@@ -19,17 +19,18 @@ A working, single-user, single-machine binary that:
 
 1. Owns a canonical on-disk state schema for runs, nodes, events, discussions, and spin-off proposals.
 2. Exposes a strict, AI-first CLI over that schema (`--json` everywhere, JSONL logs, no interactive prompts).
-3. Spawns at least **one** worktree kind end-to-end (proposed: `spinoff`) — proving the architecture without rewriting all five `/worktree-*` variants up front.
-4. Lets the human navigate runs / nodes / discussions / spin-offs from a minimum TUI without touching `tmux list-windows | grep wm-`.
+3. Spawns **all 8 current worktree kinds** end-to-end at the single-agent level — `code`, `spinoff`, `orchestrated`, `research`, `technical-decision`, `make-skill`, `fan-out`, `bugfix`. The recursive supervisor design (see `design.md` §7) makes "all kinds" only marginally more code than "one kind" because the spawn path delegates to the existing `~/.claude/skills/worktree/scripts/create.sh` for window naming, emoji, and worktree creation.
+4. Reliably surfaces structured decision reports (`node.report` events) from terminated agents to their parent supervisor — exactly-once consumption — so post-MVP DAG/fan-out work can build on the same protocol.
 
-MVP **explicitly excludes**: `/orchestrate` DAG runner, `/fan-out` concurrency manager, multi-host execution, and the macOS-native UI. Those land after the schema and one-kind spawn have proven stable.
+MVP **explicitly excludes**: a native Rust DAG runner, a native Rust fan-out concurrency manager, multi-host execution, the macOS-native UI, and the read-only TUI. The TUI is deferred to a later phase; the human navigates runs via CLI + `event tail --follow` for MVP. DAG and fan-out concurrency stay in the respective agent skill prompts, which call the binary recursively (parent agent → `orchestratectl run create --kind ...` per child).
 
 ## Non-goals (MVP)
 
-- Replacing every `/worktree-*` variant. One is enough to validate.
-- Backwards-compatibility with the prose skills. They run in parallel until the binary is stable.
+- Native Rust orchestration logic (DAG runner, fan-out concurrency manager). These live in agent skill prompts and use the binary as primitive.
+- Backwards-compatibility with the prose skills' internal state. They run in parallel until the binary is stable; both write into `~/.orchestratectl/runs/` once the shim lands.
 - Cross-host or remote orchestration.
 - Authentication, multi-user, or shared state.
+- TUI. Read-only TUI is deferred; CLI + `event tail --follow` is the MVP human view.
 
 ## Design
 
@@ -41,11 +42,10 @@ See [`breakdown.md`](breakdown.md) — child issues, dependencies, critical path
 
 ## Phases
 
-1. **Schema + scaffolding** — `Cargo.toml`, crate layout, on-disk schema frozen in `design.md`.
+1. **Schema + scaffolding** — `Cargo.toml`, two-crate workspace (`octl-core`, `octl-cli`), on-disk schema frozen in `design.md`.
 2. **Read-only CLI** — `run list`, `run show`, `node list`, `node show`, `event tail`. Hand-populated fixtures verify the schema.
-3. **Minimum TUI** — runs / nodes / detail panes, read-only over the same schema.
-4. **First spawn** — `spinoff` kind end-to-end (creates worktree, registers node, writes events).
-5. **Mutation CLIs** — `discussion resolve`, `spinoff approve|reject`.
+3. **Mutation CLIs** — `discussion resolve`, `spinoff approve|reject`, `run cancel`, `node report`.
+4. **Supervisor + all-kinds spawn** — recursive per-spawning-agent supervisor process, `run create --kind <X>` shells out to `create.sh` and registers the node, watchdog handles `node.report` and child-process death.
 
 ## Notes
 
