@@ -99,5 +99,368 @@ Design commands to work well in pipelines and with other tools:
 
 - Fetch commands output to stdout by default (pipe-friendly)
 - `--output FILE` as an alternative to stdout redirection
-- Support stdin where it makes sense (e.g. reading URLs from a list)
+- Support stdin where it makes sense (e.g. reading URLs from a list); accept
+  `-` as a filename to mean stdin
 - Consistent flag naming across commands (`--target`, `--output`, `--json`)
+
+## 6. CLI surface: noun-verb imperative, declarative `apply` as opt-in
+
+Default to a **noun-verb imperative** surface: the resource comes first, the
+action second (`<tool> job create ...`, `<tool> node list`, `<tool> job show
+<id>`). This matches `gh` (`gh pr create`, `gh issue list`). For tools with
+a single dominant resource (`cargo build`, `npm install`) a flat verb-first
+surface is fine — don't invent a noun layer for a one-resource CLI.
+
+A **declarative manifest** surface (`<tool> apply -f run.yaml`) belongs as an
+*additional* entry point, not the primary one. Add it only when:
+
+- The resource has enough fields that a file is easier than flags, **and**
+- Convergent reconciliation (apply repeatedly → same state) is a real
+  requirement, not aesthetic Kubernetes-mimicry
+
+This restriction applies to the declarative verb `apply`, not to file-based
+input generally. Imperative commands may and should accept `--file`,
+`--body-file`, or `-` (stdin) when the payload is too large, structured,
+or quoting-sensitive for flags (large markdown, JSON bodies, batch
+creates). That is plain composition, not declarative state.
+
+Rationale: AI callers compose CLI calls one at a time from a planning step;
+each call should be self-describing in the argv. `gh pr create --title X
+--body Y` is one transcript line the agent reads back to itself. A manifest
+file splits intent across argv + file contents and adds a stat/parse step
+for the agent. Manifests *are* the right answer when state-convergence is
+the actual semantics (Terraform, kubectl) — just don't make them mandatory
+when the operation is genuinely imperative.
+
+## 7. Subcommand verbs: pick one set, no synonyms
+
+Use exactly this verb vocabulary across all subcommands:
+
+- `list` (zero-or-more, filterable) — never `ls`, `index`, `all`
+- `show` (one, by id/slug) — never `get`, `view`, `describe`, `cat`
+- `create` (new resource) — never `new`, `add`, `make`
+- `update` (mutate existing) — never `edit`, `set`, `patch`, `modify`
+- `delete` (remove) — never `rm`, `remove`, `destroy`
+
+No verb may mean both "list many" and "show one" (the `kubectl get pods` /
+`kubectl get pod foo` overload is exactly the ambiguity this rule rejects).
+
+Exceptions need a written reason: `apply` (declarative convergence — see §6),
+`exec` (executes something rather than mutating state), `skill` (companion-
+skill installer — see §15), domain verbs that have no CRUD equivalent
+(`commit`, `push`, `fetch` in git).
+
+`update` semantics: by default a `update` command mutates only the fields
+named on the command line (selective patch). A full-resource replace is
+opt-in via `--replace-file` / `--replace` and must be documented as such.
+This is patch semantics under one verb — there is no separate `patch`
+command.
+
+Rationale: AI callers guess subcommand names from training-set patterns.
+Even though `get` dominates the training corpus, the cost of one wrong-guess
+retry is much smaller than the cost of an inconsistent verb vocabulary
+across our own tools. The agent learns the rule once per tool family and
+hits it every time after. We bias toward strictness over corpus-familiarity.
+
+## 8. Configuration precedence: flag > env > file > built-in default
+
+For **persistent configuration values** (API URLs, profiles, default
+targets, timeouts, credentials), precedence is resolved **per configuration
+key**: an explicit flag for that key overrides the environment variable for
+that same key, which overrides the config file's value for that key, which
+overrides the built-in default. Two independent keys may legitimately come
+from different layers; one layer does not displace another wholesale.
+
+- Lists and maps **replace** rather than deep-merge — the highest-priority
+  source for that key wins in full
+- Env var name mirrors the flag: `--api-url` ↔ `<TOOL>_API_URL`
+- Config file location is **inspectable at runtime** via `<tool> config
+  path`. The path itself may follow platform conventions (XDG on Linux,
+  `~/Library` on macOS, `%APPDATA%` on Windows) — what matters is that
+  the caller never has to guess
+- `<tool> config show --json` prints the effective resolved config and
+  where each value came from (`source: "flag" | "env" | "file" |
+  "default"`). **Secret-valued keys are redacted by default**
+  (`value: "<redacted>", secret: true`) — explicit `--show-secrets` is
+  required to dump them, and emits a warning to stderr
+
+**Invocation-behavior flags** (`--json`, `--dry-run`, `--force`, `--yes`,
+`--verbose`, `--output`, positional resource identifiers) are **not**
+config-file settings unless explicitly documented per command. They are
+per-invocation choices, not persistent configuration.
+
+Rationale: AI callers need to reason about *why* a value is what it is —
+"the agent set `--api-url` but the run still hit prod" is debuggable only
+if the source is inspectable. Mirroring flag↔env names removes a lookup
+step. Reference: `aws` documents this precedence and exposes it via
+`aws configure list`; copy that pattern. The secret-redaction default is
+non-negotiable: AI agents routinely paste tool output into transcripts and
+issue comments.
+
+## 9. Output format is fixed, not TTY-detected
+
+Output format is determined **only** by explicit flags (`--json`,
+`--output=text|json|jsonl`), never by `isatty()`. Given the same inputs
+and external state, stdout/stderr formatting does not change merely because
+stdout/stderr is or is not a terminal. No color, no table-vs-line
+switching, no progress bars based on terminal detection.
+
+- Default format is human-readable text; `--json` opts into structured
+  output; `--output=jsonl` opts into streaming events (see §12)
+- Color is off by default; only `--color=always` and `--color=never`
+  exist — there is no `--color=auto` (it would be either dead syntax or
+  TTY-sniffing under another name)
+- Pagination is never automatic — see §3
+
+Rationale: TTY-sniffing makes CLIs non-reproducible. The agent's local
+invocation, the CI invocation, and the user's terminal invocation must all
+produce the same bytes given the same flags, or transcripts and tests
+diverge from reality. `gh` and `kubectl` both ship TTY-detection that has
+bitten users; avoid the trap.
+
+## 10. Schema versioning, errors, warnings, and deprecation
+
+JSON output is a versioned API surface, not free-form. Treat it
+accordingly:
+
+- Every `--json` payload (top-level and event-level for streaming) carries
+  a `schema_version` field (integer, monotonic)
+- Additive changes (new fields) do not bump the version. Breaking changes
+  do: removing/renaming fields, changing field types, changing enum
+  semantics, making optional fields required, changing nullability,
+  changing event ordering guarantees, or changing the meaning of an
+  existing field
+- Every CLI implements `<tool> version --json` returning at least
+  `{version, commit, schema_version, supported_schemas}` so the agent can
+  detect drift between trained expectations and reality
+
+**Error envelope under `--json`.** Failures emit a structured error
+object to **stderr** (not stdout — see §2):
+
+```json
+{
+  "schema_version": 1,
+  "error": {
+    "code": "invalid_target",
+    "message": "Invalid target 'foobar'. Available: local, staging, demo, prod",
+    "invalid_value": "foobar",
+    "expected": ["local", "staging", "demo", "prod"]
+  }
+}
+```
+
+**Warnings are not errors.** Under `--json`, non-fatal warnings (e.g.
+deprecation) belong in a `warnings: []` array inside the **stdout** JSON
+payload — not on stderr. This keeps stderr a fatal-only channel and avoids
+forcing the agent to format-sniff. In text mode, warnings go to stderr
+prefixed with `warning: ` so they're trivially distinguishable.
+
+**Deprecation policy.** Deprecated flags and commands emit a structured
+warning on every use, naming the removal version (or commit/tag window if
+the tool has no semver releases). Suppress with
+`<TOOL>_NO_DEPRECATION_WARNINGS=1`. Deprecations live for at least one
+release window before removal. A deprecation alone never changes exit
+code.
+
+Rationale: agents pin against observed CLI behavior. Without a schema
+version, the agent can't tell "field missing because absent" from "field
+missing because renamed in v2". The error envelope makes failure parseable
+the same way success is parseable.
+
+## 11. Dry-run, idempotency, and retry safety
+
+**Dry-run.** Every command that creates, updates, or deletes a resource
+supports `--dry-run`. Dry-run:
+
+- Performs all input validation and read-only checks that the real run does
+- Emits the planned mutations using a **planning envelope** distinct from
+  the real-run result envelope:
+  ```json
+  {
+    "schema_version": 1,
+    "dry_run": true,
+    "would": [
+      {"action": "create", "resource": "run", "input": {...},
+       "known_effects": {"status": "would_create"},
+       "unknown_until_apply": ["id", "created_at", "url"]}
+    ]
+  }
+  ```
+- Never partially applies — either prints the full plan or errors
+
+If a truthful dry-run is not possible (token rotation, OAuth login,
+race-sensitive ops, commands whose result depends on server-generated
+state the dry-run cannot reserve), the command **fails explicit**:
+exit 1 with `{schema_version, error: {code: "dry_run_unsupported",
+reason: "..."}}`. A fake dry-run is worse than no dry-run — it gives
+the AI caller false confidence.
+
+**Idempotency and retry safety.** AI callers retry. The retry path must
+not turn a successful first call into a confusing failure.
+
+- For network-backed `create`, **support a caller-supplied idempotency
+  key** (`--idempotency-key <opaque>`): the second call with the same key
+  returns the original result, not a conflict. Echo the key in the JSON
+  output. Recommend this pattern wherever the backend supports it (Stripe,
+  AWS, and most modern APIs do)
+- Where idempotency keys are not available, offer symmetric opt-ins:
+  `--if-not-exists` on `create` (succeed silently if it already exists,
+  return the existing resource) and `--if-exists` on `delete` (succeed
+  silently if absent)
+- `delete` of a missing resource defaults to a clear error, but the
+  `--if-exists` flag exists for the AI retry use case
+- `update` is selective by default (only fields named — see §7); a retried
+  update is naturally idempotent
+
+The point is the agent should always have a way to say "I don't care
+whether you already did this; converge to this state and tell me the
+final result." Different commands offer that affordance through
+different mechanisms; offer at least one.
+
+Rationale: "did my last call succeed?" must be answerable without
+ambiguity-prone error-message string matching. Idempotency keys are the
+industry-standard answer where the network is involved; the symmetric
+flags are the local-tool answer.
+
+## 12. Long-running operations: streaming events and progress queries
+
+Operations that take more than a few seconds need a way for the caller —
+human or agent — to know they are still alive and how far along they are.
+The format is part of the command contract, not a runtime decision.
+
+**Streaming mode.** A long-running command declares its output format up
+front:
+
+- `--output=jsonl` (or `--jsonl`) emits one JSON event per line to stdout,
+  each carrying `schema_version`, `event` (`"progress"`, `"log"`,
+  `"result"`, `"error"`, `"cancelled"`), and a monotonic `seq`
+- Terminal events are mutually exclusive: exactly one of `result`,
+  `cancelled`, or `error` ends the stream. The absence of a terminal
+  event means the process crashed mid-stream; consumers treat that as
+  `error`
+- `--json` (single document) is forbidden for primarily long-running
+  commands — pick `--output=jsonl` or design the command around a
+  separate progress query (below). A command must not silently switch
+  format based on elapsed runtime
+- Text mode prints brief one-line-per-step progress to stderr — **never**
+  spinners, ANSI cursor movement, or carriage-return-overwrite progress
+  bars. These rules apply in both human and agent modes; we deliberately
+  forfeit the spinner UX for format predictability
+
+**Progress query.** For commands that run as a daemon, background job, or
+detached process — where the caller is not streaming the output — every
+such command exposes a paired progress query:
+
+- `<tool> <noun> show <id>` (or `<tool> <noun> status <id>`) returns the
+  current state, `schema_version`, the last `seq` emitted, and a recent
+  event window
+- Agents poll this instead of waiting on a stream. Human callers run it
+  on demand
+
+**Signals.** The streaming process traps both `SIGINT` and `SIGTERM`
+(AI sandbox timeouts use `SIGTERM`, terminal Ctrl-C uses `SIGINT`) and
+emits a final `{"event": "cancelled"}` event before exit when feasible.
+Exit codes for cancellation: **130 for SIGINT, 143 for SIGTERM**. These
+are declared exceptions to §2's `0/1/2` policy; document them in the
+tool's `--help`.
+
+Rationale: AI callers read incrementally and need to distinguish "still
+working" from "hung". A spinner is invisible to a subprocess reader; a
+JSONL event is parseable, filterable, and survives `tee` to a log. For
+background jobs the agent can't stream, the progress-query subcommand is
+the same answer in pull form.
+
+## 13. Large outputs go to a file the agent can query
+
+A `list` command that returns 10 000 rows blows out an AI agent's context
+window. The conventional answer in human CLIs is paging or
+`--limit`/`--cursor`; both push complexity onto the caller and force
+repeated calls. The AI-first answer is different:
+
+**Default to inline output for small results, and offer
+`--output FILE.jsonl` or `--output FILE.db` (SQLite) for results that
+might not be small.** When writing to a file:
+
+- JSONL: one record per line, each carrying `schema_version` — agent
+  reads with `jq`, `grep`, `head`, `wc -l`
+- SQLite: structured schema with primary keys and indexes the command
+  documents — agent reads with `sqlite3 file.db "SELECT ... WHERE ..."`
+- The command prints to stdout (or `--json` stdout) only metadata about
+  the file: path, count, schema_version, optionally a SQL/jq query hint
+  the agent can use as a starting point
+
+This replaces traditional pagination entirely for the AI use case. The
+agent never gets the full result blob into context; it issues targeted
+queries against the file. For genuinely huge results, SQLite is
+preferred (indexed lookups, `LIMIT/OFFSET`, joins across multiple
+exports). For moderate streaming results, JSONL is enough.
+
+`--limit` is still useful as a guardrail against accidentally requesting
+huge inline output, but it is not the primary mechanism.
+
+Rationale: AI context is the binding resource. Twenty agent turns asking
+`tool list --cursor abc123` is worse than one turn that writes a SQLite
+file and three turns of focused SQL. The standard `--output FILE` from
+§5 already exists; this section makes it the recommended pattern for any
+result that might be large.
+
+## 14. `--help` is agent-first, structured, and drill-down
+
+`--help` is the first thing an AI agent reads when it doesn't know a
+command. Optimize it for that reader. Humans benefit too.
+
+- **Top-level `<tool> --help`** lists subcommands with one-line
+  descriptions, and the small set of global flags (`--json`,
+  `--output`, `--verbose`, `--version`). It does **not** dump every
+  flag of every subcommand
+- **Drill-down**: `<tool> <subcommand> --help` is the next layer —
+  full flag list, accepted values, defaults, the env-var name for each
+  flag (per §8), and exit-code semantics. Further nesting works the
+  same way: `<tool> job create --help` is independent of
+  `<tool> job --help`
+- **Machine-readable help**: every `<tool> ... --help` accepts `--json`
+  and emits a structured description of subcommands, flags, args,
+  defaults, env-var mappings, accepted-value enums, deprecation status,
+  and the `schema_version` of the help payload itself
+- **Examples**: each subcommand's help includes at least one working
+  example as text (humans), and an `examples: []` array of
+  `{description, argv}` pairs under `--json` (agents). Examples are
+  copy-pasteable and use the canonical verb vocabulary from §7
+
+Rationale: agents lookup a command, fail, retry — this loop is much
+shorter if the help they read is structured (no prose scraping) and
+drilled (no flag-firehose). For humans, the same drill-down is just good
+UX. The schema-versioned `--help --json` is what makes §10's "schema as
+API surface" promise complete: now the *surface itself* is queryable, not
+just the data.
+
+## 15. `skill` subcommand: install companion AI-skills
+
+Every CLI ships with a `skill` subcommand whose job is to install
+Claude-Code-style skills (`SKILL.md` files with frontmatter) that teach
+an AI agent how to drive this CLI in real workflows. The skill files are
+the agent's *operating manual* for the tool — distinct from `--help`
+(reference) and the schema (data shape).
+
+- `<tool> skill list` — shows available skills shipped with this tool,
+  one-line descriptions
+- `<tool> skill install [<name>]` — copies the skill(s) into the active
+  Claude Code installation (`~/.claude/skills/` by default,
+  `--target <dir>` for other agent runtimes); installs all when no name
+  given
+- `<tool> skill show <name> --json` — prints the skill content without
+  installing, so an agent can read it inline if needed
+
+The skills themselves live alongside the tool's source (in-repo) so they
+version with the binary. The CLI is responsible for keeping skill text
+and CLI surface in sync (a tool whose `skill list` references a removed
+flag is a release-blocker, same as a broken `--help`).
+
+Rationale: `--help` tells an agent *what* a command does; a skill tells
+it *when and how to use it in a multi-step workflow* — when to combine
+with which other commands, which gotchas to avoid, what the success
+criteria look like. The skill is also the natural place to encode
+non-obvious idioms (e.g. "always pass `--output FILE.jsonl` when the
+result might exceed N rows" — §13). Shipping skills from the tool itself
+means every agent that installs the tool gets the operating manual in
+one step, rather than asking the agent to discover patterns by trial.
