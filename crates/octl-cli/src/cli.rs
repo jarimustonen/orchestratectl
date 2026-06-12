@@ -58,17 +58,19 @@ enum SkillAction {
         /// Skill name (see `skill list`).
         name: String,
     },
-    /// Copy a skill's SKILL.md to the agent's skill directory.
+    /// Copy a skill's SKILL.md to the agent's skill directory. Installs
+    /// every embedded skill when no name is given (per §15).
     Install {
-        /// Skill name (see `skill list`).
-        name: String,
+        /// Skill name (see `skill list`). Omit to install every skill.
+        name: Option<String>,
         /// Which agent runtime to install for.
         #[arg(long, value_enum, default_value_t = SkillAgentArg::Claude)]
         agent: SkillAgentArg,
-        /// Override the destination path. Incompatible with `--agent all`.
+        /// Override the destination path. Incompatible with `--agent all`
+        /// and with the install-all (no-name) form.
         #[arg(long)]
         dest: Option<PathBuf>,
-        /// Overwrite an existing file at the destination.
+        /// Overwrite existing files at the destination(s).
         #[arg(long)]
         force: bool,
     },
@@ -119,7 +121,7 @@ pub fn run() -> ExitCode {
                 dest,
                 force,
             } => crate::skill::cmd_install(
-                &name,
+                name.as_deref(),
                 agent.into(),
                 dest,
                 force,

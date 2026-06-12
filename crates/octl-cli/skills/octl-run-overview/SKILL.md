@@ -6,10 +6,20 @@ version: 1
 
 # octl-run-overview
 
+> ## ⚠️ PREVIEW — DO NOT INVOKE BLINDLY
+>
+> The `orchestratectl run list` / `orchestratectl run show` subcommands
+> documented here are **not yet implemented** in this build. They land in
+> a follow-up issue (`run-list-show`). Until then, this file is a forward
+> contract: read it to understand the shape of the response, but **call
+> `orchestratectl version` first** and refuse to execute `run` commands
+> unless they appear in `--help`. If they don't, tell the user the
+> feature is not yet shipped and stop.
+
 `orchestratectl` is the state owner for agent workflows: worktrees,
 fan-outs, orchestrations, and spinoffs. Every workflow is a **run** with
 canonical state under `~/.orchestratectl/runs/<run-id>/`. Two commands
-expose that state to you:
+will expose that state to you once they ship:
 
 - `orchestratectl run list [--json]` — every run, newest first
 - `orchestratectl run show <run-id> [--json]` — one run, full detail
@@ -45,7 +55,7 @@ by `created_at` (RFC3339).
     "runs": [
       {
         "id": "01HZ...",
-        "kind": "worktree-code | worktree-spinoff | fan-out | orchestrate",
+        "kind": "worktree-code | spinoff | fan-out | orchestrate",
         "lifecycle": "pending | running | paused | completed | failed | cancelled",
         "status": "<kind-specific short label>",
         "created_at": "2026-06-12T10:30:00Z",
