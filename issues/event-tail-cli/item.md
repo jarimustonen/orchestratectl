@@ -3,12 +3,15 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 commits:
 - hash: 6dd88a41f6347ad023383be9574a2d02df899d05
   summary: 'feat(event-tail-cli): event tail with --follow, signals, formats'
+- hash: 5664584c1d9dfeff5649a0b3cb0be3f30050e0d3
+  summary: 'fix(event-tail-cli): apply multi-LLM review findings'
+closed: 2026-06-12
 ---
 
 # Event tail CLI
