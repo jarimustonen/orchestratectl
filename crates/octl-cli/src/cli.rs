@@ -52,7 +52,7 @@ enum Command {
         #[command(subcommand)]
         action: crate::run::RunAction,
     },
-    /// Read events from a run's `events.jsonl` (and, with `--follow`, tail it).
+    /// Read (`tail`) or append (`create`) events on a run's event log.
     Event {
         #[command(subcommand)]
         action: crate::event::EventAction,

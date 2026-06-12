@@ -1,4 +1,7 @@
-//! Integration tests for `event tail`.
+//! Integration tests for the `event` subcommand family — `tail` (read)
+//! and `create` (sanctioned write path).
+//!
+//! Each test uses a fresh `TempDir` via `ORCHESTRATECTL_HOME`.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -7,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 fn bin(home: &TempDir) -> Command {
@@ -487,4 +490,343 @@ fn send_sigint(child: &Child) -> std::io::Result<()> {
     // gated to `cfg(unix)` above.
     let mut c = unsafe { std::ptr::read(child as *const Child) };
     c.kill()
+}
+
+// ---- helpers shared by the `event create` tests below ----
+
+fn run_ok(cmd: &mut Command) -> Value {
+    let out = cmd.output().expect("spawn");
+    assert!(
+        out.status.success(),
+        "exit={:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("stdout is valid JSON")
+}
+
+fn run_fail(cmd: &mut Command) -> (i32, Value) {
+    let out = cmd.output().expect("spawn");
+    assert!(!out.status.success(), "expected failure");
+    let code = out.status.code().expect("exit code");
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    let last = stderr.lines().last().expect("stderr has at least one line");
+    let v: Value = serde_json::from_str(last).expect("error envelope JSON");
+    (code, v)
+}
+
+fn write_json(home: &TempDir, name: &str, v: Value) -> std::path::PathBuf {
+    let p = home.path().join(name);
+    std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+    p
+}
+
+#[test]
+fn node_created_then_node_status_updates_projection() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+
+    // Append node.created via event create.
+    let created_data = write_json(
+        &home,
+        "node_created.json",
+        json!({"kind": "spinoff", "task": "demo"}),
+    );
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        created_data.to_str().unwrap(),
+    ]));
+    assert_eq!(v["data"]["kind"], "node.created");
+    assert_eq!(v["data"]["seq"].as_u64().unwrap(), 2); // 1 = run.created
+
+    // nodes/n-0001.json must exist with status pending.
+    let node_path = home
+        .path()
+        .join("runs")
+        .join(&run_id)
+        .join("nodes")
+        .join("n-0001.json");
+    let node: Value = serde_json::from_slice(&std::fs::read(&node_path).unwrap()).unwrap();
+    assert_eq!(node["status"], "pending");
+
+    // node.status running.
+    let status_data = write_json(&home, "node_status.json", json!({"status": "running"}));
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.status",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        status_data.to_str().unwrap(),
+    ]));
+    assert_eq!(v["data"]["seq"].as_u64().unwrap(), 3);
+
+    let node: Value = serde_json::from_slice(&std::fs::read(&node_path).unwrap()).unwrap();
+    assert_eq!(node["status"], "running");
+}
+
+#[test]
+fn unknown_kind_is_rejected_with_expected_list() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(&home, "x.json", json!({}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.bogus",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "unknown_event_kind");
+    let expected = err["error"]["expected"].as_array().expect("expected list");
+    assert!(expected.iter().any(|v| v.as_str() == Some("node.created")));
+}
+
+#[test]
+fn missing_node_id_for_node_scoped_kind_rejected() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(&home, "rep.json", json!({"success": true}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.report",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "missing_required_flag");
+}
+
+#[test]
+fn dry_run_does_not_touch_filesystem() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let events_path = home.path().join("runs").join(&run_id).join("events.jsonl");
+    let before = std::fs::read(&events_path).unwrap();
+
+    let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--dry-run",
+    ]));
+    assert_eq!(v["data"]["dry_run"], true);
+    let projections = v["data"]["projections"].as_array().expect("projections");
+    assert!(projections
+        .iter()
+        .any(|p| p.as_str() == Some("nodes/n-0001.json")));
+
+    let after = std::fs::read(&events_path).unwrap();
+    assert_eq!(before, after, "dry-run must not append to events.jsonl");
+    assert!(!home
+        .path()
+        .join("runs")
+        .join(&run_id)
+        .join("nodes")
+        .join("n-0001.json")
+        .exists());
+}
+
+#[test]
+fn idempotency_key_returns_existing_seq() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+
+    let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    let v1 = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    let seq1 = v1["data"]["seq"].as_u64().unwrap();
+
+    // Same key, even with different payload, returns the original event.
+    let p2 = write_json(&home, "nc2.json", json!({"kind": "code"}));
+    let v2 = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p2.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    assert_eq!(v2["data"]["seq"].as_u64().unwrap(), seq1);
+    assert_eq!(v2["data"]["idempotent_replay"], true);
+
+    // events.jsonl must have exactly one node.created.
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
+            .unwrap();
+    let count = events
+        .lines()
+        .filter(|l| l.contains("\"kind\":\"node.created\""))
+        .count();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn run_not_found_is_user_error() {
+    let home = TempDir::new().unwrap();
+    let p = write_json(&home, "x.json", json!({}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        "01JXBOGUSRUNIDNOTHERE",
+        "--kind",
+        "node.status",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "run_not_found");
+}
+
+#[test]
+fn from_file_invalid_json_rejected() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = home.path().join("bad.json");
+    std::fs::write(&p, b"not json").unwrap();
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "from_file_invalid_json");
+}
+
+#[test]
+fn node_id_rejected_for_run_status() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(&home, "rs.json", json!({"status": "running"}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "run.status",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "unexpected_flag");
+}
+
+#[test]
+fn discussion_opened_updates_manifest_and_writes_discussion_file() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+
+    // Need a node first so the reducer has somewhere to anchor.
+    let nc = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        nc.to_str().unwrap(),
+    ]));
+
+    let disc = write_json(
+        &home,
+        "disc.json",
+        json!({
+            "discussion_id": "d-01TEST",
+            "node_id": "n-0001",
+            "topic": "should we X?",
+            "severity": "discuss"
+        }),
+    );
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "discussion.opened",
+        "--from-file",
+        disc.to_str().unwrap(),
+    ]));
+    let projs = v["data"]["projections"].as_array().unwrap();
+    assert!(projs
+        .iter()
+        .any(|p| p.as_str() == Some("discussions/d-01TEST.json")));
+    assert!(projs.iter().any(|p| p.as_str() == Some("manifest.json")));
+
+    let disc_path = home
+        .path()
+        .join("runs")
+        .join(&run_id)
+        .join("discussions")
+        .join("d-01TEST.json");
+    assert!(disc_path.exists());
+
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(home.path().join("runs").join(&run_id).join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["open_discussions"].as_u64().unwrap(), 1);
 }

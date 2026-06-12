@@ -216,32 +216,48 @@ pub fn append_and_apply(
     data: Value,
 ) -> Result<u64> {
     RunLock::with_lock(&paths.lock(), || {
-        let last = recover_last_seq(&paths.events())?;
-        let seq = last + 1;
-        let run_id = paths
-            .root
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let ev = Event {
-            ts: Utc::now(),
-            seq,
-            kind: kind.to_string(),
-            run_id,
-            node_id: node_id.map(str::to_string),
-            idempotency_key: idempotency_key.map(str::to_string),
-            data,
-        };
-        let events_path = paths.events();
-        let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
-        line.push(b'\n');
-        let mut f = open_events_append(&events_path)?;
-        f.write_all(&line)
-            .map_err(|e| Error::io(events_path.clone(), e))?;
-        f.sync_all().map_err(|e| Error::io(events_path, e))?;
-        apply_event(paths, &ev)?;
-        Ok(seq)
+        append_and_apply_unlocked(paths, kind, node_id, idempotency_key, data)
     })
+}
+
+/// Same as [`append_and_apply`] but assumes the caller already holds the
+/// run's [`RunLock`]. Use when you need to fold extra logic (e.g. an
+/// idempotency-key lookup) into the same locked critical section —
+/// calling [`append_and_apply`] recursively would deadlock because
+/// `flock` blocks when a second open of the lock file from the same
+/// process tries to acquire LOCK_EX.
+pub fn append_and_apply_unlocked(
+    paths: &RunPaths,
+    kind: &str,
+    node_id: Option<&str>,
+    idempotency_key: Option<&str>,
+    data: Value,
+) -> Result<u64> {
+    let last = recover_last_seq(&paths.events())?;
+    let seq = last + 1;
+    let run_id = paths
+        .root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ev = Event {
+        ts: Utc::now(),
+        seq,
+        kind: kind.to_string(),
+        run_id,
+        node_id: node_id.map(str::to_string),
+        idempotency_key: idempotency_key.map(str::to_string),
+        data,
+    };
+    let events_path = paths.events();
+    let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
+    line.push(b'\n');
+    let mut f = open_events_append(&events_path)?;
+    f.write_all(&line)
+        .map_err(|e| Error::io(events_path.clone(), e))?;
+    f.sync_all().map_err(|e| Error::io(events_path, e))?;
+    apply_event(paths, &ev)?;
+    Ok(seq)
 }
 
 /// Read every event from `events.jsonl`. Used by tests and reducer replays.

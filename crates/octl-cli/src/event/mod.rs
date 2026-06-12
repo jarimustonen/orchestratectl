@@ -1,14 +1,20 @@
 //! `event` subcommand — read/write events on the canonical event log.
 //!
-//! Expected verbs (one file per verb, shared types here):
+//! Verbs (one file per verb, shared types here):
 //!
-//! - `tail`   — read (this module's `tail.rs`, design.md §2.3).
-//! - `create` — append (parallel `event-create-cli` spinoff — keep this
-//!   module's surface compatible but do **not** edit `create.rs` here).
+//! - `tail`   — read (`tail.rs`, design.md §2.3).
+//! - `create` — sanctioned write path (`create.rs`, design.md §1, §2.3).
+//!   Direct `echo ... >> events.jsonl` is explicitly banned because macOS
+//!   lacks `flock(1)` and portable shell-side locking can't be enforced;
+//!   `event create` acquires the per-run `flock`, assigns `seq`, appends,
+//!   runs the reducer, fsyncs, and releases — all in one atomic window.
 //!
 //! `dispatch` is the single entry point called from `cli.rs`.
 
+pub mod create;
 pub mod tail;
+
+use std::path::PathBuf;
 
 use clap::{Subcommand, ValueEnum};
 
@@ -69,6 +75,28 @@ pub enum EventAction {
         #[arg(long)]
         output: Option<std::path::PathBuf>,
     },
+    /// Append one event to a run's `events.jsonl` and update projections.
+    Create {
+        /// Target run-id (`<root>/runs/<run-id>` must exist).
+        run_id: String,
+        /// Event kind (see design.md §1.4 for the closed MVP set).
+        #[arg(long)]
+        kind: String,
+        /// Node-id for node-scoped kinds (`node.*`, `child.spawned`).
+        #[arg(long)]
+        node_id: Option<String>,
+        /// JSON file containing the event's `data` payload.
+        #[arg(long)]
+        from_file: PathBuf,
+        /// Dedup token — a repeat call with the same key returns the
+        /// existing event's `seq` instead of appending again.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        /// Print the would-be event + projection plan and exit 0 without
+        /// touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub fn dispatch(action: EventAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
@@ -85,6 +113,23 @@ pub fn dispatch(action: EventAction, json: bool, warnings: &[String]) -> Result<
             follow,
             format,
             output,
+            json,
+            warnings,
+        }),
+        EventAction::Create {
+            run_id,
+            kind,
+            node_id,
+            from_file,
+            idempotency_key,
+            dry_run,
+        } => create::run(create::Args {
+            run_id,
+            kind,
+            node_id,
+            from_file,
+            idempotency_key,
+            dry_run,
             json,
             warnings,
         }),
