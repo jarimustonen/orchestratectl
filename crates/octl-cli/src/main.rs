@@ -1,6 +1,7 @@
 mod cli;
 mod error;
 mod output;
+mod skill;
 
 use std::process::ExitCode;
 

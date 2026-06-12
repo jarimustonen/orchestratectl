@@ -42,6 +42,53 @@ struct Cli {
 enum Command {
     /// Show binary, commit, and state-schema versions.
     Version,
+    /// List, show, or install companion AI-skills shipped with this binary.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillAction {
+    /// List skills embedded in this binary.
+    List,
+    /// Print a skill's SKILL.md to stdout.
+    Show {
+        /// Skill name (see `skill list`).
+        name: String,
+    },
+    /// Copy a skill's SKILL.md to the agent's skill directory.
+    Install {
+        /// Skill name (see `skill list`).
+        name: String,
+        /// Which agent runtime to install for.
+        #[arg(long, value_enum, default_value_t = SkillAgentArg::Claude)]
+        agent: SkillAgentArg,
+        /// Override the destination path. Incompatible with `--agent all`.
+        #[arg(long)]
+        dest: Option<PathBuf>,
+        /// Overwrite an existing file at the destination.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum SkillAgentArg {
+    Claude,
+    Codex,
+    All,
+}
+
+impl From<SkillAgentArg> for crate::skill::AgentTarget {
+    fn from(v: SkillAgentArg) -> Self {
+        match v {
+            SkillAgentArg::Claude => Self::Claude,
+            SkillAgentArg::Codex => Self::Codex,
+            SkillAgentArg::All => Self::All,
+        }
+    }
 }
 
 pub fn run() -> ExitCode {
@@ -61,6 +108,25 @@ pub fn run() -> ExitCode {
 
     let result = match cli.command {
         Command::Version => cmd_version(cli.json, &logging_warnings),
+        Command::Skill { action } => match action {
+            SkillAction::List => crate::skill::cmd_list(cli.json, &logging_warnings),
+            SkillAction::Show { name } => {
+                crate::skill::cmd_show(&name, cli.json, &logging_warnings)
+            }
+            SkillAction::Install {
+                name,
+                agent,
+                dest,
+                force,
+            } => crate::skill::cmd_install(
+                &name,
+                agent.into(),
+                dest,
+                force,
+                cli.json,
+                &logging_warnings,
+            ),
+        },
     };
 
     match result {
