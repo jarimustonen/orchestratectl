@@ -2,18 +2,17 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::json;
 
 use octl_core::{read_manifest_opt, read_spinoff_opt};
 
 use crate::error::CliError;
 use crate::output;
 use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
-use crate::spinoff::status_kebab;
+use crate::spinoff::{status_arg_kebab, status_kebab, StatusFilterArg};
 
 pub struct Args<'a> {
     pub run_id: String,
-    pub status: Option<String>,
+    pub status: Option<StatusFilterArg>,
     pub json: bool,
     pub warnings: &'a [String],
 }
@@ -40,10 +39,12 @@ struct Summary {
     resolved_at: Option<DateTime<Utc>>,
 }
 
-const ALLOWED_FILTERS: &[&str] = &["pending", "approved", "rejected"];
-
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
+    // Validate inputs at the boundary *before* any filesystem work
+    // (AGENTS-AI-FIRST-CLI §1: reject unknown values up front).
     let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let status_filter = args.status.map(status_arg_kebab);
+
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
 
@@ -52,17 +53,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             CliError::user("run_not_found", format!("no run with id {run_id}"))
                 .with_invalid_value(&run_id),
         );
-    }
-
-    if let Some(s) = args.status.as_deref() {
-        if !ALLOWED_FILTERS.contains(&s) {
-            return Err(CliError::user(
-                "invalid_value",
-                format!("--status must be one of {:?}", ALLOWED_FILTERS),
-            )
-            .with_invalid_value(s)
-            .with_expected(json!(ALLOWED_FILTERS)));
-        }
     }
 
     let mut out: Vec<Summary> = Vec::new();
@@ -95,7 +85,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 None => continue,
             };
             let status = status_kebab(s.status);
-            if let Some(filter) = args.status.as_deref() {
+            if let Some(filter) = status_filter {
                 if status != filter {
                     continue;
                 }
@@ -113,7 +103,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             });
         }
     }
-    out.sort_by_key(|p| std::cmp::Reverse(p.proposed_at));
+    // Reverse-chronological with proposal_id as the tie-breaker so
+    // same-millisecond proposals come out deterministically — matters
+    // for AI consumers diffing list output.
+    out.sort_by(|a, b| {
+        b.proposed_at
+            .cmp(&a.proposed_at)
+            .then_with(|| a.proposal_id.cmp(&b.proposal_id))
+    });
 
     emit(
         ListPayload {

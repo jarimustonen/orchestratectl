@@ -1,15 +1,16 @@
 //! `spinoff approve` — emit `spinoff.approved`, optionally materialize
 //! an `issuectl` issue.
 //!
-//! V10 design intent: a missing `issuectl` binary is not fatal — the
-//! approval still records, only the auto-materialization path is
-//! skipped, and the caller sees a `warnings[]` entry so they can run
-//! `issuectl new` themselves.
+//! Auto-materialization is best-effort: a missing `issuectl` binary is
+//! intentionally silent (the tool is optional), an `issuectl` *failure*
+//! surfaces as a warning entry in the success envelope so the caller
+//! can decide whether to retry `issuectl new` themselves. The approval
+//! is recorded either way.
 
 use std::process::Command;
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use octl_core::{
     append_and_apply_unlocked, read_manifest_opt, read_spinoff_opt, RunLock, SpinoffStatus,
@@ -18,6 +19,7 @@ use octl_core::{
 use crate::error::CliError;
 use crate::output;
 use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
+use crate::spinoff::require_safe_slug;
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -30,9 +32,9 @@ pub struct Args<'a> {
 }
 
 #[derive(Serialize)]
-struct ApprovePayload<'a> {
-    run_id: &'a str,
-    proposal_id: &'a str,
+struct ApprovePayload {
+    run_id: String,
+    proposal_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     issue_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,14 +43,36 @@ struct ApprovePayload<'a> {
     idempotent_replay: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dry_run: Option<bool>,
-    /// Per-call warnings (issuectl-missing, issuectl-failed). Merges
-    /// with the global envelope `warnings` array in `output::emit_json`.
-    warnings: Vec<String>,
+}
+
+/// What the locked critical section decided. Returning a typed enum
+/// (rather than `Option<u64>`) so the caller never confuses a race-loss
+/// for an idempotent replay of its own request — the loser must surface
+/// the *persisted* state, not its locally-computed slug.
+enum Outcome {
+    Applied {
+        seq: u64,
+    },
+    AlreadyApproved {
+        issue_slug: Option<String>,
+    },
+    AlreadyRejected {
+        reason: Option<String>,
+    },
+    /// The proposal vanished between the unlocked pre-check and the
+    /// authoritative re-check inside the lock. Race against deletion
+    /// or a corrupt projection.
+    ProposalNotFound,
+    RunNotFound,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let proposal_id = require_safe_id(&args.proposal_id, "proposal-id")?;
+    let issue_slug_arg = match args.issue_slug.as_deref() {
+        Some(s) => Some(require_safe_slug(s, "issue-slug")?),
+        None => None,
+    };
 
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
@@ -71,21 +95,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     };
 
+    // Pre-lock fast-path responses. The lock-time recheck still
+    // enforces these invariants authoritatively below.
     match proposal.status {
         SpinoffStatus::Approved => {
-            // Idempotent re-approve. Return the prior decision.
-            return emit(
-                ApprovePayload {
-                    run_id: &run_id,
-                    proposal_id: &proposal_id,
-                    issue_slug: proposal.accepted_as_issue_slug.clone(),
-                    seq: None,
-                    idempotent_replay: Some(true),
-                    dry_run: None,
-                    warnings: Vec::new(),
-                },
+            return emit_approved(
+                &run_id,
+                &proposal_id,
+                proposal.accepted_as_issue_slug.clone(),
+                None,
+                Some(true),
+                None,
                 args.json,
                 args.warnings,
+                &[],
             );
         }
         SpinoffStatus::Rejected => {
@@ -98,14 +121,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         SpinoffStatus::Proposed => {}
     }
 
-    // Resolve the issue slug, possibly via issuectl. Run this before
-    // taking the flock — issuectl operates on a different repo and may
-    // be slow; we don't want to block the run's event log on it.
+    // Resolve the issue slug, possibly via issuectl. Calling issuectl
+    // *before* the lock means two concurrent approvers can both create
+    // external issues (one orphan, one canonical). Mitigations:
+    //   - the lock-time recheck below returns the persisted slug, never
+    //     the locally-computed one, when the loser detects a race;
+    //   - the user can pass `--issue-slug` to skip materialization;
+    //   - a follow-up issue (`spinoff-issuectl-materialization-arch`)
+    //     redesigns this into a reserve→materialize→attach flow.
     let mut local_warnings: Vec<String> = Vec::new();
-    let issue_slug: Option<String> = if let Some(s) = args.issue_slug.as_deref() {
-        Some(s.to_string())
+    let issue_slug: Option<String> = if let Some(s) = &issue_slug_arg {
+        Some(s.clone())
     } else if args.dry_run {
-        // Planning envelope: don't fork issuectl on dry-run.
         None
     } else {
         match materialize_via_issuectl(
@@ -123,18 +150,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     if args.dry_run {
-        return emit(
-            ApprovePayload {
-                run_id: &run_id,
-                proposal_id: &proposal_id,
-                issue_slug,
-                seq: None,
-                idempotent_replay: None,
-                dry_run: Some(true),
-                warnings: local_warnings,
-            },
+        return emit_approved(
+            &run_id,
+            &proposal_id,
+            issue_slug,
+            None,
+            None,
+            Some(true),
             args.json,
             args.warnings,
+            &local_warnings,
         );
     }
 
@@ -145,16 +170,30 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
     let data = Value::Object(data);
 
-    let seq = RunLock::with_lock(&paths.lock(), || {
-        // Re-check status under the lock: a concurrent approve could
-        // have raced us between the unlocked read above and now.
-        if let Some(cur) = read_spinoff_opt(&paths, &proposal_id)? {
-            if matches!(
-                cur.status,
-                SpinoffStatus::Approved | SpinoffStatus::Rejected
-            ) {
-                return Ok(None);
+    let outcome = RunLock::with_lock(&paths.lock(), || {
+        // Re-validate run + proposal under the lock — the unlocked reads
+        // above are advisory. A concurrent run-delete or
+        // projection-corruption between unlocked check and lock is rare
+        // but valid.
+        if read_manifest_opt(&paths)?.is_none() {
+            return Ok(Outcome::RunNotFound);
+        }
+        let cur = match read_spinoff_opt(&paths, &proposal_id)? {
+            Some(p) => p,
+            None => return Ok(Outcome::ProposalNotFound),
+        };
+        match cur.status {
+            SpinoffStatus::Approved => {
+                return Ok(Outcome::AlreadyApproved {
+                    issue_slug: cur.accepted_as_issue_slug.clone(),
+                });
             }
+            SpinoffStatus::Rejected => {
+                return Ok(Outcome::AlreadyRejected {
+                    reason: cur.rejected_reason.clone(),
+                });
+            }
+            SpinoffStatus::Proposed => {}
         }
         let seq = append_and_apply_unlocked(
             &paths,
@@ -163,48 +202,78 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             args.idempotency_key.as_deref(),
             data,
         )?;
-        Ok(Some(seq))
+        Ok(Outcome::Applied { seq })
     })
     .map_err(from_core)?;
 
-    let (seq, replayed) = match seq {
-        Some(s) => (Some(s), false),
-        None => (None, true),
-    };
-
-    emit(
-        ApprovePayload {
-            run_id: &run_id,
-            proposal_id: &proposal_id,
+    match outcome {
+        Outcome::Applied { seq } => emit_approved(
+            &run_id,
+            &proposal_id,
             issue_slug,
-            seq,
-            idempotent_replay: if replayed { Some(true) } else { None },
-            dry_run: None,
-            warnings: local_warnings,
-        },
-        args.json,
-        args.warnings,
-    )
+            Some(seq),
+            None,
+            None,
+            args.json,
+            args.warnings,
+            &local_warnings,
+        ),
+        Outcome::AlreadyApproved {
+            issue_slug: persisted,
+        } => emit_approved(
+            &run_id,
+            &proposal_id,
+            persisted,
+            None,
+            Some(true),
+            None,
+            args.json,
+            args.warnings,
+            &local_warnings,
+        ),
+        Outcome::AlreadyRejected { reason } => Err(CliError::user(
+            "proposal_already_rejected",
+            format!(
+                "proposal {proposal_id} was rejected by a concurrent caller \
+                 (reason: {:?}); cannot approve",
+                reason
+            ),
+        )
+        .with_invalid_value(&proposal_id)),
+        Outcome::ProposalNotFound => Err(CliError::user(
+            "proposal_not_found",
+            format!("proposal {proposal_id} disappeared from run {run_id}"),
+        )
+        .with_invalid_value(&proposal_id)),
+        Outcome::RunNotFound => Err(CliError::user(
+            "run_not_found",
+            format!("run {run_id} disappeared"),
+        )
+        .with_invalid_value(&run_id)),
+    }
 }
 
 /// Try to materialize an issue via `issuectl new`. Returns:
 ///
 /// - `Ok(Some(slug))` on success.
-/// - `Ok(None)` if `issuectl` is not on PATH (no warning — design
-///   intent is that `issuectl` is optional).
-/// - `Err(warning)` if `issuectl` is on PATH but failed; the caller
-///   should attach the message to the response `warnings` array.
+/// - `Ok(None)` if `issuectl` is not on PATH — silent because
+///   `issuectl` is intentionally optional.
+/// - `Err(warning)` if `issuectl` was found but failed; the caller
+///   attaches the message to the response `warnings` array.
 fn materialize_via_issuectl(
     title: &str,
     kind: &str,
     rationale: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let mut cmd = Command::new("issuectl");
-    cmd.args(["--json", "new", "--type", "feature", "--title", title]);
     let description = rationale.map(str::to_string).unwrap_or_else(|| {
         format!("Auto-materialized spin-off ({kind}) approved via orchestratectl.")
     });
-    cmd.args(["--description", &description]);
+    let mut cmd = Command::new("issuectl");
+    // `--` terminates clap option parsing so an LLM-generated title
+    // beginning with `--` doesn't get reinterpreted as an issuectl
+    // flag. issuectl supports the standard `--` sentinel.
+    cmd.args(["--json", "new", "--type", "feature"]);
+    cmd.args(["--title", title, "--description", &description]);
 
     let output = match cmd.output() {
         Ok(o) => o,
@@ -231,25 +300,33 @@ fn materialize_via_issuectl(
     }
 }
 
-fn emit(payload: ApprovePayload<'_>, json: bool, warnings: &[String]) -> Result<(), CliError> {
+#[allow(clippy::too_many_arguments)]
+fn emit_approved(
+    run_id: &str,
+    proposal_id: &str,
+    issue_slug: Option<String>,
+    seq: Option<u64>,
+    idempotent_replay: Option<bool>,
+    dry_run: Option<bool>,
+    json: bool,
+    warnings: &[String],
+    local_warnings: &[String],
+) -> Result<(), CliError> {
+    let payload = ApprovePayload {
+        run_id: run_id.to_string(),
+        proposal_id: proposal_id.to_string(),
+        issue_slug: issue_slug.clone(),
+        seq,
+        idempotent_replay,
+        dry_run,
+    };
     if json {
-        // Merge per-call warnings into the envelope. `output::emit_json`
-        // owns the envelope's `warnings` field, so we hand it the union.
         let merged: Vec<String> = warnings
             .iter()
             .cloned()
-            .chain(payload.warnings.iter().cloned())
+            .chain(local_warnings.iter().cloned())
             .collect();
-        let body = json!({
-            "run_id": payload.run_id,
-            "proposal_id": payload.proposal_id,
-            "issue_slug": payload.issue_slug,
-            "seq": payload.seq,
-            "idempotent_replay": payload.idempotent_replay,
-            "dry_run": payload.dry_run,
-            "warnings": payload.warnings,
-        });
-        output::emit_json(&body, &merged)
+        output::emit_json(&payload, &merged)
             .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
     } else {
         println!("run-id:      {}", payload.run_id);
@@ -270,7 +347,7 @@ fn emit(payload: ApprovePayload<'_>, json: bool, warnings: &[String]) -> Result<
         if payload.idempotent_replay == Some(true) {
             println!("note:        idempotent replay (already approved)");
         }
-        for w in &payload.warnings {
+        for w in local_warnings {
             eprintln!("warning: {}", w);
         }
         for w in warnings {

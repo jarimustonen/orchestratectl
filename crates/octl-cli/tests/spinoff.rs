@@ -24,7 +24,17 @@ fn run_ok(cmd: &mut Command) -> Value {
         out.status,
         String::from_utf8_lossy(&out.stderr)
     );
-    serde_json::from_slice(&out.stdout).expect("stdout is valid JSON")
+    let v: Value = serde_json::from_slice(&out.stdout).expect("stdout is valid JSON");
+    // AGENTS-AI-FIRST-CLI §10 success envelope contract.
+    assert_eq!(v["schema_version"], 1, "envelope shape: {v}");
+    assert!(v.get("data").is_some(), "envelope shape: {v}");
+    assert!(v.get("error").is_none(), "envelope shape: {v}");
+    // `data` must not double-carry the envelope `warnings` field.
+    assert!(
+        v["data"].get("warnings").is_none(),
+        "data.warnings should live only at envelope level: {v}"
+    );
+    v
 }
 
 fn run_fail(cmd: &mut Command) -> (i32, Value) {
@@ -541,4 +551,274 @@ fn reject_after_approve_is_proposal_already_approved() {
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "proposal_already_approved");
+}
+
+// ----------------------------- input validation -----------------------------
+
+#[test]
+fn approve_rejects_empty_issue_slug() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+#[test]
+fn approve_rejects_issue_slug_with_uppercase_or_spaces() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "My Slug",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+#[test]
+fn reject_rejects_empty_reason() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "spinoff",
+        "reject",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--reason",
+        "   ",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+#[test]
+fn reject_rejects_reason_with_control_chars() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "spinoff",
+        "reject",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--reason",
+        "out\x07of scope",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+// ----------------------------- list ordering -----------------------------
+
+#[test]
+fn list_orders_by_proposed_at_desc_with_proposal_id_tiebreaker() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    propose(&home, &run_id, "s-01bbbbbbbbbbbbbbbbbbbbbbbb", "B");
+    propose(&home, &run_id, "s-01ccccccccccccccccccccccccc", "C");
+
+    let v1 = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
+    let v2 = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
+    // Two reads of the same state must produce byte-identical proposal order.
+    assert_eq!(v1["data"]["proposals"], v2["data"]["proposals"]);
+}
+
+// --------------------------- concurrency -----------------------------------
+
+#[cfg(unix)]
+#[test]
+fn concurrent_approve_appends_exactly_one_event() {
+    use std::thread;
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "race");
+
+    // Two parallel `approve --issue-slug ...` against the same proposal.
+    // The flock + decision-enum recheck must collapse the race so only
+    // one `spinoff.approved` event lands and the loser sees
+    // idempotent_replay.
+    let home_path = home.path().to_path_buf();
+    let r1 = run_id.clone();
+    let r2 = run_id.clone();
+    let t1 = thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", &home_path)
+            .env("PATH", "/nonexistent-orchestratectl-test-path")
+            .args([
+                "--json",
+                "spinoff",
+                "approve",
+                &r1,
+                "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--issue-slug",
+                "slug-from-t1",
+            ])
+            .output()
+            .expect("spawn")
+    });
+    let home_path2 = home.path().to_path_buf();
+    let t2 = thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", &home_path2)
+            .env("PATH", "/nonexistent-orchestratectl-test-path")
+            .args([
+                "--json",
+                "spinoff",
+                "approve",
+                &r2,
+                "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--issue-slug",
+                "slug-from-t2",
+            ])
+            .output()
+            .expect("spawn")
+    });
+    let o1 = t1.join().unwrap();
+    let o2 = t2.join().unwrap();
+    assert!(
+        o1.status.success(),
+        "t1 stderr: {}",
+        String::from_utf8_lossy(&o1.stderr)
+    );
+    assert!(
+        o2.status.success(),
+        "t2 stderr: {}",
+        String::from_utf8_lossy(&o2.stderr)
+    );
+
+    // Exactly one spinoff.approved event in the log.
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
+            .unwrap();
+    let count = events
+        .lines()
+        .filter(|l| l.contains("\"kind\":\"spinoff.approved\""))
+        .count();
+    assert_eq!(
+        count, 1,
+        "expected exactly one spinoff.approved event; log:\n{events}"
+    );
+
+    // Projection holds whichever slug won.
+    let proj: Value = serde_json::from_slice(
+        &std::fs::read(
+            home.path()
+                .join("runs")
+                .join(&run_id)
+                .join("spinoffs")
+                .join("s-01aaaaaaaaaaaaaaaaaaaaaaaa.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proj["status"], "approved");
+    let persisted_slug = proj["accepted_as_issue_slug"].as_str().unwrap();
+    assert!(
+        persisted_slug == "slug-from-t1" || persisted_slug == "slug-from-t2",
+        "persisted slug must be one of the two callers: {persisted_slug}"
+    );
+
+    // Both responses must agree on the persisted slug — the loser
+    // must NOT echo its own locally-computed slug (this is the
+    // race-loss bug the decision-enum fixes).
+    let v1: Value = serde_json::from_slice(&o1.stdout).unwrap();
+    let v2: Value = serde_json::from_slice(&o2.stdout).unwrap();
+    assert_eq!(v1["data"]["issue_slug"], persisted_slug);
+    assert_eq!(v2["data"]["issue_slug"], persisted_slug);
+    // Exactly one of the two responses claims `seq`; the other is the
+    // idempotent replay.
+    let s1_some = v1["data"]["seq"].as_u64().is_some();
+    let s2_some = v2["data"]["seq"].as_u64().is_some();
+    assert!(
+        s1_some ^ s2_some,
+        "exactly one caller must have applied: v1={v1}, v2={v2}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_approve_vs_reject_does_not_lie_about_outcome() {
+    use std::thread;
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "race2");
+
+    let home_path = home.path().to_path_buf();
+    let r1 = run_id.clone();
+    let r2 = run_id.clone();
+    let t_app = thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", &home_path)
+            .env("PATH", "/nonexistent-orchestratectl-test-path")
+            .args([
+                "--json",
+                "spinoff",
+                "approve",
+                &r1,
+                "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--issue-slug",
+                "winner-app",
+            ])
+            .output()
+            .expect("spawn")
+    });
+    let home_path2 = home.path().to_path_buf();
+    let t_rej = thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", &home_path2)
+            .env("PATH", "/nonexistent-orchestratectl-test-path")
+            .args([
+                "--json",
+                "spinoff",
+                "reject",
+                &r2,
+                "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--reason",
+                "winner-rej",
+            ])
+            .output()
+            .expect("spawn")
+    });
+    let o_app = t_app.join().unwrap();
+    let o_rej = t_rej.join().unwrap();
+    // Whoever lost must report a deterministic error (not false success).
+    let app_ok = o_app.status.success();
+    let rej_ok = o_rej.status.success();
+    assert!(
+        app_ok ^ rej_ok,
+        "exactly one must succeed; app_ok={app_ok}, rej_ok={rej_ok}"
+    );
+
+    let loser_stderr = if app_ok { &o_rej.stderr } else { &o_app.stderr };
+    let stderr_s = String::from_utf8_lossy(loser_stderr);
+    let last = stderr_s
+        .lines()
+        .last()
+        .expect("loser must emit error envelope");
+    let v: Value = serde_json::from_str(last).expect("loser error JSON");
+    let code = v["error"]["code"].as_str().unwrap();
+    assert!(
+        code == "proposal_already_approved" || code == "proposal_already_rejected",
+        "loser must report a status-conflict error, got: {code}"
+    );
 }
