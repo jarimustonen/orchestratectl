@@ -3,9 +3,17 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: high
 epic: orchestratectl-mvp
+commits:
+- hash: 731177b
+  summary: noun-module refactor + run create/list/show/cancel/reattach + append_and_apply
+- hash: fc69586
+  summary: integration tests for the 5 run verbs
+- hash: e47ba2b
+  summary: apply multi-LLM review findings + handoff
+closed: 2026-06-12
 ---
 
 # Run CLI (read + lifecycle)
