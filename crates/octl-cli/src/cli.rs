@@ -52,6 +52,11 @@ enum Command {
         #[command(subcommand)]
         action: crate::run::RunAction,
     },
+    /// Read events from a run's `events.jsonl` (and, with `--follow`, tail it).
+    Event {
+        #[command(subcommand)]
+        action: crate::event::EventAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -135,6 +140,7 @@ pub fn run() -> ExitCode {
             ),
         },
         Command::Run { action } => crate::run::dispatch(action, cli.json, &logging_warnings),
+        Command::Event { action } => crate::event::dispatch(action, cli.json, &logging_warnings),
     };
 
     match result {

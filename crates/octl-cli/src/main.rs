@@ -1,5 +1,6 @@
 mod cli;
 mod error;
+mod event;
 mod home;
 mod idempotency;
 mod output;

@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+ctrlc = { version = "3.4", features = ["termination"] }
 
 [profile.release]
 lto = "thin"
