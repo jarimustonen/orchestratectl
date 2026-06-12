@@ -3,9 +3,15 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: open
+status: done
 priority: high
 epic: orchestratectl-mvp
+commits:
+- hash: at(octl-core)
+  summary: state schema, flock, event append + reducer
+- hash: 0835f37
+  summary: 'fix(octl-core): apply multi-LLM review findings + handoff'
+closed: 2026-06-12
 ---
 
 # State schema crate (octl-core)
