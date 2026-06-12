@@ -6,6 +6,11 @@ assignee: jari
 status: in-progress
 priority: high
 epic: orchestratectl-mvp
+commits:
+- hash: 2b8793e
+  summary: 'feat(supervisor-process): supervise subcommand + reattach upgrade'
+- hash: 9a4e598
+  summary: 'test(supervisor-process): V2/V3/V7/V8/V9 validation gates'
 ---
 
 # Supervisor process (orchestratectl supervise)
