@@ -128,7 +128,9 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
 struct VersionPayload {
     version: &'static str,
     commit: &'static str,
-    schema_version: u32,
+    // JSON envelope schemas this binary can emit. The envelope's own
+    // `schema_version` (added by `output::emit_json`) names the one in
+    // use right now; this list is the full set, per §10.
     supported_schemas: &'static [u32],
     state_schema_version: u32,
     supported_state_schemas: &'static [u32],
@@ -138,7 +140,6 @@ fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
-        schema_version: crate::error::SCHEMA_VERSION,
         supported_schemas: &[crate::error::SCHEMA_VERSION],
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
@@ -148,11 +149,11 @@ fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
             .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
     } else {
         println!("orchestratectl {}", payload.version);
-        println!("commit:               {}", payload.commit);
-        println!("envelope schema:      {}", payload.schema_version);
-        println!("state schema version: {}", payload.state_schema_version);
+        println!("commit:                  {}", payload.commit);
+        println!("envelope schemas:        {:?}", payload.supported_schemas);
+        println!("state schema version:    {}", payload.state_schema_version);
         println!(
-            "supported state:      {:?}",
+            "supported state schemas: {:?}",
             payload.supported_state_schemas
         );
         for w in warnings {
