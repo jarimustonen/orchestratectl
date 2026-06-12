@@ -3,7 +3,7 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: high
 epic: orchestratectl-mvp
 commits:
@@ -13,6 +13,7 @@ commits:
   summary: 'test(supervisor-process): V2/V3/V7/V8/V9 validation gates'
 - hash: 6d2093a
   summary: 'docs(supervisor-process): handoff notes'
+closed: 2026-06-12
 ---
 
 # Supervisor process (orchestratectl supervise)
