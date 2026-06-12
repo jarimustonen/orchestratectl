@@ -128,9 +128,15 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
 struct VersionPayload {
     version: &'static str,
     commit: &'static str,
-    // JSON envelope schemas this binary can emit. The envelope's own
-    // `schema_version` (added by `output::emit_json`) names the one in
-    // use right now; this list is the full set, per §10.
+    // Duplicated from the success envelope intentionally. §10 of
+    // AGENTS-AI-FIRST-CLI requires `version --json` to return
+    // `{version, commit, schema_version, supported_schemas}` at the
+    // payload level. Agents that unwrap `.data` must still see the
+    // contract; omitting this field would make `.data.schema_version`
+    // null while `.data.state_schema_version` is present — an
+    // asymmetric foot-gun (review history/review-version-subcommand.md
+    // §1).
+    schema_version: u32,
     supported_schemas: &'static [u32],
     state_schema_version: u32,
     supported_state_schemas: &'static [u32],
@@ -140,6 +146,7 @@ fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
+        schema_version: crate::error::SCHEMA_VERSION,
         supported_schemas: &[crate::error::SCHEMA_VERSION],
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
@@ -150,17 +157,29 @@ fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
     } else {
         println!("orchestratectl {}", payload.version);
         println!("commit:                  {}", payload.commit);
-        println!("envelope schemas:        {:?}", payload.supported_schemas);
+        println!("envelope schema:         {}", payload.schema_version);
+        println!(
+            "supported envelopes:     {}",
+            format_u32_list(payload.supported_schemas)
+        );
         println!("state schema version:    {}", payload.state_schema_version);
         println!(
-            "supported state schemas: {:?}",
-            payload.supported_state_schemas
+            "supported state schemas: {}",
+            format_u32_list(payload.supported_state_schemas)
         );
         for w in warnings {
             eprintln!("warning: {}", w);
         }
     }
     Ok(())
+}
+
+fn format_u32_list(values: &[u32]) -> String {
+    values
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Initialise the JSONL log subscriber. Logs go to

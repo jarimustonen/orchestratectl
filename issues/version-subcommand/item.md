@@ -6,6 +6,9 @@ assignee: jari
 status: in-progress
 priority: normal
 epic: orchestratectl-mvp
+commits:
+- hash: 0cb3c93 feat(version)
+  summary: finalize version subcommand contract
 ---
 
 # version subcommand
