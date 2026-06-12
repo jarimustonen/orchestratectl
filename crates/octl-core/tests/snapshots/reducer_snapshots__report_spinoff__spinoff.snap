@@ -1,0 +1,18 @@
+---
+source: crates/octl-core/tests/reducer_snapshots.rs
+expression: v
+---
+{
+  "accepted_as_issue_slug": "drop-legacy-cookie-path",
+  "node_id": "n-0001",
+  "proposal_id": "s-fixturespinoff0001",
+  "proposed_at": "<ts>",
+  "proposed_kind": "spinoff",
+  "proposed_title": "drop legacy cookie path",
+  "rationale": "would tidy the auth surface",
+  "rejected_reason": null,
+  "resolved_at": "<ts>",
+  "run_id": "01jxfixture00000000000000000",
+  "schema_version": 1,
+  "status": "approved"
+}

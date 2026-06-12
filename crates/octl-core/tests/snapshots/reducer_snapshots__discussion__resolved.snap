@@ -1,0 +1,22 @@
+---
+source: crates/octl-core/tests/reducer_snapshots.rs
+expression: v
+---
+{
+  "context": "the legacy path predates the session-token rework",
+  "discussion_id": "d-fixturediscussion01",
+  "node_id": "n-0001",
+  "opened_at": "<ts>",
+  "options": [
+    "keep",
+    "drop",
+    "feature-flag"
+  ],
+  "resolution": "drop",
+  "resolved_at": "<ts>",
+  "run_id": "01jxfixture00000000000000000",
+  "schema_version": 1,
+  "severity": "discuss",
+  "status": "resolved",
+  "topic": "should we drop the legacy cookie path?"
+}

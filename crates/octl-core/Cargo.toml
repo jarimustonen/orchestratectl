@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 fs2 = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

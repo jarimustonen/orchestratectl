@@ -1,0 +1,36 @@
+---
+source: crates/octl-core/tests/reducer_snapshots.rs
+expression: v
+---
+{
+  "agent_pid": null,
+  "agent_pid_start_time": null,
+  "branch": null,
+  "children": [],
+  "kind": "spinoff",
+  "last_processed_report_seq_by_child": {},
+  "last_report": {
+    "discussion_items": [],
+    "spinoff_proposals": [
+      {
+        "proposed_kind": "spinoff",
+        "proposed_title": "drop legacy cookie path",
+        "rationale": "would tidy the auth surface"
+      }
+    ],
+    "success": true,
+    "summary": "Root cause: stale cookie. Fixed.",
+    "wrap_up_recommendations": []
+  },
+  "node_id": "n-0001",
+  "parent_node_id": null,
+  "run_id": "01jxfixture00000000000000000",
+  "schema_version": 1,
+  "started_at": "<ts>",
+  "status": "done",
+  "supervisor_pid": null,
+  "task": "investigate /login redirect",
+  "tmux_window": null,
+  "updated_at": "<ts>",
+  "worktree_path": null
+}
