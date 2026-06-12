@@ -36,7 +36,7 @@ impl Harness {
         let seq = self.next_seq;
         let paths = &self.paths;
         RunLock::with_lock(&paths.lock(), || {
-            append_event_with_seq(paths, seq, kind, node_id, None, data, false)?;
+            append_event_with_seq(paths, seq, kind, node_id, None, data)?;
             let events = read_all_events(&paths.events())?;
             let ev = events.last().unwrap();
             apply_event(paths, ev)?;

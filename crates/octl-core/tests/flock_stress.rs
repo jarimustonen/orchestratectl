@@ -62,7 +62,6 @@ fn flock_stress_50_threads_1000_iters() {
                             None,
                             None,
                             json!({"tid": tid, "i": i}),
-                            false,
                         )
                     })
                     .unwrap();

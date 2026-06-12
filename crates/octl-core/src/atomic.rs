@@ -3,13 +3,17 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{Error, Result};
 
-/// Write `bytes` to `path` atomically: tempfile in the same directory + rename.
-///
-/// `fsync`s the tempfile before rename; parent directory `fsync` is best-effort
-/// (callers that need strict crash-consistency may parent-fsync separately).
+/// Per-process monotonic suffix that disambiguates concurrent in-process
+/// writers of the same projection path (the per-run `flock` only serializes
+/// across processes; in-process writers must self-disambiguate).
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Write `bytes` to `path` atomically: tempfile in the same directory + rename
+/// + parent-directory `fsync`. The tempfile is `fsync`ed before rename.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().ok_or_else(|| {
         Error::IoBare(std::io::Error::new(
@@ -27,11 +31,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             ))
         })?
         .to_string_lossy();
-    let tmp = dir.join(format!(".{fname}.tmp.{}", std::process::id()));
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{fname}.tmp.{}.{seq}", std::process::id()));
     {
         let mut f = OpenOptions::new()
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .write(true)
             .open(&tmp)
             .map_err(|e| Error::io(&tmp, e))?;
@@ -39,6 +43,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         f.sync_all().map_err(|e| Error::io(&tmp, e))?;
     }
     std::fs::rename(&tmp, path).map_err(|e| Error::io(path, e))?;
+    // Best-effort parent-directory fsync so the rename survives a power-loss
+    // event on filesystems that don't journal directory entries automatically
+    // (ext4 without `dirsync`, btrfs without explicit fsync).
+    if let Ok(dir_file) = File::open(dir) {
+        let _ = dir_file.sync_all();
+    }
     Ok(())
 }
 

@@ -12,10 +12,16 @@ use crate::lock::RunLock;
 use crate::paths::RunPaths;
 use crate::schema::Event;
 
-/// Maximum bytes to scan back from EOF to recover the last `seq`.
-const SEQ_RECOVERY_TAIL_BYTES: u64 = 64 * 1024;
+/// Backward-scan chunk size when looking for the previous newline.
+const SCAN_CHUNK: u64 = 64 * 1024;
 
 /// Read the last `seq` from `events.jsonl`, or `0` if empty/missing.
+///
+/// Tolerates:
+/// - lines larger than any fixed buffer (`node.report` payloads can be 10s of KB
+///   per `design.md` §1.4) — we scan backwards in chunks for the previous `\n`.
+/// - a crash-truncated final line lacking a trailing `\n` — that partial tail
+///   is discarded and recovery uses the last complete record.
 ///
 /// Caller must already hold the run's [`RunLock`] for correctness against
 /// concurrent appenders.
@@ -29,35 +35,106 @@ pub fn recover_last_seq(events_path: &Path) -> Result<u64> {
     if len == 0 {
         return Ok(0);
     }
-    let read_from = len.saturating_sub(SEQ_RECOVERY_TAIL_BYTES);
-    f.seek(SeekFrom::Start(read_from))
+
+    // Require a newline-terminated final line; otherwise treat the last
+    // partial chunk as torn and recover from the previous complete line.
+    let mut tail_byte = [0u8; 1];
+    f.seek(SeekFrom::End(-1))
         .map_err(|e| Error::io(events_path, e))?;
-    let mut buf = Vec::with_capacity((len - read_from) as usize);
-    f.read_to_end(&mut buf)
+    f.read_exact(&mut tail_byte)
         .map_err(|e| Error::io(events_path, e))?;
-    let last_line = buf
-        .split(|b| *b == b'\n')
-        .rfind(|s| !s.is_empty())
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.to_path_buf(),
-            reason: "no newline-terminated lines in tail window".into(),
-        })?;
-    let v: Value = serde_json::from_slice(last_line).map_err(|e| Error::json(events_path, e))?;
-    let seq = v
-        .get("seq")
+    let mut end = if tail_byte[0] == b'\n' {
+        len - 1
+    } else {
+        match find_prev_newline(&mut f, len, events_path)? {
+            Some(p) => p,
+            None => return Ok(0),
+        }
+    };
+
+    // `end` is the byte index of the trailing `\n` of the last complete
+    // record (exclusive of the newline). Find the previous newline to
+    // bracket the line.
+    let line_start = match find_prev_newline(&mut f, end, events_path)? {
+        Some(p) => p + 1,
+        None => 0,
+    };
+    let line_len = end - line_start;
+    f.seek(SeekFrom::Start(line_start))
+        .map_err(|e| Error::io(events_path, e))?;
+    let mut line = vec![0u8; line_len as usize];
+    f.read_exact(&mut line)
+        .map_err(|e| Error::io(events_path, e))?;
+    // Strip trailing CR if present (defensive).
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    if line.is_empty() {
+        // Two newlines in a row (or trailing-only) — treat as "no event".
+        // Recurse downward by recovering from the next earlier line.
+        if line_start == 0 {
+            return Ok(0);
+        }
+        end = line_start - 1;
+        let prev = match find_prev_newline(&mut f, end, events_path)? {
+            Some(p) => p + 1,
+            None => 0,
+        };
+        let plen = end - prev;
+        f.seek(SeekFrom::Start(prev))
+            .map_err(|e| Error::io(events_path, e))?;
+        let mut prev_line = vec![0u8; plen as usize];
+        f.read_exact(&mut prev_line)
+            .map_err(|e| Error::io(events_path, e))?;
+        return parse_seq(&prev_line, events_path);
+    }
+    parse_seq(&line, events_path)
+}
+
+fn parse_seq(line: &[u8], events_path: &Path) -> Result<u64> {
+    let v: Value = serde_json::from_slice(line).map_err(|e| Error::json(events_path, e))?;
+    v.get("seq")
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::CorruptEventLog {
             path: events_path.to_path_buf(),
-            reason: "last line missing integer `seq` field".into(),
-        })?;
-    Ok(seq)
+            reason: "last complete line missing integer `seq` field".into(),
+        })
+}
+
+/// Find the byte offset of the last `\n` strictly before `before`. Returns
+/// `None` if no newline exists in `[0, before)`.
+fn find_prev_newline(
+    f: &mut std::fs::File,
+    before: u64,
+    events_path: &Path,
+) -> Result<Option<u64>> {
+    if before == 0 {
+        return Ok(None);
+    }
+    let mut pos = before;
+    loop {
+        let start = pos.saturating_sub(SCAN_CHUNK);
+        let len = pos - start;
+        f.seek(SeekFrom::Start(start))
+            .map_err(|e| Error::io(events_path, e))?;
+        let mut buf = vec![0u8; len as usize];
+        f.read_exact(&mut buf)
+            .map_err(|e| Error::io(events_path, e))?;
+        if let Some(i) = buf.iter().rposition(|b| *b == b'\n') {
+            return Ok(Some(start + i as u64));
+        }
+        if start == 0 {
+            return Ok(None);
+        }
+        pos = start;
+    }
 }
 
 /// Append one event under the run's `flock`. Returns the assigned `seq`.
 ///
 /// `seq` is recovered from the last line of `events.jsonl` on every call.
-/// Long-lived supervisors that hold their own cached counter should bypass
-/// this and use [`append_event_with_seq`] instead.
+/// Long-lived supervisors that hold their own cached counter should use
+/// [`append_event_with_seq`] under their own `flock`-held scope instead.
 pub fn append_event(
     paths: &RunPaths,
     kind: &str,
@@ -68,21 +145,17 @@ pub fn append_event(
     RunLock::with_lock(&paths.lock(), || {
         let last = recover_last_seq(&paths.events())?;
         let seq = last + 1;
-        append_event_with_seq(
-            paths,
-            seq,
-            kind,
-            node_id,
-            idempotency_key,
-            data,
-            /* relock = */ false,
-        )?;
+        write_event_line(paths, seq, kind, node_id, idempotency_key, data)?;
         Ok(seq)
     })
 }
 
-/// Append one event with a caller-supplied `seq`. Acquires the run lock
-/// unless `relock` is `false` (caller already holds it).
+/// Append one event with a caller-supplied `seq`. The caller **must** hold
+/// the run's [`RunLock`] for the duration of this call and is responsible
+/// for ensuring `seq` is monotonic. Misuse can corrupt the event log.
+///
+/// Long-lived supervisors that cache `next_seq` in memory use this path;
+/// short-lived callers should prefer [`append_event`].
 pub fn append_event_with_seq(
     paths: &RunPaths,
     seq: u64,
@@ -90,37 +163,40 @@ pub fn append_event_with_seq(
     node_id: Option<&str>,
     idempotency_key: Option<&str>,
     data: Value,
-    relock: bool,
 ) -> Result<()> {
-    let do_append = || -> Result<()> {
-        let run_id = paths
-            .root
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let ev = Event {
-            ts: Utc::now(),
-            seq,
-            kind: kind.to_string(),
-            run_id,
-            node_id: node_id.map(str::to_string),
-            idempotency_key: idempotency_key.map(str::to_string),
-            data,
-        };
-        let events_path = paths.events();
-        let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
-        line.push(b'\n');
-        let mut f = open_events_append(&events_path)?;
-        f.write_all(&line)
-            .map_err(|e| Error::io(events_path.clone(), e))?;
-        f.sync_all().map_err(|e| Error::io(events_path, e))?;
-        Ok(())
+    write_event_line(paths, seq, kind, node_id, idempotency_key, data)
+}
+
+fn write_event_line(
+    paths: &RunPaths,
+    seq: u64,
+    kind: &str,
+    node_id: Option<&str>,
+    idempotency_key: Option<&str>,
+    data: Value,
+) -> Result<()> {
+    let run_id = paths
+        .root
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ev = Event {
+        ts: Utc::now(),
+        seq,
+        kind: kind.to_string(),
+        run_id,
+        node_id: node_id.map(str::to_string),
+        idempotency_key: idempotency_key.map(str::to_string),
+        data,
     };
-    if relock {
-        RunLock::with_lock(&paths.lock(), do_append)
-    } else {
-        do_append()
-    }
+    let events_path = paths.events();
+    let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
+    line.push(b'\n');
+    let mut f = open_events_append(&events_path)?;
+    f.write_all(&line)
+        .map_err(|e| Error::io(events_path.clone(), e))?;
+    f.sync_all().map_err(|e| Error::io(events_path, e))?;
+    Ok(())
 }
 
 /// Read every event from `events.jsonl`. Used by tests and reducer replays.
