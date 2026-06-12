@@ -58,6 +58,15 @@ Assumptions in `design.md` that need empirical confirmation, cross-project coord
 
 **If contention is too high:** Document the per-run write-burst cap in `design.md` and recommend supervisors batch their writes.
 
+**Measured (2026-06-12, release build, M-series Mac, state-schema-crate spinoff):**
+
+- **Correctness:** PASSED — 50 000 distinct monotonic `seq`, no torn lines.
+- **Latency:** p50 ≈ 181 ms, p99 ≈ **639 ms**, max ≈ 2.45 s — **two orders of magnitude above the <10 ms expectation**.
+- **Driver:** fsync-per-append on contention; every short-lived `event create` re-reads the tail of `events.jsonl` to recover the `seq` counter.
+- **Throughput:** ~250 ops/s/run at peak contention, **not** the implicit "thousands" the V4 budget assumed.
+
+**Decision pending (Jari):** invoke the documented fallback ("supervisors batch their writes") or build the proper `RunWriter` API now. Tracked in spin-off issue `runwriter-batched-append-api` (cached `next_seq` + batched fsync). Other related spin-offs: `core-append-and-apply-api`, `core-path-traversal-id-validation`, `core-runpaths-store-run-id`.
+
 ## Scale validations
 
 ### V5 — Supervisor process count at peak
