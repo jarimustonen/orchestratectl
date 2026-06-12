@@ -55,11 +55,7 @@ pub enum DiscussionAction {
     },
 }
 
-pub fn dispatch(
-    action: DiscussionAction,
-    json: bool,
-    warnings: &[String],
-) -> Result<(), CliError> {
+pub fn dispatch(action: DiscussionAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
     match action {
         DiscussionAction::List { run_id, status } => list::run(list::Args {
             run_id,

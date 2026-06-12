@@ -6,6 +6,9 @@ assignee: jari
 status: in-progress
 priority: normal
 epic: orchestratectl-mvp
+commits:
+- hash: 65e5f43
+  summary: 'feat(discussion-cli): list/show/resolve verbs'
 ---
 
 # Discussion CLI (list/show/resolve)
