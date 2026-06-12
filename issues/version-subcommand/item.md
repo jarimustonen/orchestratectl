@@ -3,12 +3,15 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 commits:
 - hash: 0cb3c93 feat(version)
   summary: finalize version subcommand contract
+- hash: 63353f2 fix(version)
+  summary: apply multi-LLM review fixes
+closed: 2026-06-12
 ---
 
 # version subcommand
