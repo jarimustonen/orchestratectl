@@ -3,7 +3,7 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 commits:
@@ -11,6 +11,9 @@ commits:
   summary: 'feat(node-cli-read): node list/show/report subcommands'
 - hash: ab6397a
   summary: 'fix(node-cli-read): apply llm-review findings'
+- hash: 7769af3
+  summary: 'chore(node-cli-read): file llm-review spin-off issues + handoff'
+closed: 2026-06-12
 ---
 
 # Node CLI (list/show/report)
