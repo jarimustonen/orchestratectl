@@ -6,6 +6,9 @@ assignee: jari
 status: in-progress
 priority: normal
 epic: orchestratectl-mvp
+commits:
+- hash: 6dd88a41f6347ad023383be9574a2d02df899d05
+  summary: 'feat(event-tail-cli): event tail with --follow, signals, formats'
 ---
 
 # Event tail CLI

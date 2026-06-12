@@ -1,23 +1,26 @@
 //! `event tail` — stream a run's `events.jsonl` to stdout (or `--output`).
 //!
-//! Per design.md §2.3 and AGENTS-AI-FIRST-CLI §12:
+//! Per design.md §2.3 and AGENTS-AI-FIRST-CLI §10/§12:
 //! - Without `--follow`: read events with `seq >= from_seq` to EOF, emit
-//!   a terminal `{"event":"result","status":"ok"}` envelope (JSON modes),
-//!   exit 0.
-//! - With `--follow`: same initial read, then poll every 500ms. SIGINT
-//!   exits 130, SIGTERM exits 143 (best-effort: ctrlc does not surface
-//!   the signal value so we use 130 as the conservative default — see
-//!   note below). On signal, emit `{"event":"cancelled"}` and flush.
+//!   a terminal `{"event":"result","status":"ok",...}` envelope in JSONL
+//!   mode, exit 0.
+//! - With `--follow`: same initial read, then poll the file every 500ms.
+//!   SIGINT exits 130; SIGTERM also exits 130 (known §12 divergence —
+//!   the task spec explicitly authorises the conservative fallback
+//!   because `ctrlc::set_handler` does not surface the signal value).
+//!   On signal, emit `{"event":"cancelled",...}` and flush. The signal
+//!   is checked between events in the initial drain too, so a large
+//!   backlog can still be cancelled responsively.
 //!
-//! Signal note: `ctrlc::set_handler` invokes the same callback for SIGINT
-//! and SIGTERM (with the `termination` feature) without distinguishing
-//! them. The task spec authorises the 130 fallback when the crate cannot
-//! distinguish. If we later need a true 143 on SIGTERM, swap `ctrlc` for
-//! `signal-hook`.
+//! Limitations (documented contract):
+//! - `events.jsonl` is append-only by design.md §1.4; the follow loop
+//!   does NOT handle log rotation / inode replacement. Such a change is
+//!   detected via fd-shrink as `events_log_truncated`, but a same-size
+//!   replacement would silently desync. That is out of contract.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Seek, Write};
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -28,12 +31,15 @@ use serde_json::Value;
 
 use octl_core::{read_manifest_opt, Event};
 
-use crate::error::CliError;
-use crate::event::FormatArg;
+use crate::error::{CliError, SCHEMA_VERSION};
+use crate::event::{resolve_format, FormatArg};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const SIGINT_EXIT: i32 = 130;
+/// Exit code returned for both SIGINT and SIGTERM. Strictly correct
+/// per §12 is 130 / 143 respectively, but `ctrlc` does not surface the
+/// signal value to the handler — task spec authorises this fallback.
+const CANCELLED_EXIT_FALLBACK: i32 = 130;
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -45,22 +51,13 @@ pub struct Args<'a> {
     pub warnings: &'a [String],
 }
 
-/// Resolved output format. Without `--format`, `--json` selects `jsonl`
-/// (canonical machine-readable stream), otherwise the default is `text`.
-fn resolve_format(format: Option<FormatArg>, json: bool) -> FormatArg {
-    match format {
-        Some(f) => f,
-        None if json => FormatArg::Jsonl,
-        None => FormatArg::Text,
-    }
-}
-
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let format = resolve_format(args.format, args.json)?;
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
 
-    // Require run to exist (consistent with `run show`); reading a
+    // Require the run to exist (consistent with `run show`); reading a
     // non-existent run id is a user error, not "stream of nothing".
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
@@ -69,56 +66,69 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         );
     }
 
-    let format = resolve_format(args.format, args.json);
     let events_path = paths.events();
 
-    // Logging warnings are surfaced to stderr up-front (the rest of the
-    // run is a long-running stream, so we can't put them in a trailing
-    // envelope the way `run show` does).
+    // Refuse to write our render back into the canonical event log.
+    // Without this guard, `--output <…>/events.jsonl` truncates (no-follow)
+    // or appends (follow) the source file — silent data loss.
+    if let Some(out) = &args.output {
+        reject_output_alias(&events_path, out)?;
+    }
+
+    // Logging warnings to stderr. §10 wants them in the stdout payload
+    // under `--json`, but a stream has no single payload. Streaming-side
+    // delivery (embed in terminal envelope) is tracked as a follow-up;
+    // for now stderr keeps them visible without polluting the JSONL stream.
     for w in args.warnings {
         eprintln!("warning: {}", w);
     }
 
-    // Install the signal handler before we start reading so a SIGINT
-    // during the initial read also lands a `cancelled` envelope.
+    // Install signal handler before any I/O so a SIGINT during the
+    // initial drain is honoured. Best-effort: re-install on repeated
+    // invocations (e.g. test harnesses) is benign — `ctrlc` returns
+    // `HandlerAlreadyExists` which we ignore.
     let cancel = Arc::new(AtomicBool::new(false));
-    if args.follow {
+    {
         let flag = cancel.clone();
-        // try_set_handler avoids panicking under repeated installation
-        // (e.g. from integration test harnesses).
         let _ = ctrlc::try_set_handler(move || {
-            flag.store(true, Ordering::SeqCst);
+            flag.store(true, Ordering::Release);
         });
     }
 
     // Open writer (stdout or --output file).
     let mut writer: Box<dyn Write> = match &args.output {
         None => Box::new(std::io::stdout().lock()),
-        Some(p) => {
-            let mut opts = OpenOptions::new();
-            opts.create(true).write(true);
-            if args.follow {
-                opts.append(true);
-            } else {
-                opts.truncate(true);
-            }
-            let f = opts.open(p).map_err(|e| {
-                CliError::system("io_error", format!("open {}: {}", p.display(), e))
-            })?;
-            Box::new(f)
-        }
+        Some(p) => Box::new(open_output(p, args.follow)?),
     };
 
-    // Open events file (may not yet exist for a freshly-created run).
-    let mut reader = open_events_reader(&events_path)?;
-    let mut last_seen_seq: u64 = args.from_seq.saturating_sub(1);
+    // Open events file if present; if missing, `reader` is None until
+    // the follow loop sees it appear. Never *create* the file — that's
+    // the supervisor's job.
+    let mut reader = try_open_events_reader(&events_path)?;
+    let mut last_seen_seq: Option<u64> = None;
     let mut buf = String::new();
 
-    // Initial drain of the file.
-    last_seen_seq = drain(&mut reader, &mut buf, &mut *writer, format, last_seen_seq)?;
+    if let Some(r) = reader.as_mut() {
+        drain(
+            r,
+            &mut buf,
+            &mut *writer,
+            format,
+            args.from_seq,
+            &mut last_seen_seq,
+            &cancel,
+        )?;
+    }
+
+    // If a signal arrived during initial drain, honour it regardless of
+    // --follow.
+    if cancel.load(Ordering::Acquire) {
+        emit_terminal(&mut *writer, format, TerminalKind::Cancelled, last_seen_seq)?;
+        flush_and_exit(writer, CANCELLED_EXIT_FALLBACK);
+    }
 
     if !args.follow {
-        emit_terminal(&mut *writer, format, TerminalKind::Result)?;
+        emit_terminal(&mut *writer, format, TerminalKind::Result, last_seen_seq)?;
         writer
             .flush()
             .map_err(|e| CliError::system("io_error", format!("flush: {e}")))?;
@@ -127,31 +137,35 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // Follow loop.
     loop {
-        if cancel.load(Ordering::SeqCst) {
-            emit_terminal(&mut *writer, format, TerminalKind::Cancelled)?;
-            let _ = writer.flush();
-            // Drop writer before exit to flush stdout buffers / close file.
-            drop(writer);
-            process::exit(SIGINT_EXIT);
+        if cancel.load(Ordering::Acquire) {
+            emit_terminal(&mut *writer, format, TerminalKind::Cancelled, last_seen_seq)?;
+            flush_and_exit(writer, CANCELLED_EXIT_FALLBACK);
         }
         std::thread::sleep(POLL_INTERVAL);
-        if cancel.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::Acquire) {
             continue;
         }
-        // Detect truncation: file shrank below our current read position.
-        let pos = reader
+
+        // First time the file appears, open it.
+        if reader.is_none() {
+            reader = try_open_events_reader(&events_path)?;
+            if reader.is_none() {
+                continue;
+            }
+        }
+
+        let r = reader.as_mut().unwrap();
+
+        // Detect truncation against the open fd (not the path — a rotated
+        // file would otherwise be misreported as "shrunk").
+        let pos = r
             .stream_position()
             .map_err(|e| CliError::system("io_error", format!("stream_position: {e}")))?;
-        let len_now = match std::fs::metadata(&events_path) {
-            Ok(m) => m.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => {
-                return Err(CliError::system(
-                    "io_error",
-                    format!("stat {}: {}", events_path.display(), e),
-                ));
-            }
-        };
+        let len_now = r
+            .get_ref()
+            .metadata()
+            .map_err(|e| CliError::system("io_error", format!("fstat: {e}")))?
+            .len();
         if len_now < pos {
             return Err(CliError::system(
                 "events_log_truncated",
@@ -163,29 +177,25 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 ),
             ));
         }
-        last_seen_seq = drain(&mut reader, &mut buf, &mut *writer, format, last_seen_seq)?;
+
+        drain(
+            r,
+            &mut buf,
+            &mut *writer,
+            format,
+            args.from_seq,
+            &mut last_seen_seq,
+            &cancel,
+        )?;
     }
 }
 
-/// Open `events.jsonl` if present, else hand back a reader over a empty
-/// file we created in-memory so the polling loop can keep going until the
-/// supervisor appends the first line.
-fn open_events_reader(events_path: &std::path::Path) -> Result<BufReader<File>, CliError> {
+/// Try to open `events.jsonl` for reading. `Ok(None)` means it doesn't
+/// exist yet — caller can poll. Other IO errors propagate.
+fn try_open_events_reader(events_path: &Path) -> Result<Option<BufReader<File>>, CliError> {
     match File::open(events_path) {
-        Ok(f) => Ok(BufReader::new(f)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Touch the file so the BufReader has something to seek/read.
-            // Best-effort; if creation races with the writer, we open it
-            // on the next poll cycle.
-            let _ = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(events_path);
-            let f = File::open(events_path).map_err(|e| {
-                CliError::system("io_error", format!("open {}: {}", events_path.display(), e))
-            })?;
-            Ok(BufReader::new(f))
-        }
+        Ok(f) => Ok(Some(BufReader::new(f))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(CliError::system(
             "io_error",
             format!("open {}: {}", events_path.display(), e),
@@ -193,50 +203,107 @@ fn open_events_reader(events_path: &std::path::Path) -> Result<BufReader<File>, 
     }
 }
 
-/// Read every complete line currently in the file, parse, and emit. A
-/// partial trailing line (no `\n`) is left in the file for the next poll
-/// — we seek back so we re-read it whole.
+fn open_output(p: &Path, follow: bool) -> Result<File, CliError> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true);
+    if follow {
+        opts.append(true);
+    } else {
+        opts.truncate(true);
+    }
+    opts.open(p)
+        .map_err(|e| CliError::system("io_error", format!("open {}: {}", p.display(), e)))
+}
+
+/// Refuse if `output` resolves to the same on-disk file as the source
+/// `events.jsonl`. Without this, `--output <…>/events.jsonl` silently
+/// destroys the canonical event log.
+fn reject_output_alias(events_path: &Path, output: &Path) -> Result<(), CliError> {
+    // Canonicalize when both exist (this is the common danger case —
+    // events.jsonl is created by `run create`, so it almost always
+    // exists by the time tail runs).
+    if let (Ok(ev), Ok(out)) = (
+        std::fs::canonicalize(events_path),
+        std::fs::canonicalize(output),
+    ) {
+        if ev == out {
+            return Err(CliError::user(
+                "invalid_output",
+                "--output must not point at the run's events.jsonl",
+            )
+            .with_invalid_value(output.display().to_string()));
+        }
+    }
+    Ok(())
+}
+
+/// Read every complete line currently in the file, parse, and emit. The
+/// `cancel` flag is polled per event so a backlog drain can be cancelled.
+/// Partial trailing bytes (no `\n`) are left in `buf` for the next call
+/// to append to — no seek-back-and-rebuffer dance.
 fn drain(
     reader: &mut BufReader<File>,
     buf: &mut String,
     writer: &mut dyn Write,
     format: FormatArg,
-    mut last_seen_seq: u64,
-) -> Result<u64, CliError> {
+    from_seq: u64,
+    last_seen_seq: &mut Option<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), CliError> {
+    let mut emitted_any = false;
     loop {
-        buf.clear();
-        let pos_before = reader
-            .stream_position()
-            .map_err(|e| CliError::system("io_error", format!("stream_position: {e}")))?;
+        if cancel.load(Ordering::Acquire) {
+            break;
+        }
+        // `read_line` APPENDS to `buf` and stops at the first `\n`. We
+        // accumulate partial bytes across poll cycles until we see one;
+        // the whole `buf` is then a single complete line.
         let n = reader
             .read_line(buf)
             .map_err(|e| CliError::system("io_error", format!("read_line: {e}")))?;
         if n == 0 {
-            return Ok(last_seen_seq);
+            // True EOF (no bytes read this call). Any pending partial
+            // bytes stay in `buf` for the next poll cycle to complete.
+            break;
         }
         if !buf.ends_with('\n') {
-            // Partial line — caller is mid-write. Rewind and retry on next poll.
-            reader
-                .seek(SeekFrom::Start(pos_before))
-                .map_err(|e| CliError::system("io_error", format!("seek: {e}")))?;
-            return Ok(last_seen_seq);
+            // Read some bytes but no terminator yet — partial line.
+            // Leave the bytes in `buf` and bail; the next `read_line`
+            // call will append the remainder.
+            break;
         }
+        // `buf` holds exactly one complete line.
         let line = buf.trim_end_matches(['\n', '\r']);
-        if line.is_empty() {
-            continue;
+        if !line.is_empty() {
+            let ev: Event = serde_json::from_str(line).map_err(|e| {
+                CliError::system(
+                    "events_log_corrupt",
+                    format!("parse event line: {e}: {line}"),
+                )
+            })?;
+            let dedup_ok = match *last_seen_seq {
+                Some(last) => ev.seq > last,
+                None => true,
+            };
+            if ev.seq >= from_seq && dedup_ok {
+                emit_event(writer, format, &ev)?;
+                emitted_any = true;
+            }
+            if dedup_ok {
+                *last_seen_seq = Some(ev.seq);
+            }
         }
-        let ev: Event = serde_json::from_str(line).map_err(|e| {
-            CliError::system(
-                "events_log_corrupt",
-                format!("parse event line: {e}: {line}"),
-            )
-        })?;
-        if ev.seq <= last_seen_seq {
-            continue;
-        }
-        emit_event(writer, format, &ev)?;
-        last_seen_seq = ev.seq;
+        // Consumed this line — start fresh for the next one.
+        buf.clear();
     }
+    if emitted_any {
+        // Flush so consumers (especially block-buffered piped stdout)
+        // observe new events within one poll interval.
+        writer
+            .flush()
+            .map_err(|e| CliError::system("io_error", format!("flush: {e}")))?;
+    }
+    Ok(())
 }
 
 fn emit_event(writer: &mut dyn Write, format: FormatArg, ev: &Event) -> Result<(), CliError> {
@@ -245,11 +312,6 @@ fn emit_event(writer: &mut dyn Write, format: FormatArg, ev: &Event) -> Result<(
             let line = serde_json::to_string(ev)
                 .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
             writeln!(writer, "{}", line)
-        }
-        FormatArg::Json => {
-            let pretty = serde_json::to_string_pretty(ev)
-                .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-            writeln!(writer, "{}", pretty)
         }
         FormatArg::Text => writeln!(writer, "{}", text_summary(ev)),
     }
@@ -269,22 +331,22 @@ fn text_summary(ev: &Event) -> String {
         format!(" {detail}")
     };
     format!(
-        "[{seq:>6}] {ts} {kind}{node}{detail}",
+        "[{seq}] {ts} {kind}{node}{detail}",
         seq = ev.seq,
         ts = ev.ts.to_rfc3339(),
         kind = ev.kind,
     )
 }
 
-/// Try to surface the most useful inline field for human eyes. We avoid
-/// emitting the full payload (some are tens of KB) and instead probe a
-/// few common keys.
+/// Surface the most useful inline field for human eyes. We avoid emitting
+/// the full payload (some are tens of KB) and probe common keys. `kind`
+/// is excluded because it duplicates the outer field.
 fn text_data_detail(data: &Value) -> String {
     let obj = match data.as_object() {
         Some(o) => o,
         None => return String::new(),
     };
-    for key in ["status", "title", "kind", "reason", "message"] {
+    for key in ["status", "title", "reason", "message"] {
         if let Some(v) = obj.get(key).and_then(Value::as_str) {
             return format!("{key}={v}");
         }
@@ -300,34 +362,54 @@ enum TerminalKind {
 
 #[derive(Serialize)]
 struct TerminalEnvelope<'a> {
+    schema_version: u32,
     event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_seq: Option<u64>,
 }
 
-/// Emit the terminal `{"event":"result"}` or `{"event":"cancelled"}`
-/// envelope. Text mode emits nothing (humans read the trailing event and
-/// don't need a marker line — the prompt returns).
+/// Emit the terminal `{"event":"result"|"cancelled",...}` envelope. Text
+/// mode emits nothing (humans read the trailing event line — no need for
+/// a marker).
 fn emit_terminal(
     writer: &mut dyn Write,
     format: FormatArg,
     kind: TerminalKind,
+    last_seen_seq: Option<u64>,
 ) -> Result<(), CliError> {
     if matches!(format, FormatArg::Text) {
         return Ok(());
     }
     let envelope = match kind {
         TerminalKind::Result => TerminalEnvelope {
+            schema_version: SCHEMA_VERSION,
             event: "result",
             status: Some("ok"),
+            last_seq: last_seen_seq,
         },
         TerminalKind::Cancelled => TerminalEnvelope {
+            schema_version: SCHEMA_VERSION,
             event: "cancelled",
             status: None,
+            last_seq: last_seen_seq,
         },
     };
     let line = serde_json::to_string(&envelope)
         .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
     writeln!(writer, "{}", line)
         .map_err(|e| CliError::system("io_error", format!("write terminal: {e}")))
+}
+
+/// Flush the writer AND the global stdout buffer, drop the writer, then
+/// `process::exit`. The global `Stdout` is block-buffered when piped (the
+/// agent case); dropping a `StdoutLock` releases the lock but does NOT
+/// flush that block buffer. Without the explicit flush below, agents
+/// reading through a pipe lose the final `cancelled` envelope.
+fn flush_and_exit(mut writer: Box<dyn Write>, code: i32) -> ! {
+    let _ = writer.flush();
+    drop(writer);
+    let _ = std::io::stdout().lock().flush();
+    process::exit(code);
 }
