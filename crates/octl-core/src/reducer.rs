@@ -55,6 +55,23 @@ fn want_str<'a>(events_path: &Path, ev: &Event, d: &'a Value, field: &str) -> Re
         })
 }
 
+/// Read an optional string field with strict typing: missing/null → `None`,
+/// JSON string → `Some(s)`, anything else → `CorruptEventLog`. Prevents
+/// the reducer from silently dropping non-string payload values.
+fn optional_str(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result<Option<String>> {
+    match d.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} kind={} `{field}` must be a JSON string or null",
+                ev.seq, ev.kind
+            ),
+        }),
+    }
+}
+
 fn optional_i32(d: &Value, field: &str, events_path: &Path, ev: &Event) -> Result<Option<i32>> {
     match d.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -402,16 +419,13 @@ fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
         return Ok(());
     }
     disc.status = DiscussionStatus::Resolved;
-    disc.resolution = ev
-        .data
-        .get("resolution")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    disc.note = ev
-        .data
-        .get("note")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    // `discussion.resolved` must carry a string `resolution` — without
+    // one, the projection would advance to `Resolved` with `resolution:
+    // null`, which is a corrupt domain state. Reject at the reducer
+    // boundary so any writer (CLI, future supervisor, manual `event
+    // create`) is held to the same contract.
+    disc.resolution = Some(want_str(&events_path, ev, &ev.data, "resolution")?.to_string());
+    disc.note = optional_str(&events_path, ev, &ev.data, "note")?;
     disc.resolved_at = Some(ev.ts);
     write_discussion(paths, &disc)?;
     if let Some(mut m) = read_manifest_opt(paths)? {

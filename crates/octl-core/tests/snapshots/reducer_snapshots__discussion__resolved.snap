@@ -1,11 +1,13 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
+assertion_line: 213
 expression: v
 ---
 {
   "context": "the legacy path predates the session-token rework",
   "discussion_id": "d-fixturediscussion01",
   "node_id": "n-0001",
+  "note": null,
   "opened_at": "<ts>",
   "options": [
     "keep",

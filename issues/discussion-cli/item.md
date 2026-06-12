@@ -9,6 +9,8 @@ epic: orchestratectl-mvp
 commits:
 - hash: 65e5f43
   summary: 'feat(discussion-cli): list/show/resolve verbs'
+- hash: c1832f1
+  summary: 'test(discussion-cli): integration tests'
 ---
 
 # Discussion CLI (list/show/resolve)

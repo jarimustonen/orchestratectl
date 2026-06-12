@@ -69,6 +69,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let mut out: Vec<DiscussionSummary> = Vec::new();
     for ent in entries {
         let ent = ent.map_err(|e| CliError::system("io_error", e.to_string()))?;
+        // Skip directories, symlinks, FIFOs, sockets — `read_discussion_opt`
+        // would surface them as opaque deserialization errors. Only
+        // regular files are valid projection slots.
+        if !ent.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
         let path = ent.path();
         let id = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => s.to_string(),
@@ -77,7 +83,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if path
             .extension()
             .and_then(|s| s.to_str())
-            .map(|s| !s.eq_ignore_ascii_case("json"))
+            .map(|s| s != "json")
             .unwrap_or(true)
         {
             continue;
@@ -102,7 +108,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         });
     }
 
-    out.sort_by_key(|d| std::cmp::Reverse(d.opened_at));
+    // Newest first, with `discussion_id` as a stable secondary key so
+    // two discussions opened in the same millisecond stay ordered
+    // deterministically (`opened_at` resolution is RFC3339 ms).
+    out.sort_by(|a, b| {
+        b.opened_at
+            .cmp(&a.opened_at)
+            .then_with(|| a.discussion_id.cmp(&b.discussion_id))
+    });
     emit(out, args.json, args.warnings)
 }
 

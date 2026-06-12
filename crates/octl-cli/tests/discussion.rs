@@ -211,6 +211,22 @@ fn resolve_writes_event_and_updates_projection() {
     ]));
     assert!(v["data"]["seq"].as_u64().unwrap() > 0);
     assert_eq!(v["data"]["choice"], "drop");
+    assert_eq!(v["data"]["outcome"], "appended");
+    assert_eq!(v["data"]["node_id"], "n-0001");
+
+    // The on-disk event should carry the discussion's node_id at the
+    // top level so future per-node `event tail` filters work.
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
+            .unwrap();
+    let resolved_line = events
+        .lines()
+        .find(|l| l.contains("\"kind\":\"discussion.resolved\""))
+        .expect("discussion.resolved event present");
+    let ev: Value = serde_json::from_str(resolved_line).unwrap();
+    assert_eq!(ev["node_id"], "n-0001");
+    assert_eq!(ev["data"]["resolution"], "drop");
+    assert_eq!(ev["data"]["note"], "decided in standup");
 
     // Projection updated.
     let disc_path = home
@@ -262,7 +278,7 @@ fn resolve_same_choice_is_idempotent_noop() {
         "--choice",
         "drop",
     ]));
-    assert_eq!(v["data"]["no_op"], true);
+    assert_eq!(v["data"]["outcome"], "no-op");
     assert!(v["data"]["seq"].is_null());
 
     let events_after =
@@ -320,7 +336,8 @@ fn resolve_dry_run_does_not_touch_filesystem() {
         "drop",
         "--dry-run",
     ]));
-    assert_eq!(v["data"]["dry_run"], true);
+    assert_eq!(v["data"]["outcome"], "dry-run");
+    assert_eq!(v["data"]["would_be"], "appended");
 
     let after = std::fs::read(&events_path).unwrap();
     assert_eq!(before, after, "dry-run must not append to events.jsonl");
@@ -352,6 +369,190 @@ fn resolve_empty_choice_rejected() {
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+#[test]
+fn resolve_idempotency_key_same_payload_replays() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-01ONE", "first topic");
+
+    let v1 = run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--idempotency-key",
+        "k-1",
+    ]));
+    let seq1 = v1["data"]["seq"].as_u64().unwrap();
+    assert_eq!(v1["data"]["outcome"], "appended");
+
+    let v2 = run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--idempotency-key",
+        "k-1",
+    ]));
+    assert_eq!(v2["data"]["outcome"], "idempotent-replay");
+    assert_eq!(v2["data"]["seq"].as_u64().unwrap(), seq1);
+
+    // Only one discussion.resolved event should be in the log.
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
+            .unwrap();
+    let count = events
+        .lines()
+        .filter(|l| l.contains("\"kind\":\"discussion.resolved\""))
+        .count();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-01ONE", "first topic");
+
+    run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--idempotency-key",
+        "k-1",
+    ]));
+
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "keep",
+        "--idempotency-key",
+        "k-1",
+    ]));
+    // Idempotency layer must fire before the domain status check.
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "idempotency_conflict");
+    assert_eq!(err["error"]["expected"]["prior_resolution"], "drop");
+}
+
+#[test]
+fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-01ONE", "first topic");
+
+    run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--note",
+        "first",
+        "--idempotency-key",
+        "k-1",
+    ]));
+
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--note",
+        "second",
+        "--idempotency-key",
+        "k-1",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "idempotency_conflict");
+}
+
+#[test]
+fn resolve_choice_length_capped() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-01ONE", "first topic");
+    let huge = "x".repeat(2048);
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        &huge,
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_value");
+}
+
+#[test]
+fn resolve_dry_run_against_resolved_reports_noop() {
+    // Dry-run must surface domain state (#3 in the review): a second
+    // dry-run with the same choice on a resolved discussion should be
+    // a `no-op` preflight, not a falsely-promised `appended`.
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-01ONE", "first topic");
+
+    run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+    ]));
+
+    // Same choice → preflight should report no-op, not appended.
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "drop",
+        "--dry-run",
+    ]));
+    assert_eq!(v["data"]["outcome"], "no-op");
+
+    // Different choice → must error out even in dry-run (not silently
+    // promise success).
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "discussion",
+        "resolve",
+        &run_id,
+        "d-01ONE",
+        "--choice",
+        "keep",
+        "--dry-run",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "discussion_already_resolved");
 }
 
 #[test]
