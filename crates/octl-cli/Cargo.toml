@@ -1,0 +1,22 @@
+[package]
+name = "octl-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "orchestratectl CLI binary."
+
+[[bin]]
+name = "orchestratectl"
+path = "src/main.rs"
+
+[dependencies]
+octl-core = { path = "../octl-core" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
