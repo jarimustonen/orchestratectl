@@ -255,37 +255,40 @@ fn cancel_missing_run_returns_run_not_found() {
 }
 
 #[test]
-fn reattach_records_event_and_idempotent_repeat() {
+fn reattach_spawns_supervisor_and_records_events() {
     let home = TempDir::new().unwrap();
     let run_id = create(&home, "spinoff", "x");
-    let v = run_ok(bin(&home).args(["--json", "run", "reattach", &run_id]));
-    assert_eq!(v["data"]["action"], "reattach-requested");
+    let v = run_ok(bin(&home).args([
+        "--json",
+        "run",
+        "reattach",
+        &run_id,
+        "--once",
+    ]));
+    assert_eq!(v["data"]["action"], "reattached");
+    assert!(v["data"]["supervisor_pid"].as_u64().is_some());
+
+    // Give the spawned --once supervisor a beat to write its exit event.
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let events =
         std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
             .unwrap();
-    let count = events
+    let kinds: Vec<String> = events
         .lines()
-        .filter(|l| {
+        .map(|l| {
             let v: Value = serde_json::from_str(l).unwrap();
-            v["kind"] == "supervisor.reattach-requested"
+            v["kind"].as_str().unwrap().to_string()
         })
-        .count();
-    assert_eq!(count, 1);
-
-    // Repeat: a second reattach is a fresh event (no dedup at this layer).
-    run_ok(bin(&home).args(["--json", "run", "reattach", &run_id]));
-    let events =
-        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
-            .unwrap();
-    let count = events
-        .lines()
-        .filter(|l| {
-            let v: Value = serde_json::from_str(l).unwrap();
-            v["kind"] == "supervisor.reattach-requested"
-        })
-        .count();
-    assert_eq!(count, 2);
+        .collect();
+    assert!(
+        kinds.contains(&"supervisor.reattach-requested".to_string()),
+        "kinds: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"supervisor.reattached".to_string()),
+        "kinds: {kinds:?}"
+    );
 }
 
 #[test]

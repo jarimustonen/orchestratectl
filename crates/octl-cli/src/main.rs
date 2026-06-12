@@ -9,6 +9,7 @@ mod output;
 mod run;
 mod skill;
 mod spinoff;
+mod supervise;
 
 use std::process::ExitCode;
 

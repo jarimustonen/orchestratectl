@@ -85,9 +85,18 @@ pub enum RunAction {
         #[arg(long)]
         note: Option<String>,
     },
-    /// Request supervisor reattach. Until `supervisor-process` lands,
-    /// this only records the request event for later replay.
-    Reattach { run_id: String },
+    /// Restart the run's supervisor process. Refuses if the recorded
+    /// supervisor PID is still alive. Spawns `orchestratectl supervise
+    /// <run-id>` detached with stdout/stderr → `supervisor.stderr.log`.
+    Reattach {
+        run_id: String,
+        /// Pass `--once` to the spawned supervisor (test-only).
+        #[arg(long, hide = true)]
+        once: bool,
+        /// Pass `--max-iter <n>` to the spawned supervisor (test-only).
+        #[arg(long, hide = true)]
+        max_iter: Option<u32>,
+    },
 }
 
 pub fn dispatch(action: RunAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
@@ -123,7 +132,11 @@ pub fn dispatch(action: RunAction, json: bool, warnings: &[String]) -> Result<()
         }),
         RunAction::Show { run_id } => show::run(&run_id, json, warnings),
         RunAction::Cancel { run_id, note } => cancel::run(&run_id, note.as_deref(), json, warnings),
-        RunAction::Reattach { run_id } => reattach::run(&run_id, json, warnings),
+        RunAction::Reattach {
+            run_id,
+            once,
+            max_iter,
+        } => reattach::run(&run_id, once, max_iter, json, warnings),
     }
 }
 

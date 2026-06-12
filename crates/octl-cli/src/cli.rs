@@ -72,6 +72,10 @@ enum Command {
         #[command(subcommand)]
         action: crate::spinoff::SpinoffAction,
     },
+    /// Long-lived per-run supervisor: tail-follow events, watchdog
+    /// agents, consume child `node.report` events with deterministic-
+    /// ID dedup. Re-enters the same binary; `run reattach` invokes it.
+    Supervise(crate::supervise::SuperviseArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -162,6 +166,9 @@ pub fn run() -> ExitCode {
         }
         Command::Spinoff { action } => {
             crate::spinoff::dispatch(action, cli.json, &logging_warnings)
+        }
+        Command::Supervise(args) => {
+            crate::supervise::dispatch(args, cli.json, &logging_warnings)
         }
     };
 
