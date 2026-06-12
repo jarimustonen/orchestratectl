@@ -258,13 +258,7 @@ fn cancel_missing_run_returns_run_not_found() {
 fn reattach_spawns_supervisor_and_records_events() {
     let home = TempDir::new().unwrap();
     let run_id = create(&home, "spinoff", "x");
-    let v = run_ok(bin(&home).args([
-        "--json",
-        "run",
-        "reattach",
-        &run_id,
-        "--once",
-    ]));
+    let v = run_ok(bin(&home).args(["--json", "run", "reattach", &run_id, "--once"]));
     assert_eq!(v["data"]["action"], "reattached");
     assert!(v["data"]["supervisor_pid"].as_u64().is_some());
 

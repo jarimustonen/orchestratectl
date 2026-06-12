@@ -51,9 +51,7 @@ pub fn run(
         if pid_file::pid_alive(existing) {
             return Err(CliError::system(
                 "supervisor_already_running",
-                format!(
-                    "supervisor pid {existing} for run {run_id} is alive (no reattach needed)"
-                ),
+                format!("supervisor pid {existing} for run {run_id} is alive (no reattach needed)"),
             ));
         }
         // Stale PID file: record the dead prior incarnation.
@@ -82,10 +80,7 @@ pub fn run(
         .append(true)
         .open(&stderr_path)
         .map_err(|e| {
-            CliError::system(
-                "io_error",
-                format!("open {}: {}", stderr_path.display(), e),
-            )
+            CliError::system("io_error", format!("open {}: {}", stderr_path.display(), e))
         })?;
     let stderr_clone = stderr_file
         .try_clone()
@@ -106,10 +101,7 @@ pub fn run(
         .stderr(stderr_clone)
         .spawn()
         .map_err(|e| {
-            CliError::system(
-                "spawn_failed",
-                format!("spawn supervise {}: {}", run_id, e),
-            )
+            CliError::system("spawn_failed", format!("spawn supervise {}: {}", run_id, e))
         })?;
     let child_pid = child.id();
 

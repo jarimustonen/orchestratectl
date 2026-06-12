@@ -186,7 +186,9 @@ pub fn dispatch(args: SuperviseArgs, json: bool, warnings: &[String]) -> Result<
                     }
                     match spawn_child_supervisor(&root, &child_run_id, &paths) {
                         Ok(child_pid) => {
-                            state.spawned_children.insert(child_run_id.clone(), child_pid);
+                            state
+                                .spawned_children
+                                .insert(child_run_id.clone(), child_pid);
                             let child_paths = run_paths(&root, &child_run_id);
                             let events = child_paths.events();
                             child_tails.insert(
@@ -259,16 +261,14 @@ pub fn dispatch(args: SuperviseArgs, json: bool, warnings: &[String]) -> Result<
                 state.last_seq_by_child.insert(cid.clone(), ev.seq);
                 match ev.kind.as_str() {
                     "node.report" => {
-                        let child_node_id = ev
-                            .node_id
-                            .clone()
-                            .unwrap_or_else(|| "n-0001".to_string());
+                        let child_node_id =
+                            ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
                         // Discover the parent's spawning node by
                         // scanning our own nodes/ for a child entry.
                         // Default to "n-0001" if not found — this is
                         // the standard top-level root node.
-                        let parent_node_id =
-                            find_spawning_node(&paths, &cid).unwrap_or_else(|| "n-0001".to_string());
+                        let parent_node_id = find_spawning_node(&paths, &cid)
+                            .unwrap_or_else(|| "n-0001".to_string());
                         match reducer::process_node_report(
                             &paths,
                             &parent_node_id,
@@ -339,7 +339,11 @@ pub fn dispatch(args: SuperviseArgs, json: bool, warnings: &[String]) -> Result<
             break "work-complete";
         }
 
-        std::thread::sleep(if iter % 2 == 0 { TAIL_TICK } else { WATCHDOG_TICK });
+        std::thread::sleep(if iter % 2 == 0 {
+            TAIL_TICK
+        } else {
+            WATCHDOG_TICK
+        });
     };
 
     // Clean shutdown.
@@ -419,10 +423,7 @@ fn spawn_child_supervisor(
         .append(true)
         .open(&stderr_path)
         .map_err(|e| {
-            CliError::system(
-                "io_error",
-                format!("open {}: {}", stderr_path.display(), e),
-            )
+            CliError::system("io_error", format!("open {}: {}", stderr_path.display(), e))
         })?;
     let stderr_clone = stderr_file
         .try_clone()
@@ -532,9 +533,7 @@ fn watchdog_tick(paths: &RunPaths) -> Result<(), CliError> {
         let Some(pid) = n.agent_pid else { continue };
         let probe = watchdog::AgentProbe {
             pid: pid as u32,
-            start_time: n
-                .agent_pid_start_time
-                .map(|t| t.timestamp().max(0) as u64),
+            start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
             tmux_window: n.tmux_window.clone(),
             // Heuristic: if tmux_window isn't recorded we can't probe
             // tmux. Don't fail liveness on that absence alone.

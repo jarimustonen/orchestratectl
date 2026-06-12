@@ -57,12 +57,8 @@ pub fn state_path(run_dir: &Path) -> PathBuf {
 pub fn load(run_dir: &Path) -> Result<SupervisorState, CliError> {
     let p = state_path(run_dir);
     match std::fs::read(&p) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-            CliError::system(
-                "io_error",
-                format!("parse {}: {}", p.display(), e),
-            )
-        }),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| CliError::system("io_error", format!("parse {}: {}", p.display(), e))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SupervisorState::default()),
         Err(e) => Err(CliError::system(
             "io_error",
@@ -92,8 +88,10 @@ mod tests {
     #[test]
     fn round_trip_preserves_cursors() {
         let dir = TempDir::new().unwrap();
-        let mut s = SupervisorState::default();
-        s.last_seq_own = 42;
+        let mut s = SupervisorState {
+            last_seq_own: 42,
+            ..Default::default()
+        };
         s.last_processed_report_seq_by_child
             .insert("child-1".to_string(), 7);
         s.spawned_children.insert("child-1".to_string(), 999);

@@ -169,14 +169,8 @@ pub fn process_node_report(
         }
         if let Some(items) = report.get("spinoff_proposals").and_then(Value::as_array) {
             for (i, item) in items.iter().enumerate() {
-                let id = deterministic_id(
-                    's',
-                    child_run_id,
-                    child_node_id,
-                    report_seq,
-                    "spinoff",
-                    i,
-                );
+                let id =
+                    deterministic_id('s', child_run_id, child_node_id, report_seq, "spinoff", i);
                 if parent_paths.spinoff(&id).exists() {
                     consumption.skipped_already_present += 1;
                     continue;

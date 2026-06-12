@@ -56,7 +56,10 @@ impl EventTail {
         let len = f
             .metadata()
             .map_err(|e| {
-                CliError::system("io_error", format!("metadata {}: {}", self.path.display(), e))
+                CliError::system(
+                    "io_error",
+                    format!("metadata {}: {}", self.path.display(), e),
+                )
             })?
             .len();
         if len < self.pos {
@@ -77,10 +80,7 @@ impl EventTail {
         loop {
             let mut line = String::new();
             let n = reader.read_line(&mut line).map_err(|e| {
-                CliError::system(
-                    "io_error",
-                    format!("read {}: {}", self.path.display(), e),
-                )
+                CliError::system("io_error", format!("read {}: {}", self.path.display(), e))
             })?;
             if n == 0 {
                 break;
@@ -198,10 +198,7 @@ mod tests {
         write_line(&p, 1, "a");
         // Append a partial line (no newline).
         {
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&p)
-                .unwrap();
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
             f.write_all(b"{\"ts\":\"2026").unwrap();
         }
         let mut t = EventTail::new(&p, 0);
@@ -210,10 +207,7 @@ mod tests {
         assert_eq!(evs[0].seq, 1);
         // Finish the line and re-poll.
         {
-            let mut f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&p)
-                .unwrap();
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
             f.write_all(
                 b"-06-12T00:00:00Z\",\"seq\":2,\"kind\":\"b\",\"run_id\":\"r\",\"data\":{}}\n",
             )

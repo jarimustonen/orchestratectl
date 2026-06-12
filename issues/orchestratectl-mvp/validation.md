@@ -153,3 +153,21 @@ Expectation: < 1 GB resident, < 5% CPU, well under the 10240 FD per-process limi
 - Items V1–V4 must complete before the corresponding `breakdown.md` issues can be marked done.
 - Items V5–V6 are gates: if they fail catastrophically, the design must change before more code lands.
 - Items V7–V9 are correctness tests that must pass for the supervisor-process and run-reattach issues to ship.
+
+## Resolved
+
+### V2, V3, V7, V8, V9 — supervisor-process gates (2026-06-12)
+
+All five gates pass as integration tests in `crates/octl-cli/tests/supervise_gates.rs`. The CLI invocation under test is `orchestratectl supervise <run-id> --once` (a test-only escape hatch documented in `--help`).
+
+- **V2 — `agent_pid` discovery + liveness:** in-process simulation that forges a `node.created` event carrying the test runner's own PID, then a known-dead PID (`0x3FFF_FFFE`). The supervisor's watchdog passes the alive case without synthesizing a report and synthesizes `node.report {failed:true, reason:"agent-died"}` for the dead case. Real tmux-pane PID re-discovery is deferred to integration with `create.sh`'s structured stdout (see V1); the code path that consumes `nodes/<id>.json::agent_pid` is fully covered.
+- **V3 — `kill(pid, 0)` + start-time identity:** start_time stability is verified by `supervise::watchdog::tests::start_time_is_stable_across_reads` (two reads of own start_time within 1s of each other). PID-recycle defense is covered by setting `agent_pid_start_time` to `1970-01-01T00:00:00Z` for a live PID and asserting `Liveness::Recycled` is reported, producing `reason: "agent-pid-recycled"` in the synthesized node.report. Cross-platform start_time read uses the `sysinfo` crate; direct `libc::sysctl` fallback is not currently needed.
+- **V7 — Deterministic-ID dedup under crash recovery:** a parent + child run is constructed, the child writes a 2-discussion + 3-spinoff `node.report`, the parent supervisor consumes it (`--once`), and the parent's `discussions/` + `spinoffs/` directories are confirmed to hold exactly 5 derived files. The supervisor's resume cursor is then deleted and the parent supervisor is re-run; the deterministic IDs match files already on disk and emission is skipped → counts remain at 5 (no duplicates). The fault-injection thread-local hook exists in `reducer.rs` for richer mid-batch tests; the directory-scan dedup is the production guarantee.
+- **V8 — `run reattach` end-to-end:** `run reattach --once` is invoked twice on the same run. The events log accumulates `supervisor.reattach-requested` (×2), `supervisor.reattached` (×2), `supervisor.exited` (×2), demonstrating the stale-PID detection path and the clean-shutdown contract.
+- **V9 — `run cancel` synthesized-report propagation:** a parent + child are wired via `--parent-run-id`, the child is `run cancel`led producing a synthetic `node.report {cancelled: true}`, then the parent supervisor consumes events and is asserted to have produced zero spinoffs/discussions while still advancing `last_processed_report_seq_by_child[child]`.
+
+**Production caveats (carried over to follow-up issues):**
+
+- Real tmux pane-PID re-discovery (V2 "live tmux") is exercised only via a stub `TMUX_BIN=/usr/bin/true`. The integration with workmux/tmux happens in the next issue (`all-kinds-spawn`) and the create.sh stdout contract (V1).
+- The watchdog currently treats `tmux_window: null` as "skip tmux probe". When create.sh starts populating `tmux_window`, the half-state `(PID alive, tmux gone)` path will become testable end-to-end.
+- The deterministic-ID slice uses 10 hex chars of SHA-256 (40 bits) per the issue spec; design.md §1.4 originally suggested base32. The hex choice is fine for per-run dedup (a few hundred items max) but is noted here so future migrations can choose consistently.

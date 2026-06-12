@@ -167,9 +167,7 @@ pub fn run() -> ExitCode {
         Command::Spinoff { action } => {
             crate::spinoff::dispatch(action, cli.json, &logging_warnings)
         }
-        Command::Supervise(args) => {
-            crate::supervise::dispatch(args, cli.json, &logging_warnings)
-        }
+        Command::Supervise(args) => crate::supervise::dispatch(args, cli.json, &logging_warnings),
     };
 
     match result {

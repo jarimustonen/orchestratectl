@@ -19,9 +19,8 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
             format!("pid path {} has no parent", path.display()),
         )
     })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e))
-    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e)))?;
     let tmp = parent.join(format!(".supervisor.pid.tmp.{}", std::process::id()));
     std::fs::write(&tmp, pid.to_string())
         .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
