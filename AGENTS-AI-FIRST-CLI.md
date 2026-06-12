@@ -464,3 +464,174 @@ non-obvious idioms (e.g. "always pass `--output FILE.jsonl` when the
 result might exceed N rows" — §13). Shipping skills from the tool itself
 means every agent that installs the tool gets the operating manual in
 one step, rather than asking the agent to discover patterns by trial.
+
+## 16. `skill print`: stream skill content without installing
+
+Pair the installer of §15 with a print subcommand that streams the
+canonical skill text to stdout:
+
+- `<tool> skill print <name>` — writes the `SKILL.md` (frontmatter +
+  body) for `<name>` to stdout, exit 0. Unknown name → §10 error
+  envelope on stderr, exit 1
+- `<tool> skill print <name> --json` — emits a structured payload
+  `{schema_version, name, cli_version, schema_version_skill, content,
+  path_in_repo}` so the agent can route the body separately from the
+  metadata
+- Output is byte-identical to what `skill install` would have written
+  to disk for that name. There is no "rendered" vs "raw" distinction
+- No side effects: no file writes, no network. Print is the read-only
+  twin of install
+
+This is the natural complement to `<tool> skill install` (§15):
+*install* persists the operating manual on the agent's runtime so it
+loads on every future session; *print* streams it once into the
+current conversation. Use install for the agent's own machine; use
+print in CI, sandboxes, ad-hoc remote shells, or when the agent
+discovers the tool mid-task and needs the workflow guidance
+immediately without modifying the runtime.
+
+Concretely, an agent that has just learned `<tool>` exists and wants
+to drive it correctly runs `<tool> skill print <main-skill>` once and
+reads the body into its working context — no install step, no
+filesystem mutation, and (by §17) the version it gets matches the
+binary it is about to invoke.
+
+Rationale: `skill install` is the right answer when the skill should
+persist across sessions, but it requires write access to a runtime
+directory the agent may not own (CI runners, locked sandboxes, remote
+shells). `skill print` makes the same operating manual available as
+pure stdout — composable with `cat`, `jq`, `tee`, and the agent's
+own context-loading mechanisms. It also gives `<tool> skill install`
+a trivial reference implementation: install is `print | write-to-disk`.
+
+## 17. Skill–CLI version synchronization
+
+The companion skill of §15/§16 is a versioned artifact. Its workflow
+guidance, flag names, and example invocations must match the CLI
+surface that will execute them — a skill that references a removed
+flag is no better than a broken `--help`. Treat skill text and CLI
+surface as one release unit.
+
+- **Frontmatter version fields.** Every shipped `SKILL.md` declares
+  two versions in its frontmatter:
+  - `cli_version:` — the CLI release the skill body was written
+    against (e.g. `cli_version: "0.6.3"`)
+  - `schema_version:` — the skill-format version (the §10 contract
+    applied to the skill payload itself, so agents can detect breaking
+    changes to the skill format independently of the tool's data
+    schema)
+- **`skill print` is version-pinned to the running binary.** `<tool>
+  skill print <name>` always returns the skill that ships *with the
+  currently installed binary* — i.e. its `cli_version` equals
+  `<tool> --version`. It never reads a stale copy from disk. If the
+  binary cannot resolve a matching skill (corrupt install, partial
+  upgrade), it errors with `{code: "skill_version_mismatch"}` rather
+  than serving an older copy
+- **`skill install` warns on drift.** `<tool> skill install <name>`
+  compares the target directory's existing skill (if any) against the
+  CLI's bundled version. If the on-disk `cli_version` is older than
+  the running binary's version, install proceeds but emits a §10
+  warning naming both versions; if it is *newer* (agent upgraded the
+  skill ahead of the binary), install errors unless `--force` is
+  passed
+- **`<tool> version --json` exposes the contract.** Per §10 the
+  version payload already carries `version`, `commit`, and
+  `schema_version`. Extend it with `skills: [{name, cli_version,
+  schema_version}]` so the agent can audit skill freshness against
+  the running binary in one call, no filesystem walk needed
+- **CI gate.** A release pipeline that ships a CLI surface change
+  (added/removed/renamed flags, changed verb vocabulary, changed
+  `--help --json` payload) must regenerate or bump the bundled
+  skill(s) in the same commit. The check is mechanical: diff the
+  `--help --json` snapshot against the previous release, and fail the
+  build if any skill's `cli_version` is older than the new binary's
+  version. This is the same release-blocker discipline §15 already
+  imposes on `skill list`
+
+The principle is one-way: the **binary is the source of truth, the
+skill follows it.** Skills never drift ahead of the binary in
+production; they may lag by one bump only inside an active development
+loop, never across a release tag.
+
+Rationale: an agent that reads a stale skill will compose calls
+against flags that no longer exist, then debug against a `--help`
+that contradicts the skill — a worst-case loop that burns context and
+produces wrong commits. Pinning `skill print` to the running binary
+removes the discrepancy at read time; the frontmatter version fields
+let the agent reason explicitly about which release it is following;
+the install-time warning catches the offline case where the agent
+installed a skill once and the CLI has since moved on. Together these
+make "is my workflow guidance current?" a one-call question instead
+of a multi-step audit.
+
+## 18. `doctor` subcommand: read-only self-diagnostic
+
+Every CLI ships a `doctor` subcommand that runs the tool's full
+internal self-check and reports each check's status. Doctor is the
+agent's first move when a command fails for non-obvious reasons —
+"is the install broken, is the data corrupt, is the config wrong, is
+a dependency missing?" — and it must answer that question without the
+agent having to know which subsystem to interrogate.
+
+- `<tool> doctor` — runs all checks; one human-readable line per
+  check (`OK`, `WARN`, `FAIL` + short message) and a final summary
+  `summary: N ok, M warn, K fail`
+- `<tool> doctor --json` — emits the §10 structured form:
+  ```json
+  {
+    "schema_version": 1,
+    "checks": [
+      {"id": "schema.issues", "status": "ok",
+       "message": "12 issues validated"},
+      {"id": "skill.sync", "status": "warn",
+       "message": "skill 'issue' is cli_version 0.6.2, binary is 0.6.3",
+       "fix_suggestion": "tool skill install issue --force"}
+    ],
+    "summary": {"ok": 11, "warn": 1, "fail": 0}
+  }
+  ```
+- Exit code: **0** if all checks are `ok` or `warn` only; **1** if any
+  check is `fail`. Deprecation-style warnings never flip the exit code
+  (consistent with §10)
+- **Read-only by default.** Doctor never mutates state. The corrective
+  twin is `<tool> doctor --fix`, which runs the same checks and then
+  applies the safe subset of `fix_suggestion`s. `--fix` is opt-in per
+  invocation, never the default, and emits the planning envelope from
+  §11 first if combined with `--dry-run`
+
+The canonical set of check categories is small and stable:
+
+- **Schema validation** — every on-disk data file the tool owns
+  validates against its declared schema (e.g. `issuectl doctor` walks
+  `issues/*/item.md` frontmatter against `issues/.schema.yaml`)
+- **Dependencies** — every binary the tool shells out to is on `PATH`
+  at a supported version; missing or out-of-range versions
+  `FAIL` with `fix_suggestion` naming the install command
+- **Skill sync** — for every installed companion skill (§17), the
+  on-disk `cli_version` matches the running binary; mismatch is
+  `WARN` with `<tool> skill install <name> --force` as the suggestion
+- **Configuration integrity** — every required key from §8 resolves
+  (flag/env/file/default), no orphan references (e.g. a config
+  pointing at a deleted profile), no secret-shaped values stored in
+  non-secret keys
+- **Data integrity** — domain-specific structural checks: orphan
+  files, broken cross-references, stale lock/marker files, indices
+  that disagree with the underlying records
+
+Every check has a stable `id` (so the agent can pin which checks it
+expects to see), a `status`, a one-line `message` naming the actual
+state observed, and — for `WARN`/`FAIL` — a `fix_suggestion` that is
+either a concrete command the agent can run, or a brief diagnostic
+hint when no automated fix is safe.
+
+Rationale: AI agents debug by hypothesis testing, and `doctor` is the
+cheapest hypothesis: "is the tool itself healthy?" One command, one
+structured answer, with per-check `id`s the agent can correlate
+against the failure it just saw. The read-only default matters
+because the agent will run `doctor` reflexively after errors — it
+must not have side effects in that loop. The `--fix` twin exists for
+the explicit "yes, apply the suggested repairs" case, separated by a
+flag so neither use accidentally triggers the other. The structured
+output makes `doctor` composable with the rest of the agent's
+toolchain (`jq '.checks[] | select(.status == "fail")'`), the same
+way every other §10-conformant payload is.
