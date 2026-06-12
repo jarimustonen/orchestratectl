@@ -62,6 +62,11 @@ enum Command {
         #[command(subcommand)]
         action: crate::node::NodeAction,
     },
+    /// List, show, or resolve discussions for a run.
+    Discussion {
+        #[command(subcommand)]
+        action: crate::discussion::DiscussionAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -147,6 +152,9 @@ pub fn run() -> ExitCode {
         Command::Run { action } => crate::run::dispatch(action, cli.json, &logging_warnings),
         Command::Event { action } => crate::event::dispatch(action, cli.json, &logging_warnings),
         Command::Node { action } => crate::node::dispatch(action, cli.json, &logging_warnings),
+        Command::Discussion { action } => {
+            crate::discussion::dispatch(action, cli.json, &logging_warnings)
+        }
     };
 
     match result {

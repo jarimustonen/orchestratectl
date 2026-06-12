@@ -1,4 +1,5 @@
 mod cli;
+mod discussion;
 mod error;
 mod event;
 mod home;

@@ -379,6 +379,7 @@ fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
         options,
         status: DiscussionStatus::Open,
         resolution: None,
+        note: None,
         resolved_at: None,
     };
     write_discussion(paths, &disc)?;
@@ -404,6 +405,11 @@ fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
     disc.resolution = ev
         .data
         .get("resolution")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    disc.note = ev
+        .data
+        .get("note")
         .and_then(Value::as_str)
         .map(str::to_string);
     disc.resolved_at = Some(ev.ts);
