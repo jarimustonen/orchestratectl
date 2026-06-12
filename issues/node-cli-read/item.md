@@ -9,6 +9,8 @@ epic: orchestratectl-mvp
 commits:
 - hash: cfdd513
   summary: 'feat(node-cli-read): node list/show/report subcommands'
+- hash: ab6397a
+  summary: 'fix(node-cli-read): apply llm-review findings'
 ---
 
 # Node CLI (list/show/report)
