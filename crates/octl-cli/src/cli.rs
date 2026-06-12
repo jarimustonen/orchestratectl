@@ -67,6 +67,11 @@ enum Command {
         #[command(subcommand)]
         action: crate::discussion::DiscussionAction,
     },
+    /// List, approve, or reject spin-off proposals on a run.
+    Spinoff {
+        #[command(subcommand)]
+        action: crate::spinoff::SpinoffAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -154,6 +159,9 @@ pub fn run() -> ExitCode {
         Command::Node { action } => crate::node::dispatch(action, cli.json, &logging_warnings),
         Command::Discussion { action } => {
             crate::discussion::dispatch(action, cli.json, &logging_warnings)
+        }
+        Command::Spinoff { action } => {
+            crate::spinoff::dispatch(action, cli.json, &logging_warnings)
         }
     };
 

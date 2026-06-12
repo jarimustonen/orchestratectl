@@ -8,6 +8,7 @@ mod node;
 mod output;
 mod run;
 mod skill;
+mod spinoff;
 
 use std::process::ExitCode;
 
