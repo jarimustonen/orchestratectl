@@ -3,7 +3,7 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 commits:
@@ -11,6 +11,7 @@ commits:
   summary: 'feat(event-create-cli): sanctioned write path for events'
 - hash: 75b676c81db16840defec8a47b81fd57bbe75184
   summary: 'fix(event-create-cli): apply llm-review findings'
+closed: 2026-06-12
 ---
 
 # Event create CLI (sanctioned write path)
