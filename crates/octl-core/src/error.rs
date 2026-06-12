@@ -36,14 +36,14 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
             source,
         }
     }
 
-    pub(crate) fn json(path: impl Into<PathBuf>, source: serde_json::Error) -> Self {
+    pub fn json(path: impl Into<PathBuf>, source: serde_json::Error) -> Self {
         Self::Json {
             path: path.into(),
             source,

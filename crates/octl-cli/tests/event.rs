@@ -677,8 +677,7 @@ fn idempotency_key_returns_existing_seq() {
     ]));
     let seq1 = v1["data"]["seq"].as_u64().unwrap();
 
-    // Same key, even with different payload, returns the original event.
-    let p2 = write_json(&home, "nc2.json", json!({"kind": "code"}));
+    // Same key with the same payload returns the original seq.
     let v2 = run_ok(bin(&home).args([
         "--json",
         "event",
@@ -689,7 +688,7 @@ fn idempotency_key_returns_existing_seq() {
         "--node-id",
         "n-0001",
         "--from-file",
-        p2.to_str().unwrap(),
+        p.to_str().unwrap(),
         "--idempotency-key",
         "k1",
     ]));
@@ -705,6 +704,147 @@ fn idempotency_key_returns_existing_seq() {
         .filter(|l| l.contains("\"kind\":\"node.created\""))
         .count();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn idempotency_key_conflict_on_payload_mismatch() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+
+    let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+
+    // Same key, different payload → conflict (not a silent replay).
+    let p2 = write_json(&home, "nc2.json", json!({"kind": "code"}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p2.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "idempotency_conflict");
+}
+
+#[test]
+fn node_heartbeat_kind_is_rejected() {
+    // node.heartbeat is design.md §7.5 "future opt-in" and not in the
+    // closed MVP set — the reducer has no case for it.
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(&home, "hb.json", json!({}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.heartbeat",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "unknown_event_kind");
+}
+
+#[test]
+fn run_created_kind_is_forbidden_via_event_create() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(
+        &home,
+        "rc.json",
+        json!({"kind": "spinoff", "lifecycle": "autonomous", "title": "x"}),
+    );
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "run.created",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "kind_not_routable");
+}
+
+#[test]
+fn path_traversal_in_data_discussion_id_rejected() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let p = write_json(
+        &home,
+        "evil.json",
+        json!({
+            "discussion_id": "../../etc/passwd",
+            "node_id": "n-0001",
+            "topic": "x",
+            "severity": "discuss",
+        }),
+    );
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "discussion.opened",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "invalid_id");
+}
+
+#[test]
+fn from_file_size_cap_enforced() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    // 2 MiB of JSON whitespace — larger than the 1 MiB cap.
+    let big = home.path().join("big.json");
+    let mut buf = String::from("{\"pad\":\"");
+    buf.push_str(&"a".repeat(2 * 1024 * 1024));
+    buf.push_str("\"}");
+    std::fs::write(&big, &buf).unwrap();
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        big.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "from_file_too_large");
 }
 
 #[test]
