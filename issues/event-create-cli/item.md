@@ -6,6 +6,9 @@ assignee: jari
 status: in-progress
 priority: normal
 epic: orchestratectl-mvp
+commits:
+- hash: bac6e0f9fed42f6aa0ede725811d706c7bf0ceaa
+  summary: 'feat(event-create-cli): sanctioned write path for events'
 ---
 
 # Event create CLI (sanctioned write path)
