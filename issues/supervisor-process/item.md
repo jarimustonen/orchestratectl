@@ -11,6 +11,8 @@ commits:
   summary: 'feat(supervisor-process): supervise subcommand + reattach upgrade'
 - hash: 9a4e598
   summary: 'test(supervisor-process): V2/V3/V7/V8/V9 validation gates'
+- hash: 6d2093a
+  summary: 'docs(supervisor-process): handoff notes'
 ---
 
 # Supervisor process (orchestratectl supervise)
