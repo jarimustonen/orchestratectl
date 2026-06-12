@@ -12,17 +12,17 @@
 //! `events.jsonl` under the same lock window for a prior `node.report`
 //! event with the same key, return its `seq` instead of appending again.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use octl_core::{ensure_root, read_manifest_opt, read_node_opt, RunLock};
+use octl_core::{ensure_root, read_manifest_opt, read_node_opt, Kind, RunLock};
 
 use crate::error::CliError;
 use crate::output;
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, require_nonempty, require_safe_id, run_paths};
 
 /// Mirror of `event create`'s 1 MiB cap. `node.report` is the largest
 /// realistic payload (design.md §1.4 cites 10-50 KB); 1 MiB still
@@ -54,40 +54,15 @@ struct ReportPayload<'a> {
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let node_id = require_safe_id(&args.node_id, "node-id")?;
+    // Reject empty-or-whitespace keys. An empty key would silently
+    // collapse unrelated retries (every "no key" caller would share
+    // the same dedup slot).
+    let idempotency_key = match args.idempotency_key {
+        Some(k) => Some(require_nonempty(&k, "idempotency-key")?),
+        None => None,
+    };
 
-    let meta = std::fs::metadata(&args.from_file).map_err(|e| {
-        CliError::user(
-            "from_file_unreadable",
-            format!("stat {}: {}", args.from_file.display(), e),
-        )
-        .with_invalid_value(args.from_file.display().to_string())
-    })?;
-    if !meta.is_file() {
-        return Err(CliError::user(
-            "from_file_unreadable",
-            format!("{} is not a regular file", args.from_file.display()),
-        )
-        .with_invalid_value(args.from_file.display().to_string()));
-    }
-    if meta.len() > MAX_FROM_FILE_BYTES {
-        return Err(CliError::user(
-            "from_file_too_large",
-            format!(
-                "--from-file is {} bytes; max is {} bytes",
-                meta.len(),
-                MAX_FROM_FILE_BYTES
-            ),
-        )
-        .with_invalid_value(args.from_file.display().to_string()));
-    }
-
-    let bytes = std::fs::read(&args.from_file).map_err(|e| {
-        CliError::user(
-            "from_file_unreadable",
-            format!("read {}: {}", args.from_file.display(), e),
-        )
-        .with_invalid_value(args.from_file.display().to_string())
-    })?;
+    let bytes = read_capped(&args.from_file)?;
     let data: Value = serde_json::from_slice(&bytes).map_err(|e| {
         CliError::user(
             "from_file_invalid_json",
@@ -138,59 +113,111 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // Idempotency lookup + append must share one lock window so a
     // concurrent retry can't see "no prior event" and double-append.
-    let (seq, replayed) = RunLock::with_lock(&paths.lock(), || {
-        if let Some(key) = args.idempotency_key.as_deref() {
+    enum Outcome {
+        Replayed(PriorReport),
+        Appended(u64),
+    }
+    let outcome = RunLock::with_lock(&paths.lock(), || {
+        if let Some(key) = idempotency_key.as_deref() {
             if let Some(prior) = find_prior_report(&paths.events(), key)? {
-                return Ok((prior, true));
+                return Ok(Outcome::Replayed(prior));
             }
         }
         let seq = octl_core::append_and_apply_unlocked(
             &paths,
             "node.report",
             Some(&node_id),
-            args.idempotency_key.as_deref(),
+            idempotency_key.as_deref(),
             data.clone(),
         )?;
-        Ok((
-            PriorReport {
-                seq,
-                node_id: Some(node_id.clone()),
-                data: data.clone(),
-            },
-            false,
-        ))
+        Ok(Outcome::Appended(seq))
     })
     .map_err(from_core)?;
 
-    if replayed {
-        // Stripe-style: re-using a key with a different payload is a
-        // client error, not a silent replay. Matches `event create`.
-        if seq.node_id.as_deref() != Some(node_id.as_str()) {
-            return Err(CliError::user(
-                "idempotency_conflict",
-                format!(
-                    "idempotency-key was previously used for a different --node-id \
-                     (prior: {:?}, current: {})",
-                    seq.node_id, node_id
-                ),
-            ));
+    let (event_seq, replayed) = match outcome {
+        Outcome::Appended(seq) => (seq, false),
+        Outcome::Replayed(prior) => {
+            // Stripe-style: re-using a key with a different payload is
+            // a client error, not a silent replay. Matches `event create`.
+            let prior_node = prior.node_id.as_deref().unwrap_or("<none>");
+            if prior_node != node_id.as_str() {
+                return Err(CliError::user(
+                    "idempotency_conflict",
+                    format!(
+                        "idempotency-key was previously used for a different --node-id \
+                         (prior: {prior_node}, current: {node_id})"
+                    ),
+                ));
+            }
+            if prior.data != data {
+                return Err(CliError::user(
+                    "idempotency_conflict",
+                    "idempotency-key was previously used with a different --from-file payload",
+                ));
+            }
+            (prior.seq, true)
         }
-        if seq.data != data {
-            return Err(CliError::user(
-                "idempotency_conflict",
-                "idempotency-key was previously used with a different --from-file payload",
-            ));
-        }
-    }
+    };
 
     let payload = ReportPayload {
         run_id: &run_id,
         node_id: &node_id,
-        event_seq: Some(seq.seq),
+        event_seq: Some(event_seq),
         idempotent_replay: if replayed { Some(true) } else { None },
         dry_run: None,
     };
     emit(&payload, args.json, args.warnings)
+}
+
+/// Read `--from-file` while enforcing the size cap during the read
+/// itself, not via a separate `metadata()` stat. `metadata()` followed
+/// by `read()` is TOCTOU-vulnerable — the file could grow between the
+/// two calls and we'd OOM. `take(MAX + 1)` defends without an extra
+/// syscall round-trip.
+fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
+    let mut f = std::fs::File::open(path).map_err(|e| {
+        CliError::user(
+            "from_file_unreadable",
+            format!("open {}: {}", path.display(), e),
+        )
+        .with_invalid_value(path.display().to_string())
+    })?;
+    let meta = f.metadata().map_err(|e| {
+        CliError::user(
+            "from_file_unreadable",
+            format!("stat {}: {}", path.display(), e),
+        )
+        .with_invalid_value(path.display().to_string())
+    })?;
+    if !meta.is_file() {
+        return Err(CliError::user(
+            "from_file_unreadable",
+            format!("{} is not a regular file", path.display()),
+        )
+        .with_invalid_value(path.display().to_string()));
+    }
+    let mut buf = Vec::new();
+    f.by_ref()
+        .take(MAX_FROM_FILE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| {
+            CliError::user(
+                "from_file_unreadable",
+                format!("read {}: {}", path.display(), e),
+            )
+            .with_invalid_value(path.display().to_string())
+        })?;
+    if (buf.len() as u64) > MAX_FROM_FILE_BYTES {
+        return Err(CliError::user(
+            "from_file_too_large",
+            format!(
+                "--from-file exceeds maximum of {} bytes",
+                MAX_FROM_FILE_BYTES
+            ),
+        )
+        .with_invalid_value(path.display().to_string()));
+    }
+    Ok(buf)
 }
 
 /// §7.3 payload validation. Rejects anything obviously not a report
@@ -198,7 +225,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// offending field instead of bubbling a generic `CorruptEventLog`.
 fn validate_report_payload(data: &Value) -> Result<(), CliError> {
     let obj = data.as_object().ok_or_else(|| {
-        CliError::user("schema-violation", "report payload must be a JSON object")
+        CliError::user("schema_violation", "report payload must be a JSON object")
     })?;
 
     // `success` is the one strictly required field per §7.3. A cancel-
@@ -206,14 +233,14 @@ fn validate_report_payload(data: &Value) -> Result<(), CliError> {
     // `success: false` — both are still booleans on the wire.
     let success = obj.get("success").ok_or_else(|| {
         CliError::user(
-            "schema-violation",
+            "schema_violation",
             "report payload missing required field `success`",
         )
         .with_expected(json!({"field": "success", "type": "boolean"}))
     })?;
     if !success.is_boolean() {
         return Err(
-            CliError::user("schema-violation", "field `success` must be a boolean")
+            CliError::user("schema_violation", "field `success` must be a boolean")
                 .with_expected(json!({"field": "success", "type": "boolean"})),
         );
     }
@@ -221,25 +248,44 @@ fn validate_report_payload(data: &Value) -> Result<(), CliError> {
     if let Some(v) = obj.get("summary") {
         if !v.is_string() && !v.is_null() {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 "field `summary` must be a string",
             ));
         }
     }
-    if let Some(v) = obj.get("cancelled") {
-        if !v.is_boolean() {
+    let cancelled = match obj.get("cancelled") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| {
+            CliError::user("schema_violation", "field `cancelled` must be a boolean")
+        })?,
+    };
+    let reason = match obj.get("reason") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| {
+            CliError::user("schema_violation", "field `reason` must be a string")
+        })?),
+    };
+
+    // §7.7: a cancel-synthesized report carries `cancelled: true,
+    // success: false, reason: <non-empty>`. Allowing `success: true`
+    // alongside `cancelled: true` would persist a contradiction (the
+    // reducer prioritizes `cancelled`, so the node would be cancelled
+    // while `last_report.success == true`).
+    if cancelled {
+        if success.as_bool().unwrap() {
             return Err(CliError::user(
-                "schema-violation",
-                "field `cancelled` must be a boolean",
+                "schema_violation",
+                "`cancelled: true` requires `success: false`",
             ));
         }
-    }
-    if let Some(v) = obj.get("reason") {
-        if !v.is_string() && !v.is_null() {
-            return Err(CliError::user(
-                "schema-violation",
-                "field `reason` must be a string",
-            ));
+        match reason {
+            Some(s) if !s.trim().is_empty() => {}
+            _ => {
+                return Err(CliError::user(
+                    "schema_violation",
+                    "`cancelled: true` requires a non-empty `reason` string",
+                ));
+            }
         }
     }
 
@@ -249,18 +295,6 @@ fn validate_report_payload(data: &Value) -> Result<(), CliError> {
         obj.get("wrap_up_recommendations"),
         "wrap_up_recommendations",
     )?;
-    // `decisions` is mentioned in the issue summary as an optional
-    // field; design.md §7.3 doesn't pin its shape, so we accept any
-    // array and let the supervisor interpret it. Reject non-array so
-    // we still catch typos.
-    if let Some(v) = obj.get("decisions") {
-        if !v.is_array() {
-            return Err(CliError::user(
-                "schema-violation",
-                "field `decisions` must be an array",
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -269,7 +303,7 @@ fn validate_discussion_items(v: Option<&Value>) -> Result<(), CliError> {
         Some(Value::Array(a)) => a,
         Some(_) => {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 "field `discussion_items` must be an array",
             ));
         }
@@ -278,44 +312,33 @@ fn validate_discussion_items(v: Option<&Value>) -> Result<(), CliError> {
     for (i, item) in arr.iter().enumerate() {
         let obj = item.as_object().ok_or_else(|| {
             CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("discussion_items[{i}] must be a JSON object"),
             )
         })?;
         let topic = obj.get("topic").and_then(Value::as_str);
         if topic.is_none() || topic.unwrap().trim().is_empty() {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("discussion_items[{i}].topic must be a non-empty string"),
             ));
         }
         if let Some(sev) = obj.get("severity") {
-            let s = sev.as_str().ok_or_else(|| {
+            let _ = sev.as_str().ok_or_else(|| {
                 CliError::user(
-                    "schema-violation",
+                    "schema_violation",
                     format!("discussion_items[{i}].severity must be a string"),
                 )
             })?;
-            // §7.3 example lists "discuss|critical"; keep enforcement
-            // soft (warn-by-rejecting unknown) so the supervisor can
-            // add new severities without coordinating a CLI release.
-            if !matches!(s, "discuss" | "critical") {
-                return Err(CliError::user(
-                    "schema-violation",
-                    format!(
-                        "discussion_items[{i}].severity must be `discuss` or `critical` (got `{s}`)"
-                    ),
-                )
-                .with_expected(json!(["discuss", "critical"])));
-            }
+            // §7.3 example lists "discuss|critical" but the design
+            // calls for forward-compatibility — accept any string and
+            // let the supervisor interpret unknown severities. (A
+            // CLI-side closed-set check would deadlock agents shipped
+            // ahead of a CLI release; see review #2/DeepSeek and #15
+            // /Claude.)
         }
         if let Some(opts) = obj.get("options") {
-            if !opts.is_array() {
-                return Err(CliError::user(
-                    "schema-violation",
-                    format!("discussion_items[{i}].options must be an array"),
-                ));
-            }
+            validate_string_array_at(opts, &format!("discussion_items[{i}].options"))?;
         }
     }
     Ok(())
@@ -326,7 +349,7 @@ fn validate_spinoff_proposals(v: Option<&Value>) -> Result<(), CliError> {
         Some(Value::Array(a)) => a,
         Some(_) => {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 "field `spinoff_proposals` must be an array",
             ));
         }
@@ -335,31 +358,70 @@ fn validate_spinoff_proposals(v: Option<&Value>) -> Result<(), CliError> {
     for (i, item) in arr.iter().enumerate() {
         let obj = item.as_object().ok_or_else(|| {
             CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("spinoff_proposals[{i}] must be a JSON object"),
             )
         })?;
         let title = obj.get("proposed_title").and_then(Value::as_str);
         if title.is_none() || title.unwrap().trim().is_empty() {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("spinoff_proposals[{i}].proposed_title must be a non-empty string"),
             ));
         }
-        let kind = obj.get("proposed_kind").and_then(Value::as_str);
-        if kind.is_none() {
+        let kind_str = obj
+            .get("proposed_kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::user(
+                    "schema_violation",
+                    format!("spinoff_proposals[{i}].proposed_kind must be a string"),
+                )
+            })?;
+        // Reject unknown kinds at the CLI boundary so the supervisor
+        // never has to translate a generic `CorruptEventLog` for the
+        // user. Mirrors the `Kind` enum's `rename_all = "kebab-case"`
+        // serde routing.
+        if serde_json::from_value::<Kind>(Value::String(kind_str.to_string())).is_err() {
             return Err(CliError::user(
-                "schema-violation",
-                format!("spinoff_proposals[{i}].proposed_kind must be a string"),
-            ));
+                "schema_violation",
+                format!("spinoff_proposals[{i}].proposed_kind `{kind_str}` is not a known kind"),
+            )
+            .with_expected(json!([
+                "code",
+                "spinoff",
+                "orchestrated",
+                "research",
+                "technical-decision",
+                "make-skill",
+                "fan-out",
+                "bugfix"
+            ])));
         }
         if let Some(rationale) = obj.get("rationale") {
             if !rationale.is_string() && !rationale.is_null() {
                 return Err(CliError::user(
-                    "schema-violation",
+                    "schema_violation",
                     format!("spinoff_proposals[{i}].rationale must be a string"),
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Path-aware string-array validator. Used for nested fields where
+/// the caller wants to embed an index in the error message.
+fn validate_string_array_at(v: &Value, path: &str) -> Result<(), CliError> {
+    let arr = v
+        .as_array()
+        .ok_or_else(|| CliError::user("schema_violation", format!("{path} must be an array")))?;
+    for (i, item) in arr.iter().enumerate() {
+        if !item.is_string() {
+            return Err(CliError::user(
+                "schema_violation",
+                format!("{path}[{i}] must be a string"),
+            ));
         }
     }
     Ok(())
@@ -370,7 +432,7 @@ fn validate_string_array(v: Option<&Value>, field: &str) -> Result<(), CliError>
         Some(Value::Array(a)) => a,
         Some(_) => {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("field `{field}` must be an array"),
             ));
         }
@@ -379,7 +441,7 @@ fn validate_string_array(v: Option<&Value>, field: &str) -> Result<(), CliError>
     for (i, item) in arr.iter().enumerate() {
         if !item.is_string() {
             return Err(CliError::user(
-                "schema-violation",
+                "schema_violation",
                 format!("{field}[{i}] must be a string"),
             ));
         }
@@ -480,14 +542,14 @@ mod tests {
     fn missing_success_rejected() {
         let v = json!({"summary": "no success field"});
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]
     fn non_object_root_rejected() {
         let v = json!([1, 2, 3]);
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]
@@ -497,17 +559,63 @@ mod tests {
             "discussion_items": [{"severity": "discuss"}],
         });
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]
-    fn discussion_item_unknown_severity_rejected() {
+    fn discussion_item_unknown_severity_accepted_for_forward_compat() {
+        // Forward-compat: a supervisor may add new severities without
+        // a CLI release. The validator only enforces that severity is
+        // a string, not a closed set.
         let v = json!({
             "success": true,
-            "discussion_items": [{"topic": "x", "severity": "panic"}],
+            "discussion_items": [{"topic": "x", "severity": "info"}],
+        });
+        assert!(validate_report_payload(&v).is_ok());
+    }
+
+    #[test]
+    fn discussion_item_non_string_severity_rejected() {
+        let v = json!({
+            "success": true,
+            "discussion_items": [{"topic": "x", "severity": 42}],
         });
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
+    }
+
+    #[test]
+    fn discussion_item_options_must_be_strings() {
+        let v = json!({
+            "success": true,
+            "discussion_items": [{"topic": "x", "options": [1, 2]}],
+        });
+        let err = validate_report_payload(&v).unwrap_err();
+        assert_eq!(err.code, "schema_violation");
+    }
+
+    #[test]
+    fn spinoff_unknown_proposed_kind_rejected() {
+        let v = json!({
+            "success": true,
+            "spinoff_proposals": [{"proposed_title": "x", "proposed_kind": "not-a-kind"}],
+        });
+        let err = validate_report_payload(&v).unwrap_err();
+        assert_eq!(err.code, "schema_violation");
+    }
+
+    #[test]
+    fn cancelled_requires_success_false() {
+        let v = json!({"success": true, "cancelled": true, "reason": "x"});
+        let err = validate_report_payload(&v).unwrap_err();
+        assert_eq!(err.code, "schema_violation");
+    }
+
+    #[test]
+    fn cancelled_requires_reason() {
+        let v = json!({"success": false, "cancelled": true});
+        let err = validate_report_payload(&v).unwrap_err();
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]
@@ -517,7 +625,7 @@ mod tests {
             "spinoff_proposals": [{"proposed_title": "x"}],
         });
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]
@@ -527,7 +635,7 @@ mod tests {
             "wrap_up_recommendations": ["ok", 42],
         });
         let err = validate_report_payload(&v).unwrap_err();
-        assert_eq!(err.code, "schema-violation");
+        assert_eq!(err.code, "schema_violation");
     }
 
     #[test]

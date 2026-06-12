@@ -7,7 +7,7 @@ use octl_core::{read_manifest_opt, read_node_opt};
 
 use crate::error::CliError;
 use crate::output;
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, kind_kebab, require_safe_id, run_paths, status_kebab};
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -63,40 +63,50 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             ));
         }
     };
+    let filter = args.status.as_deref().map(str::trim);
     if let Some(read) = entries {
-        let mut ids: Vec<String> = read
-            .filter_map(Result::ok)
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                    return None;
-                }
-                p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
-            })
-            .collect();
+        let mut ids: Vec<String> = Vec::new();
+        for ent in read {
+            // Propagate per-entry read errors. Silently swallowing
+            // them (with `.filter_map(Result::ok)`) would hide
+            // permission errors, broken NFS mounts, etc. and produce
+            // a partial list that callers can't distinguish from a
+            // truly empty run.
+            let ent = ent.map_err(|e| {
+                CliError::system(
+                    "io_error",
+                    format!("read_dir entry {}: {}", nodes_dir.display(), e),
+                )
+            })?;
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                ids.push(stem.to_string());
+            }
+        }
         ids.sort();
         for node_id in ids {
             let n = match read_node_opt(&paths, &node_id).map_err(from_core)? {
                 Some(n) => n,
                 None => continue,
             };
-            let kind = serde_json::to_value(n.kind)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            let status = serde_json::to_value(n.status)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            if let Some(filter) = &args.status {
-                if &status != filter {
+            // Use the canonical kebab-case helpers from `run/mod.rs`
+            // rather than round-tripping the enum through
+            // `serde_json::to_value`. Adding a new variant is then a
+            // pattern-match compile error, not a silent `""`.
+            let kind = kind_kebab(n.kind);
+            let status = status_kebab(n.status);
+            if let Some(f) = filter {
+                if status != f {
                     continue;
                 }
             }
             out.push(NodeSummary {
                 node_id: n.node_id,
-                kind,
-                status,
+                kind: kind.to_string(),
+                status: status.to_string(),
                 parent_node_id: n.parent_node_id,
                 updated_at: n.updated_at,
                 children: n.children.len() as u32,

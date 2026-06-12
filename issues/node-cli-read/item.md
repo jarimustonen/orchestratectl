@@ -6,6 +6,9 @@ assignee: jari
 status: in-progress
 priority: normal
 epic: orchestratectl-mvp
+commits:
+- hash: cfdd513
+  summary: 'feat(node-cli-read): node list/show/report subcommands'
 ---
 
 # Node CLI (list/show/report)

@@ -74,7 +74,13 @@ const ALLOWED_KINDS: &[&str] = &[
 /// append a duplicate bootstrap record to an already-initialised run —
 /// the reducer is idempotent against it, but the second record is pure
 /// noise in the canonical log.
-const FORBIDDEN_KINDS_FOR_EVENT_CREATE: &[&str] = &["run.created"];
+///
+/// `node.report` is a §7.3-shaped domain verb owned by `orchestratectl
+/// node report`. The generic write path doesn't run the §7.3 payload
+/// validator, so allowing it here would let agents bypass schema
+/// enforcement and put malformed terminal reports into the canonical
+/// log. Routes to `node report` instead.
+const FORBIDDEN_KINDS_FOR_EVENT_CREATE: &[&str] = &["run.created", "node.report"];
 
 /// Upper bound on `--from-file` payload size. `node.report` is the
 /// largest realistic event at ~10-50 KB (design.md §1.4); 1 MiB gives

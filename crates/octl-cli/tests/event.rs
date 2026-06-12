@@ -602,14 +602,14 @@ fn unknown_kind_is_rejected_with_expected_list() {
 fn missing_node_id_for_node_scoped_kind_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let p = write_json(&home, "rep.json", json!({"success": true}));
+    let p = write_json(&home, "ns.json", json!({"status": "running"}));
     let (code, err) = run_fail(bin(&home).args([
         "--json",
         "event",
         "create",
         &run_id,
         "--kind",
-        "node.report",
+        "node.status",
         "--from-file",
         p.to_str().unwrap(),
     ]));

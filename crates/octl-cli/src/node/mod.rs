@@ -38,8 +38,8 @@ pub enum NodeAction {
         /// existing event's `seq` instead of appending again.
         #[arg(long)]
         idempotency_key: Option<String>,
-        /// Print the would-be event + projection plan and exit 0
-        /// without touching the filesystem.
+        /// Validate the payload and exit 0 without writing anything
+        /// to the run's events.jsonl or projection files.
         #[arg(long)]
         dry_run: bool,
     },

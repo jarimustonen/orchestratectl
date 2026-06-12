@@ -239,7 +239,7 @@ fn report_invalid_payload_rejected() {
         p.to_str().unwrap(),
     ]));
     assert_eq!(code, 1);
-    assert_eq!(err["error"]["code"], "schema-violation");
+    assert_eq!(err["error"]["code"], "schema_violation");
 }
 
 #[test]
@@ -335,6 +335,154 @@ fn report_idempotency_conflict_on_payload_mismatch() {
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "idempotency_conflict");
+}
+
+#[test]
+fn report_unknown_run_rejected() {
+    let home = TempDir::new().unwrap();
+    let p = write_json(&home, "rep.json", json!({"success": true}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "node",
+        "report",
+        "01J0000000000000000000000X",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "run_not_found");
+}
+
+#[test]
+fn report_idempotency_conflict_on_node_mismatch() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    create_node(&home, &run_id, "n-0001");
+    create_node(&home, &run_id, "n-0002");
+    let p = write_json(&home, "rep.json", json!({"success": true}));
+    run_ok(bin(&home).args([
+        "--json",
+        "node",
+        "report",
+        &run_id,
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "node",
+        "report",
+        &run_id,
+        "n-0002",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "idempotency_conflict");
+}
+
+#[test]
+fn report_success_false_marks_node_failed() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    create_node(&home, &run_id, "n-0001");
+    let p = write_json(&home, "rep.json", json!({"success": false}));
+    run_ok(bin(&home).args([
+        "--json",
+        "node",
+        "report",
+        &run_id,
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    let node: Value = serde_json::from_slice(
+        &std::fs::read(
+            home.path()
+                .join("runs")
+                .join(&run_id)
+                .join("nodes")
+                .join("n-0001.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(node["status"], "failed");
+}
+
+#[test]
+fn report_from_file_too_large_rejected() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    create_node(&home, &run_id, "n-0001");
+    let big = home.path().join("big.json");
+    let mut s = String::from("{\"success\":true,\"summary\":\"");
+    s.push_str(&"a".repeat(2 * 1024 * 1024));
+    s.push_str("\"}");
+    std::fs::write(&big, &s).unwrap();
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "node",
+        "report",
+        &run_id,
+        "n-0001",
+        "--from-file",
+        big.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "from_file_too_large");
+}
+
+#[test]
+fn event_create_cannot_bypass_node_report_validation() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    create_node(&home, &run_id, "n-0001");
+    let p = write_json(&home, "bad.json", json!({"summary": "no success"}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.report",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "kind_not_routable");
+}
+
+#[test]
+fn list_emits_kebab_case_kind_and_status() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    // Use a multi-word kind variant so kebab-case matters.
+    let p = write_json(&home, "tn.json", json!({"kind": "technical-decision"}));
+    run_ok(bin(&home).args([
+        "--json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+    ]));
+    let v = run_ok(bin(&home).args(["--json", "node", "list", &run_id]));
+    let nodes = v["data"]["nodes"].as_array().unwrap();
+    assert_eq!(nodes[0]["kind"], "technical-decision");
+    assert_eq!(nodes[0]["status"], "pending");
 }
 
 #[test]
