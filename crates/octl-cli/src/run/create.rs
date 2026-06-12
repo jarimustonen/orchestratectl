@@ -15,7 +15,10 @@ use octl_core::{ensure_root, new_run_id, Kind, Lifecycle};
 use crate::error::CliError;
 use crate::idempotency;
 use crate::output;
-use crate::run::{from_core, lifecycle_for, require_nonempty, run_paths};
+use crate::run::{
+    from_core, kind_kebab, lifecycle_for, lifecycle_kebab, require_nonempty, require_safe_id,
+    run_paths,
+};
 
 pub struct Args<'a> {
     pub kind: Kind,
@@ -111,10 +114,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // which can't observe the reservation. Refuse with the canonical
         // envelope rather than fake it.
         return Err(CliError::user(
-            "dry-run-unsupported",
+            "dry_run_unsupported",
             "child-spawn create cannot be truthfully dry-run; use --idempotency-key for safe retry",
         ));
     }
+
+    // Validate parent IDs at the CLI boundary so a malicious or
+    // careless `--parent-run-id ../something` never reaches path
+    // construction.
+    let parent_run_id = match args.parent_run_id.as_deref() {
+        Some(v) => Some(require_safe_id(v, "parent-run-id")?),
+        None => None,
+    };
+    let parent_node_id = match args.parent_node_id.as_deref() {
+        Some(v) => Some(require_safe_id(v, "parent-node-id")?),
+        None => None,
+    };
 
     let root = crate::home::root_dir()?;
 
@@ -131,8 +146,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 dir.display().to_string(),
                 args.kind,
                 lifecycle_for(args.kind),
-                args.parent_run_id.as_deref(),
-                args.parent_node_id.as_deref(),
+                parent_run_id.as_deref(),
+                parent_node_id.as_deref(),
                 Some(true),
                 None,
                 args.json,
@@ -163,11 +178,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     ensure_root(&root).map_err(from_core)?;
 
     if is_child {
-        // The parent run must already exist on disk — otherwise the
-        // `child.spawned` write would land in a fabricated parent dir
-        // and the projection would never be observed.
-        let parent_run_id = args.parent_run_id.as_deref().unwrap();
-        let parent_node_id = args.parent_node_id.as_deref().unwrap();
+        // The parent run AND the parent node must already exist on
+        // disk. Without the node check, `child.spawned` would silently
+        // be a no-op in the reducer (it ignores events targeting an
+        // unknown node) and the parent → child link would never form.
+        let parent_run_id = parent_run_id.as_deref().unwrap();
+        let parent_node_id = parent_node_id.as_deref().unwrap();
         let parent_paths = run_paths(&root, parent_run_id);
         if !parent_paths.manifest().exists() {
             return Err(CliError::user(
@@ -176,6 +192,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             )
             .with_invalid_value(parent_run_id));
         }
+        // Parent-node existence is NOT validated here: the parent's
+        // `nodes/n-0001.json` is created by the parent supervisor when
+        // it boots (design.md §7.2 step 7), which is later than the
+        // first child-spawn. Validating now would force a chicken-and-
+        // egg order. The reducer's `apply_child_spawned` is tolerant —
+        // a `child.spawned` event with an unknown parent node is a
+        // recorded fact in the log; the link materializes on replay
+        // once the parent node exists. Tracked in `handoff.md` D2.
         let child_data = json!({
             "child_run_id": run_id,
             "child_node_id": "n-0001",
@@ -216,11 +240,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if is_child {
         data.insert(
             "parent_run_id".into(),
-            Value::String(args.parent_run_id.clone().unwrap()),
+            Value::String(parent_run_id.clone().unwrap()),
         );
         data.insert(
             "parent_node_id".into(),
-            Value::String(args.parent_node_id.clone().unwrap()),
+            Value::String(parent_node_id.clone().unwrap()),
         );
     }
     octl_core::append_and_apply(
@@ -246,8 +270,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         child_dir.display().to_string(),
         args.kind,
         lifecycle,
-        args.parent_run_id.as_deref(),
-        args.parent_node_id.as_deref(),
+        parent_run_id.as_deref(),
+        parent_node_id.as_deref(),
         None,
         None,
         args.json,
@@ -301,24 +325,4 @@ fn emit(
         }
     }
     Ok(())
-}
-
-fn kind_kebab(k: Kind) -> &'static str {
-    match k {
-        Kind::Code => "code",
-        Kind::Spinoff => "spinoff",
-        Kind::Orchestrated => "orchestrated",
-        Kind::Research => "research",
-        Kind::TechnicalDecision => "technical-decision",
-        Kind::MakeSkill => "make-skill",
-        Kind::FanOut => "fan-out",
-        Kind::Bugfix => "bugfix",
-    }
-}
-
-fn lifecycle_kebab(l: Lifecycle) -> &'static str {
-    match l {
-        Lifecycle::Autonomous => "autonomous",
-        Lifecycle::Interactive => "interactive",
-    }
 }

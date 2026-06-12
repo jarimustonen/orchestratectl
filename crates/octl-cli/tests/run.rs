@@ -115,7 +115,7 @@ fn create_child_dry_run_is_unsupported() {
         "--dry-run",
     ]));
     assert_eq!(code, 1);
-    assert_eq!(v["error"]["code"], "dry-run-unsupported");
+    assert_eq!(v["error"]["code"], "dry_run_unsupported");
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn show_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
     let (code, v) = run_fail(bin(&home).args(["--json", "run", "show", "nope"]));
     assert_eq!(code, 1);
-    assert_eq!(v["error"]["code"], "run-not-found");
+    assert_eq!(v["error"]["code"], "run_not_found");
     assert_eq!(v["error"]["invalid_value"], "nope");
 }
 
@@ -251,7 +251,7 @@ fn cancel_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
     let (code, v) = run_fail(bin(&home).args(["--json", "run", "cancel", "nope"]));
     assert_eq!(code, 1);
-    assert_eq!(v["error"]["code"], "run-not-found");
+    assert_eq!(v["error"]["code"], "run_not_found");
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn reattach_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
     let (code, v) = run_fail(bin(&home).args(["--json", "run", "reattach", "nope"]));
     assert_eq!(code, 1);
-    assert_eq!(v["error"]["code"], "run-not-found");
+    assert_eq!(v["error"]["code"], "run_not_found");
 }
 
 #[test]

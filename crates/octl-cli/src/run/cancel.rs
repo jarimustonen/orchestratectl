@@ -8,7 +8,7 @@ use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, Status};
 
 use crate::error::CliError;
 use crate::output;
-use crate::run::{from_core, run_paths};
+use crate::run::{from_core, require_safe_id, run_paths};
 
 #[derive(Serialize)]
 struct CancelPayload {
@@ -23,14 +23,15 @@ pub fn run(
     json: bool,
     warnings: &[String],
 ) -> Result<(), CliError> {
+    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id);
+    let paths = run_paths(&root, &run_id);
     let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
         Some(m) => m,
         None => {
             return Err(
-                CliError::user("run-not-found", format!("no run with id {run_id}"))
-                    .with_invalid_value(run_id),
+                CliError::user("run_not_found", format!("no run with id {run_id}"))
+                    .with_invalid_value(&run_id),
             );
         }
     };
@@ -38,7 +39,7 @@ pub fn run(
     if matches!(manifest.status, Status::Cancelled) {
         return emit(
             CancelPayload {
-                run_id: run_id.into(),
+                run_id,
                 cancelled_nodes: vec![],
                 already_cancelled: true,
             },
@@ -52,7 +53,19 @@ pub fn run(
     // us honest if some events were dropped and the directory listing
     // differs from manifest.node_count.
     let mut cancelled_nodes: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) {
+    let nodes_dir = paths.nodes_dir();
+    let read = match std::fs::read_dir(&nodes_dir) {
+        Ok(e) => Some(e),
+        // No nodes/ yet (run never reached create.sh) — nothing to cancel.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(CliError::system(
+                "io_error",
+                format!("read_dir {}: {}", nodes_dir.display(), e),
+            ));
+        }
+    };
+    if let Some(entries) = read {
         let mut ids: Vec<String> = entries
             .filter_map(Result::ok)
             .filter_map(|e| {
@@ -98,7 +111,7 @@ pub fn run(
 
     emit(
         CancelPayload {
-            run_id: run_id.into(),
+            run_id,
             cancelled_nodes,
             already_cancelled: false,
         },

@@ -6,7 +6,9 @@ use octl_core::{read_manifest_opt, Manifest};
 
 use crate::error::CliError;
 use crate::output;
-use crate::run::{from_core, run_paths};
+use crate::run::{
+    from_core, kind_kebab, lifecycle_kebab, require_safe_id, run_paths, status_kebab,
+};
 
 #[derive(Serialize)]
 struct ShowPayload {
@@ -22,14 +24,15 @@ struct Counts {
 }
 
 pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError> {
+    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id);
+    let paths = run_paths(&root, &run_id);
     let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
         Some(m) => m,
         None => {
             return Err(
-                CliError::user("run-not-found", format!("no run with id {run_id}"))
-                    .with_invalid_value(run_id),
+                CliError::user("run_not_found", format!("no run with id {run_id}"))
+                    .with_invalid_value(&run_id),
             );
         }
     };
@@ -45,9 +48,12 @@ pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError
     } else {
         println!("run-id:        {}", payload.manifest.run_id);
         println!("title:         {}", payload.manifest.title);
-        println!("status:        {:?}", payload.manifest.status);
-        println!("kind:          {:?}", payload.manifest.kind);
-        println!("lifecycle:     {:?}", payload.manifest.lifecycle);
+        println!("status:        {}", status_kebab(payload.manifest.status));
+        println!("kind:          {}", kind_kebab(payload.manifest.kind));
+        println!(
+            "lifecycle:     {}",
+            lifecycle_kebab(payload.manifest.lifecycle)
+        );
         println!("created_at:    {}", payload.manifest.created_at);
         println!("updated_at:    {}", payload.manifest.updated_at);
         println!("nodes:         {}", payload.counts.nodes);

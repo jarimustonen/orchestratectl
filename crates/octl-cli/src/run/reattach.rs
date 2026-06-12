@@ -14,7 +14,7 @@ use octl_core::{append_and_apply, read_manifest_opt};
 
 use crate::error::CliError;
 use crate::output;
-use crate::run::{from_core, run_paths};
+use crate::run::{from_core, require_safe_id, run_paths};
 
 #[derive(Serialize)]
 struct ReattachPayload<'a> {
@@ -24,12 +24,13 @@ struct ReattachPayload<'a> {
 }
 
 pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError> {
+    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id);
+    let paths = run_paths(&root, &run_id);
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
-            CliError::user("run-not-found", format!("no run with id {run_id}"))
-                .with_invalid_value(run_id),
+            CliError::user("run_not_found", format!("no run with id {run_id}"))
+                .with_invalid_value(&run_id),
         );
     }
     append_and_apply(
@@ -41,7 +42,7 @@ pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError
     )
     .map_err(from_core)?;
     let payload = ReattachPayload {
-        run_id,
+        run_id: &run_id,
         action: "reattach-requested",
         note: "supervisor not yet implemented; event recorded for replay",
     };

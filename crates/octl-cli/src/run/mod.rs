@@ -153,6 +153,66 @@ pub fn require_nonempty(value: &str, field: &str) -> Result<String, CliError> {
     Ok(trimmed.to_string())
 }
 
+/// Reject identifier strings that could escape the runs/ directory.
+///
+/// The run-id is user-controlled at the `show`/`cancel`/`reattach` call
+/// sites and at `--parent-run-id`. Without validation, values like
+/// `../../etc` would let an attacker walk outside `<root>/runs/`.
+/// Accepts the ULID charset our own generator emits plus `n-` style
+/// node ids: ASCII alphanumeric plus `-` and `_`.
+pub fn require_safe_id(value: &str, field: &str) -> Result<String, CliError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(CliError::user(
+            "invalid_id",
+            format!("--{field} must be ASCII alphanumeric + `-`/`_` and not `.`/`..`"),
+        )
+        .with_invalid_value(value));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Render a `Kind` as its canonical kebab-case wire string. Single
+/// source of truth shared by every verb so create/list/show/json/text
+/// stay aligned and adding a new kind only requires editing here.
+pub fn kind_kebab(k: Kind) -> &'static str {
+    match k {
+        Kind::Code => "code",
+        Kind::Spinoff => "spinoff",
+        Kind::Orchestrated => "orchestrated",
+        Kind::Research => "research",
+        Kind::TechnicalDecision => "technical-decision",
+        Kind::MakeSkill => "make-skill",
+        Kind::FanOut => "fan-out",
+        Kind::Bugfix => "bugfix",
+    }
+}
+
+pub fn lifecycle_kebab(l: Lifecycle) -> &'static str {
+    match l {
+        Lifecycle::Autonomous => "autonomous",
+        Lifecycle::Interactive => "interactive",
+    }
+}
+
+pub fn status_kebab(s: octl_core::Status) -> &'static str {
+    use octl_core::Status::*;
+    match s {
+        Pending => "pending",
+        Running => "running",
+        Blocked => "blocked",
+        Done => "done",
+        Failed => "failed",
+        Cancelled => "cancelled",
+    }
+}
+
 /// `<root>/runs/`.
 pub fn runs_root(root: &Path) -> PathBuf {
     root.join("runs")
