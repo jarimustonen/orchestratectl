@@ -9,6 +9,7 @@ use serde::Serialize;
 pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum ExitKind {
     User = 1,
     System = 2,
