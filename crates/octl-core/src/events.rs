@@ -10,6 +10,7 @@ use crate::atomic::open_events_append;
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
+use crate::reducer::apply_event;
 use crate::schema::Event;
 
 /// Backward-scan chunk size when looking for the previous newline.
@@ -197,6 +198,50 @@ fn write_event_line(
         .map_err(|e| Error::io(events_path.clone(), e))?;
     f.sync_all().map_err(|e| Error::io(events_path, e))?;
     Ok(())
+}
+
+/// Append one event under the run's `flock` *and* fold it into the
+/// projection files via [`apply_event`]. Returns the assigned `seq`.
+///
+/// This is the canonical mutate path for short-lived CLI callers: every
+/// `events.jsonl` line is immediately reflected in `manifest.json` /
+/// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one
+/// lock, so a read CLI run a millisecond later never sees a stale
+/// projection.
+pub fn append_and_apply(
+    paths: &RunPaths,
+    kind: &str,
+    node_id: Option<&str>,
+    idempotency_key: Option<&str>,
+    data: Value,
+) -> Result<u64> {
+    RunLock::with_lock(&paths.lock(), || {
+        let last = recover_last_seq(&paths.events())?;
+        let seq = last + 1;
+        let run_id = paths
+            .root
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ev = Event {
+            ts: Utc::now(),
+            seq,
+            kind: kind.to_string(),
+            run_id,
+            node_id: node_id.map(str::to_string),
+            idempotency_key: idempotency_key.map(str::to_string),
+            data,
+        };
+        let events_path = paths.events();
+        let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
+        line.push(b'\n');
+        let mut f = open_events_append(&events_path)?;
+        f.write_all(&line)
+            .map_err(|e| Error::io(events_path.clone(), e))?;
+        f.sync_all().map_err(|e| Error::io(events_path, e))?;
+        apply_event(paths, &ev)?;
+        Ok(seq)
+    })
 }
 
 /// Read every event from `events.jsonl`. Used by tests and reducer replays.

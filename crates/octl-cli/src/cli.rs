@@ -47,6 +47,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
+    /// Create, list, show, cancel, or reattach a run.
+    Run {
+        #[command(subcommand)]
+        action: crate::run::RunAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -129,6 +134,7 @@ pub fn run() -> ExitCode {
                 &logging_warnings,
             ),
         },
+        Command::Run { action } => crate::run::dispatch(action, cli.json, &logging_warnings),
     };
 
     match result {

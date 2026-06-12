@@ -23,7 +23,9 @@ pub mod reducer;
 pub mod schema;
 
 pub use error::{Error, Result};
-pub use events::{append_event, append_event_with_seq, read_all_events, recover_last_seq};
+pub use events::{
+    append_and_apply, append_event, append_event_with_seq, read_all_events, recover_last_seq,
+};
 pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
 pub use lock::RunLock;
 pub use paths::{run_dir, RunPaths};
