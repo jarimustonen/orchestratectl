@@ -9,6 +9,8 @@ epic: orchestratectl-mvp
 commits:
 - hash: bac6e0f9fed42f6aa0ede725811d706c7bf0ceaa
   summary: 'feat(event-create-cli): sanctioned write path for events'
+- hash: 75b676c81db16840defec8a47b81fd57bbe75184
+  summary: 'fix(event-create-cli): apply llm-review findings'
 ---
 
 # Event create CLI (sanctioned write path)
