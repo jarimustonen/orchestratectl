@@ -1,9 +1,9 @@
 ---
 created: 2026-06-11
-updated: 2026-06-11
+updated: 2026-06-12
 type: epic
 owner: jari
-status: open
+status: in-progress
 priority: high
 ---
 
@@ -46,6 +46,24 @@ See [`breakdown.md`](breakdown.md) — child issues, dependencies, critical path
 2. **Read-only CLI** — `run list`, `run show`, `node list`, `node show`, `event tail`. Hand-populated fixtures verify the schema.
 3. **Mutation CLIs** — `discussion resolve`, `spinoff approve|reject`, `run cancel`, `node report`.
 4. **Supervisor + all-kinds spawn** — recursive per-spawning-agent supervisor process, `run create --kind <X>` shells out to `create.sh` and registers the node, watchdog handles `node.report` and child-process death.
+
+## Issues
+
+Child issues (see `breakdown.md` for full dependencies and critical path):
+
+- [ ] @cargo-scaffolding — Workspace + AI-first CLI plumbing (chore)
+- [ ] @state-schema-crate — octl-core schema types + flock primitive
+- [ ] @run-cli-read — `run create|list|show|cancel|reattach`
+- [ ] @node-cli-read — `node list|show|report`
+- [ ] @event-tail-cli — `event tail` with `--follow`, SIGINT/SIGTERM
+- [ ] @event-create-cli — sanctioned write path for skill-shim
+- [ ] @version-subcommand — `version --json` per AGENTS-AI-FIRST-CLI §10
+- [ ] @skill-subcommand — companion-skill installer per §15
+- [ ] @supervisor-process — `orchestratectl supervise` long-lived
+- [ ] @all-kinds-spawn — `run create --kind <X>` for all 8 kinds
+- [ ] @discussion-cli — `discussion list|show|resolve`
+- [ ] @spinoff-proposal-cli — `spinoff list|approve|reject`
+- [ ] @create-sh-structured-stdout — cross-repo patch to `create.sh` (chore)
 
 ## Notes
 
