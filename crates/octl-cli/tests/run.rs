@@ -12,6 +12,7 @@ use tempfile::TempDir;
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     c
 }
 
@@ -94,7 +95,7 @@ fn create_dry_run_does_not_touch_filesystem() {
         "--dry-run",
     ]));
     assert_eq!(v["data"]["dry_run"], true);
-    assert_eq!(v["data"]["supervisor"], "not-yet-spawned");
+    assert_eq!(v["data"]["supervisor"], "not-spawned-dry-run");
     // No runs dir should exist (root not initialized).
     assert!(!home.path().join("runs").exists());
 }

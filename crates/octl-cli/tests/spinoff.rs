@@ -9,6 +9,7 @@ use tempfile::TempDir;
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     // Scrub PATH so a real `issuectl` on the developer's system can't
     // leak into the "missing issuectl" tests. Individual tests that
     // need a fixture issuectl set PATH back explicitly.
@@ -439,6 +440,7 @@ fn approve_without_issue_slug_calls_stub_issuectl() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     cmd.env("ORCHESTRATECTL_HOME", home.path());
+    cmd.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     cmd.env("PATH", stub.path());
     cmd.args([
         "--output",

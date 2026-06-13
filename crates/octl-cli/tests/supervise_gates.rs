@@ -16,6 +16,7 @@ use tempfile::TempDir;
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     // Make tmux probes deterministically "no window" by pointing
     // TMUX_BIN at a binary that prints nothing.
     c.env("TMUX_BIN", "/usr/bin/true");
