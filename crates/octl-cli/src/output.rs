@@ -86,9 +86,7 @@ pub fn parse_output_value(s: &str) -> Result<OutputSpec, String> {
                 Some("jsonl") => OutputFormat::Jsonl,
                 Some("json") => OutputFormat::Json,
                 _ => {
-                    return Err(format!(
-                        "file path '{s}' must end in .json or .jsonl"
-                    ));
+                    return Err(format!("file path '{s}' must end in .json or .jsonl"));
                 }
             };
             Ok(OutputSpec {
@@ -165,10 +163,12 @@ pub fn emit_envelope<T: Serialize>(
                 .map_err(|e| {
                     CliError::system("io_error", format!("open {}: {}", path.display(), e))
                 })?;
-            f.write_all(&bytes)
-                .map_err(|e| CliError::system("io_error", format!("write {}: {}", path.display(), e)))?;
-            f.flush()
-                .map_err(|e| CliError::system("io_error", format!("flush {}: {}", path.display(), e)))?;
+            f.write_all(&bytes).map_err(|e| {
+                CliError::system("io_error", format!("write {}: {}", path.display(), e))
+            })?;
+            f.flush().map_err(|e| {
+                CliError::system("io_error", format!("flush {}: {}", path.display(), e))
+            })?;
         }
     }
     Ok(())
@@ -188,9 +188,18 @@ mod tests {
 
     #[test]
     fn parses_format_tokens() {
-        assert_eq!(parse_output_value("text").unwrap().format, OutputFormat::Text);
-        assert_eq!(parse_output_value("json").unwrap().format, OutputFormat::Json);
-        assert_eq!(parse_output_value("jsonl").unwrap().format, OutputFormat::Jsonl);
+        assert_eq!(
+            parse_output_value("text").unwrap().format,
+            OutputFormat::Text
+        );
+        assert_eq!(
+            parse_output_value("json").unwrap().format,
+            OutputFormat::Json
+        );
+        assert_eq!(
+            parse_output_value("jsonl").unwrap().format,
+            OutputFormat::Jsonl
+        );
     }
 
     #[test]

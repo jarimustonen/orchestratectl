@@ -41,7 +41,8 @@ fn write_json(home: &TempDir, name: &str, v: Value) -> PathBuf {
 
 fn create_run(home: &TempDir) -> String {
     let v = run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -57,7 +58,8 @@ fn create_run(home: &TempDir) -> String {
 fn seed_discussion(home: &TempDir, run_id: &str, discussion_id: &str, topic: &str) {
     let nc = write_json(home, "nc.json", json!({"kind": "spinoff"}));
     run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         run_id,
@@ -79,7 +81,8 @@ fn seed_discussion(home: &TempDir, run_id: &str, discussion_id: &str, topic: &st
         }),
     );
     run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         run_id,
@@ -98,7 +101,7 @@ fn list_returns_open_discussion() {
     let run_id = create_run(&home);
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
-    let v = run_ok(bin(&home).args(["--json", "discussion", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "discussion", "list", &run_id]));
     let arr = v["data"]["discussions"].as_array().expect("array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["discussion_id"], "d-01ONE");
@@ -113,7 +116,8 @@ fn list_filters_by_status() {
 
     // Resolve it.
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -122,12 +126,20 @@ fn list_filters_by_status() {
         "keep",
     ]));
 
-    let open =
-        run_ok(bin(&home).args(["--json", "discussion", "list", &run_id, "--status", "open"]));
+    let open = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "discussion",
+        "list",
+        &run_id,
+        "--status",
+        "open",
+    ]));
     assert_eq!(open["data"]["discussions"].as_array().unwrap().len(), 0);
 
     let resolved = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "list",
         &run_id,
@@ -142,8 +154,13 @@ fn list_filters_by_status() {
 #[test]
 fn list_unknown_run_is_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, err) =
-        run_fail(bin(&home).args(["--json", "discussion", "list", "01J0000000000000000000000X"]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "discussion",
+        "list",
+        "01J0000000000000000000000X",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");
 }
@@ -152,7 +169,7 @@ fn list_unknown_run_is_run_not_found() {
 fn list_empty_when_no_discussions_dir() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let v = run_ok(bin(&home).args(["--json", "discussion", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "discussion", "list", &run_id]));
     assert_eq!(v["data"]["discussions"].as_array().unwrap().len(), 0);
 }
 
@@ -164,7 +181,7 @@ fn show_returns_projection() {
     let run_id = create_run(&home);
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
-    let v = run_ok(bin(&home).args(["--json", "discussion", "show", &run_id, "d-01ONE"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "discussion", "show", &run_id, "d-01ONE"]));
     assert_eq!(v["data"]["discussion_id"], "d-01ONE");
     assert_eq!(v["data"]["topic"], "first topic");
     assert_eq!(v["data"]["status"], "open");
@@ -175,7 +192,7 @@ fn show_missing_discussion_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (code, err) =
-        run_fail(bin(&home).args(["--json", "discussion", "show", &run_id, "d-NOPE"]));
+        run_fail(bin(&home).args(["--output", "json", "discussion", "show", &run_id, "d-NOPE"]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "discussion_not_found");
 }
@@ -185,7 +202,7 @@ fn show_invalid_id_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (code, err) =
-        run_fail(bin(&home).args(["--json", "discussion", "show", &run_id, "../etc"]));
+        run_fail(bin(&home).args(["--output", "json", "discussion", "show", &run_id, "../etc"]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "invalid_id");
 }
@@ -199,7 +216,8 @@ fn resolve_writes_event_and_updates_projection() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -256,7 +274,8 @@ fn resolve_same_choice_is_idempotent_noop() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -270,7 +289,8 @@ fn resolve_same_choice_is_idempotent_noop() {
             .unwrap();
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -294,7 +314,8 @@ fn resolve_different_choice_is_conflict() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -304,7 +325,8 @@ fn resolve_different_choice_is_conflict() {
     ]));
 
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -327,7 +349,8 @@ fn resolve_dry_run_does_not_touch_filesystem() {
     let before = std::fs::read(&events_path).unwrap();
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -359,7 +382,8 @@ fn resolve_empty_choice_rejected() {
     let run_id = create_run(&home);
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -378,7 +402,8 @@ fn resolve_idempotency_key_same_payload_replays() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     let v1 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -392,7 +417,8 @@ fn resolve_idempotency_key_same_payload_replays() {
     assert_eq!(v1["data"]["outcome"], "appended");
 
     let v2 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -423,7 +449,8 @@ fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -435,7 +462,8 @@ fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
     ]));
 
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -458,7 +486,8 @@ fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -472,7 +501,8 @@ fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
     ]));
 
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -495,7 +525,8 @@ fn resolve_choice_length_capped() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
     let huge = "x".repeat(2048);
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -517,7 +548,8 @@ fn resolve_dry_run_against_resolved_reports_noop() {
     seed_discussion(&home, &run_id, "d-01ONE", "first topic");
 
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -528,7 +560,8 @@ fn resolve_dry_run_against_resolved_reports_noop() {
 
     // Same choice → preflight should report no-op, not appended.
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -542,7 +575,8 @@ fn resolve_dry_run_against_resolved_reports_noop() {
     // Different choice → must error out even in dry-run (not silently
     // promise success).
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,
@@ -560,7 +594,8 @@ fn resolve_missing_discussion_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "discussion",
         "resolve",
         &run_id,

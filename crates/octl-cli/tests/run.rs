@@ -37,7 +37,9 @@ fn run_fail(cmd: &mut Command) -> (i32, Value) {
 }
 
 fn create(home: &TempDir, kind: &str, title: &str) -> String {
-    let v = run_ok(bin(home).args(["--json", "run", "create", "--kind", kind, "--title", title]));
+    let v = run_ok(bin(home).args([
+        "--output", "json", "run", "create", "--kind", kind, "--title", title,
+    ]));
     v["data"]["run_id"]
         .as_str()
         .expect("run_id is string")
@@ -51,7 +53,7 @@ fn create_then_list_then_show_then_cancel_flow() {
 
     // list returns the just-created run with status pending and
     // node_count 0 (no node.created yet — that's the supervisor's job).
-    let v = run_ok(bin(&home).args(["--json", "run", "list"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
     let runs = v["data"]["runs"].as_array().expect("runs array");
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["run_id"], run_id);
@@ -59,21 +61,21 @@ fn create_then_list_then_show_then_cancel_flow() {
     assert_eq!(runs[0]["kind"], "spinoff");
 
     // show returns the full manifest under `manifest` and counters.
-    let v = run_ok(bin(&home).args(["--json", "run", "show", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
     assert_eq!(v["data"]["manifest"]["run_id"], run_id);
     assert_eq!(v["data"]["counts"]["nodes"], 0);
 
     // cancel emits run.status:cancelled. With 0 nodes, no synthesized
     // node.report events — `cancelled_nodes` must be empty.
-    let v = run_ok(bin(&home).args(["--json", "run", "cancel", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
     assert_eq!(v["data"]["already_cancelled"], false);
     assert_eq!(v["data"]["cancelled_nodes"].as_array().unwrap().len(), 0);
 
     // Idempotent re-cancel.
-    let v = run_ok(bin(&home).args(["--json", "run", "cancel", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
     assert_eq!(v["data"]["already_cancelled"], true);
 
-    let v = run_ok(bin(&home).args(["--json", "run", "show", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
     assert_eq!(v["data"]["manifest"]["status"], "cancelled");
 }
 
@@ -81,7 +83,8 @@ fn create_then_list_then_show_then_cancel_flow() {
 fn create_dry_run_does_not_touch_filesystem() {
     let home = TempDir::new().unwrap();
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -101,7 +104,8 @@ fn create_child_dry_run_is_unsupported() {
     let home = TempDir::new().unwrap();
     let parent = create(&home, "orchestrated", "parent");
     let (code, v) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -123,7 +127,8 @@ fn create_child_writes_child_spawned_to_parent_events() {
     let home = TempDir::new().unwrap();
     let parent = create(&home, "orchestrated", "parent");
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -173,7 +178,8 @@ fn create_child_writes_child_spawned_to_parent_events() {
 fn create_with_idempotency_key_returns_same_run_id() {
     let home = TempDir::new().unwrap();
     let v1 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -186,7 +192,8 @@ fn create_with_idempotency_key_returns_same_run_id() {
     let r1 = v1["data"]["run_id"].as_str().unwrap().to_string();
 
     let v2 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -208,7 +215,7 @@ fn create_with_idempotency_key_returns_same_run_id() {
 fn create_rejects_empty_title() {
     let home = TempDir::new().unwrap();
     let (code, v) = run_fail(bin(&home).args([
-        "--json", "run", "create", "--kind", "spinoff", "--title", "   ",
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "   ",
     ]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "invalid_value");
@@ -220,7 +227,8 @@ fn create_rejects_unbalanced_parent_flags() {
     // Only --parent-run-id without --parent-node-id is rejected by clap
     // (requires=...) with the structured envelope.
     let (code, v) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -240,7 +248,7 @@ fn create_rejects_unbalanced_parent_flags() {
 #[test]
 fn show_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--json", "run", "show", "nope"]));
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "show", "nope"]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
     assert_eq!(v["error"]["invalid_value"], "nope");
@@ -249,7 +257,7 @@ fn show_missing_run_returns_run_not_found() {
 #[test]
 fn cancel_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--json", "run", "cancel", "nope"]));
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", "nope"]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
 }
@@ -258,7 +266,7 @@ fn cancel_missing_run_returns_run_not_found() {
 fn reattach_spawns_supervisor_and_records_events() {
     let home = TempDir::new().unwrap();
     let run_id = create(&home, "spinoff", "x");
-    let v = run_ok(bin(&home).args(["--json", "run", "reattach", &run_id, "--once"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
     assert_eq!(v["data"]["action"], "reattached");
     assert!(v["data"]["supervisor_pid"].as_u64().is_some());
 
@@ -288,7 +296,7 @@ fn reattach_spawns_supervisor_and_records_events() {
 #[test]
 fn reattach_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--json", "run", "reattach", "nope"]));
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "reattach", "nope"]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
 }
@@ -299,13 +307,13 @@ fn list_filters_by_kind_and_status() {
     let a = create(&home, "spinoff", "a");
     let _b = create(&home, "orchestrated", "b");
 
-    let v = run_ok(bin(&home).args(["--json", "run", "list", "--kind", "spinoff"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list", "--kind", "spinoff"]));
     let runs = v["data"]["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["run_id"], a);
 
     // Filter that matches nothing returns an empty list (not an error).
-    let v = run_ok(bin(&home).args(["--json", "run", "list", "--status", "done"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list", "--status", "done"]));
     assert!(v["data"]["runs"].as_array().unwrap().is_empty());
 }
 
@@ -313,6 +321,6 @@ fn list_filters_by_kind_and_status() {
 fn list_when_root_missing_returns_empty() {
     let home = TempDir::new().unwrap();
     // No runs created — runs/ dir does not exist yet.
-    let v = run_ok(bin(&home).args(["--json", "run", "list"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
     assert!(v["data"]["runs"].as_array().unwrap().is_empty());
 }

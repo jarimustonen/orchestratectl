@@ -59,7 +59,11 @@ pub struct SuperviseArgs {
     pub max_iter: Option<u32>,
 }
 
-pub fn dispatch(args: SuperviseArgs, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(
+    args: SuperviseArgs,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);

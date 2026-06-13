@@ -35,7 +35,7 @@ fn mk_home() -> TempDir {
 fn skill_list_json_pins_catalog_shape() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "list", "--json"])
+        .args(["skill", "list", "--output", "json"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
@@ -60,7 +60,7 @@ fn skill_list_json_pins_catalog_shape() {
 fn skill_show_text_prints_skill_md_contents() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "show", "octl-run-overview"])
+        .args(["--output", "text", "skill", "show", "octl-run-overview"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
@@ -75,7 +75,7 @@ fn skill_show_text_prints_skill_md_contents() {
 fn skill_show_json_wraps_content_under_data() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "show", "octl-run-overview", "--json"])
+        .args(["skill", "show", "octl-run-overview", "--output", "json"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
@@ -126,7 +126,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
 fn skill_install_with_default_paths_writes_under_home() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--json"])
+        .args(["skill", "install", "octl-run-overview", "--output", "json"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "default install failed: {:?}", out);
@@ -151,7 +151,8 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
             "octl-spawn-spinoff",
             "--agent",
             "all",
-            "--json",
+            "--output",
+            "json",
         ])
         .output()
         .expect("spawn");
@@ -178,7 +179,7 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
 fn skill_install_no_name_installs_every_skill() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "install", "--json"])
+        .args(["skill", "install", "--output", "json"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "install-all failed: {:?}", out);

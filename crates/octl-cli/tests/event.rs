@@ -36,7 +36,8 @@ fn run_ok_output(cmd: &mut Command) -> (String, String) {
 fn create_run(home: &TempDir) -> String {
     let out = bin(home)
         .args([
-            "--json",
+            "--output",
+            "json",
             "run",
             "create",
             "--kind",
@@ -89,7 +90,8 @@ fn tail_reads_existing_events_and_terminal_envelope() {
     append_event(&evp, &run_id, 2, "node.created");
     append_event(&evp, &run_id, 3, "node.report");
 
-    let (stdout, _) = run_ok_output(bin(&home).args(["--json", "event", "tail", &run_id]));
+    let (stdout, _) =
+        run_ok_output(bin(&home).args(["--output", "jsonl", "event", "tail", &run_id]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 4, "stdout was: {stdout}");
     let last: Value = serde_json::from_str(lines.last().unwrap()).expect("terminal json");
@@ -111,8 +113,15 @@ fn tail_from_seq_skips_earlier_events() {
     append_event(&evp, &run_id, 2, "a");
     append_event(&evp, &run_id, 3, "b");
 
-    let (stdout, _) =
-        run_ok_output(bin(&home).args(["--json", "event", "tail", &run_id, "--from-seq", "3"]));
+    let (stdout, _) = run_ok_output(bin(&home).args([
+        "--output",
+        "jsonl",
+        "event",
+        "tail",
+        &run_id,
+        "--from-seq",
+        "3",
+    ]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "stdout was: {stdout}");
     let only: Value = serde_json::from_str(lines[0]).unwrap();
@@ -131,8 +140,15 @@ fn tail_from_seq_zero_includes_seq_one() {
     // but verify the default --from-seq=0 includes the first event.
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let (stdout, _) =
-        run_ok_output(bin(&home).args(["--json", "event", "tail", &run_id, "--from-seq", "0"]));
+    let (stdout, _) = run_ok_output(bin(&home).args([
+        "--output",
+        "jsonl",
+        "event",
+        "tail",
+        &run_id,
+        "--from-seq",
+        "0",
+    ]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "stdout was: {stdout}");
     let first: Value = serde_json::from_str(lines[0]).unwrap();
@@ -144,7 +160,7 @@ fn tail_text_format_no_terminal_envelope() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (stdout, _) =
-        run_ok_output(bin(&home).args(["event", "tail", &run_id, "--format", "text"]));
+        run_ok_output(bin(&home).args(["--output", "text", "event", "tail", &run_id]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "stdout was: {stdout}");
     assert!(lines[0].contains("run.created"), "line: {}", lines[0]);
@@ -156,7 +172,7 @@ fn tail_jsonl_format_canonical_one_line() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (stdout, _) =
-        run_ok_output(bin(&home).args(["event", "tail", &run_id, "--format", "jsonl"]));
+        run_ok_output(bin(&home).args(["--output", "jsonl", "event", "tail", &run_id]));
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2);
     let ev: Value = serde_json::from_str(lines[0]).unwrap();
@@ -164,18 +180,21 @@ fn tail_jsonl_format_canonical_one_line() {
 }
 
 #[test]
-fn tail_json_and_format_text_conflict_is_rejected() {
+fn tail_rejects_pretty_json_format() {
+    // Pretty single-document JSON is not a valid stream — neither one
+    // JSON document (open-ended) nor JSONL (one object per line). The
+    // streaming verb refuses the format up front per AGENTS §12.
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let out = bin(&home)
-        .args(["--json", "event", "tail", &run_id, "--format", "text"])
+        .args(["--output", "json", "event", "tail", &run_id])
         .output()
         .expect("spawn");
     assert!(!out.status.success());
     let stderr = String::from_utf8(out.stderr).expect("utf8");
     let last = stderr.lines().last().expect("error envelope");
     let v: Value = serde_json::from_str(last).expect("json");
-    assert_eq!(v["error"]["code"], "conflicting_arguments");
+    assert_eq!(v["error"]["code"], "unsupported_format");
 }
 
 #[test]
@@ -186,11 +205,12 @@ fn tail_output_file_truncate_without_follow() {
     std::fs::write(&out_path, b"GARBAGE\n").unwrap();
 
     let _ = run_ok_output(bin(&home).args([
-        "--json",
+        "--output",
+        "jsonl",
         "event",
         "tail",
         &run_id,
-        "--output",
+        "--to-file",
         out_path.to_str().unwrap(),
     ]));
     let body = std::fs::read_to_string(&out_path).unwrap();
@@ -214,11 +234,12 @@ fn tail_output_aliasing_events_file_is_rejected() {
 
     let out = bin(&home)
         .args([
-            "--json",
+            "--output",
+            "jsonl",
             "event",
             "tail",
             &run_id,
-            "--output",
+            "--to-file",
             evp.to_str().unwrap(),
         ])
         .output()
@@ -238,7 +259,13 @@ fn tail_output_aliasing_events_file_is_rejected() {
 fn tail_unknown_run_fails_with_run_not_found() {
     let home = TempDir::new().unwrap();
     let out = bin(&home)
-        .args(["--json", "event", "tail", "01J0000000000000000000000X"])
+        .args([
+            "--output",
+            "jsonl",
+            "event",
+            "tail",
+            "01J0000000000000000000000X",
+        ])
         .output()
         .expect("spawn");
     assert!(!out.status.success());
@@ -252,7 +279,7 @@ fn tail_unknown_run_fails_with_run_not_found() {
 fn tail_invalid_run_id_rejected() {
     let home = TempDir::new().unwrap();
     let out = bin(&home)
-        .args(["--json", "event", "tail", "../etc"])
+        .args(["--output", "jsonl", "event", "tail", "../etc"])
         .output()
         .expect("spawn");
     assert!(!out.status.success());
@@ -282,7 +309,7 @@ fn tail_partial_line_is_held_until_newline_arrives() {
     drop(f);
 
     let mut child = bin(&home)
-        .args(["--json", "event", "tail", &run_id, "--follow"])
+        .args(["--output", "jsonl", "event", "tail", &run_id, "--follow"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -321,7 +348,7 @@ fn tail_follow_picks_up_appended_event_within_one_second() {
     let evp = events_path(&home, &run_id);
 
     let mut child = bin(&home)
-        .args(["--json", "event", "tail", &run_id, "--follow"])
+        .args(["--output", "jsonl", "event", "tail", &run_id, "--follow"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -354,7 +381,7 @@ fn tail_follow_emits_cancelled_envelope_on_sigint() {
     let run_id = create_run(&home);
 
     let mut child = bin(&home)
-        .args(["--json", "event", "tail", &run_id, "--follow"])
+        .args(["--output", "jsonl", "event", "tail", &run_id, "--follow"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -396,7 +423,7 @@ fn tail_follow_detects_log_truncation() {
     append_event(&evp, &run_id, 2, "x");
 
     let mut child = bin(&home)
-        .args(["--json", "event", "tail", &run_id, "--follow"])
+        .args(["--output", "jsonl", "event", "tail", &run_id, "--follow"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -533,7 +560,8 @@ fn node_created_then_node_status_updates_projection() {
         json!({"kind": "spinoff", "task": "demo"}),
     );
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -560,7 +588,8 @@ fn node_created_then_node_status_updates_projection() {
     // node.status running.
     let status_data = write_json(&home, "node_status.json", json!({"status": "running"}));
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -583,7 +612,8 @@ fn unknown_kind_is_rejected_with_expected_list() {
     let run_id = create_run(&home);
     let p = write_json(&home, "x.json", json!({}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -604,7 +634,8 @@ fn missing_node_id_for_node_scoped_kind_rejected() {
     let run_id = create_run(&home);
     let p = write_json(&home, "ns.json", json!({"status": "running"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -626,7 +657,8 @@ fn dry_run_does_not_touch_filesystem() {
 
     let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -662,7 +694,8 @@ fn idempotency_key_returns_existing_seq() {
 
     let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
     let v1 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -679,7 +712,8 @@ fn idempotency_key_returns_existing_seq() {
 
     // Same key with the same payload returns the original seq.
     let v2 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -713,7 +747,8 @@ fn idempotency_key_conflict_on_payload_mismatch() {
 
     let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -730,7 +765,8 @@ fn idempotency_key_conflict_on_payload_mismatch() {
     // Same key, different payload → conflict (not a silent replay).
     let p2 = write_json(&home, "nc2.json", json!({"kind": "code"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -755,7 +791,8 @@ fn node_heartbeat_kind_is_rejected() {
     let run_id = create_run(&home);
     let p = write_json(&home, "hb.json", json!({}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -780,7 +817,8 @@ fn run_created_kind_is_forbidden_via_event_create() {
         json!({"kind": "spinoff", "lifecycle": "autonomous", "title": "x"}),
     );
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -808,7 +846,8 @@ fn path_traversal_in_data_discussion_id_rejected() {
         }),
     );
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -832,7 +871,8 @@ fn from_file_size_cap_enforced() {
     buf.push_str("\"}");
     std::fs::write(&big, &buf).unwrap();
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -852,7 +892,8 @@ fn run_not_found_is_user_error() {
     let home = TempDir::new().unwrap();
     let p = write_json(&home, "x.json", json!({}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         "01JXBOGUSRUNIDNOTHERE",
@@ -874,7 +915,8 @@ fn from_file_invalid_json_rejected() {
     let p = home.path().join("bad.json");
     std::fs::write(&p, b"not json").unwrap();
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -895,7 +937,8 @@ fn node_id_rejected_for_run_status() {
     let run_id = create_run(&home);
     let p = write_json(&home, "rs.json", json!({"status": "running"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -918,7 +961,8 @@ fn discussion_opened_updates_manifest_and_writes_discussion_file() {
     // Need a node first so the reducer has somewhere to anchor.
     let nc = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -941,7 +985,8 @@ fn discussion_opened_updates_manifest_and_writes_discussion_file() {
         }),
     );
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,

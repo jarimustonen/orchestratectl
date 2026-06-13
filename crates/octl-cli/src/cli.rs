@@ -266,7 +266,9 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
     };
     match spec.format {
-        OutputFormat::Json | OutputFormat::Jsonl => output::emit_envelope(&payload, spec, warnings)?,
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?
+        }
         OutputFormat::Text => {
             println!("orchestratectl {}", payload.version);
             println!("commit:                  {}", payload.commit);

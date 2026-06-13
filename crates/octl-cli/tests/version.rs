@@ -15,7 +15,10 @@ fn bin() -> Command {
 
 #[test]
 fn version_text_succeeds_with_clean_stderr() {
-    let out = bin().arg("version").output().expect("spawn");
+    let out = bin()
+        .args(["--output", "text", "version"])
+        .output()
+        .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert!(
@@ -41,7 +44,10 @@ fn version_text_succeeds_with_clean_stderr() {
 
 #[test]
 fn version_json_pins_envelope_and_payload_shape() {
-    let out = bin().args(["version", "--json"]).output().expect("spawn");
+    let out = bin()
+        .args(["version", "--output", "json"])
+        .output()
+        .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
     assert!(
         out.stderr.is_empty(),
@@ -116,6 +122,44 @@ fn version_json_pins_envelope_and_payload_shape() {
         is_unknown || is_sha,
         "commit must be 'unknown' or 40-char lowercase hex SHA, got: {commit:?}"
     );
+}
+
+#[test]
+fn version_jsonl_default_is_single_line_envelope() {
+    // `--output jsonl` is the new default. A single-payload subcommand
+    // emits the envelope as one compact line (no trailing newline beyond
+    // the line terminator), parseable by `serde_json::from_str`.
+    let out = bin()
+        .args(["--output", "jsonl", "version"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout.clone()).expect("utf8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected single envelope line, got: {stdout:?}"
+    );
+    let v: serde_json::Value = serde_json::from_str(lines[0]).expect("valid JSON");
+    assert_eq!(v["schema_version"], 1);
+    assert!(v["data"].is_object());
+
+    // The bare `version` invocation (no flag) takes the same path.
+    let bare = bin().arg("version").output().expect("spawn");
+    assert!(bare.status.success());
+    assert_eq!(bare.stdout, out.stdout, "default must equal --output jsonl");
+}
+
+#[test]
+fn version_rejects_legacy_json_flag() {
+    // `--json` is gone; passing it must error with `unknown_subcommand_or_flag`.
+    let out = bin().args(["--json", "version"]).output().expect("spawn");
+    assert!(!out.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8(out.stderr).expect("utf8");
+    let last = stderr.lines().last().expect("stderr non-empty");
+    let v: serde_json::Value = serde_json::from_str(last).expect("error envelope is valid JSON");
+    assert_eq!(v["error"]["code"], "unknown_subcommand_or_flag");
 }
 
 #[test]

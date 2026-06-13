@@ -504,7 +504,11 @@ struct PriorReport {
     data: Value,
 }
 
-fn emit(payload: &ReportPayload<'_>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+fn emit(
+    payload: &ReportPayload<'_>,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(payload, spec, warnings)?;

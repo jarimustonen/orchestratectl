@@ -35,7 +35,8 @@ fn run_fail(cmd: &mut Command) -> (i32, Value) {
 
 fn create_run(home: &TempDir) -> String {
     let v = run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -53,7 +54,8 @@ fn create_node(home: &TempDir, run_id: &str, node_id: &str) {
         json!({"kind": "spinoff"}),
     );
     run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         run_id,
@@ -76,7 +78,7 @@ fn write_json(home: &TempDir, name: &str, v: Value) -> PathBuf {
 fn list_empty_run_returns_no_nodes() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let v = run_ok(bin(&home).args(["--json", "node", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "node", "list", &run_id]));
     assert_eq!(v["data"]["nodes"].as_array().unwrap().len(), 0);
     assert_eq!(v["data"]["run_id"], run_id);
 }
@@ -87,7 +89,7 @@ fn list_returns_created_nodes_sorted() {
     let run_id = create_run(&home);
     create_node(&home, &run_id, "n-0002");
     create_node(&home, &run_id, "n-0001");
-    let v = run_ok(bin(&home).args(["--json", "node", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "node", "list", &run_id]));
     let nodes = v["data"]["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 2);
     assert_eq!(nodes[0]["node_id"], "n-0001");
@@ -104,7 +106,8 @@ fn list_status_filter() {
     // Flip one node to running.
     let p = write_json(&home, "st.json", json!({"status": "running"}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -115,7 +118,9 @@ fn list_status_filter() {
         "--from-file",
         p.to_str().unwrap(),
     ]));
-    let v = run_ok(bin(&home).args(["--json", "node", "list", &run_id, "--status", "running"]));
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "node", "list", &run_id, "--status", "running",
+    ]));
     let nodes = v["data"]["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0]["node_id"], "n-0001");
@@ -124,8 +129,13 @@ fn list_status_filter() {
 #[test]
 fn list_unknown_run_rejected() {
     let home = TempDir::new().unwrap();
-    let (code, err) =
-        run_fail(bin(&home).args(["--json", "node", "list", "01J0000000000000000000000X"]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "node",
+        "list",
+        "01J0000000000000000000000X",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");
 }
@@ -133,7 +143,7 @@ fn list_unknown_run_rejected() {
 #[test]
 fn list_invalid_run_id_rejected() {
     let home = TempDir::new().unwrap();
-    let (code, err) = run_fail(bin(&home).args(["--json", "node", "list", "../etc"]));
+    let (code, err) = run_fail(bin(&home).args(["--output", "json", "node", "list", "../etc"]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "invalid_id");
 }
@@ -143,7 +153,7 @@ fn show_returns_full_node_json() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     create_node(&home, &run_id, "n-0001");
-    let v = run_ok(bin(&home).args(["--json", "node", "show", &run_id, "n-0001"]));
+    let v = run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
     assert_eq!(v["data"]["node_id"], "n-0001");
     assert_eq!(v["data"]["run_id"], run_id);
     assert_eq!(v["data"]["status"], "pending");
@@ -154,7 +164,8 @@ fn show_returns_full_node_json() {
 fn show_unknown_node_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let (code, err) = run_fail(bin(&home).args(["--json", "node", "show", &run_id, "n-9999"]));
+    let (code, err) =
+        run_fail(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-9999"]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "node_not_found");
 }
@@ -176,7 +187,8 @@ fn report_appends_event_and_updates_node() {
         }),
     );
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -208,7 +220,8 @@ fn report_dry_run_does_not_touch_filesystem() {
 
     let p = write_json(&home, "rep.json", json!({"success": true}));
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -230,7 +243,8 @@ fn report_invalid_payload_rejected() {
     create_node(&home, &run_id, "n-0001");
     let p = write_json(&home, "bad.json", json!({"summary": "no success"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -248,7 +262,8 @@ fn report_unknown_node_rejected() {
     let run_id = create_run(&home);
     let p = write_json(&home, "rep.json", json!({"success": true}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -267,7 +282,8 @@ fn report_idempotency_key_returns_existing_seq() {
     create_node(&home, &run_id, "n-0001");
     let p = write_json(&home, "rep.json", json!({"success": true}));
     let v1 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -280,7 +296,8 @@ fn report_idempotency_key_returns_existing_seq() {
     let seq1 = v1["data"]["event_seq"].as_u64().unwrap();
 
     let v2 = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -310,7 +327,8 @@ fn report_idempotency_conflict_on_payload_mismatch() {
     create_node(&home, &run_id, "n-0001");
     let p1 = write_json(&home, "r1.json", json!({"success": true, "summary": "a"}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -323,7 +341,8 @@ fn report_idempotency_conflict_on_payload_mismatch() {
 
     let p2 = write_json(&home, "r2.json", json!({"success": true, "summary": "b"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -342,7 +361,8 @@ fn report_unknown_run_rejected() {
     let home = TempDir::new().unwrap();
     let p = write_json(&home, "rep.json", json!({"success": true}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         "01J0000000000000000000000X",
@@ -362,7 +382,8 @@ fn report_idempotency_conflict_on_node_mismatch() {
     create_node(&home, &run_id, "n-0002");
     let p = write_json(&home, "rep.json", json!({"success": true}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -373,7 +394,8 @@ fn report_idempotency_conflict_on_node_mismatch() {
         "k1",
     ]));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -394,7 +416,8 @@ fn report_success_false_marks_node_failed() {
     create_node(&home, &run_id, "n-0001");
     let p = write_json(&home, "rep.json", json!({"success": false}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -427,7 +450,8 @@ fn report_from_file_too_large_rejected() {
     s.push_str("\"}");
     std::fs::write(&big, &s).unwrap();
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &run_id,
@@ -446,7 +470,8 @@ fn event_create_cannot_bypass_node_report_validation() {
     create_node(&home, &run_id, "n-0001");
     let p = write_json(&home, "bad.json", json!({"summary": "no success"}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -468,7 +493,8 @@ fn list_emits_kebab_case_kind_and_status() {
     // Use a multi-word kind variant so kebab-case matters.
     let p = write_json(&home, "tn.json", json!({"kind": "technical-decision"}));
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -479,7 +505,7 @@ fn list_emits_kebab_case_kind_and_status() {
         "--from-file",
         p.to_str().unwrap(),
     ]));
-    let v = run_ok(bin(&home).args(["--json", "node", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "node", "list", &run_id]));
     let nodes = v["data"]["nodes"].as_array().unwrap();
     assert_eq!(nodes[0]["kind"], "technical-decision");
     assert_eq!(nodes[0]["status"], "pending");
@@ -490,7 +516,8 @@ fn report_invalid_run_id_rejected() {
     let home = TempDir::new().unwrap();
     let p = write_json(&home, "rep.json", json!({"success": true}));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         "../etc",

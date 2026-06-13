@@ -46,7 +46,11 @@ pub enum NodeAction {
     },
 }
 
-pub fn dispatch(action: NodeAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(
+    action: NodeAction,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match action {
         NodeAction::List { run_id, status } => list::run(list::Args {
             run_id,

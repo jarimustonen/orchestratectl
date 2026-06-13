@@ -49,7 +49,7 @@ fn run_fail(cmd: &mut Command) -> (i32, Value) {
 
 fn create_run(home: &TempDir) -> String {
     let v = run_ok(bin(home).args([
-        "--json", "run", "create", "--kind", "spinoff", "--title", "test-run",
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "test-run",
     ]));
     v["data"]["run_id"].as_str().unwrap().to_string()
 }
@@ -65,7 +65,8 @@ fn propose(home: &TempDir, run_id: &str, proposal_id: &str, title: &str) {
     )
     .unwrap();
     run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         run_id,
@@ -91,7 +92,8 @@ fn propose(home: &TempDir, run_id: &str, proposal_id: &str, title: &str) {
     )
     .unwrap();
     run_ok(bin(home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         run_id,
@@ -128,7 +130,7 @@ fn write_stub_issuectl(slug: &str) -> TempDir {
 fn list_empty_when_no_proposals() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let v = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));
     let proposals = v["data"]["proposals"].as_array().unwrap();
     assert!(proposals.is_empty());
 }
@@ -140,7 +142,7 @@ fn list_returns_proposals_with_status_filter() {
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     propose(&home, &run_id, "s-01bbbbbbbbbbbbbbbbbbbbbbbb", "B");
 
-    let v = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
+    let v = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));
     let proposals = v["data"]["proposals"].as_array().unwrap();
     assert_eq!(proposals.len(), 2);
     for p in proposals {
@@ -149,7 +151,8 @@ fn list_returns_proposals_with_status_filter() {
 
     // Approve one, then filter.
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -157,7 +160,9 @@ fn list_returns_proposals_with_status_filter() {
         "--issue-slug",
         "manual-slug",
     ]));
-    let v = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id, "--status", "approved"]));
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "spinoff", "list", &run_id, "--status", "approved",
+    ]));
     let approved = v["data"]["proposals"].as_array().unwrap();
     assert_eq!(approved.len(), 1);
     assert_eq!(approved[0]["proposal_id"], "s-01aaaaaaaaaaaaaaaaaaaaaaaa");
@@ -167,8 +172,13 @@ fn list_returns_proposals_with_status_filter() {
 #[test]
 fn list_unknown_run_id_is_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, err) =
-        run_fail(bin(&home).args(["--json", "spinoff", "list", "01XXXXXXXXXXXXXXXXXXXXXXXX"]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "list",
+        "01XXXXXXXXXXXXXXXXXXXXXXXX",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");
 }
@@ -177,8 +187,9 @@ fn list_unknown_run_id_is_run_not_found() {
 fn list_rejects_invalid_status_filter() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    let (code, err) =
-        run_fail(bin(&home).args(["--json", "spinoff", "list", &run_id, "--status", "bogus"]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output", "json", "spinoff", "list", &run_id, "--status", "bogus",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "invalid_value");
 }
@@ -192,7 +203,8 @@ fn approve_writes_event_and_updates_projection_with_manual_slug() {
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -230,7 +242,8 @@ fn approve_is_idempotent_on_reapproval() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -239,7 +252,8 @@ fn approve_is_idempotent_on_reapproval() {
         "slug-1",
     ]));
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -261,7 +275,8 @@ fn approve_dry_run_does_not_touch_filesystem() {
     let before = std::fs::read(&events_path).unwrap();
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -280,7 +295,8 @@ fn approve_unknown_proposal_is_proposal_not_found() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -296,14 +312,16 @@ fn approve_after_reject_is_proposal_already_rejected() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
         "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
     ]));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -325,7 +343,8 @@ fn approve_without_issue_slug_calls_stub_issuectl() {
     cmd.env("ORCHESTRATECTL_HOME", home.path());
     cmd.env("PATH", stub.path());
     cmd.args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -356,7 +375,8 @@ fn approve_without_issue_slug_missing_issuectl_succeeds_with_warning() {
 
     // bin() already scrubs PATH so issuectl is not found.
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -401,7 +421,8 @@ fn approve_issuectl_failure_emits_warning_and_still_records() {
     cmd.env("ORCHESTRATECTL_HOME", home.path());
     cmd.env("PATH", dir.path());
     cmd.args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -427,7 +448,8 @@ fn reject_writes_event_and_updates_projection() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -458,7 +480,8 @@ fn reject_idempotent_on_matching_reason() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -467,7 +490,8 @@ fn reject_idempotent_on_matching_reason() {
         "same",
     ]));
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -484,7 +508,8 @@ fn reject_with_different_reason_is_proposal_already_rejected() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -493,7 +518,8 @@ fn reject_with_different_reason_is_proposal_already_rejected() {
         "first",
     ]));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -514,7 +540,8 @@ fn reject_dry_run_does_not_touch_filesystem() {
     let before = std::fs::read(&events_path).unwrap();
 
     let v = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -534,7 +561,8 @@ fn reject_after_approve_is_proposal_already_approved() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -543,7 +571,8 @@ fn reject_after_approve_is_proposal_already_approved() {
         "s",
     ]));
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -561,7 +590,8 @@ fn approve_rejects_empty_issue_slug() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -579,7 +609,8 @@ fn approve_rejects_issue_slug_with_uppercase_or_spaces() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "approve",
         &run_id,
@@ -597,7 +628,8 @@ fn reject_rejects_empty_reason() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -615,7 +647,8 @@ fn reject_rejects_reason_with_control_chars() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     let (code, err) = run_fail(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "spinoff",
         "reject",
         &run_id,
@@ -637,8 +670,8 @@ fn list_orders_by_proposed_at_desc_with_proposal_id_tiebreaker() {
     propose(&home, &run_id, "s-01bbbbbbbbbbbbbbbbbbbbbbbb", "B");
     propose(&home, &run_id, "s-01ccccccccccccccccccccccccc", "C");
 
-    let v1 = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
-    let v2 = run_ok(bin(&home).args(["--json", "spinoff", "list", &run_id]));
+    let v1 = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));
+    let v2 = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));
     // Two reads of the same state must produce byte-identical proposal order.
     assert_eq!(v1["data"]["proposals"], v2["data"]["proposals"]);
 }
@@ -665,7 +698,8 @@ fn concurrent_approve_appends_exactly_one_event() {
             .env("ORCHESTRATECTL_HOME", &home_path)
             .env("PATH", "/nonexistent-orchestratectl-test-path")
             .args([
-                "--json",
+                "--output",
+                "json",
                 "spinoff",
                 "approve",
                 &r1,
@@ -682,7 +716,8 @@ fn concurrent_approve_appends_exactly_one_event() {
             .env("ORCHESTRATECTL_HOME", &home_path2)
             .env("PATH", "/nonexistent-orchestratectl-test-path")
             .args([
-                "--json",
+                "--output",
+                "json",
                 "spinoff",
                 "approve",
                 &r2,
@@ -771,7 +806,8 @@ fn concurrent_approve_vs_reject_does_not_lie_about_outcome() {
             .env("ORCHESTRATECTL_HOME", &home_path)
             .env("PATH", "/nonexistent-orchestratectl-test-path")
             .args([
-                "--json",
+                "--output",
+                "json",
                 "spinoff",
                 "approve",
                 &r1,
@@ -788,7 +824,8 @@ fn concurrent_approve_vs_reject_does_not_lie_about_outcome() {
             .env("ORCHESTRATECTL_HOME", &home_path2)
             .env("PATH", "/nonexistent-orchestratectl-test-path")
             .args([
-                "--json",
+                "--output",
+                "json",
                 "spinoff",
                 "reject",
                 &r2,

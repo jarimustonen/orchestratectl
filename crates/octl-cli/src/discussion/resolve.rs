@@ -422,7 +422,11 @@ struct FullEventForReplay {
     data: Value,
 }
 
-fn emit(payload: &ResolvePayload<'_>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+fn emit(
+    payload: &ResolvePayload<'_>,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             return output::emit_envelope(payload, spec, warnings);

@@ -96,7 +96,11 @@ pub enum EventAction {
     },
 }
 
-pub fn dispatch(action: EventAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(
+    action: EventAction,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match action {
         EventAction::Tail {
             run_id,

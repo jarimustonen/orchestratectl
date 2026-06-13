@@ -6,7 +6,12 @@ use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths, status_kebab};
 
-pub fn run(run_id: &str, node_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+pub fn run(
+    run_id: &str,
+    node_id: &str,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
     let node_id = require_safe_id(node_id, "node-id")?;
     let root = crate::home::root_dir()?;

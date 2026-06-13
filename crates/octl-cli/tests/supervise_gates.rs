@@ -49,7 +49,9 @@ fn count_kind(events: &Path, kind: &str) -> usize {
 }
 
 fn create_run(home: &TempDir, kind: &str, title: &str) -> String {
-    let v = run_ok(bin(home).args(["--json", "run", "create", "--kind", kind, "--title", title]));
+    let v = run_ok(bin(home).args([
+        "--output", "json", "run", "create", "--kind", kind, "--title", title,
+    ]));
     v["data"]["run_id"].as_str().unwrap().to_string()
 }
 
@@ -82,7 +84,8 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     )
     .unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -105,7 +108,7 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
     // Now supervise --once: alive PID + no tmux probe → no synthesis.
-    run_ok(bin(&home).args(["--json", "supervise", &run_id, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(
         count_kind(&events, "node.report"),
@@ -120,7 +123,7 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
     n["agent_pid"] = Value::from(0x3FFF_FFFE_i64);
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
-    run_ok(bin(&home).args(["--json", "supervise", &run_id, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
     assert!(
         count_kind(&events, "node.report") >= 1,
         "dead PID must synthesize a failed node.report. events={:?}",
@@ -154,7 +157,8 @@ fn v3_kill_and_start_time_identity() {
     )
     .unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &run_id,
@@ -172,7 +176,7 @@ fn v3_kill_and_start_time_identity() {
     n["tmux_window"] = Value::Null;
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
-    run_ok(bin(&home).args(["--json", "supervise", &run_id, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
     let events = run_dir(&home, &run_id).join("events.jsonl");
     let reports = read_events(&events)
         .into_iter()
@@ -204,7 +208,8 @@ fn v7_deterministic_id_dedup_under_crash() {
     let p_node = home.path().join("v7-parent-node.json");
     std::fs::write(&p_node, r#"{"kind":"orchestrated","task":"x"}"#).unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &parent,
@@ -220,7 +225,8 @@ fn v7_deterministic_id_dedup_under_crash() {
     // --parent-*) so that child.spawned lands in the parent's events
     // and the parent node's children list is populated.
     let child_create = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -238,7 +244,8 @@ fn v7_deterministic_id_dedup_under_crash() {
     let c_node = home.path().join("v7-child-node.json");
     std::fs::write(&c_node, r#"{"kind":"spinoff","task":"x"}"#).unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &child,
@@ -269,7 +276,8 @@ fn v7_deterministic_id_dedup_under_crash() {
     )
     .unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "node",
         "report",
         &child,
@@ -297,7 +305,7 @@ fn v7_deterministic_id_dedup_under_crash() {
     )
     .unwrap();
 
-    run_ok(bin(&home).args(["--json", "supervise", &parent, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &parent, "--once"]));
 
     // Inspect parent's discussions/ and spinoffs/.
     let disc_dir = run_dir(&home, &parent).join("discussions");
@@ -316,7 +324,7 @@ fn v7_deterministic_id_dedup_under_crash() {
         format!(r#"{{"schema_version":1,"spawned_children":{{"{child}":1}}}}"#),
     )
     .unwrap();
-    run_ok(bin(&home).args(["--json", "supervise", &parent, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &parent, "--once"]));
 
     let n_disc2 = std::fs::read_dir(&disc_dir).unwrap().count();
     let n_spin2 = std::fs::read_dir(&spin_dir).unwrap().count();
@@ -335,7 +343,7 @@ fn v8_reattach_end_to_end() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home, "spinoff", "v8");
 
-    run_ok(bin(&home).args(["--json", "run", "reattach", &run_id, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
     // Wait for the spawned --once supervisor to exit and write its
     // supervisor.exited event.
     std::thread::sleep(Duration::from_millis(500));
@@ -345,7 +353,7 @@ fn v8_reattach_end_to_end() {
     assert!(count_kind(&events, "supervisor.exited") >= 1);
 
     // Second reattach: prior PID is stale.
-    run_ok(bin(&home).args(["--json", "run", "reattach", &run_id, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
     std::thread::sleep(Duration::from_millis(500));
     assert!(count_kind(&events, "supervisor.reattach-requested") >= 2);
 }
@@ -364,7 +372,8 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
     let p_node = home.path().join("v9-pn.json");
     std::fs::write(&p_node, r#"{"kind":"orchestrated","task":"x"}"#).unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &parent,
@@ -377,7 +386,8 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
     ]));
 
     let child = run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "run",
         "create",
         "--kind",
@@ -395,7 +405,8 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
     let c_node = home.path().join("v9-cn.json");
     std::fs::write(&c_node, r#"{"kind":"spinoff","task":"x"}"#).unwrap();
     run_ok(bin(&home).args([
-        "--json",
+        "--output",
+        "json",
         "event",
         "create",
         &child,
@@ -408,7 +419,7 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
     ]));
 
     // Cancel the child — synthesizes a node.report {cancelled: true}.
-    run_ok(bin(&home).args(["--json", "run", "cancel", &child]));
+    run_ok(bin(&home).args(["--output", "json", "run", "cancel", &child]));
 
     // Pre-seed parent to skip child-supervisor fork.
     std::fs::write(
@@ -416,7 +427,7 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
         format!(r#"{{"schema_version":1,"spawned_children":{{"{child}":1}}}}"#),
     )
     .unwrap();
-    run_ok(bin(&home).args(["--json", "supervise", &parent, "--once"]));
+    run_ok(bin(&home).args(["--output", "json", "supervise", &parent, "--once"]));
 
     // Parent must have zero spinoffs/discussions derived from the
     // cancelled child report.
