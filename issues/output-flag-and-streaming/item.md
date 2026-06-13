@@ -6,6 +6,13 @@ status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
+commits:
+- hash: c55487d
+  summary: 'feat(output): replace --json with --output text|json|jsonl (default jsonl)'
+- hash: '5793917'
+  summary: 'test(output): migrate suite to --output flag, add jsonl single-line + legacy-flag tests'
+- hash: a18c88a
+  summary: 'docs(skills): update SKILL.md seeds for --output flag (default jsonl)'
 ---
 
 # Global --output flag and --output=jsonl streaming
