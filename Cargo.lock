@@ -577,6 +577,7 @@ dependencies = [
  "ctrlc",
  "libc",
  "octl-core",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

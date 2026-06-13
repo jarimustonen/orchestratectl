@@ -76,6 +76,11 @@ fn generate_skill_files(manifest_dir: &Path) {
     let cli_version = env!("CARGO_PKG_VERSION");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let skills_dir = manifest_dir.join("skills");
+    // Watch the catalog directory itself so adding or removing a
+    // `skills/<name>/` subdirectory re-triggers this build script.
+    // Without this, a new skill landing in the tree won't be picked up
+    // until a `cargo clean`. (Review finding #4.)
+    println!("cargo:rerun-if-changed={}", skills_dir.display());
 
     let entries = std::fs::read_dir(&skills_dir)
         .unwrap_or_else(|e| panic!("read {}: {}", skills_dir.display(), e));

@@ -100,8 +100,8 @@ back rather than guessing.
 
 This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
 first invocation in a session, run
-`orchestratectl version --output jsonl | jq -r .data.version` and
-compare:
+`orchestratectl version --output json`, parse the JSON, and read
+`.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Missing**: install one of:
   - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
@@ -118,9 +118,11 @@ compare:
   `cargo install orchestratectl --force`, or re-run the shell
   installer). Stop and wait — schema / CLI surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of
-  what this skill was written for. Tell the user to refresh the skill
-  so the instructions match the CLI surface they actually have:
-  `orchestratectl skill install orchestratectl-overview --force`
-  (default agent is `claude`; pass `--agent codex` for Codex or
-  `--agent all` for both). Continue once the skill matches.
+  what this skill was written for. The whole bundled skill catalog has
+  moved with the binary, so refresh all of them — not just this one:
+  `orchestratectl skill install --force` (default agent is `claude`;
+  pass `--agent codex` for Codex or `--agent all` for both). To refresh
+  only this skill, run
+  `orchestratectl skill install orchestratectl-overview --force`.
+  Continue once the skills match.
 - **Equal**: proceed normally.

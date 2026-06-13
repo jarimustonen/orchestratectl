@@ -276,19 +276,22 @@ pub fn cmd_install(
         }
     }
 
-    let drift_warnings = preflight(&plan, force)?;
+    let preflight_result = preflight(&plan, force)?;
 
     // Combine caller-provided warnings (logging init, etc.) with
     // drift-detected ones so the success envelope surfaces both.
     let mut all_warnings: Vec<String> = warnings.to_vec();
-    all_warnings.extend(drift_warnings);
+    all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
     for (skill, agent_name, path) in plan {
-        // Drift detection in preflight already greenlit the older-version
-        // case even without `--force`, so pass `true` to `write_atomic`
-        // when the file exists (we have already decided to overwrite).
-        let allow_overwrite = force || path.exists();
+        // The set of paths approved for overwrite is decided exclusively
+        // by preflight — never recomputed from `path.exists()` in this
+        // loop. That keeps the persist_noclobber TOCTOU guarantee intact:
+        // a file that did not exist at preflight time will refuse to
+        // overwrite, even if a concurrent process created it in the
+        // window. (Review finding #1.)
+        let allow_overwrite = preflight_result.overwrite_allowed.contains(&path);
         write_atomic(&path, skill.body, allow_overwrite)?;
         installed.push(InstalledFile {
             name: skill.name,
@@ -312,25 +315,25 @@ pub fn cmd_install(
     Ok(())
 }
 
-/// Compare two `cli_version` strings as semver-style dot-separated
-/// numeric tuples. Falls back to lexicographic comparison on
-/// non-numeric components so a malformed on-disk version doesn't panic.
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let parse = |s: &str| -> Vec<(u64, String)> {
-        s.split('.')
-            .map(|part| {
-                let num: u64 = part
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
-                    .parse()
-                    .unwrap_or(0);
-                let rest: String = part.chars().skip_while(|c| c.is_ascii_digit()).collect();
-                (num, rest)
-            })
-            .collect()
-    };
-    parse(a).cmp(&parse(b))
+/// Compare two `cli_version` strings via the `semver` crate. Returns
+/// `None` if either side fails to parse as semver — callers treat that
+/// as "unversioned / legacy" rather than guessing an ordering.
+/// (Review finding #2 — the previous ad-hoc parser inverted prerelease
+/// ordering: `1.0.0-alpha > 1.0.0` instead of `<`.)
+fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let av = semver::Version::parse(a).ok()?;
+    let bv = semver::Version::parse(b).ok()?;
+    Some(av.cmp(&bv))
+}
+
+/// Outcome of the install preflight pass.
+///
+/// `overwrite_allowed` is the *authoritative* set of paths the write
+/// loop is permitted to clobber. Computed once, then never recomputed —
+/// see `cmd_install` for the TOCTOU rationale.
+struct PreflightResult {
+    warnings: Vec<String>,
+    overwrite_allowed: HashSet<PathBuf>,
 }
 
 /// Reject the whole install plan before touching the filesystem when any
@@ -341,10 +344,11 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 fn preflight(
     plan: &[(&'static EmbeddedSkill, &'static str, PathBuf)],
     force: bool,
-) -> Result<Vec<String>, CliError> {
+) -> Result<PreflightResult, CliError> {
     use std::cmp::Ordering;
     let mut seen: HashSet<&Path> = HashSet::new();
-    let mut drift_warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut overwrite_allowed: HashSet<PathBuf> = HashSet::new();
     for (skill, _, path) in plan {
         if !seen.insert(path.as_path()) {
             return Err(CliError::user(
@@ -361,57 +365,54 @@ fn preflight(
             .with_invalid_value(path.display().to_string()));
         }
         if !path.exists() {
+            // No file → the write loop will refuse to clobber via
+            // persist_noclobber. Do not insert into `overwrite_allowed`.
             continue;
         }
-        // Existing target: classify by `cli_version` drift relative to
-        // the running binary (AGENTS-AI-FIRST-CLI §17).
-        let on_disk_version = fs::read_to_string(path)
+        // Existing target: classify by semver-correct `cli_version`
+        // drift relative to the running binary (AGENTS-AI-FIRST-CLI §17).
+        // An unreadable or unparseable `cli_version` lands in the
+        // "legacy / unversioned" arm so we never invent an ordering.
+        let on_disk_raw = fs::read_to_string(path)
             .ok()
             .and_then(|s| parse_frontmatter_field(&s, "cli_version"));
-        match on_disk_version.as_deref() {
-            Some(v) => match compare_versions(v, CLI_VERSION) {
-                Ordering::Less => {
-                    // Older on disk: install proceeds with a warning so
-                    // the agent learns the operating manual just moved.
-                    drift_warnings.push(format!(
-                        "skill_version_drift: {} on disk is {}; binary ships {}; overwriting",
-                        skill.name, v, CLI_VERSION
-                    ));
+        let drift = on_disk_raw
+            .as_deref()
+            .and_then(|v| compare_versions(v, CLI_VERSION).map(|ord| (v, ord)));
+        match drift {
+            Some((v, Ordering::Less)) => {
+                // Older on disk: install proceeds with a warning so the
+                // agent learns the operating manual just moved.
+                overwrite_allowed.insert(path.clone());
+                warnings.push(format!(
+                    "skill_version_drift: {} on disk is {}; binary ships {}; overwriting",
+                    skill.name, v, CLI_VERSION
+                ));
+            }
+            Some((v, Ordering::Greater)) => {
+                if !force {
+                    return Err(CliError::system(
+                        "skill_version_too_new",
+                        format!(
+                            "{}: on-disk skill is cli_version {} but binary is {}; pass --force to overwrite anyway",
+                            path.display(),
+                            v,
+                            CLI_VERSION
+                        ),
+                    )
+                    .with_invalid_value(path.display().to_string()));
                 }
-                Ordering::Greater => {
-                    if !force {
-                        return Err(CliError::system(
-                            "skill_version_too_new",
-                            format!(
-                                "{}: on-disk skill is cli_version {} but binary is {}; pass --force to overwrite anyway",
-                                path.display(),
-                                v,
-                                CLI_VERSION
-                            ),
-                        )
-                        .with_invalid_value(path.display().to_string()));
-                    }
-                    drift_warnings.push(format!(
-                        "skill_version_drift: {} on disk is {} (newer than binary {}); --force overwriting",
-                        skill.name, v, CLI_VERSION
-                    ));
-                }
-                Ordering::Equal => {
-                    if !force {
-                        return Err(CliError::system(
-                            "refused_overwrite",
-                            format!(
-                                "{} already exists; pass --force to overwrite",
-                                path.display()
-                            ),
-                        )
-                        .with_invalid_value(path.display().to_string()));
-                    }
-                }
-            },
-            None => {
-                // Existing file without a parseable `cli_version`: treat
-                // as the unversioned-legacy case and require --force.
+                overwrite_allowed.insert(path.clone());
+                warnings.push(format!(
+                    "skill_version_drift: {} on disk is {} (newer than binary {}); --force overwriting",
+                    skill.name, v, CLI_VERSION
+                ));
+            }
+            Some((_, Ordering::Equal)) | None => {
+                // Either equal versions (already in sync) or no
+                // parseable `cli_version` on disk (legacy / unversioned
+                // / unreadable). Both require explicit --force; we
+                // refuse to invent an overwrite policy.
                 if !force {
                     return Err(CliError::system(
                         "refused_overwrite",
@@ -422,10 +423,14 @@ fn preflight(
                     )
                     .with_invalid_value(path.display().to_string()));
                 }
+                overwrite_allowed.insert(path.clone());
             }
         }
     }
-    Ok(drift_warnings)
+    Ok(PreflightResult {
+        warnings,
+        overwrite_allowed,
+    })
 }
 
 fn lookup(name: &str) -> Result<&'static EmbeddedSkill, CliError> {
@@ -599,6 +604,9 @@ mod tests {
         // emit an empty string. Fail the build instead. Also pin
         // `name` equality between the catalog entry and the frontmatter
         // so a rename in one place can't quietly desync from the other.
+        // (Review finding #5: extended to pin `cli_version` ==
+        // CLI_VERSION and parseable `schema_version` so silent fallbacks
+        // in `catalog()` and `cmd_print()` can't mask a broken template.)
         for s in SKILLS {
             let d = parse_description(s.body)
                 .unwrap_or_else(|| panic!("skill {} missing description", s.name));
@@ -609,7 +617,53 @@ mod tests {
                 "catalog name {:?} does not match frontmatter name {:?}",
                 s.name, n
             );
+            let cli = parse_frontmatter_field(s.body, "cli_version")
+                .unwrap_or_else(|| panic!("skill {} missing cli_version", s.name));
+            assert_eq!(
+                cli, CLI_VERSION,
+                "skill {} cli_version {:?} does not match binary {:?}",
+                s.name, cli, CLI_VERSION
+            );
+            let schema = parse_frontmatter_field(s.body, "schema_version")
+                .unwrap_or_else(|| panic!("skill {} missing schema_version", s.name));
+            let parsed: u32 = schema.parse().unwrap_or_else(|_| {
+                panic!(
+                    "skill {} has unparseable schema_version {:?}",
+                    s.name, schema
+                )
+            });
+            assert_eq!(
+                parsed, SKILL_SCHEMA_VERSION,
+                "skill {} schema_version {} != {}",
+                s.name, parsed, SKILL_SCHEMA_VERSION
+            );
+            assert!(
+                !s.body.contains("{{CLI_VERSION}}"),
+                "skill {} still contains unrendered {{{{CLI_VERSION}}}} placeholder",
+                s.name
+            );
         }
+    }
+
+    #[test]
+    fn compare_versions_handles_semver_ordering() {
+        use std::cmp::Ordering;
+        // Pre-release is *less than* the release.
+        assert_eq!(
+            compare_versions("1.0.0-alpha", "1.0.0"),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_versions("1.0.0", "1.0.0-alpha"),
+            Some(Ordering::Greater)
+        );
+        // Standard numeric ordering.
+        assert_eq!(compare_versions("1.10.0", "1.9.0"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("0.0.1", "0.0.1"), Some(Ordering::Equal));
+        // Unparseable → None so callers route to the legacy arm.
+        assert_eq!(compare_versions("banana", "1.0.0"), None);
+        assert_eq!(compare_versions("1.0.0", "1.x"), None);
+        assert_eq!(compare_versions("{{CLI_VERSION}}", "1.0.0"), None);
     }
 
     #[test]
