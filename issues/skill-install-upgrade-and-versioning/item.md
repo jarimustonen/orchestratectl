@@ -3,9 +3,10 @@ created: 2026-06-13
 updated: 2026-06-13
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-13
 ---
 
 # Skill install/upgrade + skill print + version sync
