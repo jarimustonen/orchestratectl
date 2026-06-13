@@ -99,6 +99,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // enforces these invariants authoritatively below.
     match proposal.status {
         SpinoffStatus::Approved => {
+            if let Some(err) = mismatch_error(
+                &proposal_id,
+                issue_slug_arg.as_deref(),
+                proposal.accepted_as_issue_slug.as_deref(),
+            ) {
+                return Err(err);
+            }
             return emit_approved(
                 &run_id,
                 &proposal_id,
@@ -220,17 +227,24 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         ),
         Outcome::AlreadyApproved {
             issue_slug: persisted,
-        } => emit_approved(
-            &run_id,
-            &proposal_id,
-            persisted,
-            None,
-            Some(true),
-            None,
-            args.spec,
-            args.warnings,
-            &local_warnings,
-        ),
+        } => {
+            if let Some(err) =
+                mismatch_error(&proposal_id, issue_slug_arg.as_deref(), persisted.as_deref())
+            {
+                return Err(err);
+            }
+            emit_approved(
+                &run_id,
+                &proposal_id,
+                persisted,
+                None,
+                Some(true),
+                None,
+                args.spec,
+                args.warnings,
+                &local_warnings,
+            )
+        }
         Outcome::AlreadyRejected { reason } => Err(CliError::user(
             "proposal_already_rejected",
             format!(
@@ -251,6 +265,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         )
         .with_invalid_value(&run_id)),
     }
+}
+
+/// If the proposal is already approved and the caller provided an
+/// `--issue-slug` that does not match the recorded slug, return a
+/// `proposal_already_approved` error. Silent ignores here would let
+/// the caller believe their slug was attached when it wasn't.
+fn mismatch_error(
+    proposal_id: &str,
+    requested: Option<&str>,
+    recorded: Option<&str>,
+) -> Option<CliError> {
+    let requested = requested?;
+    if recorded == Some(requested) {
+        return None;
+    }
+    let recorded_repr = recorded.unwrap_or("<none>");
+    Some(
+        CliError::user(
+            "proposal_already_approved",
+            format!(
+                "proposal {proposal_id} is already approved with issue-slug \
+                 {recorded_repr:?}; cannot re-approve with a different slug \
+                 {requested:?}"
+            ),
+        )
+        .with_invalid_value(requested)
+        .with_expected(Value::String(recorded_repr.to_string())),
+    )
 }
 
 /// Try to materialize an issue via `issuectl new`. Returns:

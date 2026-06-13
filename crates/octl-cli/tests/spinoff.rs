@@ -237,7 +237,7 @@ fn approve_writes_event_and_updates_projection_with_manual_slug() {
 }
 
 #[test]
-fn approve_is_idempotent_on_reapproval() {
+fn approve_is_idempotent_on_reapproval_with_same_slug() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
@@ -259,11 +259,69 @@ fn approve_is_idempotent_on_reapproval() {
         &run_id,
         "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
         "--issue-slug",
-        "slug-anything",
+        "slug-1",
     ]));
     assert_eq!(v["data"]["idempotent_replay"], true);
-    // Original slug preserved.
     assert_eq!(v["data"]["issue_slug"], "slug-1");
+}
+
+#[test]
+fn approve_is_idempotent_on_reapproval_without_slug() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "slug-1",
+    ]));
+    // Re-approve without specifying --issue-slug returns the recorded slug.
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]));
+    assert_eq!(v["data"]["idempotent_replay"], true);
+    assert_eq!(v["data"]["issue_slug"], "slug-1");
+}
+
+#[test]
+fn approve_with_different_slug_is_proposal_already_approved() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "slug-1",
+    ]));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "slug-2",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "proposal_already_approved");
+    assert_eq!(err["error"]["expected"], "slug-1");
+    assert_eq!(err["error"]["invalid_value"], "slug-2");
 }
 
 #[test]
@@ -730,16 +788,6 @@ fn concurrent_approve_appends_exactly_one_event() {
     });
     let o1 = t1.join().unwrap();
     let o2 = t2.join().unwrap();
-    assert!(
-        o1.status.success(),
-        "t1 stderr: {}",
-        String::from_utf8_lossy(&o1.stderr)
-    );
-    assert!(
-        o2.status.success(),
-        "t2 stderr: {}",
-        String::from_utf8_lossy(&o2.stderr)
-    );
 
     // Exactly one spinoff.approved event in the log.
     let events =
@@ -773,21 +821,30 @@ fn concurrent_approve_appends_exactly_one_event() {
         "persisted slug must be one of the two callers: {persisted_slug}"
     );
 
-    // Both responses must agree on the persisted slug — the loser
-    // must NOT echo its own locally-computed slug (this is the
-    // race-loss bug the decision-enum fixes).
-    let v1: Value = serde_json::from_slice(&o1.stdout).unwrap();
-    let v2: Value = serde_json::from_slice(&o2.stdout).unwrap();
-    assert_eq!(v1["data"]["issue_slug"], persisted_slug);
-    assert_eq!(v2["data"]["issue_slug"], persisted_slug);
-    // Exactly one of the two responses claims `seq`; the other is the
-    // idempotent replay.
-    let s1_some = v1["data"]["seq"].as_u64().is_some();
-    let s2_some = v2["data"]["seq"].as_u64().is_some();
+    // The caller whose slug won succeeds; the loser surfaces
+    // `proposal_already_approved` (per B5: a different `--issue-slug`
+    // after approval must not be silently swallowed).
+    let (winner, loser, loser_slug) = if persisted_slug == "slug-from-t1" {
+        (&o1, &o2, "slug-from-t2")
+    } else {
+        (&o2, &o1, "slug-from-t1")
+    };
     assert!(
-        s1_some ^ s2_some,
-        "exactly one caller must have applied: v1={v1}, v2={v2}"
+        winner.status.success(),
+        "winner stderr: {}",
+        String::from_utf8_lossy(&winner.stderr)
     );
+    assert!(
+        !loser.status.success(),
+        "loser stdout: {}",
+        String::from_utf8_lossy(&loser.stdout)
+    );
+    let winner_v: Value = serde_json::from_slice(&winner.stdout).unwrap();
+    assert_eq!(winner_v["data"]["issue_slug"], persisted_slug);
+    let loser_err: Value = serde_json::from_slice(&loser.stderr).unwrap();
+    assert_eq!(loser_err["error"]["code"], "proposal_already_approved");
+    assert_eq!(loser_err["error"]["expected"], persisted_slug);
+    assert_eq!(loser_err["error"]["invalid_value"], loser_slug);
 }
 
 #[cfg(unix)]
