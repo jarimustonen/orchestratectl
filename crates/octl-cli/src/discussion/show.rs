@@ -3,7 +3,7 @@
 use octl_core::{read_discussion_opt, Discussion};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 use super::status_kebab;
@@ -11,7 +11,7 @@ use super::status_kebab;
 pub fn run(
     run_id: &str,
     discussion_id: &str,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
@@ -37,38 +37,38 @@ pub fn run(
         }
     };
 
-    emit(&disc, json, warnings)
+    emit(&disc, spec, warnings)
 }
 
-fn emit(d: &Discussion, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(d, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("discussion-id: {}", d.discussion_id);
-        println!("run-id:        {}", d.run_id);
-        println!("node-id:       {}", d.node_id);
-        println!("status:        {}", status_kebab(d.status));
-        println!("severity:      {}", d.severity);
-        println!("topic:         {}", d.topic);
-        if let Some(c) = &d.context {
-            println!("context:       {}", c);
+fn emit(d: &Discussion, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(d, spec, warnings)?;
         }
-        if !d.options.is_empty() {
-            println!("options:       {}", d.options.join(", "));
-        }
-        println!("opened_at:     {}", d.opened_at);
-        if let Some(r) = &d.resolution {
-            println!("resolution:    {}", r);
-        }
-        if let Some(n) = &d.note {
-            println!("note:          {}", n);
-        }
-        if let Some(t) = d.resolved_at {
-            println!("resolved_at:   {}", t);
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            println!("discussion-id: {}", d.discussion_id);
+            println!("run-id:        {}", d.run_id);
+            println!("node-id:       {}", d.node_id);
+            println!("status:        {}", status_kebab(d.status));
+            println!("severity:      {}", d.severity);
+            println!("topic:         {}", d.topic);
+            if let Some(c) = &d.context {
+                println!("context:       {}", c);
+            }
+            if !d.options.is_empty() {
+                println!("options:       {}", d.options.join(", "));
+            }
+            println!("opened_at:     {}", d.opened_at);
+            if let Some(r) = &d.resolution {
+                println!("resolution:    {}", r);
+            }
+            if let Some(n) = &d.note {
+                println!("note:          {}", n);
+            }
+            if let Some(t) = d.resolved_at {
+                println!("resolved_at:   {}", t);
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

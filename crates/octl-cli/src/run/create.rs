@@ -14,7 +14,7 @@ use octl_core::{ensure_root, new_run_id, Kind, Lifecycle};
 
 use crate::error::CliError;
 use crate::idempotency;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
     from_core, kind_kebab, lifecycle_for, lifecycle_kebab, require_nonempty, require_safe_id,
     run_paths,
@@ -30,7 +30,7 @@ pub struct Args<'a> {
     pub parent_node_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -150,7 +150,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 parent_node_id.as_deref(),
                 Some(true),
                 None,
-                args.json,
+                args.spec,
                 args.warnings,
             );
         }
@@ -170,7 +170,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             None,
             None,
             Some(true),
-            args.json,
+            args.spec,
             args.warnings,
         );
     }
@@ -274,7 +274,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         parent_node_id.as_deref(),
         None,
         None,
-        args.json,
+        args.spec,
         args.warnings,
     )
 }
@@ -289,7 +289,7 @@ fn emit(
     parent_node_id: Option<&str>,
     idempotent_replay: Option<bool>,
     dry_run: Option<bool>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let payload = CreatedPayload {
@@ -303,25 +303,25 @@ fn emit(
         idempotent_replay,
         dry_run,
     };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id: {}", payload.run_id);
-        println!("dir:    {}", payload.dir);
-        println!("kind:   {}", kind_kebab(kind));
-        println!("status: pending  (supervisor: {})", payload.supervisor);
-        if let (Some(p), Some(n)) = (parent_run_id, parent_node_id) {
-            println!("parent: {}/{}", p, n);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
         }
-        if idempotent_replay == Some(true) {
-            println!("note:   returned from idempotency-key cache");
-        }
-        if dry_run == Some(true) {
-            println!("note:   --dry-run (no filesystem changes)");
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            println!("run-id: {}", payload.run_id);
+            println!("dir:    {}", payload.dir);
+            println!("kind:   {}", kind_kebab(kind));
+            println!("status: pending  (supervisor: {})", payload.supervisor);
+            if let (Some(p), Some(n)) = (parent_run_id, parent_node_id) {
+                println!("parent: {}/{}", p, n);
+            }
+            if idempotent_replay == Some(true) {
+                println!("note:   returned from idempotency-key cache");
+            }
+            if dry_run == Some(true) {
+                println!("note:   --dry-run (no filesystem changes)");
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

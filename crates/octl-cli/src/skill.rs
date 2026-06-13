@@ -13,7 +13,7 @@ use serde::Serialize;
 use tempfile::NamedTempFile;
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 
 /// One embedded skill: name and full SKILL.md text. The description is
 /// parsed lazily from the body's frontmatter so the catalog stays a
@@ -64,7 +64,7 @@ struct InstalledFile {
     path: String,
 }
 
-pub fn cmd_list(json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn cmd_list(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let skills: Vec<SkillSummary> = SKILLS
         .iter()
         .map(|s| SkillSummary {
@@ -72,43 +72,44 @@ pub fn cmd_list(json: bool, warnings: &[String]) -> Result<(), CliError> {
             description: parse_description(s.body).unwrap_or_default(),
         })
         .collect();
-    if json {
-        output::emit_json(&ListPayload { skills }, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        for s in &skills {
-            println!("{}\t{}", s.name, s.description);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&ListPayload { skills }, spec, warnings)?;
         }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            for s in &skills {
+                println!("{}\t{}", s.name, s.description);
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())
 }
 
-pub fn cmd_show(name: &str, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn cmd_show(name: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let skill = lookup(name)?;
-    if json {
-        #[derive(Serialize)]
-        struct ShowPayload<'a> {
-            name: &'a str,
-            content: &'a str,
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            #[derive(Serialize)]
+            struct ShowPayload<'a> {
+                name: &'a str,
+                content: &'a str,
+            }
+            output::emit_envelope(
+                &ShowPayload {
+                    name: skill.name,
+                    content: skill.body,
+                },
+                spec,
+                warnings,
+            )?;
         }
-        output::emit_json(
-            &ShowPayload {
-                name: skill.name,
-                content: skill.body,
-            },
-            warnings,
-        )
-        .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        print!("{}", skill.body);
-        if !skill.body.ends_with('\n') {
-            println!();
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            print!("{}", skill.body);
+            if !skill.body.ends_with('\n') {
+                println!();
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())
@@ -119,7 +120,7 @@ pub fn cmd_install(
     agent: AgentTarget,
     dest: Option<PathBuf>,
     force: bool,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     // §15: `install [<name>]` installs all skills when no name is given.
@@ -178,15 +179,15 @@ pub fn cmd_install(
     }
 
     let payload = InstallPayload { installed };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        for f in &payload.installed {
-            println!("installed {} ({}) -> {}", f.name, f.agent, f.path);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
         }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            for f in &payload.installed {
+                println!("installed {} ({}) -> {}", f.name, f.agent, f.path);
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

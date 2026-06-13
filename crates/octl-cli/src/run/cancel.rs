@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, Status};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 #[derive(Serialize)]
@@ -20,7 +20,7 @@ struct CancelPayload {
 pub fn run(
     run_id: &str,
     note: Option<&str>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
@@ -43,7 +43,7 @@ pub fn run(
                 cancelled_nodes: vec![],
                 already_cancelled: true,
             },
-            json,
+            spec,
             warnings,
         );
     }
@@ -115,27 +115,27 @@ pub fn run(
             cancelled_nodes,
             already_cancelled: false,
         },
-        json,
+        spec,
         warnings,
     )
 }
 
-fn emit(payload: CancelPayload, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        if payload.already_cancelled {
-            println!("run {} already cancelled (no-op)", payload.run_id);
-        } else {
-            println!(
-                "cancelled run {} ({} node(s))",
-                payload.run_id,
-                payload.cancelled_nodes.len()
-            );
+fn emit(payload: CancelPayload, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
         }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            if payload.already_cancelled {
+                println!("run {} already cancelled (no-op)", payload.run_id);
+            } else {
+                println!(
+                    "cancelled run {} ({} node(s))",
+                    payload.run_id,
+                    payload.cancelled_nodes.len()
+                );
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

@@ -16,6 +16,7 @@ use clap::{Subcommand, ValueEnum};
 use octl_core::{Kind, Lifecycle, RunPaths};
 
 use crate::error::CliError;
+use crate::output::OutputSpec;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -99,7 +100,7 @@ pub enum RunAction {
     },
 }
 
-pub fn dispatch(action: RunAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match action {
         RunAction::Create {
             kind,
@@ -121,22 +122,22 @@ pub fn dispatch(action: RunAction, json: bool, warnings: &[String]) -> Result<()
             parent_node_id,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
         RunAction::List { status, kind } => list::run(list::Args {
             status,
             kind,
-            json,
+            spec,
             warnings,
         }),
-        RunAction::Show { run_id } => show::run(&run_id, json, warnings),
-        RunAction::Cancel { run_id, note } => cancel::run(&run_id, note.as_deref(), json, warnings),
+        RunAction::Show { run_id } => show::run(&run_id, spec, warnings),
+        RunAction::Cancel { run_id, note } => cancel::run(&run_id, note.as_deref(), spec, warnings),
         RunAction::Reattach {
             run_id,
             once,
             max_iter,
-        } => reattach::run(&run_id, once, max_iter, json, warnings),
+        } => reattach::run(&run_id, once, max_iter, spec, warnings),
     }
 }
 

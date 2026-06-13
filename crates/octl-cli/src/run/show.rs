@@ -5,7 +5,7 @@ use serde::Serialize;
 use octl_core::{read_manifest_opt, Manifest};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
     from_core, kind_kebab, lifecycle_kebab, require_safe_id, run_paths, status_kebab,
 };
@@ -23,7 +23,7 @@ struct Counts {
     spinoffs: u64,
 }
 
-pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
@@ -42,25 +42,25 @@ pub fn run(run_id: &str, json: bool, warnings: &[String]) -> Result<(), CliError
         spinoffs: count_jsons(&paths.spinoffs_dir()),
     };
     let payload = ShowPayload { manifest, counts };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id:        {}", payload.manifest.run_id);
-        println!("title:         {}", payload.manifest.title);
-        println!("status:        {}", status_kebab(payload.manifest.status));
-        println!("kind:          {}", kind_kebab(payload.manifest.kind));
-        println!(
-            "lifecycle:     {}",
-            lifecycle_kebab(payload.manifest.lifecycle)
-        );
-        println!("created_at:    {}", payload.manifest.created_at);
-        println!("updated_at:    {}", payload.manifest.updated_at);
-        println!("nodes:         {}", payload.counts.nodes);
-        println!("discussions:   {}", payload.counts.discussions);
-        println!("spinoffs:      {}", payload.counts.spinoffs);
-        for w in warnings {
-            eprintln!("warning: {}", w);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
+        }
+        OutputFormat::Text => {
+            println!("run-id:        {}", payload.manifest.run_id);
+            println!("title:         {}", payload.manifest.title);
+            println!("status:        {}", status_kebab(payload.manifest.status));
+            println!("kind:          {}", kind_kebab(payload.manifest.kind));
+            println!(
+                "lifecycle:     {}",
+                lifecycle_kebab(payload.manifest.lifecycle)
+            );
+            println!("created_at:    {}", payload.manifest.created_at);
+            println!("updated_at:    {}", payload.manifest.updated_at);
+            println!("nodes:         {}", payload.counts.nodes);
+            println!("discussions:   {}", payload.counts.discussions);
+            println!("spinoffs:      {}", payload.counts.spinoffs);
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

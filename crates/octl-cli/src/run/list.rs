@@ -6,13 +6,13 @@ use serde::Serialize;
 use octl_core::{read_manifest_opt, RunPaths};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, runs_root};
 
 pub struct Args<'a> {
     pub status: Option<String>,
     pub kind: Option<String>,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -57,7 +57,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return emit(out, args.json, args.warnings);
+            return emit(out, args.spec, args.warnings);
         }
         Err(e) => {
             return Err(CliError::system(
@@ -106,25 +106,25 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     out.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-    emit(out, args.json, args.warnings)
+    emit(out, args.spec, args.warnings)
 }
 
-fn emit(runs: Vec<RunSummary>, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(&ListPayload { runs }, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        if runs.is_empty() {
-            println!("(no runs)");
+fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&ListPayload { runs }, spec, warnings)?;
         }
-        for r in &runs {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                r.run_id, r.kind, r.status, r.node_count, r.title
-            );
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            if runs.is_empty() {
+                println!("(no runs)");
+            }
+            for r in &runs {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    r.run_id, r.kind, r.status, r.node_count, r.title
+                );
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

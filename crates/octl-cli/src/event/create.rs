@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use octl_core::{ensure_root, RunLock};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 pub struct Args<'a> {
@@ -27,7 +27,7 @@ pub struct Args<'a> {
     pub from_file: PathBuf,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -343,7 +343,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             dry_run: Some(true),
             projections,
         };
-        return emit(&payload, args.json, args.warnings);
+        return emit(&payload, args.spec, args.warnings);
     }
 
     ensure_root(&root).map_err(from_core)?;
@@ -406,7 +406,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         dry_run: None,
         projections,
     };
-    emit(&payload, args.json, args.warnings)
+    emit(&payload, args.spec, args.warnings)
 }
 
 /// What `find_prior_event` returns when an idempotency-key hit lands.
@@ -475,34 +475,34 @@ struct FullEventForReplay {
     data: Value,
 }
 
-fn emit(payload: &CreatedPayload<'_>, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id:      {}", payload.run_id);
-        println!("kind:        {}", payload.kind);
-        if let Some(n) = payload.node_id {
-            println!("node-id:     {}", n);
+fn emit(payload: &CreatedPayload<'_>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(payload, spec, warnings)?;
         }
-        match payload.seq {
-            Some(s) => println!("seq:         {}", s),
-            None => println!("seq:         (assigned on apply)"),
-        }
-        if payload.dry_run == Some(true) {
-            println!("note:        --dry-run (no filesystem changes)");
-        }
-        if payload.idempotent_replay == Some(true) {
-            println!("note:        returned from idempotency-key cache");
-        }
-        if !payload.projections.is_empty() {
-            println!("projections:");
-            for p in &payload.projections {
-                println!("  - {}", p);
+        OutputFormat::Text => {
+            println!("run-id:      {}", payload.run_id);
+            println!("kind:        {}", payload.kind);
+            if let Some(n) = payload.node_id {
+                println!("node-id:     {}", n);
             }
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+            match payload.seq {
+                Some(s) => println!("seq:         {}", s),
+                None => println!("seq:         (assigned on apply)"),
+            }
+            if payload.dry_run == Some(true) {
+                println!("note:        --dry-run (no filesystem changes)");
+            }
+            if payload.idempotent_replay == Some(true) {
+                println!("note:        returned from idempotency-key cache");
+            }
+            if !payload.projections.is_empty() {
+                println!("projections:");
+                for p in &payload.projections {
+                    println!("  - {}", p);
+                }
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

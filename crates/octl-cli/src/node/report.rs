@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use octl_core::{ensure_root, read_manifest_opt, read_node_opt, Kind, RunLock};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_nonempty, require_safe_id, run_paths};
 
 /// Mirror of `event create`'s 1 MiB cap. `node.report` is the largest
@@ -35,7 +35,7 @@ pub struct Args<'a> {
     pub from_file: PathBuf,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -106,7 +106,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             idempotent_replay: None,
             dry_run: Some(true),
         };
-        return emit(&payload, args.json, args.warnings);
+        return emit(&payload, args.spec, args.warnings);
     }
 
     ensure_root(&root).map_err(from_core)?;
@@ -166,7 +166,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         idempotent_replay: if replayed { Some(true) } else { None },
         dry_run: None,
     };
-    emit(&payload, args.json, args.warnings)
+    emit(&payload, args.spec, args.warnings)
 }
 
 /// Read `--from-file` while enforcing the size cap during the read
@@ -504,25 +504,25 @@ struct PriorReport {
     data: Value,
 }
 
-fn emit(payload: &ReportPayload<'_>, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id:    {}", payload.run_id);
-        println!("node-id:   {}", payload.node_id);
-        match payload.event_seq {
-            Some(s) => println!("event_seq: {}", s),
-            None => println!("event_seq: (assigned on apply)"),
+fn emit(payload: &ReportPayload<'_>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(payload, spec, warnings)?;
         }
-        if payload.dry_run == Some(true) {
-            println!("note:      --dry-run (no filesystem changes)");
-        }
-        if payload.idempotent_replay == Some(true) {
-            println!("note:      returned from idempotency-key cache");
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            println!("run-id:    {}", payload.run_id);
+            println!("node-id:   {}", payload.node_id);
+            match payload.event_seq {
+                Some(s) => println!("event_seq: {}", s),
+                None => println!("event_seq: (assigned on apply)"),
+            }
+            if payload.dry_run == Some(true) {
+                println!("note:      --dry-run (no filesystem changes)");
+            }
+            if payload.idempotent_replay == Some(true) {
+                println!("note:      returned from idempotency-key cache");
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

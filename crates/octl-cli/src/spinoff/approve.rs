@@ -17,7 +17,7 @@ use octl_core::{
 };
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
 use crate::spinoff::require_safe_slug;
 
@@ -27,7 +27,7 @@ pub struct Args<'a> {
     pub issue_slug: Option<String>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -106,7 +106,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 None,
                 Some(true),
                 None,
-                args.json,
+                args.spec,
                 args.warnings,
                 &[],
             );
@@ -157,7 +157,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             None,
             None,
             Some(true),
-            args.json,
+            args.spec,
             args.warnings,
             &local_warnings,
         );
@@ -214,7 +214,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Some(seq),
             None,
             None,
-            args.json,
+            args.spec,
             args.warnings,
             &local_warnings,
         ),
@@ -227,7 +227,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             None,
             Some(true),
             None,
-            args.json,
+            args.spec,
             args.warnings,
             &local_warnings,
         ),
@@ -308,7 +308,7 @@ fn emit_approved(
     seq: Option<u64>,
     idempotent_replay: Option<bool>,
     dry_run: Option<bool>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
     local_warnings: &[String],
 ) -> Result<(), CliError> {
@@ -320,38 +320,36 @@ fn emit_approved(
         idempotent_replay,
         dry_run,
     };
-    if json {
-        let merged: Vec<String> = warnings
-            .iter()
-            .cloned()
-            .chain(local_warnings.iter().cloned())
-            .collect();
-        output::emit_json(&payload, &merged)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id:      {}", payload.run_id);
-        println!("proposal-id: {}", payload.proposal_id);
-        if let Some(s) = &payload.issue_slug {
-            println!("issue-slug:  {}", s);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            let merged: Vec<String> = warnings
+                .iter()
+                .cloned()
+                .chain(local_warnings.iter().cloned())
+                .collect();
+            output::emit_envelope(&payload, spec, &merged)?;
         }
-        match payload.seq {
-            Some(s) => println!("seq:         {}", s),
-            None if payload.dry_run == Some(true) => {
-                println!("seq:         (assigned on apply)")
+        OutputFormat::Text => {
+            println!("run-id:      {}", payload.run_id);
+            println!("proposal-id: {}", payload.proposal_id);
+            if let Some(s) = &payload.issue_slug {
+                println!("issue-slug:  {}", s);
             }
-            None => println!("seq:         (no-op; already approved)"),
-        }
-        if payload.dry_run == Some(true) {
-            println!("note:        --dry-run (no filesystem changes)");
-        }
-        if payload.idempotent_replay == Some(true) {
-            println!("note:        idempotent replay (already approved)");
-        }
-        for w in local_warnings {
-            eprintln!("warning: {}", w);
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+            match payload.seq {
+                Some(s) => println!("seq:         {}", s),
+                None if payload.dry_run == Some(true) => {
+                    println!("seq:         (assigned on apply)")
+                }
+                None => println!("seq:         (no-op; already approved)"),
+            }
+            if payload.dry_run == Some(true) {
+                println!("note:        --dry-run (no filesystem changes)");
+            }
+            if payload.idempotent_replay == Some(true) {
+                println!("note:        idempotent replay (already approved)");
+            }
+            output::emit_text_warnings(local_warnings);
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

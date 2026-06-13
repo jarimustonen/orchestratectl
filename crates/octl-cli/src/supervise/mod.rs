@@ -34,7 +34,7 @@ use tracing::{info, warn};
 use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, RunPaths, Status};
 
 use crate::error::{CliError, ExitKind};
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 /// Polling cadences (design.md §7.5 defaults).
@@ -59,7 +59,7 @@ pub struct SuperviseArgs {
     pub max_iter: Option<u32>,
 }
 
-pub fn dispatch(args: SuperviseArgs, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(args: SuperviseArgs, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
@@ -371,16 +371,16 @@ pub fn dispatch(args: SuperviseArgs, json: bool, warnings: &[String]) -> Result<
         reason: exit_reason,
         iterations: iter,
     };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!(
-            "supervisor exited run={} pid={} reason={} iter={}",
-            run_id, our_pid, exit_reason, iter
-        );
-        for w in warnings {
-            eprintln!("warning: {}", w);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
+        }
+        OutputFormat::Text => {
+            println!(
+                "supervisor exited run={} pid={} reason={} iter={}",
+                run_id, our_pid, exit_reason, iter
+            );
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

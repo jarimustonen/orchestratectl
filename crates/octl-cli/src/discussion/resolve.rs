@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use octl_core::{ensure_root, read_discussion_opt, Discussion, DiscussionStatus, RunLock};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_nonempty, require_safe_id, run_paths};
 
 /// Hard caps on free-form CLI strings written into the event log.
@@ -42,7 +42,7 @@ pub struct Args<'a> {
     pub note: Option<String>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -312,7 +312,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 would_be: None,
                 projections: Vec::new(),
             };
-            emit(&payload, args.json, args.warnings)
+            emit(&payload, args.spec, args.warnings)
         }
 
         LockResult::NoOp { existing } => {
@@ -327,7 +327,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 would_be: None,
                 projections: Vec::new(),
             };
-            emit(&payload, args.json, args.warnings)
+            emit(&payload, args.spec, args.warnings)
         }
 
         LockResult::WouldAppend { existing } => {
@@ -342,7 +342,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 would_be: Some(Outcome::Appended),
                 projections: projections_for(&discussion_id),
             };
-            emit(&payload, args.json, args.warnings)
+            emit(&payload, args.spec, args.warnings)
         }
 
         LockResult::Appended { seq, node_id } => {
@@ -357,7 +357,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 would_be: None,
                 projections: projections_for(&discussion_id),
             };
-            emit(&payload, args.json, args.warnings)
+            emit(&payload, args.spec, args.warnings)
         }
     }
 }
@@ -422,11 +422,14 @@ struct FullEventForReplay {
     data: Value,
 }
 
-fn emit(payload: &ResolvePayload<'_>, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
+fn emit(payload: &ResolvePayload<'_>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            return output::emit_envelope(payload, spec, warnings);
+        }
+        OutputFormat::Text => {}
+    }
+    {
         println!("run-id:        {}", payload.run_id);
         println!("discussion-id: {}", payload.discussion_id);
         println!("node-id:       {}", payload.node_id);
@@ -459,9 +462,7 @@ fn emit(payload: &ResolvePayload<'_>, json: bool, warnings: &[String]) -> Result
                 println!("  - {}", p);
             }
         }
-        for w in warnings {
-            eprintln!("warning: {}", w);
-        }
+        output::emit_text_warnings(warnings);
     }
     Ok(())
 }

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use crate::error::CliError;
+use crate::output::OutputSpec;
 
 #[derive(Subcommand, Debug)]
 pub enum NodeAction {
@@ -45,15 +46,15 @@ pub enum NodeAction {
     },
 }
 
-pub fn dispatch(action: NodeAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(action: NodeAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match action {
         NodeAction::List { run_id, status } => list::run(list::Args {
             run_id,
             status,
-            json,
+            spec,
             warnings,
         }),
-        NodeAction::Show { run_id, node_id } => show::run(&run_id, &node_id, json, warnings),
+        NodeAction::Show { run_id, node_id } => show::run(&run_id, &node_id, spec, warnings),
         NodeAction::Report {
             run_id,
             node_id,
@@ -66,7 +67,7 @@ pub fn dispatch(action: NodeAction, json: bool, warnings: &[String]) -> Result<(
             from_file,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
     }

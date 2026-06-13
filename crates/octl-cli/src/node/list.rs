@@ -6,13 +6,13 @@ use serde::Serialize;
 use octl_core::{read_manifest_opt, read_node_opt};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, kind_kebab, require_safe_id, run_paths, status_kebab};
 
 pub struct Args<'a> {
     pub run_id: String,
     pub status: Option<String>,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -118,21 +118,21 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         run_id: run_id.clone(),
         nodes: out,
     };
-    if args.json {
-        output::emit_json(&payload, args.warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        if payload.nodes.is_empty() {
-            println!("(no nodes)");
+    match args.spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, args.spec, args.warnings)?;
         }
-        for n in &payload.nodes {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                n.node_id, n.kind, n.status, n.children, n.updated_at
-            );
-        }
-        for w in args.warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            if payload.nodes.is_empty() {
+                println!("(no nodes)");
+            }
+            for n in &payload.nodes {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    n.node_id, n.kind, n.status, n.children, n.updated_at
+                );
+            }
+            output::emit_text_warnings(args.warnings);
         }
     }
     Ok(())

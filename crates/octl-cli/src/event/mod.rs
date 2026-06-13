@@ -16,35 +16,34 @@ pub mod tail;
 
 use std::path::PathBuf;
 
-use clap::{Subcommand, ValueEnum};
+use clap::Subcommand;
 
 use crate::error::CliError;
+use crate::output::{OutputFormat, OutputSpec};
 
-/// Output format for streaming verbs. `Text` is the human default;
-/// `Jsonl` is the canonical machine stream (one JSON event per line).
-///
-/// `Json` (pretty multi-line) was deliberately dropped — review found
-/// it was neither a valid single JSON document nor valid JSONL, breaking
-/// every line-oriented consumer.
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-#[clap(rename_all = "lowercase")]
+/// Output format for streaming verbs. `Text` is the human-readable
+/// per-event line; `Jsonl` is the canonical machine stream (one JSON
+/// event per line). Pretty `Json` is not a valid stream format and the
+/// caller is rejected with `unsupported_format` if they pass it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatArg {
     Text,
     Jsonl,
 }
 
-/// Decide the effective format for a streaming verb. Shared so future
-/// `event` verbs apply the same precedence policy.
-pub fn resolve_format(format: Option<FormatArg>, json: bool) -> Result<FormatArg, CliError> {
-    match (format, json) {
-        // Conflict: --json promises machine output, --format text breaks it.
-        (Some(FormatArg::Text), true) => Err(CliError::user(
-            "conflicting_arguments",
-            "--json cannot be combined with --format text",
+/// Map the global `OutputFormat` to the streaming `FormatArg`. Single
+/// JSON document mode is rejected — a pretty-printed multi-line JSON
+/// payload is neither a valid single document (the stream is open-ended)
+/// nor valid JSONL (one-per-line). Streaming verbs must declare format
+/// up front per AGENTS-AI-FIRST-CLI §12.
+pub fn resolve_format(fmt: OutputFormat) -> Result<FormatArg, CliError> {
+    match fmt {
+        OutputFormat::Text => Ok(FormatArg::Text),
+        OutputFormat::Jsonl => Ok(FormatArg::Jsonl),
+        OutputFormat::Json => Err(CliError::user(
+            "unsupported_format",
+            "streaming verbs do not support --output json (pretty single-document); use jsonl or text",
         )),
-        (Some(f), _) => Ok(f),
-        (None, true) => Ok(FormatArg::Jsonl),
-        (None, false) => Ok(FormatArg::Text),
     }
 }
 
@@ -66,14 +65,12 @@ pub enum EventAction {
         /// Keep polling for new events after reaching EOF.
         #[arg(long)]
         follow: bool,
-        /// Output format: `text` (human) or `jsonl` (one JSON event per line).
-        #[arg(long, value_enum)]
-        format: Option<FormatArg>,
-        /// Write to file instead of stdout. Truncated on open without
-        /// `--follow`, append-mode with `--follow`. Must not point at
-        /// the run's own `events.jsonl`.
+        /// Write the stream to this file instead of stdout. Truncated on
+        /// open without `--follow`, append-mode with `--follow`. Must not
+        /// point at the run's own `events.jsonl`. The format is the
+        /// global `--output` selection (text or jsonl).
         #[arg(long)]
-        output: Option<std::path::PathBuf>,
+        to_file: Option<std::path::PathBuf>,
     },
     /// Append one event to a run's `events.jsonl` and update projections.
     Create {
@@ -99,21 +96,19 @@ pub enum EventAction {
     },
 }
 
-pub fn dispatch(action: EventAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(action: EventAction, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match action {
         EventAction::Tail {
             run_id,
             from_seq,
             follow,
-            format,
-            output,
+            to_file,
         } => tail::run(tail::Args {
             run_id,
             from_seq,
             follow,
-            format,
-            output,
-            json,
+            to_file,
+            spec,
             warnings,
         }),
         EventAction::Create {
@@ -130,7 +125,7 @@ pub fn dispatch(action: EventAction, json: bool, warnings: &[String]) -> Result<
             from_file,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
     }

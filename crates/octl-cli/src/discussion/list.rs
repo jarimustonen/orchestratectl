@@ -6,7 +6,7 @@ use serde::Serialize;
 use octl_core::{read_discussion_opt, DiscussionStatus};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 
 use super::{status_kebab, StatusArg};
@@ -14,7 +14,7 @@ use super::{status_kebab, StatusArg};
 pub struct Args<'a> {
     pub run_id: String,
     pub status: Option<StatusArg>,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -56,7 +56,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return emit(Vec::new(), args.json, args.warnings);
+            return emit(Vec::new(), args.spec, args.warnings);
         }
         Err(e) => {
             return Err(CliError::system(
@@ -116,29 +116,29 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .cmp(&a.opened_at)
             .then_with(|| a.discussion_id.cmp(&b.discussion_id))
     });
-    emit(out, args.json, args.warnings)
+    emit(out, args.spec, args.warnings)
 }
 
 fn emit(
     discussions: Vec<DiscussionSummary>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
-    if json {
-        output::emit_json(&ListPayload { discussions }, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        if discussions.is_empty() {
-            println!("(no discussions)");
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&ListPayload { discussions }, spec, warnings)?;
         }
-        for d in &discussions {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                d.discussion_id, d.node_id, d.status, d.severity, d.topic
-            );
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            if discussions.is_empty() {
+                println!("(no discussions)");
+            }
+            for d in &discussions {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    d.discussion_id, d.node_id, d.status, d.severity, d.topic
+                );
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

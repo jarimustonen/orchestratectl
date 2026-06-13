@@ -33,6 +33,7 @@ use octl_core::{read_manifest_opt, Event};
 
 use crate::error::{CliError, SCHEMA_VERSION};
 use crate::event::{resolve_format, FormatArg};
+use crate::output::OutputSpec;
 use crate::run::{from_core, require_safe_id, run_paths};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -45,15 +46,14 @@ pub struct Args<'a> {
     pub run_id: String,
     pub from_seq: u64,
     pub follow: bool,
-    pub format: Option<FormatArg>,
-    pub output: Option<PathBuf>,
-    pub json: bool,
+    pub to_file: Option<PathBuf>,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
-    let format = resolve_format(args.format, args.json)?;
+    let format = resolve_format(args.spec.format)?;
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id);
 
@@ -71,7 +71,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Refuse to write our render back into the canonical event log.
     // Without this guard, `--output <…>/events.jsonl` truncates (no-follow)
     // or appends (follow) the source file — silent data loss.
-    if let Some(out) = &args.output {
+    if let Some(out) = &args.to_file {
         reject_output_alias(&events_path, out)?;
     }
 
@@ -96,7 +96,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     // Open writer (stdout or --output file).
-    let mut writer: Box<dyn Write> = match &args.output {
+    let mut writer: Box<dyn Write> = match &args.to_file {
         None => Box::new(std::io::stdout().lock()),
         Some(p) => Box::new(open_output(p, args.follow)?),
     };

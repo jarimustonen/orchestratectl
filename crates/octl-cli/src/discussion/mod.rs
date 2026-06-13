@@ -11,6 +11,7 @@ pub mod show;
 use clap::{Subcommand, ValueEnum};
 
 use crate::error::CliError;
+use crate::output::OutputSpec;
 
 /// Status filter for `discussion list`.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -55,18 +56,22 @@ pub enum DiscussionAction {
     },
 }
 
-pub fn dispatch(action: DiscussionAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(
+    action: DiscussionAction,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match action {
         DiscussionAction::List { run_id, status } => list::run(list::Args {
             run_id,
             status,
-            json,
+            spec,
             warnings,
         }),
         DiscussionAction::Show {
             run_id,
             discussion_id,
-        } => show::run(&run_id, &discussion_id, json, warnings),
+        } => show::run(&run_id, &discussion_id, spec, warnings),
         DiscussionAction::Resolve {
             run_id,
             discussion_id,
@@ -81,7 +86,7 @@ pub fn dispatch(action: DiscussionAction, json: bool, warnings: &[String]) -> Re
             note,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
     }

@@ -17,7 +17,7 @@ use serde_json::json;
 use octl_core::{append_and_apply, read_manifest_opt};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 use crate::supervise::pid_file;
 
@@ -34,7 +34,7 @@ pub fn run(
     run_id: &str,
     once: bool,
     max_iter: Option<u32>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
@@ -137,16 +137,16 @@ pub fn run(
         action: "reattached",
         supervisor_pid: recorded_pid,
     };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!(
-            "reattached run {} (supervisor pid {})",
-            run_id, recorded_pid
-        );
-        for w in warnings {
-            eprintln!("warning: {}", w);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
+        }
+        OutputFormat::Text => {
+            println!(
+                "reattached run {} (supervisor pid {})",
+                run_id, recorded_pid
+            );
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

@@ -6,14 +6,14 @@ use serde::Serialize;
 use octl_core::{read_manifest_opt, read_spinoff_opt};
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
 use crate::spinoff::{status_arg_kebab, status_kebab, StatusFilterArg};
 
 pub struct Args<'a> {
     pub run_id: String,
     pub status: Option<StatusFilterArg>,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -117,27 +117,27 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             run_id,
             proposals: out,
         },
-        args.json,
+        args.spec,
         args.warnings,
     )
 }
 
-fn emit(payload: ListPayload, json: bool, warnings: &[String]) -> Result<(), CliError> {
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        if payload.proposals.is_empty() {
-            println!("(no proposals)");
+fn emit(payload: ListPayload, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
         }
-        for p in &payload.proposals {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                p.proposal_id, p.status, p.node_id, p.proposed_kind, p.proposed_title
-            );
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+        OutputFormat::Text => {
+            if payload.proposals.is_empty() {
+                println!("(no proposals)");
+            }
+            for p in &payload.proposals {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}",
+                    p.proposal_id, p.status, p.node_id, p.proposed_kind, p.proposed_title
+                );
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

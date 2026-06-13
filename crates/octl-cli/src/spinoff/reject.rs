@@ -8,7 +8,7 @@ use octl_core::{
 };
 
 use crate::error::CliError;
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, require_safe_id, run_paths};
 use crate::spinoff::validate_reason_like;
 
@@ -18,7 +18,7 @@ pub struct Args<'a> {
     pub reason: Option<String>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
-    pub json: bool,
+    pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
 }
 
@@ -88,7 +88,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     None,
                     Some(true),
                     None,
-                    args.json,
+                    args.spec,
                     args.warnings,
                 );
             }
@@ -120,7 +120,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             None,
             None,
             Some(true),
-            args.json,
+            args.spec,
             args.warnings,
         );
     }
@@ -172,7 +172,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Some(seq),
             None,
             None,
-            args.json,
+            args.spec,
             args.warnings,
         ),
         Outcome::AlreadyRejected { reason: persisted } => {
@@ -184,7 +184,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     None,
                     Some(true),
                     None,
-                    args.json,
+                    args.spec,
                     args.warnings,
                 )
             } else {
@@ -225,7 +225,7 @@ fn emit_rejected(
     seq: Option<u64>,
     idempotent_replay: Option<bool>,
     dry_run: Option<bool>,
-    json: bool,
+    spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
     let payload = RejectPayload {
@@ -236,30 +236,30 @@ fn emit_rejected(
         idempotent_replay,
         dry_run,
     };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("run-id:      {}", payload.run_id);
-        println!("proposal-id: {}", payload.proposal_id);
-        if let Some(r) = &payload.reason {
-            println!("reason:      {}", r);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
         }
-        match payload.seq {
-            Some(s) => println!("seq:         {}", s),
-            None if payload.dry_run == Some(true) => {
-                println!("seq:         (assigned on apply)")
+        OutputFormat::Text => {
+            println!("run-id:      {}", payload.run_id);
+            println!("proposal-id: {}", payload.proposal_id);
+            if let Some(r) = &payload.reason {
+                println!("reason:      {}", r);
             }
-            None => println!("seq:         (no-op; already rejected)"),
-        }
-        if payload.dry_run == Some(true) {
-            println!("note:        --dry-run (no filesystem changes)");
-        }
-        if payload.idempotent_replay == Some(true) {
-            println!("note:        idempotent replay (already rejected)");
-        }
-        for w in warnings {
-            eprintln!("warning: {}", w);
+            match payload.seq {
+                Some(s) => println!("seq:         {}", s),
+                None if payload.dry_run == Some(true) => {
+                    println!("seq:         (assigned on apply)")
+                }
+                None => println!("seq:         (no-op; already rejected)"),
+            }
+            if payload.dry_run == Some(true) {
+                println!("note:        --dry-run (no filesystem changes)");
+            }
+            if payload.idempotent_replay == Some(true) {
+                println!("note:        idempotent replay (already rejected)");
+            }
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())

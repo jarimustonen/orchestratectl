@@ -11,6 +11,7 @@ pub mod reject;
 use clap::{Subcommand, ValueEnum};
 
 use crate::error::CliError;
+use crate::output::OutputSpec;
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 #[clap(rename_all = "kebab-case")]
@@ -58,12 +59,16 @@ pub enum SpinoffAction {
     },
 }
 
-pub fn dispatch(action: SpinoffAction, json: bool, warnings: &[String]) -> Result<(), CliError> {
+pub fn dispatch(
+    action: SpinoffAction,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     match action {
         SpinoffAction::List { run_id, status } => list::run(list::Args {
             run_id,
             status,
-            json,
+            spec,
             warnings,
         }),
         SpinoffAction::Approve {
@@ -78,7 +83,7 @@ pub fn dispatch(action: SpinoffAction, json: bool, warnings: &[String]) -> Resul
             issue_slug,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
         SpinoffAction::Reject {
@@ -93,7 +98,7 @@ pub fn dispatch(action: SpinoffAction, json: bool, warnings: &[String]) -> Resul
             reason,
             idempotency_key,
             dry_run,
-            json,
+            spec,
             warnings,
         }),
     }

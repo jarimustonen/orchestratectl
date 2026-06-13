@@ -14,7 +14,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{CliError, ExitKind};
-use crate::output;
+use crate::output::{self, OutputFormat, OutputSpec};
 
 const GIT_COMMIT: &str = env!("ORCHESTRATECTL_GIT_COMMIT");
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,10 +29,19 @@ const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
     color = ColorChoice::Never,
 )]
 struct Cli {
-    /// Emit machine-readable JSON output on stdout. Shorthand for the
-    /// `--output` flag added in a follow-up issue.
-    #[arg(long, global = true)]
-    json: bool,
+    /// Output format. `jsonl` (default) emits one compact JSON envelope
+    /// per line on stdout — AI-first. `json` emits a single pretty
+    /// document. `text` emits a human-readable summary. A path-shaped
+    /// value (`./out.json`, `./out.jsonl`) routes the machine envelope
+    /// to that file (the format is inferred from the extension).
+    #[arg(
+        long,
+        global = true,
+        default_value = "jsonl",
+        value_name = "FMT|PATH",
+        value_parser = parse_output_arg,
+    )]
+    output: OutputSpec,
 
     #[command(subcommand)]
     command: Command,
@@ -132,18 +141,18 @@ pub fn run() -> ExitCode {
 
     info!(
         target: "orchestratectl::cli",
-        json = cli.json,
+        output_format = ?cli.output.format,
+        output_file = ?cli.output.file,
         command = ?cli.command,
         "command dispatched"
     );
 
+    let output = &cli.output;
     let result = match cli.command {
-        Command::Version => cmd_version(cli.json, &logging_warnings),
+        Command::Version => cmd_version(output, &logging_warnings),
         Command::Skill { action } => match action {
-            SkillAction::List => crate::skill::cmd_list(cli.json, &logging_warnings),
-            SkillAction::Show { name } => {
-                crate::skill::cmd_show(&name, cli.json, &logging_warnings)
-            }
+            SkillAction::List => crate::skill::cmd_list(output, &logging_warnings),
+            SkillAction::Show { name } => crate::skill::cmd_show(&name, output, &logging_warnings),
             SkillAction::Install {
                 name,
                 agent,
@@ -154,20 +163,18 @@ pub fn run() -> ExitCode {
                 agent.into(),
                 dest,
                 force,
-                cli.json,
+                output,
                 &logging_warnings,
             ),
         },
-        Command::Run { action } => crate::run::dispatch(action, cli.json, &logging_warnings),
-        Command::Event { action } => crate::event::dispatch(action, cli.json, &logging_warnings),
-        Command::Node { action } => crate::node::dispatch(action, cli.json, &logging_warnings),
+        Command::Run { action } => crate::run::dispatch(action, output, &logging_warnings),
+        Command::Event { action } => crate::event::dispatch(action, output, &logging_warnings),
+        Command::Node { action } => crate::node::dispatch(action, output, &logging_warnings),
         Command::Discussion { action } => {
-            crate::discussion::dispatch(action, cli.json, &logging_warnings)
+            crate::discussion::dispatch(action, output, &logging_warnings)
         }
-        Command::Spinoff { action } => {
-            crate::spinoff::dispatch(action, cli.json, &logging_warnings)
-        }
-        Command::Supervise(args) => crate::supervise::dispatch(args, cli.json, &logging_warnings),
+        Command::Spinoff { action } => crate::spinoff::dispatch(action, output, &logging_warnings),
+        Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
     };
 
     match result {
@@ -249,7 +256,7 @@ struct VersionPayload {
     supported_state_schemas: &'static [u32],
 }
 
-fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
+fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
@@ -258,27 +265,29 @@ fn cmd_version(json: bool, warnings: &[String]) -> Result<(), CliError> {
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
     };
-    if json {
-        output::emit_json(&payload, warnings)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    } else {
-        println!("orchestratectl {}", payload.version);
-        println!("commit:                  {}", payload.commit);
-        println!("envelope schema:         {}", payload.schema_version);
-        println!(
-            "supported envelopes:     {}",
-            format_u32_list(payload.supported_schemas)
-        );
-        println!("state schema version:    {}", payload.state_schema_version);
-        println!(
-            "supported state schemas: {}",
-            format_u32_list(payload.supported_state_schemas)
-        );
-        for w in warnings {
-            eprintln!("warning: {}", w);
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => output::emit_envelope(&payload, spec, warnings)?,
+        OutputFormat::Text => {
+            println!("orchestratectl {}", payload.version);
+            println!("commit:                  {}", payload.commit);
+            println!("envelope schema:         {}", payload.schema_version);
+            println!(
+                "supported envelopes:     {}",
+                format_u32_list(payload.supported_schemas)
+            );
+            println!("state schema version:    {}", payload.state_schema_version);
+            println!(
+                "supported state schemas: {}",
+                format_u32_list(payload.supported_state_schemas)
+            );
+            output::emit_text_warnings(warnings);
         }
     }
     Ok(())
+}
+
+fn parse_output_arg(s: &str) -> Result<OutputSpec, String> {
+    output::parse_output_value(s)
 }
 
 fn format_u32_list(values: &[u32]) -> String {
