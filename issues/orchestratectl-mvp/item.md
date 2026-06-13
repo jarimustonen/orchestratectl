@@ -1,10 +1,11 @@
 ---
 created: 2026-06-11
-updated: 2026-06-12
+updated: 2026-06-13
 type: epic
 owner: jari
-status: in-progress
+status: done
 priority: high
+closed: 2026-06-13
 ---
 
 # orchestratectl MVP
