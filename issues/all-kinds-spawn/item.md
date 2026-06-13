@@ -3,7 +3,7 @@ created: 2026-06-12
 updated: 2026-06-12
 type: feature
 assignee: jari
-status: open
+status: done
 priority: high
 epic: orchestratectl-mvp
 ---
