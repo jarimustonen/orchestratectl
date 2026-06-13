@@ -29,9 +29,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 
-use octl_core::{read_manifest_opt, Event};
+use octl_core::{read_manifest_opt, Event, SCHEMA_VERSION};
 
-use crate::error::{CliError, SCHEMA_VERSION};
+use crate::error::CliError;
 use crate::event::{resolve_format, FormatArg};
 use crate::output::OutputSpec;
 use crate::run::{from_core, require_safe_id, run_paths};

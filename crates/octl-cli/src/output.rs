@@ -21,7 +21,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::error::{CliError, SCHEMA_VERSION};
+use octl_core::SCHEMA_VERSION;
+
+use crate::error::CliError;
 
 /// Resolved output format for a single invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

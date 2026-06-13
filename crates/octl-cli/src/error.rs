@@ -4,9 +4,8 @@
 //! to **stderr**. Exit codes follow §2: 0 success, 1 user/validation,
 //! 2 refused-but-actionable (system/IO).
 
+use octl_core::SCHEMA_VERSION;
 use serde::Serialize;
-
-pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]

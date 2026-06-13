@@ -260,8 +260,8 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
-        schema_version: crate::error::SCHEMA_VERSION,
-        supported_schemas: &[crate::error::SCHEMA_VERSION],
+        schema_version: octl_core::SCHEMA_VERSION,
+        supported_schemas: &[octl_core::SCHEMA_VERSION],
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
     };

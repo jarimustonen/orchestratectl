@@ -13,6 +13,7 @@
 //! Higher-level supervisor and CLI logic live in their own crates / issues.
 
 pub mod atomic;
+pub mod envelope;
 pub mod error;
 pub mod events;
 pub mod ids;
@@ -22,6 +23,7 @@ pub mod projections;
 pub mod reducer;
 pub mod schema;
 
+pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
     append_and_apply, append_and_apply_unlocked, append_event, append_event_with_seq,
