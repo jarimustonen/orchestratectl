@@ -3,9 +3,10 @@ created: 2026-06-13
 updated: 2026-06-13
 type: chore
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-13
 ---
 
 # MVP polish wave 2 (B4 + B5 + B6 + B7)
