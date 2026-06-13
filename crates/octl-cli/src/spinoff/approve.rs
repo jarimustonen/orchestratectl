@@ -291,18 +291,26 @@ fn mismatch_error(
     if recorded == Some(requested) {
         return None;
     }
-    let recorded_repr = recorded.unwrap_or("<none>");
-    Some(
-        CliError::user(
-            "proposal_already_approved",
+    let (message, expected) = match recorded {
+        Some(r) => (
             format!(
                 "proposal {proposal_id} is already approved with issue-slug \
-                 {recorded_repr:?}; cannot re-approve with a different slug \
-                 {requested:?}"
+                 {r:?}; cannot re-approve with a different slug {requested:?}"
             ),
-        )
-        .with_invalid_value(requested)
-        .with_expected(Value::String(recorded_repr.to_string())),
+            Value::String(r.to_string()),
+        ),
+        None => (
+            format!(
+                "proposal {proposal_id} is already approved without a recorded \
+                 issue-slug; cannot bind {requested:?} retroactively"
+            ),
+            Value::Null,
+        ),
+    };
+    Some(
+        CliError::user("proposal_already_approved", message)
+            .with_invalid_value(requested)
+            .with_expected(expected),
     )
 }
 

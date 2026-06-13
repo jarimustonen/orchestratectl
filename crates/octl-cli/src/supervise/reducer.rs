@@ -27,8 +27,8 @@ use crate::supervise::state::SupervisorState;
 /// Matches the encoding contract in design.md §1.4: base32-lowercase
 /// (RFC 4648, no padding) of the leading 50 bits of `sha256(tuple)`.
 /// 50 bits is comfortable headroom for per-run dedup (a few hundred
-/// items at most) — birthday collisions become probable around ~3M
-/// items, far beyond any realistic single-run scope.
+/// items at most) — the 50% birthday-collision midpoint is around
+/// ~40M items, far beyond any realistic single-run scope.
 ///
 /// The hashed tuple includes `item_kind` ("discussion" / "spinoff") as
 /// belt-and-suspenders alongside the `d-` / `s-` prefix: even if a
@@ -53,22 +53,26 @@ pub fn deterministic_id(
     h.update(b":");
     h.update(item_index.to_string().as_bytes());
     let digest = h.finalize();
+    let head: &[u8; 7] = digest[..7].try_into().expect("sha256 produces 32 bytes");
     let mut out = String::with_capacity(2 + 10);
     out.push(prefix);
     out.push('-');
-    out.push_str(&base32_lower_10(&digest));
+    out.push_str(&base32_lower_10(head));
     out
 }
 
-/// Encode the first 50 bits of `bytes` as 10 lowercase base32 chars
-/// (RFC 4648 alphabet `a-z2-7`, no padding). Caller must provide at
-/// least 7 bytes — `sha256` always does.
-fn base32_lower_10(bytes: &[u8]) -> String {
+/// Encode the leading 50 bits of `bytes` as 10 lowercase base32 chars
+/// (RFC 4648 alphabet `a-z2-7`, no padding). The fixed `&[u8; 7]`
+/// signature makes the length invariant a type-level guarantee —
+/// `sha256` digests always have at least 7 bytes, but a future caller
+/// who slices wrong gets a compile error instead of silently truncated
+/// entropy.
+fn base32_lower_10(bytes: &[u8; 7]) -> String {
     const ALPHA: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    // Pack the leading 7 bytes (56 bits) into a u64, then keep the
-    // top 50 bits as ten 5-bit groups.
+    // Pack 7 bytes (56 bits) into a u64 MSB-first, then drop the bottom
+    // 6 bits — the remaining 50 bits become ten high-to-low 5-bit groups.
     let mut acc: u64 = 0;
-    for &b in bytes.iter().take(7) {
+    for &b in bytes {
         acc = (acc << 8) | u64::from(b);
     }
     acc >>= 6;
@@ -78,7 +82,9 @@ fn base32_lower_10(bytes: &[u8]) -> String {
         let idx = ((acc >> shift) & 0x1f) as usize;
         *slot = ALPHA[idx];
     }
-    String::from_utf8(out.to_vec()).expect("base32 alphabet is ASCII")
+    std::str::from_utf8(&out)
+        .expect("base32 alphabet is ASCII")
+        .to_owned()
 }
 
 // Fault-injection hook for V7's crash-recovery test. When set to
@@ -308,37 +314,34 @@ mod tests {
     }
 
     /// Lock the encoding contract from design.md §1.4 against a known
-    /// input tuple, so any future change to the formula (alphabet,
-    /// bit-slice, prefix) trips this assertion.
+    /// input tuple. The expected literal was computed independently
+    /// from the spec primitives (sha256 → take 50 bits → base32-lower);
+    /// any drift in the formula (input order, separators, hashing,
+    /// encoding) trips this assertion.
     #[test]
     fn deterministic_id_formula_matches_design_md_1_4() {
-        // Known tuple — change of any axis must change the encoded ID.
-        // The expected literal below is the output of the current
-        // implementation: base32-lowercase of sha256(tuple)[..50 bits].
         let got = deterministic_id('d', "run-x", "n-0001", 7, "discussion", 2);
-        // Recompute the expected value by hand from the same primitives
-        // the spec names (sha256 → take 50 bits → base32-lowercase).
-        // This is functionally a fixture: if the implementation drifts,
-        // this literal stops matching and a human must reconcile.
-        let expected_alphabet_len = 10;
-        assert_eq!(got.len(), 2 + expected_alphabet_len);
-        assert!(got.starts_with("d-"));
-        // Encoding sanity: 10 base32 chars carry 50 bits — must not be
-        // hex (which would only use 0-9a-f).
-        let body = &got[2..];
-        assert!(
-            body.chars()
-                .any(|c| ('g'..='z').contains(&c) || ('2'..='7').contains(&c)),
-            "id {got} looks hex-shaped (no chars outside 0-9a-f); base32 encoding regressed"
-        );
+        assert_eq!(got, "d-a4ldwigubn");
     }
 
     #[test]
     fn base32_lower_10_alphabet_is_rfc4648_lowercase() {
-        // All-zero input → all 'a'.
+        // Alphabet endpoints.
         assert_eq!(base32_lower_10(&[0u8; 7]), "aaaaaaaaaa");
-        // All-ones input → all '7' (top 5 bits of 0xff = 0b11111 = 31 = '7').
         assert_eq!(base32_lower_10(&[0xff; 7]), "7777777777");
+
+        // RFC 4648 §10 known vector: "foobar" -> "MZXW6YTBOI======".
+        // With a zero 7th byte the first 50 bits are the 48 bits of
+        // "foobar" plus two zero pad bits — matches the first 10 chars
+        // of the canonical encoding, lowercased.
+        assert_eq!(base32_lower_10(b"foobar\0"), "mzxw6ytboi");
+
+        // Asymmetric fixtures that catch MSB/LSB swaps and an off-by-one
+        // in the `>>= 6` shift. The high bit of byte 0 must land in the
+        // top bit of char 0; bit position 49 (counted from the MSB of
+        // the 50-bit window) must land in the low bit of char 9.
+        assert_eq!(base32_lower_10(&[0x80, 0, 0, 0, 0, 0, 0]), "qaaaaaaaaa");
+        assert_eq!(base32_lower_10(&[0, 0, 0, 0, 0, 0, 0x40]), "aaaaaaaaab");
     }
 
     #[test]

@@ -294,6 +294,46 @@ fn approve_is_idempotent_on_reapproval_without_slug() {
 }
 
 #[test]
+fn approve_with_slug_after_approval_without_recorded_slug_errors() {
+    // When `issuectl new` is unavailable, the first approve records
+    // `accepted_as_issue_slug = null`. A later retry that supplies
+    // `--issue-slug` cannot bind it retroactively (B5 contract) — it
+    // errors with `proposal_already_approved` and the structured
+    // `expected` field is JSON null, not a sentinel string.
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
+    let first = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]));
+    assert!(first["data"]["issue_slug"].is_null());
+
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+        "--issue-slug",
+        "slug-later",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "proposal_already_approved");
+    assert_eq!(err["error"]["invalid_value"], "slug-later");
+    assert!(
+        err["error"]["expected"].is_null(),
+        "expected should be JSON null when no slug was recorded, got {}",
+        err["error"]["expected"]
+    );
+}
+
+#[test]
 fn approve_with_different_slug_is_proposal_already_approved() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
