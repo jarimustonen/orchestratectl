@@ -9,6 +9,8 @@ pub mod create;
 pub mod list;
 pub mod reattach;
 pub mod show;
+pub mod spawn;
+pub mod supervisor_spawn;
 
 use std::path::{Path, PathBuf};
 
@@ -59,8 +61,18 @@ pub enum RunAction {
         source_repo: Option<String>,
         #[arg(long)]
         source_branch: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "prompt_file")]
         task: Option<String>,
+        /// Path to a prompt file (instead of inlining via --task). Used
+        /// as-is and handed to create.sh.
+        #[arg(long)]
+        prompt_file: Option<String>,
+        /// Workmux layout name; forwarded to create.sh as `-l <name>`.
+        #[arg(long)]
+        layout: Option<String>,
+        /// Skip workmux post-create hooks; forwarded to create.sh.
+        #[arg(long)]
+        no_hooks: bool,
         #[arg(long, requires = "parent_node_id")]
         parent_run_id: Option<String>,
         #[arg(long, requires = "parent_run_id")]
@@ -69,6 +81,13 @@ pub enum RunAction {
         idempotency_key: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// **Test-only.** Skip the create.sh shell-out and supervisor
+        /// spawn; produce only the on-disk run skeleton (manifest +
+        /// run.created event). Hidden from `--help`. Never set this in
+        /// production — the run will be missing its worktree, tmux
+        /// window, and supervisor.
+        #[arg(long, hide = true)]
+        skip_materialize: bool,
     },
     /// List runs on disk.
     List {
@@ -108,16 +127,24 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source_repo,
             source_branch,
             task,
+            prompt_file,
+            layout,
+            no_hooks,
             parent_run_id,
             parent_node_id,
             idempotency_key,
             dry_run,
+            skip_materialize,
         } => create::run(create::Args {
+            skip_materialize,
             kind: kind.into(),
             title,
             source_repo,
             source_branch,
             task,
+            prompt_file,
+            layout,
+            no_hooks,
             parent_run_id,
             parent_node_id,
             idempotency_key,
@@ -141,12 +168,11 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
     }
 }
 
-/// Map a `Kind` to its default `Lifecycle` per design.md §7.4.
+/// Map a `Kind` to its default `Lifecycle`. Thin alias over
+/// [`Kind::lifecycle`] so CLI call sites keep their existing
+/// free-function spelling while the source of truth lives in core.
 pub fn lifecycle_for(k: Kind) -> Lifecycle {
-    match k {
-        Kind::Code => Lifecycle::Interactive,
-        _ => Lifecycle::Autonomous,
-    }
+    k.lifecycle()
 }
 
 /// Resolve `<root>/runs/<run-id>` and return `RunPaths`.

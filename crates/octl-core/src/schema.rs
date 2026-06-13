@@ -26,6 +26,24 @@ pub enum Kind {
     Bugfix,
 }
 
+impl Kind {
+    /// Default lifecycle for a kind (design.md §7.4). `code` is
+    /// interactive (human-driven inside tmux); every other MVP kind is
+    /// autonomous (agent runs to completion, watchdog adjudicates).
+    pub fn lifecycle(self) -> Lifecycle {
+        match self {
+            Kind::Code => Lifecycle::Interactive,
+            Kind::Spinoff
+            | Kind::Orchestrated
+            | Kind::Research
+            | Kind::TechnicalDecision
+            | Kind::MakeSkill
+            | Kind::FanOut
+            | Kind::Bugfix => Lifecycle::Autonomous,
+        }
+    }
+}
+
 /// Lifecycle (design.md §1.2, §7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
