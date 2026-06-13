@@ -5,6 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    generate_skill_files(&manifest_dir);
+
     let repo_root = manifest_dir
         .ancestors()
         .find(|p| p.join(".git").exists())
@@ -62,5 +64,41 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+/// Substitute `{{CLI_VERSION}}` in every `skills/<name>/SKILL.template.md`
+/// with the crate's Cargo version, writing the result to
+/// `$OUT_DIR/skills/<name>/SKILL.md`. Embedded into the binary via
+/// `include_str!` at compile time so the shipped skill text always matches
+/// the binary it ships with (AGENTS-AI-FIRST-CLI §17).
+fn generate_skill_files(manifest_dir: &Path) {
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let skills_dir = manifest_dir.join("skills");
+
+    let entries = std::fs::read_dir(&skills_dir)
+        .unwrap_or_else(|e| panic!("read {}: {}", skills_dir.display(), e));
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let template = path.join("SKILL.template.md");
+        if !template.exists() {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).expect("dirname");
+        let body = std::fs::read_to_string(&template)
+            .unwrap_or_else(|e| panic!("read {}: {}", template.display(), e));
+        let rendered = body.replace("{{CLI_VERSION}}", cli_version);
+
+        let out_skill_dir = out_dir.join("skills").join(name);
+        std::fs::create_dir_all(&out_skill_dir)
+            .unwrap_or_else(|e| panic!("mkdir {}: {}", out_skill_dir.display(), e));
+        let out_file = out_skill_dir.join("SKILL.md");
+        std::fs::write(&out_file, &rendered)
+            .unwrap_or_else(|e| panic!("write {}: {}", out_file.display(), e));
+        println!("cargo:rerun-if-changed={}", template.display());
     }
 }

@@ -96,6 +96,12 @@ enum SkillAction {
         /// Skill name (see `skill list`).
         name: String,
     },
+    /// Stream a skill's SKILL.md (frontmatter + body) byte-identically
+    /// to stdout. Read-only twin of `install` (AGENTS-AI-FIRST-CLI §16).
+    Print {
+        /// Skill name (see `skill list`).
+        name: String,
+    },
     /// Copy a skill's SKILL.md to the agent's skill directory. Installs
     /// every embedded skill when no name is given (per §15).
     Install {
@@ -153,6 +159,9 @@ pub fn run() -> ExitCode {
         Command::Skill { action } => match action {
             SkillAction::List => crate::skill::cmd_list(output, &logging_warnings),
             SkillAction::Show { name } => crate::skill::cmd_show(&name, output, &logging_warnings),
+            SkillAction::Print { name } => {
+                crate::skill::cmd_print(&name, output, &logging_warnings)
+            }
             SkillAction::Install {
                 name,
                 agent,
@@ -242,6 +251,11 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
 struct VersionPayload {
     version: &'static str,
     commit: &'static str,
+    /// Bundled skill catalog (AGENTS-AI-FIRST-CLI §17). Each entry's
+    /// `cli_version` is sourced from the embedded SKILL.md frontmatter,
+    /// so an agent can audit "is the skill I loaded matching the binary
+    /// I am about to call?" in one call.
+    skills: Vec<crate::skill::SkillCatalogEntry>,
     // Duplicated from the success envelope intentionally. §10 of
     // AGENTS-AI-FIRST-CLI requires `version --json` to return
     // `{version, commit, schema_version, supported_schemas}` at the
@@ -260,6 +274,7 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
+        skills: crate::skill::catalog(),
         schema_version: octl_core::SCHEMA_VERSION,
         supported_schemas: &[octl_core::SCHEMA_VERSION],
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,

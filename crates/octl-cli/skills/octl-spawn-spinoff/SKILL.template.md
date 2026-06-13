@@ -2,6 +2,8 @@
 name: octl-spawn-spinoff
 description: Spawn an autonomous spinoff worktree via orchestratectl — a single fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back. Use when the user wants a parallel sub-task handled without interactive review.
 version: 1
+cli_version: "{{CLI_VERSION}}"
+schema_version: 1
 ---
 
 # octl-spawn-spinoff
@@ -112,3 +114,33 @@ Standard error envelope on stderr, non-zero exit. Likely codes:
   conflicting worktree)
 - `not_implemented` — the spinoff kind is not yet wired up in this
   build; fall back to `/worktree-spinoff`
+
+## Install or upgrade `orchestratectl`
+
+This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+first invocation in a session, run
+`orchestratectl version --output jsonl | jq -r .data.version` and
+compare:
+
+- **Missing**: install one of:
+  - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
+  - **Cargo** (any platform with a Rust toolchain): `cargo install orchestratectl`
+  - **Shell installer** (no toolchain):
+    `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
+
+  (Publishing channels are TBD; the placeholders above mirror
+  `issuectl` conventions and will be replaced once the release pipeline
+  ships.)
+- **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
+  `{{CLI_VERSION}}` and suggest upgrading via the same channel they
+  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl`,
+  `cargo install orchestratectl --force`, or re-run the shell
+  installer). Stop and wait — the `run create --kind spinoff` flag
+  surface may have changed.
+- **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of
+  what this skill was written for. Refresh the skill so the documented
+  invocation matches the CLI:
+  `orchestratectl skill install octl-spawn-spinoff --force` (add
+  `--agent codex` for Codex or `--agent all` for both). Continue once
+  the skill matches.
+- **Equal**: proceed normally.

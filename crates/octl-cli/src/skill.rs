@@ -1,8 +1,11 @@
-//! `skill` subcommand — list / show / install companion AI-skills.
+//! `skill` subcommand — list / show / print / install companion AI-skills.
 //!
-//! Skill files (`SKILL.md`) live under `crates/octl-cli/skills/<name>/`
-//! and are embedded into the binary at compile time via `include_str!`,
-//! so they version with the CLI. See `AGENTS-AI-FIRST-CLI.md` §15.
+//! Skill files (`SKILL.template.md`) live under
+//! `crates/octl-cli/skills/<name>/`. At build time, `build.rs` substitutes
+//! `{{CLI_VERSION}}` with the crate's Cargo version and writes the
+//! result to `$OUT_DIR/skills/<name>/SKILL.md`. The generated files are
+//! embedded into the binary at compile time via `include_str!`, so they
+//! version with the CLI. See `AGENTS-AI-FIRST-CLI.md` §15-§17.
 
 use std::collections::HashSet;
 use std::fs;
@@ -21,18 +24,71 @@ use crate::output::{self, OutputFormat, OutputSpec};
 struct EmbeddedSkill {
     name: &'static str,
     body: &'static str,
+    path_in_repo: &'static str,
 }
 
 const SKILLS: &[EmbeddedSkill] = &[
     EmbeddedSkill {
+        name: "orchestratectl-overview",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/orchestratectl-overview/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/orchestratectl-overview/SKILL.template.md",
+    },
+    EmbeddedSkill {
         name: "octl-run-overview",
-        body: include_str!("../skills/octl-run-overview/SKILL.md"),
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/octl-run-overview/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/octl-run-overview/SKILL.template.md",
     },
     EmbeddedSkill {
         name: "octl-spawn-spinoff",
-        body: include_str!("../skills/octl-spawn-spinoff/SKILL.md"),
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/octl-spawn-spinoff/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/octl-spawn-spinoff/SKILL.template.md",
     },
 ];
+
+/// Binary version embedded at build time. `build.rs` substitutes this
+/// into every shipped SKILL.md's `cli_version:` frontmatter, so `skill
+/// print` always returns a body whose declared `cli_version` matches the
+/// binary that emitted it (AGENTS-AI-FIRST-CLI §17).
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Skill-format schema version (the version of the SKILL.md frontmatter +
+/// body contract itself, distinct from the envelope `schema_version`).
+const SKILL_SCHEMA_VERSION: u32 = 1;
+
+/// Public catalog entry used by `version --json` to expose the bundled
+/// skill set (AGENTS-AI-FIRST-CLI §17). The on-disk skill is the source
+/// of truth for `cli_version`; emit it directly from the parsed
+/// frontmatter so the version payload cannot quietly disagree with what
+/// `skill print` returns.
+#[derive(Debug, Serialize)]
+pub struct SkillCatalogEntry {
+    pub name: &'static str,
+    pub cli_version: String,
+    pub schema_version: u32,
+}
+
+pub fn catalog() -> Vec<SkillCatalogEntry> {
+    SKILLS
+        .iter()
+        .map(|s| SkillCatalogEntry {
+            name: s.name,
+            cli_version: parse_frontmatter_field(s.body, "cli_version")
+                .unwrap_or_else(|| CLI_VERSION.to_string()),
+            schema_version: parse_frontmatter_field(s.body, "schema_version")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(SKILL_SCHEMA_VERSION),
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum AgentTarget {
@@ -115,6 +171,60 @@ pub fn cmd_show(name: &str, spec: &OutputSpec, warnings: &[String]) -> Result<()
     Ok(())
 }
 
+/// `skill print <name>` — stream the canonical embedded SKILL.md text
+/// to stdout, byte-identical to what `skill install` would persist
+/// (AGENTS-AI-FIRST-CLI §16). Pure read; no filesystem mutation.
+pub fn cmd_print(name: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+    let skill = lookup(name)?;
+    let cli_version = parse_frontmatter_field(skill.body, "cli_version")
+        .unwrap_or_else(|| CLI_VERSION.to_string());
+    let schema_version_skill = parse_frontmatter_field(skill.body, "schema_version")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SKILL_SCHEMA_VERSION);
+    match spec.format {
+        OutputFormat::Json => {
+            #[derive(Serialize)]
+            struct PrintPayload<'a> {
+                /// Skill-print payload schema; bumps independently from
+                /// the envelope's `schema_version`.
+                schema_version: u32,
+                name: &'a str,
+                cli_version: &'a str,
+                schema_version_skill: u32,
+                content: &'a str,
+                path_in_repo: &'a str,
+            }
+            output::emit_envelope(
+                &PrintPayload {
+                    schema_version: SKILL_SCHEMA_VERSION,
+                    name: skill.name,
+                    cli_version: &cli_version,
+                    schema_version_skill,
+                    content: skill.body,
+                    path_in_repo: skill.path_in_repo,
+                },
+                spec,
+                warnings,
+            )?;
+        }
+        // §16 contract: text and jsonl both stream the SKILL.md
+        // byte-identically. The structured form is opt-in via `--output
+        // json`; the default (jsonl) is byte-identity so `skill print`
+        // composes with `cat`, `tee`, and shell redirection without any
+        // un-wrapping step.
+        OutputFormat::Text | OutputFormat::Jsonl => {
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
+            out.write_all(skill.body.as_bytes())
+                .map_err(|e| CliError::system("io_error", format!("write stdout: {e}")))?;
+            out.flush()
+                .map_err(|e| CliError::system("io_error", format!("flush stdout: {e}")))?;
+            output::emit_text_warnings(warnings);
+        }
+    }
+    Ok(())
+}
+
 pub fn cmd_install(
     name: Option<&str>,
     agent: AgentTarget,
@@ -166,11 +276,20 @@ pub fn cmd_install(
         }
     }
 
-    preflight(&plan, force)?;
+    let drift_warnings = preflight(&plan, force)?;
+
+    // Combine caller-provided warnings (logging init, etc.) with
+    // drift-detected ones so the success envelope surfaces both.
+    let mut all_warnings: Vec<String> = warnings.to_vec();
+    all_warnings.extend(drift_warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
     for (skill, agent_name, path) in plan {
-        write_atomic(&path, skill.body, force)?;
+        // Drift detection in preflight already greenlit the older-version
+        // case even without `--force`, so pass `true` to `write_atomic`
+        // when the file exists (we have already decided to overwrite).
+        let allow_overwrite = force || path.exists();
+        write_atomic(&path, skill.body, allow_overwrite)?;
         installed.push(InstalledFile {
             name: skill.name,
             agent: agent_name,
@@ -181,16 +300,37 @@ pub fn cmd_install(
     let payload = InstallPayload { installed };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&payload, spec, warnings)?;
+            output::emit_envelope(&payload, spec, &all_warnings)?;
         }
         OutputFormat::Text => {
             for f in &payload.installed {
                 println!("installed {} ({}) -> {}", f.name, f.agent, f.path);
             }
-            output::emit_text_warnings(warnings);
+            output::emit_text_warnings(&all_warnings);
         }
     }
     Ok(())
+}
+
+/// Compare two `cli_version` strings as semver-style dot-separated
+/// numeric tuples. Falls back to lexicographic comparison on
+/// non-numeric components so a malformed on-disk version doesn't panic.
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |s: &str| -> Vec<(u64, String)> {
+        s.split('.')
+            .map(|part| {
+                let num: u64 = part
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                let rest: String = part.chars().skip_while(|c| c.is_ascii_digit()).collect();
+                (num, rest)
+            })
+            .collect()
+    };
+    parse(a).cmp(&parse(b))
 }
 
 /// Reject the whole install plan before touching the filesystem when any
@@ -201,23 +341,15 @@ pub fn cmd_install(
 fn preflight(
     plan: &[(&'static EmbeddedSkill, &'static str, PathBuf)],
     force: bool,
-) -> Result<(), CliError> {
+) -> Result<Vec<String>, CliError> {
+    use std::cmp::Ordering;
     let mut seen: HashSet<&Path> = HashSet::new();
-    for (_, _, path) in plan {
+    let mut drift_warnings: Vec<String> = Vec::new();
+    for (skill, _, path) in plan {
         if !seen.insert(path.as_path()) {
             return Err(CliError::user(
                 "duplicate_destination",
                 format!("destination appears more than once: {}", path.display()),
-            )
-            .with_invalid_value(path.display().to_string()));
-        }
-        if path.exists() && !force {
-            return Err(CliError::system(
-                "refused_overwrite",
-                format!(
-                    "{} already exists; pass --force to overwrite",
-                    path.display()
-                ),
             )
             .with_invalid_value(path.display().to_string()));
         }
@@ -228,8 +360,72 @@ fn preflight(
             )
             .with_invalid_value(path.display().to_string()));
         }
+        if !path.exists() {
+            continue;
+        }
+        // Existing target: classify by `cli_version` drift relative to
+        // the running binary (AGENTS-AI-FIRST-CLI §17).
+        let on_disk_version = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| parse_frontmatter_field(&s, "cli_version"));
+        match on_disk_version.as_deref() {
+            Some(v) => match compare_versions(v, CLI_VERSION) {
+                Ordering::Less => {
+                    // Older on disk: install proceeds with a warning so
+                    // the agent learns the operating manual just moved.
+                    drift_warnings.push(format!(
+                        "skill_version_drift: {} on disk is {}; binary ships {}; overwriting",
+                        skill.name, v, CLI_VERSION
+                    ));
+                }
+                Ordering::Greater => {
+                    if !force {
+                        return Err(CliError::system(
+                            "skill_version_too_new",
+                            format!(
+                                "{}: on-disk skill is cli_version {} but binary is {}; pass --force to overwrite anyway",
+                                path.display(),
+                                v,
+                                CLI_VERSION
+                            ),
+                        )
+                        .with_invalid_value(path.display().to_string()));
+                    }
+                    drift_warnings.push(format!(
+                        "skill_version_drift: {} on disk is {} (newer than binary {}); --force overwriting",
+                        skill.name, v, CLI_VERSION
+                    ));
+                }
+                Ordering::Equal => {
+                    if !force {
+                        return Err(CliError::system(
+                            "refused_overwrite",
+                            format!(
+                                "{} already exists; pass --force to overwrite",
+                                path.display()
+                            ),
+                        )
+                        .with_invalid_value(path.display().to_string()));
+                    }
+                }
+            },
+            None => {
+                // Existing file without a parseable `cli_version`: treat
+                // as the unversioned-legacy case and require --force.
+                if !force {
+                    return Err(CliError::system(
+                        "refused_overwrite",
+                        format!(
+                            "{} already exists; pass --force to overwrite",
+                            path.display()
+                        ),
+                    )
+                    .with_invalid_value(path.display().to_string()));
+                }
+            }
+        }
     }
-    Ok(())
+    Ok(drift_warnings)
 }
 
 fn lookup(name: &str) -> Result<&'static EmbeddedSkill, CliError> {
@@ -351,7 +547,14 @@ fn write_atomic(path: &Path, content: &str, force: bool) -> Result<(), CliError>
 /// out of scope — but it covers every shape our SKILL.md frontmatter is
 /// allowed to take.
 fn parse_description(body: &str) -> Option<String> {
-    // Tolerate a UTF-8 BOM at the start of the file.
+    parse_frontmatter_field(body, "description")
+}
+
+/// Generic line-oriented frontmatter field extractor. Same constraints
+/// as `parse_description`: top-level `---` fence, `key: value` shape,
+/// single-line scalars only. Strips surrounding `"` / `'` quotes from
+/// the value.
+fn parse_frontmatter_field(body: &str, field: &str) -> Option<String> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let mut lines = body.lines();
     if lines.next()?.trim_end() != "---" {
@@ -361,8 +564,10 @@ fn parse_description(body: &str) -> Option<String> {
         if line.trim_end() == "---" {
             return None;
         }
-        let (key, value) = line.split_once(':')?;
-        if key.trim() == "description" {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim() == field {
             let v = value.trim();
             let v = v
                 .strip_prefix('"')
@@ -380,21 +585,7 @@ fn parse_description(body: &str) -> Option<String> {
 /// test that pins catalog name == frontmatter name.
 #[cfg(test)]
 fn parse_name(body: &str) -> Option<String> {
-    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
-    let mut lines = body.lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
-    }
-    for line in lines {
-        if line.trim_end() == "---" {
-            return None;
-        }
-        let (key, value) = line.split_once(':')?;
-        if key.trim() == "name" {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
+    parse_frontmatter_field(body, "name")
 }
 
 #[cfg(test)]

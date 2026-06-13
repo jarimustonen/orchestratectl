@@ -46,7 +46,14 @@ fn skill_list_json_pins_catalog_shape() {
     names.sort();
     // Pin the exact catalog: a silent addition or removal must show up
     // as a test failure so the consumer-facing surface stays explicit.
-    assert_eq!(names, vec!["octl-run-overview", "octl-spawn-spinoff"]);
+    assert_eq!(
+        names,
+        vec![
+            "octl-run-overview",
+            "octl-spawn-spinoff",
+            "orchestratectl-overview",
+        ]
+    );
     for s in skills {
         assert!(
             !s["description"].as_str().unwrap_or("").is_empty(),
@@ -271,4 +278,146 @@ fn skill_show_unknown_emits_skill_not_found() {
     let err: Value = serde_json::from_slice(&out.stderr).expect("json err envelope");
     assert_eq!(err["error"]["code"], "skill_not_found");
     assert_eq!(err["error"]["invalid_value"], "no-such-skill");
+}
+
+#[test]
+fn skill_print_default_streams_skill_md_byte_identically() {
+    // §16: `skill print` (default `--output jsonl`) writes the embedded
+    // SKILL.md byte-identically — no envelope wrapping. The bytes must
+    // equal what `skill install` would persist.
+    let home = mk_home();
+    let print_out = bin(&home)
+        .args(["skill", "print", "orchestratectl-overview"])
+        .output()
+        .expect("spawn");
+    assert!(print_out.status.success(), "exit: {:?}", print_out.status);
+    let dest = home.path().join("printed.md");
+    let install_out = bin(&home)
+        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .arg(&dest)
+        .output()
+        .expect("spawn");
+    assert!(install_out.status.success());
+    let on_disk = std::fs::read(&dest).expect("read installed");
+    assert_eq!(
+        print_out.stdout, on_disk,
+        "skill print stdout must equal skill install on-disk bytes"
+    );
+}
+
+#[test]
+fn skill_print_json_payload_pins_schema() {
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "print",
+            "orchestratectl-overview",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "exit: {:?}", out.status);
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["schema_version"], 1);
+    let data = &v["data"];
+    assert_eq!(data["name"], "orchestratectl-overview");
+    assert_eq!(data["schema_version"], 1);
+    assert_eq!(data["schema_version_skill"], 1);
+    assert_eq!(
+        data["cli_version"].as_str().unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert!(data["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("---\nname: orchestratectl-overview"));
+    assert!(data["path_in_repo"]
+        .as_str()
+        .unwrap()
+        .contains("SKILL.template.md"));
+}
+
+#[test]
+fn skill_print_unknown_emits_skill_not_found() {
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "print", "no-such-skill"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(1));
+    let err: Value = serde_json::from_slice(&out.stderr).expect("err envelope");
+    assert_eq!(err["error"]["code"], "skill_not_found");
+}
+
+#[test]
+fn skill_install_over_older_version_warns_and_succeeds_without_force() {
+    // §17 drift: install over an older on-disk skill must proceed
+    // without --force and surface a `skill_version_drift` warning so the
+    // agent learns the operating manual just moved.
+    let home = mk_home();
+    let dest = home.path().join("SKILL.md");
+    // Hand-write an "older" skill — cli_version 0.0.0 will always be
+    // older than the current binary.
+    std::fs::write(
+        &dest,
+        "---\nname: orchestratectl-overview\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .arg(&dest)
+        .args(["--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "install over older must succeed: {:?}",
+        out
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let warnings = v["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("skill_version_drift")
+                && w.as_str().unwrap().contains("0.0.0")),
+        "expected skill_version_drift warning naming 0.0.0; got {warnings:?}"
+    );
+    // File was overwritten with the bundled body.
+    let after = std::fs::read_to_string(&dest).unwrap();
+    assert!(after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
+    // §17 drift: install over a newer on-disk skill refuses with exit 2
+    // and `skill_version_too_new` unless --force is passed.
+    let home = mk_home();
+    let dest = home.path().join("SKILL.md");
+    std::fs::write(
+        &dest,
+        "---\nname: orchestratectl-overview\ndescription: future\ncli_version: \"99.0.0\"\nschema_version: 1\n---\n",
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .arg(&dest)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "expected exit 2");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("err envelope");
+    assert_eq!(err["error"]["code"], "skill_version_too_new");
+
+    // --force overrides the refusal.
+    let out = bin(&home)
+        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .arg(&dest)
+        .arg("--force")
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "--force install must succeed");
 }

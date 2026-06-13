@@ -89,6 +89,7 @@ fn version_json_pins_envelope_and_payload_shape() {
         BTreeSet::from([
             "version",
             "commit",
+            "skills",
             "schema_version",
             "supported_schemas",
             "state_schema_version",
@@ -107,6 +108,22 @@ fn version_json_pins_envelope_and_payload_shape() {
     // binary and the CLI binary are built from the same crate, so
     // `CARGO_PKG_VERSION` here equals the value baked into the binary.
     assert_eq!(data["version"], env!("CARGO_PKG_VERSION"));
+
+    // §17 skill catalog: non-empty array; every entry has the binary's
+    // version, plus a stable schema_version. Pins the §17 contract so a
+    // silent decoupling of skill `cli_version` from the binary surfaces
+    // as a test failure.
+    let skills = data["skills"].as_array().expect("skills array");
+    assert!(!skills.is_empty(), "skill catalog is empty");
+    for s in skills {
+        assert!(s["name"].is_string());
+        assert_eq!(
+            s["cli_version"].as_str().unwrap(),
+            env!("CARGO_PKG_VERSION"),
+            "skill cli_version must match binary version"
+        );
+        assert_eq!(s["schema_version"], 1);
+    }
 
     // Commit is either "unknown" (no .git) or a 40-char lowercase hex
     // SHA. Without this check, `build.rs` could regress to embedding
