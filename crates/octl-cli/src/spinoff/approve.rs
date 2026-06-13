@@ -6,6 +6,15 @@
 //! surfaces as a warning entry in the success envelope so the caller
 //! can decide whether to retry `issuectl new` themselves. The approval
 //! is recorded either way.
+//!
+//! ## `--idempotency-key` scope
+//!
+//! The key dedupes the *local* `spinoff.approved` event-log write
+//! only. It does NOT plumb through to `issuectl new`, so retrying an
+//! approve with the same key after a partial failure can still create
+//! a second issuectl issue. For retry-safe materialization, pass
+//! `--issue-slug <slug>` — that skips the `issuectl` call entirely
+//! and binds the approval to a known-existing issue.
 
 use std::process::Command;
 

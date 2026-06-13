@@ -41,6 +41,10 @@ pub enum SpinoffAction {
         /// slug; skips the `issuectl new` call.
         #[arg(long)]
         issue_slug: Option<String>,
+        /// Dedupes the *local* `spinoff.approved` event-log write only.
+        /// Does NOT prevent a duplicate `issuectl new` call on retry —
+        /// for retry-safe materialization, pass `--issue-slug` so the
+        /// `issuectl` call is skipped entirely.
         #[arg(long)]
         idempotency_key: Option<String>,
         #[arg(long)]
