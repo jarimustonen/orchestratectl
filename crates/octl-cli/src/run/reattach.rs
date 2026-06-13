@@ -22,6 +22,7 @@ use crate::run::{from_core, require_safe_id, run_paths};
 use crate::supervise::pid_file;
 
 const PID_FILE_WAIT: Duration = Duration::from_secs(5);
+const POLL_TICK: Duration = Duration::from_millis(200);
 
 #[derive(Serialize)]
 struct ReattachPayload<'a> {
@@ -121,7 +122,7 @@ pub fn run(
             // the file hasn't landed yet (it should within a tick).
             break child_pid;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(POLL_TICK);
     };
 
     let _ = append_and_apply(
