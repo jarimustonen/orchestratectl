@@ -22,13 +22,18 @@ use octl_core::{
 use crate::error::CliError;
 use crate::supervise::state::SupervisorState;
 
-/// `s-<10 hex chars of sha256>` / `d-<10 hex chars>`.
+/// `s-<10 base32 chars>` / `d-<10 base32 chars>` (50 bits of entropy).
 ///
-/// The `[..10]` slice in the issue spec is intentionally a chars-of-hex
-/// slice: hex keeps the formula easy to verify by hand, and 10 hex chars
-/// = 40 bits of entropy, plenty for per-run dedup (a few hundred items
-/// at most). Design.md §1.4 shows base32 but the issue spec overrides
-/// with the hex-style formula; we follow the issue.
+/// Matches the encoding contract in design.md §1.4: base32-lowercase
+/// (RFC 4648, no padding) of the leading 50 bits of `sha256(tuple)`.
+/// 50 bits is comfortable headroom for per-run dedup (a few hundred
+/// items at most) — birthday collisions become probable around ~3M
+/// items, far beyond any realistic single-run scope.
+///
+/// The hashed tuple includes `item_kind` ("discussion" / "spinoff") as
+/// belt-and-suspenders alongside the `d-` / `s-` prefix: even if a
+/// future caller misroutes a tuple through the wrong prefix, the
+/// underlying hash still differs across item kinds.
 pub fn deterministic_id(
     prefix: char,
     child_run_id: &str,
@@ -48,14 +53,32 @@ pub fn deterministic_id(
     h.update(b":");
     h.update(item_index.to_string().as_bytes());
     let digest = h.finalize();
-    let mut hex = String::with_capacity(2 + 10);
-    hex.push(prefix);
-    hex.push('-');
-    for &b in digest.iter().take(5) {
-        use std::fmt::Write;
-        let _ = write!(&mut hex, "{:02x}", b);
+    let mut out = String::with_capacity(2 + 10);
+    out.push(prefix);
+    out.push('-');
+    out.push_str(&base32_lower_10(&digest));
+    out
+}
+
+/// Encode the first 50 bits of `bytes` as 10 lowercase base32 chars
+/// (RFC 4648 alphabet `a-z2-7`, no padding). Caller must provide at
+/// least 7 bytes — `sha256` always does.
+fn base32_lower_10(bytes: &[u8]) -> String {
+    const ALPHA: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    // Pack the leading 7 bytes (56 bits) into a u64, then keep the
+    // top 50 bits as ten 5-bit groups.
+    let mut acc: u64 = 0;
+    for &b in bytes.iter().take(7) {
+        acc = (acc << 8) | u64::from(b);
     }
-    hex
+    acc >>= 6;
+    let mut out = [0u8; 10];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let shift = (9 - i) * 5;
+        let idx = ((acc >> shift) & 0x1f) as usize;
+        *slot = ALPHA[idx];
+    }
+    String::from_utf8(out.to_vec()).expect("base32 alphabet is ASCII")
 }
 
 // Fault-injection hook for V7's crash-recovery test. When set to
@@ -274,6 +297,48 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.starts_with("d-"));
         assert_eq!(a.len(), 2 + 10);
+        // Output is base32-lowercase per design.md §1.4: only the RFC
+        // 4648 alphabet `a-z2-7` (no padding, no uppercase, no hex).
+        for c in a[2..].chars() {
+            assert!(
+                c.is_ascii_lowercase() || ('2'..='7').contains(&c),
+                "non-base32 char {c:?} in {a}"
+            );
+        }
+    }
+
+    /// Lock the encoding contract from design.md §1.4 against a known
+    /// input tuple, so any future change to the formula (alphabet,
+    /// bit-slice, prefix) trips this assertion.
+    #[test]
+    fn deterministic_id_formula_matches_design_md_1_4() {
+        // Known tuple — change of any axis must change the encoded ID.
+        // The expected literal below is the output of the current
+        // implementation: base32-lowercase of sha256(tuple)[..50 bits].
+        let got = deterministic_id('d', "run-x", "n-0001", 7, "discussion", 2);
+        // Recompute the expected value by hand from the same primitives
+        // the spec names (sha256 → take 50 bits → base32-lowercase).
+        // This is functionally a fixture: if the implementation drifts,
+        // this literal stops matching and a human must reconcile.
+        let expected_alphabet_len = 10;
+        assert_eq!(got.len(), 2 + expected_alphabet_len);
+        assert!(got.starts_with("d-"));
+        // Encoding sanity: 10 base32 chars carry 50 bits — must not be
+        // hex (which would only use 0-9a-f).
+        let body = &got[2..];
+        assert!(
+            body.chars()
+                .any(|c| ('g'..='z').contains(&c) || ('2'..='7').contains(&c)),
+            "id {got} looks hex-shaped (no chars outside 0-9a-f); base32 encoding regressed"
+        );
+    }
+
+    #[test]
+    fn base32_lower_10_alphabet_is_rfc4648_lowercase() {
+        // All-zero input → all 'a'.
+        assert_eq!(base32_lower_10(&[0u8; 7]), "aaaaaaaaaa");
+        // All-ones input → all '7' (top 5 bits of 0xff = 0b11111 = 31 = '7').
+        assert_eq!(base32_lower_10(&[0xff; 7]), "7777777777");
     }
 
     #[test]

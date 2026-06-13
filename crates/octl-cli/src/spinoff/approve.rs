@@ -237,9 +237,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         Outcome::AlreadyApproved {
             issue_slug: persisted,
         } => {
-            if let Some(err) =
-                mismatch_error(&proposal_id, issue_slug_arg.as_deref(), persisted.as_deref())
-            {
+            if let Some(err) = mismatch_error(
+                &proposal_id,
+                issue_slug_arg.as_deref(),
+                persisted.as_deref(),
+            ) {
                 return Err(err);
             }
             emit_approved(

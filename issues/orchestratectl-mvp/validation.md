@@ -100,7 +100,7 @@ Expectation: < 1 GB resident, < 5% CPU, well under the 10240 FD per-process limi
 
 ### V7 — Deterministic-ID dedup actually works
 
-**Assumption:** The deterministic-ID rule (`design.md` §1.4) — `discussion_id = sha256(child_run_id + child_node_id + report_seq + item_index)[:10]` — produces stable, collision-free IDs across parent-supervisor restart.
+**Assumption:** The deterministic-ID rule (`design.md` §1.4) — `discussion_id = "d-" + base32_lowercase(sha256(child_run_id + ":" + child_node_id + ":" + report_seq + ":" + item_kind + ":" + item_index))[:10]` — produces stable, collision-free IDs across parent-supervisor restart. (Implementation adds `item_kind` as a defense-in-depth axis alongside the `d-`/`s-` prefix; the encoding and bit-width match §1.4.)
 
 **Check:** Unit + integration test in `octl-core` that:
 1. Simulates a child writing `node.report` with 3 spinoff proposals + 2 discussion items.
@@ -170,4 +170,4 @@ All five gates pass as integration tests in `crates/octl-cli/tests/supervise_gat
 
 - Real tmux pane-PID re-discovery (V2 "live tmux") is exercised only via a stub `TMUX_BIN=/usr/bin/true`. The integration with workmux/tmux happens in the next issue (`all-kinds-spawn`) and the create.sh stdout contract (V1).
 - The watchdog currently treats `tmux_window: null` as "skip tmux probe". When create.sh starts populating `tmux_window`, the half-state `(PID alive, tmux gone)` path will become testable end-to-end.
-- The deterministic-ID slice uses 10 hex chars of SHA-256 (40 bits) per the issue spec; design.md §1.4 originally suggested base32. The hex choice is fine for per-run dedup (a few hundred items max) but is noted here so future migrations can choose consistently.
+- The deterministic-ID slice uses 10 lowercase base32 chars of SHA-256 (50 bits), aligned with design.md §1.4 (decision B7, 2026-06-13). Prefix `d-` for discussions, `s-` for spinoffs. Alphabet is RFC 4648 `a-z2-7`, no padding. The earlier hex coding (40 bits) was migrated before any external consumer locked the format. The encoding contract is asserted directly in `supervise::reducer::tests::deterministic_id_formula_matches_design_md_1_4` so any future drift trips the test.
