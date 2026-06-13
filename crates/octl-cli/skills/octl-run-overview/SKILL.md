@@ -21,11 +21,15 @@ fan-outs, orchestrations, and spinoffs. Every workflow is a **run** with
 canonical state under `~/.orchestratectl/runs/<run-id>/`. Two commands
 will expose that state to you once they ship:
 
-- `orchestratectl run list [--json]` — every run, newest first
-- `orchestratectl run show <run-id> [--json]` — one run, full detail
+- `orchestratectl run list` — every run, newest first
+- `orchestratectl run show <run-id>` — one run, full detail
 
-Always pass `--json`. The human format is for terminals; agents read
-JSON.
+The default output is `--output jsonl` — one compact JSON envelope per
+line on stdout. Agents read this directly with `serde_json::from_str`
+on each line. Pass `--output text` only when a human is reading the
+terminal; pass `--output json` if you want pretty-printed JSON instead
+of the single-line stream. The `--json` flag from older builds is
+gone — `--output jsonl` is the canonical machine form.
 
 ## Envelope
 

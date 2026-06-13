@@ -36,9 +36,12 @@ orchestratectl run create \
   --kind spinoff \
   --prompt "<the task in one paragraph>" \
   --source-branch <branch> \
-  [--target-branch <branch>] \
-  [--json]
+  [--target-branch <branch>]
 ```
+
+(The default is `--output jsonl` — one compact envelope per line on
+stdout. Add `--output text` for a human-readable summary or `--output
+json` for pretty-printed JSON.)
 
 - `--kind spinoff` is required; it picks the autonomous worker recipe.
 - `--prompt` is the *entire* brief the spinoff agent will see. It must
