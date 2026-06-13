@@ -1,12 +1,13 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-13
 type: chore
 assignee: jari
-status: open
+status: done
 priority: high
 epic: orchestratectl-mvp
 labels: [cross-repo]
+closed: 2026-06-13
 ---
 
 # Patch create.sh to emit structured JSON stdout (cross-repo)
