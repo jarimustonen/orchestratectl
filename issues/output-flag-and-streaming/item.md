@@ -2,7 +2,7 @@
 created: 2026-06-12
 updated: 2026-06-13
 type: task
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
@@ -13,6 +13,9 @@ commits:
   summary: 'test(output): migrate suite to --output flag, add jsonl single-line + legacy-flag tests'
 - hash: a18c88a
   summary: 'docs(skills): update SKILL.md seeds for --output flag (default jsonl)'
+- hash: b29662f
+  summary: 'docs(output-flag-and-streaming): handoff notes (llm-review deferred)'
+closed: 2026-06-13
 ---
 
 # Global --output flag and --output=jsonl streaming
