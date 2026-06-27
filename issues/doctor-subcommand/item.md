@@ -3,9 +3,10 @@ created: 2026-06-27
 updated: 2026-06-27
 type: feature
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-27
 ---
 
 # doctor subcommand (read-only self-diagnostic per §18)
