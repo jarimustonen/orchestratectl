@@ -2,9 +2,10 @@
 created: 2026-06-12
 updated: 2026-06-27
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-27
 ---
 
 # octl-core: validate IDs / typed ID newtypes
