@@ -146,9 +146,12 @@ fn find_prev_newline(
 /// the run's [`RunLock`] for the duration of this call and is responsible
 /// for ensuring `seq` is monotonic. Misuse can corrupt the event log.
 ///
-/// `pub(crate)` — this raw, no-reducer, caller-managed-`seq` primitive is an
-/// internal building block (and a footgun outside the crate). It is retained
-/// for the crate's own tests and a future `rebuild_projections_from_events`.
+/// Test-only (`#[cfg(test)]`): a raw, no-reducer, caller-managed-`seq`
+/// primitive used by the crate's fixtures and the flock stress test to craft
+/// event logs with explicit seqs. Production mutation goes through
+/// [`append_and_apply_event`]; projection rebuild (future) replays via
+/// [`crate::reducer`], so neither needs this.
+#[cfg(test)]
 pub(crate) fn append_event_with_seq(
     paths: &RunPaths,
     seq: u64,
@@ -160,6 +163,7 @@ pub(crate) fn append_event_with_seq(
     write_event_line(paths, seq, kind, node_id, idempotency_key, data)
 }
 
+#[cfg(test)]
 fn write_event_line(
     paths: &RunPaths,
     seq: u64,

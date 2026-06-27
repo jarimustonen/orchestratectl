@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply, read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status,
+    append_and_apply_event, read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -72,7 +72,7 @@ fn install_signal_handlers() -> Result<(), CliError> {
         sa.sa_sigaction = handle_term_signal as extern "C" fn(libc::c_int) as usize;
         // Block both term signals while the handler runs, and use
         // SA_RESTART so a signal arriving mid-syscall (e.g. the `flock`
-        // / write inside the shutdown `append_and_apply`) does not fail
+        // / write inside the shutdown `append_and_apply_event`) does not fail
         // that syscall with EINTR and defeat the clean-shutdown contract.
         libc::sigemptyset(&raw mut sa.sa_mask);
         libc::sigaddset(&raw mut sa.sa_mask, libc::SIGINT);
@@ -164,7 +164,7 @@ pub fn dispatch(
         pid = our_pid,
         "supervisor started"
     );
-    let _ = append_and_apply(
+    let _ = append_and_apply_event(
         &paths,
         "supervisor.started",
         None,
@@ -310,7 +310,7 @@ pub fn dispatch(
                             );
                             // Record on parent log so a future
                             // operator can see the failure (D1).
-                            let _ = append_and_apply(
+                            let _ = append_and_apply_event(
                                 &paths,
                                 "child.spawn_failed",
                                 ev.node_id.as_deref(),
@@ -479,7 +479,7 @@ pub fn dispatch(
         None => json!({"pid": our_pid, "reason": exit_reason}),
     };
     let _ =
-        append_and_apply(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
+        append_and_apply_event(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
     pid_file::remove_if_owner(&pid_path, our_pid);
 
     #[derive(Serialize)]
@@ -614,7 +614,7 @@ fn spawn_child_supervisor(
         }
     }
     // Record on the parent's tracking node too via an event.
-    let _ = append_and_apply(
+    let _ = append_and_apply_event(
         parent_paths,
         "child.supervisor_attached",
         None,
@@ -762,7 +762,7 @@ fn watchdog_tick(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": [],
             });
-            if let Err(e) = append_and_apply(paths, "node.report", Some(&node_id), None, data) {
+            if let Err(e) = append_and_apply_event(paths, "node.report", Some(&node_id), None, data) {
                 warn!(
                     target: "orchestratectl::supervise",
                     node = %node_id,

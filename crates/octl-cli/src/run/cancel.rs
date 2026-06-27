@@ -4,7 +4,7 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, Status};
+use octl_core::{append_and_apply_event, read_manifest_opt, read_node_opt, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -104,7 +104,7 @@ pub fn run(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": []
             });
-            append_and_apply(&paths, "node.report", Some(nid.as_str()), None, data)
+            append_and_apply_event(&paths, "node.report", Some(nid.as_str()), None, data)
                 .map_err(from_core)?;
             cancelled_nodes.push(node_id);
         }
@@ -115,7 +115,7 @@ pub fn run(
     if let Some(n) = note {
         status_data.insert("note".into(), Value::String(n.into()));
     }
-    append_and_apply(&paths, "run.status", None, None, Value::Object(status_data))
+    append_and_apply_event(&paths, "run.status", None, None, Value::Object(status_data))
         .map_err(from_core)?;
 
     emit(

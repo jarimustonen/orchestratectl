@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::json;
 
-use octl_core::{append_and_apply, read_manifest_opt};
+use octl_core::{append_and_apply_event, read_manifest_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -56,7 +56,7 @@ pub fn run(
         }
         // Stale PID file (dead or recycled PID): record the dead prior
         // incarnation.
-        let _ = append_and_apply(
+        let _ = append_and_apply_event(
             &paths,
             "supervisor.exited",
             None,
@@ -66,7 +66,7 @@ pub fn run(
     }
 
     // Record the request, then spawn.
-    append_and_apply(
+    append_and_apply_event(
         &paths,
         "supervisor.reattach-requested",
         None,
@@ -123,7 +123,7 @@ pub fn run(
         std::thread::sleep(POLL_TICK);
     };
 
-    let _ = append_and_apply(
+    let _ = append_and_apply_event(
         &paths,
         "supervisor.reattached",
         None,

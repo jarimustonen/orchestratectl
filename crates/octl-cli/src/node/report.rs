@@ -19,10 +19,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use octl_core::report::{validate_report_payload, ReportValidationError};
-use octl_core::{
-    ensure_root, find_prior_with_key, read_manifest_opt, read_node_opt, PriorEvent, RunLock,
-    RunPaths,
-};
+use octl_core::{ensure_root, read_manifest_opt, read_node_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -115,52 +112,44 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     ensure_root(&root).map_err(from_core)?;
 
-    // Idempotency lookup + append must share one lock window so a
-    // concurrent retry can't see "no prior event" and double-append.
-    enum Outcome {
-        Replayed(PriorEvent),
-        Appended(u64),
-    }
-    let outcome = RunLock::with_lock(&paths.lock(), || {
-        if let Some(key) = idempotency_key.as_deref() {
-            if let Some(prior) = find_prior_report(&paths, key)? {
-                return Ok(Outcome::Replayed(prior));
-            }
-        }
-        let seq = octl_core::append_and_apply_unlocked(
-            &paths,
-            "node.report",
-            Some(node_id.as_str()),
-            idempotency_key.as_deref(),
-            data.clone(),
-        )?;
-        Ok(Outcome::Appended(seq))
-    })
+    // The canonical mutation entry folds the idempotency-key lookup and the
+    // append into one lock window, so a concurrent retry can't see "no prior
+    // event" and double-append.
+    let result = octl_core::append_and_apply_event(
+        &paths,
+        "node.report",
+        Some(node_id.as_str()),
+        idempotency_key.as_deref(),
+        data.clone(),
+    )
     .map_err(from_core)?;
 
-    let (event_seq, replayed) = match outcome {
-        Outcome::Appended(seq) => (seq, false),
-        Outcome::Replayed(prior) => {
-            // Stripe-style: re-using a key with a different payload is
-            // a client error, not a silent replay. Matches `event create`.
-            let prior_node = prior.node_id.as_deref().unwrap_or("<none>");
-            if prior_node != node_id.as_str() {
-                return Err(CliError::user(
-                    "idempotency_conflict",
-                    format!(
-                        "idempotency-key was previously used for a different --node-id \
-                         (prior: {prior_node}, current: {node_id})"
-                    ),
-                ));
-            }
-            if prior.data != data {
-                return Err(CliError::user(
-                    "idempotency_conflict",
-                    "idempotency-key was previously used with a different --from-file payload",
-                ));
-            }
-            (prior.seq, true)
+    let (event_seq, replayed) = if result.idempotent_replay {
+        // Stripe-style: re-using a key with a different payload is a client
+        // error, not a silent replay. Matches `event create`. The prior event
+        // is immutable, so this conflict check is safe after the lock released.
+        let prior = result
+            .prior
+            .expect("an idempotent replay always carries the prior event");
+        let prior_node = prior.node_id.as_deref().unwrap_or("<none>");
+        if prior_node != node_id.as_str() {
+            return Err(CliError::user(
+                "idempotency_conflict",
+                format!(
+                    "idempotency-key was previously used for a different --node-id \
+                     (prior: {prior_node}, current: {node_id})"
+                ),
+            ));
         }
+        if prior.data != data {
+            return Err(CliError::user(
+                "idempotency_conflict",
+                "idempotency-key was previously used with a different --from-file payload",
+            ));
+        }
+        (prior.seq, true)
+    } else {
+        (result.seq, false)
     };
 
     let payload = ReportPayload {
@@ -232,14 +221,6 @@ fn map_report_validation_error(err: ReportValidationError) -> CliError {
         cli = cli.with_expected(expected);
     }
     cli
-}
-
-/// Locate a prior `node.report` event with this idempotency `key`. Thin
-/// wrapper over [`octl_core::find_prior_with_key`] pinned to the
-/// `node.report` kind — see there for the torn-line policy and the
-/// requirement that the caller hold the run's `flock`.
-fn find_prior_report(paths: &RunPaths, key: &str) -> octl_core::Result<Option<PriorEvent>> {
-    find_prior_with_key(paths, "node.report", key)
 }
 
 fn emit(

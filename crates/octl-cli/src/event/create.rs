@@ -3,17 +3,18 @@
 //! Validates `--kind` against the closed MVP event-kind set (design.md
 //! §1.4), enforces `--node-id` for kinds that reference a specific node,
 //! reads the `data` payload from `--from-file`, then appends + applies the
-//! event under one `flock` window via `octl_core::append_and_apply`.
+//! event via the canonical `octl_core::append_and_apply_event`.
 //!
-//! `--idempotency-key` dedup scans the existing event log under the same
-//! lock so concurrent retries can't race past each other.
+//! `--idempotency-key` dedup is folded into that one call: it scans the
+//! existing event log and appends under a single `flock` window so concurrent
+//! retries can't race past each other.
 
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::{ensure_root, find_prior_with_key, PriorEvent, RunLock, RunPaths};
+use octl_core::ensure_root;
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -352,48 +353,39 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     ensure_root(&root).map_err(from_core)?;
 
-    // Idempotency check + append must run inside one lock window so a
-    // concurrent retry can't see "no prior event" and double-append.
-    let (seq, replayed) = RunLock::with_lock(&paths.lock(), || {
-        if let Some(key) = args.idempotency_key.as_deref() {
-            if let Some(prior) = find_prior_event(&paths, kind, key)? {
-                return Ok((prior, true));
-            }
-        }
-        let seq = octl_core::append_and_apply_unlocked(
-            &paths,
-            kind,
-            node_id.as_deref(),
-            args.idempotency_key.as_deref(),
-            data.clone(),
-        )?;
-        Ok((
-            PriorEvent {
-                seq,
-                node_id: node_id.clone(),
-                data: data.clone(),
-            },
-            false,
-        ))
-    })
+    // The canonical mutation entry folds the idempotency-key lookup and the
+    // append into one lock window, so a concurrent retry can't see "no prior
+    // event" and double-append.
+    let result = octl_core::append_and_apply_event(
+        &paths,
+        kind,
+        node_id.as_deref(),
+        args.idempotency_key.as_deref(),
+        data.clone(),
+    )
     .map_err(from_core)?;
 
-    if replayed {
-        // Stripe-style: the same idempotency key with a different
-        // payload is a client error, not a silent replay. The CLI
-        // would otherwise return the original seq + the new request's
-        // projections, lying about what was recorded.
-        if seq.node_id.as_deref() != node_id.as_deref() {
+    if result.idempotent_replay {
+        // Stripe-style: the same idempotency key with a different payload is a
+        // client error, not a silent replay. The CLI would otherwise return
+        // the original seq + the new request's projections, lying about what
+        // was recorded. The prior event is immutable, so checking it after the
+        // lock released is safe.
+        let prior = result
+            .prior
+            .as_ref()
+            .expect("an idempotent replay always carries the prior event");
+        if prior.node_id.as_deref() != node_id.as_deref() {
             return Err(CliError::user(
                 "idempotency_conflict",
                 format!(
                     "idempotency-key was previously used for a different --node-id \
                      (prior: {:?}, current: {:?})",
-                    seq.node_id, node_id
+                    prior.node_id, node_id
                 ),
             ));
         }
-        if seq.data != data {
+        if prior.data != data {
             return Err(CliError::user(
                 "idempotency_conflict",
                 "idempotency-key was previously used with a different --from-file payload",
@@ -405,23 +397,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         run_id: &run_id,
         kind,
         node_id: node_id.as_deref(),
-        seq: Some(seq.seq),
-        idempotent_replay: if replayed { Some(true) } else { None },
+        seq: Some(result.seq),
+        idempotent_replay: if result.idempotent_replay {
+            Some(true)
+        } else {
+            None
+        },
         dry_run: None,
         projections,
     };
     emit(&payload, args.spec, args.warnings)
-}
-
-/// Locate a prior event with this `kind` + idempotency `key`. Thin wrapper
-/// over [`octl_core::find_prior_with_key`] — see there for the torn-line
-/// policy and the requirement that the caller hold the run's `flock`.
-fn find_prior_event(
-    paths: &RunPaths,
-    kind: &str,
-    key: &str,
-) -> octl_core::Result<Option<PriorEvent>> {
-    find_prior_with_key(paths, kind, key)
 }
 
 fn emit(

@@ -252,7 +252,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "child_kind": kind_kebab(args.kind),
             "child_title": title,
         });
-        octl_core::append_and_apply(
+        octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
             Some(parent_node_id),
@@ -305,7 +305,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Value::String(parent_node_id.clone().unwrap()),
         );
     }
-    octl_core::append_and_apply(
+    octl_core::append_and_apply_event(
         &paths,
         "run.created",
         None,
@@ -359,7 +359,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // between create.sh's check and ours, emit node.failed and return
     // a structured error rather than silently recording a dead PID.
     if let Err(e) = spawn::verify_agent_pid(outcome.agent_pid_hint) {
-        let _ = octl_core::append_and_apply(
+        let _ = octl_core::append_and_apply_event(
             &paths,
             "node.failed",
             Some("n-0001"),
@@ -385,7 +385,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "task": args.task,
         "parent_node_id": parent_node_id,
     });
-    octl_core::append_and_apply(&paths, "node.created", Some("n-0001"), None, node_data)
+    octl_core::append_and_apply_event(&paths, "node.created", Some("n-0001"), None, node_data)
         .map_err(from_core)?;
 
     // For top-level runs, spawn the supervisor and wait for its PID
