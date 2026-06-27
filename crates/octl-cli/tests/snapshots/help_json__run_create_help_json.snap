@@ -10,6 +10,7 @@ expression: value
     "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
     "aliases": [],
     "hidden": false,
+    "deprecated": false,
     "flags": [
       {
         "long": "dry-run",

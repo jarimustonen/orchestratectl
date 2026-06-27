@@ -56,6 +56,12 @@ pub struct CommandNode {
     /// Whether the command is hidden from the human text help. Hidden
     /// commands are still listed (agents may invoke them) but flagged.
     pub hidden: bool,
+    /// Whether the command is deprecated (per the `[deprecated]` help-text
+    /// convention — see [`parse_deprecation`]).
+    pub deprecated: bool,
+    /// Optional deprecation note from a `[deprecated: <note>]` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation_note: Option<String>,
     /// Command version, when one is set (typically only the root).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -95,11 +101,14 @@ pub struct FlagInfo {
     pub required: bool,
     /// Whether the flag is hidden from the human text help.
     pub hidden: bool,
-    /// Deprecation status. clap exposes no first-class deprecation
-    /// metadata, so this is a reserved field that is always `false` until
-    /// a deprecation convention is adopted (see issue handoff note). It is
-    /// emitted unconditionally so agents can rely on its presence.
+    /// Whether the flag is deprecated. clap 4.6 exposes no first-class
+    /// deprecation getter, so this is driven by the `[deprecated]`
+    /// help-text convention (see [`parse_deprecation`]). Emitted
+    /// unconditionally so agents can rely on its presence.
     pub deprecated: bool,
+    /// Optional deprecation note from a `[deprecated: <note>]` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation_note: Option<String>,
     /// Default value(s) applied when the flag is omitted.
     pub defaults: Vec<String>,
     /// Accepted values (the enum) when the flag is value-restricted.
@@ -127,6 +136,12 @@ pub struct PositionalInfo {
     pub multiple: bool,
     /// Accepted values (the enum) when the argument is value-restricted.
     pub accepted_values: Vec<String>,
+    /// Whether the positional is deprecated (per the `[deprecated]`
+    /// help-text convention — see [`parse_deprecation`]).
+    pub deprecated: bool,
+    /// Optional deprecation note from a `[deprecated: <note>]` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation_note: Option<String>,
 }
 
 /// Synthetic id for the global help flag injected into the lenient-parse
@@ -292,12 +307,15 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         .collect();
     subcommands.sort_by(|a, b| a.command.cmp(&b.command));
 
-    let about = cmd.get_about().map(ToString::to_string);
+    // A command's deprecation is read from its `about` (the canonical
+    // one-liner); the `[deprecated]` prefix is stripped from both `about`
+    // and `long_about` so it never leaks into the rendered text.
+    let about_dep = parse_deprecation(cmd.get_about().map(ToString::to_string));
+    let about = about_dep.text;
     // Only surface `long_about` when it adds something over `about`; clap
     // returns the same text for both when only `about` was set.
-    let long_about = cmd
-        .get_long_about()
-        .map(ToString::to_string)
+    let long_about = parse_deprecation(cmd.get_long_about().map(ToString::to_string))
+        .text
         .filter(|l| Some(l) != about.as_ref());
 
     CommandNode {
@@ -306,6 +324,8 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         long_about,
         aliases: cmd.get_visible_aliases().map(ToString::to_string).collect(),
         hidden: cmd.is_hide_set(),
+        deprecated: about_dep.deprecated,
+        deprecation_note: about_dep.note,
         version: cmd.get_version().map(ToString::to_string),
         flags,
         positionals,
@@ -319,10 +339,11 @@ fn build_flag(arg: &Arg) -> Option<FlagInfo> {
     let long = arg.get_long()?.to_string();
     let action = arg.get_action();
     let takes_value = takes_value(action);
+    let dep = parse_deprecation(arg.get_help().map(ToString::to_string));
     Some(FlagInfo {
         long,
         short: arg.get_short().map(|c| c.to_string()),
-        help: arg.get_help().map(ToString::to_string),
+        help: dep.text,
         // Boolean flags carry a derived value-name placeholder in clap;
         // suppress it so agents don't read a value where none is taken.
         value_names: if takes_value {
@@ -334,7 +355,8 @@ fn build_flag(arg: &Arg) -> Option<FlagInfo> {
         multiple: multiple(arg, action),
         required: arg.is_required_set(),
         hidden: arg.is_hide_set(),
-        deprecated: false,
+        deprecated: dep.deprecated,
+        deprecation_note: dep.note,
         defaults: default_values(arg),
         accepted_values: accepted_values(arg),
         env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
@@ -342,9 +364,10 @@ fn build_flag(arg: &Arg) -> Option<FlagInfo> {
 }
 
 fn build_positional(arg: &Arg) -> PositionalInfo {
+    let dep = parse_deprecation(arg.get_help().map(ToString::to_string));
     PositionalInfo {
         name: arg.get_id().as_str().to_string(),
-        help: arg.get_help().map(ToString::to_string),
+        help: dep.text,
         value_names: value_names(arg),
         // `build()` assigns every positional a 1-based index before we
         // walk, so this is always `Some`. Emitting a bogus `0` instead
@@ -355,6 +378,8 @@ fn build_positional(arg: &Arg) -> PositionalInfo {
         required: arg.is_required_set(),
         multiple: multiple(arg, arg.get_action()),
         accepted_values: accepted_values(arg),
+        deprecated: dep.deprecated,
+        deprecation_note: dep.note,
     }
 }
 
@@ -380,6 +405,81 @@ fn accepted_values(arg: &Arg) -> Vec<String> {
         .filter(|p| !p.is_hide_set())
         .map(|p| p.get_name().to_string())
         .collect()
+}
+
+/// Result of applying the [`parse_deprecation`] help-text convention.
+struct Deprecation {
+    deprecated: bool,
+    note: Option<String>,
+    /// The help/about text with any `[deprecated...]` prefix stripped
+    /// (`None` if nothing remains).
+    text: Option<String>,
+}
+
+// ----------------------------------------------------------------------
+// Help-text convention: marking deprecation
+// ----------------------------------------------------------------------
+//
+// clap 4.6 exposes NO `Arg`/`Command` deprecation getter, so there is no
+// structural source for `deprecated`. Instead, deprecation is declared in
+// the help text itself and parsed back out here:
+//
+//   - `[deprecated]`                → deprecated, no note
+//   - `[deprecated: use --foo bar]` → deprecated, note = "use --foo bar"
+//
+// The token must be a PREFIX of the help/about text. The walker strips it
+// from the rendered `about`/`long_about`/`help`/positional-help and sets
+// `deprecated: true` (with the optional note). Authors opt something into
+// deprecation purely in its doc-comment / `#[arg(help = ...)]`:
+//
+//   /// [deprecated: use `run create --kind`] Spawn a run.
+//   Spawn { ... }
+//
+// Applies uniformly to flags, positionals, and whole subcommands. There
+// are no deprecations in the tree today; this is the forward path.
+
+/// Parse the `[deprecated]` / `[deprecated: <note>]` prefix convention from
+/// a piece of help/about text. See the convention block above.
+fn parse_deprecation(text: Option<String>) -> Deprecation {
+    let Some(text) = text else {
+        return Deprecation {
+            deprecated: false,
+            note: None,
+            text: None,
+        };
+    };
+    // `[deprecated: <note>]` — note runs up to the first closing `]`.
+    if let Some(rest) = text.strip_prefix("[deprecated:") {
+        if let Some(end) = rest.find(']') {
+            return Deprecation {
+                deprecated: true,
+                note: non_empty(rest[..end].trim()),
+                text: non_empty(rest[end + 1..].trim_start()),
+            };
+        }
+    }
+    // `[deprecated]` — bare marker, no note.
+    if let Some(rest) = text.strip_prefix("[deprecated]") {
+        return Deprecation {
+            deprecated: true,
+            note: None,
+            text: non_empty(rest.trim_start()),
+        };
+    }
+    Deprecation {
+        deprecated: false,
+        note: None,
+        text: Some(text),
+    }
+}
+
+/// `Some(trimmed)` unless the string is empty, in which case `None`.
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 /// Whether an arg consumes a value, derived from its action. `Help` /
@@ -498,6 +598,68 @@ mod tests {
             HelpRequest::UnknownSubcommand { token } => assert_eq!(token, "bogus"),
             other => panic!("expected UnknownSubcommand, got {:?}", DebugReq(&other)),
         }
+    }
+
+    #[test]
+    fn deprecation_prefix_is_parsed_and_stripped() {
+        // Bare marker.
+        let d = parse_deprecation(Some("[deprecated] Old flag.".to_string()));
+        assert!(d.deprecated);
+        assert_eq!(d.note, None);
+        assert_eq!(d.text.as_deref(), Some("Old flag."));
+
+        // Marker with a note.
+        let d = parse_deprecation(Some("[deprecated: use --kind] Spawn.".to_string()));
+        assert!(d.deprecated);
+        assert_eq!(d.note.as_deref(), Some("use --kind"));
+        assert_eq!(d.text.as_deref(), Some("Spawn."));
+
+        // Marker with nothing after it collapses the text to None.
+        let d = parse_deprecation(Some("[deprecated]".to_string()));
+        assert!(d.deprecated);
+        assert_eq!(d.text, None);
+
+        // Non-deprecated text is untouched; a non-prefix occurrence does not
+        // trigger the convention.
+        let d = parse_deprecation(Some("Create a [deprecated] run.".to_string()));
+        assert!(!d.deprecated);
+        assert_eq!(d.text.as_deref(), Some("Create a [deprecated] run."));
+    }
+
+    #[test]
+    fn deprecation_surfaces_on_a_synthetic_flag() {
+        // End-to-end through the walker: a flag whose help opens with the
+        // marker renders `deprecated: true` with the prefix stripped.
+        let mut cmd = Command::new("tool").arg(
+            Arg::new("legacy")
+                .long("legacy")
+                .action(ArgAction::SetTrue)
+                .help("[deprecated: use --modern] Old toggle."),
+        );
+        cmd.build();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "legacy")
+            .unwrap();
+        let flag = build_flag(arg).expect("named flag");
+        assert!(flag.deprecated);
+        assert_eq!(flag.deprecation_note.as_deref(), Some("use --modern"));
+        assert_eq!(flag.help.as_deref(), Some("Old toggle."));
+    }
+
+    #[test]
+    fn deprecation_surfaces_on_a_synthetic_subcommand() {
+        let mut cmd =
+            Command::new("tool").subcommand(Command::new("old").about("[deprecated] Legacy verb."));
+        cmd.build();
+        let node = build_node(&cmd, "tool");
+        let old = node
+            .subcommands
+            .iter()
+            .find(|s| s.command == "tool old")
+            .expect("subcommand");
+        assert!(old.deprecated);
+        assert_eq!(old.about.as_deref(), Some("Legacy verb."));
     }
 
     // Tiny helper so the panic message above can name the variant without a

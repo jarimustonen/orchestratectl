@@ -10,6 +10,7 @@ expression: value
     "about": "Create, list, show, cancel, or reattach a run",
     "aliases": [],
     "hidden": false,
+    "deprecated": false,
     "flags": [
       {
         "long": "help",
@@ -48,6 +49,7 @@ expression: value
         "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -101,7 +103,8 @@ expression: value
             "index": 1,
             "required": true,
             "multiple": false,
-            "accepted_values": []
+            "accepted_values": [],
+            "deprecated": false
           }
         ],
         "subcommands": []
@@ -111,6 +114,7 @@ expression: value
         "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "dry-run",
@@ -332,6 +336,7 @@ expression: value
         "about": "List runs on disk",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -397,6 +402,7 @@ expression: value
         "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -465,7 +471,8 @@ expression: value
             "index": 1,
             "required": true,
             "multiple": false,
-            "accepted_values": []
+            "accepted_values": [],
+            "deprecated": false
           }
         ],
         "subcommands": []
@@ -475,6 +482,7 @@ expression: value
         "about": "Show one run's manifest and counters",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -515,7 +523,8 @@ expression: value
             "index": 1,
             "required": true,
             "multiple": false,
-            "accepted_values": []
+            "accepted_values": [],
+            "deprecated": false
           }
         ],
         "subcommands": []

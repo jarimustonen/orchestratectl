@@ -10,6 +10,7 @@ expression: value
     "about": "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
     "aliases": [],
     "hidden": false,
+    "deprecated": false,
     "version": "[VERSION]",
     "flags": [
       {
@@ -49,6 +50,7 @@ expression: value
         "about": "List, show, or resolve discussions for a run",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -87,6 +89,7 @@ expression: value
             "about": "List discussions for a run",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -144,7 +147,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -154,6 +158,7 @@ expression: value
             "about": "Resolve a discussion — emits `discussion.resolved`, updates the projection. Idempotent on `--choice`; conflict on `--choice` change",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "choice",
@@ -250,7 +255,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "discussion_id",
@@ -260,7 +266,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -270,6 +277,7 @@ expression: value
             "about": "Show a single discussion projection",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -310,7 +318,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "discussion_id",
@@ -320,7 +329,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -332,6 +342,7 @@ expression: value
         "about": "Read-only self-diagnostic: validate schema, skill-sync, deps, config, and data integrity. `--fix` applies the safe subset",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "dry-run",
@@ -399,6 +410,7 @@ expression: value
         "about": "Read (`tail`) or append (`create`) events on a run's event log",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -437,6 +449,7 @@ expression: value
             "about": "Append one event to a run's `events.jsonl` and update projections",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -548,7 +561,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -559,6 +573,7 @@ expression: value
             "long_about": "Stream events from a run's `events.jsonl`. Tails to EOF and exits (or follows the file with `--follow`, polling every 500ms).\n\nJSONL mode emits one object per line and terminates with exactly one `{\"event\":\"result\"|\"cancelled\",\"schema_version\":1, ...}` envelope. With `--follow`, SIGINT exits 130. SIGTERM also exits 130 (known divergence from AGENTS-AI-FIRST-CLI §12's 143 — `ctrlc` does not surface the signal value; see comment in `tail.rs`).",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "follow",
@@ -643,7 +658,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -655,6 +671,7 @@ expression: value
         "about": "List nodes, show a node, or submit a structured terminal report",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -693,6 +710,7 @@ expression: value
             "about": "List nodes belonging to a run",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -747,7 +765,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -757,6 +776,7 @@ expression: value
             "about": "Agent self-submission of a structured terminal report (§7.3)",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -839,7 +859,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "node_id",
@@ -849,7 +870,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -859,6 +881,7 @@ expression: value
             "about": "Print one node's JSON projection",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -899,7 +922,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "node_id",
@@ -909,7 +933,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -921,6 +946,7 @@ expression: value
         "about": "Create, list, show, cancel, or reattach a run",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -959,6 +985,7 @@ expression: value
             "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1012,7 +1039,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1022,6 +1050,7 @@ expression: value
             "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -1243,6 +1272,7 @@ expression: value
             "about": "List runs on disk",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1308,6 +1338,7 @@ expression: value
             "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1376,7 +1407,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1386,6 +1418,7 @@ expression: value
             "about": "Show one run's manifest and counters",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1426,7 +1459,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1438,6 +1472,7 @@ expression: value
         "about": "List, show, or install companion AI-skills shipped with this binary",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -1476,6 +1511,7 @@ expression: value
             "about": "Copy a skill's SKILL.md to the agent's skill directory. Installs every embedded skill when no name is given (per §15)",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "agent",
@@ -1565,7 +1601,8 @@ expression: value
                 "index": 1,
                 "required": false,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1575,6 +1612,7 @@ expression: value
             "about": "List skills embedded in this binary",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1614,6 +1652,7 @@ expression: value
             "about": "Stream a skill's SKILL.md (frontmatter + body) byte-identically to stdout. Read-only twin of `install` (AGENTS-AI-FIRST-CLI §16)",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1655,7 +1694,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1665,6 +1705,7 @@ expression: value
             "about": "Print a skill's SKILL.md to stdout",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1706,7 +1747,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1718,6 +1760,7 @@ expression: value
         "about": "List, approve, or reject spin-off proposals on a run",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -1756,6 +1799,7 @@ expression: value
             "about": "Approve a proposal: emit `spinoff.approved` and (optionally) materialize an issue via `issuectl new`",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -1837,7 +1881,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "proposal_id",
@@ -1847,7 +1892,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1857,6 +1903,7 @@ expression: value
             "about": "List spin-off proposals for a run",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "help",
@@ -1915,7 +1962,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -1925,6 +1973,7 @@ expression: value
             "about": "Reject a proposal: emit `spinoff.rejected`",
             "aliases": [],
             "hidden": false,
+            "deprecated": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -2004,7 +2053,8 @@ expression: value
                 "index": 1,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               },
               {
                 "name": "proposal_id",
@@ -2014,7 +2064,8 @@ expression: value
                 "index": 2,
                 "required": true,
                 "multiple": false,
-                "accepted_values": []
+                "accepted_values": [],
+                "deprecated": false
               }
             ],
             "subcommands": []
@@ -2026,6 +2077,7 @@ expression: value
         "about": "Long-lived per-run supervisor: tail-follow events, watchdog agents, consume child `node.report` events with deterministic- ID dedup. Re-enters the same binary; `run reattach` invokes it",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
@@ -2095,7 +2147,8 @@ expression: value
             "index": 1,
             "required": true,
             "multiple": false,
-            "accepted_values": []
+            "accepted_values": [],
+            "deprecated": false
           }
         ],
         "subcommands": []
@@ -2105,6 +2158,7 @@ expression: value
         "about": "Show binary, commit, and state-schema versions",
         "aliases": [],
         "hidden": false,
+        "deprecated": false,
         "flags": [
           {
             "long": "help",
