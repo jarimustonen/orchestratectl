@@ -645,4 +645,160 @@ mod tests {
         write_manifest(&paths, &m).unwrap();
         assert!(paths.manifest().exists());
     }
+
+    // --- symlink containment: a replaced subdir or file is refused ---------
+    //
+    // Each test stores a *valid* projection behind the symlink so the rejection
+    // can only come from the symlink guard, never from a parse/key/run-id check
+    // downstream.
+
+    #[cfg(unix)]
+    #[test]
+    fn read_node_rejects_symlinked_nodes_dir() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(paths.nodes_dir()).unwrap();
+        symlink(&outside, paths.nodes_dir()).unwrap();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        write_raw(&outside.join("n-0001.json"), &node_json("n-0001", RUN));
+        assert!(matches!(
+            read_node(&paths, &id),
+            Err(Error::SymlinkSubdir { name: "nodes", .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_node_rejects_symlinked_node_file() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        let target = tmp.path().join("evil-node.json");
+        write_raw(&target, &node_json("n-0001", RUN));
+        symlink(&target, paths.node(&id)).unwrap();
+        assert!(matches!(
+            read_node(&paths, &id),
+            Err(Error::SymlinkProjectionFile { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_discussion_rejects_symlinked_discussions_dir() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(paths.discussions_dir()).unwrap();
+        symlink(&outside, paths.discussions_dir()).unwrap();
+        let id = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        write_raw(
+            &outside.join(format!("d-{ULID_A}.json")),
+            &discussion_json(&format!("d-{ULID_A}"), RUN),
+        );
+        assert!(matches!(
+            read_discussion(&paths, &id),
+            Err(Error::SymlinkSubdir {
+                name: "discussions",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_discussion_rejects_symlinked_discussion_file() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let id = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        let target = tmp.path().join("evil-discussion.json");
+        write_raw(&target, &discussion_json(&format!("d-{ULID_A}"), RUN));
+        symlink(&target, paths.discussion(&id)).unwrap();
+        assert!(matches!(
+            read_discussion(&paths, &id),
+            Err(Error::SymlinkProjectionFile { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_spinoff_rejects_symlinked_spinoffs_dir() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(paths.spinoffs_dir()).unwrap();
+        symlink(&outside, paths.spinoffs_dir()).unwrap();
+        let id = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
+        write_raw(
+            &outside.join(format!("s-{ULID_A}.json")),
+            &spinoff_json(&format!("s-{ULID_A}"), RUN),
+        );
+        assert!(matches!(
+            read_spinoff(&paths, &id),
+            Err(Error::SymlinkSubdir {
+                name: "spinoffs",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_spinoff_rejects_symlinked_spinoff_file() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let id = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
+        let target = tmp.path().join("evil-spinoff.json");
+        write_raw(&target, &spinoff_json(&format!("s-{ULID_A}"), RUN));
+        symlink(&target, paths.spinoff(&id)).unwrap();
+        assert!(matches!(
+            read_spinoff(&paths, &id),
+            Err(Error::SymlinkProjectionFile { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_node_rejects_symlinked_nodes_dir() {
+        // The write side is guarded too: a symlinked subdir would otherwise
+        // land the atomic temp+rename outside the run tree.
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir(paths.nodes_dir()).unwrap();
+        symlink(&outside, paths.nodes_dir()).unwrap();
+        let n: Node = serde_json::from_value(node_json("n-0001", RUN)).unwrap();
+        assert!(matches!(
+            write_node(&paths, &n),
+            Err(Error::SymlinkSubdir { name: "nodes", .. })
+        ));
+        // The forged write never reached the symlink target.
+        assert!(!outside.join("n-0001.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_node_rejects_symlinked_run_root() {
+        // A symlinked run root must be refused even when every subdir and file
+        // beneath it is a perfectly ordinary file — `from_validated` skips the
+        // construction-time check, so the read path re-guards the root.
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real-run");
+        let real_paths = RunPaths::new(&real, RUN).unwrap();
+        std::fs::create_dir_all(real_paths.nodes_dir()).unwrap();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        write_raw(&real_paths.node(&id), &node_json("n-0001", RUN));
+        let link = tmp.path().join("link-run");
+        symlink(&real, &link).unwrap();
+        let linked = RunPaths::from_validated(link, RunId::parse_str(RUN).unwrap());
+        assert!(matches!(
+            read_node(&linked, &id),
+            Err(Error::SymlinkRunDir { .. })
+        ));
+    }
 }

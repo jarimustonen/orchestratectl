@@ -202,6 +202,35 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlinked_run_dir_at_construction() {
+        // A symlink to a real directory: the id is well-formed, but the run
+        // root is a symlink, so `new` must refuse to follow it.
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        symlink(&real, &link).unwrap();
+        assert!(matches!(
+            RunPaths::new(&link, "01jxsnap000000000000000000"),
+            Err(Error::SymlinkRunDir { path }) if path == link
+        ));
+    }
+
+    #[test]
+    fn accepts_a_real_directory_run_root() {
+        // A real (non-symlink) existing directory is fine — only symlinks are
+        // refused, not pre-existing run dirs.
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(RunPaths::new(&dir, "01jxsnap000000000000000000").is_ok());
+    }
+
     #[test]
     fn rejects_malformed_run_ids_at_construction() {
         for bad in [
