@@ -420,9 +420,12 @@ fn flush_and_exit(mut writer: Box<dyn Write>, code: i32) -> ! {
     let _ = writer.flush();
     drop(writer);
     let _ = std::io::stdout().lock().flush();
-    // Emit *before* the flush so this line is itself drained to disk — it
-    // both records why tail exited and is the regression canary proving the
-    // exit path no longer drops buffered events.
+    // Emit *before* the flush so the line is itself drained: it records why
+    // tail exited and exercises the exit-path flush end to end. Best-effort —
+    // the appender is lossy, so under channel back-pressure this single line
+    // could be dropped before `flush_logs` runs. The flush's real job is the
+    // *already-buffered* events; this line is a bonus, not a guarantee. The
+    // deterministic regression check lives in cli's `drain_cell` unit test.
     info!(target: "orchestratectl::event::tail", code, "event tail exiting via signal");
     crate::cli::flush_logs();
     process::exit(code);

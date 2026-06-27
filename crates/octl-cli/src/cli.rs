@@ -395,32 +395,44 @@ type LogCell = Arc<Mutex<Option<WorkerGuard>>>;
 /// `init_logging` runs (e.g. the structured-help path returns before it).
 static LOG_FLUSH: OnceLock<LogCell> = OnceLock::new();
 
-/// Drain the non-blocking appender's channel to disk by dropping the
-/// [`WorkerGuard`]. tracing-appender 0.2 exposes no manual flush
-/// (`NonBlocking::flush` is a no-op); the worker only drains and `fsync`s
-/// the file when it receives the `Shutdown` message that `WorkerGuard::drop`
-/// sends. Dropping it blocks until that drain completes.
+/// Drain the non-blocking appender's channel by dropping the [`WorkerGuard`].
+/// tracing-appender 0.2 exposes no manual flush (`NonBlocking::flush` is a
+/// no-op); the worker drains the channel and calls `Write::flush` on the
+/// file only when it receives the `Shutdown` message that `WorkerGuard::drop`
+/// sends. Note this is a userspace flush, not an `fsync` — records reach the
+/// OS/page cache, not guaranteed physical media.
+///
+/// Dropping the guard blocks until the worker acknowledges, but only up to
+/// tracing-appender's built-in shutdown budget (~100ms to enqueue the
+/// `Shutdown` + ~1s waiting for the worker). Under a deep backlog on a slow
+/// disk that budget can elapse before the channel is fully drained, so this
+/// is a best-effort flush, not an unconditional guarantee.
 ///
 /// Idempotent: takes the guard out of the shared cell, so the first caller
 /// (whether [`LogGuard::drop`] or [`flush_logs`]) flushes and every later
 /// call is a no-op. After the first flush this process's logging is dead —
 /// any further events are silently discarded — so only flush right before
-/// exit. Poisoned-lock safe: a panic elsewhere must not strand the flush.
+/// exit. Poison handling is defensive: the only code holding this lock is
+/// `take()`/assignment (neither can panic mid-hold), but if the lock were
+/// ever poisoned we still recover the guard rather than strand the flush.
 fn drain_cell(cell: &Mutex<Option<WorkerGuard>>) {
     let taken = match cell.lock() {
         Ok(mut g) => g.take(),
         Err(poisoned) => poisoned.into_inner().take(),
     };
-    // Drop *after* releasing the lock: `WorkerGuard::drop` blocks up to ~1s
-    // waiting for the worker to drain, and there is no reason to hold the
-    // mutex across it.
+    // Drop *after* releasing the lock: `WorkerGuard::drop` blocks (up to the
+    // shutdown budget above) waiting for the worker to drain, and there is no
+    // reason to hold the mutex across it.
     drop(taken);
 }
 
-/// Drain this process's buffered tracing events to disk. Safe to call from
-/// any subcommand; a no-op if logging was never initialised. Intended for
-/// `std::process::exit` paths (e.g. `event tail`'s signal exit) that bypass
-/// the [`LogGuard`]'s `Drop`. See `issues/log-guard-flush-on-process-exit`.
+/// Drain this process's buffered tracing events to disk, then shut logging
+/// down. This is **terminal**, not a periodic flush: it drops the
+/// `WorkerGuard`, so every `tracing` event emitted afterwards is silently
+/// discarded. Call it only as the last step before `std::process::exit`
+/// (e.g. `event tail`'s signal exit) — the path that bypasses the
+/// [`LogGuard`]'s `Drop`. A no-op if logging was never initialised. See
+/// `issues/log-guard-flush-on-process-exit`.
 pub(crate) fn flush_logs() {
     if let Some(cell) = LOG_FLUSH.get() {
         drain_cell(cell);
@@ -456,17 +468,34 @@ struct LoggingInit {
 }
 
 /// Build a [`LoggingInit`] from the collected `warnings` and an optional
-/// [`WorkerGuard`], wiring the shared cell into the process-global
-/// [`LOG_FLUSH`] so `process::exit` paths can drain it. `init_logging`'s
-/// every return point funnels through here so the global is always
-/// registered (even when no guard exists — then flushing is a harmless
-/// no-op).
+/// [`WorkerGuard`], storing the guard into the *single* process-global
+/// [`LOG_FLUSH`] cell so [`flush_logs`] and the returned [`LogGuard`] always
+/// drain the same one. `init_logging`'s every return point funnels through
+/// here so the global is always registered (even when no guard exists — then
+/// flushing is a harmless no-op).
+///
+/// There is exactly one cell per process: `get_or_init` creates it on the
+/// first call and every later call reuses it. The live guard is installed
+/// only into an empty slot — a second `init_logging` (tests, re-entry) keeps
+/// the original guard and drops its own. This keeps the global cell and the
+/// stack [`LogGuard`] pointing at the same `Option`, which is the whole
+/// correctness argument: whichever drains first takes the guard, the other
+/// is a no-op. (In the real binary `init_logging` runs once; a second call
+/// would in any case get `guard: None`, since `try_init` refuses to install
+/// a second subscriber.)
 fn finish_logging(warnings: Vec<String>, guard: Option<WorkerGuard>) -> LoggingInit {
-    let cell: LogCell = Arc::new(Mutex::new(guard));
-    // First (and only) `init_logging` call per process wins; a second call
-    // in a test or re-entrant path keeps the original cell, which is fine —
-    // it owns the live guard.
-    let _ = LOG_FLUSH.set(cell.clone());
+    let cell = LOG_FLUSH.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    {
+        let mut slot = match cell.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if slot.is_none() {
+            *slot = guard;
+        }
+        // else: an earlier init already owns the live guard; `guard` (None on
+        // the re-entry path) is dropped here.
+    }
     LoggingInit {
         warnings,
         guard: LogGuard { cell },
@@ -642,5 +671,39 @@ mod tests {
     fn drain_cell_on_absent_guard_is_noop() {
         let cell: LogCell = Arc::new(Mutex::new(None));
         drain_cell(&cell); // must not panic
+    }
+
+    /// The normal-exit path: dropping a [`LogGuard`] must drain its cell —
+    /// this is the RAII guarantee `run()` relies on. Uses the slow sink so
+    /// the line is provably still in flight when the guard drops, making the
+    /// flush (not luck) responsible for it reaching disk. Guards against a
+    /// regression where `LogGuard::drop` stops calling `drain_cell` (e.g. an
+    /// extra `Arc` clone keeping the inner `WorkerGuard` alive past drop).
+    #[test]
+    fn log_guard_drop_drains_buffered_line() {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let (mut writer, guard) = NonBlockingBuilder::default()
+            .lossy(true)
+            .finish(SlowSink { out: out.clone() });
+        writer.write_all(b"on-drop-line\n").unwrap();
+
+        let cell: LogCell = Arc::new(Mutex::new(Some(guard)));
+        // A second Arc to the same cell (as `LOG_FLUSH` holds in production)
+        // must NOT keep the inner guard alive: `LogGuard::drop` takes it out
+        // of the `Option` and drops it regardless of the strong count.
+        let log_guard = LogGuard { cell: cell.clone() };
+        assert!(
+            out.lock().unwrap().is_empty(),
+            "line reached the sink before drop — the sink wasn't slow enough"
+        );
+
+        drop(log_guard);
+        assert_eq!(
+            &*out.lock().unwrap(),
+            b"on-drop-line\n",
+            "LogGuard::drop did not drain the buffered line"
+        );
+        // The surviving Arc's slot is now empty — flushing it is a no-op.
+        assert!(cell.lock().unwrap().is_none());
     }
 }
