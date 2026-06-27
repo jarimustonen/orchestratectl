@@ -21,11 +21,11 @@ impl Harness {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         ensure_root(root).unwrap();
-        let run_id = "01jxfixture00000000000000000".to_string();
+        let run_id = "01jxsnap000000000000000000".to_string();
         let dir = run_dir(root, &run_id);
         std::fs::create_dir_all(&dir).unwrap();
         Self {
-            paths: RunPaths::new(dir),
+            paths: RunPaths::new(dir, run_id).unwrap(),
             next_seq: 0,
             _tmp: tmp,
         }
@@ -216,4 +216,102 @@ fn node_status_terminal_guard() {
         Status::Done,
         "terminal node must not transition back to running"
     );
+}
+
+/// `run.status` terminal guard, standalone: a `Done` run ignores a late
+/// status event (the run-cancel test only exercises the `Cancelled` state).
+#[test]
+fn run_status_terminal_guard() {
+    let mut h = Harness::new();
+    h.append(
+        "run.created",
+        None,
+        json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "fixture" }),
+    );
+    h.append("run.status", None, json!({ "status": "running" }));
+    h.append("run.status", None, json!({ "status": "done" }));
+    assert_eq!(read_manifest(&h.paths).unwrap().status, Status::Done);
+
+    h.append("run.status", None, json!({ "status": "running" }));
+    assert_eq!(
+        read_manifest(&h.paths).unwrap().status,
+        Status::Done,
+        "terminal run must not transition back to running"
+    );
+}
+
+/// A conflicting terminal transition (Done → Cancelled via `node.status`) is
+/// dropped by the guard, not applied — the first terminal status wins.
+#[test]
+fn conflicting_terminal_transition_is_noop() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    h.append("node.report", Some("n-0001"), json!({ "success": true }));
+    assert_eq!(h.node("n-0001").status, Status::Done);
+
+    h.append(
+        "node.status",
+        Some("n-0001"),
+        json!({ "status": "cancelled" }),
+    );
+    assert_eq!(
+        h.node("n-0001").status,
+        Status::Done,
+        "a conflicting terminal status must not overwrite the settled one"
+    );
+}
+
+/// Strict boolean typing: a non-boolean `success` on a live node is corrupt
+/// (rather than silently coerced to "missing").
+#[test]
+fn non_boolean_success_is_corrupt() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let err = h
+        .try_append("node.report", Some("n-0001"), json!({ "success": "true" }))
+        .unwrap_err();
+    assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
+    assert_eq!(h.node("n-0001").status, Status::Running);
+}
+
+/// Strict boolean typing: a non-boolean `cancelled` is corrupt even when a
+/// valid `success` is present — it must not be coerced to `false`.
+#[test]
+fn non_boolean_cancelled_is_corrupt() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let err = h
+        .try_append(
+            "node.report",
+            Some("n-0001"),
+            json!({ "success": false, "cancelled": "true" }),
+        )
+        .unwrap_err();
+    assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
+    assert_eq!(h.node("n-0001").status, Status::Running);
+}
+
+/// Guard-before-validate: a malformed (bare `{}`) report against an already
+/// terminal node is a clean no-op, not a `CorruptEventLog`. A dead event must
+/// not be able to brick replay of a settled node's log.
+#[test]
+fn corrupt_report_against_terminal_node_is_noop() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let report = json!({ "success": true, "summary": "done" });
+    h.append("node.report", Some("n-0001"), report.clone());
+    assert_eq!(h.node("n-0001").status, Status::Done);
+
+    // Bare `{}` would be CorruptEventLog against a live node, but the node is
+    // terminal, so the guard short-circuits before validation.
+    h.try_append("node.report", Some("n-0001"), json!({}))
+        .expect("malformed report against terminal node must be a no-op");
+
+    let n = h.node("n-0001");
+    assert_eq!(n.status, Status::Done);
+    assert_eq!(n.last_report, Some(report), "last_report must be untouched");
 }

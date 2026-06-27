@@ -55,10 +55,12 @@ pub enum Lifecycle {
 /// Run/node status (design.md §1.2).
 ///
 /// `Done`, `Failed`, and `Cancelled` are **terminal**: once a run or node
-/// reaches one of them it must never transition again. The reducer enforces
-/// this — every status transition is a no-op once [`Status::is_terminal`]
-/// holds — so a late-arriving event (e.g. an agent success report racing a
-/// `run cancel`) cannot resurrect a settled state.
+/// reaches one of them its `status` must never change again. The reducer
+/// enforces this — `apply_run_status`, `apply_node_status`, and
+/// `apply_node_report` are all no-ops once [`Status::is_terminal`] holds — so
+/// a late-arriving event (e.g. an agent success report racing a `run cancel`)
+/// cannot resurrect a settled state. Only the `status` field is frozen;
+/// other projection fields may still be mutated by non-status events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
@@ -73,8 +75,10 @@ pub enum Status {
 impl Status {
     /// True for the terminal states `Done | Failed | Cancelled`. A run or
     /// node in a terminal state is settled: the reducer treats any further
-    /// status transition as a no-op (see `reducer.rs`).
-    pub fn is_terminal(&self) -> bool {
+    /// *status* transition as a no-op. "Settled" applies to `status` only —
+    /// non-status projection fields (e.g. `Node::children` via
+    /// `child.spawned`, or manifest counters) can still change.
+    pub fn is_terminal(self) -> bool {
         matches!(self, Status::Done | Status::Failed | Status::Cancelled)
     }
 }
@@ -144,6 +148,14 @@ pub struct Node {
     pub children: Vec<ChildRef>,
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// The `node.report` payload that drove this node to its terminal status.
+    /// Set only by the report that actually transitions the node (Done /
+    /// Failed / Cancelled). Once the node is terminal it is frozen: a late
+    /// report against an already-settled node is dropped without overwriting
+    /// this field (see `reducer::apply_node_report`). So for a node cancelled
+    /// by `run cancel`, this holds the synthesized cancel report, not a
+    /// later-arriving agent report — that payload remains only in
+    /// `events.jsonl`.
     pub last_report: Option<Value>,
     #[serde(default)]
     pub last_processed_report_seq_by_child: Map<String, Value>,

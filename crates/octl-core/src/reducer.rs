@@ -72,6 +72,25 @@ fn optional_str(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Resul
     }
 }
 
+/// Read an optional boolean field with strict typing: missing/null → `None`,
+/// JSON bool → `Some(b)`, anything else → `CorruptEventLog`. Mirrors
+/// [`optional_str`] / [`optional_i32`]; prevents a non-boolean `success` /
+/// `cancelled` from being silently coerced to `false` and bypassing the
+/// success-XOR-cancelled invariant.
+fn optional_bool(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result<Option<bool>> {
+    match d.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} kind={} `{field}` must be a JSON boolean or null",
+                ev.seq, ev.kind
+            ),
+        }),
+    }
+}
+
 fn optional_i32(d: &Value, field: &str, events_path: &Path, ev: &Event) -> Result<Option<i32>> {
     match d.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -232,7 +251,7 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     // Terminal-state guard: a settled run never transitions again (e.g. a
     // late `run.status running` after a cancel). See run-cli-read/handoff.md D5.
     if m.status.is_terminal() {
-        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        trace_terminal_noop(ev, m.status, new_status);
         return Ok(());
     }
     if m.status == new_status {
@@ -327,7 +346,7 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     // Terminal-state guard: a settled node never transitions again. See
     // run-cli-read/handoff.md D5.
     if n.status.is_terminal() {
-        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        trace_terminal_noop(ev, n.status, new_status);
         return Ok(());
     }
     if n.status == new_status {
@@ -350,52 +369,81 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ev.seq
             ),
         })?;
-    // Validate the report's terminal outcome *before* touching the
-    // projection. A `node.report` must express exactly one terminal
-    // outcome — success/failure XOR cancellation. Anything else (a bare
-    // `{}` with neither, or the contradiction `success: true` +
-    // `cancelled: true`) is a corrupt event: the reducer is the canonical
-    // gate, so reject it here rather than silently leaving the node in a
-    // dangling state. See design.md §7.7 and node-cli-read/handoff.md D4.
-    let new_status = report_terminal_status(&events_path, ev)?;
-
     let mut n = match read_node_opt(paths, node_id)? {
         Some(n) => n,
         None => return Ok(()),
     };
-    // Terminal-state guard: a node that already reached a terminal state is
-    // settled. A late-arriving report (e.g. an agent success racing a `run
-    // cancel`) must not resurrect it — and must not even decorate the
-    // projection, so `last_report` is left untouched too. See
-    // run-cli-read/handoff.md D5.
+    // Terminal-state guard *before* payload validation: a node that already
+    // reached a terminal state is settled, so a late-arriving report (e.g. an
+    // agent success racing a `run cancel`) is a dead event — it must not
+    // resurrect the node, and must not even decorate the projection, so
+    // `last_report` is left untouched. Guarding first also keeps replay
+    // robust: a malformed dead report against a settled node is a clean
+    // no-op rather than a `CorruptEventLog` that would brick rebuild of a
+    // log `append_and_apply` already committed. See run-cli-read/handoff.md
+    // D5. (3/4 of /llm-review preferred guard-before-validate over the
+    // reverse the issue spec sketched; the required CorruptEventLog cases
+    // all target live nodes, so validation still runs for them.)
     if n.status.is_terminal() {
-        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        tracing::debug!(
+            target: "octl_core::reducer",
+            seq = ev.seq, kind = %ev.kind, node_id = %node_id, current = ?n.status,
+            "no-op: node.report against terminal node"
+        );
         return Ok(());
     }
+    // Live node: validate the report's terminal outcome. A `node.report`
+    // must express exactly one terminal outcome — success/failure XOR
+    // cancellation. Anything else (a bare `{}` with neither, or the
+    // contradiction `success: true` + `cancelled: true`) is a corrupt event:
+    // the reducer is the canonical gate, so reject it rather than silently
+    // leaving the node in a dangling state. See design.md §7.7 and
+    // node-cli-read/handoff.md D4.
+    let new_status = report_terminal_status(&events_path, ev)?;
     n.last_report = Some(ev.data.clone());
     n.status = new_status;
     n.updated_at = ev.ts;
     write_node(paths, &n)
 }
 
+/// Emit an observability trace for a status event dropped by the terminal
+/// guard. Re-applying the *same* terminal status is routine idempotent replay
+/// (`debug`); an event carrying a *different* status is a real conflict that
+/// should not occur on a well-formed log (`warn`) — e.g. a `done` node being
+/// told to go `cancelled`. The guard no-ops either way; the level is the only
+/// difference, so a genuine corruption signal is visible without flooding
+/// logs on every replay.
+fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
+    if current == incoming {
+        tracing::debug!(
+            target: "octl_core::reducer",
+            seq = ev.seq, kind = %ev.kind, status = ?current,
+            "no-op: status re-applied to terminal target"
+        );
+    } else {
+        tracing::warn!(
+            target: "octl_core::reducer",
+            seq = ev.seq, kind = %ev.kind, current = ?current, incoming = ?incoming,
+            "no-op: ignored conflicting transition from terminal target"
+        );
+    }
+}
+
 /// Derive the terminal status a `node.report` event asserts, enforcing the
-/// success-XOR-cancelled invariant.
+/// success-XOR-cancelled invariant with strict boolean typing.
 ///
 /// `cancelled: true` (with `success: false` or absent) → [`Status::Cancelled`].
 /// Otherwise `success` must be present: `true` → [`Status::Done`], `false` →
-/// [`Status::Failed`]. Neither field (bare `{}`) or the contradiction
-/// `success: true` + `cancelled: true` is a [`Error::CorruptEventLog`].
+/// [`Status::Failed`]. Neither field (bare `{}`), the contradiction
+/// `success: true` + `cancelled: true`, or a non-boolean `success` /
+/// `cancelled` is a [`Error::CorruptEventLog`].
 fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
     let corrupt = |reason: String| Error::CorruptEventLog {
         path: events_path.to_path_buf(),
         reason,
     };
-    let cancelled = ev
-        .data
-        .get("cancelled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let success = ev.data.get("success").and_then(Value::as_bool);
+    let cancelled = optional_bool(events_path, ev, &ev.data, "cancelled")?.unwrap_or(false);
+    let success = optional_bool(events_path, ev, &ev.data, "success")?;
     if cancelled {
         if success == Some(true) {
             return Err(corrupt(format!(
@@ -409,7 +457,7 @@ fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
             Some(true) => Ok(Status::Done),
             Some(false) => Ok(Status::Failed),
             None => Err(corrupt(format!(
-                "event seq={} kind=node.report missing `success` xor `cancelled`",
+                "event seq={} kind=node.report must set boolean `success` or `cancelled: true`",
                 ev.seq
             ))),
         }
