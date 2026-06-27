@@ -3,7 +3,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
-use fs2::FileExt;
+use fs4::FileExt;
 
 use crate::error::{Error, Result};
 
@@ -28,7 +28,11 @@ impl RunLock {
             .truncate(false)
             .open(lock_path)
             .map_err(|e| Error::io(lock_path, e))?;
-        file.lock_exclusive().map_err(|e| Error::io(lock_path, e))?;
+        // Fully-qualified to call fs4's trait method, not `std::fs::File::lock`
+        // (an inherent method stable since 1.89 that would otherwise shadow it
+        // on newer toolchains). fs4 renamed `fs2`'s `lock_exclusive` to `lock`
+        // to mirror std.
+        <File as FileExt>::lock(&file).map_err(|e| Error::io(lock_path, e))?;
         Ok(Self { file: Some(file) })
     }
 
@@ -45,7 +49,7 @@ impl Drop for RunLock {
     fn drop(&mut self) {
         if let Some(f) = self.file.take() {
             // Best-effort unlock — kernel releases on file close anyway.
-            // Use the fs2 trait method explicitly to avoid clashing with
+            // Use the fs4 trait method explicitly to avoid clashing with
             // `std::fs::File::unlock` (stable since 1.89, above our MSRV).
             let _ = <File as FileExt>::unlock(&f);
         }

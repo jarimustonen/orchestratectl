@@ -1,6 +1,6 @@
 //! V4 stress test: 50 threads × 1000 iterations of `flock` + append.
 //!
-//! Validates `design.md` §4 / `validation.md` V4 — `fs2` flock on
+//! Validates `design.md` §4 / `validation.md` V4 — `fs4` flock on
 //! macOS APFS correctly serializes concurrent short-lived writers without
 //! livelock, starvation, or torn lines.
 //!

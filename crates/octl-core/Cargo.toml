@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
-fs2 = { workspace = true }
+fs4 = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
