@@ -154,15 +154,21 @@ pub enum Error {
         path: PathBuf,
     },
 
-    /// A projection file is a symlink rather than a regular file.
+    /// A run-state file is a symlink rather than a regular file — covers the
+    /// manifest, the event log, the lock file, and the per-id projection files
+    /// (`name` discriminates: `"manifest"`, `"events"`, `"lock"`, `"node"`,
+    /// `"discussion"`, `"spinoff"`).
     ///
     /// Same best-effort containment, trust model, and TOCTOU residual gap as
-    /// [`Error::SymlinkRunDir`]. Projection files are written via temp-file +
-    /// rename and are always regular files; a symlink in their place is a
-    /// tampered or corrupted run.
-    #[error("projection file is a symlink (refusing to follow it): {path}")]
-    SymlinkProjectionFile {
-        /// The symlinked projection file path.
+    /// [`Error::SymlinkRunDir`]. These files are created by the run itself
+    /// (projection writes go via temp-file + rename, always regular files); a
+    /// symlink in their place is a tampered or corrupted run.
+    #[error("run state file {name:?} is a symlink (refusing to follow it): {path}")]
+    SymlinkStateFile {
+        /// Which state file (`"manifest"`, `"events"`, `"lock"`, `"node"`,
+        /// `"discussion"`, `"spinoff"`).
+        name: &'static str,
+        /// The symlinked file path.
         path: PathBuf,
     },
 

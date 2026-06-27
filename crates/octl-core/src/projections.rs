@@ -13,22 +13,26 @@ use crate::schema::{
 /// Resolve a projection file path while rejecting a symlinked run root, the
 /// symlinked subdir, or a symlinked file before the caller opens it — so a
 /// tampered run-tree component cannot redirect a read or write outside the run
-/// directory. `subdir`/`name` identify the containing projection directory and
-/// `file` is the resolved per-id path; both checks run after the run root is
-/// guarded. Best-effort containment with a check-then-open TOCTOU gap — see
-/// [`reject_symlink`].
+/// directory. `dir_name` names the containing subdir (for [`Error::SymlinkSubdir`])
+/// and `file_kind` names the projection type (for [`Error::SymlinkStateFile`]);
+/// both checks run after the run root is guarded. Best-effort containment with a
+/// check-then-open TOCTOU gap — see [`reject_symlink`].
 fn checked_file(
     paths: &RunPaths,
     subdir: PathBuf,
-    name: &'static str,
+    dir_name: &'static str,
     file: PathBuf,
+    file_kind: &'static str,
 ) -> Result<PathBuf> {
     paths.guard_root()?;
     reject_symlink(&subdir, || Error::SymlinkSubdir {
-        name,
+        name: dir_name,
         path: subdir.clone(),
     })?;
-    reject_symlink(&file, || Error::SymlinkProjectionFile { path: file.clone() })?;
+    reject_symlink(&file, || Error::SymlinkStateFile {
+        name: file_kind,
+        path: file.clone(),
+    })?;
     Ok(file)
 }
 
@@ -36,23 +40,38 @@ fn checked_file(
 fn checked_manifest(paths: &RunPaths) -> Result<PathBuf> {
     paths.guard_root()?;
     let p = paths.manifest();
-    reject_symlink(&p, || Error::SymlinkProjectionFile { path: p.clone() })?;
+    reject_symlink(&p, || Error::SymlinkStateFile {
+        name: "manifest",
+        path: p.clone(),
+    })?;
     Ok(p)
 }
 
 /// `nodes/<id>.json` path with run-root, `nodes/`, and file symlink guards.
 fn checked_node(paths: &RunPaths, id: &NodeId) -> Result<PathBuf> {
-    checked_file(paths, paths.nodes_dir(), "nodes", paths.node(id))
+    checked_file(paths, paths.nodes_dir(), "nodes", paths.node(id), "node")
 }
 
 /// `discussions/<id>.json` path with run-root, `discussions/`, and file guards.
 fn checked_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<PathBuf> {
-    checked_file(paths, paths.discussions_dir(), "discussions", paths.discussion(id))
+    checked_file(
+        paths,
+        paths.discussions_dir(),
+        "discussions",
+        paths.discussion(id),
+        "discussion",
+    )
 }
 
 /// `spinoffs/<id>.json` path with run-root, `spinoffs/`, and file guards.
 fn checked_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<PathBuf> {
-    checked_file(paths, paths.spinoffs_dir(), "spinoffs", paths.spinoff(id))
+    checked_file(
+        paths,
+        paths.spinoffs_dir(),
+        "spinoffs",
+        paths.spinoff(id),
+        "spinoff",
+    )
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -680,7 +699,7 @@ mod tests {
         symlink(&target, paths.node(&id)).unwrap();
         assert!(matches!(
             read_node(&paths, &id),
-            Err(Error::SymlinkProjectionFile { .. })
+            Err(Error::SymlinkStateFile { name: "node", .. })
         ));
     }
 
@@ -718,7 +737,10 @@ mod tests {
         symlink(&target, paths.discussion(&id)).unwrap();
         assert!(matches!(
             read_discussion(&paths, &id),
-            Err(Error::SymlinkProjectionFile { .. })
+            Err(Error::SymlinkStateFile {
+                name: "discussion",
+                ..
+            })
         ));
     }
 
@@ -756,7 +778,10 @@ mod tests {
         symlink(&target, paths.spinoff(&id)).unwrap();
         assert!(matches!(
             read_spinoff(&paths, &id),
-            Err(Error::SymlinkProjectionFile { .. })
+            Err(Error::SymlinkStateFile {
+                name: "spinoff",
+                ..
+            })
         ));
     }
 
@@ -782,23 +807,99 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn read_node_rejects_symlinked_run_root() {
-        // A symlinked run root must be refused even when every subdir and file
-        // beneath it is a perfectly ordinary file — `from_validated` skips the
-        // construction-time check, so the read path re-guards the root.
+    fn read_node_re_guards_a_run_root_swapped_after_construction() {
+        // The access-time guard must catch a root that becomes a symlink AFTER
+        // the (now-checked) constructor ran — the long-lived-handle case. Build
+        // a clean RunPaths, then swap its root dir for a symlink to an outside
+        // dir that holds an otherwise-valid node, and confirm the read refuses
+        // to follow it.
         use std::os::unix::fs::symlink;
         let tmp = TempDir::new().unwrap();
-        let real = tmp.path().join("real-run");
-        let real_paths = RunPaths::new(&real, RUN).unwrap();
-        std::fs::create_dir_all(real_paths.nodes_dir()).unwrap();
+        let root = tmp.path().join("run");
+        let paths = RunPaths::new(&root, RUN).unwrap();
         let id = NodeId::parse_str("n-0001").unwrap();
-        write_raw(&real_paths.node(&id), &node_json("n-0001", RUN));
-        let link = tmp.path().join("link-run");
-        symlink(&real, &link).unwrap();
-        let linked = RunPaths::from_validated(link, RunId::parse_str(RUN).unwrap());
+        // Outside target with a real nodes/ and a valid node behind it.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(outside.join("nodes")).unwrap();
+        write_raw(
+            &outside.join("nodes/n-0001.json"),
+            &node_json("n-0001", RUN),
+        );
+        // Swap the real run dir for a symlink to `outside`.
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        symlink(&outside, &root).unwrap();
         assert!(matches!(
-            read_node(&linked, &id),
+            read_node(&paths, &id),
             Err(Error::SymlinkRunDir { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_validated_rejects_a_symlinked_run_root_at_construction() {
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link");
+        symlink(&real, &link).unwrap();
+        assert!(matches!(
+            RunPaths::from_validated(link, RunId::parse_str(RUN).unwrap()),
+            Err(Error::SymlinkRunDir { .. })
+        ));
+    }
+
+    // --- manifest + write-side file symlink coverage ----------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn read_manifest_rejects_symlinked_manifest_file() {
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let target = tmp.path().join("evil-manifest.json");
+        write_raw(&target, &manifest_json(RUN));
+        symlink(&target, paths.manifest()).unwrap();
+        assert!(matches!(
+            read_manifest(&paths),
+            Err(Error::SymlinkStateFile {
+                name: "manifest",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_node_rejects_symlinked_node_file() {
+        // Write side: a symlinked target file is refused before the atomic
+        // temp+rename runs, so the forged write never reaches the link target.
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        let target = tmp.path().join("evil-node.json");
+        symlink(&target, paths.node(&id)).unwrap();
+        let n: Node = serde_json::from_value(node_json("n-0001", RUN)).unwrap();
+        assert!(matches!(
+            write_node(&paths, &n),
+            Err(Error::SymlinkStateFile { name: "node", .. })
+        ));
+        assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_node_rejects_dangling_symlinked_file() {
+        // A symlink whose target does not exist is still a symlink — it must be
+        // rejected as corruption, not treated as an absent file (`None`).
+        use std::os::unix::fs::symlink;
+        let (tmp, paths) = setup();
+        let id = NodeId::parse_str("n-0001").unwrap();
+        symlink(tmp.path().join("does-not-exist.json"), paths.node(&id)).unwrap();
+        assert!(matches!(
+            read_node_opt(&paths, &id),
+            Err(Error::SymlinkStateFile { name: "node", .. })
         ));
     }
 }

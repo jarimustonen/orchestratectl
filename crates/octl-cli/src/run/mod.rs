@@ -196,7 +196,9 @@ pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
         .with_invalid_value(run_id)
     })?;
     let dir = octl_core::run_dir(root, &rid);
-    Ok(RunPaths::from_validated(dir, rid))
+    // `from_validated` runs the symlink-root guard; a symlinked run dir maps to
+    // the `corrupt_run` envelope rather than being silently followed.
+    RunPaths::from_validated(dir, rid).map_err(from_core)
 }
 
 /// Trim a CLI string argument and reject empty/whitespace-only values.
@@ -313,14 +315,16 @@ pub fn from_core(err: octl_core::Error) -> CliError {
                 .with_invalid_value(body_id)
                 .with_expected(serde_json::Value::String(expected_id))
         }
-        // A symlinked run dir, subdir, or projection file is a tampered or
-        // corrupted run, not a transient I/O fault to retry — it surfaces as a
-        // distinct `corrupt_run` user error (exit 1) so a retry loop doesn't
-        // chase a path that will never be a regular file.
-        octl_core::Error::SymlinkRunDir { .. }
-        | octl_core::Error::SymlinkSubdir { .. }
-        | octl_core::Error::SymlinkProjectionFile { .. } => {
-            CliError::user("corrupt_run", err.to_string())
+        // A symlinked run dir, subdir, or state file is a tampered or corrupted
+        // run, not a transient I/O fault to retry — it surfaces as a distinct
+        // `corrupt_run` user error (exit 1) so a retry loop doesn't chase a path
+        // that will never be a regular file. The offending path rides along in
+        // `invalid_value` so an operator can go straight to it.
+        octl_core::Error::SymlinkRunDir { ref path }
+        | octl_core::Error::SymlinkSubdir { ref path, .. }
+        | octl_core::Error::SymlinkStateFile { ref path, .. } => {
+            let path = path.display().to_string();
+            CliError::user("corrupt_run", err.to_string()).with_invalid_value(path)
         }
         other => CliError::system("io_error", other.to_string()),
     }

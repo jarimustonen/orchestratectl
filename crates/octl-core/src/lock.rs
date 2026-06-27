@@ -6,6 +6,7 @@ use std::path::Path;
 use fs4::FileExt;
 
 use crate::error::{Error, Result};
+use crate::paths::reject_symlink;
 
 /// RAII guard holding the exclusive `flock` for the run.
 ///
@@ -17,10 +18,22 @@ pub struct RunLock {
 impl RunLock {
     /// Acquire the exclusive lock on `<run-dir>/.lock`, creating the file if
     /// needed. Blocks until the lock is available.
+    ///
+    /// Best-effort symlink containment: a `.lock` that is a symlink is refused
+    /// ([`Error::SymlinkStateFile`]) so `flock` cannot be taken on a file
+    /// outside the run tree, which would silently break mutual exclusion. This
+    /// guards the lock file's own final component; a symlinked *run root* is
+    /// caught downstream when the held critical section opens `events.jsonl` /
+    /// the projections (both re-guard the root before writing). See
+    /// [`crate::paths::reject_symlink`] for the check-then-open TOCTOU caveat.
     pub fn acquire(lock_path: &Path) -> Result<Self> {
         if let Some(p) = lock_path.parent() {
             std::fs::create_dir_all(p).map_err(|e| Error::io(p, e))?;
         }
+        reject_symlink(lock_path, || Error::SymlinkStateFile {
+            name: "lock",
+            path: lock_path.to_path_buf(),
+        })?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -53,5 +66,38 @@ impl Drop for RunLock {
             // `std::fs::File::unlock` (stable since 1.89, above our MSRV).
             let _ = <File as FileExt>::unlock(&f);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn acquire_succeeds_on_a_regular_lock_file() {
+        let tmp = TempDir::new().unwrap();
+        let lock = tmp.path().join(".lock");
+        // First acquire creates the file; a second acquire after drop succeeds.
+        drop(RunLock::acquire(&lock).unwrap());
+        assert!(RunLock::acquire(&lock).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acquire_rejects_a_symlinked_lock_file() {
+        // A symlinked `.lock` would take `flock` on a file outside the run,
+        // silently breaking mutual exclusion — refuse it.
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("outside.lock");
+        let lock = tmp.path().join(".lock");
+        symlink(&target, &lock).unwrap();
+        assert!(matches!(
+            RunLock::acquire(&lock),
+            Err(Error::SymlinkStateFile { name: "lock", .. })
+        ));
+        // The forged lock never touched the symlink target.
+        assert!(!target.exists());
     }
 }

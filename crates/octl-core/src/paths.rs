@@ -14,13 +14,25 @@ use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
 /// create it as usual. Any other `symlink_metadata` failure surfaces as
 /// [`Error::Io`].
 ///
+/// `symlink_metadata` does not follow the *final* path component but does follow
+/// every *intermediate* one. Callers therefore guard each level they care about
+/// in its own call (root, then subdir, then file) — checking only the leaf would
+/// silently follow a symlinked parent. A broken symlink (target absent) is still
+/// reported as a symlink and rejected; only a path whose own final component is
+/// absent yields `NotFound` → `Ok`.
+///
+/// **Scope.** This guards the run directory and everything *inside* it. Symlinks
+/// at or *above* the run root — `<root>/runs`, `<root>`, `$HOME` — are explicitly
+/// out of scope: the state root is `$HOME/.orchestratectl/`, a trusted per-user
+/// `0700` directory with no shared writers, so its ancestry is assumed intact.
+///
 /// **Residual TOCTOU gap.** This is check-then-open: a pure TOCTOU attacker can
 /// swap `path` for a symlink in the window between this `symlink_metadata` call
-/// and the caller's subsequent open. Closing that gap needs `O_NOFOLLOW` /
-/// `openat2` (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), which the standard
-/// library does not expose portably. It is out of scope for the MVP threat
-/// model: the state root is `$HOME/.orchestratectl/`, a per-user `0700`
-/// directory with no shared writers.
+/// and the caller's subsequent open — and, across the per-level calls, swap an
+/// already-checked parent so a later level resolves through it. All of that
+/// shares one accepted window; closing it needs `O_NOFOLLOW` / `openat2`
+/// (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), which the standard library does
+/// not expose portably and which is out of scope for the MVP threat model.
 pub(crate) fn reject_symlink(path: &Path, mk_err: impl FnOnce() -> Error) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(md) if md.file_type().is_symlink() => Err(mk_err()),
@@ -77,25 +89,42 @@ impl RunPaths {
     }
 
     /// Construct paths from an already-validated [`RunId`], skipping the
-    /// re-parse [`RunPaths::new`] does. `root` must be the run directory
-    /// (typically [`run_dir`]'s output for this same id).
-    pub fn from_validated(root: impl Into<PathBuf>, run_id: RunId) -> Self {
-        Self {
-            root: root.into(),
-            run_id,
-        }
+    /// re-parse [`RunPaths::new`] does (but *not* the symlink-root check —
+    /// that one `symlink_metadata` is negligible and is the production CLI's
+    /// only construction-time guard, since this is the constructor it uses).
+    /// `root` must be the run directory (typically [`run_dir`]'s output for this
+    /// same id). Rejects a symlinked root with [`Error::SymlinkRunDir`].
+    pub fn from_validated(root: impl Into<PathBuf>, run_id: RunId) -> Result<Self> {
+        let root = root.into();
+        reject_symlink(&root, || Error::SymlinkRunDir { path: root.clone() })?;
+        Ok(Self { root, run_id })
     }
 
     /// Reject this run's root if it is a symlink ([`Error::SymlinkRunDir`]).
     ///
-    /// [`RunPaths::new`] already runs this check, but the production CLI builds
-    /// paths via [`RunPaths::from_validated`] (which skips it for speed), so the
-    /// projection read/write helpers re-guard the root at access time. Cheap
-    /// (one `symlink_metadata`) and best-effort — see [`reject_symlink`].
+    /// Both constructors already run this check, but a long-lived [`RunPaths`]
+    /// can be swapped under after construction, so every projection / event /
+    /// lock access re-guards the root. Cheap (one `symlink_metadata`) and
+    /// best-effort — see [`reject_symlink`].
     pub(crate) fn guard_root(&self) -> Result<()> {
         reject_symlink(&self.root, || Error::SymlinkRunDir {
             path: self.root.clone(),
         })
+    }
+
+    /// `events.jsonl` path, guarding the run root and the event log itself
+    /// against symlink redirection ([`Error::SymlinkStateFile`]). The event
+    /// log is the run's source of truth and its highest-leverage write, so
+    /// every append/recover routes through here rather than [`RunPaths::events`]
+    /// directly. Best-effort — see [`reject_symlink`].
+    pub(crate) fn checked_events(&self) -> Result<PathBuf> {
+        self.guard_root()?;
+        let p = self.events();
+        reject_symlink(&p, || Error::SymlinkStateFile {
+            name: "events",
+            path: p.clone(),
+        })?;
+        Ok(p)
     }
 
     /// Path to the run manifest (`manifest.json`).

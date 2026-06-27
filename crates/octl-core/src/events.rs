@@ -364,7 +364,11 @@ pub fn append_and_apply_unlocked(
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<u64> {
-    let events_path = paths.events();
+    // Symlink containment runs once here, before truncate/recover/open all
+    // reuse this path — guarding the run root and the event log itself so a
+    // swapped `events.jsonl` can't redirect the run's source-of-truth write
+    // outside the run tree.
+    let events_path = paths.checked_events()?;
     // Remove any crash-torn final line BEFORE recovering the seq or
     // appending, so the new record is never concatenated onto a partial one
     // and `seq` is recovered from a clean, `\n`-terminated file.
@@ -596,7 +600,10 @@ pub(crate) fn find_prior_with_key(
     kind: &str,
     idempotency_key: &str,
 ) -> Result<Option<PriorEvent>> {
-    let events_path = paths.events();
+    // Guard the run root + event log before reading: the idempotency scan
+    // opens `events.jsonl` ahead of the append, so it must refuse a symlinked
+    // log too rather than read through it.
+    let events_path = paths.checked_events()?;
     let f = match std::fs::File::open(&events_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -705,6 +712,26 @@ mod tests {
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].run_id.as_str(), run_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_rejects_a_symlinked_event_log() {
+        // `events.jsonl` is the run's source of truth and highest-leverage
+        // write — a symlinked log must be refused, not appended through.
+        use crate::Error;
+        use std::os::unix::fs::symlink;
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let target = tmp.path().join("evil-events.jsonl");
+        symlink(&target, paths.events()).unwrap();
+        let err = append_and_apply_event(&paths, "run.status", None, None, json!({})).unwrap_err();
+        assert!(
+            matches!(err, Error::SymlinkStateFile { name: "events", .. }),
+            "got {err:?}"
+        );
+        // The forged append never reached the symlink target.
+        assert!(!target.exists());
     }
 
     /// Build a fresh, empty run directory with a valid `RunPaths` whose
