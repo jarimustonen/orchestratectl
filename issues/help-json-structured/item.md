@@ -6,6 +6,7 @@ status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
+related: ['@help-json-clap-native-resolution', '@help-json-richer-arg-metadata', '@help-json-depth-control', '@help-json-deprecation-convention']
 ---
 
 # Structured --help --json output across all subcommands
