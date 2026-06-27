@@ -12,14 +12,17 @@
 //! `events.jsonl` under the same lock window for a prior `node.report`
 //! event with the same key, return its `seq` instead of appending again.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 use octl_core::report::{validate_report_payload, ReportValidationError};
-use octl_core::{ensure_root, read_manifest_opt, read_node_opt, RunLock};
+use octl_core::{
+    ensure_root, find_prior_with_key, read_manifest_opt, read_node_opt, PriorEvent, RunLock,
+    RunPaths,
+};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -115,12 +118,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Idempotency lookup + append must share one lock window so a
     // concurrent retry can't see "no prior event" and double-append.
     enum Outcome {
-        Replayed(PriorReport),
+        Replayed(PriorEvent),
         Appended(u64),
     }
     let outcome = RunLock::with_lock(&paths.lock(), || {
         if let Some(key) = idempotency_key.as_deref() {
-            if let Some(prior) = find_prior_report(&paths.events(), key)? {
+            if let Some(prior) = find_prior_report(&paths, key)? {
                 return Ok(Outcome::Replayed(prior));
             }
         }
@@ -231,59 +234,12 @@ fn map_report_validation_error(err: ReportValidationError) -> CliError {
     cli
 }
 
-/// Mirrors `event create`'s `find_prior_event` but specialized to
-/// `node.report`. Could be DRY'd with that helper in a follow-up — see
-/// `handoff.md`-style spin-off note in the issue closing message.
-fn find_prior_report(events_path: &Path, key: &str) -> octl_core::Result<Option<PriorReport>> {
-    let f = match std::fs::File::open(events_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(octl_core::Error::io(events_path, e)),
-    };
-    let reader = BufReader::new(f);
-    for line in reader.lines() {
-        let line = line.map_err(|e| octl_core::Error::io(events_path, e))?;
-        if line.is_empty() {
-            continue;
-        }
-        let probe: ProbeFields = match serde_json::from_str(&line) {
-            Ok(p) => p,
-            // Tolerate a torn final line the same way `recover_last_seq`
-            // does — an in-flight crash mid-write shouldn't wedge
-            // idempotency lookup.
-            Err(_) => continue,
-        };
-        if probe.kind != "node.report" || probe.idempotency_key.as_deref() != Some(key) {
-            continue;
-        }
-        let full: FullEventForReplay =
-            serde_json::from_str(&line).map_err(|e| octl_core::Error::json(events_path, e))?;
-        return Ok(Some(PriorReport {
-            seq: full.seq,
-            node_id: full.node_id,
-            data: full.data,
-        }));
-    }
-    Ok(None)
-}
-
-#[derive(Deserialize)]
-struct ProbeFields {
-    kind: String,
-    idempotency_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct FullEventForReplay {
-    seq: u64,
-    node_id: Option<String>,
-    data: Value,
-}
-
-struct PriorReport {
-    seq: u64,
-    node_id: Option<String>,
-    data: Value,
+/// Locate a prior `node.report` event with this idempotency `key`. Thin
+/// wrapper over [`octl_core::find_prior_with_key`] pinned to the
+/// `node.report` kind — see there for the torn-line policy and the
+/// requirement that the caller hold the run's `flock`.
+fn find_prior_report(paths: &RunPaths, key: &str) -> octl_core::Result<Option<PriorEvent>> {
+    find_prior_with_key(paths, "node.report", key)
 }
 
 fn emit(
