@@ -3,14 +3,14 @@
 //! MVP only ships a placeholder `version` subcommand. The full subcommand
 //! tree (per `design.md` §2) lands in subsequent issues.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{ColorChoice, Parser, Subcommand};
 use serde::Serialize;
 use tracing::info;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{CliError, ExitKind};
@@ -138,7 +138,12 @@ impl From<SkillAgentArg> for crate::skill::AgentTarget {
 }
 
 pub fn run() -> ExitCode {
-    let logging_warnings = init_logging();
+    // `_log_guard` owns the non-blocking writer's worker thread. It MUST
+    // stay alive for the whole of `run()`: dropping it flushes buffered
+    // events and joins the thread, so binding it here keeps logs flowing
+    // until every subcommand (including the long-lived `supervise` loop)
+    // has returned.
+    let (logging_warnings, _log_guard) = init_logging();
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -319,14 +324,21 @@ fn format_u32_list(values: &[u32]) -> String {
 /// `~/.orchestratectl/logs/orchestratectl.log.jsonl`. Best-effort: if the
 /// log file cannot be opened, the process still runs and the caller sees
 /// the failure in the success-envelope `warnings` array or on stderr.
-fn init_logging() -> Vec<String> {
+///
+/// Returns the collected warnings plus the [`WorkerGuard`] for the
+/// non-blocking writer. The guard owns the background writer thread; the
+/// caller MUST keep it alive until the process is done logging, otherwise
+/// buffered events are dropped on drop. `None` is returned whenever the
+/// subscriber was not installed (no log path, IO error, or an
+/// already-initialised global subscriber).
+fn init_logging() -> (Vec<String>, Option<WorkerGuard>) {
     let mut warnings = Vec::new();
     let log_path = match log_path() {
         Some(p) => p,
         None => {
             warnings
                 .push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
-            return warnings;
+            return (warnings, None);
         }
     };
 
@@ -337,7 +349,7 @@ fn init_logging() -> Vec<String> {
                 parent.display(),
                 e
             ));
-            return warnings;
+            return (warnings, None);
         }
     }
 
@@ -349,19 +361,21 @@ fn init_logging() -> Vec<String> {
                 log_path.display(),
                 e
             ));
-            return warnings;
+            return (warnings, None);
         }
     };
 
     let filter =
         EnvFilter::try_from_env("ORCHESTRATECTL_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
-    // Share one open file handle across every log event via Arc<File>.
-    // tracing-subscriber's `MakeWriter` impl for `Arc<File>` writes
-    // through `&File` (one `write(2)` per event under the kernel's
-    // O_APPEND atomicity guarantee) — no per-event `try_clone` and no
-    // panicking path on FD exhaustion.
-    let writer: Arc<File> = Arc::new(file);
+    // Hand the file to a background writer thread. The supervisor polls at
+    // 500ms across ~100 nodes; doing the `write(2)` synchronously on the
+    // tracing call path would serialise that hot loop on disk IO and could
+    // interleave records larger than PIPE_BUF. `non_blocking` buffers each
+    // event onto a channel (default ~128K-message capacity) and a single
+    // worker drains it, so every record reaches the file whole, in order,
+    // and off the caller's thread.
+    let (writer, guard) = tracing_appender::non_blocking(file);
     let layer = fmt::layer()
         .json()
         .with_current_span(false)
@@ -374,10 +388,14 @@ fn init_logging() -> Vec<String> {
         .try_init()
         .is_err()
     {
+        // Subscriber already installed: the layer we just built is unused,
+        // so let the guard drop here (flushing and joining the idle worker)
+        // rather than handing back a guard for a writer nobody reads.
         warnings.push("tracing subscriber already initialised".to_string());
+        return (warnings, None);
     }
 
-    warnings
+    (warnings, Some(guard))
 }
 
 fn log_path() -> Option<PathBuf> {

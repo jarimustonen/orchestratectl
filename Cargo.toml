@@ -20,6 +20,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
 insta = { version = "1", features = ["json"] }
 tempfile = "3"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
