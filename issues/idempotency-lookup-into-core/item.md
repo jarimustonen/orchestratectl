@@ -21,3 +21,9 @@ While at it, fix the tolerance bug surfaced by review: both scanners `continue` 
 The shared helper should either (a) track whether the malformed line is the file's last line and tolerate only that, or (b) fall through to a hard `CorruptEventLog` error. Probably (b), because by the time the CLI is called the upstream `recover_last_seq` has already accepted the same file — a parse failure here implies inter-line corruption.
 
 Sources: `issues/node-cli-read/handoff.md` D1, D2.
+
+## Comments
+
+### 2026-06-27T10:16:23Z · @jari
+
+Multi-model review (Gemini 3.1, GPT-5.5, Opus 4.7, DeepSeek V4) applied: fixed a consensus-critical split-brain where a valid-JSON torn final line was matched by the dedup scan but discarded by recover_last_seq (lost-event / duplicate-seq). Also: ProbeFields.seq now optional, byte-oriented read (partial-UTF8 torn tail tolerated), matched-line bad payload + parse_seq now map to CorruptEventLog for consistent exit-1 classification, escape_debug excerpts. Report: history/review-idempotency-lookup-into-core.md. Two out-of-scope torn-line gaps (read_all_events divergence, append-path tail truncation) spun off to @torn-line-policy-consistency.
