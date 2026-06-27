@@ -1,0 +1,20 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "run_id": "[RUN_ID]",
+    "nodes": [
+      {
+        "node_id": "n-0001",
+        "kind": "spinoff",
+        "status": "pending",
+        "parent_node_id": null,
+        "updated_at": "[TS]",
+        "children": 0
+      }
+    ]
+  }
+}

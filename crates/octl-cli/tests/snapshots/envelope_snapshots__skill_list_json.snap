@@ -1,0 +1,23 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "skills": [
+      {
+        "name": "orchestratectl-overview",
+        "description": "First read for any agent that has just discovered the `orchestratectl` binary mid-conversation. Teaches the overall shape of the tool — runs, supervisors, nodes, discussions, spinoffs — and the canonical create→supervise→collect-reports cycle. Use when asked \"what is orchestratectl\", when the binary appears in a session for the first time, or before issuing the first non-trivial command."
+      },
+      {
+        "name": "octl-run-overview",
+        "description": "Read the output of `orchestratectl run list` and `orchestratectl run show` to inspect the state of orchestrated agent workflows (worktrees, fan-outs, spinoffs). Use when asked about run status, when triaging an in-flight orchestration, or before deciding whether to spawn, resume, or abort work."
+      },
+      {
+        "name": "octl-spawn-spinoff",
+        "description": "Spawn an autonomous spinoff worktree via orchestratectl — a single fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back. Use when the user wants a parallel sub-task handled without interactive review."
+      }
+    ]
+  }
+}

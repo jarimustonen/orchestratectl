@@ -1,0 +1,5 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"data":{"version":"0.0.1","commit":"[COMMIT]","skills":[{"name":"orchestratectl-overview","cli_version":"0.0.1","schema_version":1},{"name":"octl-run-overview","cli_version":"0.0.1","schema_version":1},{"name":"octl-spawn-spinoff","cli_version":"0.0.1","schema_version":1}],"schema_version":1,"supported_schemas":[1],"state_schema_version":1,"supported_state_schemas":[1]}}

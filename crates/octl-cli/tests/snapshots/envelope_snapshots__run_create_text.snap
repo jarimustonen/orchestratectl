@@ -1,0 +1,8 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+run-id: [RUN_ID]
+dir:    [HOME]/runs/[RUN_ID]
+kind:   spinoff
+status: pending  (supervisor: delegated-to-parent-supervisor)

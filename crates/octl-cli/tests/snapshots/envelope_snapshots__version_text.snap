@@ -1,0 +1,10 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+orchestratectl 0.0.1
+commit:                  [COMMIT]
+envelope schema:         1
+supported envelopes:     1
+state schema version:    1
+supported state schemas: 1

@@ -1,0 +1,5 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+p-0001	pending	n-0001	spinoff	seed proposal

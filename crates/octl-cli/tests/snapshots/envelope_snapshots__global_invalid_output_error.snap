@@ -1,0 +1,5 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"error":{"code":"invalid_arguments","message":"error: invalid value 'yaml' for '--output <FMT|PATH>': expected one of text|json|jsonl or a .json/.jsonl file path; got 'yaml'"}}

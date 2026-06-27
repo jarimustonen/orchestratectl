@@ -31,3 +31,7 @@ semver = "1"
 [dev-dependencies]
 tempfile = { workspace = true }
 libc = { workspace = true }
+insta = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+regex = { workspace = true }

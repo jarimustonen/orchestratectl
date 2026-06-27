@@ -1,0 +1,5 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: orchestratectl-overview, octl-run-overview, octl-spawn-spinoff","invalid_value":"no-such-skill","expected":{"one_of":["orchestratectl-overview","octl-run-overview","octl-spawn-spinoff"]}}}

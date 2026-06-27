@@ -1,0 +1,5 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"data":{"run_id":"[RUN_ID]","kind":"node.created","node_id":"n-1001","seq":4,"projections":["nodes/n-1001.json","manifest.json"]}}
