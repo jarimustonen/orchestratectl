@@ -5,7 +5,8 @@ use insta::assert_json_snapshot;
 use octl_core::events::read_all_events;
 use octl_core::{
     append_event_with_seq, apply_event, ensure_root, read_discussion_opt, read_manifest,
-    read_node_opt, read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunLock, RunPaths,
+    read_node_opt, read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunId, RunLock,
+    RunPaths,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -22,7 +23,7 @@ impl Harness {
         let root = tmp.path();
         ensure_root(root).unwrap();
         let run_id = "01jxsnap000000000000000000".to_string();
-        let dir = run_dir(root, &run_id);
+        let dir = run_dir(root, &RunId::parse_str(&run_id).unwrap());
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             paths: RunPaths::new(dir, run_id).unwrap(),
@@ -165,7 +166,7 @@ fn run_node_report_spinoff_flow() {
     assert_json_snapshot!("report_spinoff__spinoff", v);
 
     // Sanity: run_id was carried through to all artifacts.
-    assert_eq!(s.run_id, run_id);
+    assert_eq!(s.run_id.as_str(), run_id);
 }
 
 #[test]
@@ -248,7 +249,7 @@ fn child_spawned_records_parent_child_link() {
         "child.spawned",
         Some("n-0001"),
         json!({
-            "child_run_id": "01jxchildrun000000000000000",
+            "child_run_id": "01jxchd0000000000000000000",
             "child_node_id": "n-0001",
             "child_kind": "spinoff",
             "child_title": "sub-task A",
@@ -258,7 +259,7 @@ fn child_spawned_records_parent_child_link() {
         "child.spawned",
         Some("n-0001"),
         json!({
-            "child_run_id": "01jxchildrun111111111111111",
+            "child_run_id": "01jxche0000000000000000000",
             "child_node_id": "n-0001",
             "child_kind": "spinoff",
             "child_title": "sub-task B",

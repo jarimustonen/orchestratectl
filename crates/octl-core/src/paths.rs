@@ -50,6 +50,16 @@ impl RunPaths {
         }
     }
 
+    /// Construct paths from an already-validated [`RunId`], skipping the
+    /// re-parse [`RunPaths::new`] does. `root` must be the run directory
+    /// (typically [`run_dir`]'s output for this same id).
+    pub fn from_validated(root: impl Into<PathBuf>, run_id: RunId) -> Self {
+        Self {
+            root: root.into(),
+            run_id,
+        }
+    }
+
     /// Path to the run manifest (`manifest.json`).
     pub fn manifest(&self) -> PathBuf {
         self.root.join("manifest.json")
@@ -111,8 +121,12 @@ impl RunPaths {
 }
 
 /// Compose the standard run directory under `<root>/runs/<run-id>`.
-pub fn run_dir(root: &Path, run_id: &str) -> PathBuf {
-    root.join("runs").join(run_id)
+///
+/// Takes a validated [`RunId`] so this run-level path constructor cannot be
+/// handed a `..` or absolute component — closing the same traversal vector the
+/// per-run [`RunPaths`] helpers close for node/discussion/spinoff ids.
+pub fn run_dir(root: &Path, run_id: &RunId) -> PathBuf {
+    root.join("runs").join(run_id.as_str())
 }
 
 #[cfg(test)]

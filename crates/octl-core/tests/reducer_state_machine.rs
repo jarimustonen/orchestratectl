@@ -5,7 +5,7 @@
 use octl_core::events::read_all_events;
 use octl_core::{
     append_event_with_seq, apply_event, ensure_root, read_manifest, read_node_opt, run_dir, Error,
-    Node, NodeId, RunLock, RunPaths, Status,
+    Node, NodeId, RunId, RunLock, RunPaths, Status,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -22,7 +22,7 @@ impl Harness {
         let root = tmp.path();
         ensure_root(root).unwrap();
         let run_id = "01jxsnap000000000000000000".to_string();
-        let dir = run_dir(root, &run_id);
+        let dir = run_dir(root, &RunId::parse_str(&run_id).unwrap());
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             paths: RunPaths::new(dir, run_id).unwrap(),

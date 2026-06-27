@@ -539,7 +539,10 @@ fn spawn_child_supervisor(
 ) -> Result<u32, CliError> {
     // D1: tolerate the race window — wait up to CHILD_DIR_WAIT for the
     // child run dir to appear before deciding the spawn has failed.
-    let child_dir = octl_core::run_dir(root, child_run_id);
+    // `child_run_id` was validated by the caller; re-parse to feed run_dir a
+    // typed RunId (run_dir no longer accepts a raw &str).
+    let child_rid = parse_run_id(child_run_id)?;
+    let child_dir = octl_core::run_dir(root, &child_rid);
     let deadline = Instant::now() + CHILD_DIR_WAIT;
     while !child_dir.join("manifest.json").exists() {
         if Instant::now() >= deadline {
@@ -653,19 +656,11 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
         };
         if let Ok(Some(n)) = read_node_opt(paths, &nid) {
             for c in &n.children {
-                // Validate before this id becomes a filesystem path on
-                // reseed — a corrupt/stale projection must not let an
-                // unsafe run id escape the runs root.
-                if let Ok(safe) = parse_run_id(&c.run_id).map(|r| r.to_string()) {
-                    out.entry(safe).or_insert_with(|| node_id.clone());
-                } else {
-                    warn!(
-                        target: "orchestratectl::supervise",
-                        parent_node = %node_id,
-                        child = %c.run_id,
-                        "node projection has unsafe child run id; skipping"
-                    );
-                }
+                // `c.run_id` is a validated `RunId` — the projection would have
+                // failed to deserialize otherwise — so it is already safe to
+                // use as a path component when reseeding child tails.
+                out.entry(c.run_id.to_string())
+                    .or_insert_with(|| node_id.clone());
             }
         }
     }

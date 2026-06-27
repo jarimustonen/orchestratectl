@@ -113,7 +113,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 node_id: n.node_id.to_string(),
                 kind: kind.to_string(),
                 status: status.to_string(),
-                parent_node_id: n.parent_node_id,
+                parent_node_id: n.parent_node_id.map(|p| p.to_string()),
                 updated_at: n.updated_at,
                 children: n.children.len() as u32,
             });

@@ -240,11 +240,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let seq = octl_core::append_and_apply_unlocked(
             &paths,
             "discussion.resolved",
-            Some(&node_id),
+            Some(node_id.as_str()),
             args.idempotency_key.as_deref(),
             data,
         )?;
-        Ok(LockResult::Appended { seq, node_id })
+        Ok(LockResult::Appended {
+            seq,
+            node_id: node_id.to_string(),
+        })
     })
     .map_err(from_core)?;
 
@@ -304,7 +307,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let payload = ResolvePayload {
                 run_id: &run_id,
                 discussion_id: discussion_id.as_str(),
-                node_id: &existing.node_id,
+                node_id: existing.node_id.as_str(),
                 choice: &choice,
                 note: note.as_deref(),
                 outcome: Outcome::IdempotentReplay,
@@ -319,7 +322,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let payload = ResolvePayload {
                 run_id: &run_id,
                 discussion_id: discussion_id.as_str(),
-                node_id: &existing.node_id,
+                node_id: existing.node_id.as_str(),
                 choice: &choice,
                 note: existing.note.as_deref(),
                 outcome: Outcome::NoOp,
@@ -334,7 +337,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let payload = ResolvePayload {
                 run_id: &run_id,
                 discussion_id: discussion_id.as_str(),
-                node_id: &existing.node_id,
+                node_id: existing.node_id.as_str(),
                 choice: &choice,
                 note: note.as_deref(),
                 outcome: Outcome::DryRun,

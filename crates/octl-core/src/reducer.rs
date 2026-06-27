@@ -23,7 +23,7 @@ use crate::projections::{
 };
 use crate::schema::{
     ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,
-    Lifecycle, Manifest, Node, NodeId, ProposalId, SpinoffProposal, SpinoffStatus, Status,
+    Lifecycle, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal, SpinoffStatus, Status,
     STATE_SCHEMA_VERSION,
 };
 
@@ -37,6 +37,62 @@ fn corrupt_id(events_path: &Path, ev: &Event, e: &IdValidationError) -> Error {
         path: events_path.to_path_buf(),
         reason: format!("event seq={} kind={}: {e}", ev.seq, ev.kind),
     }
+}
+
+/// Parse an optional `RunId` from event-data field `field`: missing/null →
+/// `None`; a JSON string → validated `Some(RunId)`; a malformed id or a
+/// non-string value → [`Error::CorruptEventLog`].
+fn opt_run_id(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result<Option<RunId>> {
+    match d.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => RunId::parse_str(s)
+            .map(Some)
+            .map_err(|e| corrupt_id(events_path, ev, &e)),
+        Some(_) => Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} kind={} `{field}` must be a JSON string or null",
+                ev.seq, ev.kind
+            ),
+        }),
+    }
+}
+
+/// Parse an optional `NodeId` from event-data field `field`. See [`opt_run_id`].
+fn opt_node_id(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result<Option<NodeId>> {
+    match d.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => NodeId::parse_str(s)
+            .map(Some)
+            .map_err(|e| corrupt_id(events_path, ev, &e)),
+        Some(_) => Err(Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!(
+                "event seq={} kind={} `{field}` must be a JSON string or null",
+                ev.seq, ev.kind
+            ),
+        }),
+    }
+}
+
+/// Resolve a required `NodeId` from event-data field `field`, falling back to
+/// the envelope's top-level `node_id`. Used where the node reference may appear
+/// either in `data` or on the envelope (discussion/spinoff `node_id`).
+fn want_node_id_with_fallback(
+    events_path: &Path,
+    ev: &Event,
+    d: &Value,
+    field: &str,
+) -> Result<NodeId> {
+    let s = d
+        .get(field)
+        .and_then(Value::as_str)
+        .or(ev.node_id.as_deref())
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.to_path_buf(),
+            reason: format!("event seq={} kind={} missing `{field}`", ev.seq, ev.kind),
+        })?;
+    NodeId::parse_str(s).map_err(|e| corrupt_id(events_path, ev, &e))
 }
 
 fn data_kind(v: &Value) -> Option<Kind> {
@@ -198,7 +254,7 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     // no-op (but validates that `run_id` matches; otherwise the event log
     // is being applied to the wrong run).
     if let Some(existing) = read_manifest_opt(paths)? {
-        if existing.run_id != ev.run_id {
+        if existing.run_id.as_str() != ev.run_id {
             return Err(Error::CorruptEventLog {
                 path: paths.manifest(),
                 reason: format!(
@@ -226,7 +282,8 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let title = want_str(&events_path, ev, d, "title")?.to_string();
     let m = Manifest {
         schema_version: STATE_SCHEMA_VERSION,
-        run_id: ev.run_id.clone(),
+        // `run_id == paths.run_id` was verified at `apply_event` entry.
+        run_id: paths.run_id.clone(),
         kind,
         lifecycle,
         title,
@@ -248,14 +305,8 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         node_count: 0,
         open_discussions: 0,
         pending_spinoffs: 0,
-        parent_run_id: d
-            .get("parent_run_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        parent_node_id: d
-            .get("parent_node_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
+        parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
     };
     write_manifest(paths, &m)
 }
@@ -309,11 +360,9 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let n = Node {
         schema_version: STATE_SCHEMA_VERSION,
         node_id,
-        run_id: ev.run_id.clone(),
-        parent_node_id: d
-            .get("parent_node_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        // `run_id == paths.run_id` was verified at `apply_event` entry.
+        run_id: paths.run_id.clone(),
+        parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
         kind,
         status: Status::Pending,
         task: d.get("task").and_then(Value::as_str).map(str::to_string),
@@ -492,18 +541,7 @@ fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
     if read_discussion_opt(paths, &discussion_id)?.is_some() {
         return Ok(());
     }
-    let node_id = d
-        .get("node_id")
-        .and_then(Value::as_str)
-        .or(ev.node_id.as_deref())
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=discussion.opened missing `node_id`",
-                ev.seq
-            ),
-        })?
-        .to_string();
+    let node_id = want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
     let options = d
         .get("options")
         .and_then(Value::as_array)
@@ -516,7 +554,7 @@ fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
     let disc = Discussion {
         schema_version: STATE_SCHEMA_VERSION,
         discussion_id,
-        run_id: ev.run_id.clone(),
+        run_id: paths.run_id.clone(),
         node_id,
         opened_at: ev.ts,
         severity: d
@@ -588,22 +626,11 @@ fn apply_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ),
             }
         })?;
-    let node_id = d
-        .get("node_id")
-        .and_then(Value::as_str)
-        .or(ev.node_id.as_deref())
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=spinoff.proposed missing `node_id`",
-                ev.seq
-            ),
-        })?
-        .to_string();
+    let node_id = want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
     let s = SpinoffProposal {
         schema_version: STATE_SCHEMA_VERSION,
         proposal_id,
-        run_id: ev.run_id.clone(),
+        run_id: paths.run_id.clone(),
         node_id,
         proposed_at: ev.ts,
         proposed_title: want_str(&events_path, ev, d, "proposed_title")?.to_string(),
@@ -696,13 +723,15 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
         })?;
     let parent_node_id =
         NodeId::parse_str(parent_node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    let child_run_id = want_str(&events_path, ev, &ev.data, "child_run_id")?.to_string();
-    let child_node_id = ev
-        .data
-        .get("child_node_id")
-        .and_then(Value::as_str)
-        .unwrap_or("n-0001")
-        .to_string();
+    let child_run_id = RunId::parse_str(want_str(&events_path, ev, &ev.data, "child_run_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let child_node_id = NodeId::parse_str(
+        ev.data
+            .get("child_node_id")
+            .and_then(Value::as_str)
+            .unwrap_or("n-0001"),
+    )
+    .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let mut n = match read_node_opt(paths, &parent_node_id)? {
         Some(n) => n,
         None => return Ok(()),
@@ -744,7 +773,8 @@ mod tests {
     fn apply_event_rejects_event_from_a_different_run() {
         let tmp = TempDir::new().unwrap();
         let run_id = "01jxsnap000000000000000000";
-        let dir = crate::run_dir(tmp.path(), run_id);
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
         std::fs::create_dir_all(&dir).unwrap();
         let paths = RunPaths::new(dir, run_id).unwrap();
 

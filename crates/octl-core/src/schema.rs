@@ -173,17 +173,19 @@ id_newtype! {
 
 impl NodeId {
     /// Accepted-shape hint shared by every rejection.
-    const EXPECTED: &'static str = "n-NNNN (n- followed by 4+ ASCII digits)";
+    const EXPECTED: &'static str = "n-NNNN (n- followed by 4-10 ASCII digits)";
 
-    /// Parse and validate a `node_id`. Requires the `n-` prefix followed by at
-    /// least four ASCII digits; rejects anything else (wrong prefix, too few
-    /// digits, non-digit body).
+    /// Parse and validate a `node_id`. Requires the `n-` prefix followed by
+    /// 4 to 10 ASCII digits; rejects anything else (wrong prefix, too few or
+    /// too many digits, non-digit body). The 10-digit ceiling covers the full
+    /// `u32` counter range [`crate::format_node_id`] draws from while bounding
+    /// the filename length (a defense against `ENAMETOOLONG` from a forged id).
     pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
         let body = s.strip_prefix("n-").ok_or(IdValidationError::WrongPrefix {
             kind: "node",
             expected: Self::EXPECTED,
         })?;
-        if body.len() >= 4 && body.bytes().all(|b| b.is_ascii_digit()) {
+        if (4..=10).contains(&body.len()) && body.bytes().all(|b| b.is_ascii_digit()) {
             Ok(Self(s.to_string()))
         } else {
             Err(IdValidationError::InvalidFormat {
@@ -409,8 +411,8 @@ pub enum SpinoffStatus {
 pub struct Manifest {
     /// State-schema version this file was written with.
     pub schema_version: u32,
-    /// Unique run identifier (ULID).
-    pub run_id: String,
+    /// Unique run identifier (ULID). Validated on read.
+    pub run_id: RunId,
     /// Kind of work this run performs.
     pub kind: Kind,
     /// Execution lifecycle (autonomous vs interactive).
@@ -436,18 +438,18 @@ pub struct Manifest {
     /// Count of currently pending spin-off proposals (denormalized counter).
     pub pending_spinoffs: u32,
     /// Run that spawned this run, if it is itself a child.
-    pub parent_run_id: Option<String>,
+    pub parent_run_id: Option<RunId>,
     /// Node in the parent run that spawned this run, if any.
-    pub parent_node_id: Option<String>,
+    pub parent_node_id: Option<NodeId>,
 }
 
 /// `(child_run_id, child_node_id)` pointer recorded in `Node::children`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChildRef {
-    /// Run id of the spawned child.
-    pub run_id: String,
-    /// Node id within the child run.
-    pub node_id: String,
+    /// Run id of the spawned child. Validated on read.
+    pub run_id: RunId,
+    /// Node id within the child run. Validated on read.
+    pub node_id: NodeId,
 }
 
 /// `nodes/<node-id>.json` (design.md §1.3).
@@ -459,10 +461,10 @@ pub struct Node {
     /// read; this is the projection's filename key, so it can never name a
     /// path outside `nodes/`.
     pub node_id: NodeId,
-    /// Run this node belongs to.
-    pub run_id: String,
+    /// Run this node belongs to. Validated on read.
+    pub run_id: RunId,
     /// Parent node within the same run, if this is a sub-node.
-    pub parent_node_id: Option<String>,
+    pub parent_node_id: Option<NodeId>,
     /// Kind of work this node performs.
     pub kind: Kind,
     /// Current node status.
@@ -512,10 +514,10 @@ pub struct Discussion {
     /// projection's filename key, so it can never name a path outside
     /// `discussions/`.
     pub discussion_id: DiscussionId,
-    /// Run this discussion belongs to.
-    pub run_id: String,
-    /// Node that opened the discussion.
-    pub node_id: String,
+    /// Run this discussion belongs to. Validated on read.
+    pub run_id: RunId,
+    /// Node that opened the discussion. Validated on read.
+    pub node_id: NodeId,
     /// When the discussion was opened.
     pub opened_at: DateTime<Utc>,
     /// Severity tag (e.g. `critical`, `normal`) driving alerting.
@@ -546,10 +548,10 @@ pub struct SpinoffProposal {
     /// Unique proposal identifier. Validated on read; this is the projection's
     /// filename key, so it can never name a path outside `spinoffs/`.
     pub proposal_id: ProposalId,
-    /// Run this proposal belongs to.
-    pub run_id: String,
-    /// Node that proposed the spin-off.
-    pub node_id: String,
+    /// Run this proposal belongs to. Validated on read.
+    pub run_id: RunId,
+    /// Node that proposed the spin-off. Validated on read.
+    pub node_id: NodeId,
     /// When the proposal was made.
     pub proposed_at: DateTime<Utc>,
     /// Suggested title for the spun-off work.
@@ -569,6 +571,15 @@ pub struct SpinoffProposal {
 }
 
 /// One event-log line (design.md §1.4).
+///
+/// Unlike the projection structs, `run_id` / `node_id` here stay `String`
+/// rather than the typed id newtypes. `Event` is the append-only wire envelope
+/// produced generically by [`crate::append_event`] (which takes
+/// `node_id: Option<&str>`); the reducer is its validating boundary — it parses
+/// every event-sourced id into the appropriate newtype (mapping failures to
+/// [`Error::CorruptEventLog`]) before any of them is used to build a path.
+///
+/// [`Error::CorruptEventLog`]: crate::Error::CorruptEventLog
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Wall-clock timestamp the event was appended.
@@ -670,10 +681,11 @@ mod id_tests {
             Err(IdValidationError::WrongPrefix { .. })
         ));
         for bad in [
-            "n-1",    // too few digits
-            "n-abcd", // non-digit body
-            "n-",     // empty body
-            "n-00a1", // mixed
+            "n-1",           // too few digits
+            "n-abcd",        // non-digit body
+            "n-",            // empty body
+            "n-00a1",        // mixed
+            "n-00000000000", // 11 digits — over the 10-digit ceiling
         ] {
             assert!(
                 matches!(
@@ -785,6 +797,6 @@ mod id_tests {
     fn error_exposes_kind_and_expected() {
         let err = NodeId::parse_str("n-x").unwrap_err();
         assert_eq!(err.kind(), "node");
-        assert_eq!(err.expected(), "n-NNNN (n- followed by 4+ ASCII digits)");
+        assert_eq!(err.expected(), "n-NNNN (n- followed by 4-10 ASCII digits)");
     }
 }

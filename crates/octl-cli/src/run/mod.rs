@@ -185,14 +185,18 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
 /// than being collapsed into `run_not_found`. Callers that look a run up by id
 /// still emit their own `run_not_found` for the valid-but-missing case.
 pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
-    RunPaths::new(octl_core::run_dir(root, run_id), run_id).map_err(|err| match err {
-        octl_core::Error::InvalidRunId { reason, .. } => CliError::user(
+    // Validate the run-id into a typed RunId *before* composing any path, then
+    // build the run dir from the validated id — `run_dir` only accepts RunId, so
+    // a `..`/absolute component can never reach the filesystem.
+    let rid = RunId::parse_str(run_id).map_err(|e| {
+        CliError::user(
             "invalid_run_id",
-            format!("run id {run_id:?} is not a valid ULID: {reason}"),
+            format!("run id {run_id:?} is not a valid ULID: {e}"),
         )
-        .with_invalid_value(run_id),
-        other => from_core(other),
-    })
+        .with_invalid_value(run_id)
+    })?;
+    let dir = octl_core::run_dir(root, &rid);
+    Ok(RunPaths::from_validated(dir, rid))
 }
 
 /// Trim a CLI string argument and reject empty/whitespace-only values.

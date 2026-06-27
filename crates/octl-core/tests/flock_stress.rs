@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use octl_core::events::{append_event_with_seq, read_all_events, recover_last_seq};
-use octl_core::{ensure_root, run_dir, RunLock, RunPaths};
+use octl_core::{ensure_root, run_dir, RunId, RunLock, RunPaths};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -32,7 +32,7 @@ fn flock_stress_50_threads_1000_iters() {
     let root = tmp.path();
     ensure_root(root).unwrap();
     let run_id = "01jxstress0000000000000000".to_string();
-    let dir = run_dir(root, &run_id);
+    let dir = run_dir(root, &RunId::parse_str(&run_id).unwrap());
     std::fs::create_dir_all(&dir).unwrap();
     let paths = Arc::new(RunPaths::new(dir, run_id).unwrap());
 

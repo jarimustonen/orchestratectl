@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use octl_core::{
-    append_and_apply_unlocked, read_node_opt, write_node, DiscussionId, NodeId, ProposalId,
+    append_and_apply_unlocked, read_node_opt, write_node, DiscussionId, NodeId, ProposalId, RunId,
     RunLock, RunPaths, Status, STATE_SCHEMA_VERSION,
 };
 
@@ -132,6 +132,17 @@ pub fn process_node_report(
     report: &Value,
     state: &mut SupervisorState,
 ) -> Result<Option<ReportConsumption>, CliError> {
+    // Validate every id at the boundary, BEFORE acquiring the lock or emitting
+    // any event. Doing it up front means a malformed id can't leave a partial
+    // batch of discussion/spinoff events behind (the previous code validated
+    // `parent_node_id` only at the end, after writes). `parent_nid` is reused
+    // for the node-projection update below; the child ids are validated for
+    // their own sake (they feed deterministic-id derivation and state keys).
+    let parent_nid = NodeId::parse_str(parent_node_id)
+        .map_err(|e| CliError::user("invalid_id", e.to_string()))?;
+    RunId::parse_str(child_run_id).map_err(|e| CliError::user("invalid_id", e.to_string()))?;
+    NodeId::parse_str(child_node_id).map_err(|e| CliError::user("invalid_id", e.to_string()))?;
+
     if let Some(prev) = state
         .last_processed_report_seq_by_child
         .get(child_run_id)
@@ -163,11 +174,12 @@ pub fn process_node_report(
                     "discussion",
                     i,
                 );
-                // `id` is our own deterministic output, so this parse never
-                // fails in practice; map any failure to a system error rather
-                // than panicking.
+                // `id` is our own deterministic output (always a valid
+                // `d-<base32>`), so a parse failure is an unreachable
+                // generator bug — fail loudly rather than smuggling it through
+                // as a recoverable error.
                 let did = DiscussionId::parse_str(&id)
-                    .map_err(|e| CliError::system("invalid_generated_id", e.to_string()))?;
+                    .expect("deterministic_id must produce a valid DiscussionId");
                 if parent_paths.discussion(&did).exists() {
                     consumption.skipped_already_present += 1;
                     continue;
@@ -209,7 +221,7 @@ pub fn process_node_report(
                 let id =
                     deterministic_id('s', child_run_id, child_node_id, report_seq, "spinoff", i);
                 let pid = ProposalId::parse_str(&id)
-                    .map_err(|e| CliError::system("invalid_generated_id", e.to_string()))?;
+                    .expect("deterministic_id must produce a valid ProposalId");
                 if parent_paths.spinoff(&pid).exists() {
                     consumption.skipped_already_present += 1;
                     continue;
@@ -247,8 +259,7 @@ pub fn process_node_report(
         // syncing the parent node's `last_processed_report_seq_by_child`
         // map onto its on-disk projection. The state file is the cursor
         // of record; the node-projection mirror is a debugging aid.
-        let parent_nid = NodeId::parse_str(parent_node_id)
-            .map_err(|e| CliError::user("invalid_id", e.to_string()))?;
+        // `parent_nid` was validated at function entry.
         if let Some(mut n) = read_node_opt(parent_paths, &parent_nid)
             .map_err(|e| CliError::system("io_error", e.to_string()))?
         {

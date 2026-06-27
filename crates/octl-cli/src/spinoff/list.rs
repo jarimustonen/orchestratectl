@@ -97,7 +97,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             }
             out.push(Summary {
                 proposal_id: s.proposal_id.to_string(),
-                node_id: s.node_id,
+                node_id: s.node_id.to_string(),
                 status,
                 proposed_title: s.proposed_title,
                 proposed_kind: kind_kebab(s.proposed_kind),

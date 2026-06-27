@@ -102,7 +102,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             }
         }
         out.push(RunSummary {
-            run_id: m.run_id,
+            run_id: m.run_id.to_string(),
             kind,
             status,
             title: m.title,

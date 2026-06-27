@@ -188,7 +188,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             args.source_branch.as_deref(),
             key,
         )? {
-            let dir = octl_core::run_dir(&root, &existing);
+            // `existing` is a previously-stored run id; validate it before it
+            // composes a path (run_dir only accepts a typed RunId).
+            let existing_rid = parse_run_id(&existing)?;
+            let dir = octl_core::run_dir(&root, &existing_rid);
             return emit(EmitInput {
                 run_id: &existing,
                 dir: dir.display().to_string(),
@@ -207,8 +210,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let run_id = new_run_id();
+    // Validate the freshly generated id (infallible in practice) so run_dir
+    // gets a typed RunId rather than a raw &str.
+    let run_id_typed = parse_run_id(&run_id)?;
     let lifecycle = lifecycle_for(args.kind);
-    let child_dir = octl_core::run_dir(&root, &run_id);
+    let child_dir = octl_core::run_dir(&root, &run_id_typed);
 
     if args.dry_run {
         return emit(EmitInput {

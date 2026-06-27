@@ -99,7 +99,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
         out.push(DiscussionSummary {
             discussion_id: d.discussion_id.to_string(),
-            node_id: d.node_id,
+            node_id: d.node_id.to_string(),
             status: status_kebab(d.status).to_string(),
             severity: d.severity,
             topic: d.topic,
