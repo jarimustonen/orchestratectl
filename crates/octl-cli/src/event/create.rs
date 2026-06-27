@@ -8,13 +8,12 @@
 //! `--idempotency-key` dedup scans the existing event log under the same
 //! lock so concurrent retries can't race past each other.
 
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::{ensure_root, RunLock};
+use octl_core::{ensure_root, find_prior_with_key, PriorEvent, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -355,7 +354,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // concurrent retry can't see "no prior event" and double-append.
     let (seq, replayed) = RunLock::with_lock(&paths.lock(), || {
         if let Some(key) = args.idempotency_key.as_deref() {
-            if let Some(prior) = find_prior_event(&paths.events(), kind, key)? {
+            if let Some(prior) = find_prior_event(&paths, kind, key)? {
                 return Ok((prior, true));
             }
         }
@@ -412,70 +411,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     emit(&payload, args.spec, args.warnings)
 }
 
-/// What `find_prior_event` returns when an idempotency-key hit lands.
-/// We need more than the bare seq so the caller can validate that the
-/// retry payload matches.
-struct PriorEvent {
-    seq: u64,
-    node_id: Option<String>,
-    data: Value,
-}
-
-/// Stream-scan `events.jsonl` for an event with matching `kind` and
-/// `idempotency_key`. Deserialises only the fields the lookup needs so
-/// the cost stays bounded in `data` size, not log size × payload size.
-///
-/// Caller must hold the run's `flock`.
+/// Locate a prior event with this `kind` + idempotency `key`. Thin wrapper
+/// over [`octl_core::find_prior_with_key`] — see there for the torn-line
+/// policy and the requirement that the caller hold the run's `flock`.
 fn find_prior_event(
-    events_path: &std::path::Path,
+    paths: &RunPaths,
     kind: &str,
     key: &str,
 ) -> octl_core::Result<Option<PriorEvent>> {
-    let f = match std::fs::File::open(events_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(octl_core::Error::io(events_path, e)),
-    };
-    let reader = BufReader::new(f);
-    for line in reader.lines() {
-        let line = line.map_err(|e| octl_core::Error::io(events_path, e))?;
-        if line.is_empty() {
-            continue;
-        }
-        // Skim past lines whose `kind` / `idempotency_key` don't match
-        // without ever parsing the (potentially large) `data` payload.
-        let probe: ProbeFields = match serde_json::from_str(&line) {
-            Ok(p) => p,
-            // A torn final line is tolerated by `recover_last_seq`;
-            // mirror that tolerance here so an idempotency lookup
-            // doesn't itself wedge on the same condition.
-            Err(_) => continue,
-        };
-        if probe.kind != kind || probe.idempotency_key.as_deref() != Some(key) {
-            continue;
-        }
-        let full: FullEventForReplay =
-            serde_json::from_str(&line).map_err(|e| octl_core::Error::json(events_path, e))?;
-        return Ok(Some(PriorEvent {
-            seq: full.seq,
-            node_id: full.node_id,
-            data: full.data,
-        }));
-    }
-    Ok(None)
-}
-
-#[derive(Deserialize)]
-struct ProbeFields {
-    kind: String,
-    idempotency_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct FullEventForReplay {
-    seq: u64,
-    node_id: Option<String>,
-    data: Value,
+    find_prior_with_key(paths, kind, key)
 }
 
 fn emit(

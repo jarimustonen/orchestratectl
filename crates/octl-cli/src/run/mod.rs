@@ -272,6 +272,17 @@ pub fn runs_root(root: &Path) -> PathBuf {
 }
 
 /// Map a `core::Error` into a `CliError`.
+///
+/// A corrupt event log is a data-integrity fault the caller must
+/// investigate, not a transient I/O error to retry — it surfaces as a
+/// distinct `corrupt-event-log` user error (exit 1) so a retry loop
+/// doesn't hammer a file that will never parse. Everything else collapses
+/// into the generic `io_error` system class (exit 2).
 pub fn from_core(err: octl_core::Error) -> CliError {
-    CliError::system("io_error", err.to_string())
+    match err {
+        octl_core::Error::CorruptEventLog { .. } => {
+            CliError::user("corrupt-event-log", err.to_string())
+        }
+        other => CliError::system("io_error", other.to_string()),
+    }
 }
