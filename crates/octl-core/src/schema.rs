@@ -35,6 +35,40 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The kebab-case wire name for this kind — the same string serde
+    /// (de)serializes via `rename_all = "kebab-case"`.
+    ///
+    /// The exhaustive `match` is deliberate: adding a `Kind` variant fails
+    /// to compile until its wire name is listed here, so [`Kind::WIRE_NAMES`]
+    /// and any caller that advertises the accepted kinds (e.g. the report
+    /// validator's `expected` hint) cannot silently drift from the enum.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Kind::Code => "code",
+            Kind::Spinoff => "spinoff",
+            Kind::Orchestrated => "orchestrated",
+            Kind::Research => "research",
+            Kind::TechnicalDecision => "technical-decision",
+            Kind::MakeSkill => "make-skill",
+            Kind::FanOut => "fan-out",
+            Kind::Bugfix => "bugfix",
+        }
+    }
+
+    /// Every kind's kebab-case wire name, in declaration order. Single
+    /// source of truth for "the set of accepted kinds" — see [`Kind::wire_name`].
+    pub const WIRE_NAMES: &'static [&'static str] = &[
+        Kind::Code.wire_name(),
+        Kind::Spinoff.wire_name(),
+        Kind::Orchestrated.wire_name(),
+        Kind::Research.wire_name(),
+        Kind::TechnicalDecision.wire_name(),
+        Kind::MakeSkill.wire_name(),
+        Kind::FanOut.wire_name(),
+        Kind::Bugfix.wire_name(),
+    ];
+
     /// Default lifecycle for a kind (design.md §7.4). `code` is
     /// interactive (human-driven inside tmux); every other MVP kind is
     /// autonomous (agent runs to completion, watchdog adjudicates).
@@ -300,4 +334,26 @@ pub struct Event {
     /// Kind-specific payload applied by the reducer.
     #[serde(default)]
     pub data: Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Kind::wire_name` (and thus `Kind::WIRE_NAMES`) must stay identical
+    /// to what serde actually (de)serializes. If the `rename_all` routing
+    /// or a variant name ever diverges from `wire_name`, this fails — which
+    /// is what keeps the report validator's `expected` hint honest.
+    #[test]
+    fn wire_names_match_serde_round_trip() {
+        for &name in Kind::WIRE_NAMES {
+            let kind: Kind = serde_json::from_value(Value::String(name.to_string()))
+                .unwrap_or_else(|_| panic!("WIRE_NAMES entry {name:?} is not a valid Kind"));
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                Value::String(name.to_string()),
+                "serde round-trip diverged from wire_name for {name:?}",
+            );
+        }
+    }
 }

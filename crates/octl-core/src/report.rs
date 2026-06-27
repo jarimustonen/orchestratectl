@@ -164,16 +164,10 @@ impl ReportValidationError {
             Self::MissingSuccess | Self::SuccessNotBoolean => {
                 Some(serde_json::json!({"field": "success", "type": "boolean"}))
             }
-            Self::SpinoffProposalKindUnknown { .. } => Some(serde_json::json!([
-                "code",
-                "spinoff",
-                "orchestrated",
-                "research",
-                "technical-decision",
-                "make-skill",
-                "fan-out",
-                "bugfix"
-            ])),
+            // Source the accepted kinds from the enum so the hint can never
+            // drift from what the validator actually accepts (see
+            // `Kind::WIRE_NAMES` and its serde round-trip test).
+            Self::SpinoffProposalKindUnknown { .. } => Some(serde_json::json!(Kind::WIRE_NAMES)),
             _ => None,
         }
     }
@@ -225,7 +219,13 @@ pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError
     // reducer prioritizes `cancelled`, so the node would be cancelled
     // while `last_report.success == true`).
     if cancelled {
-        if success.as_bool().unwrap_or(false) {
+        // `success` was confirmed a boolean above, so this never panics;
+        // `expect` documents that invariant rather than masking a reorder
+        // bug behind `unwrap_or(false)`.
+        if success
+            .as_bool()
+            .expect("success validated as boolean above")
+        {
             return Err(ReportValidationError::CancelledRequiresSuccessFalse);
         }
         match reason {
@@ -431,6 +431,44 @@ mod tests {
     }
 
     #[test]
+    fn success_variants_carry_field_type_hint() {
+        // Both `success` errors reproduce the exact CLI hint, byte-for-byte.
+        let hint = Some(json!({"field": "success", "type": "boolean"}));
+        assert_eq!(ReportValidationError::MissingSuccess.expected(), hint);
+        assert_eq!(ReportValidationError::SuccessNotBoolean.expected(), hint);
+    }
+
+    #[test]
+    fn summary_must_be_string() {
+        let v = json!({"success": true, "summary": 42});
+        assert!(matches!(
+            validate_report_payload(&v),
+            Err(ReportValidationError::SummaryNotString)
+        ));
+    }
+
+    #[test]
+    fn discussion_item_options_non_array_rejected() {
+        let v = json!({
+            "success": true,
+            "discussion_items": [{"topic": "x", "options": "not-an-array"}],
+        });
+        assert!(matches!(
+            validate_report_payload(&v),
+            Err(ReportValidationError::PathNotArray { .. })
+        ));
+    }
+
+    #[test]
+    fn cancelled_requires_non_whitespace_reason() {
+        let v = json!({"success": false, "cancelled": true, "reason": "   "});
+        assert!(matches!(
+            validate_report_payload(&v),
+            Err(ReportValidationError::CancelledRequiresReason)
+        ));
+    }
+
+    #[test]
     fn non_boolean_success_rejected() {
         let v = json!({"success": "yes"});
         assert!(matches!(
@@ -486,8 +524,22 @@ mod tests {
             err,
             ReportValidationError::SpinoffProposalKindUnknown { index: 0, .. }
         ));
-        // Unknown kind surfaces the closed-set of known kinds.
-        assert!(err.expected().is_some());
+        // Unknown kind surfaces the exact closed-set of known kinds, and
+        // that set is the enum's own wire names (no drift).
+        assert_eq!(err.expected(), Some(json!(crate::schema::Kind::WIRE_NAMES)));
+        assert_eq!(
+            err.expected(),
+            Some(json!([
+                "code",
+                "spinoff",
+                "orchestrated",
+                "research",
+                "technical-decision",
+                "make-skill",
+                "fan-out",
+                "bugfix"
+            ]))
+        );
     }
 
     #[test]
