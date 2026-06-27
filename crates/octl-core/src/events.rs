@@ -519,8 +519,8 @@ mod tests {
         let run_id = "01jxsnap000000000000000000";
         let paths = RunPaths::new(dir, run_id).unwrap();
 
-        let r =
-            append_and_apply_event(&paths, "run.status", None, None, serde_json::json!({})).unwrap();
+        let r = append_and_apply_event(&paths, "run.status", None, None, serde_json::json!({}))
+            .unwrap();
         assert_eq!(r.seq, 1);
 
         let events = read_all_events(&paths.events()).unwrap();

@@ -478,8 +478,8 @@ pub fn dispatch(
         Some(name) => json!({"pid": our_pid, "reason": "signal", "signal": name}),
         None => json!({"pid": our_pid, "reason": exit_reason}),
     };
-    let _ =
-        append_and_apply_event(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
+    let _ = append_and_apply_event(&paths, "supervisor.exited", None, None, exited_data)
+        .map_err(from_core);
     pid_file::remove_if_owner(&pid_path, our_pid);
 
     #[derive(Serialize)]
@@ -762,7 +762,8 @@ fn watchdog_tick(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": [],
             });
-            if let Err(e) = append_and_apply_event(paths, "node.report", Some(&node_id), None, data) {
+            if let Err(e) = append_and_apply_event(paths, "node.report", Some(&node_id), None, data)
+            {
                 warn!(
                     target: "orchestratectl::supervise",
                     node = %node_id,
