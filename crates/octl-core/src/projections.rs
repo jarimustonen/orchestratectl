@@ -34,6 +34,7 @@ fn check_schema(path: &Path, found: u32) -> Result<()> {
     }
 }
 
+/// Read and schema-validate the run manifest. Errors if it is missing.
 pub fn read_manifest(paths: &RunPaths) -> Result<Manifest> {
     let p = paths.manifest();
     let m: Manifest = read_json(&p)?;
@@ -41,6 +42,7 @@ pub fn read_manifest(paths: &RunPaths) -> Result<Manifest> {
     Ok(m)
 }
 
+/// Read and schema-validate the run manifest, returning `None` if absent.
 pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
     let p = paths.manifest();
     match read_json_opt::<Manifest>(&p)? {
@@ -52,10 +54,12 @@ pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
     }
 }
 
+/// Atomically write the run manifest (temp file + rename).
 pub fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
     write_json_atomic(&paths.manifest(), m)
 }
 
+/// Read and schema-validate one node. Errors if it is missing.
 pub fn read_node(paths: &RunPaths, node_id: &str) -> Result<Node> {
     let p = paths.node(node_id);
     let n: Node = read_json(&p)?;
@@ -63,6 +67,7 @@ pub fn read_node(paths: &RunPaths, node_id: &str) -> Result<Node> {
     Ok(n)
 }
 
+/// Read and schema-validate one node, returning `None` if absent.
 pub fn read_node_opt(paths: &RunPaths, node_id: &str) -> Result<Option<Node>> {
     let p = paths.node(node_id);
     match read_json_opt::<Node>(&p)? {
@@ -74,10 +79,12 @@ pub fn read_node_opt(paths: &RunPaths, node_id: &str) -> Result<Option<Node>> {
     }
 }
 
+/// Atomically write a node's projection file, keyed by its `node_id`.
 pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
     write_json_atomic(&paths.node(&n.node_id), n)
 }
 
+/// Read and schema-validate one discussion. Errors if it is missing.
 pub fn read_discussion(paths: &RunPaths, id: &str) -> Result<Discussion> {
     let p = paths.discussion(id);
     let d: Discussion = read_json(&p)?;
@@ -85,6 +92,7 @@ pub fn read_discussion(paths: &RunPaths, id: &str) -> Result<Discussion> {
     Ok(d)
 }
 
+/// Read and schema-validate one discussion, returning `None` if absent.
 pub fn read_discussion_opt(paths: &RunPaths, id: &str) -> Result<Option<Discussion>> {
     let p = paths.discussion(id);
     match read_json_opt::<Discussion>(&p)? {
@@ -96,10 +104,12 @@ pub fn read_discussion_opt(paths: &RunPaths, id: &str) -> Result<Option<Discussi
     }
 }
 
+/// Atomically write a discussion file, keyed by its `discussion_id`.
 pub fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
     write_json_atomic(&paths.discussion(&d.discussion_id), d)
 }
 
+/// Read and schema-validate one spin-off proposal. Errors if it is missing.
 pub fn read_spinoff(paths: &RunPaths, id: &str) -> Result<SpinoffProposal> {
     let p = paths.spinoff(id);
     let s: SpinoffProposal = read_json(&p)?;
@@ -107,6 +117,7 @@ pub fn read_spinoff(paths: &RunPaths, id: &str) -> Result<SpinoffProposal> {
     Ok(s)
 }
 
+/// Read and schema-validate one spin-off proposal, returning `None` if absent.
 pub fn read_spinoff_opt(paths: &RunPaths, id: &str) -> Result<Option<SpinoffProposal>> {
     let p = paths.spinoff(id);
     match read_json_opt::<SpinoffProposal>(&p)? {
@@ -118,6 +129,7 @@ pub fn read_spinoff_opt(paths: &RunPaths, id: &str) -> Result<Option<SpinoffProp
     }
 }
 
+/// Atomically write a spin-off proposal file, keyed by its `proposal_id`.
 pub fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
     write_json_atomic(&paths.spinoff(&s.proposal_id), s)
 }

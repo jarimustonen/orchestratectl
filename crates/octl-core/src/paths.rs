@@ -50,6 +50,7 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
 
 /// Per-run paths anchored on `<root>/runs/<run-id>/`.
 pub struct RunPaths {
+    /// The run's root directory; every other path is derived from it.
     pub root: PathBuf,
     /// The validated run id this directory belongs to. Carried explicitly so
     /// event envelopes never re-derive it from `root.file_name()`.
@@ -69,42 +70,52 @@ impl RunPaths {
         })
     }
 
+    /// Path to the run manifest (`manifest.json`).
     pub fn manifest(&self) -> PathBuf {
         self.root.join("manifest.json")
     }
 
+    /// Path to the append-only event log (`events.jsonl`).
     pub fn events(&self) -> PathBuf {
         self.root.join("events.jsonl")
     }
 
+    /// Path to the advisory `flock` file (`.lock`) guarding this run.
     pub fn lock(&self) -> PathBuf {
         self.root.join(".lock")
     }
 
+    /// Path to the `nodes/` directory holding per-node projection files.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")
     }
 
+    /// Path to a single node's projection file (`nodes/<node-id>.json`).
     pub fn node(&self, node_id: &str) -> PathBuf {
         self.nodes_dir().join(format!("{node_id}.json"))
     }
 
+    /// Path to the `discussions/` directory.
     pub fn discussions_dir(&self) -> PathBuf {
         self.root.join("discussions")
     }
 
+    /// Path to a single discussion file (`discussions/<id>.json`).
     pub fn discussion(&self, id: &str) -> PathBuf {
         self.discussions_dir().join(format!("{id}.json"))
     }
 
+    /// Path to the `spinoffs/` directory.
     pub fn spinoffs_dir(&self) -> PathBuf {
         self.root.join("spinoffs")
     }
 
+    /// Path to a single spin-off proposal file (`spinoffs/<id>.json`).
     pub fn spinoff(&self, id: &str) -> PathBuf {
         self.spinoffs_dir().join(format!("{id}.json"))
     }
 
+    /// Path to the supervisor pid file (`supervisor.pid`).
     pub fn supervisor_pid(&self) -> PathBuf {
         self.root.join("supervisor.pid")
     }
