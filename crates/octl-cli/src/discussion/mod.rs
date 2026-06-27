@@ -93,7 +93,7 @@ pub fn dispatch(
 }
 
 pub fn status_kebab(s: octl_core::DiscussionStatus) -> &'static str {
-    use octl_core::DiscussionStatus::*;
+    use octl_core::DiscussionStatus::{Open, Resolved};
     match s {
         Open => "open",
         Resolved => "resolved",

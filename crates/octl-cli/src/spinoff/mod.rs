@@ -112,7 +112,7 @@ pub fn dispatch(
 /// output and `--status` filtering. `proposed` becomes `pending` so the
 /// CLI surface matches design.md §2.5 verbiage.
 pub fn status_kebab(s: octl_core::SpinoffStatus) -> &'static str {
-    use octl_core::SpinoffStatus::*;
+    use octl_core::SpinoffStatus::{Approved, Proposed, Rejected};
     match s {
         Proposed => "pending",
         Approved => "approved",

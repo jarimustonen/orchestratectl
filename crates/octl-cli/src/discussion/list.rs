@@ -72,7 +72,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // Skip directories, symlinks, FIFOs, sockets — `read_discussion_opt`
         // would surface them as opaque deserialization errors. Only
         // regular files are valid projection slots.
-        if !ent.file_type().map(|t| t.is_file()).unwrap_or(false) {
+        if !ent.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         let path = ent.path();
@@ -80,12 +80,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Some(s) => s.to_string(),
             None => continue,
         };
-        if path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s != "json")
-            .unwrap_or(true)
-        {
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
         let d = match read_discussion_opt(&paths, &id).map_err(from_core)? {

@@ -35,3 +35,46 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Workspace-wide lint policy. Each crate opts in with `lints.workspace = true`.
+# octl-core layers `missing_docs = "warn"` on top via its own [lints] table.
+[workspace.lints.clippy]
+# Pedantic is a strong default for a CLI that will grow many subcommands —
+# it catches API-consistency and correctness-adjacent smells early. We keep it
+# at "warn" (CI promotes warnings to errors via `-D warnings`) and allow-list
+# the lints that fire too aggressively for this codebase's idioms.
+pedantic = { level = "warn", priority = -1 }
+
+# --- Allow-listed pedantic lints (documented rationale per item) ---
+# Fires on `foo::Foo`-style paths that are conventional and readable here.
+module_name_repetitions = "allow"
+# We expose plain APIs; `#[must_use]` everywhere is noise for an internal tool.
+must_use_candidate = "allow"
+# Error/panic doc enforcement is deferred until the public API stabilises.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Numeric conversions here are deliberate (unix timestamps, byte counts, pids).
+# The `cast_*` family flags every `as` regardless of intent and would force
+# noisy `#[allow]` or `try_from().unwrap()` churn for no safety gain at our sizes.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# Long command-handler / reducer functions are readable top-to-bottom; splitting
+# them purely to satisfy a line count would hurt more than it helps right now.
+too_many_lines = "allow"
+# `match { Some(x) => x, None => ... }` vs `let...else` is a style preference;
+# clippy itself marks these MaybeIncorrect. Not worth churning ~25 call sites.
+manual_let_else = "allow"
+# Many handlers take owned args they only borrow. Tightening every signature to
+# `&T` ripples through callers for no real gain on a pre-1.0 internal CLI.
+needless_pass_by_value = "allow"
+# The flagged fields (e.g. `Node.node_id`, `ChildRef.run_id`) are part of the
+# serialized on-disk schema — renaming them would break stored state files.
+struct_field_names = "allow"
+# Event-dispatch and projection-path matches list each event kind explicitly as
+# a documentation of the known set; identical bodies across arms are intentional.
+match_same_arms = "allow"
+# Local enums/structs/`use`s are deliberately defined next to their use site
+# (e.g. the lock-result enums in the discussion/report handlers) for locality.
+items_after_statements = "allow"

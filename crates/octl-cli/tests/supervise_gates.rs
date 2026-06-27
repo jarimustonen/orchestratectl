@@ -137,8 +137,8 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
 
 /// V3: `kill(pid, 0)` + `start_time` identity defense.
 ///
-/// Verifies that (1) start_time is stable across reads, (2) supplying
-/// a wildly wrong start_time forces `Recycled` rather than `Alive` for
+/// Verifies that (1) `start_time` is stable across reads, (2) supplying
+/// a wildly wrong `start_time` forces `Recycled` rather than `Alive` for
 /// the watchdog's own PID, and (3) the watchdog's verdict on a dead
 /// PID is `Dead`. Cross-platform via the `sysinfo` crate path.
 #[test]
@@ -311,8 +311,8 @@ fn v7_deterministic_id_dedup_under_crash() {
     // Inspect parent's discussions/ and spinoffs/.
     let disc_dir = run_dir(&home, &parent).join("discussions");
     let spin_dir = run_dir(&home, &parent).join("spinoffs");
-    let n_disc = std::fs::read_dir(&disc_dir).map(|d| d.count()).unwrap_or(0);
-    let n_spin = std::fs::read_dir(&spin_dir).map(|d| d.count()).unwrap_or(0);
+    let n_disc = std::fs::read_dir(&disc_dir).map_or(0, std::iter::Iterator::count);
+    let n_spin = std::fs::read_dir(&spin_dir).map_or(0, std::iter::Iterator::count);
     assert_eq!(n_disc, 2, "parent must have 2 discussions");
     assert_eq!(n_spin, 3, "parent must have 3 spinoffs");
 
@@ -498,11 +498,9 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
     // Parent must have zero spinoffs/discussions derived from the
     // cancelled child report.
     let n_spin = std::fs::read_dir(run_dir(&home, &parent).join("spinoffs"))
-        .map(|d| d.count())
-        .unwrap_or(0);
+        .map_or(0, std::iter::Iterator::count);
     let n_disc = std::fs::read_dir(run_dir(&home, &parent).join("discussions"))
-        .map(|d| d.count())
-        .unwrap_or(0);
+        .map_or(0, std::iter::Iterator::count);
     assert_eq!(n_spin, 0, "cancelled child must not propagate spinoffs");
     assert_eq!(n_disc, 0, "cancelled child must not propagate discussions");
 

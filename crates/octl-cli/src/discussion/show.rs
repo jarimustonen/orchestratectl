@@ -53,20 +53,20 @@ fn emit(d: &Discussion, spec: &OutputSpec, warnings: &[String]) -> Result<(), Cl
             println!("severity:      {}", d.severity);
             println!("topic:         {}", d.topic);
             if let Some(c) = &d.context {
-                println!("context:       {}", c);
+                println!("context:       {c}");
             }
             if !d.options.is_empty() {
                 println!("options:       {}", d.options.join(", "));
             }
             println!("opened_at:     {}", d.opened_at);
             if let Some(r) = &d.resolution {
-                println!("resolution:    {}", r);
+                println!("resolution:    {r}");
             }
             if let Some(n) = &d.note {
-                println!("note:          {}", n);
+                println!("note:          {n}");
             }
             if let Some(t) = d.resolved_at {
-                println!("resolved_at:   {}", t);
+                println!("resolved_at:   {t}");
             }
             output::emit_text_warnings(warnings);
         }

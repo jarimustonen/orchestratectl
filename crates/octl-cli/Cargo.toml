@@ -12,6 +12,9 @@ description = "orchestratectl CLI binary."
 name = "orchestratectl"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 octl-core = { path = "../octl-core" }
 clap = { workspace = true }

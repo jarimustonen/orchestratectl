@@ -260,8 +260,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "proposal_already_rejected",
             format!(
                 "proposal {proposal_id} was rejected by a concurrent caller \
-                 (reason: {:?}); cannot approve",
-                reason
+                 (reason: {reason:?}); cannot approve"
             ),
         )
         .with_invalid_value(&proposal_id)),
@@ -326,9 +325,10 @@ fn materialize_via_issuectl(
     kind: &str,
     rationale: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let description = rationale.map(str::to_string).unwrap_or_else(|| {
-        format!("Auto-materialized spin-off ({kind}) approved via orchestratectl.")
-    });
+    let description = rationale.map_or_else(
+        || format!("Auto-materialized spin-off ({kind}) approved via orchestratectl."),
+        str::to_string,
+    );
     let mut cmd = Command::new("issuectl");
     // `--` terminates clap option parsing so an LLM-generated title
     // beginning with `--` doesn't get reinterpreted as an issuectl
@@ -394,12 +394,12 @@ fn emit_approved(
             println!("run-id:      {}", payload.run_id);
             println!("proposal-id: {}", payload.proposal_id);
             if let Some(s) = &payload.issue_slug {
-                println!("issue-slug:  {}", s);
+                println!("issue-slug:  {s}");
             }
             match payload.seq {
-                Some(s) => println!("seq:         {}", s),
+                Some(s) => println!("seq:         {s}"),
                 None if payload.dry_run == Some(true) => {
-                    println!("seq:         (assigned on apply)")
+                    println!("seq:         (assigned on apply)");
                 }
                 None => println!("seq:         (no-op; already approved)"),
             }

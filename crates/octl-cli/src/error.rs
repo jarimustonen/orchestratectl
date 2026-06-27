@@ -92,10 +92,9 @@ impl CliError {
     pub fn emit(&self) {
         let payload = self.payload();
         match serde_json::to_string(&payload) {
-            Ok(s) => eprintln!("{}", s),
+            Ok(s) => eprintln!("{s}"),
             Err(_) => eprintln!(
-                "{{\"schema_version\":{},\"error\":{{\"code\":\"internal_serialize\",\"message\":\"failed to serialize error envelope\"}}}}",
-                SCHEMA_VERSION
+                "{{\"schema_version\":{SCHEMA_VERSION},\"error\":{{\"code\":\"internal_serialize\",\"message\":\"failed to serialize error envelope\"}}}}"
             ),
         }
     }

@@ -1,6 +1,6 @@
 //! Integration tests for the `skill` subcommand.
 //!
-//! Locks the AGENTS-AI-FIRST-CLI §15 contract: list shape, refused_overwrite
+//! Locks the AGENTS-AI-FIRST-CLI §15 contract: list shape, `refused_overwrite`
 //! error envelope on exit 2, `--force` recovery, the install-all (no-name)
 //! form, and `--agent`/`--dest` mutual-exclusion rules. The shipped skill
 //! catalog (names + non-empty descriptions) is pinned here so accidental
@@ -43,7 +43,7 @@ fn skill_list_json_pins_catalog_shape() {
     assert_eq!(v["schema_version"], 1);
     let skills = v["data"]["skills"].as_array().expect("skills array");
     let mut names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
-    names.sort();
+    names.sort_unstable();
     // Pin the exact catalog: a silent addition or removal must show up
     // as a test failure so the consumer-facing surface stays explicit.
     assert_eq!(
@@ -103,7 +103,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
         .arg(&dest)
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "first install failed: {:?}", out);
+    assert!(out.status.success(), "first install failed: {out:?}");
     assert!(dest.exists(), "destination not created");
 
     let out = bin(&home)
@@ -126,7 +126,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
         .arg("--force")
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "force install failed: {:?}", out);
+    assert!(out.status.success(), "force install failed: {out:?}");
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn skill_install_with_default_paths_writes_under_home() {
         .args(["skill", "install", "octl-run-overview", "--output", "json"])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "default install failed: {:?}", out);
+    assert!(out.status.success(), "default install failed: {out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let installed = v["data"]["installed"].as_array().expect("installed array");
     assert_eq!(installed.len(), 1);
@@ -163,7 +163,7 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
         ])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "agent=all install failed: {:?}", out);
+    assert!(out.status.success(), "agent=all install failed: {out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let installed = v["data"]["installed"].as_array().expect("installed");
     let agents: Vec<&str> = installed
@@ -189,7 +189,7 @@ fn skill_install_no_name_installs_every_skill() {
         .args(["skill", "install", "--output", "json"])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "install-all failed: {:?}", out);
+    assert!(out.status.success(), "install-all failed: {out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let installed = v["data"]["installed"].as_array().expect("installed");
     let names: Vec<&str> = installed
@@ -263,7 +263,7 @@ fn skill_install_accepts_bare_relative_dest() {
         ])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "bare-dest install failed: {:?}", out);
+    assert!(out.status.success(), "bare-dest install failed: {out:?}");
     assert!(home.path().join("SKILL.md").exists());
 }
 
@@ -374,8 +374,7 @@ fn skill_install_over_older_version_warns_and_succeeds_without_force() {
         .expect("spawn");
     assert!(
         out.status.success(),
-        "install over older must succeed: {:?}",
-        out
+        "install over older must succeed: {out:?}"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let warnings = v["warnings"].as_array().expect("warnings array");

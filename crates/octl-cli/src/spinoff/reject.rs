@@ -192,8 +192,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     "proposal_already_rejected",
                     format!(
                         "proposal {proposal_id} was rejected by a concurrent caller with a \
-                         different reason (prior: {:?}, current: {:?})",
-                        persisted, reason
+                         different reason (prior: {persisted:?}, current: {reason:?})"
                     ),
                 )
                 .with_invalid_value(&proposal_id))
@@ -244,12 +243,12 @@ fn emit_rejected(
             println!("run-id:      {}", payload.run_id);
             println!("proposal-id: {}", payload.proposal_id);
             if let Some(r) = &payload.reason {
-                println!("reason:      {}", r);
+                println!("reason:      {r}");
             }
             match payload.seq {
-                Some(s) => println!("seq:         {}", s),
+                Some(s) => println!("seq:         {s}"),
                 None if payload.dry_run == Some(true) => {
-                    println!("seq:         (assigned on apply)")
+                    println!("seq:         (assigned on apply)");
                 }
                 None => println!("seq:         (no-op; already rejected)"),
             }

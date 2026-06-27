@@ -67,6 +67,9 @@ pub fn deterministic_id(
 /// `sha256` digests always have at least 7 bytes, but a future caller
 /// who slices wrong gets a compile error instead of silently truncated
 /// entropy.
+// The `&[u8; 7]` reference is the documented design choice above; the
+// by-value efficiency clippy suggests is irrelevant for a 7-byte one-shot.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn base32_lower_10(bytes: &[u8; 7]) -> String {
     const ALPHA: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     // Pack 7 bytes (56 bits) into a u64 MSB-first, then drop the bottom
@@ -145,7 +148,7 @@ pub fn process_node_report(
     // Hold the parent run's flock for the full write batch. Using
     // `RunLock::acquire` rather than `with_lock` lets the closure body
     // return `CliError` directly instead of going through `core::Error`.
-    let _guard = RunLock::acquire(&parent_paths.lock())
+    let guard = RunLock::acquire(&parent_paths.lock())
         .map_err(|e| CliError::system("io_error", e.to_string()))?;
     {
         // Discussions first, then spinoffs — stable order makes the
@@ -247,7 +250,7 @@ pub fn process_node_report(
                 .map_err(|e| CliError::system("io_error", e.to_string()))?;
         }
     }
-    drop(_guard);
+    drop(guard);
 
     state
         .last_processed_report_seq_by_child
@@ -256,6 +259,9 @@ pub fn process_node_report(
 }
 
 #[inline]
+// `_emitted` is unused in non-test builds (hence the underscore) but read
+// inside the `cfg(test)` block, which trips `used_underscore_binding`.
+#[allow(clippy::used_underscore_binding)]
 fn fault_inject_check(_emitted: usize) {
     #[cfg(test)]
     {
@@ -264,7 +270,7 @@ fn fault_inject_check(_emitted: usize) {
                 if _emitted >= n {
                     // Clear so retry won't re-trigger.
                     c.set(None);
-                    panic!("fault_inject: forced crash after {} emit(s)", _emitted);
+                    panic!("fault_inject: forced crash after {_emitted} emit(s)");
                 }
             }
         });

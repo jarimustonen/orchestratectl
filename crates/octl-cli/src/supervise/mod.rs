@@ -39,7 +39,7 @@ use crate::run::{from_core, require_safe_id, run_paths};
 
 /// Polling cadences (design.md §7.5 defaults).
 const TAIL_TICK: Duration = Duration::from_millis(500);
-const WATCHDOG_TICK: Duration = Duration::from_millis(1000);
+const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 /// Max time we wait for a spawned child run's directory to appear
 /// (handoff D1).
 const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
@@ -498,8 +498,7 @@ pub fn dispatch(
         }
         OutputFormat::Text => {
             println!(
-                "supervisor exited run={} pid={} reason={} iter={}",
-                run_id, our_pid, exit_reason, iter
+                "supervisor exited run={run_id} pid={our_pid} reason={exit_reason} iter={iter}"
             );
             output::emit_text_warnings(warnings);
         }
@@ -578,7 +577,7 @@ fn spawn_child_supervisor(
         .map_err(|e| {
             CliError::system(
                 "spawn_failed",
-                format!("spawn supervise {}: {}", child_run_id, e),
+                format!("spawn supervise {child_run_id}: {e}"),
             )
         })?;
     let pid = child.id();

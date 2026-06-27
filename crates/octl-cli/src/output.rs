@@ -180,7 +180,7 @@ pub fn emit_envelope<T: Serialize>(
 /// stderr). Shared across every subcommand's text branch.
 pub fn emit_text_warnings(warnings: &[String]) {
     for w in warnings {
-        eprintln!("warning: {}", w);
+        eprintln!("warning: {w}");
     }
 }
 

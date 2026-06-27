@@ -41,10 +41,10 @@ pub fn run(
             println!("node-id:       {}", node.node_id);
             println!("status:        {}", status_kebab(node.status));
             if let Some(p) = &node.parent_node_id {
-                println!("parent-node:   {}", p);
+                println!("parent-node:   {p}");
             }
             if let Some(t) = &node.task {
-                println!("task:          {}", t);
+                println!("task:          {t}");
             }
             println!("children:      {}", node.children.len());
             println!("updated_at:    {}", node.updated_at);

@@ -488,10 +488,10 @@ fn emit(
             println!("run-id:      {}", payload.run_id);
             println!("kind:        {}", payload.kind);
             if let Some(n) = payload.node_id {
-                println!("node-id:     {}", n);
+                println!("node-id:     {n}");
             }
             match payload.seq {
-                Some(s) => println!("seq:         {}", s),
+                Some(s) => println!("seq:         {s}"),
                 None => println!("seq:         (assigned on apply)"),
             }
             if payload.dry_run == Some(true) {
@@ -503,7 +503,7 @@ fn emit(
             if !payload.projections.is_empty() {
                 println!("projections:");
                 for p in &payload.projections {
-                    println!("  - {}", p);
+                    println!("  - {p}");
                 }
             }
             output::emit_text_warnings(warnings);

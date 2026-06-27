@@ -261,7 +261,7 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
     };
     err.emit();
     for w in logging_warnings {
-        eprintln!("warning: {}", w);
+        eprintln!("warning: {w}");
     }
     ExitCode::from(ExitKind::User as u8)
 }
@@ -301,7 +301,7 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&payload, spec, warnings)?
+            output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
             println!("orchestratectl {}", payload.version);

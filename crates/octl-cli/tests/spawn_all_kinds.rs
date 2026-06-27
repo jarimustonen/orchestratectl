@@ -10,7 +10,7 @@
 //! - create.sh exit 2 → orchestratectl exit 2 with envelope code
 //!   prefix `create_sh_error_`.
 //! - Missing `--task`/`--prompt-file` is a structured user error.
-//! - Top-level run writes node.created event and records agent_pid.
+//! - Top-level run writes node.created event and records `agent_pid`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -32,11 +32,7 @@ const KINDS: &[&str] = &[
 
 fn write_fake_create_sh(dir: &TempDir, stdout: &str, exit_code: i32) -> PathBuf {
     let path = dir.path().join("fake-create.sh");
-    let body = format!(
-        "#!/bin/bash\ncat <<'EOF'\n{stdout}\nEOF\nexit {exit_code}\n",
-        stdout = stdout,
-        exit_code = exit_code
-    );
+    let body = format!("#!/bin/bash\ncat <<'EOF'\n{stdout}\nEOF\nexit {exit_code}\n");
     std::fs::write(&path, body).unwrap();
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
@@ -46,9 +42,7 @@ fn write_fake_create_sh(dir: &TempDir, stdout: &str, exit_code: i32) -> PathBuf 
 
 fn fake_success_stdout(kind: &str, pid: u32) -> String {
     format!(
-        r#"{{"schema_version":1,"type":"{kind}","branch":"wt/test-{kind}","worktree_path":"/tmp/wt-{kind}","tmux_window":"🚀 wt/test-{kind}","agent_pid_hint":{pid},"workmux_session":"test"}}"#,
-        kind = kind,
-        pid = pid
+        r#"{{"schema_version":1,"type":"{kind}","branch":"wt/test-{kind}","worktree_path":"/tmp/wt-{kind}","tmux_window":"🚀 wt/test-{kind}","agent_pid_hint":{pid},"workmux_session":"test"}}"#
     )
 }
 
@@ -109,7 +103,7 @@ fn each_kind_spawns_and_emits_node_created() {
                 .unwrap();
         let saw = events.lines().any(|l| {
             let v: Value = serde_json::from_str(l).unwrap();
-            v["kind"] == "node.created" && v["data"]["agent_pid"].as_u64() == Some(pid as u64)
+            v["kind"] == "node.created" && v["data"]["agent_pid"].as_u64() == Some(u64::from(pid))
         });
         assert!(
             saw,

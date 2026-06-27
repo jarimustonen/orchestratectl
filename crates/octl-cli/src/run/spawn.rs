@@ -90,7 +90,7 @@ pub fn write_prompt_file(run_dir: &Path, task: &str) -> Result<PathBuf, CliError
 
 /// Invoke create.sh and parse its structured stdout.
 ///
-/// On non-zero exit, builds a CliError whose payload includes whatever
+/// On non-zero exit, builds a `CliError` whose payload includes whatever
 /// the script wrote on stderr: if stderr parses as a standard error
 /// envelope we surface its `code`/`message`/`invalid_value`/`expected`
 /// fields; otherwise the raw stderr is included verbatim so debugging
@@ -154,7 +154,7 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
             });
         return Err(CliError {
             kind: exit_kind,
-            code: format!("create_sh_error_{}", code),
+            code: format!("create_sh_error_{code}"),
             message,
             invalid_value,
             expected,
@@ -164,17 +164,14 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     let stdout = String::from_utf8(output.stdout).map_err(|e| {
         CliError::system(
             "create_sh_invalid_stdout",
-            format!("create.sh stdout was not UTF-8: {}", e),
+            format!("create.sh stdout was not UTF-8: {e}"),
         )
     })?;
     let trimmed = stdout.trim();
     serde_json::from_str::<SpawnOutcome>(trimmed).map_err(|e| {
         CliError::system(
             "create_sh_unparseable_stdout",
-            format!(
-                "could not parse create.sh stdout as SpawnOutcome ({}): {}",
-                e, trimmed
-            ),
+            format!("could not parse create.sh stdout as SpawnOutcome ({e}): {trimmed}"),
         )
     })
 }
@@ -215,13 +212,13 @@ pub fn verify_agent_pid(pid: i64) -> Result<(), CliError> {
     if pid <= 0 {
         return Err(CliError::system(
             "agent_pid_invalid",
-            format!("create.sh returned non-positive agent_pid_hint: {}", pid),
+            format!("create.sh returned non-positive agent_pid_hint: {pid}"),
         ));
     }
     if !crate::supervise::pid_file::pid_alive(pid as u32) {
         return Err(CliError::system(
             "agent_pid_discovery_failed",
-            format!("agent_pid {} was not alive after create.sh returned", pid),
+            format!("agent_pid {pid} was not alive after create.sh returned"),
         ));
     }
     Ok(())
@@ -277,7 +274,7 @@ EOF
         .unwrap();
         assert_eq!(out.branch, "wt/x");
         assert_eq!(out.tmux_window, "🚀 wt/x");
-        assert_eq!(out.agent_pid_hint, me as i64);
+        assert_eq!(out.agent_pid_hint, i64::from(me));
         std::env::remove_var("OCTL_CREATE_SH");
     }
 

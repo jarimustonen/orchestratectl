@@ -220,7 +220,7 @@ pub fn append_and_apply(
 /// idempotency-key lookup) into the same locked critical section —
 /// calling [`append_and_apply`] recursively would deadlock because
 /// `flock` blocks when a second open of the lock file from the same
-/// process tries to acquire LOCK_EX.
+/// process tries to acquire `LOCK_EX`.
 pub fn append_and_apply_unlocked(
     paths: &RunPaths,
     kind: &str,

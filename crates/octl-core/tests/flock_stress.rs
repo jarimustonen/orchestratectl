@@ -5,8 +5,8 @@
 //! livelock, starvation, or torn lines.
 //!
 //! Verifies:
-//! - final `events.jsonl` has exactly 50_000 lines
-//! - every `seq` 1..=50_000 appears exactly once
+//! - final `events.jsonl` has exactly `50_000` lines
+//! - every `seq` `1..=50_000` appears exactly once
 //! - no torn lines (every line is valid JSON)
 //! - prints 99th-percentile lock-acquisition latency
 
@@ -104,8 +104,7 @@ fn flock_stress_50_threads_1000_iters() {
     let p99 = lats[(lats.len() * 99) / 100];
     let max = *lats.last().unwrap();
     eprintln!(
-        "V4 flock stress: {} threads × {} iters = {} ops in {:.2?}",
-        THREADS, ITERS_PER_THREAD, TOTAL, elapsed
+        "V4 flock stress: {THREADS} threads × {ITERS_PER_THREAD} iters = {TOTAL} ops in {elapsed:.2?}"
     );
     eprintln!(
         "V4 flock stress: lock-acquire latency  p50={:.3}ms  p99={:.3}ms  max={:.3}ms",

@@ -80,7 +80,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // delivery (embed in terminal envelope) is tracked as a follow-up;
     // for now stderr keeps them visible without polluting the JSONL stream.
     for w in args.warnings {
-        eprintln!("warning: {}", w);
+        eprintln!("warning: {w}");
     }
 
     // Install signal handler before any I/O so a SIGINT during the
@@ -311,7 +311,7 @@ fn emit_event(writer: &mut dyn Write, format: FormatArg, ev: &Event) -> Result<(
         FormatArg::Jsonl => {
             let line = serde_json::to_string(ev)
                 .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-            writeln!(writer, "{}", line)
+            writeln!(writer, "{line}")
         }
         FormatArg::Text => writeln!(writer, "{}", text_summary(ev)),
     }
@@ -398,7 +398,7 @@ fn emit_terminal(
     };
     let line = serde_json::to_string(&envelope)
         .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-    writeln!(writer, "{}", line)
+    writeln!(writer, "{line}")
         .map_err(|e| CliError::system("io_error", format!("write terminal: {e}")))
 }
 

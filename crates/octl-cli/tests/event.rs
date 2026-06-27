@@ -165,7 +165,7 @@ fn tail_text_format_no_terminal_envelope() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 1, "stdout was: {stdout}");
     assert!(lines[0].contains("run.created"), "line: {}", lines[0]);
-    assert!(lines[0].starts_with("["), "line: {}", lines[0]);
+    assert!(lines[0].starts_with('['), "line: {}", lines[0]);
 }
 
 #[test]
@@ -301,8 +301,7 @@ fn tail_partial_line_is_held_until_newline_arrives() {
 
     // Write a partial JSON line.
     let partial = format!(
-        "{{\"ts\":\"2026-06-12T10:00:00Z\",\"seq\":2,\"kind\":\"partial.test\",\"run_id\":\"{}\",\"node_id\":null,\"idempotency_key\":null,\"data\":",
-        run_id
+        "{{\"ts\":\"2026-06-12T10:00:00Z\",\"seq\":2,\"kind\":\"partial.test\",\"run_id\":\"{run_id}\",\"node_id\":null,\"idempotency_key\":null,\"data\":"
     );
     let mut f = OpenOptions::new().append(true).open(&evp).expect("open");
     f.write_all(partial.as_bytes()).unwrap();

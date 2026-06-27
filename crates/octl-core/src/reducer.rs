@@ -315,7 +315,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         started_at: Some(ev.ts),
         updated_at: ev.ts,
         last_report: None,
-        last_processed_report_seq_by_child: Default::default(),
+        last_processed_report_seq_by_child: serde_json::Map::default(),
     };
     write_node(paths, &n)?;
     if let Some(mut m) = read_manifest_opt(paths)? {

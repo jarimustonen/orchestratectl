@@ -439,7 +439,7 @@ fn emit(
         println!("node-id:       {}", payload.node_id);
         println!("choice:        {}", payload.choice);
         if let Some(n) = payload.note {
-            println!("note:          {}", n);
+            println!("note:          {n}");
         }
         let outcome_label = match payload.outcome {
             Outcome::Appended => "appended",
@@ -447,9 +447,9 @@ fn emit(
             Outcome::NoOp => "no-op (already resolved with same choice)",
             Outcome::DryRun => "dry-run (no filesystem changes)",
         };
-        println!("outcome:       {}", outcome_label);
+        println!("outcome:       {outcome_label}");
         if let Some(s) = payload.seq {
-            println!("seq:           {}", s);
+            println!("seq:           {s}");
         }
         if let Some(w) = payload.would_be {
             let w_label = match w {
@@ -458,12 +458,12 @@ fn emit(
                 Outcome::NoOp => "no-op",
                 Outcome::DryRun => "dry-run",
             };
-            println!("would-be:      {}", w_label);
+            println!("would-be:      {w_label}");
         }
         if !payload.projections.is_empty() {
             println!("projections:");
             for p in &payload.projections {
-                println!("  - {}", p);
+                println!("  - {p}");
             }
         }
         output::emit_text_warnings(warnings);

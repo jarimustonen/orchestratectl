@@ -43,7 +43,7 @@ impl Liveness {
     }
 }
 
-/// Read the process start_time (Unix seconds) for `pid`. Returns `None`
+/// Read the process `start_time` (Unix seconds) for `pid`. Returns `None`
 /// if the process does not exist or the platform sysinfo backend
 /// declines to populate the value.
 pub fn pid_start_time(pid: u32) -> Option<u64> {
@@ -53,7 +53,8 @@ pub fn pid_start_time(pid: u32) -> Option<u64> {
         true,
         sysinfo::ProcessRefreshKind::new(),
     );
-    sys.process(Pid::from_u32(pid)).map(|p| p.start_time())
+    sys.process(Pid::from_u32(pid))
+        .map(sysinfo::Process::start_time)
 }
 
 /// Check whether `tmux list-windows` includes a window whose name
@@ -86,7 +87,7 @@ pub fn tmux_window_present(window_name: &str) -> bool {
 pub struct AgentProbe {
     pub pid: u32,
     /// Start-time captured at spawn (Unix seconds). `None` means the
-    /// supervisor could not read start_time on this platform — we then
+    /// supervisor could not read `start_time` on this platform — we then
     /// fall back to PID-only liveness and accept the tiny risk of a
     /// reused PID being mistaken for the agent.
     pub start_time: Option<u64>,

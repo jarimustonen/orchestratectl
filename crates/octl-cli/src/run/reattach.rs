@@ -102,9 +102,7 @@ pub fn run(
         .stdout(stderr_file)
         .stderr(stderr_clone)
         .spawn()
-        .map_err(|e| {
-            CliError::system("spawn_failed", format!("spawn supervise {}: {}", run_id, e))
-        })?;
+        .map_err(|e| CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}")))?;
     let child_pid = child.id();
 
     // Wait briefly for the child to write its own PID file. We may see
@@ -144,10 +142,7 @@ pub fn run(
             output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
-            println!(
-                "reattached run {} (supervisor pid {})",
-                run_id, recorded_pid
-            );
+            println!("reattached run {run_id} (supervisor pid {recorded_pid})");
             output::emit_text_warnings(warnings);
         }
     }

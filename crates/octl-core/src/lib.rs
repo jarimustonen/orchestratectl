@@ -11,6 +11,11 @@
 //! - The projection reducer ([`apply_event`]).
 //!
 //! Higher-level supervisor and CLI logic live in their own crates / issues.
+//!
+//! `octl-core` is the canonical library surface, so public items are required
+//! to carry doc comments (`#![warn(missing_docs)]`). Lint-level policy
+//! otherwise lives in the workspace `[workspace.lints]` table (pedantic clippy).
+#![warn(missing_docs)]
 
 pub mod atomic;
 pub mod envelope;

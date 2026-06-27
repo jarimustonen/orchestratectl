@@ -22,14 +22,14 @@ use std::path::PathBuf;
 use crate::error::CliError;
 use crate::home;
 
-const FNV_OFFSET_LOW: u64 = 0xcbf29ce484222325;
-const FNV_OFFSET_HIGH: u64 = 0x84222325cbf29ce4;
-const FNV_PRIME: u64 = 0x100000001b3;
+const FNV_OFFSET_LOW: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_OFFSET_HIGH: u64 = 0x8422_2325_cbf2_9ce4;
+const FNV_PRIME: u64 = 0x100_0000_01b3;
 
 fn fnv1a64(seed: u64, bytes: &[u8]) -> u64 {
     let mut h = seed;
     for &b in bytes {
-        h ^= b as u64;
+        h ^= u64::from(b);
         h = h.wrapping_mul(FNV_PRIME);
     }
     h
@@ -47,7 +47,7 @@ fn key_hash(repo: Option<&str>, branch: Option<&str>, key: &str) -> String {
         low = fnv1a64(low, part.as_bytes());
         high = fnv1a64(high, part.as_bytes());
     }
-    format!("{:016x}{:016x}", high, low)
+    format!("{high:016x}{low:016x}")
 }
 
 fn file_path(repo: Option<&str>, branch: Option<&str>, key: &str) -> Result<PathBuf, CliError> {

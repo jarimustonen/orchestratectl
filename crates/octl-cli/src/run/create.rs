@@ -383,10 +383,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent
     // supervisor (design.md §7.2 step 6).
-    let supervisor_pid = if !is_child {
-        Some(supervisor_spawn::spawn_for_run(&paths, &run_id)?.pid)
-    } else {
+    let supervisor_pid = if is_child {
         None
+    } else {
+        Some(supervisor_spawn::spawn_for_run(&paths, &run_id)?.pid)
     };
 
     if let Some(key) = args.idempotency_key.as_deref() {
@@ -479,7 +479,7 @@ fn derive_branch_name(kind: Kind, run_id: &str, title: &str) -> String {
     let short = run_id
         .to_ascii_lowercase()
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .take(10)
         .collect::<String>();
     let slug: String = title
@@ -497,7 +497,7 @@ fn derive_branch_name(kind: Kind, run_id: &str, title: &str) -> String {
         slug
     };
     let slug: String = slug.chars().take(40).collect();
-    format!("wt/{}-{}", short, slug)
+    format!("wt/{short}-{slug}")
 }
 
 struct EmitInput<'a> {
@@ -547,20 +547,20 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
             println!("dir:    {}", payload.dir);
             println!("kind:   {}", kind_kebab(i.kind));
             match &payload.supervisor {
-                SupervisorField::Pid(p) => println!("status: running  (supervisor pid {})", p),
-                SupervisorField::Note(n) => println!("status: pending  (supervisor: {})", n),
+                SupervisorField::Pid(p) => println!("status: running  (supervisor pid {p})"),
+                SupervisorField::Note(n) => println!("status: pending  (supervisor: {n})"),
             }
             if let Some(b) = payload.branch {
-                println!("branch: {}", b);
+                println!("branch: {b}");
             }
             if let Some(w) = payload.worktree_path {
-                println!("path:   {}", w);
+                println!("path:   {w}");
             }
             if let Some(t) = payload.tmux_window {
-                println!("tmux:   {}", t);
+                println!("tmux:   {t}");
             }
             if let (Some(p), Some(n)) = (payload.parent_run_id, payload.parent_node_id) {
-                println!("parent: {}/{}", p, n);
+                println!("parent: {p}/{n}");
             }
             if payload.idempotent_replay == Some(true) {
                 println!("note:   returned from idempotency-key cache");

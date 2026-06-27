@@ -69,7 +69,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     for ent in entries {
         let ent = ent.map_err(|e| CliError::system("io_error", e.to_string()))?;
-        if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        if !ent.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         // The directory name must be a valid run id; foreign dirs are skipped.

@@ -77,8 +77,7 @@ fn count_jsons(dir: &std::path::Path) -> u64 {
             e.path()
                 .extension()
                 .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case("json"))
-                .unwrap_or(false)
+                .is_some_and(|s| s.eq_ignore_ascii_case("json"))
         })
         .count() as u64
 }

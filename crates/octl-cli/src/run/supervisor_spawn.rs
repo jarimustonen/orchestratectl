@@ -51,9 +51,7 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
         .stdout(stderr_file)
         .stderr(stderr_clone)
         .spawn()
-        .map_err(|e| {
-            CliError::system("spawn_failed", format!("spawn supervise {}: {}", run_id, e))
-        })?;
+        .map_err(|e| CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}")))?;
     let spawned_pid = child.id();
 
     let pid_path = paths.supervisor_pid();

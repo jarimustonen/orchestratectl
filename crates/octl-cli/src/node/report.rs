@@ -210,10 +210,7 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
     if (buf.len() as u64) > MAX_FROM_FILE_BYTES {
         return Err(CliError::user(
             "from_file_too_large",
-            format!(
-                "--from-file exceeds maximum of {} bytes",
-                MAX_FROM_FILE_BYTES
-            ),
+            format!("--from-file exceeds maximum of {MAX_FROM_FILE_BYTES} bytes"),
         )
         .with_invalid_value(path.display().to_string()));
     }
@@ -517,7 +514,7 @@ fn emit(
             println!("run-id:    {}", payload.run_id);
             println!("node-id:   {}", payload.node_id);
             match payload.event_seq {
-                Some(s) => println!("event_seq: {}", s),
+                Some(s) => println!("event_seq: {s}"),
                 None => println!("event_seq: (assigned on apply)"),
             }
             if payload.dry_run == Some(true) {

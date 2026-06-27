@@ -290,10 +290,10 @@ pub fn cmd_install(
             (AgentTarget::Claude, Some(p)) => plan.push((skill, "claude", p.clone())),
             (AgentTarget::Codex, Some(p)) => plan.push((skill, "codex", p.clone())),
             (AgentTarget::Claude, None) => {
-                plan.push((skill, "claude", default_path("claude", skill.name)?))
+                plan.push((skill, "claude", default_path("claude", skill.name)?));
             }
             (AgentTarget::Codex, None) => {
-                plan.push((skill, "codex", default_path("codex", skill.name)?))
+                plan.push((skill, "codex", default_path("codex", skill.name)?));
             }
             (AgentTarget::All, _) => {
                 plan.push((skill, "claude", default_path("claude", skill.name)?));
@@ -527,12 +527,11 @@ fn write_atomic(path: &Path, content: &str, force: bool) -> Result<(), CliError>
             format!("could not create tempfile in {}: {}", parent.display(), e),
         )
     })?;
-    tmp.write_all(content.as_bytes()).map_err(|e| {
-        CliError::system("write_failed", format!("could not write tempfile: {}", e))
-    })?;
-    tmp.as_file_mut().sync_all().map_err(|e| {
-        CliError::system("fsync_failed", format!("could not fsync tempfile: {}", e))
-    })?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|e| CliError::system("write_failed", format!("could not write tempfile: {e}")))?;
+    tmp.as_file_mut()
+        .sync_all()
+        .map_err(|e| CliError::system("fsync_failed", format!("could not fsync tempfile: {e}")))?;
 
     // `persist_noclobber` makes the non-force case TOCTOU-safe: the rename
     // refuses to clobber via the kernel rather than via an earlier

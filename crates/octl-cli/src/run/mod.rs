@@ -255,7 +255,7 @@ pub fn lifecycle_kebab(l: Lifecycle) -> &'static str {
 }
 
 pub fn status_kebab(s: octl_core::Status) -> &'static str {
-    use octl_core::Status::*;
+    use octl_core::Status::{Blocked, Cancelled, Done, Failed, Pending, Running};
     match s {
         Pending => "pending",
         Running => "running",
@@ -271,7 +271,7 @@ pub fn runs_root(root: &Path) -> PathBuf {
     root.join("runs")
 }
 
-/// Map a core::Error into a CliError.
+/// Map a `core::Error` into a `CliError`.
 pub fn from_core(err: octl_core::Error) -> CliError {
     CliError::system("io_error", err.to_string())
 }
