@@ -61,6 +61,13 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 /// so a transient `stat` hiccup cannot kill a live supervisor.
 const SELF_TERMINATE_TICKS: u32 = 3;
 
+/// Minimum gap between successive "log events dropped" warnings. The
+/// supervisor never renders a success envelope while it runs, so unlike
+/// short-lived commands it cannot surface lossy-mode drops there — it emits a
+/// periodic `warn!` instead. Rate-limited so a sustained back-pressure storm
+/// does not itself flood the log it is warning about.
+const DROPPED_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Set by the SIGINT/SIGTERM handler to the received signal number (0 =
 /// none). Read by the main loop to trigger shutdown and by the shutdown
 /// path to pick the §7.8 exit code and `signal` payload field. We use a
@@ -212,6 +219,12 @@ pub fn dispatch(
     // to 0 on any tick where it exists; once it crosses
     // `SELF_TERMINATE_TICKS` we self-terminate (run dir vanished).
     let mut manifest_missing_streak: u32 = 0;
+
+    // Rate-limit state for the periodic lossy-drop warning (see
+    // `maybe_warn_dropped`). The supervisor renders no envelope mid-run, so
+    // this is its only channel for surfacing dropped log events.
+    let mut last_dropped_warned: u64 = 0;
+    let mut last_dropped_warn_at: Option<Instant> = None;
 
     let mut iter: u32 = 0;
     let exit_reason: &'static str = loop {
@@ -484,6 +497,17 @@ pub fn dispatch(
                 "watchdog tick failed"
             );
         }
+
+        // Surface lossy-mode log drops periodically. A long-lived
+        // supervisor under sustained back-pressure could silently shed
+        // `error!`/`warn!` events; this is the only place it can flag that
+        // (it renders no success envelope until shutdown).
+        maybe_warn_dropped(
+            crate::cli::dropped_log_events(),
+            Instant::now(),
+            &mut last_dropped_warned,
+            &mut last_dropped_warn_at,
+        );
 
         // Persist cursors after each tick so a crash mid-run loses at
         // most one tick of progress (and the deterministic-ID reducer
@@ -839,6 +863,39 @@ fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &st
             "failed to persist corrupt-line diagnostic (advanced past it anyway)"
         );
     }
+}
+
+/// Decide whether to emit a rate-limited "log events dropped" warning, and
+/// emit it if so. Warns only when `current` exceeds the last-warned count
+/// (i.e. *new* drops since the previous warning) AND at least
+/// [`DROPPED_WARN_INTERVAL`] has elapsed since that warning (or none has been
+/// emitted yet). On warn, updates `last_count`/`last_at` and returns `true`.
+///
+/// `current` and `now` are passed in (rather than read inside) so the
+/// rate-limit logic is deterministically unit-testable; production callers
+/// pass [`crate::cli::dropped_log_events`] and [`Instant::now`].
+fn maybe_warn_dropped(
+    current: u64,
+    now: Instant,
+    last_count: &mut u64,
+    last_at: &mut Option<Instant>,
+) -> bool {
+    if current <= *last_count {
+        return false;
+    }
+    let due = last_at.is_none_or(|t| now.duration_since(t) >= DROPPED_WARN_INTERVAL);
+    if !due {
+        return false;
+    }
+    warn!(
+        target: "orchestratectl::supervise",
+        dropped = current,
+        newly_dropped = current - *last_count,
+        "log events dropped due to buffer overflow (lossy non-blocking appender under sustained back-pressure)"
+    );
+    *last_count = current;
+    *last_at = Some(now);
+    true
 }
 
 fn all_work_done(
