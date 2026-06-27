@@ -18,6 +18,7 @@
 //! positionals by index, subcommands by name. Field renames/removals are
 //! breaking changes — bump `SCHEMA_VERSION_HELP`.
 
+use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, Command};
 use serde::Serialize;
 
@@ -128,89 +129,132 @@ pub struct PositionalInfo {
     pub accepted_values: Vec<String>,
 }
 
-/// Detect a structured-help request from raw argv (excluding argv\[0\]).
-///
-/// Returns the resolved [`OutputSpec`] only when **both** a help flag
-/// (`--help` / `-h`) and an explicit non-text `--output json|jsonl`
-/// (or a `.json`/`.jsonl` file destination) are present. A bare `--help`
-/// (no `--output`) or `--output text` returns `None`, preserving clap's
-/// default text rendering (§14 out-of-scope: bare `--help` is unchanged).
-pub fn detect_json_help_request(args: &[String]) -> Option<OutputSpec> {
-    let mut help = false;
-    let mut spec: Option<OutputSpec> = None;
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "--" {
-            // End-of-options: everything after is a positional value, so a
-            // trailing `--help` is data, not a help request. Stop scanning.
-            break;
-        } else if a == "--help" || a == "-h" {
-            help = true;
-            i += 1;
-        } else if a == "--output" {
-            if let Some(v) = args.get(i + 1) {
-                spec = crate::output::parse_output_value(v).ok();
-            }
-            i += 2;
-        } else if let Some(v) = a.strip_prefix("--output=") {
-            spec = crate::output::parse_output_value(v).ok();
-            i += 1;
-        } else {
-            i += 1;
-        }
-    }
-    match (help, spec) {
-        (true, Some(s)) if s.format != OutputFormat::Text => Some(s),
-        _ => None,
-    }
+/// Synthetic id for the global help flag injected into the lenient-parse
+/// clone (see [`resolve_help_request`]). Double-underscore prefix keeps it
+/// clear of any real arg id.
+const HELP_FLAG_ID: &str = "__octl_help_request";
+
+/// Id of the global `--output` arg, read back from the lenient parse.
+const OUTPUT_ARG_ID: &str = "output";
+
+/// Outcome of inspecting raw argv for a structured-help request.
+pub enum HelpRequest {
+    /// Not a JSON help request — the caller falls through to clap's normal
+    /// dispatch. Covers no `--help`, a bare `--help` (no explicit
+    /// `--output`), and `--output text`, all of which keep clap's text
+    /// rendering (§14: bare `--help` is unchanged).
+    None,
+    /// Structured help requested for the resolved subcommand path
+    /// (canonical subcommand names, root excluded).
+    Render { spec: OutputSpec, path: Vec<String> },
+    /// Structured help requested, but a token in subcommand position is not
+    /// a known subcommand. The caller emits an error envelope (exit 1)
+    /// rather than falling back to root help.
+    UnknownSubcommand { token: String },
 }
 
-/// Walk the subcommand path encoded in raw argv and return the deepest
-/// matched [`Command`] together with its full invocation path.
+/// Resolve a structured-help request from raw argv (excluding argv\[0\])
+/// via a clap *lenient* parse.
 ///
-/// Flags (and the value of `--output`) are skipped; the first token that
-/// is not a known subcommand (e.g. a positional value) ends the walk. This
-/// mirrors clap's own drill-down: `run create --help` resolves to the
-/// `create` leaf regardless of where `--help`/`--output` sit in argv.
+/// This replaces the former hand-rolled argv scan. `root` is the real
+/// (canonical) command tree; it is cloned and reconfigured so a single
+/// tolerant parse recovers the subcommand path **and** the `--output`
+/// value exactly as clap would — robust against value-taking flags at any
+/// level, short-flag clusters (`-vh`), non-canonical aliases, and `--`
+/// (handled by clap for free).
 ///
-/// Limitation: this is a lightweight scan, not a full clap parse. It knows
-/// the arity of only the global `--output`; the value of any *other*
-/// value-taking flag is treated as a candidate subcommand. That is sound
-/// for the current command tree — value-taking flags live only on leaf
-/// commands, which have no subcommands for a stray value to match — but a
-/// value-taking flag added at a noun level would need this replaced with a
-/// clap lenient-parse resolver (`ignore_errors`). Tracked in the
-/// `help-json-clap-native-resolution` spin-off.
-pub fn navigate<'a>(root: &'a Command, args: &[String]) -> (&'a Command, String) {
+/// Returns [`HelpRequest::Render`] only when **both** an explicit help flag
+/// (`--help`/`-h`) and an explicit non-text `--output` are present; a bare
+/// `--help` or `--output text` returns [`HelpRequest::None`]. An unknown
+/// subcommand returns [`HelpRequest::UnknownSubcommand`].
+#[must_use]
+pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
+    let mut lenient = root
+        .clone()
+        // Tolerate unknown flags/values so the path and `--output` resolve
+        // even when `--help` sits where clap would normally reject it.
+        .ignore_errors(true)
+        // Suppress clap's built-in `--help` (its action short-circuits to
+        // text); we detect help via the injected flag below instead.
+        .disable_help_flag(true)
+        // Surface an unknown subcommand as an external subcommand in the
+        // matches rather than silently dropping it, so we can error on it.
+        .allow_external_subcommands(true)
+        .arg(
+            Arg::new(HELP_FLAG_ID)
+                .long("help")
+                .short('h')
+                .action(ArgAction::SetTrue)
+                .global(true),
+        );
+
+    // clap expects argv[0] to be the program name.
+    let with_prog = std::iter::once(root.get_name().to_string()).chain(args.iter().cloned());
+    let Ok(matches) = lenient.try_get_matches_from_mut(with_prog) else {
+        // `ignore_errors` makes a hard error practically unreachable; if one
+        // slips through we simply decline the request.
+        return HelpRequest::None;
+    };
+
+    // A help request requires an explicit `--help`/`-h`.
+    if !matches.get_flag(HELP_FLAG_ID) {
+        return HelpRequest::None;
+    }
+
+    // ...and an explicit non-text `--output`. The `jsonl` default does not
+    // count (`value_source` distinguishes it), so a bare `--help` keeps
+    // clap's text rendering.
+    let spec = match matches.value_source(OUTPUT_ARG_ID) {
+        Some(ValueSource::CommandLine) => matches.get_one::<OutputSpec>(OUTPUT_ARG_ID).cloned(),
+        _ => None,
+    };
+    let Some(spec) = spec else {
+        return HelpRequest::None;
+    };
+    if spec.format == OutputFormat::Text {
+        return HelpRequest::None;
+    }
+
+    // Walk the resolved subcommand path, validating each name against the
+    // real tree. With `allow_external_subcommands`, an unknown token in
+    // subcommand position surfaces here as a subcommand whose name the real
+    // tree does not know — that is the unknown-subcommand signal.
+    let mut cur = root;
+    let mut path = Vec::new();
+    let mut node = &matches;
+    while let Some((name, sub)) = node.subcommand() {
+        match cur.find_subcommand(name) {
+            Some(child) => {
+                cur = child;
+                path.push(name.to_string());
+                node = sub;
+            }
+            None => {
+                return HelpRequest::UnknownSubcommand {
+                    token: name.to_string(),
+                }
+            }
+        }
+    }
+
+    HelpRequest::Render { spec, path }
+}
+
+/// Walk a canonical subcommand-name path (root excluded) through a built
+/// command tree, returning the deepest command and its full invocation
+/// path. The names come from [`resolve_help_request`]'s clap parse, so
+/// every lookup succeeds; an unknown name simply stops the walk (defensive,
+/// not expected).
+#[must_use]
+pub fn navigate_path<'a>(root: &'a Command, names: &[String]) -> (&'a Command, String) {
     let mut cur = root;
     let mut path = vec![root.get_name().to_string()];
-    let mut i = 0;
-    while i < args.len() {
-        let tok = &args[i];
-        if tok == "--" {
-            // End-of-options: nothing after is a subcommand.
+    for name in names {
+        let Some(sc) = cur.find_subcommand(name) else {
             break;
-        }
-        if tok == "--output" {
-            i += 2; // skip the flag and its space-separated value
-            continue;
-        }
-        if tok.starts_with('-') {
-            // any other flag (--output=…, --help, -h, …): not a subcommand
-            i += 1;
-            continue;
-        }
-        match cur.find_subcommand(tok) {
-            Some(sc) => {
-                cur = sc;
-                path.push(sc.get_name().to_string());
-                i += 1;
-            }
-            // A non-flag token that is not a subcommand is a positional
-            // value (e.g. a run id); the command is fully resolved.
-            None => break,
-        }
+        };
+        cur = sc;
+        path.push(sc.get_name().to_string());
     }
     (cur, path.join(" "))
 }
@@ -351,4 +395,121 @@ fn takes_value(action: &ArgAction) -> bool {
 fn multiple(arg: &Arg, action: &ArgAction) -> bool {
     matches!(action, ArgAction::Append | ArgAction::Count)
         || arg.get_num_args().is_some_and(|r| r.max_values() > 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A miniature command tree mirroring the real one's shape: a global
+    /// `--output` (custom `OutputSpec` parser, `jsonl` default) plus a noun
+    /// (`run`) with a leaf verb (`create`).
+    fn test_root() -> Command {
+        Command::new("tool")
+            .arg(
+                Arg::new(OUTPUT_ARG_ID)
+                    .long("output")
+                    .global(true)
+                    .default_value("jsonl")
+                    .value_parser(crate::output::parse_output_value),
+            )
+            .subcommand(Command::new("run").subcommand(Command::new("create")))
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn render_resolves_leaf_path_and_output() {
+        let req = resolve_help_request(
+            &test_root(),
+            &args(&["run", "create", "--help", "--output", "json"]),
+        );
+        match req {
+            HelpRequest::Render { spec, path } => {
+                assert_eq!(spec.format, OutputFormat::Json);
+                assert_eq!(path, vec!["run".to_string(), "create".to_string()]);
+            }
+            _ => panic!("expected Render"),
+        }
+    }
+
+    #[test]
+    fn output_can_precede_the_subcommand_path() {
+        // A robustness win over the old scan: `--output` resolves wherever
+        // it sits, including before any subcommand.
+        let req =
+            resolve_help_request(&test_root(), &args(&["--output", "jsonl", "run", "--help"]));
+        match req {
+            HelpRequest::Render { spec, path } => {
+                assert_eq!(spec.format, OutputFormat::Jsonl);
+                assert_eq!(path, vec!["run".to_string()]);
+            }
+            _ => panic!("expected Render"),
+        }
+    }
+
+    #[test]
+    fn bare_help_without_output_is_none() {
+        // Default `--output jsonl` must NOT count — clap's text help stands.
+        assert!(matches!(
+            resolve_help_request(&test_root(), &args(&["run", "create", "--help"])),
+            HelpRequest::None
+        ));
+    }
+
+    #[test]
+    fn output_text_with_help_is_none() {
+        assert!(matches!(
+            resolve_help_request(&test_root(), &args(&["run", "--help", "--output", "text"])),
+            HelpRequest::None
+        ));
+    }
+
+    #[test]
+    fn no_help_flag_is_none() {
+        assert!(matches!(
+            resolve_help_request(&test_root(), &args(&["run", "--output", "json"])),
+            HelpRequest::None
+        ));
+    }
+
+    #[test]
+    fn double_dash_suppresses_detection() {
+        // After `--`, a trailing `--help` is positional data, not a request.
+        assert!(matches!(
+            resolve_help_request(
+                &test_root(),
+                &args(&["run", "--", "--help", "--output", "json"])
+            ),
+            HelpRequest::None
+        ));
+    }
+
+    #[test]
+    fn unknown_subcommand_after_flags_is_flagged() {
+        // Flag-first ordering surfaces the bad token as an external
+        // subcommand the real tree rejects.
+        match resolve_help_request(
+            &test_root(),
+            &args(&["--help", "--output", "json", "bogus"]),
+        ) {
+            HelpRequest::UnknownSubcommand { token } => assert_eq!(token, "bogus"),
+            other => panic!("expected UnknownSubcommand, got {:?}", DebugReq(&other)),
+        }
+    }
+
+    // Tiny helper so the panic message above can name the variant without a
+    // `Debug` impl on `HelpRequest` (which would otherwise be dead weight).
+    struct DebugReq<'a>(&'a HelpRequest);
+    impl std::fmt::Debug for DebugReq<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                HelpRequest::None => write!(f, "None"),
+                HelpRequest::Render { path, .. } => write!(f, "Render({path:?})"),
+                HelpRequest::UnknownSubcommand { token } => write!(f, "Unknown({token})"),
+            }
+        }
+    }
 }

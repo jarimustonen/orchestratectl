@@ -199,15 +199,52 @@ fn subcommands_are_sorted_by_name() {
 }
 
 #[test]
-fn unknown_subcommand_with_json_help_falls_back_to_root() {
-    // Documented behavior (locked intentionally): structured help is a
-    // pre-parse query, so an unknown subcommand is treated as a positional
-    // and the walk stops at the deepest *valid* node (here the root). This
-    // does NOT error — see help::navigate. A future clap-native resolver
-    // (spin-off help-json-clap-native-resolution) may tighten this.
-    let stdout = help_stdout(&["bogus-subcommand", "--help", "--output", "json"]);
-    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
-    assert_eq!(v["data"]["command"], "orchestratectl");
+fn unknown_subcommand_with_json_help_errors() {
+    // §14 tightening (help-json-clap-native-resolution): an unknown
+    // subcommand under structured help is an error envelope (exit 1), not a
+    // silent fall-back to root help. The clap lenient parse drops the
+    // trailing `--help`/`--output` after the bad leading token, so this
+    // falls through to clap's normal dispatch, which rejects the unknown
+    // subcommand — either way the caller sees a structured error, no JSON
+    // help on stdout.
+    let assert = bin()
+        .args(["bogus-subcommand", "--help", "--output", "json"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    assert!(
+        out.stdout.is_empty(),
+        "no JSON help on stdout for an unknown subcommand: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+    let v: Value = serde_json::from_str(stderr.trim()).expect("stderr is an error envelope");
+    assert!(v.get("error").is_some(), "error envelope on stderr: {v}");
+}
+
+#[test]
+fn unknown_subcommand_after_flags_errors() {
+    // Flag-first ordering: `--help --output json bogus`. Here the clap
+    // lenient parse *does* recover help + output and surfaces `bogus` as an
+    // external subcommand the real tree rejects — exercising the resolver's
+    // own UnknownSubcommand path (code `unknown_subcommand`), distinct from
+    // clap's normal dispatch above.
+    let assert = bin()
+        .args(["--help", "--output", "json", "bogus-subcommand"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    assert!(
+        out.stdout.is_empty(),
+        "no JSON help on stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+    let v: Value = serde_json::from_str(stderr.trim()).expect("stderr is an error envelope");
+    assert_eq!(
+        v["error"]["code"], "unknown_subcommand",
+        "resolver-level unknown-subcommand error: {v}"
+    );
 }
 
 #[test]

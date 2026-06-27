@@ -153,8 +153,21 @@ pub fn run() -> ExitCode {
     // perturbed by) the log file's writability — keeping the payload
     // deterministic regardless of `$HOME`/`$ORCHESTRATECTL_HOME`.
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(spec) = crate::help::detect_json_help_request(&raw_args) {
-        return emit_json_help(&raw_args, &spec);
+    match crate::help::resolve_help_request(&Cli::command(), &raw_args) {
+        crate::help::HelpRequest::None => {}
+        crate::help::HelpRequest::Render { spec, path } => {
+            return emit_json_help(&path, &spec);
+        }
+        crate::help::HelpRequest::UnknownSubcommand { token } => {
+            // §14 tightening: an unknown subcommand under structured help is
+            // an error, not a silent fall-back to root help.
+            let err = CliError::user(
+                "unknown_subcommand",
+                format!("unknown subcommand '{token}'"),
+            );
+            err.emit();
+            return ExitCode::from(ExitKind::User as u8);
+        }
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. It MUST
@@ -230,19 +243,20 @@ pub fn run() -> ExitCode {
     }
 }
 
-/// Render the structured help payload for the command path encoded in
-/// `raw_args` and emit it through the standard success envelope. Builds
-/// the clap command tree (propagating global flags and help/version into
-/// every subcommand), walks to the requested command, and projects it.
+/// Render the structured help payload for the resolved `subcommand_path`
+/// (canonical subcommand names from [`crate::help::resolve_help_request`])
+/// and emit it through the standard success envelope. Builds the clap
+/// command tree (propagating global flags and help/version into every
+/// subcommand), walks to the requested command, and projects it.
 ///
 /// No `warnings` parameter: help renders before `init_logging`, so there
 /// are none to surface — the payload is pure command metadata.
-fn emit_json_help(raw_args: &[String], spec: &OutputSpec) -> ExitCode {
+fn emit_json_help(subcommand_path: &[String], spec: &OutputSpec) -> ExitCode {
     let mut root = Cli::command();
     // Propagate global args (e.g. `--output`) and the implicit `--help`
     // into every subcommand so each node's flag list is accurate.
     root.build();
-    let (target, path) = crate::help::navigate(&root, raw_args);
+    let (target, path) = crate::help::navigate_path(&root, subcommand_path);
     let data = crate::help::build_help(target, &path);
     match output::emit_envelope(&data, spec, &[]) {
         Ok(()) => ExitCode::SUCCESS,
