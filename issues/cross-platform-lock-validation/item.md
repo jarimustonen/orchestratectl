@@ -28,18 +28,54 @@ Scoped to **item 2 (supply-chain advisory gate)** this pass; item 1 deferred.
 
 **Shipped:**
 
-- `deny.toml [advisories]`: added explicit `unsound = "all"` (the class fs2 was
-  flagged under) alongside the existing `unmaintained = "all"` / `yanked = "deny"`.
-  Documented that the v1 `vulnerability`/`notice` knobs were removed in the v2
-  schema (cargo-deny#611) and vulnerabilities now always deny — so no extra knob
-  is needed to fail on a RUSTSEC vulnerability.
+- `deny.toml [advisories]`: added explicit `unsound = "all"` as general
+  defense-in-depth, alongside the existing `unmaintained = "all"` / `yanked =
+  "deny"`. Documented that the v1 `vulnerability`/`notice` knobs were removed in
+  the v2 schema (cargo-deny#611) and vulnerabilities now always deny — so no extra
+  knob is needed to fail on a RUSTSEC vulnerability.
 - `deny.toml [bans]`: added `deny = [{ crate = "fs2", ... }]` reintroduction
-  guard. A transitive dep pulling fs2 back in fails the `deny` CI job even if the
-  RUSTSEC entry were ever dropped. Verified by `cargo add fs2` → `cargo deny check
-  bans` fails with `error[banned]`, then rolled back.
+  guard. A transitive dep pulling fs2 back in fails the `deny` CI job.
+
+**Empirical findings from the /llm-review pass (cargo-deny 0.19.9, against a
+freshly fetched RustSec DB):**
+
+- **fs2 has no RUSTSEC advisory in the database today** — there is no
+  `crates/fs2/` entry. So the `unmaintained`/`unsound` advisory gates do NOT catch
+  fs2; the `[bans]` entry is the *sole* guard. The original issue framing ("fs2 is
+  unmaintained with known soundness issues, add an advisory gate") is only half
+  right: an advisory gate would not have caught fs2. The name-based ban is what
+  protects us. Comments in `deny.toml` corrected to say this plainly.
+- **`unmaintained = "all"` is a hard error gate, not a warning.** Verified by
+  adding a real unmaintained crate (`backoff`, RUSTSEC-2025-0012) to the tree:
+  `cargo deny check advisories` emits `error[unmaintained]` and exits 1
+  ("advisories FAILED"). With `unmaintained = "none"` it exits 0. (Two reviewers
+  claimed v2 informational advisories only warn and need `--deny warnings` — that
+  is false for 0.19.9.)
+- **fs2 ban fires correctly:** `cargo add fs2` → `cargo deny check bans` fails with
+  `error[banned] crate 'fs2 = 0.4.3' is explicitly banned`; rolled back. A
+  `package = "fs2"` rename is still caught (lockfile crate name); a differently
+  named fork is not (accepted limitation, noted in config).
 - `cargo deny check --locked` passes clean on the current tree (advisories, bans,
   licenses, sources all ok).
 - Design note updated: `issues/ci-and-lints/design.md` cargo-deny section.
+
+**Deferred spin-off findings (from review — out of scope here):**
+
+- **Cross-platform target coverage for cargo-deny.** CI runs on the Linux runner,
+  so cargo-deny only evaluates the host-target dependency graph; a macOS-only
+  reintroduction of a banned/flagged crate could go uncaught. Adding
+  `[graph].targets = ["x86_64-apple-darwin", "aarch64-apple-darwin", ...]` would
+  close this — but doing so surfaces pre-existing **license** allow-list failures
+  (platform-specific crates, plus deprecated `MIT/Apache-2.0` slash-syntax not
+  matching the allow-list), and `all-features = true` widens that further. Needs
+  its own triage. This dovetails with deferred **item 1** (cross-platform lock
+  coverage) above.
+- **Advisory-DB freshness.** The advisory gate is only as fresh as the RustSec DB.
+  Mitigated in CI because `EmbarkStudios/cargo-deny-action@v2` fetches the DB on
+  each run rather than relying on the cached `~/.cargo` registry. No change needed
+  unless the workflow is ever switched to a self-managed/offline DB.
+- **`multiple-versions = "warn"`** (pre-existing, deliberate) and an explicit
+  empty `ignore = []` advisory policy were raised as nice-to-haves; left as-is.
 
 **MSRV gate (optional item):** already present — CI has an `msrv (1.85)` job
 (`.github/workflows/ci.yml`) pinned to `rust-version` from `Cargo.toml`. No change
