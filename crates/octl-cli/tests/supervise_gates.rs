@@ -578,3 +578,158 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
         "cursor not advanced: {parent_node:?}"
     );
 }
+
+/// Orphan defense: a long-lived supervisor whose run dir vanishes out
+/// from under it must self-terminate cleanly (exit 0) rather than poll a
+/// deleted directory forever and keep forking children — the root cause
+/// of the `test-harness-leaks-supervisors` orphan accumulation.
+///
+/// We remove only `manifest.json` (the trigger) while leaving the events
+/// log intact, so we can additionally assert the documented
+/// `supervisor.self-terminated` marker lands. (When the *whole* run dir
+/// is removed — the TempDir-teardown case — there is no log to write to,
+/// and the event is correctly skipped; only the clean exit is observable.)
+#[test]
+fn self_terminate_when_run_dir_vanishes() {
+    use std::time::Instant;
+
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "self-term");
+    let rdir = run_dir(&home, &run_id);
+
+    // Spawn a real, long-lived supervisor (no --once). It is a direct
+    // child here, so we can wait on it and a kill fallback reaps it if
+    // the assertion is about to fail.
+    let mut child = bin(&home)
+        .args(["supervise", &run_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn supervisor");
+
+    // Wait for boot (the PID file appears once it has entered the loop).
+    let pid_file = rdir.join("supervisor.pid");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pid_file.exists(), "supervisor did not start in time");
+
+    // Yank the manifest out from under it (leaving events.jsonl intact).
+    std::fs::remove_file(rdir.join("manifest.json")).expect("remove manifest");
+
+    // It must self-terminate within ~5s (3 missing-manifest ticks + boot
+    // and scheduling slack). Budget 10s to stay robust under CI load.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("try_wait") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("supervisor did not self-terminate within 10s of run dir removal");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "self-terminate must be a clean exit 0, got {status:?}"
+    );
+
+    // The surviving events log records the documented marker.
+    let events = rdir.join("events.jsonl");
+    assert!(
+        count_kind(&events, "supervisor.self-terminated") >= 1,
+        "expected a supervisor.self-terminated event, got {:?}",
+        read_events(&events)
+            .into_iter()
+            .map(|v| v["kind"].clone())
+            .collect::<Vec<_>>()
+    );
+    // The PID file is cleaned up on exit.
+    assert!(
+        !pid_file.exists(),
+        "supervisor.pid must be removed on self-terminate"
+    );
+}
+
+/// The original leak's exact failure mode: the *entire* run dir is removed
+/// (a test `TempDir` teardown). The supervisor must self-terminate cleanly
+/// (exit 0) AND must not resurrect the deleted directory — `state::save` /
+/// `append_and_apply_event` write through `create_dir_all`, so a sloppy
+/// implementation leaves a ghost dir behind after an operator's `rm -rf`.
+#[test]
+fn self_terminate_when_whole_run_dir_removed() {
+    use std::time::Instant;
+
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "self-term-dir");
+    let rdir = run_dir(&home, &run_id);
+
+    let mut child = bin(&home)
+        .args(["supervise", &run_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn supervisor");
+
+    let pid_file = rdir.join("supervisor.pid");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(pid_file.exists(), "supervisor did not start in time");
+
+    // Remove the whole run dir out from under the supervisor. This races
+    // the supervisor's per-tick `state.json` write, which can recreate a
+    // file mid-walk and yield ENOTEMPTY. The first pass deletes
+    // `manifest.json`, after which the orphan defense stops the
+    // supervisor writing, so a short retry loop converges. (This is the
+    // operator's `rm -rf` racing a live writer — a test concern, not a
+    // product one; the product guarantee is "do not *resurrect* the dir",
+    // asserted below.)
+    let del_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::remove_dir_all(&rdir) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) if Instant::now() < del_deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("remove run dir: {e}"),
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("try_wait") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("supervisor did not self-terminate within 10s of run dir removal");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "self-terminate must be a clean exit 0, got {status:?}"
+    );
+    // The supervisor must NOT have recreated the directory the operator
+    // (here, the test) deleted.
+    assert!(
+        !rdir.exists(),
+        "supervisor must not resurrect the deleted run dir: {}",
+        std::fs::read_dir(&rdir)
+            .map(|d| d
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(", "))
+            .unwrap_or_default()
+    );
+}

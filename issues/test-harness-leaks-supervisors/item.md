@@ -2,7 +2,7 @@
 created: 2026-06-27
 updated: 2026-06-27
 type: bug
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
 ---
@@ -31,3 +31,35 @@ Integration tests that spawn a *real* supervisor (not `--once` / not signal-term
 ## Repro
 
 Run `cargo test --all` (or just `-p octl-cli --test spawn_all_kinds`) a few times, then `pgrep -fl 'orchestratectl supervise'` — orphans remain after the run completes.
+
+## Resolution (2026-06-27)
+
+Two-sided fix; multi-model `/llm-review` (Gemini 3.1, GPT-5.5, Opus 4.7, DeepSeek v4) run on the
+diff — assessment in `history/review-test-harness-leaks-supervisors.md`.
+
+**Product hardening (`crates/octl-cli/src/supervise/mod.rs`).** Orphan defense checked at the TOP
+of the main loop (before any side-effecting work): if `manifest.json` is absent (via `try_exists`,
+so a transient stat error doesn't count) for `SELF_TERMINATE_TICKS = 3` consecutive 1s polls (~3s),
+the supervisor self-terminates — exit 0, emitting `supervisor.self-terminated` when the events log
+survives. Manifest writes are atomic (tempfile+rename) so manifest.json is never transiently absent
+from a legitimate rewrite.
+
+Critical review finding (all 4 reviewers): `state::save` and `append_and_apply_event` write through
+`create_dir_all`, so the naïve version *resurrected* the deleted run dir every tick. Fixed by
+(a) hoisting the check above all IO and (b) adding `write_atomic_no_create` /
+`write_json_atomic_no_create` to octl-core and switching `state::save` to the non-creating variant —
+a vanished run dir now makes the per-tick save fail harmlessly instead of resurrecting the dir.
+
+**Test fixes.** `tests/spawn_all_kinds.rs` gained a Drop-guard `SupervisorReaper` (captures the
+supervisor PID from the `run create` response, SIGTERM → 2s grace → SIGKILL, errno-aware so it never
+signals a recycled/foreign PID), replacing the racy `run cancel` cleanup. The `OCTL_TEST_SKIP_MATERIALIZE`
+suites never reached supervisor spawn (early return in create.rs), so only these two `spawn_all_kinds`
+tests actually leaked. New `supervise_gates.rs` tests: `self_terminate_when_run_dir_vanishes`
+(manifest-only removal → exit 0 + `supervisor.self-terminated` event) and
+`self_terminate_when_whole_run_dir_removed` (whole dir removed → exit 0 + asserts no resurrection).
+
+**Verified:** build + `cargo test --release --workspace` + clippy + fmt clean; 0 leaked supervisors
+from this worktree's binary after the full suite; whole-dir test deterministic over 12 consecutive runs.
+
+Deferred to `supervisor-child-detach-reap`: cascade-SIGTERM tracked child supervisors on self-terminate
+(today self-healing — each child's dir vanishes simultaneously and it self-terminates independently).

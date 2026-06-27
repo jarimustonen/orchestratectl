@@ -14,6 +14,13 @@
 //! (start-time identity check, §7.6), atomically write our own PID on
 //! boot, emit `supervisor.exited` and remove the PID file on exit.
 //! `--once` and `--max-iter <n>` are test-only escape hatches.
+//!
+//! Orphan defense: if our run's `manifest.json` disappears for a few
+//! consecutive ticks (the run dir was removed — e.g. a test `TempDir`
+//! teardown, or an operator deleting the run), there is nothing left to
+//! supervise. We self-terminate cleanly (exit 0, `supervisor.self-terminated`
+//! event when the events log survives) rather than poll a deleted
+//! directory forever and keep forking children.
 
 pub mod pid_file;
 pub mod reducer;
@@ -45,6 +52,14 @@ const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 /// Max time we wait for a spawned child run's directory to appear
 /// (handoff D1).
 const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
+/// Consecutive missing-manifest polls (`WATCHDOG_TICK` apart, so ≈3s)
+/// before we self-terminate. Defends against orphaning: when a run dir is
+/// deleted out from under us (a test's `TempDir` on teardown, or an
+/// operator removing the run), there is nothing left to supervise and
+/// polling the vanished directory forever wastes CPU + file descriptors.
+/// We require a short streak rather than reacting to a single missed read
+/// so a transient `stat` hiccup cannot kill a live supervisor.
+const SELF_TERMINATE_TICKS: u32 = 3;
 
 /// Set by the SIGINT/SIGTERM handler to the received signal number (0 =
 /// none). Read by the main loop to trigger shutdown and by the shutdown
@@ -209,11 +224,43 @@ pub fn dispatch(
     let mut half_state_streak: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
 
+    // Consecutive ticks our run's manifest.json has been missing. Reset
+    // to 0 on any tick where it exists; once it crosses
+    // `SELF_TERMINATE_TICKS` we self-terminate (run dir vanished).
+    let mut manifest_missing_streak: u32 = 0;
+
     let mut iter: u32 = 0;
     let exit_reason: &'static str = loop {
         if SIGNAL_RECEIVED.load(Ordering::SeqCst) != 0 {
             break "signal";
         }
+
+        // Orphan defense — checked BEFORE any side-effecting work. When
+        // our run's manifest has vanished, the run dir was removed out
+        // from under us (a test's `TempDir` teardown, or an operator
+        // deleting the run). We must NOT proceed into the tail/watchdog/
+        // state-save work below: those write through `create_dir_all`
+        // (atomic writes + `flock` acquisition) and would resurrect the
+        // very directory we've decided is gone, ghost-file by ghost-file,
+        // on every tick. Manifest writes are atomic (tempfile + rename),
+        // so manifest.json is never transiently absent during a
+        // legitimate rewrite — but we still require a short consecutive
+        // streak so a one-off `stat` hiccup can't kill a live supervisor.
+        match paths.manifest().try_exists() {
+            Ok(false) => {
+                manifest_missing_streak += 1;
+                if manifest_missing_streak >= SELF_TERMINATE_TICKS {
+                    break "run-dir-vanished";
+                }
+                std::thread::sleep(WATCHDOG_TICK);
+                continue;
+            }
+            // Present, or a stat error (permission flip, NFS hiccup) that
+            // is not proof the run is gone: reset the streak and keep
+            // supervising.
+            Ok(true) | Err(_) => manifest_missing_streak = 0,
+        }
+
         if let Some(max) = args.max_iter {
             if iter >= max {
                 break "test-bounded-exit";
@@ -449,7 +496,9 @@ pub fn dispatch(
 
         // Persist cursors after each tick so a crash mid-run loses at
         // most one tick of progress (and the deterministic-ID reducer
-        // makes that loss idempotent anyway).
+        // makes that loss idempotent anyway). `state::save` is
+        // non-creating: if the run dir was deleted mid-tick the write
+        // fails harmlessly instead of resurrecting the directory.
         let _ = state::save(&paths.root, &state);
 
         if args.once {
@@ -469,7 +518,9 @@ pub fn dispatch(
         });
     };
 
-    // Clean shutdown.
+    // Clean shutdown. Persist final cursors. `state::save` is
+    // non-creating, so when the run dir vanished this write fails
+    // harmlessly rather than resurrecting the deleted directory.
     let _ = state::save(&paths.root, &state);
     let signal_num = SIGNAL_RECEIVED.load(Ordering::SeqCst);
     let signal_name = match signal_num {
@@ -477,12 +528,37 @@ pub fn dispatch(
         libc::SIGTERM => Some("SIGTERM"),
         _ => None,
     };
-    let exited_data = match signal_name {
-        Some(name) => json!({"pid": our_pid, "reason": "signal", "signal": name}),
-        None => json!({"pid": our_pid, "reason": exit_reason}),
-    };
-    let _ = append_and_apply_event(&paths, "supervisor.exited", None, None, exited_data)
-        .map_err(from_core);
+    if exit_reason == "run-dir-vanished" {
+        warn!(
+            target: "orchestratectl::supervise",
+            run_id = %run_id,
+            pid = our_pid,
+            "run dir vanished; supervisor self-terminating"
+        );
+        // Emit a self-terminate marker only if the events log still
+        // exists. When the whole run dir was removed (the common case)
+        // there is nothing to append to — and we must NOT recreate the
+        // directory we just decided is gone. `supervisor.exited` is
+        // intentionally skipped here: the dedicated event is clearer for
+        // operators reading the log of a still-partially-present run.
+        if paths.events().exists() {
+            let _ = append_and_apply_event(
+                &paths,
+                "supervisor.self-terminated",
+                None,
+                None,
+                json!({"pid": our_pid, "reason": "run-dir-vanished"}),
+            )
+            .map_err(from_core);
+        }
+    } else {
+        let exited_data = match signal_name {
+            Some(name) => json!({"pid": our_pid, "reason": "signal", "signal": name}),
+            None => json!({"pid": our_pid, "reason": exit_reason}),
+        };
+        let _ = append_and_apply_event(&paths, "supervisor.exited", None, None, exited_data)
+            .map_err(from_core);
+    }
     pid_file::remove_if_owner(&pid_path, our_pid);
 
     #[derive(Serialize)]

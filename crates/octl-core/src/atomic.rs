@@ -12,16 +12,33 @@ use crate::error::{Error, Result};
 /// across processes; in-process writers must self-disambiguate).
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Write `bytes` to `path` atomically: tempfile in the same directory + rename
-/// + parent-directory `fsync`. The tempfile is `fsync`ed before rename.
+/// Write `bytes` to `path` atomically: tempfile in the same directory, then
+/// rename, then a parent-directory `fsync`. The tempfile is `fsync`ed before
+/// the rename. Creates the parent directory if absent.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_inner(path, bytes, true)
+}
+
+/// Like [`write_atomic`] but does NOT create the parent directory: if the
+/// parent is absent the write fails with the underlying `NotFound` error
+/// instead of resurrecting it. Used for writes that must never recreate a
+/// directory deleted out from under the writer — e.g. the supervisor's
+/// per-tick state save once its run dir has vanished (otherwise the
+/// `create_dir_all` would rebuild the run dir ghost-file by ghost-file).
+pub fn write_atomic_no_create(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_inner(path, bytes, false)
+}
+
+fn write_atomic_inner(path: &Path, bytes: &[u8], create_parent: bool) -> Result<()> {
     let dir = path.parent().ok_or_else(|| {
         Error::IoBare(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("path {} has no parent directory", path.display()),
         ))
     })?;
-    std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+    if create_parent {
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+    }
     let fname = path
         .file_name()
         .ok_or_else(|| {
@@ -56,6 +73,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| Error::json(path, e))?;
     write_atomic(path, &bytes)
+}
+
+/// Like [`write_json_atomic`] but does NOT create the parent directory.
+/// See [`write_atomic_no_create`].
+pub fn write_json_atomic_no_create<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| Error::json(path, e))?;
+    write_atomic_no_create(path, &bytes)
 }
 
 /// Open `events.jsonl` for `O_APPEND` writes (creating it if absent).

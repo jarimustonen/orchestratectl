@@ -15,9 +15,84 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
+
+/// Reaps the detached `orchestratectl supervise` processes that
+/// `run create` spawns, so the test suite never leaks them
+/// (issue: test-harness-leaks-supervisors). These supervisors are
+/// grandchildren of the test process (forked by the `run create`
+/// subprocess, which has already exited), so they cannot be `waitpid`-ed
+/// directly — we SIGTERM each tracked PID and poll `kill(pid, 0)` for it
+/// to vanish, escalating to SIGKILL after a short grace period.
+///
+/// Held as a guard so the reap runs even when an assertion panics, and —
+/// declared *after* the run's `TempDir` — drops *before* it, killing the
+/// supervisor before its run dir is removed.
+struct SupervisorReaper {
+    pids: Vec<i32>,
+}
+
+impl SupervisorReaper {
+    fn new() -> Self {
+        Self { pids: Vec::new() }
+    }
+
+    fn track(&mut self, pid: i32) {
+        if pid > 0 {
+            self.pids.push(pid);
+        }
+    }
+
+    /// Pull the supervisor PID out of a `run create` response envelope's
+    /// `data.supervisor` field and track it. Ignored for dry-run /
+    /// child-spawn responses where the field is not a PID, and for the
+    /// (impossible-in-practice) case of a PID that does not fit `i32`.
+    fn track_from_response(&mut self, v: &Value) {
+        if let Some(pid) = v["data"]["supervisor"]
+            .as_u64()
+            .and_then(|p| i32::try_from(p).ok())
+        {
+            self.track(pid);
+        }
+    }
+}
+
+/// True once `pid` no longer refers to a process *we* can signal.
+/// `kill(pid, 0)` succeeding means it is alive and ours. `ESRCH` means
+/// gone; `EPERM` means the PID was recycled to a process owned by someone
+/// else — our supervisor is gone either way, and we must NOT escalate
+/// SIGKILL to a stranger.
+fn process_gone(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) != 0 }
+}
+
+impl Drop for SupervisorReaper {
+    fn drop(&mut self) {
+        for &pid in &self.pids {
+            // If it already exited, do nothing — never signal a PID that
+            // may have been recycled.
+            if process_gone(pid) {
+                continue;
+            }
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            // Wait up to 2s for a clean exit before escalating. We only
+            // SIGKILL while `kill(pid, 0)` keeps succeeding (still alive
+            // and still ours); the moment it reports gone/recycled we
+            // stop, so we never SIGKILL a recycled PID.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !process_gone(pid) {
+                if Instant::now() >= deadline {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
 
 const KINDS: &[&str] = &[
     "code",
@@ -80,12 +155,16 @@ fn run_fail(cmd: &mut Command) -> (i32, Value) {
 fn each_kind_spawns_and_emits_node_created() {
     for kind in KINDS {
         let home = TempDir::new().unwrap();
+        // Declared after `home` so it drops first: reap the supervisor
+        // before the run's TempDir is removed.
+        let mut reaper = SupervisorReaper::new();
         let pid = std::process::id();
         let script = write_fake_create_sh(&home, &fake_success_stdout(kind, pid), 0);
         let v = run_ok(bin(&home, &script).args([
             "--output", "json", "run", "create", "--kind", kind, "--title", "smoke", "--task",
             "do work",
         ]));
+        reaper.track_from_response(&v);
         let data = &v["data"];
         assert_eq!(data["kind"], *kind, "kind in payload for {kind}: {data}");
         assert_eq!(data["node_id"], "n-0001", "node_id for {kind}");
@@ -110,11 +189,10 @@ fn each_kind_spawns_and_emits_node_created() {
             "node.created with agent_pid missing for {kind}: {events}"
         );
 
-        // Cancel so the spawned supervisor exits cleanly.
-        let _ = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
-            .env("ORCHESTRATECTL_HOME", home.path())
-            .args(["--output", "json", "run", "cancel", run_id])
-            .output();
+        // `reaper` (declared above) SIGTERMs the spawned supervisor on
+        // drop — before `home`'s TempDir removes the run dir — so the
+        // process is reaped deterministically instead of being left to
+        // poll a vanished directory.
     }
 }
 
@@ -157,6 +235,9 @@ fn create_sh_exit_2_propagates_as_system_error() {
 #[test]
 fn task_writes_prompt_file_in_run_dir() {
     let home = TempDir::new().unwrap();
+    // Declared after `home` so it drops first, reaping the supervisor
+    // before the run dir is removed.
+    let mut reaper = SupervisorReaper::new();
     let script = write_fake_create_sh(
         &home,
         &fake_success_stdout("spinoff", std::process::id()),
@@ -174,13 +255,9 @@ fn task_writes_prompt_file_in_run_dir() {
         "--task",
         "investigate the bug",
     ]));
+    reaper.track_from_response(&v);
     let run_id = v["data"]["run_id"].as_str().unwrap();
     let prompt =
         std::fs::read_to_string(home.path().join("runs").join(run_id).join("prompt.md")).unwrap();
     assert_eq!(prompt, "investigate the bug");
-    // cleanup spawned supervisor
-    let _ = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
-        .env("ORCHESTRATECTL_HOME", home.path())
-        .args(["--output", "json", "run", "cancel", run_id])
-        .output();
 }

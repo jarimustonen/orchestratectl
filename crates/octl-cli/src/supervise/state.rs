@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use octl_core::atomic::write_json_atomic;
+use octl_core::atomic::write_json_atomic_no_create;
 
 use crate::error::CliError;
 
@@ -70,8 +70,16 @@ pub fn load(run_dir: &Path) -> Result<SupervisorState, CliError> {
     }
 }
 
+/// Persist the resume cursor to `<run-dir>/supervisor.state.json`.
+///
+/// Uses a non-creating atomic write: the run dir is created by `run
+/// create` and always exists for the duration of legitimate supervision,
+/// so we never need to create it here. Crucially, if the run dir has been
+/// deleted out from under us (test `TempDir` teardown / operator removing
+/// the run), this write fails with `NotFound` rather than resurrecting the
+/// directory — the supervisor's orphan defense then self-terminates.
 pub fn save(run_dir: &Path, state: &SupervisorState) -> Result<(), CliError> {
-    write_json_atomic(&state_path(run_dir), state)
+    write_json_atomic_no_create(&state_path(run_dir), state)
         .map_err(|e| CliError::system("io_error", e.to_string()))
 }
 
