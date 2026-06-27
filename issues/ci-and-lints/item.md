@@ -1,11 +1,12 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-27
 type: task
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
+closed: 2026-06-27
 ---
 
 # CI workflow, rustfmt.toml, clippy.toml, deny.toml, workspace lints
