@@ -19,7 +19,8 @@ use octl_core::ensure_root;
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
-    from_core, parse_discussion_id, parse_node_id, parse_proposal_id, parse_run_id, run_paths,
+    from_core, parse_discussion_id, parse_node_id, parse_proposal_id, parse_run_id,
+    require_nonempty, run_paths,
 };
 
 pub struct Args<'a> {
@@ -227,6 +228,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .with_expected(json!(ALLOWED_KINDS)));
     }
     let kind = args.kind.as_str();
+    // Reject empty/whitespace-only idempotency keys, matching `node report`.
+    // An empty key would otherwise collapse every "no real key" call into one
+    // dedup slot once `append_and_apply_event`'s folded scan runs.
+    let idempotency_key = match args.idempotency_key.as_deref() {
+        Some(k) => Some(require_nonempty(k, "idempotency-key")?),
+        None => None,
+    };
     if FORBIDDEN_KINDS_FOR_EVENT_CREATE.contains(&kind) {
         return Err(CliError::user(
             "kind_not_routable",
@@ -360,7 +368,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         &paths,
         kind,
         node_id.as_deref(),
-        args.idempotency_key.as_deref(),
+        idempotency_key.as_deref(),
         data.clone(),
     )
     .map_err(from_core)?;

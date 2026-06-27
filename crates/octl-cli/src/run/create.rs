@@ -252,11 +252,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "child_kind": kind_kebab(args.kind),
             "child_title": title,
         });
+        // No idempotency key on the parent's `child.spawned`: `run create`'s
+        // own dedup is the CLI-level `idempotency::store` (key -> run_id) that
+        // short-circuits a retry *before* this point. Passing the key here
+        // would instead make `append_and_apply_event` scan the parent log and,
+        // on a retry that slipped past the store (e.g. a crash before
+        // `idempotency::store`), return an idempotent replay of the *first*
+        // child — silently orphaning the freshly generated `run_id`.
         octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
             Some(parent_node_id),
-            args.idempotency_key.as_deref(),
+            None,
             child_data,
         )
         .map_err(from_core)?;
@@ -305,14 +312,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Value::String(parent_node_id.clone().unwrap()),
         );
     }
-    octl_core::append_and_apply_event(
-        &paths,
-        "run.created",
-        None,
-        args.idempotency_key.as_deref(),
-        Value::Object(data),
-    )
-    .map_err(from_core)?;
+    // As with `child.spawned` above, `run create` dedups via the CLI-level
+    // `idempotency::store` (below), not the folded event-log scan — so the
+    // append carries no idempotency key.
+    octl_core::append_and_apply_event(&paths, "run.created", None, None, Value::Object(data))
+        .map_err(from_core)?;
 
     // `--skip-materialize` short-circuit: skeleton-only run, used by
     // tests that need a run dir without booting a real worktree/agent.

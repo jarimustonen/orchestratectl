@@ -227,6 +227,13 @@ pub struct AppendResult {
 /// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one lock,
 /// so a read CLI run a millisecond later never sees a stale projection.
 ///
+/// The log is the source of truth: the event line is appended and fsynced
+/// *before* the reducer runs. If the reducer returns `Err` (a `CorruptEventLog`
+/// for a malformed payload), the event is already durably committed while the
+/// projections are not updated — the error surfaces, but the line stays. Such
+/// an event is a deterministic no-op-or-error on a future projection rebuild;
+/// it is never silently dropped.
+///
 /// When `idempotency_key` is `Some` and a prior event with the same `kind` +
 /// key already exists ([`find_prior_with_key`]), nothing is appended or
 /// applied: the result carries the prior event's `seq`, `idempotent_replay:
@@ -396,10 +403,10 @@ const CORRUPT_LINE_EXCERPT_BYTES: usize = 100;
 /// invalid UTF-8 is reported as `CorruptEventLog`, not I/O.
 ///
 /// Caller must hold the run's [`RunLock`]; the scan is read-only over an
-/// append-only file. The contract is documentation-only — a future
-/// higher-level mutation API (tracked as `core-append-and-apply-api`) is
-/// expected to fold this into a lock-holding type.
-pub fn find_prior_with_key(
+/// append-only file. `pub(crate)`: this lock-sensitive primitive is no longer
+/// a public API — [`append_and_apply_event`] folds the scan and the append
+/// into one lock window so callers can't run the scan-then-append race.
+pub(crate) fn find_prior_with_key(
     paths: &RunPaths,
     kind: &str,
     idempotency_key: &str,
