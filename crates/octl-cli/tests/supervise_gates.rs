@@ -49,6 +49,25 @@ fn count_kind(events: &Path, kind: &str) -> usize {
         .count()
 }
 
+/// Poll until `events` contains at least `want` lines of `kind`, or time out.
+/// Replaces fixed `sleep`s when waiting on a *detached* supervisor process:
+/// its boot+tick+write latency varies (observed 0–1000ms) so a single short
+/// sleep is inherently flaky, while the assertion we care about is simply
+/// "the event eventually appears".
+fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
+    // Budget generously (~15s): these tests run in parallel and each spawns
+    // detached supervisor processes, so under contention a spawn+boot can take
+    // several seconds. The poll returns as soon as the condition is met.
+    for _ in 0..600 {
+        let n = count_kind(events, kind);
+        if n >= want {
+            return n;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    count_kind(events, kind)
+}
+
 fn create_run(home: &TempDir, kind: &str, title: &str) -> String {
     let v = run_ok(bin(home).args([
         "--output", "json", "run", "create", "--kind", kind, "--title", title,
@@ -355,7 +374,9 @@ fn signal_exit_codes_and_payload() {
         // installed its signal handlers and entered the loop) rather than a
         // fixed sleep, so the kill never races startup even on a loaded CI.
         let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // Generous deadline (~30s): the whole suite runs many process-spawning
+        // supervisor tests in parallel, so boot can be slow under contention.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !pid_file.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -410,18 +431,29 @@ fn v8_reattach_end_to_end() {
     let run_id = create_run(&home, "spinoff", "v8");
 
     run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
-    // Wait for the spawned --once supervisor to exit and write its
-    // supervisor.exited event.
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait for the spawned --once supervisor to boot, tick, and write its
+    // supervisor.exited event. Polling (not a fixed sleep) because the
+    // detached process's latency varies and a single 500ms sleep is flaky.
     let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert!(wait_for_kind(&events, "supervisor.exited", 1) >= 1);
     assert!(count_kind(&events, "supervisor.reattach-requested") >= 1);
     assert!(count_kind(&events, "supervisor.reattached") >= 1);
-    assert!(count_kind(&events, "supervisor.exited") >= 1);
+
+    // The `--once` supervisor writes `supervisor.exited` just *before* it
+    // removes its pid file and exits. Wait for the pid file to disappear so
+    // the second reattach sees a genuinely stale (dead) prior supervisor
+    // rather than racing the still-dying one (which would refuse).
+    let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
+    for _ in 0..600 {
+        if !pid_file.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 
     // Second reattach: prior PID is stale.
     run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(count_kind(&events, "supervisor.reattach-requested") >= 2);
+    assert!(wait_for_kind(&events, "supervisor.reattach-requested", 2) >= 2);
 }
 
 /// V9: `run cancel` synthesized-report propagation.

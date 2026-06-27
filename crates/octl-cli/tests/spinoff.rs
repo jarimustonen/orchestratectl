@@ -768,7 +768,7 @@ fn list_orders_by_proposed_at_desc_with_proposal_id_tiebreaker() {
     let run_id = create_run(&home);
     propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "A");
     propose(&home, &run_id, "s-01bbbbbbbbbbbbbbbbbbbbbbbb", "B");
-    propose(&home, &run_id, "s-01ccccccccccccccccccccccccc", "C");
+    propose(&home, &run_id, "s-01cccccccccccccccccccccccc", "C");
 
     let v1 = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));
     let v2 = run_ok(bin(&home).args(["--output", "json", "spinoff", "list", &run_id]));

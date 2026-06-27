@@ -6,13 +6,13 @@ expression: value
   "schema_version": 1,
   "data": {
     "run_id": "[RUN_ID]",
-    "discussion_id": "d-0001",
+    "discussion_id": "d-0001000001",
     "node_id": "n-0001",
     "choice": "keep",
     "outcome": "appended",
     "seq": 4,
     "projections": [
-      "discussions/d-0001.json",
+      "discussions/d-0001000001.json",
       "manifest.json"
     ]
   }

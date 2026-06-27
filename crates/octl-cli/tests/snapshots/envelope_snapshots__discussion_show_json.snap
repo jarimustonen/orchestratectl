@@ -6,7 +6,7 @@ expression: value
   "schema_version": 1,
   "data": {
     "schema_version": 1,
-    "discussion_id": "d-0001",
+    "discussion_id": "d-0001000001",
     "run_id": "[RUN_ID]",
     "node_id": "n-0001",
     "opened_at": "[TS]",

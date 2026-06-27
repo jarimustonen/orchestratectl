@@ -146,7 +146,7 @@ fn list_invalid_run_id_rejected() {
     let home = TempDir::new().unwrap();
     let (code, err) = run_fail(bin(&home).args(["--output", "json", "node", "list", "../etc"]));
     assert_eq!(code, 1);
-    assert_eq!(err["error"]["code"], "invalid_id");
+    assert_eq!(err["error"]["code"], "invalid_run_id");
 }
 
 #[test]
@@ -527,5 +527,5 @@ fn report_invalid_run_id_rejected() {
         p.to_str().unwrap(),
     ]));
     assert_eq!(code, 1);
-    assert_eq!(err["error"]["code"], "invalid_id");
+    assert_eq!(err["error"]["code"], "invalid_run_id");
 }

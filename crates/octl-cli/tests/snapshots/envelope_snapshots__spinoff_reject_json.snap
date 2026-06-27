@@ -6,7 +6,7 @@ expression: value
   "schema_version": 1,
   "data": {
     "run_id": "[RUN_ID]",
-    "proposal_id": "p-0001",
+    "proposal_id": "s-0001000001",
     "reason": "not now",
     "seq": 4
   }

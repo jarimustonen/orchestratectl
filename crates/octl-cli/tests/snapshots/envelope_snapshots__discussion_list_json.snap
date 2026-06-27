@@ -7,7 +7,7 @@ expression: value
   "data": {
     "discussions": [
       {
-        "discussion_id": "d-0001",
+        "discussion_id": "d-0001000001",
         "node_id": "n-0001",
         "status": "open",
         "severity": "discuss",

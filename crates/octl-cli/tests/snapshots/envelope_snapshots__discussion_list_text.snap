@@ -2,4 +2,4 @@
 source: crates/octl-cli/tests/envelope_snapshots.rs
 expression: value
 ---
-d-0001	n-0001	open	discuss	seed topic
+d-0001000001	n-0001	open	discuss	seed topic

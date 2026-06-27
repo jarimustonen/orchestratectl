@@ -2,4 +2,4 @@
 source: crates/octl-cli/tests/envelope_snapshots.rs
 expression: value
 ---
-{"schema_version":1,"data":{"run_id":"[RUN_ID]","proposals":[{"proposal_id":"p-0001","node_id":"n-0001","status":"pending","proposed_title":"seed proposal","proposed_kind":"spinoff","proposed_at":"[TS]"}]}}
+{"schema_version":1,"data":{"run_id":"[RUN_ID]","proposals":[{"proposal_id":"s-0001000001","node_id":"n-0001","status":"pending","proposed_title":"seed proposal","proposed_kind":"spinoff","proposed_at":"[TS]"}]}}

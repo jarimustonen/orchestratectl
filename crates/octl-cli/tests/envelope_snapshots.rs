@@ -298,7 +298,7 @@ fn seed_discussion(home: &TempDir, run_id: &str) {
         "discussion.opened",
         None,
         json!({
-            "discussion_id": "d-0001",
+            "discussion_id": "d-0001000001",
             "node_id": "n-0001",
             "topic": "seed topic",
             "severity": "discuss"
@@ -313,7 +313,7 @@ fn seed_spinoff(home: &TempDir, run_id: &str) {
         "spinoff.proposed",
         None,
         json!({
-            "proposal_id": "p-0001",
+            "proposal_id": "s-0001000001",
             "node_id": "n-0001",
             "proposed_title": "seed proposal",
             "proposed_kind": "spinoff",
@@ -705,8 +705,14 @@ fn discussion_envelopes() {
         snapshot(name, &out, &red);
     }
 
-    let out =
-        ok_stdout(bin(&home).args(["--output", "json", "discussion", "show", &run_id, "d-0001"]));
+    let out = ok_stdout(bin(&home).args([
+        "--output",
+        "json",
+        "discussion",
+        "show",
+        &run_id,
+        "d-0001000001",
+    ]));
     snapshot("discussion_show_json", &out, &red);
 
     // Dry-run envelope for `discussion resolve`.
@@ -716,7 +722,7 @@ fn discussion_envelopes() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001",
+        "d-0001000001",
         "--choice",
         "keep",
         "--dry-run",
@@ -727,21 +733,21 @@ fn discussion_envelopes() {
     snapshot(
         "discussion_show_not_found_error",
         &err_stderr(
-            bin(&home).args(["discussion", "show", &run_id, "d-nope"]),
+            bin(&home).args(["discussion", "show", &run_id, "d-nope000001"]),
             1,
         ),
         &red,
     );
 
     // Wet (non-dry) `discussion resolve` success envelope — locks the real
-    // write shape. Last, since it flips d-0001 to resolved.
+    // write shape. Last, since it flips d-0001000001 to resolved.
     let out = ok_stdout(bin(&home).args([
         "--output",
         "json",
         "discussion",
         "resolve",
         &run_id,
-        "d-0001",
+        "d-0001000001",
         "--choice",
         "keep",
     ]));
@@ -775,7 +781,14 @@ fn spinoff_envelopes() {
     snapshot(
         "spinoff_reject_empty_reason_error",
         &err_stderr(
-            bin(&home).args(["spinoff", "reject", &run_id, "p-0001", "--reason", "   "]),
+            bin(&home).args([
+                "spinoff",
+                "reject",
+                &run_id,
+                "s-0001000001",
+                "--reason",
+                "   ",
+            ]),
             1,
         ),
         &red,
@@ -783,7 +796,14 @@ fn spinoff_envelopes() {
 
     // `spinoff reject` success (a local-only write — no issuectl needed).
     let out = ok_stdout(bin(&home).args([
-        "--output", "json", "spinoff", "reject", &run_id, "p-0001", "--reason", "not now",
+        "--output",
+        "json",
+        "spinoff",
+        "reject",
+        &run_id,
+        "s-0001000001",
+        "--reason",
+        "not now",
     ]));
     snapshot("spinoff_reject_json", &out, &red);
 }
