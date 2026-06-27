@@ -38,7 +38,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply_event, read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status,
+    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, NodeId,
+    RunLock, RunPaths, Status,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -905,7 +906,43 @@ fn watchdog_tick(
             }
         };
         if commit && n.last_report.is_none() {
-            // Synthesize a terminal node.report under the run's flock.
+            // The `n.last_report.is_none()` we just tested was read OUTSIDE the
+            // run lock, so a real `node.report` could land in the window
+            // between that read and this synthesis. Acquire the run flock and
+            // re-read the node projection under it before committing: only
+            // synthesize if the node is STILL non-terminal and STILL
+            // unreported. This closes the F15 duplicate-terminal-report race
+            // (the parent-side reducer dedups it anyway, but we avoid emitting
+            // the second event at all). `append_and_apply_unlocked` is the
+            // sanctioned lock-held path — re-entering `append_and_apply_event`
+            // here would deadlock on the flock.
+            let guard = match RunLock::acquire(&paths.lock()) {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!(
+                        target: "orchestratectl::supervise",
+                        node = %node_id,
+                        error = %e,
+                        "watchdog could not lock run to synthesize report"
+                    );
+                    continue;
+                }
+            };
+            let fresh = read_node_opt(paths, &nid).ok().flatten();
+            let still_synthesizable = fresh.as_ref().is_some_and(|n| {
+                n.last_report.is_none()
+                    && !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
+            });
+            if !still_synthesizable {
+                tracing::debug!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id,
+                    "watchdog deferred to live report"
+                );
+                drop(guard);
+                continue;
+            }
+            // Synthesize a terminal node.report under the held run flock.
             let data = json!({
                 "success": false,
                 "failed": true,
@@ -916,7 +953,8 @@ fn watchdog_tick(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": [],
             });
-            if let Err(e) = append_and_apply_event(paths, "node.report", Some(&node_id), None, data)
+            if let Err(e) =
+                append_and_apply_unlocked(paths, "node.report", Some(&node_id), None, data)
             {
                 warn!(
                     target: "orchestratectl::supervise",
@@ -925,6 +963,7 @@ fn watchdog_tick(
                     "synthesize node.report failed"
                 );
             }
+            drop(guard);
         }
     }
     // Drop streaks for every node that did NOT present `TmuxGone` this
