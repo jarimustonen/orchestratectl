@@ -49,22 +49,36 @@ fn count_kind(events: &Path, kind: &str) -> usize {
         .count()
 }
 
-/// Poll until `events` contains at least `want` lines of `kind`, or time out.
+/// How long readiness polls wait before giving up. Generous on purpose: the
+/// suite runs many process-spawning supervisor tests in parallel, so under
+/// contention a detached spawn+boot+write can take several seconds (observed
+/// 0–1000ms isolated, far longer on a saturated/handbrake CI runner).
+const POLL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Poll `predicate` every 50ms until it returns `true` or `deadline` elapses.
+/// `Ok(())` means the condition was met in time; `Err(())` means it timed out.
+///
 /// Replaces fixed `sleep`s when waiting on a *detached* supervisor process:
-/// its boot+tick+write latency varies (observed 0–1000ms) so a single short
-/// sleep is inherently flaky, while the assertion we care about is simply
-/// "the event eventually appears".
-fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
-    // Budget generously (~15s): these tests run in parallel and each spawns
-    // detached supervisor processes, so under contention a spawn+boot can take
-    // several seconds. The poll returns as soon as the condition is met.
-    for _ in 0..600 {
-        let n = count_kind(events, kind);
-        if n >= want {
-            return n;
+/// its boot+tick+write latency varies, so a single short sleep is inherently
+/// flaky, while the assertion we care about is simply "the condition eventually
+/// holds". The poll returns as soon as the predicate is satisfied.
+fn poll_until<F: Fn() -> bool>(deadline: Duration, predicate: F) -> Result<(), ()> {
+    let stop = std::time::Instant::now() + deadline;
+    loop {
+        if predicate() {
+            return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(25));
+        if std::time::Instant::now() >= stop {
+            return Err(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Poll until `events` contains at least `want` lines of `kind`, or time out.
+/// Returns the final observed count so callers can assert on it directly.
+fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
+    let _ = poll_until(POLL_DEADLINE, || count_kind(events, kind) >= want);
     count_kind(events, kind)
 }
 
@@ -374,13 +388,7 @@ fn signal_exit_codes_and_payload() {
         // installed its signal handlers and entered the loop) rather than a
         // fixed sleep, so the kill never races startup even on a loaded CI.
         let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
-        // Generous deadline (~30s): the whole suite runs many process-spawning
-        // supervisor tests in parallel, so boot can be slow under contention.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !pid_file.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(pid_file.exists(), "supervisor did not start in time");
+        poll_until(POLL_DEADLINE, || pid_file.exists()).expect("supervisor did not start in time");
         unsafe {
             libc::kill(child.id() as i32, sig_num(sig));
         }
@@ -444,12 +452,7 @@ fn v8_reattach_end_to_end() {
     // the second reattach sees a genuinely stale (dead) prior supervisor
     // rather than racing the still-dying one (which would refuse).
     let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
-    for _ in 0..600 {
-        if !pid_file.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    let _ = poll_until(POLL_DEADLINE, || !pid_file.exists());
 
     // Second reattach: prior PID is stale.
     run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
