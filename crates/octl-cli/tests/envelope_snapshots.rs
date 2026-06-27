@@ -485,10 +485,13 @@ fn run_error_envelopes() {
         &[],
     );
 
-    // Not-found error (exit 1): show a non-existent run.
+    // Not-found error (exit 1): show a well-formed run id that names no run.
     snapshot(
         "run_show_not_found_error",
-        &err_stderr(bin(&home).args(["run", "show", "zzzzznotarun"]), 1),
+        &err_stderr(
+            bin(&home).args(["run", "show", "01jzabsent0000000000000000"]),
+            1,
+        ),
         &[],
     );
 
