@@ -137,20 +137,17 @@ impl EventTail {
                 consumed += n as u64;
                 continue;
             }
-            let ev: Event = match serde_json::from_slice(trimmed) {
-                Ok(v) => v,
-                Err(_) => {
-                    // Newline-terminated, unparseable: interior corruption.
-                    // Commit the valid prefix, park `pos` at this line's start,
-                    // and return what we have. The caller reports-and-skips.
-                    self.pos += consumed;
-                    self.corrupt = Some(CorruptLine {
-                        byte_offset: self.pos,
-                        byte_len: n as u64,
-                        line_excerpt: excerpt(trimmed),
-                    });
-                    return Ok(out);
-                }
+            let Ok(ev) = serde_json::from_slice::<Event>(trimmed) else {
+                // Newline-terminated, unparseable: interior corruption.
+                // Commit the valid prefix, park `pos` at this line's start,
+                // and return what we have. The caller reports-and-skips.
+                self.pos += consumed;
+                self.corrupt = Some(CorruptLine {
+                    byte_offset: self.pos,
+                    byte_len: n as u64,
+                    line_excerpt: excerpt(trimmed),
+                });
+                return Ok(out);
             };
             consumed += n as u64;
             if ev.seq <= self.last_seq {
@@ -274,6 +271,42 @@ mod tests {
         let evs = t.poll().unwrap();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].seq, 3);
+    }
+
+    #[test]
+    fn parks_at_corrupt_line_then_skips_without_looping() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("events.jsonl");
+        write_line(&p, 1, "a");
+        // A newline-terminated garbage line in the middle.
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(b"{garbage not json\n").unwrap();
+        }
+        write_line(&p, 2, "b");
+
+        let mut t = EventTail::new(&p, 0);
+        // First poll: valid prefix returned, parked at the corrupt line.
+        let evs = t.poll().unwrap();
+        assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1]);
+        // While parked, repeated polls yield nothing AND never error — this
+        // is the broken-loop fix (old behavior: a hard error every tick).
+        assert!(t.poll().unwrap().is_empty());
+        assert!(t.poll().unwrap().is_empty());
+        // The caller reports-and-skips the corrupt line exactly once.
+        let c = t.take_new_corrupt().expect("a corrupt line is parked");
+        assert!(c.byte_offset > 0);
+        assert!(
+            c.line_excerpt.contains("garbage"),
+            "excerpt: {}",
+            c.line_excerpt
+        );
+        // After skipping, the tail progresses to the line after it.
+        let evs = t.poll().unwrap();
+        assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![2]);
+        // Nothing more is parked.
+        assert!(t.take_new_corrupt().is_none());
+        assert!(t.poll().unwrap().is_empty());
     }
 
     #[test]

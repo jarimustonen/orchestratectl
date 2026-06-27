@@ -338,12 +338,11 @@ fn validate_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         path: events_path.clone(),
         reason: "run.created missing/invalid `kind`".into(),
     })?;
-    serde_json::from_value::<Lifecycle>(d.get("lifecycle").cloned().unwrap_or(Value::Null)).map_err(
-        |_| Error::CorruptEventLog {
+    serde_json::from_value::<Lifecycle>(d.get("lifecycle").cloned().unwrap_or(Value::Null))
+        .map_err(|_| Error::CorruptEventLog {
             path: events_path.clone(),
             reason: "run.created missing/invalid `lifecycle`".into(),
-        },
-    )?;
+        })?;
     want_str(&events_path, ev, d, "title")?;
     opt_run_id(&events_path, ev, d, "parent_run_id")?;
     opt_node_id(&events_path, ev, d, "parent_node_id")?;

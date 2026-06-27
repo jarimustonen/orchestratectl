@@ -34,9 +34,10 @@ impl Harness {
     }
 
     /// Append + apply through the canonical path, surfacing the reducer's
-    /// `Result` to the caller. (The event line is still appended before the
-    /// reducer runs, so an `Err` here means the projection was rejected on an
-    /// already-written line — exactly the old append-then-apply behaviour.)
+    /// `Result` to the caller. The append is now transactional: the event is
+    /// validated under the lock BEFORE any durable write, so an `Err` here
+    /// means the event was rejected and *never* written — `events.jsonl` is
+    /// left poison-free (see `events_len`).
     fn try_append(
         &mut self,
         kind: &str,
@@ -44,6 +45,13 @@ impl Harness {
         data: Value,
     ) -> octl_core::Result<()> {
         append_and_apply_event(&self.paths, kind, node_id, None, data).map(|_| ())
+    }
+
+    /// Number of events durably written to `events.jsonl`.
+    fn events_len(&self) -> usize {
+        octl_core::read_all_events(&self.paths.events())
+            .expect("events.jsonl is poison-free and re-readable")
+            .len()
     }
 
     fn node(&self, node_id: &str) -> Node {
@@ -124,6 +132,7 @@ fn bare_report_payload_is_corrupt() {
     let mut h = Harness::new();
     h.bootstrap_node();
 
+    let before = h.events_len();
     let err = h
         .try_append("node.report", Some("n-0001"), json!({}))
         .unwrap_err();
@@ -133,6 +142,8 @@ fn bare_report_payload_is_corrupt() {
     let n = h.node("n-0001");
     assert_eq!(n.status, Status::Running);
     assert_eq!(n.last_report, None);
+    // And the rejected event was never appended (no poison line).
+    assert_eq!(h.events_len(), before, "rejected event must not be written");
 }
 
 /// `success: true` + `cancelled: true` is a contradiction → `CorruptEventLog`.
@@ -141,6 +152,7 @@ fn success_and_cancelled_both_true_is_corrupt() {
     let mut h = Harness::new();
     h.bootstrap_node();
 
+    let before = h.events_len();
     let err = h
         .try_append(
             "node.report",
@@ -153,6 +165,7 @@ fn success_and_cancelled_both_true_is_corrupt() {
     let n = h.node("n-0001");
     assert_eq!(n.status, Status::Running);
     assert_eq!(n.last_report, None);
+    assert_eq!(h.events_len(), before, "rejected event must not be written");
 }
 
 /// `run cancel <run>` settles the run, then a late `node.report` success
@@ -262,11 +275,13 @@ fn non_boolean_success_is_corrupt() {
     let mut h = Harness::new();
     h.bootstrap_node();
 
+    let before = h.events_len();
     let err = h
         .try_append("node.report", Some("n-0001"), json!({ "success": "true" }))
         .unwrap_err();
     assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
     assert_eq!(h.node("n-0001").status, Status::Running);
+    assert_eq!(h.events_len(), before, "rejected event must not be written");
 }
 
 /// Strict boolean typing: a non-boolean `cancelled` is corrupt even when a
@@ -276,6 +291,7 @@ fn non_boolean_cancelled_is_corrupt() {
     let mut h = Harness::new();
     h.bootstrap_node();
 
+    let before = h.events_len();
     let err = h
         .try_append(
             "node.report",
@@ -285,6 +301,7 @@ fn non_boolean_cancelled_is_corrupt() {
         .unwrap_err();
     assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
     assert_eq!(h.node("n-0001").status, Status::Running);
+    assert_eq!(h.events_len(), before, "rejected event must not be written");
 }
 
 /// Guard-before-validate: a malformed (bare `{}`) report against an already

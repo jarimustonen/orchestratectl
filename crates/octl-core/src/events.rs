@@ -480,10 +480,7 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
     };
     let mut reader = PhysicalLineReader::new(BufReader::new(f));
     let mut out = Vec::new();
-    while let Some(line) = reader
-        .next_line()
-        .map_err(|e| Error::io(events_path, e))?
-    {
+    while let Some(line) = reader.next_line().map_err(|e| Error::io(events_path, e))? {
         // Torn final line (no trailing newline): uncommitted partial write,
         // discarded without parsing — mirrors `recover_last_seq`.
         if !line.complete {
@@ -596,10 +593,7 @@ pub(crate) fn find_prior_with_key(
     // `seq` of the last successfully-parsed line, for best-effort error
     // context pointing at where corruption begins.
     let mut last_good_seq: u64 = 0;
-    while let Some(line) = reader
-        .next_line()
-        .map_err(|e| Error::io(&events_path, e))?
-    {
+    while let Some(line) = reader.next_line().map_err(|e| Error::io(&events_path, e))? {
         // Mirror `recover_last_seq`: a final line lacking a trailing newline
         // is an uncommitted partial write, discarded WITHOUT parsing — even
         // if its bytes form valid JSON. Parsing it could otherwise return a
@@ -676,6 +670,7 @@ fn excerpt(line: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::RunPaths;
+    use serde_json::json;
     use tempfile::TempDir;
 
     #[test]
@@ -1024,6 +1019,282 @@ mod tests {
             matches!(err, Error::CorruptEventLog { .. }),
             "expected CorruptEventLog, got {err:?}"
         );
+    }
+
+    #[test]
+    fn rejected_event_is_not_appended() {
+        // The transactional fix: a reducer-rejected event must error BEFORE
+        // any durable write, so events.jsonl never gains a poison line.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let before = read_all_events(&paths.events()).unwrap().len();
+
+        // `node.report` with neither success nor cancelled → reducer rejects.
+        let err = append_and_apply_event(&paths, "node.report", Some("n-0001"), None, json!({}))
+            .unwrap_err();
+        assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
+
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before,
+            "a rejected event must not be appended"
+        );
+        // The log is still clean and re-readable (no poison line stranded it).
+        assert!(recover_last_seq(&paths.events()).is_ok());
+        let next = append_and_apply_event(
+            &paths,
+            "node.report",
+            Some("n-0001"),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap();
+        assert_eq!(
+            next.seq as usize,
+            before + 1,
+            "the next valid append reuses the seq the rejected event never consumed"
+        );
+    }
+
+    #[test]
+    fn validate_event_agrees_with_apply_event() {
+        // Drift guard: `validate_event` (the pre-append gate) must return Err
+        // in EXACTLY the cases `apply_event` would, for the same state — else
+        // it would refuse a harmless no-op or let a poison line through.
+        use crate::reducer::{apply_event, validate_event};
+
+        fn ev(paths: &RunPaths, kind: &str, node_id: Option<&str>, data: Value) -> Event {
+            Event {
+                ts: Utc::now(),
+                seq: 999,
+                kind: kind.to_string(),
+                run_id: paths.run_id.clone(),
+                node_id: node_id.map(|s| crate::schema::NodeId::parse_str(s).unwrap()),
+                idempotency_key: None,
+                data,
+            }
+        }
+        // validate is read-only, so running it first leaves apply's pre-state
+        // intact; we compare the two verdicts on the same fresh run.
+        fn agree(paths: &RunPaths, e: &Event, label: &str) {
+            let v = validate_event(paths, e).is_err();
+            let a = apply_event(paths, e).is_err();
+            assert_eq!(v, a, "{label}: validate_err={v} apply_err={a}");
+        }
+
+        // Live node: bad report rejected; good report accepted; missing
+        // node_id rejected; bad status rejected.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(&paths, "node.report", Some("n-0001"), json!({})),
+                "report-bare",
+            );
+        }
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "node.report",
+                    Some("n-0001"),
+                    json!({ "success": true }),
+                ),
+                "report-good",
+            );
+        }
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(&paths, "node.report", None, json!({})),
+                "report-no-node-id",
+            );
+        }
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(&paths, "node.status", Some("n-0001"), json!({})),
+                "status-missing",
+            );
+        }
+        // Terminal node: a malformed report is a clean no-op (guard before
+        // validate) — both must accept it.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            append_and_apply_event(
+                &paths,
+                "node.report",
+                Some("n-0001"),
+                None,
+                json!({ "success": true }),
+            )
+            .unwrap();
+            agree(
+                &paths,
+                &ev(&paths, "node.report", Some("n-0001"), json!({})),
+                "report-bare-on-terminal",
+            );
+        }
+        // Missing node: a status with no `status` field is a no-op.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            agree(
+                &paths,
+                &ev(&paths, "node.status", Some("n-0001"), json!({})),
+                "status-missing-node",
+            );
+        }
+        // Existing manifest: a run.status with no `status` is rejected.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(&paths, "run.status", None, json!({})),
+                "run-status-missing",
+            );
+        }
+        // Open discussion: a resolve without `resolution` is rejected.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            append_and_apply_event(
+                &paths,
+                "discussion.opened",
+                Some("n-0001"),
+                None,
+                json!({ "discussion_id": "d-abcdefghij", "topic": "t", "node_id": "n-0001" }),
+            )
+            .unwrap();
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "discussion.resolved",
+                    None,
+                    json!({ "discussion_id": "d-abcdefghij" }),
+                ),
+                "resolve-missing-resolution",
+            );
+        }
+        // Cross-run envelope and unknown kind.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            let mut foreign = ev(&paths, "run.status", None, json!({ "status": "running" }));
+            foreign.run_id = crate::schema::RunId::parse_str("02jxsnap000000000000000000").unwrap();
+            agree(&paths, &foreign, "cross-run");
+            agree(
+                &paths,
+                &ev(&paths, "totally.unknown", None, json!({})),
+                "unknown-kind",
+            );
+        }
+    }
+
+    #[test]
+    fn read_all_events_drops_torn_final_line() {
+        // The bug this fixes: `read_all_events` used to silently ACCEPT a
+        // valid-JSON final line lacking a trailing newline — a line
+        // `recover_last_seq` discards as an uncommitted partial write. Now it
+        // shares the torn-tail policy: the torn final line is dropped without
+        // error, and the reader agrees with `recover_last_seq`.
+        let tmp = TempDir::new().unwrap();
+        let mut log = String::new();
+        log.push_str(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+        );
+        log.push('\n');
+        // A COMPLETE, valid-JSON event whose trailing newline never flushed.
+        log.push_str(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":2,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1],
+            "torn final line must be dropped, not parsed"
+        );
+        // And it agrees with the recovery path.
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 1);
+    }
+
+    #[test]
+    fn read_all_events_rejects_corrupt_middle_line() {
+        // A newline-terminated garbage line FOLLOWED by another line is
+        // interior corruption — a hard `CorruptEventLog`, never a silent skip.
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+            "\n",
+            "{not valid json at all\n",
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":3,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let err = read_all_events(&paths.events()).unwrap_err();
+        match err {
+            Error::CorruptEventLog { reason, .. } => {
+                assert!(reason.contains("line 2"), "reason was: {reason}");
+            }
+            other => panic!("expected CorruptEventLog, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_truncates_torn_tail_before_writing() {
+        // A crash left a valid record then a torn (newline-less) partial
+        // write. The next append must truncate the torn bytes BEFORE writing,
+        // so the log never gains a `…torn…{"seq":N}` malformed line.
+        let tmp = TempDir::new().unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            br#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+        );
+        bytes.push(b'\n');
+        bytes.extend_from_slice(br#"{"seq":2,"kind":"TORN_PARTIAL_NEVER_FLUSHED"#); // no newline
+        let paths = paths_with_events(&tmp, &bytes);
+
+        // The torn tail is ignored for seq recovery (last complete seq = 1).
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 1);
+
+        // `marker` is an unknown kind → reducer no-op, so the append succeeds
+        // without any projection prerequisites.
+        let r = append_and_apply_event(&paths, "marker", None, None, serde_json::json!({"x": 1}))
+            .unwrap();
+        assert_eq!(r.seq, 2, "seq continues from the last complete record");
+
+        let raw = std::fs::read(paths.events()).unwrap();
+        assert!(
+            raw.ends_with(b"\n"),
+            "log must be newline-terminated after a clean append"
+        );
+        assert!(
+            !String::from_utf8_lossy(&raw).contains("TORN_PARTIAL_NEVER_FLUSHED"),
+            "the torn tail must be truncated away before the append"
+        );
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]

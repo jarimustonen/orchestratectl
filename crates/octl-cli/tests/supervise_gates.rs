@@ -234,6 +234,63 @@ fn v3_kill_and_start_time_identity() {
     assert_eq!(reports[0]["data"]["reason"], "agent-pid-recycled");
 }
 
+/// F17: a corrupt JSONL line in the own-run tail is reported once and
+/// skipped, instead of re-erroring on the same offset every tick (the
+/// old infinite warn-spam / CPU-burn loop).
+#[test]
+fn corrupt_tail_line_is_skipped_once_without_looping() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "corrupt-tail");
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+
+    // Wedge a newline-terminated garbage line into the MIDDLE of the log
+    // (a valid record before AND after it), so the supervisor's own
+    // backward-scanning appends still land on a parseable last record.
+    let original = std::fs::read_to_string(&events).unwrap();
+    let mut trailing: Value = serde_json::from_str(original.lines().next().unwrap()).unwrap();
+    trailing["seq"] = Value::from(2);
+    let trailing = serde_json::to_string(&trailing).unwrap();
+    let mut rewritten = String::new();
+    rewritten.push_str(original.trim_end_matches('\n'));
+    rewritten.push('\n');
+    rewritten.push_str("{this is not valid json at all\n");
+    rewritten.push_str(&trailing);
+    rewritten.push('\n');
+    std::fs::write(&events, rewritten).unwrap();
+
+    // Several ticks. With the fix this terminates promptly and emits exactly
+    // one skip event; the old behavior errored every tick and emitted none.
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "4"]));
+
+    // Tolerant read: the corrupt line is intentionally still on disk (we skip
+    // in memory, never mutate the file), so `read_events`' strict parse can't
+    // be used here.
+    let skipped: Vec<Value> = std::fs::read_to_string(&events)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["kind"] == "supervisor.event_log_skipped_line")
+        .collect();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "expected exactly one skip event, got {}",
+        skipped.len()
+    );
+    assert!(
+        skipped[0]["data"]["byte_offset"].is_number(),
+        "skip event carries the byte offset"
+    );
+    assert!(
+        skipped[0]["data"]["line_excerpt"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not valid json"),
+        "skip event carries a line excerpt: {:?}",
+        skipped[0]["data"]
+    );
+}
+
 /// V7: Deterministic-ID dedup under crash-recovery.
 ///
 /// Drives the in-process `reducer::process_node_report` (rather than
