@@ -52,9 +52,10 @@ pub struct SuperviseArgs {
     /// **Test-only escape hatch — never set in production.**
     #[arg(long)]
     pub once: bool,
-    /// Tick at most this many iterations, then exit cleanly. Combine
-    /// with `--once` to cap a self-bounded run. **Test-only escape
-    /// hatch — never set in production.**
+    /// Tick at most this many iterations, then exit cleanly. **Test-only
+    /// escape hatch — never set in production.** Note: `--once` takes
+    /// precedence — when both are set the loop still exits after the
+    /// first tick, regardless of `--max-iter`.
     #[arg(long)]
     pub max_iter: Option<u32>,
 }
@@ -133,16 +134,25 @@ pub fn dispatch(
     let mut own_tail = tail::EventTail::new(paths.events(), state.last_seq_own);
     let mut child_tails: std::collections::BTreeMap<String, ChildTracking> =
         std::collections::BTreeMap::new();
-    // Reseed children we already spawned in a previous incarnation.
-    for (cid, _) in state.spawned_children.clone() {
+    // Reseed child tails from the canonical node projections, NOT from
+    // the private `spawned_children` cache (§7.6: "for each child in the
+    // root node's children field, open a tail-follow loop"). The cache
+    // can be missing or stale after a crash; the projections are the
+    // truth. Each tail resumes from the durable report cursor
+    // (`last_processed_report_seq_by_child`) so an un-consumed report is
+    // re-tailed rather than skipped.
+    for (cid, parent_node_id) in discover_children(&paths) {
         let child_paths = run_paths(&root, &cid);
-        let events = child_paths.events();
-        let seq = state.last_seq_by_child.get(&cid).copied().unwrap_or(0);
+        let seq = state
+            .last_processed_report_seq_by_child
+            .get(&cid)
+            .copied()
+            .unwrap_or(0);
         child_tails.insert(
             cid.clone(),
             ChildTracking {
-                root: child_paths.root,
-                tail: tail::EventTail::new(events, seq),
+                parent_node_id,
+                tail: tail::EventTail::new(child_paths.events(), seq),
                 terminal: false,
             },
         );
@@ -185,6 +195,43 @@ pub fn dispatch(
                         );
                         continue;
                     };
+                    // Validate before using the id to build filesystem
+                    // paths — a malformed child_run_id from the event log
+                    // must never escape the runs root.
+                    let Ok(child_run_id) = require_safe_id(&child_run_id, "child-run-id") else {
+                        warn!(
+                            target: "orchestratectl::supervise",
+                            seq = ev.seq,
+                            child = %child_run_id,
+                            "child.spawned has unsafe child_run_id; skipping"
+                        );
+                        continue;
+                    };
+                    // The spawning parent node is `ev.node_id` (the CLI
+                    // sets it when it writes child.spawned). Attribute the
+                    // child's report-derived items to THIS node — never
+                    // fall back to a guessed root node.
+                    let parent_node_id =
+                        ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
+                    // Always open a tail for the child, independently of
+                    // whether the supervisor fork succeeds — the tail is
+                    // the primary consumption path, so a spawn failure must
+                    // never orphan the child's reports.
+                    let child_events = run_paths(&root, &child_run_id).events();
+                    let seq = state
+                        .last_processed_report_seq_by_child
+                        .get(&child_run_id)
+                        .copied()
+                        .unwrap_or(0);
+                    child_tails
+                        .entry(child_run_id.clone())
+                        .or_insert_with(|| ChildTracking {
+                            parent_node_id: parent_node_id.clone(),
+                            tail: tail::EventTail::new(child_events, seq),
+                            terminal: false,
+                        });
+                    // Fork the child supervisor exactly once (the parent's
+                    // tracking set is the single arbiter, §7.2).
                     if state.spawned_children.contains_key(&child_run_id) {
                         continue;
                     }
@@ -193,23 +240,13 @@ pub fn dispatch(
                             state
                                 .spawned_children
                                 .insert(child_run_id.clone(), child_pid);
-                            let child_paths = run_paths(&root, &child_run_id);
-                            let events = child_paths.events();
-                            child_tails.insert(
-                                child_run_id.clone(),
-                                ChildTracking {
-                                    root: child_paths.root,
-                                    tail: tail::EventTail::new(events, 0),
-                                    terminal: false,
-                                },
-                            );
                         }
                         Err(e) => {
                             warn!(
                                 target: "orchestratectl::supervise",
                                 child = %child_run_id,
                                 error = %e.message,
-                                "child spawn failed"
+                                "child spawn failed (tail still open; reports will be consumed)"
                             );
                             // Record on parent log so a future
                             // operator can see the failure (D1).
@@ -229,12 +266,14 @@ pub fn dispatch(
                 "run.status" => {
                     if let Some(s) = ev.data.get("status").and_then(Value::as_str) {
                         if matches!(s, "done" | "failed" | "cancelled") {
-                            // Save cursor before bailing out.
+                            // Terminal status on our own run is the signal
+                            // that we should wind down. We don't break here:
+                            // wind-down is driven by `all_work_done` at the
+                            // bottom of the tick (which re-reads the manifest
+                            // and also waits for any non-terminal children).
+                            // Persist the cursor so the decision survives a
+                            // crash before that check runs.
                             let _ = state::save(&paths.root, &state);
-                            // Terminal status on our own run is the
-                            // single signal that we should wrap up.
-                            // We break out of the inner for-loop here
-                            // and let the outer loop's idle check run.
                         }
                     }
                 }
@@ -267,12 +306,7 @@ pub fn dispatch(
                     "node.report" => {
                         let child_node_id =
                             ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
-                        // Discover the parent's spawning node by
-                        // scanning our own nodes/ for a child entry.
-                        // Default to "n-0001" if not found — this is
-                        // the standard top-level root node.
-                        let parent_node_id = find_spawning_node(&paths, &cid)
-                            .unwrap_or_else(|| "n-0001".to_string());
+                        let parent_node_id = entry.parent_node_id.clone();
                         match reducer::process_node_report(
                             &paths,
                             &parent_node_id,
@@ -292,17 +326,36 @@ pub fn dispatch(
                                     skipped = c.skipped_already_present,
                                     "consumed node.report"
                                 );
+                                entry.terminal = true;
                             }
-                            Ok(None) => {}
+                            Ok(None) => {
+                                // Already processed (cursor replay guard).
+                                entry.terminal = true;
+                            }
                             Err(e) => {
+                                // Consumption failed (transient IO / lock).
+                                // Do NOT terminalize and do NOT advance the
+                                // durable cursor — rewind this tail to the
+                                // last fully-consumed report seq so the
+                                // report is retried on a later tick instead
+                                // of being silently lost (at-least-once).
                                 warn!(
                                     target: "orchestratectl::supervise",
+                                    child = %cid,
+                                    seq = ev.seq,
                                     error = %e.message,
-                                    "node.report consumption failed"
+                                    "node.report consumption failed; will retry"
                                 );
+                                let cursor = state
+                                    .last_processed_report_seq_by_child
+                                    .get(&cid)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let p = entry.tail.path().to_path_buf();
+                                entry.tail = tail::EventTail::new(p, cursor);
+                                break;
                             }
                         }
-                        entry.terminal = true;
                     }
                     "run.status" => {
                         if let Some(s) = ev.data.get("status").and_then(Value::as_str) {
@@ -391,8 +444,11 @@ pub fn dispatch(
 }
 
 struct ChildTracking {
-    #[allow(dead_code)]
-    root: PathBuf,
+    /// The parent node (in *our* run) that spawned this child — captured
+    /// from `child.spawned`'s `node_id` (or the node projection on
+    /// reseed). This is where the child's report-derived discussions /
+    /// spinoffs are attributed; we must never guess it.
+    parent_node_id: String,
     tail: tail::EventTail,
     terminal: bool,
 }
@@ -472,24 +528,33 @@ fn spawn_child_supervisor(
     Ok(pid)
 }
 
-/// Find which of our own nodes registered `child_run_id` in its
-/// `children` list. Scan `<paths.root>/nodes/`.
-fn find_spawning_node(paths: &RunPaths, child_run_id: &str) -> Option<String> {
-    let entries = std::fs::read_dir(paths.nodes_dir()).ok()?;
+/// Scan our own `nodes/` for every `child_run_id -> parent_node_id`
+/// mapping recorded in a node's `children` list. This is the canonical
+/// source for which children this run owns and which local node spawned
+/// each — used to (re)seed child tails on boot (§7.6). The first node
+/// that lists a given child wins (a child is registered under exactly
+/// one node).
+fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) else {
+        return out;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let stem = p.file_stem().and_then(|s| s.to_str()).map(str::to_string);
-        let Some(node_id) = stem else { continue };
+        let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
+        };
         if let Ok(Some(n)) = read_node_opt(paths, &node_id) {
-            if n.children.iter().any(|c| c.run_id == child_run_id) {
-                return Some(node_id);
+            for c in &n.children {
+                out.entry(c.run_id.clone())
+                    .or_insert_with(|| node_id.clone());
             }
         }
     }
-    None
+    out
 }
 
 fn all_work_done(

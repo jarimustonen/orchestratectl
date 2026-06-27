@@ -3,8 +3,11 @@
 //! Holds (a) `last_seq_own` — the highest `seq` consumed from this run's
 //! own `events.jsonl` — and (b) `last_processed_report_seq_by_child` —
 //! per-child cursor used by the §7.3 reducer for exactly-once
-//! consumption across crashes. Persisted under the run's `flock` after
-//! every successful consumption batch.
+//! consumption across crashes. This file is supervisor-private state:
+//! only the single owning supervisor writes it (`write_json_atomic`,
+//! tempfile + rename), so it is NOT taken under the run's `flock` — the
+//! event log and projections are the shared, lock-guarded store; this is
+//! just the owner's resume cursor.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
