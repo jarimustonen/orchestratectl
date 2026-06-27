@@ -627,14 +627,16 @@ pub struct SpinoffProposal {
 /// `run_id` or `node_id` fails the `serde` parse at the read boundary (the
 /// id newtypes' validating `Deserialize`) rather than being carried as an
 /// unvalidated `String` until some later path helper. The parse failure
-/// surfaces as whatever error the reader maps a bad line to — e.g.
-/// [`read_all_events`] tags it [`Error::Json`] with the log path. The reducer
-/// still performs its own per-event checks (envelope `run_id` matches the run
-/// it is folded into; `data`-borne ids parse), but the envelope ids can no
-/// longer be the unvalidated party.
+/// surfaces as whatever error the reader maps a bad line to — e.g. a
+/// newline-terminated bad line is [`Error::CorruptEventLog`] from both
+/// [`read_all_events`] and [`find_prior_with_key`], which share one physical
+/// reader and torn-tail policy. The reducer still performs its own per-event
+/// checks (envelope `run_id` matches the run it is folded into; `data`-borne
+/// ids parse), but the envelope ids can no longer be the unvalidated party.
 ///
 /// [`read_all_events`]: crate::events::read_all_events
-/// [`Error::Json`]: crate::Error::Json
+/// [`find_prior_with_key`]: crate::events::find_prior_with_key
+/// [`Error::CorruptEventLog`]: crate::Error::CorruptEventLog
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Wall-clock timestamp the event was appended.

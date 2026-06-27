@@ -326,21 +326,124 @@ pub fn append_and_apply_unlocked(
     Ok(seq)
 }
 
+/// One physical line surfaced by [`PhysicalLineReader`]: its content with
+/// any trailing terminator stripped, plus enough framing for the torn-tail
+/// policy (whether it was newline-terminated) and for error context (byte
+/// offset + 1-based line number).
+struct PhysicalLine<'a> {
+    /// Line content with a single trailing terminator (`\n`, optionally
+    /// preceded by `\r`) removed. Interior/leading bytes are untouched.
+    content: &'a [u8],
+    /// `false` only for a final line lacking a trailing `\n` — a torn,
+    /// in-flight append. `true` for every newline-terminated line. Because a
+    /// non-terminated line can only be the last bytes in the file, this is
+    /// `false` for at most one line, and only ever the last one.
+    complete: bool,
+    /// 1-based line number, for `CorruptEventLog` context.
+    lineno: u64,
+}
+
+/// The single physical-line reader behind both [`read_all_events`] and
+/// [`find_prior_with_key`], so the read paths can never disagree about the
+/// torn-tail policy (design.md §1.4; torn-line-policy-consistency).
+///
+/// Bytes are read with [`BufRead::read_until`] (not `read_line`/`lines()`)
+/// for two reasons: it keeps the trailing `\n` so a torn final line is
+/// distinguishable from a newline-terminated interior one, and it reads raw
+/// bytes so a torn tail that cuts a multi-byte UTF-8 sequence is tolerated as
+/// a partial write rather than surfacing as an I/O error. A *newline-
+/// terminated* line with invalid UTF-8 still reaches the caller's parse,
+/// which classifies it as `CorruptEventLog`.
+///
+/// `next_line` lends a slice into an internal buffer, so a caller holds at
+/// most one line at a time — the streaming (lending-iterator) pattern, which
+/// keeps the per-line allocation cost to a single reused buffer.
+struct PhysicalLineReader<R: BufRead> {
+    reader: R,
+    buf: Vec<u8>,
+    lineno: u64,
+    done: bool,
+}
+
+impl<R: BufRead> PhysicalLineReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buf: Vec::new(),
+            lineno: 0,
+            done: false,
+        }
+    }
+
+    /// Yield the next physical line, or `None` at end of file. I/O errors are
+    /// surfaced raw so the caller can attach the log path.
+    fn next_line(&mut self) -> std::io::Result<Option<PhysicalLine<'_>>> {
+        if self.done {
+            return Ok(None);
+        }
+        self.buf.clear();
+        let n = self.reader.read_until(b'\n', &mut self.buf)?;
+        if n == 0 {
+            self.done = true;
+            return Ok(None);
+        }
+        self.lineno += 1;
+        let complete = self.buf.last() == Some(&b'\n');
+        // A non-terminated line is necessarily the final bytes of the file;
+        // stop after handing it back so the torn-tail policy only ever sees
+        // it last.
+        if !complete {
+            self.done = true;
+        }
+        let len = trim_line_end(&self.buf).len();
+        Ok(Some(PhysicalLine {
+            content: &self.buf[..len],
+            complete,
+            lineno: self.lineno,
+        }))
+    }
+}
+
 /// Read every event from `events.jsonl`. Used by tests and reducer replays.
+///
+/// # Torn-line policy
+///
+/// Built on the shared [`PhysicalLineReader`] so it matches
+/// [`find_prior_with_key`] and [`recover_last_seq`] exactly: a torn final
+/// line lacking a trailing `\n` is an in-flight partial write, dropped
+/// *without* parsing even if its bytes happen to be valid JSON. Any
+/// newline-terminated line that fails to parse is interior corruption and
+/// surfaces as [`Error::CorruptEventLog`] — not a transient JSON fault — so a
+/// replay rejects a poisoned log loudly instead of silently dropping a line.
 pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
     let f = match std::fs::File::open(events_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(Error::io(events_path, e)),
     };
-    let r = BufReader::new(f);
+    let mut reader = PhysicalLineReader::new(BufReader::new(f));
     let mut out = Vec::new();
-    for line in r.lines() {
-        let line = line.map_err(|e| Error::io(events_path, e))?;
-        if line.is_empty() {
+    while let Some(line) = reader
+        .next_line()
+        .map_err(|e| Error::io(events_path, e))?
+    {
+        // Torn final line (no trailing newline): uncommitted partial write,
+        // discarded without parsing — mirrors `recover_last_seq`.
+        if !line.complete {
+            break;
+        }
+        if line.content.is_empty() {
             continue;
         }
-        let ev: Event = serde_json::from_str(&line).map_err(|e| Error::json(events_path, e))?;
+        let ev: Event =
+            serde_json::from_slice(line.content).map_err(|e| Error::CorruptEventLog {
+                path: events_path.to_path_buf(),
+                reason: format!(
+                    "line {} is not a valid event: {} [{e}]",
+                    line.lineno,
+                    excerpt(line.content)
+                ),
+            })?;
         out.push(ev);
     }
     Ok(out)
@@ -432,45 +535,33 @@ pub(crate) fn find_prior_with_key(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(Error::io(&events_path, e)),
     };
-    let mut reader = BufReader::new(f);
-    let mut buf: Vec<u8> = Vec::new();
-    let mut lineno: u64 = 0;
+    let mut reader = PhysicalLineReader::new(BufReader::new(f));
     // `seq` of the last successfully-parsed line, for best-effort error
     // context pointing at where corruption begins.
     let mut last_good_seq: u64 = 0;
-    loop {
-        buf.clear();
-        // `read_until(b'\n')` keeps the trailing `\n` (which `lines()`
-        // strips) — that byte distinguishes a torn final line from a
-        // newline-terminated interior line — and reads raw bytes so a torn
-        // tail with partial UTF-8 doesn't become an I/O error.
-        let n = reader
-            .read_until(b'\n', &mut buf)
-            .map_err(|e| Error::io(&events_path, e))?;
-        if n == 0 {
-            break;
-        }
-        lineno += 1;
-        let had_newline = buf.last() == Some(&b'\n');
-        let line = trim_line_end(&buf);
-        if line.is_empty() {
-            continue;
-        }
+    while let Some(line) = reader
+        .next_line()
+        .map_err(|e| Error::io(&events_path, e))?
+    {
         // Mirror `recover_last_seq`: a final line lacking a trailing newline
         // is an uncommitted partial write, discarded WITHOUT parsing — even
         // if its bytes form valid JSON. Parsing it could otherwise return a
         // "match" for an event recovery considers unwritten, double-counting
         // the seq or skipping a real append.
-        if !had_newline {
+        if !line.complete {
             break;
         }
+        if line.content.is_empty() {
+            continue;
+        }
         let probe: ProbeFields =
-            serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+            serde_json::from_slice(line.content).map_err(|e| Error::CorruptEventLog {
                 path: events_path.clone(),
                 reason: format!(
-                    "line {lineno} is not a valid event envelope (last good seq {last_good_seq}): \
+                    "line {} is not a valid event envelope (last good seq {last_good_seq}): \
                  {} [{e}]",
-                    excerpt(line),
+                    line.lineno,
+                    excerpt(line.content),
                 ),
             })?;
         if let Some(seq) = probe.seq {
@@ -480,11 +571,12 @@ pub(crate) fn find_prior_with_key(
             continue;
         }
         let full: FullEventForReplay =
-            serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+            serde_json::from_slice(line.content).map_err(|e| Error::CorruptEventLog {
                 path: events_path.clone(),
                 reason: format!(
-                    "line {lineno} matched idempotency key but is not a replayable event: {} [{e}]",
-                    excerpt(line),
+                    "line {} matched idempotency key but is not a replayable event: {} [{e}]",
+                    line.lineno,
+                    excerpt(line.content),
                 ),
             })?;
         return Ok(Some(PriorEvent {
