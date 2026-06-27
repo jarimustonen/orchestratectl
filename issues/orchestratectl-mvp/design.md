@@ -334,7 +334,7 @@ Top-level `Cargo.toml` is a workspace; `cargo install --path crates/octl-cli` pr
 | CLI parsing | `clap` v4 with derive | Standard, AI-first-friendly help output |
 | Serialization | `serde` + `serde_json` | Schema is JSON |
 | ID generation | `ulid` | Sortable, no coordination |
-| Filesystem locking | `fs4` | Cross-platform `flock` (maintained `fs2` successor; `fs2` is unmaintained with known soundness issues) |
+| Filesystem locking | `fs4` | Cross-platform advisory file locking (`flock` on Unix); maintained `fs2` successor — `fs2` is unmaintained with known soundness issues |
 | Process supervision | `std::process::Command` + `nix` (`waitpid(WNOHANG)`, `kill(pid, 0)` for liveness checks) | Supervisor lifecycle. **Does not install a global SIGCHLD handler** — that would conflict with `std::process::Command`'s own internal reap path (causes `ECHILD`). Instead, liveness is polled (see §7.5). |
 | Signal handling | `ctrlc` for SIGINT/SIGTERM trapping on the supervisor/event-tail processes | Lightweight, does not interfere with child reap. SIGINT → exit 130, SIGTERM → exit 143 per AGENTS-AI-FIRST-CLI §12. |
 | Errors | `anyhow` (CLI), `thiserror` (core) | Library/binary split |
