@@ -417,13 +417,18 @@ fn tail_follow_emits_cancelled_envelope_on_sigint() {
 #[cfg(unix)]
 #[test]
 fn tail_signal_exit_flushes_own_diagnostic_logs() {
-    // Regression for issues/log-guard-flush-on-process-exit: `event tail`'s
-    // signal exit goes through `flush_and_exit` -> `std::process::exit`,
-    // which bypasses the WorkerGuard's `Drop`. Before the fix, this
-    // process's own buffered tracing events (queued in the non-blocking
-    // appender's channel) were silently lost. The exit path now emits a
-    // diagnostic line and calls `flush_logs()` to drain the channel to disk
-    // first — assert that line actually reaches the log file.
+    // End-to-end coverage for issues/log-guard-flush-on-process-exit:
+    // `event tail`'s signal exit goes through `flush_and_exit` ->
+    // `std::process::exit`, which bypasses the WorkerGuard's `Drop`. The
+    // exit path emits a diagnostic line and calls `flush_logs()` to drain
+    // the non-blocking appender to disk first — assert that line actually
+    // lands in the real log file via the real binary.
+    //
+    // This exercises the wiring (flush reachable from tail, log path, line
+    // emitted); it is not the deterministic regression guard. The single
+    // pre-exit line races with the worker thread, which usually drains it
+    // even without the flush. The guaranteed-to-fail-without-the-fix check
+    // lives in `cli::tests::drain_cell_blocks_until_buffered_line_is_written`.
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
 
@@ -454,10 +459,9 @@ fn tail_signal_exit_flushes_own_diagnostic_logs() {
     let contents = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("read log file {}: {e}", log_path.display()));
 
-    // The diagnostic line is emitted immediately before the flush, so it is
-    // the strongest proof the exit path no longer drops buffered events:
-    // without the flush the worker thread has no chance to write it before
-    // `process::exit` terminates the process.
+    // The diagnostic line is emitted immediately before the flush; with the
+    // fix it is guaranteed on disk, proving the exit path drains the
+    // appender end-to-end.
     let mut saw_exit_line = false;
     let mut saw_dispatch = false;
     for line in contents.lines().filter(|l| !l.trim().is_empty()) {
