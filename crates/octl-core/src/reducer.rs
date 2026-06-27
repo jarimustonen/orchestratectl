@@ -256,6 +256,250 @@ pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     }
 }
 
+/// Validate an event WITHOUT writing anything, returning `Err` in exactly
+/// the cases [`apply_event`] would (for the same projection state) and `Ok`
+/// otherwise.
+///
+/// This is the transactional gate run *before* the durable append in
+/// [`crate::events::append_and_apply_unlocked`]: a reducer-rejected event is
+/// caught here and never reaches `events.jsonl`, so a later replay /
+/// `rebuild_projections` can't trip over a poison line
+/// (append-and-apply-transactional-validation).
+///
+/// It mirrors `apply_event` branch-for-branch, including the state-dependent
+/// no-op guards (a settled node/run/discussion swallows a late or even
+/// malformed event as a clean no-op, so validation must NOT reject it). The
+/// read-only projection reads here see the same state `apply_event` will,
+/// because the caller holds the run's [`crate::lock::RunLock`] across both.
+///
+/// `pub(crate)`: an internal building block of `append_and_apply_unlocked`.
+/// Keep it in lockstep with `apply_event` — the
+/// `validate_matches_apply_rejection` test asserts they agree.
+pub(crate) fn validate_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+    // Same cross-run guard as `apply_event`'s entry.
+    if ev.run_id != paths.run_id {
+        return Err(Error::CorruptEventLog {
+            path: paths.events(),
+            reason: format!(
+                "event seq={} envelope run_id {:?} does not match run {:?}",
+                ev.seq,
+                ev.run_id.as_str(),
+                paths.run_id.as_str()
+            ),
+        });
+    }
+    #[allow(clippy::match_same_arms)]
+    match ev.kind.as_str() {
+        "run.created" => validate_run_created(paths, ev),
+        "run.status" => validate_run_status(paths, ev),
+        "node.created" => validate_node_created(paths, ev),
+        "node.status" => validate_node_status(paths, ev),
+        "node.report" => validate_node_report(paths, ev),
+        "discussion.opened" => validate_discussion_opened(paths, ev),
+        "discussion.resolved" => validate_discussion_resolved(paths, ev),
+        "spinoff.proposed" => validate_spinoff_proposed(paths, ev),
+        "spinoff.approved" => validate_spinoff_approved(paths, ev),
+        "spinoff.rejected" => validate_spinoff_rejected(paths, ev),
+        "child.spawned" => validate_child_spawned(paths, ev),
+        "supervisor.exited" => Ok(()),
+        _ => Ok(()),
+    }
+}
+
+/// The envelope `node_id` that a `node.*` event must carry, with the same
+/// `CorruptEventLog` message `apply_*` produces. Shared by validate/apply so
+/// the missing-id check can't drift between them.
+fn require_envelope_node_id(events_path: &Path, ev: &Event) -> Result<NodeId> {
+    ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason: format!(
+            "event seq={} kind={} missing top-level `node_id`",
+            ev.seq, ev.kind
+        ),
+    })
+}
+
+fn validate_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
+    if let Some(existing) = read_manifest_opt(paths)? {
+        if existing.run_id != ev.run_id {
+            return Err(Error::CorruptEventLog {
+                path: paths.manifest(),
+                reason: format!(
+                    "run.created run_id={} conflicts with existing manifest run_id={}",
+                    ev.run_id, existing.run_id
+                ),
+            });
+        }
+        return Ok(());
+    }
+    let events_path = paths.events();
+    let d = &ev.data;
+    data_kind(d.get("kind").unwrap_or(&Value::Null)).ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: "run.created missing/invalid `kind`".into(),
+    })?;
+    serde_json::from_value::<Lifecycle>(d.get("lifecycle").cloned().unwrap_or(Value::Null)).map_err(
+        |_| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: "run.created missing/invalid `lifecycle`".into(),
+        },
+    )?;
+    want_str(&events_path, ev, d, "title")?;
+    opt_run_id(&events_path, ev, d, "parent_run_id")?;
+    opt_node_id(&events_path, ev, d, "parent_node_id")?;
+    Ok(())
+}
+
+fn validate_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
+    // Missing manifest → `apply_run_status` no-ops without inspecting status.
+    if read_manifest_opt(paths)?.is_none() {
+        return Ok(());
+    }
+    // `require_status` runs whether or not the run is terminal (the terminal
+    // guard only short-circuits *after* it), so validate it unconditionally.
+    require_status(ev, paths.events())?;
+    Ok(())
+}
+
+fn validate_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    if read_node_opt(paths, &node_id)?.is_some() {
+        return Ok(());
+    }
+    let d = &ev.data;
+    data_kind(d.get("kind").unwrap_or(&Value::Null)).ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=node.created missing/invalid `kind`",
+            ev.seq
+        ),
+    })?;
+    opt_node_id(&events_path, ev, d, "parent_node_id")?;
+    optional_i32(d, "agent_pid", &events_path, ev)?;
+    optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
+    optional_i32(d, "supervisor_pid", &events_path, ev)?;
+    Ok(())
+}
+
+fn validate_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    // Missing node → no-op (no status validation). A live OR terminal node
+    // both run `require_status` (terminal guard short-circuits after it).
+    if read_node_opt(paths, &node_id)?.is_none() {
+        return Ok(());
+    }
+    require_status(ev, events_path)?;
+    Ok(())
+}
+
+fn validate_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(()),
+    };
+    // Terminal-state guard runs BEFORE payload validation in `apply_node_report`:
+    // a late report against a settled node is a dead no-op, even if malformed.
+    if n.status.is_terminal() {
+        return Ok(());
+    }
+    report_terminal_status(&events_path, ev)?;
+    Ok(())
+}
+
+fn validate_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let d = &ev.data;
+    let discussion_id = DiscussionId::parse_str(want_str(&events_path, ev, d, "discussion_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    if read_discussion_opt(paths, &discussion_id)?.is_some() {
+        return Ok(());
+    }
+    want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
+    want_str(&events_path, ev, d, "topic")?;
+    Ok(())
+}
+
+fn validate_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let id = DiscussionId::parse_str(want_str(&events_path, ev, &ev.data, "discussion_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let disc = match read_discussion_opt(paths, &id)? {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    if matches!(disc.status, DiscussionStatus::Resolved) {
+        return Ok(());
+    }
+    want_str(&events_path, ev, &ev.data, "resolution")?;
+    optional_str(&events_path, ev, &ev.data, "note")?;
+    Ok(())
+}
+
+fn validate_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    let d = &ev.data;
+    let proposal_id = ProposalId::parse_str(want_str(&events_path, ev, d, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    if read_spinoff_opt(paths, &proposal_id)?.is_some() {
+        return Ok(());
+    }
+    data_kind(d.get("proposed_kind").unwrap_or(&Value::Null)).ok_or_else(|| {
+        Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=spinoff.proposed missing/invalid `proposed_kind`",
+                ev.seq
+            ),
+        }
+    })?;
+    want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
+    want_str(&events_path, ev, d, "proposed_title")?;
+    Ok(())
+}
+
+fn validate_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
+    // `apply_spinoff_approved` can only reject on the id parse; the
+    // existence/terminal guards and optional `issue_slug` never error.
+    let events_path = paths.events();
+    ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    Ok(())
+}
+
+fn validate_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    Ok(())
+}
+
+fn validate_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let events_path = paths.events();
+    // All three id checks precede the parent-node existence no-op in
+    // `apply_child_spawned`, so they are unconditional.
+    ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=child.spawned missing parent `node_id`",
+            ev.seq
+        ),
+    })?;
+    RunId::parse_str(want_str(&events_path, ev, &ev.data, "child_run_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    NodeId::parse_str(
+        ev.data
+            .get("child_node_id")
+            .and_then(Value::as_str)
+            .unwrap_or("n-0001"),
+    )
+    .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    Ok(())
+}
+
 fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     // Idempotent: a replayed `run.created` against an existing manifest is a
     // no-op (but validates that `run_id` matches; otherwise the event log

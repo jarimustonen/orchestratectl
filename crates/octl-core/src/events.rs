@@ -11,7 +11,7 @@ use crate::atomic::open_events_append;
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
-use crate::reducer::apply_event;
+use crate::reducer::{apply_event, validate_event};
 use crate::schema::{Event, NodeId};
 
 /// Parse the optional envelope `node_id` (`Option<&str>` from a caller) into the
@@ -157,6 +157,53 @@ fn find_prev_newline(
     }
 }
 
+/// Truncate a torn (newline-less) final line off `events.jsonl` so the next
+/// append never concatenates onto a partial record.
+///
+/// `recover_last_seq` only *ignores* a torn tail for seq purposes — it never
+/// removes the bytes. Without this, an append after a crash-truncated write
+/// would write its `\n`-terminated line directly onto the partial bytes,
+/// producing one malformed `…torn…{"seq":…}` line that every later reader
+/// (now sharing a strict torn-tail policy) hard-errors on. Cutting back to
+/// the last complete record here guarantees the file is always empty or
+/// `\n`-terminated before we append.
+///
+/// Caller must hold the run's [`RunLock`]. No-op when the file is absent,
+/// empty, or already `\n`-terminated (the common, clean case — one `stat` +
+/// one-byte read, no rewrite).
+fn truncate_torn_tail(events_path: &Path) -> Result<()> {
+    let mut f = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(events_path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(Error::io(events_path, e)),
+    };
+    let len = f.metadata().map_err(|e| Error::io(events_path, e))?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    let mut tail = [0u8; 1];
+    f.seek(SeekFrom::End(-1))
+        .map_err(|e| Error::io(events_path, e))?;
+    f.read_exact(&mut tail)
+        .map_err(|e| Error::io(events_path, e))?;
+    if tail[0] == b'\n' {
+        return Ok(());
+    }
+    // Torn final line: cut back to just past the last complete record's
+    // trailing newline, or to empty when no complete record exists.
+    let keep = match find_prev_newline(&mut f, len, events_path)? {
+        Some(nl) => nl + 1,
+        None => 0,
+    };
+    f.set_len(keep).map_err(|e| Error::io(events_path, e))?;
+    f.sync_all().map_err(|e| Error::io(events_path, e))?;
+    Ok(())
+}
+
 /// Append one event with a caller-supplied `seq`. The caller **must** hold
 /// the run's [`RunLock`] for the duration of this call and is responsible
 /// for ensuring `seq` is monotonic. Misuse can corrupt the event log.
@@ -242,12 +289,12 @@ pub struct AppendResult {
 /// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one lock,
 /// so a read CLI run a millisecond later never sees a stale projection.
 ///
-/// The log is the source of truth: the event line is appended and fsynced
-/// *before* the reducer runs. If the reducer returns `Err` (a `CorruptEventLog`
-/// for a malformed payload), the event is already durably committed while the
-/// projections are not updated — the error surfaces, but the line stays. Such
-/// an event is a deterministic no-op-or-error on a future projection rebuild;
-/// it is never silently dropped.
+/// The append is transactional against reducer validation: the event is
+/// first run through [`validate_event`](crate::reducer) under the lock, and
+/// only a validating event is appended (and fsynced) and then folded by the
+/// reducer. A reducer-rejected event (a `CorruptEventLog` for a malformed
+/// payload) errors *before* any bytes are written, so the log never gains a
+/// poison line that a future replay / `rebuild_projections` would choke on.
 ///
 /// When `idempotency_key` is `Some` and a prior event with the same `kind` +
 /// key already exists ([`find_prior_with_key`]), nothing is appended or
@@ -304,7 +351,12 @@ pub fn append_and_apply_unlocked(
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<u64> {
-    let last = recover_last_seq(&paths.events())?;
+    let events_path = paths.events();
+    // Remove any crash-torn final line BEFORE recovering the seq or
+    // appending, so the new record is never concatenated onto a partial one
+    // and `seq` is recovered from a clean, `\n`-terminated file.
+    truncate_torn_tail(&events_path)?;
+    let last = recover_last_seq(&events_path)?;
     let seq = last + 1;
     let ev = Event {
         ts: Utc::now(),
@@ -315,7 +367,12 @@ pub fn append_and_apply_unlocked(
         idempotency_key: idempotency_key.map(str::to_string),
         data,
     };
-    let events_path = paths.events();
+    // Transactional gate: validate against current projection state BEFORE
+    // the durable append. A reducer-rejected event errors here and is never
+    // written, so a later replay / rebuild can't trip on a poison line. On
+    // success, `apply_event` below sees the same locked state and folds it
+    // without error.
+    validate_event(paths, &ev)?;
     let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
     line.push(b'\n');
     let mut f = open_events_append(&events_path)?;
