@@ -29,7 +29,6 @@ pub mod tail;
 pub mod watchdog;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -526,6 +525,14 @@ pub fn dispatch(
             pid = our_pid,
             "run dir vanished; supervisor self-terminating"
         );
+        // Decisive whole-tree shutdown: SIGTERM every tracked child supervisor
+        // before we exit. The common case is already self-healing — each
+        // child's run dir lives under the same root and vanishes with ours, so
+        // each child self-terminates within ~3s independently — but a child
+        // blocked on a lock or mid-`CHILD_DIR_WAIT` could outlive us. Signal
+        // it directly rather than relying on every level's independent
+        // self-terminate.
+        signal_children_term(&root, &state);
         // Emit a self-terminate marker only if the events log still
         // exists. When the whole run dir was removed (the common case)
         // there is nothing to append to — and we must NOT recreate the
@@ -592,6 +599,43 @@ pub fn dispatch(
     Ok(())
 }
 
+/// SIGTERM every tracked child supervisor for a decisive whole-tree
+/// shutdown when our run dir vanished. Best-effort: errors (a child that
+/// already exited, an unreadable record) are ignored. We only signal a pid
+/// whose identity we can verify against the child's own `supervisor.pid`
+/// record (start-time check, §7.6), so a recycled PID now owned by an
+/// unrelated process is never signalled.
+fn signal_children_term(root: &Path, state: &state::SupervisorState) {
+    for child_run_id in state.spawned_children.keys() {
+        let Ok(child_paths) = run_paths(root, child_run_id) else {
+            continue;
+        };
+        // The child wrote its current pid (and start-time) into its own
+        // supervisor.pid under the run flock; a child blocked on a lock — the
+        // case worth signalling — still has a live run dir and a readable
+        // record. If the whole child run dir vanished too, there is no record
+        // and nothing to signal (that child self-terminates like we did).
+        let Some((pid, start_time)) = pid_file::read_pid_record(&child_paths.supervisor_pid())
+        else {
+            continue;
+        };
+        if pid == 0 || !pid_file::pid_live_with_identity(pid, start_time) {
+            continue;
+        }
+        // SAFETY: `kill` with a real signal to a pid whose identity we just
+        // verified; ESRCH (it exited in the meantime) is ignored.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        info!(
+            target: "orchestratectl::supervise",
+            child = %child_run_id,
+            pid,
+            "sent SIGTERM to child supervisor (parent shutting down on run-dir-vanished)"
+        );
+    }
+}
+
 struct ChildTracking {
     /// The parent node (in *our* run) that spawned this child — captured
     /// from `child.spawned`'s `node_id` (or the node projection on
@@ -628,59 +672,53 @@ fn spawn_child_supervisor(
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    // Build a log path under <child-dir>/supervisor.stderr.log.
+    // Fork+exec a fully-detached child supervisor (setsid + double-fork via
+    // `supervisor_spawn`). The grandchild is reparented to init, so an exited
+    // child supervisor never becomes a zombie under this long-lived parent
+    // (and `kill(pid, 0)` never misreports a zombie as alive, which would
+    // corrupt the PID-staleness check). `RUST_LOG_NOSPAWN` is cleared because
+    // it is reserved for tests.
     let stderr_path: PathBuf = child_dir.join("supervisor.stderr.log");
-    let stderr_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&stderr_path)
-        .map_err(|e| {
-            CliError::system("io_error", format!("open {}: {}", stderr_path.display(), e))
-        })?;
-    let stderr_clone = stderr_file
-        .try_clone()
-        .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
+    let mut cmd =
+        crate::run::supervisor_spawn::detached_supervise_command(child_run_id, &stderr_path)?;
+    cmd.env_remove("RUST_LOG_NOSPAWN");
+    crate::run::supervisor_spawn::spawn_and_reap(&mut cmd, child_run_id)?;
 
-    let exe = std::env::current_exe()
-        .map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))?;
-    let child = Command::new(exe)
-        .arg("supervise")
-        .arg(child_run_id)
-        .stdout(stderr_file)
-        .stderr(stderr_clone)
-        .env_remove("RUST_LOG_NOSPAWN") // reserved for tests
-        .spawn()
-        .map_err(|e| {
-            CliError::system(
-                "spawn_failed",
-                format!("spawn supervise {child_run_id}: {e}"),
-            )
-        })?;
-    let pid = child.id();
+    // The double-fork detaches the real supervisor (grandchild), so the PID
+    // `Command::spawn` saw was the reaped intermediate. The authoritative pid
+    // is the one the child wrote into its own `supervisor.pid` under the run
+    // flock during `claim_pid_atomic`; read it back. On timeout we record 0
+    // (unknown) — the child is still tracked by run-id, only the cosmetic
+    // `supervisor_pid` record degrades.
+    let child_paths = run_paths(root, child_run_id)?;
+    let pid = crate::run::supervisor_spawn::await_recorded_pid(&child_paths).unwrap_or(0);
+
     // Best-effort: record supervisor_pid on the child's root node. This
     // read-modify-write races the child supervisor's own boot writes, so
     // it must be done under the child run's flock (F11) — without it the
-    // last writer silently clobbers the other's fields.
-    let child_paths = run_paths(root, child_run_id)?;
-    match RunLock::acquire(&child_paths.lock()) {
-        Ok(_guard) => {
-            // The child run's root node is always `n-0001` (a static, valid id).
-            let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
-            if let Ok(Some(mut n)) = read_node_opt(&child_paths, &root_node) {
-                n.supervisor_pid = Some(pid as i32);
-                let _ = octl_core::write_node(&child_paths, &n);
+    // last writer silently clobbers the other's fields. Skip when the pid is
+    // unknown (0) rather than recording a bogus value.
+    if pid != 0 {
+        match RunLock::acquire(&child_paths.lock()) {
+            Ok(_guard) => {
+                // The child run's root node is always `n-0001` (a static, valid id).
+                let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
+                if let Ok(Some(mut n)) = read_node_opt(&child_paths, &root_node) {
+                    n.supervisor_pid = Some(pid as i32);
+                    let _ = octl_core::write_node(&child_paths, &n);
+                }
             }
-        }
-        Err(e) => {
-            // Non-fatal: the parent already recorded the attach via the
-            // `child.supervisor_attached` event below, so this projection
-            // write is a convenience. Surface it rather than swallowing.
-            warn!(
-                target: "orchestratectl::supervise",
-                child = %child_run_id,
-                error = %e,
-                "could not lock child run to record supervisor_pid"
-            );
+            Err(e) => {
+                // Non-fatal: the parent already recorded the attach via the
+                // `child.supervisor_attached` event below, so this projection
+                // write is a convenience. Surface it rather than swallowing.
+                warn!(
+                    target: "orchestratectl::supervise",
+                    child = %child_run_id,
+                    error = %e,
+                    "could not lock child run to record supervisor_pid"
+                );
+            }
         }
     }
     // Record on the parent's tracking node too via an event.

@@ -7,10 +7,6 @@
 //! `<run-dir>/supervisor.stderr.log`, and waits briefly for the new
 //! supervisor's PID file to appear.
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::time::{Duration, Instant};
-
 use serde::Serialize;
 use serde_json::json;
 
@@ -18,11 +14,9 @@ use octl_core::{append_and_apply_event, read_manifest_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
+use crate::run::supervisor_spawn;
 use crate::run::{from_core, run_paths};
 use crate::supervise::pid_file;
-
-const PID_FILE_WAIT: Duration = Duration::from_secs(5);
-const POLL_TICK: Duration = Duration::from_millis(200);
 
 #[derive(Serialize)]
 struct ReattachPayload<'a> {
@@ -75,53 +69,29 @@ pub fn run(
     )
     .map_err(from_core)?;
 
-    let stderr_path: PathBuf = paths.root.join("supervisor.stderr.log");
-    let stderr_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&stderr_path)
-        .map_err(|e| {
-            CliError::system("io_error", format!("open {}: {}", stderr_path.display(), e))
-        })?;
-    let stderr_clone = stderr_file
-        .try_clone()
-        .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
-
-    let exe = std::env::current_exe()
-        .map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("supervise").arg(run_id);
+    // Fork+exec a fully-detached supervisor (setsid + double-fork; see
+    // `supervisor_spawn`). The spawned supervisor performs the atomic
+    // `claim_pid_atomic` in its own startup, so even if two reattaches race
+    // past the stale-pid pre-check above, exactly one spawned supervisor
+    // wins the flock-guarded claim and the loser exits.
+    let log_path = paths.root.join("supervisor.stderr.log");
+    let mut cmd = supervisor_spawn::detached_supervise_command(run_id, &log_path)?;
     if once {
         cmd.arg("--once");
     }
     if let Some(n) = max_iter {
         cmd.arg("--max-iter").arg(n.to_string());
     }
-    let child = cmd
-        .stdout(stderr_file)
-        .stderr(stderr_clone)
-        .spawn()
-        .map_err(|e| CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}")))?;
-    let child_pid = child.id();
+    supervisor_spawn::spawn_and_reap(&mut cmd, run_id)?;
 
-    // Wait briefly for the child to write its own PID file. We may see
-    // either `child_pid` (the new supervisor we just spawned) or — if a
-    // human or test reattach raced us — a different PID; either way the
-    // contract is that *some* live supervisor now owns the run.
-    let deadline = Instant::now() + PID_FILE_WAIT;
-    let recorded_pid = loop {
-        if let Some(p) = pid_file::read_pid(&pid_path) {
-            if pid_file::pid_alive(p) {
-                break p;
-            }
-        }
-        if Instant::now() >= deadline {
-            // Best-effort fallback: report the PID we spawned even if
-            // the file hasn't landed yet (it should within a tick).
-            break child_pid;
-        }
-        std::thread::sleep(POLL_TICK);
-    };
+    // Wait briefly for the new supervisor to write its own PID file. We may
+    // see the PID it claimed or — if a human or test reattach raced us — a
+    // different one; either way the contract is that *some* live supervisor
+    // now owns the run. With the double-fork we have no usable spawned PID to
+    // report on timeout, so fall back to whatever the file last recorded.
+    let recorded_pid = supervisor_spawn::await_recorded_pid(&paths)
+        .or_else(|| pid_file::read_pid(&pid_path))
+        .unwrap_or(0);
 
     let _ = append_and_apply_event(
         &paths,
