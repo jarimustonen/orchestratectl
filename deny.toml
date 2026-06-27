@@ -14,6 +14,13 @@ yanked = "deny"
 # our own crates). In the v2 schema unmaintained is a fail-by-default advisory
 # class scoped here, not a warn/deny severity knob.
 unmaintained = "all"
+# Same scoping for unsound advisories ("all" = fail on an unsound RUSTSEC entry
+# anywhere in the tree). This is the class fs2 was flagged under, so it is set
+# explicitly rather than relying on the schema default.
+unsound = "all"
+# NOTE: the old v1 `vulnerability`/`notice` knobs were removed in the v2 schema
+# (EmbarkStudios/cargo-deny#611). Vulnerability advisories now always fail — there
+# is no warn/deny toggle — so RUSTSEC vulnerabilities are denied by default here.
 
 [licenses]
 version = 2
@@ -41,6 +48,12 @@ wildcards = "deny"
 # …except internal path deps (e.g. octl-cli -> octl-core), which carry no
 # version requirement by design and are never published to a registry.
 allow-wildcard-paths = true
+# Reintroduction guard: fs2 was dropped (issue replace-fs2-with-fs4) because it is
+# unmaintained with a known soundness advisory. The `unmaintained`/`unsound`
+# advisory gates above already block it, but those depend on RUSTSEC keeping the
+# entry live. This hard ban fails CI the moment fs2 reappears in the tree — even
+# transitively via some other crate — independent of advisory-database state.
+deny = [{ crate = "fs2", reason = "unmaintained + unsound; replaced by fs4 (issue replace-fs2-with-fs4). Do not reintroduce." }]
 
 [sources]
 # Defaults: crates.io is the only allowed registry; no git sources configured.

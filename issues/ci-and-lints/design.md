@@ -70,12 +70,16 @@ across cargo-deny releases.
 
 - **licenses:** allow-list of MIT / Apache-2.0 (+ LLVM exception) / BSD-2 / BSD-3
   / ISC / Unicode-3.0 / Zlib. The copyleft GPL/AGPL family is therefore denied.
-- **advisories:** `yanked = "deny"`; `unmaintained = "all"` (scope = whole
-  dependency tree; in v2 unmaintained is a fail-by-default advisory class, not a
-  warn/deny knob).
+- **advisories:** `yanked = "deny"`; `unmaintained = "all"` and `unsound = "all"`
+  (scope = whole dependency tree; in v2 both are fail-by-default advisory classes
+  scoped here, not warn/deny knobs). The v1 `vulnerability`/`notice` knobs were
+  removed in v2 (cargo-deny#611) — vulnerability advisories now always fail.
 - **bans:** `wildcards = "deny"` with `allow-wildcard-paths = true`; both crates
   are `publish = false` so the internal `octl-cli -> octl-core` path dep is
-  exempt. Duplicate transitive versions are a warning, not a failure.
+  exempt. Duplicate transitive versions are a warning, not a failure. `deny`
+  hard-bans `fs2` (issue cross-platform-lock-validation): a transitive
+  reintroduction of the unmaintained/unsound crate fails CI immediately,
+  independent of advisory-database state.
 
 ## CI jobs (`.github/workflows/ci.yml`)
 
