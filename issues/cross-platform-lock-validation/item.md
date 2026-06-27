@@ -2,7 +2,7 @@
 created: 2026-06-27
 updated: 2026-06-27
 type: chore
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff]
