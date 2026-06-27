@@ -138,7 +138,7 @@ mod tests {
 
     fn write_line(path: &Path, seq: u64, kind: &str) {
         let line = format!(
-            "{{\"ts\":\"2026-06-12T00:00:00Z\",\"seq\":{seq},\"kind\":\"{kind}\",\"run_id\":\"r\",\"data\":{{}}}}\n"
+            "{{\"ts\":\"2026-06-12T00:00:00Z\",\"seq\":{seq},\"kind\":\"{kind}\",\"run_id\":\"01jxsnap000000000000000000\",\"data\":{{}}}}\n"
         );
         let mut f = std::fs::OpenOptions::new()
             .create(true)
@@ -209,7 +209,7 @@ mod tests {
         {
             let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
             f.write_all(
-                b"-06-12T00:00:00Z\",\"seq\":2,\"kind\":\"b\",\"run_id\":\"r\",\"data\":{}}\n",
+                b"-06-12T00:00:00Z\",\"seq\":2,\"kind\":\"b\",\"run_id\":\"01jxsnap000000000000000000\",\"data\":{}}\n",
             )
             .unwrap();
         }

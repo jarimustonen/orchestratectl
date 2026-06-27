@@ -586,12 +586,13 @@ pub struct SpinoffProposal {
 
 /// One event-log line (design.md §1.4).
 ///
-/// Unlike the projection structs, `run_id` / `node_id` here stay `String`
-/// rather than the typed id newtypes. `Event` is the append-only wire envelope
-/// produced generically by [`crate::append_and_apply_event`] (which takes
-/// `node_id: Option<&str>`); the reducer is its validating boundary — it parses
-/// every event-sourced id into the appropriate newtype (mapping failures to
-/// [`Error::CorruptEventLog`]) before any of them is used to build a path.
+/// `run_id` / `node_id` are the typed id newtypes, so deserializing an
+/// `events.jsonl` line validates the whole envelope on read: a malformed
+/// `run_id` or `node_id` fails the parse (surfacing as [`Error::CorruptEventLog`]
+/// at the read boundary) rather than being carried as an unvalidated `String`
+/// until some later path helper. The reducer still performs its own per-event
+/// checks (envelope `run_id` matches the run it is folded into; `data`-borne
+/// ids parse), but the envelope ids can no longer be the unvalidated party.
 ///
 /// [`Error::CorruptEventLog`]: crate::Error::CorruptEventLog
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -602,11 +603,11 @@ pub struct Event {
     pub seq: u64,
     /// Event kind discriminator (e.g. `node.created`, `discussion.opened`).
     pub kind: String,
-    /// Run the event belongs to.
-    pub run_id: String,
-    /// Node the event concerns, when applicable.
+    /// Run the event belongs to. Validated on read.
+    pub run_id: RunId,
+    /// Node the event concerns, when applicable. Validated on read.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub node_id: Option<String>,
+    pub node_id: Option<NodeId>,
     /// Caller-supplied key used to dedupe retried appends.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_key: Option<String>,
@@ -838,5 +839,23 @@ mod id_tests {
         let err = NodeId::parse_str("n-x").unwrap_err();
         assert_eq!(err.kind(), "node");
         assert_eq!(err.expected(), "n-NNNN (n- followed by 4-10 ASCII digits)");
+    }
+
+    #[test]
+    fn event_deserialize_validates_envelope_ids() {
+        // The whole `events.jsonl` envelope is now validated on read: the
+        // typed `run_id` / `node_id` fields parse through the id newtypes, so
+        // a malformed envelope id fails the deserialize rather than being
+        // carried downstream as an unchecked string.
+        let ok = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"node.created","run_id":"01jxsnap000000000000000000","node_id":"n-0001","data":{}}"#;
+        assert!(serde_json::from_str::<Event>(ok).is_ok());
+
+        // Invalid `run_id` (not a 26-char ULID) fails the parse.
+        let bad_run = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"run.status","run_id":"not-a-ulid","data":{}}"#;
+        assert!(serde_json::from_str::<Event>(bad_run).is_err());
+
+        // Invalid top-level `node_id` (too few digits) also fails the parse.
+        let bad_node = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"node.status","run_id":"01jxsnap000000000000000000","node_id":"n-1","data":{}}"#;
+        assert!(serde_json::from_str::<Event>(bad_node).is_err());
     }
 }

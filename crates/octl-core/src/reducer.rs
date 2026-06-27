@@ -87,7 +87,7 @@ fn want_node_id_with_fallback(
     let s = d
         .get(field)
         .and_then(Value::as_str)
-        .or(ev.node_id.as_deref())
+        .or(ev.node_id.as_ref().map(NodeId::as_str))
         .ok_or_else(|| Error::CorruptEventLog {
             path: events_path.to_path_buf(),
             reason: format!("event seq={} kind={} missing `{field}`", ev.seq, ev.kind),
@@ -225,13 +225,13 @@ pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     // An event whose envelope `run_id` doesn't match the run we're folding it
     // into means the log was copied/misrouted — fold it and projections would
     // be silently cross-contaminated. Reject before any write.
-    if ev.run_id != paths.run_id.as_str() {
+    if ev.run_id != paths.run_id {
         return Err(Error::CorruptEventLog {
             path: paths.events(),
             reason: format!(
                 "event seq={} envelope run_id {:?} does not match run {:?}",
                 ev.seq,
-                ev.run_id,
+                ev.run_id.as_str(),
                 paths.run_id.as_str()
             ),
         });
@@ -261,7 +261,7 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     // no-op (but validates that `run_id` matches; otherwise the event log
     // is being applied to the wrong run).
     if let Some(existing) = read_manifest_opt(paths)? {
-        if existing.run_id.as_str() != ev.run_id {
+        if existing.run_id != ev.run_id {
             return Err(Error::CorruptEventLog {
                 path: paths.manifest(),
                 reason: format!(
@@ -340,17 +340,15 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id_str = ev
-        .node_id
-        .as_deref()
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=node.created missing top-level `node_id`",
-                ev.seq
-            ),
-        })?;
-    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    // The envelope `node_id` is already a validated `NodeId` (parsed on read),
+    // so take it directly — no re-parse needed.
+    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=node.created missing top-level `node_id`",
+            ev.seq
+        ),
+    })?;
     // Idempotent on replay: skip if the node already exists.
     if read_node_opt(paths, &node_id)?.is_some() {
         return Ok(());
@@ -402,17 +400,13 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id_str = ev
-        .node_id
-        .as_deref()
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=node.status missing top-level `node_id`",
-                ev.seq
-            ),
-        })?;
-    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=node.status missing top-level `node_id`",
+            ev.seq
+        ),
+    })?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),
@@ -434,17 +428,13 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id_str = ev
-        .node_id
-        .as_deref()
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=node.report missing top-level `node_id`",
-                ev.seq
-            ),
-        })?;
-    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=node.report missing top-level `node_id`",
+            ev.seq
+        ),
+    })?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),
@@ -718,18 +708,13 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
     // `child.spawned` is written to the PARENT run's events; the parent
     // spawning node is `ev.node_id`, the child run/node lives in `data`.
     let events_path = paths.events();
-    let parent_node_id_str = ev
-        .node_id
-        .as_deref()
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=child.spawned missing parent `node_id`",
-                ev.seq
-            ),
-        })?;
-    let parent_node_id =
-        NodeId::parse_str(parent_node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let parent_node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=child.spawned missing parent `node_id`",
+            ev.seq
+        ),
+    })?;
     let child_run_id = RunId::parse_str(want_str(&events_path, ev, &ev.data, "child_run_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let child_node_id = NodeId::parse_str(
@@ -769,7 +754,7 @@ mod tests {
             ts: Utc::now(),
             seq: 1,
             kind: "run.status".into(),
-            run_id: run_id.into(),
+            run_id: RunId::parse_str(run_id).unwrap(),
             node_id: None,
             idempotency_key: None,
             data: serde_json::json!({ "status": "running" }),
@@ -786,7 +771,7 @@ mod tests {
         let paths = RunPaths::new(dir, run_id).unwrap();
 
         // An event whose envelope names a different run must not be folded.
-        let foreign = event("01jxotherrun00000000000000");
+        let foreign = event("02jxsnap000000000000000000");
         let err = apply_event(&paths, &foreign).expect_err("cross-run event must be rejected");
         assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
 

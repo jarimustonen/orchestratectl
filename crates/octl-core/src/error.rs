@@ -51,6 +51,18 @@ pub enum Error {
         reason: String,
     },
 
+    /// A `node_id` handed to the event-append primitive failed validation
+    /// before it could be written into an [`crate::schema::Event`] envelope.
+    /// Callers are expected to pass an already-validated node id; this is the
+    /// write-side guard that keeps an unvalidated id out of `events.jsonl`.
+    #[error("invalid node_id {node_id:?}: {reason}")]
+    InvalidNodeId {
+        /// The rejected node id.
+        node_id: String,
+        /// Why it was rejected.
+        reason: String,
+    },
+
     /// A state file declared a `schema_version` this build does not support.
     #[error("invalid schema_version {found} (supported: {supported:?}) at {path}")]
     UnsupportedSchemaVersion {

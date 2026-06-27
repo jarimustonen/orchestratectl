@@ -12,7 +12,22 @@ use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
 use crate::reducer::apply_event;
-use crate::schema::Event;
+use crate::schema::{Event, NodeId};
+
+/// Parse the optional envelope `node_id` (`Option<&str>` from a caller) into the
+/// typed `Option<NodeId>` an [`Event`] now carries. Callers are expected to pass
+/// an already-validated id; a malformed one is rejected here ([`Error::InvalidNodeId`])
+/// so it can never be written into `events.jsonl` as an unvalidated string.
+fn parse_envelope_node_id(node_id: Option<&str>) -> Result<Option<NodeId>> {
+    node_id
+        .map(|s| {
+            NodeId::parse_str(s).map_err(|e| Error::InvalidNodeId {
+                node_id: s.to_string(),
+                reason: e.to_string(),
+            })
+        })
+        .transpose()
+}
 
 /// Backward-scan chunk size when looking for the previous newline.
 const SCAN_CHUNK: u64 = 64 * 1024;
@@ -176,8 +191,8 @@ fn write_event_line(
         ts: Utc::now(),
         seq,
         kind: kind.to_string(),
-        run_id: paths.run_id.to_string(),
-        node_id: node_id.map(str::to_string),
+        run_id: paths.run_id.clone(),
+        node_id: parse_envelope_node_id(node_id)?,
         idempotency_key: idempotency_key.map(str::to_string),
         data,
     };
@@ -295,8 +310,8 @@ pub fn append_and_apply_unlocked(
         ts: Utc::now(),
         seq,
         kind: kind.to_string(),
-        run_id: paths.run_id.to_string(),
-        node_id: node_id.map(str::to_string),
+        run_id: paths.run_id.clone(),
+        node_id: parse_envelope_node_id(node_id)?,
         idempotency_key: idempotency_key.map(str::to_string),
         data,
     };
@@ -532,7 +547,7 @@ mod tests {
 
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].run_id, run_id);
+        assert_eq!(events[0].run_id.as_str(), run_id);
     }
 
     /// Build a fresh, empty run directory with a valid `RunPaths` whose

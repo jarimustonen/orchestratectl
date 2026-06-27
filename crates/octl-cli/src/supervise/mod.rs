@@ -286,7 +286,7 @@ pub fn dispatch(
                     child_tails
                         .entry(child_run_id.clone())
                         .or_insert_with(|| ChildTracking {
-                            parent_node_id: parent_node_id.clone(),
+                            parent_node_id: parent_node_id.to_string(),
                             tail: tail::EventTail::new(child_events, seq),
                             terminal: false,
                         });
@@ -313,7 +313,7 @@ pub fn dispatch(
                             let _ = append_and_apply_event(
                                 &paths,
                                 "child.spawn_failed",
-                                ev.node_id.as_deref(),
+                                ev.node_id.as_ref().map(NodeId::as_str),
                                 None,
                                 json!({
                                     "child_run_id": child_run_id,
@@ -364,8 +364,11 @@ pub fn dispatch(
                 state.last_seq_by_child.insert(cid.clone(), ev.seq);
                 match ev.kind.as_str() {
                     "node.report" => {
-                        let child_node_id =
-                            ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
+                        let child_node_id = ev
+                            .node_id
+                            .as_ref()
+                            .map_or("n-0001", NodeId::as_str)
+                            .to_string();
                         let parent_node_id = entry.parent_node_id.clone();
                         match reducer::process_node_report(
                             &paths,
