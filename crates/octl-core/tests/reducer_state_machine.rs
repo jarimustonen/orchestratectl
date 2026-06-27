@@ -70,7 +70,11 @@ impl Harness {
             Some("n-0001"),
             json!({ "kind": "spinoff", "task": "do the thing" }),
         );
-        self.append("node.status", Some("n-0001"), json!({ "status": "running" }));
+        self.append(
+            "node.status",
+            Some("n-0001"),
+            json!({ "status": "running" }),
+        );
     }
 }
 
@@ -202,7 +206,11 @@ fn node_status_terminal_guard() {
     h.append("node.report", Some("n-0001"), json!({ "success": true }));
     assert_eq!(h.node("n-0001").status, Status::Done);
 
-    h.append("node.status", Some("n-0001"), json!({ "status": "running" }));
+    h.append(
+        "node.status",
+        Some("n-0001"),
+        json!({ "status": "running" }),
+    );
     assert_eq!(
         h.node("n-0001").status,
         Status::Done,
