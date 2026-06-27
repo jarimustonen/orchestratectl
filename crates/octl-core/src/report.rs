@@ -191,9 +191,7 @@ impl ReportValidationError {
 /// Returns a [`ReportValidationError`] describing the first schema
 /// violation found.
 pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError> {
-    let obj = data
-        .as_object()
-        .ok_or(ReportValidationError::NotObject)?;
+    let obj = data.as_object().ok_or(ReportValidationError::NotObject)?;
 
     // `success` is the one strictly required field per §7.3. A cancel-
     // synthesized report (§7.7) may carry `cancelled: true` AND
@@ -218,10 +216,7 @@ pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError
     };
     let reason = match obj.get("reason") {
         None | Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_str()
-                .ok_or(ReportValidationError::ReasonNotString)?,
-        ),
+        Some(v) => Some(v.as_str().ok_or(ReportValidationError::ReasonNotString)?),
     };
 
     // §7.7: a cancel-synthesized report carries `cancelled: true,
@@ -320,9 +315,11 @@ fn validate_spinoff_proposals(v: Option<&Value>) -> Result<(), ReportValidationE
 /// Path-aware string-array validator. Used for nested fields where the
 /// caller wants to embed an index in the error message.
 fn validate_string_array_at(v: &Value, path: &str) -> Result<(), ReportValidationError> {
-    let arr = v.as_array().ok_or_else(|| ReportValidationError::PathNotArray {
-        path: path.to_string(),
-    })?;
+    let arr = v
+        .as_array()
+        .ok_or_else(|| ReportValidationError::PathNotArray {
+            path: path.to_string(),
+        })?;
     for (i, item) in arr.iter().enumerate() {
         if !item.is_string() {
             return Err(ReportValidationError::PathElementNotString {
