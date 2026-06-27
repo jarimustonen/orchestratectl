@@ -2,9 +2,21 @@
 created: 2026-06-12
 updated: 2026-06-27
 type: feature
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-27
+commits:
+- hash: b9d8dd2
+  summary: add octl_core::events::find_prior_with_key + PriorEvent
+- hash: a3460bf
+  summary: delegate event/create find_prior_event
+- hash: b1d1664
+  summary: delegate node/report find_prior_report
+- hash: 48350df
+  summary: torn-line semantics tests
+- hash: 3b660fd
+  summary: apply multi-model review findings
 ---
 
 # Move idempotency event-log scanner to octl-core
