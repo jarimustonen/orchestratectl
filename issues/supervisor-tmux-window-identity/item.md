@@ -8,6 +8,15 @@ priority: normal
 epic: orchestratectl-mvp
 related: ['@supervisor-process-review-followup']
 labels: [review-spinoff, supervisor]
+commits:
+- hash: '3130460'
+  summary: homebase create.sh emits qualified tmux identity (branch create-sh-tmux-identity)
+- hash: 67c4233
+  summary: 'core: TmuxIdentity + Node.tmux_identity + reducer folding'
+- hash: 84a83eb
+  summary: 'cli: watchdog qualified-identity match + spawn parse + back-compat warn'
+- hash: e6c248c
+  summary: 'docs: design.md §8.1/§1.3 qualified tmux identity'
 ---
 
 # supervisor: qualify tmux liveness by session:window_id + socket
