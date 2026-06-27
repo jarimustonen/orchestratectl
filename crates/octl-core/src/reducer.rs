@@ -332,36 +332,76 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
         .node_id
         .as_deref()
         .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path,
+            path: events_path.clone(),
             reason: format!(
                 "event seq={} kind=node.report missing top-level `node_id`",
                 ev.seq
             ),
         })?;
+    // Validate the report's terminal outcome *before* touching the
+    // projection. A `node.report` must express exactly one terminal
+    // outcome — success/failure XOR cancellation. Anything else (a bare
+    // `{}` with neither, or the contradiction `success: true` +
+    // `cancelled: true`) is a corrupt event: the reducer is the canonical
+    // gate, so reject it here rather than silently leaving the node in a
+    // dangling state. See design.md §7.7 and node-cli-read/handoff.md D4.
+    let new_status = report_terminal_status(&events_path, ev)?;
+
     let mut n = match read_node_opt(paths, node_id)? {
         Some(n) => n,
         None => return Ok(()),
     };
+    // Terminal-state guard: a node that already reached a terminal state is
+    // settled. A late-arriving report (e.g. an agent success racing a `run
+    // cancel`) must not resurrect it — and must not even decorate the
+    // projection, so `last_report` is left untouched too. See
+    // run-cli-read/handoff.md D5.
+    if n.status.is_terminal() {
+        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        return Ok(());
+    }
     n.last_report = Some(ev.data.clone());
+    n.status = new_status;
     n.updated_at = ev.ts;
-    // Cancellation is reported via `{cancelled: true}` regardless of
-    // whether `success` is present (a synthesized cancel-report from
-    // `run cancel` may omit `success`). See design.md §7.7.
+    write_node(paths, &n)
+}
+
+/// Derive the terminal status a `node.report` event asserts, enforcing the
+/// success-XOR-cancelled invariant.
+///
+/// `cancelled: true` (with `success: false` or absent) → [`Status::Cancelled`].
+/// Otherwise `success` must be present: `true` → [`Status::Done`], `false` →
+/// [`Status::Failed`]. Neither field (bare `{}`) or the contradiction
+/// `success: true` + `cancelled: true` is a [`Error::CorruptEventLog`].
+fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
+    let corrupt = |reason: String| Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason,
+    };
     let cancelled = ev
         .data
         .get("cancelled")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let success = ev.data.get("success").and_then(Value::as_bool);
     if cancelled {
-        n.status = Status::Cancelled;
-    } else if let Some(success) = ev.data.get("success").and_then(Value::as_bool) {
-        n.status = if success {
-            Status::Done
-        } else {
-            Status::Failed
-        };
+        if success == Some(true) {
+            return Err(corrupt(format!(
+                "event seq={} kind=node.report has contradictory `success: true` with `cancelled: true`",
+                ev.seq
+            )));
+        }
+        Ok(Status::Cancelled)
+    } else {
+        match success {
+            Some(true) => Ok(Status::Done),
+            Some(false) => Ok(Status::Failed),
+            None => Err(corrupt(format!(
+                "event seq={} kind=node.report missing `success` xor `cancelled`",
+                ev.seq
+            ))),
+        }
     }
-    write_node(paths, &n)
 }
 
 fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
