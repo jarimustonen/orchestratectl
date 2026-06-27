@@ -3,6 +3,7 @@ mod discussion;
 mod doctor;
 mod error;
 mod event;
+mod help;
 mod home;
 mod idempotency;
 mod node;

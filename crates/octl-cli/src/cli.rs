@@ -7,7 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{ColorChoice, Parser, Subcommand};
+use clap::{ColorChoice, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use tracing::info;
 use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
@@ -155,6 +155,16 @@ pub fn run() -> ExitCode {
         _guard: _log_guard,
     } = init_logging();
 
+    // Structured `--help --output json|jsonl` (AGENTS-AI-FIRST-CLI §14):
+    // clap's `--help` only renders text, so intercept the request before
+    // parsing and project the command surface to JSON instead. A bare
+    // `--help` (no explicit `--output`) or `--output text` returns `None`
+    // here and falls through to clap's default text help.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(spec) = crate::help::detect_json_help_request(&raw_args) {
+        return emit_json_help(&raw_args, &spec, &logging_warnings);
+    }
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => return handle_clap_error(e, &logging_warnings),
@@ -206,6 +216,26 @@ pub fn run() -> ExitCode {
     };
 
     match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            e.emit();
+            ExitCode::from(e.kind as u8)
+        }
+    }
+}
+
+/// Render the structured help payload for the command path encoded in
+/// `raw_args` and emit it through the standard success envelope. Builds
+/// the clap command tree (propagating global flags and help/version into
+/// every subcommand), walks to the requested command, and projects it.
+fn emit_json_help(raw_args: &[String], spec: &OutputSpec, warnings: &[String]) -> ExitCode {
+    let mut root = Cli::command();
+    // Propagate global args (e.g. `--output`) and the implicit `--help`
+    // into every subcommand so each node's flag list is accurate.
+    root.build();
+    let (target, path) = crate::help::navigate(&root, raw_args);
+    let data = crate::help::build_help(target, &path);
+    match output::emit_envelope(&data, spec, warnings) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             e.emit();
