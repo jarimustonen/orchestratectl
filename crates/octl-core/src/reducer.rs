@@ -229,6 +229,12 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
         None => return Ok(()),
     };
     let new_status = require_status(ev, paths.events())?;
+    // Terminal-state guard: a settled run never transitions again (e.g. a
+    // late `run.status running` after a cancel). See run-cli-read/handoff.md D5.
+    if m.status.is_terminal() {
+        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        return Ok(());
+    }
     if m.status == new_status {
         return Ok(());
     }
@@ -318,6 +324,12 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
         None => return Ok(()),
     };
     let new_status = require_status(ev, events_path)?;
+    // Terminal-state guard: a settled node never transitions again. See
+    // run-cli-read/handoff.md D5.
+    if n.status.is_terminal() {
+        tracing::debug!(target: "octl_core::reducer", "no-op: target is terminal");
+        return Ok(());
+    }
     if n.status == new_status {
         return Ok(());
     }
