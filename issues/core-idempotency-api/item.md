@@ -1,6 +1,6 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-27
 type: improvement
 status: open
 priority: normal
@@ -41,3 +41,9 @@ Then `event create` and `discussion resolve` use one call site; the
 "equivalence" closure encodes the per-verb conflict matrix.
 
 Discovered during: discussion-cli review (history/review-discussion-cli.md F14).
+
+## Decisions
+
+### 2026-06-27T12:49:14Z · @claude
+
+core-append-and-apply-api landed append_and_apply_event as a PARTIAL step toward this: it folds the find_prior_with_key scan + append into one flock window and returns AppendResult{seq, idempotent_replay, prior}. Conflict detection is still caller-side (event/create + node/report compare AppendResult.prior). Remaining: (a) move conflict/equivalence into core (the AppendOutcome enum + equivalence closure) so callers can't silently no-op a same-key/different-payload request; (b) reject empty keys IN CORE (CLI sites now do it at the boundary, but the core API still accepts Some("")); (c) review flagged the O(N)-per-keyed-append log scan under the exclusive lock — consider a sidecar idempotency index when this lands.
