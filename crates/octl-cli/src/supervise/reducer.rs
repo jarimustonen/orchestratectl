@@ -22,6 +22,22 @@ use octl_core::{
 use crate::error::CliError;
 use crate::supervise::state::SupervisorState;
 
+/// Existence check for a dedup-guard path that never swallows the error.
+/// `Path::try_exists` returns `Ok(false)` for a plainly-absent file and errs
+/// only when existence is genuinely unknowable (permission/IO). A dedup guard
+/// must not guess at that boundary: a wrong "absent" re-emits, a wrong
+/// "present" silently drops a never-emitted item, and the caller advances the
+/// report cursor either way. Surfacing the error lets the supervisor abort the
+/// batch before the cursor moves and retry the report later.
+fn exists_or_io_err(path: &std::path::Path) -> Result<bool, CliError> {
+    path.try_exists().map_err(|e| {
+        CliError::system(
+            "io_error",
+            format!("cannot check existence of {}: {e}", path.display()),
+        )
+    })
+}
+
 /// `s-<10 base32 chars>` / `d-<10 base32 chars>` (50 bits of entropy).
 ///
 /// Matches the encoding contract in design.md §1.4: base32-lowercase
@@ -180,13 +196,17 @@ pub fn process_node_report(
                 // as a recoverable error.
                 let did = DiscussionId::parse_str(&id)
                     .expect("deterministic_id must produce a valid DiscussionId");
-                // Fail-closed dedup: `try_exists()` errs only on permission/IO
-                // faults that leave existence genuinely unknown. For a dedup
-                // guard the safe default on "unknown" is *assume seen* and skip
-                // — re-emitting would risk a duplicate discussion. `Path::exists()`
-                // collapses such errors to `false` (assume-not-seen, re-emit),
-                // the wrong bias here; `try_exists().unwrap_or(true)` flips it.
-                if parent_paths.discussion(&did).try_exists().unwrap_or(true) {
+                // Dedup existence check — `try_exists()` errs only on
+                // permission/IO faults that leave existence genuinely unknown.
+                // Propagate that error rather than guessing: returning `Err`
+                // here aborts the batch *before* the cursor is advanced, so the
+                // report is retried on the next pass. Neither swallow-as-absent
+                // (`Path::exists()` → re-emit) nor swallow-as-present
+                // (`unwrap_or(true)` → silently drop a never-emitted item and
+                // advance the cursor) is safe; only fail-and-retry loses
+                // nothing. A spurious retry is harmless: `apply_discussion_opened`
+                // short-circuits on the existing projection.
+                if exists_or_io_err(&parent_paths.discussion(&did))? {
                     consumption.skipped_already_present += 1;
                     continue;
                 }
@@ -228,9 +248,9 @@ pub fn process_node_report(
                     deterministic_id('s', child_run_id, child_node_id, report_seq, "spinoff", i);
                 let pid = ProposalId::parse_str(&id)
                     .expect("deterministic_id must produce a valid ProposalId");
-                // Fail-closed dedup: assume-seen/skip on an unknowable
-                // existence error (see the discussion-loop note above).
-                if parent_paths.spinoff(&pid).try_exists().unwrap_or(true) {
+                // Propagate an unknowable existence error rather than guessing
+                // — see the discussion-loop note above.
+                if exists_or_io_err(&parent_paths.spinoff(&pid))? {
                     consumption.skipped_already_present += 1;
                     continue;
                 }
@@ -379,6 +399,39 @@ mod tests {
         // the 50-bit window) must land in the low bit of char 9.
         assert_eq!(base32_lower_10(&[0x80, 0, 0, 0, 0, 0, 0]), "qaaaaaaaaa");
         assert_eq!(base32_lower_10(&[0, 0, 0, 0, 0, 0, 0x40]), "aaaaaaaaab");
+    }
+
+    #[test]
+    fn deterministic_ids_validate_against_core_id_newtypes() {
+        // Producer/consumer guard: the supervisor's deterministic_id is fed
+        // straight into DiscussionId/ProposalId::parse_str at emit time, so its
+        // output MUST satisfy the tightened core validators (10-char RFC 4648
+        // base32). If base32_lower_10's alphabet or width ever drifts, replay
+        // would break — catch it here instead.
+        for seq in [0u64, 1, 7, 42, 1000, u64::MAX] {
+            for i in [0usize, 1, 5, 99] {
+                let d = deterministic_id(
+                    'd',
+                    "01jxsnap000000000000000000",
+                    "n-0001",
+                    seq,
+                    "discussion",
+                    i,
+                );
+                DiscussionId::parse_str(&d)
+                    .unwrap_or_else(|e| panic!("deterministic discussion id {d} rejected: {e}"));
+                let s = deterministic_id(
+                    's',
+                    "01jxsnap000000000000000000",
+                    "n-0001",
+                    seq,
+                    "spinoff",
+                    i,
+                );
+                ProposalId::parse_str(&s)
+                    .unwrap_or_else(|e| panic!("deterministic spinoff id {s} rejected: {e}"));
+            }
+        }
     }
 
     #[test]

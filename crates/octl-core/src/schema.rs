@@ -30,17 +30,26 @@ fn all_rfc4648_base32_lower(s: &str) -> bool {
 }
 
 /// True iff `body` is a canonical [`DiscussionId`] / [`ProposalId`] body: the
-/// exact union of the two — and only two — forms a real generator emits.
+/// *syntactic* union of the two shapes real generators use.
 ///
-/// 1. A 26-char lowercase Crockford base32 ULID (`d-<ulid>` / `s-<ulid>` from
-///    [`crate::new_discussion_id`] / [`crate::new_proposal_id`]).
+/// 1. A 26-char lowercase Crockford base32 string — the `d-<ulid>` / `s-<ulid>`
+///    shape from [`crate::new_discussion_id`] / [`crate::new_proposal_id`].
 /// 2. A 10-char RFC 4648 base32 lowercase string (`a-z2-7`) — the
-///    deterministic-id (`x-<sha-prefix>`) form the supervisor emits.
+///    deterministic-id (`x-<sha-prefix>`) shape the supervisor emits.
 ///
-/// This is intentionally *exact*, not merely path-safe: it rejects ids no
-/// generator can produce — a body of any length other than 10 or 26, a 10-char
-/// body outside RFC 4648 base32 (e.g. `0123456789`, which carries `0`/`1`), or
-/// a 26-char body outside Crockford (e.g. one containing `i`/`l`/`o`/`u`).
+/// This is a length+charset check, not proof a value was actually emitted by a
+/// generator. Two deliberate looseness notes:
+/// - The 10-char arm accepts any RFC 4648 base32 string (e.g. `zzzzzzzzzz`),
+///   not only sha-derived ones — the supervisor's digest prefix is itself
+///   uniform over that alphabet, so there is no charset rule that separates
+///   "real" from "syntactically possible" output.
+/// - The 26-char arm checks the Crockford charset only; unlike [`RunId`] it does
+///   *not* enforce the first-char `0..=7` ULID-timestamp bound. Tightening
+///   [`RunId`]/[`NodeId`] is out of scope for this validator (it would also
+///   reject the looser ULID-shaped fixtures the suite still uses); the goal here
+///   is just to reject the previously-accepted-but-impossible loose forms — any
+///   body length other than 10 or 26, a 10-char body carrying `0`/`1`/`8`/`9`,
+///   or a 26-char body carrying `i`/`l`/`o`/`u`.
 fn is_canonical_disc_or_proposal_body(body: &str) -> bool {
     (body.len() == 26 && all_crockford_lower(body))
         || (body.len() == 10 && all_rfc4648_base32_lower(body))
@@ -104,8 +113,20 @@ impl IdValidationError {
 /// newtype supplies its own `parse_str` in a separate `impl` block.
 ///
 /// `Ord` / `PartialOrd` are derived, so they forward to the inner `String`'s
-/// ordering — i.e. plain `&str` byte comparison. For the ULID forms this
+/// ordering — i.e. plain `&str` byte comparison. For the fixed-width ULID forms
+/// ([`RunId`], and the 26-char arm of `DiscussionId`/`ProposalId`) this
 /// preserves the natural time ordering ULIDs encode in their lexical sort.
+///
+/// CAVEAT — this ordering is lexical, *not* numeric or semantic:
+/// - [`NodeId`] is `n-` + a variable-width number, so once the counter grows a
+///   digit the byte order diverges from the numeric order: `n-10000 < n-9999`.
+///   Do not sort `NodeId`s expecting ascending node number; parse the body if
+///   you need that.
+/// - `DiscussionId`/`ProposalId` mix a 26-char and a 10-char form, so ordering
+///   across the two forms is arbitrary, not creation order.
+///
+/// The trait is provided for `BTreeMap`/`BTreeSet` keys and stable sorts, not
+/// as a claim of meaningful order for these two types.
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -603,13 +624,17 @@ pub struct SpinoffProposal {
 ///
 /// `run_id` / `node_id` are the typed id newtypes, so deserializing an
 /// `events.jsonl` line validates the whole envelope on read: a malformed
-/// `run_id` or `node_id` fails the parse (surfacing as [`Error::CorruptEventLog`]
-/// at the read boundary) rather than being carried as an unvalidated `String`
-/// until some later path helper. The reducer still performs its own per-event
-/// checks (envelope `run_id` matches the run it is folded into; `data`-borne
-/// ids parse), but the envelope ids can no longer be the unvalidated party.
+/// `run_id` or `node_id` fails the `serde` parse at the read boundary (the
+/// id newtypes' validating `Deserialize`) rather than being carried as an
+/// unvalidated `String` until some later path helper. The parse failure
+/// surfaces as whatever error the reader maps a bad line to — e.g.
+/// [`read_all_events`] tags it [`Error::Json`] with the log path. The reducer
+/// still performs its own per-event checks (envelope `run_id` matches the run
+/// it is folded into; `data`-borne ids parse), but the envelope ids can no
+/// longer be the unvalidated party.
 ///
-/// [`Error::CorruptEventLog`]: crate::Error::CorruptEventLog
+/// [`read_all_events`]: crate::events::read_all_events
+/// [`Error::Json`]: crate::Error::Json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Wall-clock timestamp the event was appended.
