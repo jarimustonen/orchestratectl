@@ -433,4 +433,110 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].run_id, run_id);
     }
+
+    /// Build a `RunPaths` over a fresh tempdir and write `bytes` verbatim to
+    /// `events.jsonl` — verbatim so a test can craft torn-line boundaries
+    /// (a missing trailing `\n`) that the append path never produces.
+    fn paths_with_events(tmp: &TempDir, bytes: &[u8]) -> RunPaths {
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+        std::fs::write(paths.events(), bytes).unwrap();
+        paths
+    }
+
+    #[test]
+    fn find_prior_with_key_missing_log_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+        // No events.jsonl written at all.
+        let got = find_prior_with_key(&paths, "node.report", "k1").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn find_prior_with_key_finds_the_matching_line() {
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"seq":1,"kind":"node.status","idempotency_key":"k0","node_id":"n-1","data":{}}"#,
+            "\n",
+            r#"{"seq":2,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{"ok":true}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let got = find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .expect("match");
+        assert_eq!(got.seq, 2);
+        assert_eq!(got.node_id.as_deref(), Some("n-1"));
+        assert_eq!(got.data, serde_json::json!({"ok": true}));
+    }
+
+    #[test]
+    fn find_prior_with_key_no_match_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"seq":1,"kind":"node.report","idempotency_key":"other","node_id":"n-1","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        assert!(find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn find_prior_with_key_tolerates_torn_final_line() {
+        // A complete record, then a crash-truncated final line with NO
+        // trailing newline — exactly what `recover_last_seq` tolerates.
+        // The scan must still return the earlier match and never error.
+        let tmp = TempDir::new().unwrap();
+        let mut log = String::new();
+        log.push_str(
+            r#"{"seq":1,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{"ok":true}}"#,
+        );
+        log.push('\n');
+        log.push_str(r#"{"seq":2,"kind":"node.rep"#); // torn mid-write, no newline
+        let paths = paths_with_events(&tmp, log.as_bytes());
+
+        let got = find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .expect("match before the torn tail");
+        assert_eq!(got.seq, 1);
+
+        // A torn final line with no matching key ahead of it returns None,
+        // not an error.
+        let tmp2 = TempDir::new().unwrap();
+        let paths2 = paths_with_events(&tmp2, br#"{"seq":1,"kind":"node.rep"#);
+        assert!(find_prior_with_key(&paths2, "node.report", "k1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn find_prior_with_key_rejects_torn_middle_line() {
+        // A newline-terminated garbage line FOLLOWED by another line: this
+        // is interior corruption, not an in-flight tail. It must be a hard
+        // error, never a silent skip — a skipped line could carry the very
+        // key being looked up and let the caller double-append.
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"seq":1,"kind":"node.report","idempotency_key":"k0","node_id":"n-1","data":{}}"#,
+            "\n",
+            "{not valid json at all\n",
+            r#"{"seq":3,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let err = find_prior_with_key(&paths, "node.report", "k1").unwrap_err();
+        match err {
+            Error::CorruptEventLog { reason, .. } => {
+                assert!(reason.contains("line 2"), "reason was: {reason}");
+                assert!(reason.contains("last good seq 1"), "reason was: {reason}");
+            }
+            other => panic!("expected CorruptEventLog, got {other:?}"),
+        }
+    }
 }
