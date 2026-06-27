@@ -30,6 +30,7 @@ expression: v
   "status": "done",
   "supervisor_pid": null,
   "task": "investigate /login redirect",
+  "tmux_identity": null,
   "tmux_window": null,
   "updated_at": "<ts>",
   "worktree_path": null

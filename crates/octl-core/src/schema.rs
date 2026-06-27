@@ -525,8 +525,18 @@ pub struct Node {
     pub worktree_path: Option<String>,
     /// Git branch the node works on, if any.
     pub branch: Option<String>,
-    /// tmux window hosting the node's agent, if interactive.
+    /// tmux window hosting the node's agent, if interactive. This is the
+    /// human-readable window *name* — not unique across sessions and blind to
+    /// non-default sockets. Kept for display and as the legacy liveness key;
+    /// prefer [`Node::tmux_identity`] when present.
     pub tmux_window: Option<String>,
+    /// Fully-qualified tmux identity (`session:window_id` + socket path)
+    /// captured at spawn time. `None` for nodes registered before create.sh
+    /// emitted the qualified fields — those fall back to bare-name matching on
+    /// [`Node::tmux_window`]. New spawns always populate this when create.sh
+    /// returns it.
+    #[serde(default)]
+    pub tmux_identity: Option<TmuxIdentity>,
     /// PID of the running agent process, if live.
     pub agent_pid: Option<i32>,
     /// Start time of the agent process, used to detect PID reuse.
@@ -553,6 +563,27 @@ pub struct Node {
     /// report processing across supervisor restarts.
     #[serde(default)]
     pub last_processed_report_seq_by_child: Map<String, Value>,
+}
+
+/// A fully-qualified tmux window identity recorded at spawn time.
+///
+/// `tmux_window` (the human name) is not unique across sessions, and a bare
+/// `tmux list-windows -a` cannot see windows on a non-default socket. This
+/// triple pins the exact window the agent runs in — `session:window_id` is
+/// unique per server, `window_id` (the `@NNNN` form) survives renames, and
+/// `socket` disambiguates multiple tmux servers. The watchdog matches on this
+/// when present (design.md §8.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TmuxIdentity {
+    /// Server socket path (`#{socket_path}`). `None` if create.sh could not
+    /// read it; the watchdog then queries tmux on its default socket.
+    #[serde(default)]
+    pub socket: Option<String>,
+    /// Session that owns the window (`#{session_name}`).
+    pub session: String,
+    /// Stable window id in `@NNNN` form (`#{window_id}`). Survives renames and
+    /// is unique within the server.
+    pub window_id: String,
 }
 
 /// `discussions/<discussion-id>.json` (design.md §1.5).

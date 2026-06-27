@@ -24,7 +24,7 @@ use crate::projections::{
 use crate::schema::{
     ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,
     Lifecycle, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal, SpinoffStatus, Status,
-    STATE_SCHEMA_VERSION,
+    TmuxIdentity, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -581,6 +581,26 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     write_manifest(paths, &m)
 }
 
+/// Reconstruct the fully-qualified tmux identity from `node.created` event
+/// data. Returns `Some` only when both `tmux_session` and `tmux_window_id` are
+/// present and non-null — the minimum needed to match a window unambiguously.
+/// `tmux_socket` is optional (a default-socket spawn may emit null). Legacy
+/// events from a create.sh that predates the qualified fields yield `None`, so
+/// the node falls back to bare-name matching on `tmux_window`.
+fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
+    let session = d.get("tmux_session").and_then(Value::as_str)?.to_string();
+    let window_id = d.get("tmux_window_id").and_then(Value::as_str)?.to_string();
+    let socket = d
+        .get("tmux_socket")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(TmuxIdentity {
+        socket,
+        session,
+        window_id,
+    })
+}
+
 fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
@@ -618,6 +638,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
             .get("tmux_window")
             .and_then(Value::as_str)
             .map(str::to_string),
+        tmux_identity: tmux_identity_from_data(d),
         agent_pid: optional_i32(d, "agent_pid", &events_path, ev)?,
         agent_pid_start_time: optional_ts(d, "agent_pid_start_time", &events_path, ev)?,
         supervisor_pid: optional_i32(d, "supervisor_pid", &events_path, ev)?,
@@ -1005,5 +1026,88 @@ mod tests {
         // `run.status` is a clean no-op rather than an error).
         let mine = event(run_id);
         apply_event(&paths, &mine).expect("matching run_id must be accepted");
+    }
+
+    #[test]
+    fn tmux_identity_from_data_reads_qualified_fields() {
+        let d = serde_json::json!({
+            "tmux_socket": "/private/tmp/tmux-501/default",
+            "tmux_session": "octl",
+            "tmux_window_id": "@42",
+        });
+        let id = tmux_identity_from_data(&d).expect("qualified identity");
+        assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
+        assert_eq!(id.session, "octl");
+        assert_eq!(id.window_id, "@42");
+
+        // Null socket is tolerated — session + window_id are the minimum.
+        let d2 = serde_json::json!({
+            "tmux_socket": null,
+            "tmux_session": "octl",
+            "tmux_window_id": "@7",
+        });
+        let id2 = tmux_identity_from_data(&d2).expect("identity without socket");
+        assert_eq!(id2.socket, None);
+        assert_eq!(id2.window_id, "@7");
+    }
+
+    #[test]
+    fn tmux_identity_from_data_back_compat_is_none() {
+        // Legacy create.sh: no qualified fields at all.
+        let legacy = serde_json::json!({ "tmux_window": "🚀 wt/x" });
+        assert!(tmux_identity_from_data(&legacy).is_none());
+        // Partial (window_id without session) is also insufficient → None.
+        let partial = serde_json::json!({ "tmux_window_id": "@42" });
+        assert!(tmux_identity_from_data(&partial).is_none());
+    }
+
+    /// End-to-end: a `node.created` event carrying the qualified fields folds
+    /// them into `Node.tmux_identity`; one without them leaves it `None`.
+    #[test]
+    fn node_created_populates_tmux_identity() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        let mut ev = event(run_id);
+        ev.seq = 2;
+        ev.kind = "node.created".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({
+            "kind": "spinoff",
+            "tmux_window": "🚀 wt/x",
+            "tmux_socket": "/private/tmp/tmux-501/default",
+            "tmux_session": "octl",
+            "tmux_window_id": "@42",
+        });
+        apply_node_created(&paths, &ev).expect("node.created applies");
+        let n = read_node_opt(&paths, &NodeId::parse_str("n-0001").unwrap())
+            .unwrap()
+            .unwrap();
+        let id = n.tmux_identity.expect("qualified identity recorded");
+        assert_eq!(id.session, "octl");
+        assert_eq!(id.window_id, "@42");
+        assert_eq!(n.tmux_window.as_deref(), Some("🚀 wt/x"));
+
+        // A second run with a legacy event leaves tmux_identity None.
+        let run2 = "02jxsnap000000000000000000";
+        let rid2 = RunId::parse_str(run2).unwrap();
+        let dir2 = crate::run_dir(tmp.path(), &rid2);
+        std::fs::create_dir_all(&dir2).unwrap();
+        let paths2 = RunPaths::new(dir2, run2).unwrap();
+        let mut ev2 = event(run2);
+        ev2.seq = 2;
+        ev2.kind = "node.created".into();
+        ev2.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev2.data = serde_json::json!({ "kind": "spinoff", "tmux_window": "🚀 wt/y" });
+        apply_node_created(&paths2, &ev2).expect("legacy node.created applies");
+        let n2 = read_node_opt(&paths2, &NodeId::parse_str("n-0001").unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(n2.tmux_identity.is_none());
+        assert_eq!(n2.tmux_window.as_deref(), Some("🚀 wt/y"));
     }
 }

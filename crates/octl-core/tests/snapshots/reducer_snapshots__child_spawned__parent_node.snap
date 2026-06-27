@@ -27,6 +27,7 @@ expression: v
   "status": "pending",
   "supervisor_pid": null,
   "task": "drive epic foo",
+  "tmux_identity": null,
   "tmux_window": null,
   "updated_at": "<ts>",
   "worktree_path": null
