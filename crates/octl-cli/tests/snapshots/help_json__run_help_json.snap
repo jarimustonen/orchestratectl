@@ -9,6 +9,7 @@ expression: value
     "command": "orchestratectl run",
     "about": "Create, list, show, cancel, or reattach a run",
     "aliases": [],
+    "hidden": false,
     "flags": [
       {
         "long": "help",
@@ -46,6 +47,7 @@ expression: value
         "command": "orchestratectl run cancel",
         "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -108,6 +110,7 @@ expression: value
         "command": "orchestratectl run create",
         "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "dry-run",
@@ -328,6 +331,7 @@ expression: value
         "command": "orchestratectl run list",
         "about": "List runs on disk",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -392,6 +396,7 @@ expression: value
         "command": "orchestratectl run reattach",
         "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -469,6 +474,7 @@ expression: value
         "command": "orchestratectl run show",
         "about": "Show one run's manifest and counters",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",

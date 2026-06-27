@@ -9,6 +9,7 @@ expression: value
     "command": "orchestratectl",
     "about": "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
     "aliases": [],
+    "hidden": false,
     "version": "[VERSION]",
     "flags": [
       {
@@ -47,6 +48,7 @@ expression: value
         "command": "orchestratectl discussion",
         "about": "List, show, or resolve discussions for a run",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -84,6 +86,7 @@ expression: value
             "command": "orchestratectl discussion list",
             "about": "List discussions for a run",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -150,6 +153,7 @@ expression: value
             "command": "orchestratectl discussion resolve",
             "about": "Resolve a discussion — emits `discussion.resolved`, updates the projection. Idempotent on `--choice`; conflict on `--choice` change",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "choice",
@@ -265,6 +269,7 @@ expression: value
             "command": "orchestratectl discussion show",
             "about": "Show a single discussion projection",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -326,6 +331,7 @@ expression: value
         "command": "orchestratectl doctor",
         "about": "Read-only self-diagnostic: validate schema, skill-sync, deps, config, and data integrity. `--fix` applies the safe subset",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "dry-run",
@@ -392,6 +398,7 @@ expression: value
         "command": "orchestratectl event",
         "about": "Read (`tail`) or append (`create`) events on a run's event log",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -429,6 +436,7 @@ expression: value
             "command": "orchestratectl event create",
             "about": "Append one event to a run's `events.jsonl` and update projections",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -550,6 +558,7 @@ expression: value
             "about": "Stream events from a run's `events.jsonl`. Tails to EOF and exits (or follows the file with `--follow`, polling every 500ms)",
             "long_about": "Stream events from a run's `events.jsonl`. Tails to EOF and exits (or follows the file with `--follow`, polling every 500ms).\n\nJSONL mode emits one object per line and terminates with exactly one `{\"event\":\"result\"|\"cancelled\",\"schema_version\":1, ...}` envelope. With `--follow`, SIGINT exits 130. SIGTERM also exits 130 (known divergence from AGENTS-AI-FIRST-CLI §12's 143 — `ctrlc` does not surface the signal value; see comment in `tail.rs`).",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "follow",
@@ -645,6 +654,7 @@ expression: value
         "command": "orchestratectl node",
         "about": "List nodes, show a node, or submit a structured terminal report",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -682,6 +692,7 @@ expression: value
             "command": "orchestratectl node list",
             "about": "List nodes belonging to a run",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -745,6 +756,7 @@ expression: value
             "command": "orchestratectl node report",
             "about": "Agent self-submission of a structured terminal report (§7.3)",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -846,6 +858,7 @@ expression: value
             "command": "orchestratectl node show",
             "about": "Print one node's JSON projection",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -907,6 +920,7 @@ expression: value
         "command": "orchestratectl run",
         "about": "Create, list, show, cancel, or reattach a run",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -944,6 +958,7 @@ expression: value
             "command": "orchestratectl run cancel",
             "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1006,6 +1021,7 @@ expression: value
             "command": "orchestratectl run create",
             "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -1226,6 +1242,7 @@ expression: value
             "command": "orchestratectl run list",
             "about": "List runs on disk",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1290,6 +1307,7 @@ expression: value
             "command": "orchestratectl run reattach",
             "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1367,6 +1385,7 @@ expression: value
             "command": "orchestratectl run show",
             "about": "Show one run's manifest and counters",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1418,6 +1437,7 @@ expression: value
         "command": "orchestratectl skill",
         "about": "List, show, or install companion AI-skills shipped with this binary",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -1455,6 +1475,7 @@ expression: value
             "command": "orchestratectl skill install",
             "about": "Copy a skill's SKILL.md to the agent's skill directory. Installs every embedded skill when no name is given (per §15)",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "agent",
@@ -1553,6 +1574,7 @@ expression: value
             "command": "orchestratectl skill list",
             "about": "List skills embedded in this binary",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1591,6 +1613,7 @@ expression: value
             "command": "orchestratectl skill print",
             "about": "Stream a skill's SKILL.md (frontmatter + body) byte-identically to stdout. Read-only twin of `install` (AGENTS-AI-FIRST-CLI §16)",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1641,6 +1664,7 @@ expression: value
             "command": "orchestratectl skill show",
             "about": "Print a skill's SKILL.md to stdout",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1693,6 +1717,7 @@ expression: value
         "command": "orchestratectl spinoff",
         "about": "List, approve, or reject spin-off proposals on a run",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -1730,6 +1755,7 @@ expression: value
             "command": "orchestratectl spinoff approve",
             "about": "Approve a proposal: emit `spinoff.approved` and (optionally) materialize an issue via `issuectl new`",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -1830,6 +1856,7 @@ expression: value
             "command": "orchestratectl spinoff list",
             "about": "List spin-off proposals for a run",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "help",
@@ -1897,6 +1924,7 @@ expression: value
             "command": "orchestratectl spinoff reject",
             "about": "Reject a proposal: emit `spinoff.rejected`",
             "aliases": [],
+            "hidden": false,
             "flags": [
               {
                 "long": "dry-run",
@@ -1997,6 +2025,7 @@ expression: value
         "command": "orchestratectl supervise",
         "about": "Long-lived per-run supervisor: tail-follow events, watchdog agents, consume child `node.report` events with deterministic- ID dedup. Re-enters the same binary; `run reattach` invokes it",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",
@@ -2075,6 +2104,7 @@ expression: value
         "command": "orchestratectl version",
         "about": "Show binary, commit, and state-schema versions",
         "aliases": [],
+        "hidden": false,
         "flags": [
           {
             "long": "help",

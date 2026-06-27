@@ -52,6 +52,9 @@ pub struct CommandNode {
     pub long_about: Option<String>,
     /// Visible aliases for this command.
     pub aliases: Vec<String>,
+    /// Whether the command is hidden from the human text help. Hidden
+    /// commands are still listed (agents may invoke them) but flagged.
+    pub hidden: bool,
     /// Command version, when one is set (typically only the root).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -138,7 +141,11 @@ pub fn detect_json_help_request(args: &[String]) -> Option<OutputSpec> {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        if a == "--help" || a == "-h" {
+        if a == "--" {
+            // End-of-options: everything after is a positional value, so a
+            // trailing `--help` is data, not a help request. Stop scanning.
+            break;
+        } else if a == "--help" || a == "-h" {
             help = true;
             i += 1;
         } else if a == "--output" {
@@ -166,12 +173,25 @@ pub fn detect_json_help_request(args: &[String]) -> Option<OutputSpec> {
 /// is not a known subcommand (e.g. a positional value) ends the walk. This
 /// mirrors clap's own drill-down: `run create --help` resolves to the
 /// `create` leaf regardless of where `--help`/`--output` sit in argv.
+///
+/// Limitation: this is a lightweight scan, not a full clap parse. It knows
+/// the arity of only the global `--output`; the value of any *other*
+/// value-taking flag is treated as a candidate subcommand. That is sound
+/// for the current command tree — value-taking flags live only on leaf
+/// commands, which have no subcommands for a stray value to match — but a
+/// value-taking flag added at a noun level would need this replaced with a
+/// clap lenient-parse resolver (`ignore_errors`). Tracked in the
+/// `help-json-clap-native-resolution` spin-off.
 pub fn navigate<'a>(root: &'a Command, args: &[String]) -> (&'a Command, String) {
     let mut cur = root;
     let mut path = vec![root.get_name().to_string()];
     let mut i = 0;
     while i < args.len() {
         let tok = &args[i];
+        if tok == "--" {
+            // End-of-options: nothing after is a subcommand.
+            break;
+        }
         if tok == "--output" {
             i += 2; // skip the flag and its space-separated value
             continue;
@@ -228,11 +248,20 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         .collect();
     subcommands.sort_by(|a, b| a.command.cmp(&b.command));
 
+    let about = cmd.get_about().map(ToString::to_string);
+    // Only surface `long_about` when it adds something over `about`; clap
+    // returns the same text for both when only `about` was set.
+    let long_about = cmd
+        .get_long_about()
+        .map(ToString::to_string)
+        .filter(|l| Some(l) != about.as_ref());
+
     CommandNode {
         command: command_path.to_string(),
-        about: cmd.get_about().map(ToString::to_string),
-        long_about: cmd.get_long_about().map(ToString::to_string),
+        about,
+        long_about,
         aliases: cmd.get_visible_aliases().map(ToString::to_string).collect(),
+        hidden: cmd.is_hide_set(),
         version: cmd.get_version().map(ToString::to_string),
         flags,
         positionals,
@@ -273,7 +302,12 @@ fn build_positional(arg: &Arg) -> PositionalInfo {
         name: arg.get_id().as_str().to_string(),
         help: arg.get_help().map(ToString::to_string),
         value_names: value_names(arg),
-        index: arg.get_index().unwrap_or(0),
+        // `build()` assigns every positional a 1-based index before we
+        // walk, so this is always `Some`. Emitting a bogus `0` instead
+        // would silently mis-sort and lie about the position.
+        index: arg
+            .get_index()
+            .expect("positional has an index after Command::build()"),
         required: arg.is_required_set(),
         multiple: multiple(arg, arg.get_action()),
         accepted_values: accepted_values(arg),

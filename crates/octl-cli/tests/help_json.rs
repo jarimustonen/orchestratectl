@@ -155,3 +155,71 @@ fn output_text_with_help_stays_text() {
         "--output text --help must not be JSON: {stdout:?}"
     );
 }
+
+#[test]
+fn output_equals_form_triggers_json_help() {
+    // `--output=json` (equals form) must trigger structured help too.
+    let stdout = help_stdout(&["run", "create", "--help", "--output=json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["data"]["command"], "orchestratectl run create");
+}
+
+#[test]
+fn double_dash_suppresses_json_help_detection() {
+    // After `--`, a trailing `--help`/`--output` is positional data, not a
+    // help request. Detection must not fire; clap handles the args (here
+    // `run` requires a subcommand, so it errors — the point is that we did
+    // NOT emit a JSON help envelope on stdout).
+    let out = bin()
+        .args(["run", "--", "--help", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.stdout.is_empty(),
+        "`--` must suppress JSON help on stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn subcommands_are_sorted_by_name() {
+    // Stability contract: nested subcommands sorted (by command path).
+    let stdout = help_stdout(&["run", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let cmds: Vec<String> = v["data"]["subcommands"]
+        .as_array()
+        .expect("subcommands array")
+        .iter()
+        .map(|s| s["command"].as_str().expect("command string").to_string())
+        .collect();
+    let mut sorted = cmds.clone();
+    sorted.sort();
+    assert_eq!(cmds, sorted, "subcommands must be sorted");
+    assert!(cmds.len() >= 4, "run should list its verbs: {cmds:?}");
+}
+
+#[test]
+fn unknown_subcommand_with_json_help_falls_back_to_root() {
+    // Documented behavior (locked intentionally): structured help is a
+    // pre-parse query, so an unknown subcommand is treated as a positional
+    // and the walk stops at the deepest *valid* node (here the root). This
+    // does NOT error — see help::navigate. A future clap-native resolver
+    // (spin-off help-json-clap-native-resolution) may tighten this.
+    let stdout = help_stdout(&["bogus-subcommand", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["data"]["command"], "orchestratectl");
+}
+
+#[test]
+fn output_file_help_writes_json_file() {
+    // A `.json` file destination routes the help envelope to that file.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("help.json");
+    bin()
+        .args(["--help", "--output", path.to_str().unwrap()])
+        .assert()
+        .success();
+    let body = std::fs::read_to_string(&path).expect("help file written");
+    let v: Value = serde_json::from_str(&body).expect("file is valid JSON");
+    assert_eq!(v["data"]["schema_version_help"], 1);
+}

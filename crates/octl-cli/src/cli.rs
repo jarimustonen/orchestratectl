@@ -141,6 +141,21 @@ impl From<SkillAgentArg> for crate::skill::AgentTarget {
 }
 
 pub fn run() -> ExitCode {
+    // Structured `--help --output json|jsonl` (AGENTS-AI-FIRST-CLI §14):
+    // clap's `--help` only renders text, so intercept the request before
+    // anything else and project the command surface to JSON instead. A bare
+    // `--help` (no explicit `--output`) or `--output text` returns `None`
+    // here and falls through to clap's default text help.
+    //
+    // This runs *before* `init_logging`: structured help is pure metadata
+    // that never touches run state, so it must not depend on (or be
+    // perturbed by) the log file's writability — keeping the payload
+    // deterministic regardless of `$HOME`/`$ORCHESTRATECTL_HOME`.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(spec) = crate::help::detect_json_help_request(&raw_args) {
+        return emit_json_help(&raw_args, &spec);
+    }
+
     // `_log_guard` owns the non-blocking writer's worker thread. It MUST
     // stay alive for the whole of `run()`: dropping it flushes buffered
     // events and joins the thread, so binding it here keeps logs flowing
@@ -154,16 +169,6 @@ pub fn run() -> ExitCode {
         warnings: logging_warnings,
         _guard: _log_guard,
     } = init_logging();
-
-    // Structured `--help --output json|jsonl` (AGENTS-AI-FIRST-CLI §14):
-    // clap's `--help` only renders text, so intercept the request before
-    // parsing and project the command surface to JSON instead. A bare
-    // `--help` (no explicit `--output`) or `--output text` returns `None`
-    // here and falls through to clap's default text help.
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(spec) = crate::help::detect_json_help_request(&raw_args) {
-        return emit_json_help(&raw_args, &spec, &logging_warnings);
-    }
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -228,14 +233,17 @@ pub fn run() -> ExitCode {
 /// `raw_args` and emit it through the standard success envelope. Builds
 /// the clap command tree (propagating global flags and help/version into
 /// every subcommand), walks to the requested command, and projects it.
-fn emit_json_help(raw_args: &[String], spec: &OutputSpec, warnings: &[String]) -> ExitCode {
+///
+/// No `warnings` parameter: help renders before `init_logging`, so there
+/// are none to surface — the payload is pure command metadata.
+fn emit_json_help(raw_args: &[String], spec: &OutputSpec) -> ExitCode {
     let mut root = Cli::command();
     // Propagate global args (e.g. `--output`) and the implicit `--help`
     // into every subcommand so each node's flag list is accurate.
     root.build();
     let (target, path) = crate::help::navigate(&root, raw_args);
     let data = crate::help::build_help(target, &path);
-    match output::emit_envelope(&data, spec, warnings) {
+    match output::emit_envelope(&data, spec, &[]) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             e.emit();
