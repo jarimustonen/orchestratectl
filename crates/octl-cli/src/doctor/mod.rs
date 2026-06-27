@@ -115,6 +115,14 @@ fn emit_dry_run(
     match spec.format {
         OutputFormat::Text => {
             render_text_checks(results);
+            // Mirror the real-run summary so a human (or text-parsing agent)
+            // sees the fail/warn tally even in dry-run, where the exit code
+            // is always 0.
+            let summary = Summary::tally(results);
+            println!(
+                "summary: {} ok, {} warn, {} fail",
+                summary.ok, summary.warn, summary.fail
+            );
             if plan.is_empty() {
                 println!("dry-run: no safe fixes to apply");
             } else {
@@ -214,8 +222,11 @@ fn render_text_fixes(fixes: &[fix::AppliedFix]) {
     }
 }
 
-/// Streaming jsonl: one check object per line, then any applied-fix
-/// events, then a terminal summary event.
+/// Streaming jsonl: one self-describing object per line. Every line
+/// carries `schema_version` and an `event` discriminator
+/// (`check`/`fix`/`summary`) so a streaming consumer can identify and
+/// version-check each record independently — the bundled `{schema_version,
+/// data}` envelope is only available via `--output json`.
 fn render_jsonl(
     results: &[CheckResult],
     summary: &Summary,
@@ -224,23 +235,29 @@ fn render_jsonl(
     spec: &OutputSpec,
 ) -> Result<(), CliError> {
     let mut buf = String::new();
-    for r in results {
-        let line = serde_json::to_string(r)
-            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-        buf.push_str(&line);
+    let mut push = |mut v: serde_json::Value, event: &str| -> Result<(), CliError> {
+        let obj = v.as_object_mut().ok_or_else(|| {
+            CliError::system("internal_serialize", "jsonl event was not an object")
+        })?;
+        obj.insert("event".into(), json!(event));
+        obj.insert("schema_version".into(), json!(octl_core::SCHEMA_VERSION));
+        buf.push_str(&serde_json::Value::Object(obj.clone()).to_string());
         buf.push('\n');
+        Ok(())
+    };
+    for r in results {
+        let v = serde_json::to_value(r)
+            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
+        push(v, "check")?;
     }
     if let Some(fixes) = applied {
         for f in fixes {
-            let mut v = serde_json::to_value(f)
+            let v = serde_json::to_value(f)
                 .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
-            v["event"] = json!("fix");
-            buf.push_str(&v.to_string());
-            buf.push('\n');
+            push(v, "fix")?;
         }
     }
     let mut summary_event = json!({
-        "event": "summary",
         "ok": summary.ok,
         "warn": summary.warn,
         "fail": summary.fail,
@@ -248,8 +265,7 @@ fn render_jsonl(
     if !warnings.is_empty() {
         summary_event["warnings"] = json!(warnings);
     }
-    buf.push_str(&summary_event.to_string());
-    buf.push('\n');
+    push(summary_event, "summary")?;
     write_str(&buf, spec)
 }
 

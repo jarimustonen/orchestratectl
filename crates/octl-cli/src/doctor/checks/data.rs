@@ -30,7 +30,16 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(e) => e,
         // Missing runs dir is the empty state; schema.runs already says so.
-        Err(_) => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        // Any other read failure (permissions, IO) is a real data-integrity
+        // blind spot — surface it rather than silently passing the category.
+        Err(e) => {
+            return vec![CheckResult::fail(
+                "data.orphan-supervisor",
+                format!("cannot read {}: {e}", runs_dir.display()),
+                format!("check permissions on {}", runs_dir.display()),
+            )];
+        }
     };
 
     let mut run_ids: Vec<String> = entries
@@ -44,18 +53,33 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     for run_id in &run_ids {
         let paths = RunPaths::new(runs_dir.join(run_id));
         let pid_path = paths.supervisor_pid();
+        let id = format!("data.orphan-supervisor.{run_id}");
+
+        // Distinguish "no PID file" (nothing to orphan-check) from "PID
+        // file present but unparseable" (data corruption worth a WARN).
+        if !pid_path.exists() {
+            continue;
+        }
         let Some(pid) = pid_file::read_pid(&pid_path) else {
-            // No PID file (or unparseable): nothing to orphan-check.
+            out.push(CheckResult::warn(
+                id,
+                format!(
+                    "supervisor pid file {} is unreadable/unparseable",
+                    pid_path.display()
+                ),
+                format!("inspect or rm {}", pid_path.display()),
+            ));
             continue;
         };
-        let id = format!("data.orphan-supervisor.{run_id}");
         if pid_file::pid_alive(pid) {
             out.push(CheckResult::ok(id, format!("supervisor pid {pid} alive")));
             continue;
         }
 
         // Dead PID. Suggest reattach; offer auto-removal only when the
-        // marker is clearly abandoned (>24h old).
+        // marker is clearly abandoned (>24h old). The applier re-validates
+        // the PID just before removal, so the staleness here is a gate on
+        // *offering* the fix, not the final safety check.
         let suggestion = format!(
             "orchestratectl run reattach {run_id} (or rm {})",
             pid_path.display()
@@ -69,7 +93,10 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
             suggestion,
         );
         if pid_file_is_stale(&pid_path) {
-            result = result.with_safe_fix(FixAction::RemoveFile(pid_path));
+            result = result.with_safe_fix(FixAction::RemoveStaleSupervisorPid {
+                path: pid_path,
+                observed_pid: pid,
+            });
         }
         out.push(result);
     }

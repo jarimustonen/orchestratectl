@@ -12,10 +12,18 @@ use crate::doctor::check::CheckResult;
 
 use super::Ctx;
 
-/// (binary name, install hint) for each hard dependency.
+/// (binary name, install hint) for each hard dependency. Hints name a
+/// concrete command but stay package-manager-neutral where the tool ships
+/// across ecosystems, so the advice is not wrong on Linux/CI hosts.
 const DEPS: &[(&str, &str)] = &[
-    ("tmux", "brew install tmux"),
-    ("git", "xcode-select --install (or brew install git)"),
+    (
+        "tmux",
+        "install tmux via your package manager (e.g. brew install tmux)",
+    ),
+    (
+        "git",
+        "install git via your package manager (e.g. xcode-select --install)",
+    ),
     ("workmux", "install workmux (see its README)"),
     ("issuectl", "cargo install issuectl (see its README)"),
 ];

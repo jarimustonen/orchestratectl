@@ -130,17 +130,17 @@ fn jsonl_streams_one_check_per_line_then_summary_event() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     assert!(lines.len() >= 2);
-    // Every non-final line is a check object; the final line is the
-    // summary event.
+    // Every line is self-describing: it carries schema_version and an
+    // event discriminator so a streaming consumer can version-check and
+    // route each record independently.
     let last: Value = serde_json::from_str(lines.last().unwrap()).expect("summary json");
     assert_eq!(last["event"], "summary");
+    assert_eq!(last["schema_version"], 1);
     assert!(last["ok"].is_number());
     let first: Value = serde_json::from_str(lines[0]).expect("check json");
+    assert_eq!(first["event"], "check");
+    assert_eq!(first["schema_version"], 1);
     assert!(first["id"].is_string());
-    assert!(
-        first.get("event").is_none(),
-        "check line must not be an event"
-    );
 }
 
 #[test]
@@ -278,6 +278,62 @@ fn dead_supervisor_pid_warns() {
         .as_str()
         .unwrap()
         .contains("run reattach deadrun"));
+}
+
+#[test]
+fn corrupt_supervisor_pid_warns() {
+    let env = setup();
+    let run_dir = env.orch.join("runs").join("corruptrun");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    write_minimal_manifest(&run_dir, "corruptrun");
+    std::fs::write(run_dir.join("supervisor.pid"), "not-a-pid").unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "data.orphan-supervisor.corruptrun");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"]
+        .as_str()
+        .unwrap()
+        .contains("unreadable/unparseable"));
+}
+
+#[test]
+fn fix_removes_stale_dead_supervisor_pid() {
+    let env = setup();
+    let run_dir = env.orch.join("runs").join("stalerun");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    write_minimal_manifest(&run_dir, "stalerun");
+    let pid_path = run_dir.join("supervisor.pid");
+    std::fs::write(&pid_path, "2147483647").unwrap();
+    // Backdate the mtime well past the 24h staleness threshold so the
+    // safe fix is offered. `touch -t` is portable across macOS/Linux.
+    let ok = Command::new("touch")
+        .args(["-t", "202001010000"])
+        .arg(&pid_path)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "touch -t failed; cannot backdate pid file");
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor", "--fix"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let fixes = v["data"]["fixes_applied"]
+        .as_array()
+        .expect("fixes_applied");
+    let f = fixes
+        .iter()
+        .find(|f| f["check_id"] == "data.orphan-supervisor.stalerun")
+        .expect("stale pid fix applied");
+    assert_eq!(f["applied"], true, "fix outcome: {f:?}");
+    assert!(!pid_path.exists(), "stale pid file should be removed");
 }
 
 /// Write a schema-valid manifest so the orphan-supervisor test exercises

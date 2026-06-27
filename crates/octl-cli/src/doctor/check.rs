@@ -82,11 +82,17 @@ impl CheckResult {
 }
 
 /// The concrete, side-effecting action the `--fix` applier may run for a
-/// finding. Only the §18 safe subset is representable here:
+/// finding. Only the §18 safe subset is representable here, and each
+/// variant is *domain-specific* — there is deliberately no generic
+/// "remove any file" so the safe subset cannot quietly grow into
+/// something destructive:
 ///
 /// - [`FixAction::InstallSkill`] re-installs a drifted companion skill
 ///   (`orchestratectl skill install <name> --force`).
-/// - [`FixAction::RemoveFile`] deletes a clearly-dead supervisor PID file.
+/// - [`FixAction::RemoveStaleSupervisorPid`] deletes a clearly-dead
+///   supervisor PID file. It carries `observed_pid` so the applier can
+///   re-validate (TOCTOU: a supervisor may have restarted between the
+///   check and the apply) before removing.
 ///
 /// Anything destructive of run data (e.g. repairing a corrupt
 /// manifest.json) is deliberately *not* representable: it stays a
@@ -95,8 +101,9 @@ impl CheckResult {
 pub enum FixAction {
     /// Re-install a drifted skill via `skill install <name> --force`.
     InstallSkill(String),
-    /// Remove a stale file (a >24h-dead supervisor PID file).
-    RemoveFile(PathBuf),
+    /// Remove a >24h-dead supervisor PID file, re-validating that the
+    /// file still holds `observed_pid` and that it is still dead.
+    RemoveStaleSupervisorPid { path: PathBuf, observed_pid: u32 },
 }
 
 impl FixAction {
@@ -105,7 +112,9 @@ impl FixAction {
     pub fn describe(&self) -> (&'static str, &'static str, String) {
         match self {
             FixAction::InstallSkill(name) => ("install", "skill", name.clone()),
-            FixAction::RemoveFile(path) => ("remove", "file", path.display().to_string()),
+            FixAction::RemoveStaleSupervisorPid { path, .. } => {
+                ("remove", "supervisor-pid", path.display().to_string())
+            }
         }
     }
 }

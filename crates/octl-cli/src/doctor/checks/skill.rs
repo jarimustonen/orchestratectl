@@ -33,13 +33,15 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
         let suggest_install = format!("orchestratectl skill install {name} --force");
 
         let Some(path) = skill::claude_default_path(name) else {
-            // HOME unset: cannot locate the install. Report once, neutrally.
+            // HOME unset: cannot locate any install. config.home already
+            // reports the root cause as a FAIL — emit a single consolidated
+            // skill.sync WARN rather than one noisy duplicate per skill.
             out.push(CheckResult::warn(
-                id,
-                format!("cannot locate install for {name} (HOME unset)"),
+                "skill.sync",
+                "cannot locate skill installs (HOME unset)",
                 "set HOME so the default skill path resolves",
             ));
-            continue;
+            break;
         };
 
         if !path.exists() {

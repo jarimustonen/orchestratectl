@@ -82,9 +82,24 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     )]
 }
 
-/// Best-effort writability probe that does not mutate the filesystem
-/// (doctor's read-only default). Uses the directory's permission bits
-/// rather than attempting a write.
+/// Writability probe that does not mutate the filesystem (doctor's
+/// read-only default). On Unix uses `access(2)` with `W_OK`, which honours
+/// the *effective* uid/gid, ownership, and read-only mounts — unlike
+/// `Permissions::readonly()`, which only inspects mode bits and returns
+/// "writable" for, e.g., a root-owned 0755 dir the current user cannot
+/// write. Off Unix, falls back to the mode-bit heuristic.
+#[cfg(unix)]
+fn is_writable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `access(2)` is read-only and side-effect-free; it only
+    // probes the path against the process's real uid/gid for W_OK.
+    unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
 fn is_writable(dir: &Path) -> bool {
     match std::fs::metadata(dir) {
         Ok(meta) => !meta.permissions().readonly(),

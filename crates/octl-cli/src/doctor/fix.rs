@@ -10,11 +10,12 @@
 //! changes nothing; a real `--fix` executes each action and returns a
 //! per-action outcome the caller renders alongside the check results.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Serialize;
 
 use super::check::{CheckResult, FixAction};
+use crate::supervise::pid_file;
 
 /// One entry in the `--fix --dry-run` plan (§11 `would` array).
 #[derive(Debug, Serialize)]
@@ -79,8 +80,46 @@ pub fn apply(results: &[CheckResult]) -> Vec<AppliedFix> {
 fn execute(fix: &FixAction) -> (bool, String) {
     match fix {
         FixAction::InstallSkill(name) => install_skill(name),
-        FixAction::RemoveFile(path) => match std::fs::remove_file(path) {
-            Ok(()) => (true, format!("removed {}", path.display())),
+        FixAction::RemoveStaleSupervisorPid { path, observed_pid } => {
+            remove_stale_supervisor_pid(path, *observed_pid)
+        }
+    }
+}
+
+/// Remove a stale supervisor PID file, re-validating immediately before
+/// the unlink to close the TOCTOU window between the check and the apply.
+/// A supervisor may have restarted in that gap and rewritten the file
+/// with a fresh, *live* PID; removing that would detach a healthy
+/// supervisor. So we refuse unless the file still holds exactly the PID
+/// we observed and that PID is still dead.
+fn remove_stale_supervisor_pid(path: &std::path::Path, observed_pid: u32) -> (bool, String) {
+    match pid_file::read_pid(path) {
+        None => (
+            false,
+            format!(
+                "{} no longer holds a PID; refusing to remove",
+                path.display()
+            ),
+        ),
+        Some(current) if current != observed_pid => (
+            false,
+            format!(
+                "{} changed (pid {current} != observed {observed_pid}); refusing to remove",
+                path.display()
+            ),
+        ),
+        Some(current) if pid_file::pid_alive(current) => (
+            false,
+            format!(
+                "pid {current} is now alive; refusing to remove {}",
+                path.display()
+            ),
+        ),
+        Some(_) => match std::fs::remove_file(path) {
+            Ok(()) => (
+                true,
+                format!("removed stale supervisor pid file {}", path.display()),
+            ),
             Err(e) => (false, format!("could not remove {}: {e}", path.display())),
         },
     }
@@ -100,8 +139,12 @@ fn install_skill(name: &str) -> (bool, String) {
             )
         }
     };
+    // Detach stdin: this is a non-interactive repair path and must never
+    // block on a prompt. (`skill install` is already non-interactive, but
+    // closing stdin makes the no-hang guarantee structural.)
     let output = Command::new(exe)
         .args(["skill", "install", name, "--force", "--output", "json"])
+        .stdin(Stdio::null())
         .output();
     match output {
         Ok(out) if out.status.success() => (true, format!("re-installed skill {name}")),
@@ -117,5 +160,60 @@ fn install_skill(name: &str) -> (bool, String) {
             )
         }
         Err(e) => (false, format!("could not spawn skill install {name}: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn pid_file(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("supervisor.pid");
+        std::fs::write(&p, content).unwrap();
+        (dir, p)
+    }
+
+    #[test]
+    fn removes_pid_file_that_is_still_dead() {
+        // i32::MAX is effectively never a live PID.
+        let (_d, p) = pid_file("2147483647");
+        let (applied, msg) = remove_stale_supervisor_pid(&p, 2147483647);
+        assert!(applied, "should remove a still-dead pid: {msg}");
+        assert!(!p.exists(), "file must be gone after removal");
+    }
+
+    #[test]
+    fn refuses_when_pid_revived_under_same_value() {
+        // Simulate a supervisor that restarted and re-claimed the same
+        // recorded PID: the applier observed this PID, but it is now alive.
+        let own = std::process::id();
+        let (_d, p) = pid_file(&own.to_string());
+        let (applied, msg) = remove_stale_supervisor_pid(&p, own);
+        assert!(!applied, "must not remove a now-live supervisor pid");
+        assert!(msg.contains("alive"), "msg: {msg}");
+        assert!(p.exists(), "file must be preserved");
+    }
+
+    #[test]
+    fn refuses_when_pid_changed_since_check() {
+        // The file was rewritten with a different (live) PID between the
+        // check and the apply — refuse rather than delete the new marker.
+        let own = std::process::id();
+        let (_d, p) = pid_file(&own.to_string());
+        let (applied, msg) = remove_stale_supervisor_pid(&p, 999_999);
+        assert!(!applied);
+        assert!(msg.contains("changed"), "msg: {msg}");
+        assert!(p.exists());
+    }
+
+    #[test]
+    fn refuses_when_file_disappeared() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("supervisor.pid");
+        let (applied, msg) = remove_stale_supervisor_pid(&p, 2147483647);
+        assert!(!applied);
+        assert!(msg.contains("no longer holds a PID"), "msg: {msg}");
     }
 }
