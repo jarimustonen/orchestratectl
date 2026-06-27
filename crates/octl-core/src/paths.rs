@@ -1,9 +1,34 @@
 //! Directory layout helpers for a single run.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
+
+/// Reject `path` when it exists and is a symlink — best-effort containment so a
+/// replaced run-tree component cannot redirect a read or write outside the run
+/// directory. The error is built by `mk_err`, letting callers attach the right
+/// variant (run dir / subdir / file). An absent path is accepted: a
+/// not-yet-created file or subdir is normal, and the caller's open will fault or
+/// create it as usual. Any other `symlink_metadata` failure surfaces as
+/// [`Error::Io`].
+///
+/// **Residual TOCTOU gap.** This is check-then-open: a pure TOCTOU attacker can
+/// swap `path` for a symlink in the window between this `symlink_metadata` call
+/// and the caller's subsequent open. Closing that gap needs `O_NOFOLLOW` /
+/// `openat2` (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), which the standard
+/// library does not expose portably. It is out of scope for the MVP threat
+/// model: the state root is `$HOME/.orchestratectl/`, a per-user `0700`
+/// directory with no shared writers.
+pub(crate) fn reject_symlink(path: &Path, mk_err: impl FnOnce() -> Error) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => Err(mk_err()),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::io(path, e)),
+    }
+}
 
 /// Validate that `run_id` is a lowercase, ULID-shaped Crockford base32 string.
 ///
@@ -35,19 +60,20 @@ pub struct RunPaths {
 impl RunPaths {
     /// Construct paths for `root` (the run directory) carrying a validated
     /// `run_id`. Rejects malformed ids up front so every downstream event
-    /// envelope and projection is stamped with a well-formed id.
+    /// envelope and projection is stamped with a well-formed id, and rejects a
+    /// run root that is a symlink ([`Error::SymlinkRunDir`]) so a replaced run
+    /// directory cannot redirect writes outside the run tree. An absent root is
+    /// fine — a fresh run is created later; only an existing *symlink* is
+    /// refused. See [`reject_symlink`] for the best-effort/TOCTOU caveat.
     pub fn new(root: impl Into<PathBuf>, run_id: impl Into<String>) -> Result<Self> {
         let run_id = run_id.into();
-        match RunId::parse_str(&run_id) {
-            Ok(rid) => Ok(Self {
-                root: root.into(),
-                run_id: rid,
-            }),
-            Err(e) => Err(Error::InvalidRunId {
-                run_id,
-                reason: e.to_string(),
-            }),
-        }
+        let rid = RunId::parse_str(&run_id).map_err(|e| Error::InvalidRunId {
+            run_id,
+            reason: e.to_string(),
+        })?;
+        let root = root.into();
+        reject_symlink(&root, || Error::SymlinkRunDir { path: root.clone() })?;
+        Ok(Self { root, run_id: rid })
     }
 
     /// Construct paths from an already-validated [`RunId`], skipping the
@@ -58,6 +84,18 @@ impl RunPaths {
             root: root.into(),
             run_id,
         }
+    }
+
+    /// Reject this run's root if it is a symlink ([`Error::SymlinkRunDir`]).
+    ///
+    /// [`RunPaths::new`] already runs this check, but the production CLI builds
+    /// paths via [`RunPaths::from_validated`] (which skips it for speed), so the
+    /// projection read/write helpers re-guard the root at access time. Cheap
+    /// (one `symlink_metadata`) and best-effort — see [`reject_symlink`].
+    pub(crate) fn guard_root(&self) -> Result<()> {
+        reject_symlink(&self.root, || Error::SymlinkRunDir {
+            path: self.root.clone(),
+        })
     }
 
     /// Path to the run manifest (`manifest.json`).

@@ -119,6 +119,53 @@ pub enum Error {
         body_id: String,
     },
 
+    /// The run directory itself is a symlink rather than a real directory.
+    ///
+    /// Best-effort symlink containment: [`crate::paths::RunPaths::new`] and every
+    /// projection read/write reject a symlinked run root before any open follows
+    /// it, so a replaced `<root>/runs/<id>` cannot redirect writes outside the
+    /// run tree.
+    ///
+    /// **Trust model.** The state root is `$HOME/.orchestratectl/` — a per-user
+    /// `0700` directory, not a shared multi-user mount. This guards against an
+    /// accidentally- or maliciously-replaced subtree component, not a concurrent
+    /// attacker who already holds write access to the state root.
+    ///
+    /// **Residual gap.** The check is check-then-open: a pure TOCTOU attacker can
+    /// swap the path for a symlink in the window between the `symlink_metadata`
+    /// call and the subsequent open. Closing that needs `O_NOFOLLOW` / `openat2`
+    /// (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), which the standard library
+    /// does not expose portably; it is out of scope for the MVP threat model.
+    #[error("run directory is a symlink (refusing to follow it): {path}")]
+    SymlinkRunDir {
+        /// The symlinked run directory.
+        path: PathBuf,
+    },
+
+    /// A run subdirectory (`nodes/`, `discussions/`, `spinoffs/`) is a symlink.
+    ///
+    /// Same best-effort containment, trust model, and TOCTOU residual gap as
+    /// [`Error::SymlinkRunDir`].
+    #[error("run subdirectory {name:?} is a symlink (refusing to follow it): {path}")]
+    SymlinkSubdir {
+        /// The subdirectory name (`"nodes"`, `"discussions"`, `"spinoffs"`).
+        name: &'static str,
+        /// The symlinked subdirectory path.
+        path: PathBuf,
+    },
+
+    /// A projection file is a symlink rather than a regular file.
+    ///
+    /// Same best-effort containment, trust model, and TOCTOU residual gap as
+    /// [`Error::SymlinkRunDir`]. Projection files are written via temp-file +
+    /// rename and are always regular files; a symlink in their place is a
+    /// tampered or corrupted run.
+    #[error("projection file is a symlink (refusing to follow it): {path}")]
+    SymlinkProjectionFile {
+        /// The symlinked projection file path.
+        path: PathBuf,
+    },
+
     /// A state file declared a `schema_version` this build does not support.
     #[error("invalid schema_version {found} (supported: {supported:?}) at {path}")]
     UnsupportedSchemaVersion {

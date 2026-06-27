@@ -313,6 +313,15 @@ pub fn from_core(err: octl_core::Error) -> CliError {
                 .with_invalid_value(body_id)
                 .with_expected(serde_json::Value::String(expected_id))
         }
+        // A symlinked run dir, subdir, or projection file is a tampered or
+        // corrupted run, not a transient I/O fault to retry — it surfaces as a
+        // distinct `corrupt_run` user error (exit 1) so a retry loop doesn't
+        // chase a path that will never be a regular file.
+        octl_core::Error::SymlinkRunDir { .. }
+        | octl_core::Error::SymlinkSubdir { .. }
+        | octl_core::Error::SymlinkProjectionFile { .. } => {
+            CliError::user("corrupt_run", err.to_string())
+        }
         other => CliError::system("io_error", other.to_string()),
     }
 }

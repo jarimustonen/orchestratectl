@@ -1,14 +1,59 @@
 //! Read-side helpers for projection files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::atomic::write_json_atomic;
 use crate::error::{Error, Result};
-use crate::paths::RunPaths;
+use crate::paths::{reject_symlink, RunPaths};
 use crate::schema::{
     Discussion, DiscussionId, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal,
     SUPPORTED_STATE_SCHEMAS,
 };
+
+/// Resolve a projection file path while rejecting a symlinked run root, the
+/// symlinked subdir, or a symlinked file before the caller opens it — so a
+/// tampered run-tree component cannot redirect a read or write outside the run
+/// directory. `subdir`/`name` identify the containing projection directory and
+/// `file` is the resolved per-id path; both checks run after the run root is
+/// guarded. Best-effort containment with a check-then-open TOCTOU gap — see
+/// [`reject_symlink`].
+fn checked_file(
+    paths: &RunPaths,
+    subdir: PathBuf,
+    name: &'static str,
+    file: PathBuf,
+) -> Result<PathBuf> {
+    paths.guard_root()?;
+    reject_symlink(&subdir, || Error::SymlinkSubdir {
+        name,
+        path: subdir.clone(),
+    })?;
+    reject_symlink(&file, || Error::SymlinkProjectionFile { path: file.clone() })?;
+    Ok(file)
+}
+
+/// `manifest.json` path, guarding the run root and the manifest file itself.
+fn checked_manifest(paths: &RunPaths) -> Result<PathBuf> {
+    paths.guard_root()?;
+    let p = paths.manifest();
+    reject_symlink(&p, || Error::SymlinkProjectionFile { path: p.clone() })?;
+    Ok(p)
+}
+
+/// `nodes/<id>.json` path with run-root, `nodes/`, and file symlink guards.
+fn checked_node(paths: &RunPaths, id: &NodeId) -> Result<PathBuf> {
+    checked_file(paths, paths.nodes_dir(), "nodes", paths.node(id))
+}
+
+/// `discussions/<id>.json` path with run-root, `discussions/`, and file guards.
+fn checked_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<PathBuf> {
+    checked_file(paths, paths.discussions_dir(), "discussions", paths.discussion(id))
+}
+
+/// `spinoffs/<id>.json` path with run-root, `spinoffs/`, and file guards.
+fn checked_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<PathBuf> {
+    checked_file(paths, paths.spinoffs_dir(), "spinoffs", paths.spinoff(id))
+}
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
@@ -80,7 +125,7 @@ fn check_run_id(path: &Path, kind: &'static str, expected: &RunId, body: &RunId)
 
 /// Read and schema-validate the run manifest. Errors if it is missing.
 pub fn read_manifest(paths: &RunPaths) -> Result<Manifest> {
-    let p = paths.manifest();
+    let p = checked_manifest(paths)?;
     let m: Manifest = read_json(&p)?;
     check_schema(&p, m.schema_version)?;
     check_run_id(&p, "manifest_run_id", &paths.run_id, &m.run_id)?;
@@ -92,7 +137,7 @@ pub fn read_manifest(paths: &RunPaths) -> Result<Manifest> {
 /// A present manifest whose `run_id` belongs to a foreign run is an error, not
 /// `None`: `_opt` means "missing file is fine", not "corrupt file is absent".
 pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
-    let p = paths.manifest();
+    let p = checked_manifest(paths)?;
     match read_json_opt::<Manifest>(&p)? {
         Some(m) => {
             check_schema(&p, m.schema_version)?;
@@ -109,14 +154,14 @@ pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
 /// mutate state through [`crate::events::append_and_apply_event`] so a write
 /// can never bypass the event log or the run's `flock`.
 pub(crate) fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
-    let p = paths.manifest();
+    let p = checked_manifest(paths)?;
     check_run_id(&p, "manifest_run_id", &paths.run_id, &m.run_id)?;
     write_json_atomic(&p, m)
 }
 
 /// Read and schema-validate one node. Errors if it is missing.
 pub fn read_node(paths: &RunPaths, node_id: &NodeId) -> Result<Node> {
-    let p = paths.node(node_id);
+    let p = checked_node(paths, node_id)?;
     let n: Node = read_json(&p)?;
     check_schema(&p, n.schema_version)?;
     check_key(&p, "node", node_id.as_str(), n.node_id.as_str())?;
@@ -129,7 +174,7 @@ pub fn read_node(paths: &RunPaths, node_id: &NodeId) -> Result<Node> {
 /// A present node whose body id or `run_id` does not match where it lives is an
 /// error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>> {
-    let p = paths.node(node_id);
+    let p = checked_node(paths, node_id)?;
     match read_json_opt::<Node>(&p)? {
         Some(n) => {
             check_schema(&p, n.schema_version)?;
@@ -149,14 +194,14 @@ pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>>
 /// onto the node projection while holding the run's `flock` — fields no
 /// event/reducer path manages. Pair it with [`crate::RunLock`].
 pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
-    let p = paths.node(&n.node_id);
+    let p = checked_node(paths, &n.node_id)?;
     check_run_id(&p, "node_run_id", &paths.run_id, &n.run_id)?;
     write_json_atomic(&p, n)
 }
 
 /// Read and schema-validate one discussion. Errors if it is missing.
 pub fn read_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<Discussion> {
-    let p = paths.discussion(id);
+    let p = checked_discussion(paths, id)?;
     let d: Discussion = read_json(&p)?;
     check_schema(&p, d.schema_version)?;
     check_key(&p, "discussion", id.as_str(), d.discussion_id.as_str())?;
@@ -169,7 +214,7 @@ pub fn read_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<Discussion
 /// A present discussion whose body id or `run_id` does not match where it lives
 /// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option<Discussion>> {
-    let p = paths.discussion(id);
+    let p = checked_discussion(paths, id)?;
     match read_json_opt::<Discussion>(&p)? {
         Some(d) => {
             check_schema(&p, d.schema_version)?;
@@ -185,14 +230,14 @@ pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option
 ///
 /// `pub(crate)`: see [`write_manifest`].
 pub(crate) fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
-    let p = paths.discussion(&d.discussion_id);
+    let p = checked_discussion(paths, &d.discussion_id)?;
     check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
     write_json_atomic(&p, d)
 }
 
 /// Read and schema-validate one spin-off proposal. Errors if it is missing.
 pub fn read_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<SpinoffProposal> {
-    let p = paths.spinoff(id);
+    let p = checked_spinoff(paths, id)?;
     let s: SpinoffProposal = read_json(&p)?;
     check_schema(&p, s.schema_version)?;
     check_key(&p, "spinoff", id.as_str(), s.proposal_id.as_str())?;
@@ -205,7 +250,7 @@ pub fn read_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<SpinoffProposal
 /// A present proposal whose body id or `run_id` does not match where it lives
 /// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<SpinoffProposal>> {
-    let p = paths.spinoff(id);
+    let p = checked_spinoff(paths, id)?;
     match read_json_opt::<SpinoffProposal>(&p)? {
         Some(s) => {
             check_schema(&p, s.schema_version)?;
@@ -221,7 +266,7 @@ pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<Spin
 ///
 /// `pub(crate)`: see [`write_manifest`].
 pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
-    let p = paths.spinoff(&s.proposal_id);
+    let p = checked_spinoff(paths, &s.proposal_id)?;
     check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
     write_json_atomic(&p, s)
 }
