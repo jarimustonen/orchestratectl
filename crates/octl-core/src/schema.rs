@@ -10,14 +10,28 @@ pub const STATE_SCHEMA_VERSION: u32 = 1;
 /// All state-schema versions this crate can read.
 pub const SUPPORTED_STATE_SCHEMAS: &[u32] = &[1];
 
-/// Crockford base32 alphabet in lowercase (excludes `i`, `l`, `o`, `u`). This
-/// is the charset for every id body after its `x-` prefix, and for the bare
-/// ULID of a [`RunId`].
+/// Crockford base32 alphabet in lowercase (excludes `i`, `l`, `o`, `u`). The
+/// charset for the bare ULID of a [`RunId`].
 const CROCKFORD_LOWER: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
 /// True iff every byte of `s` is a lowercase Crockford base32 character.
 fn all_crockford_lower(s: &str) -> bool {
     s.bytes().all(|b| CROCKFORD_LOWER.contains(&b))
+}
+
+/// True iff every byte of `s` is a lowercase ASCII alphanumeric (`a-z0-9`).
+///
+/// This is the charset for the body of a [`DiscussionId`] / [`ProposalId`].
+/// It is deliberately wider than Crockford: those ids come in two on-disk
+/// flavours — `x-<ulid>` (Crockford base32) *and* `x-<sha-prefix>`, the
+/// deterministic-id form emitted by the supervisor, which is RFC 4648 base32
+/// lowercase (`a-z2-7`, so it can contain `i`/`l`/`o`/`u`). A Crockford-only
+/// charset would reject every supervisor-generated discussion/spinoff id.
+/// `a-z0-9` accepts both while still excluding `/`, `.`, `-`, and uppercase —
+/// so the path-traversal guard is unaffected.
+fn all_lower_alnum(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 /// Error returned when a typed identifier fails parse-time validation.
@@ -183,23 +197,25 @@ impl NodeId {
 
 id_newtype! {
     /// A validated discussion identifier: `d-` followed by 10–26 lowercase
-    /// Crockford base32 characters. Covers both the `d-<ulid>` form (26 chars)
-    /// and the shorter `d-<sha-prefix>` deterministic-id form.
+    /// ASCII alphanumeric characters. Covers both the `d-<ulid>` form
+    /// (26 chars, Crockford base32) and the shorter `d-<sha-prefix>`
+    /// deterministic-id form (RFC 4648 base32 lowercase, `a-z2-7`).
     DiscussionId
 }
 
 impl DiscussionId {
     /// Accepted-shape hint shared by every rejection.
-    const EXPECTED: &'static str = "d-<10-26 lowercase Crockford base32 chars>";
+    const EXPECTED: &'static str = "d-<10-26 lowercase alphanumeric chars>";
 
     /// Parse and validate a `discussion_id`. Requires the `d-` prefix followed
-    /// by 10–26 lowercase Crockford base32 characters.
+    /// by 10–26 lowercase ASCII alphanumeric characters (see [`all_lower_alnum`]
+    /// for why the charset is wider than Crockford).
     pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
         let body = s.strip_prefix("d-").ok_or(IdValidationError::WrongPrefix {
             kind: "discussion",
             expected: Self::EXPECTED,
         })?;
-        if (10..=26).contains(&body.len()) && all_crockford_lower(body) {
+        if (10..=26).contains(&body.len()) && all_lower_alnum(body) {
             Ok(Self(s.to_string()))
         } else {
             Err(IdValidationError::InvalidFormat {
@@ -213,23 +229,25 @@ impl DiscussionId {
 
 id_newtype! {
     /// A validated spin-off proposal identifier: `s-` followed by 10–26
-    /// lowercase Crockford base32 characters. Covers both the `s-<ulid>` form
-    /// (26 chars) and the shorter `s-<sha-prefix>` deterministic-id form.
+    /// lowercase ASCII alphanumeric characters. Covers both the `s-<ulid>` form
+    /// (26 chars, Crockford base32) and the shorter `s-<sha-prefix>`
+    /// deterministic-id form (RFC 4648 base32 lowercase, `a-z2-7`).
     ProposalId
 }
 
 impl ProposalId {
     /// Accepted-shape hint shared by every rejection.
-    const EXPECTED: &'static str = "s-<10-26 lowercase Crockford base32 chars>";
+    const EXPECTED: &'static str = "s-<10-26 lowercase alphanumeric chars>";
 
     /// Parse and validate a `proposal_id`. Requires the `s-` prefix followed
-    /// by 10–26 lowercase Crockford base32 characters.
+    /// by 10–26 lowercase ASCII alphanumeric characters (see [`all_lower_alnum`]
+    /// for why the charset is wider than Crockford).
     pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
         let body = s.strip_prefix("s-").ok_or(IdValidationError::WrongPrefix {
             kind: "spinoff",
             expected: Self::EXPECTED,
         })?;
-        if (10..=26).contains(&body.len()) && all_crockford_lower(body) {
+        if (10..=26).contains(&body.len()) && all_lower_alnum(body) {
             Ok(Self(s.to_string()))
         } else {
             Err(IdValidationError::InvalidFormat {
@@ -681,6 +699,9 @@ mod id_tests {
             "generator must validate: {gen}"
         );
         assert!(DiscussionId::parse_str("d-0123456789").is_ok()); // 10-char sha-prefix form
+                                                                  // RFC 4648 base32 deterministic-id form (contains i/l/o/u and 2-7),
+                                                                  // which the supervisor actually emits — must validate.
+        assert!(DiscussionId::parse_str("d-ilou234567").is_ok());
         assert!(matches!(
             DiscussionId::parse_str("s-0123456789"),
             Err(IdValidationError::WrongPrefix { .. })
@@ -688,8 +709,8 @@ mod id_tests {
         for bad in [
             "d-short",                        // body < 10
             "d-0123456789012345678901234567", // body > 26
-            "d-ABCDEFGHIJ",                   // uppercase
-            "d-iiiiiiiiii",                   // `i` not in Crockford
+            "d-ABCDEFGHIJ",                   // uppercase not allowed
+            "d-abc_def012",                   // `_` not alphanumeric
             "d-",                             // empty body
         ] {
             assert!(
@@ -716,11 +737,13 @@ mod id_tests {
             "generator must validate: {gen}"
         );
         assert!(ProposalId::parse_str("s-0123456789").is_ok());
+        // RFC 4648 base32 deterministic-id form (the supervisor's actual output).
+        assert!(ProposalId::parse_str("s-uuuuuuuuuu").is_ok());
         assert!(matches!(
             ProposalId::parse_str("d-0123456789"),
             Err(IdValidationError::WrongPrefix { .. })
         ));
-        for bad in ["s-short", "s-ABCDEFGHIJ", "s-uuuuuuuuuu", "s-"] {
+        for bad in ["s-short", "s-ABCDEFGHIJ", "s-abc.def012", "s-"] {
             assert!(
                 matches!(
                     ProposalId::parse_str(bad),
