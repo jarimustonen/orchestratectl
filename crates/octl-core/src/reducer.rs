@@ -127,6 +127,18 @@ fn optional_ts(
 ///
 /// Caller must hold the run's [`crate::lock::RunLock`].
 pub fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+    // An event whose envelope `run_id` doesn't match the run we're folding it
+    // into means the log was copied/misrouted — fold it and projections would
+    // be silently cross-contaminated. Reject before any write.
+    if ev.run_id != paths.run_id {
+        return Err(Error::CorruptEventLog {
+            path: paths.events(),
+            reason: format!(
+                "event seq={} run_id={} does not belong to run {} (expected={}, found={})",
+                ev.seq, ev.run_id, paths.run_id, paths.run_id, ev.run_id
+            ),
+        });
+    }
     match ev.kind.as_str() {
         "run.created" => apply_run_created(paths, ev),
         "run.status" => apply_run_status(paths, ev),
@@ -580,4 +592,43 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
     n.children.push(new_ref);
     n.updated_at = ev.ts;
     write_node(paths, &n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::Event;
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    fn event(run_id: &str) -> Event {
+        Event {
+            ts: Utc::now(),
+            seq: 1,
+            kind: "run.status".into(),
+            run_id: run_id.into(),
+            node_id: None,
+            idempotency_key: None,
+            data: serde_json::json!({ "status": "running" }),
+        }
+    }
+
+    #[test]
+    fn apply_event_rejects_event_from_a_different_run() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let dir = crate::run_dir(tmp.path(), run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        // An event whose envelope names a different run must not be folded.
+        let foreign = event("01jxotherrun00000000000000");
+        let err = apply_event(&paths, &foreign).expect_err("cross-run event must be rejected");
+        assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
+
+        // The matching run_id is accepted (no projection exists yet, so
+        // `run.status` is a clean no-op rather than an error).
+        let mine = event(run_id);
+        apply_event(&paths, &mine).expect("matching run_id must be accepted");
+    }
 }
