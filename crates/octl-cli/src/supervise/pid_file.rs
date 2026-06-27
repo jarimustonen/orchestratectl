@@ -10,8 +10,12 @@ use std::path::Path;
 
 use crate::error::CliError;
 
-/// Atomically write `pid` to `path` via tempfile + rename. Mirrors
-/// `octl_core::atomic::write_atomic` without pulling in the JSON layer.
+/// Atomically write `pid` (plus its process start-time, when readable)
+/// to `path` via tempfile + rename. The on-disk format is one line:
+/// `"<pid>"` or `"<pid> <start_time_secs>"`. The start-time is the §7.5
+/// PID-identity defense (§7.6): a later stale-check can tell a recycled
+/// PID from the original supervisor. Mirrors `octl_core::atomic` without
+/// pulling in the JSON layer.
 pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     let parent = path.parent().ok_or_else(|| {
         CliError::system(
@@ -21,8 +25,12 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     })?;
     std::fs::create_dir_all(parent)
         .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e)))?;
+    let contents = match crate::supervise::watchdog::pid_start_time(pid) {
+        Some(st) => format!("{pid} {st}"),
+        None => pid.to_string(),
+    };
     let tmp = parent.join(format!(".supervisor.pid.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, pid.to_string())
+    std::fs::write(&tmp, contents)
         .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| CliError::system("io_error", format!("rename {}: {}", path.display(), e)))?;
@@ -30,10 +38,41 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
 }
 
 /// Read the recorded supervisor PID from `path`. Returns `None` if the
-/// file is absent or its contents do not parse as an integer.
+/// file is absent or its first token does not parse as an integer.
 pub fn read_pid(path: &Path) -> Option<u32> {
     let s = std::fs::read_to_string(path).ok()?;
-    s.trim().parse::<u32>().ok()
+    s.split_whitespace().next()?.parse::<u32>().ok()
+}
+
+/// Read `(pid, start_time)` from `path`. `start_time` is `None` for a
+/// legacy single-integer file (written before §7.6 identity landed) or
+/// when the start-time could not be captured at write time.
+pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
+    let s = std::fs::read_to_string(path).ok()?;
+    let mut it = s.split_whitespace();
+    let pid = it.next()?.parse::<u32>().ok()?;
+    let start_time = it.next().and_then(|t| t.parse::<u64>().ok());
+    Some((pid, start_time))
+}
+
+/// Liveness check for a recorded supervisor PID that additionally
+/// defends against PID reuse via the §7.5 start-time identity check
+/// (§7.6). A recycled PID (alive, but start-time disagrees) is reported
+/// `false` (stale) so reattach is not blocked forever. A legacy record
+/// with no recorded start-time, or a platform that cannot read it, falls
+/// back to plain liveness.
+pub fn pid_live_with_identity(pid: u32, recorded_start_time: Option<u64>) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    match recorded_start_time {
+        Some(recorded) => match crate::supervise::watchdog::pid_start_time(pid) {
+            // 1s tolerance mirrors the watchdog's recycle check.
+            Some(actual) => recorded.abs_diff(actual) <= 1,
+            None => true,
+        },
+        None => true,
+    }
 }
 
 /// Remove the PID file if it still records `expected_pid`. Mismatch is

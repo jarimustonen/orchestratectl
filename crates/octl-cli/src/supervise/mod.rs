@@ -30,7 +30,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, RunPaths, Status};
+use octl_core::{
+    append_and_apply, read_manifest_opt, read_node_opt, RunLock, RunPaths, Status,
+};
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -115,8 +117,8 @@ pub fn dispatch(
     }
 
     let pid_path = paths.supervisor_pid();
-    if let Some(existing) = pid_file::read_pid(&pid_path) {
-        if pid_file::pid_alive(existing) {
+    if let Some((existing, start_time)) = pid_file::read_pid_record(&pid_path) {
+        if pid_file::pid_live_with_identity(existing, start_time) {
             return Err(CliError {
                 kind: ExitKind::System,
                 code: "supervisor_already_running".into(),
@@ -127,7 +129,8 @@ pub fn dispatch(
                 expected: None,
             });
         }
-        // Stale PID file: log and overwrite.
+        // Stale PID file (dead, or a recycled PID per the start-time
+        // identity check): log and overwrite.
         warn!(
             target: "orchestratectl::supervise",
             stale_pid = existing,
@@ -553,11 +556,16 @@ fn spawn_child_supervisor(
             )
         })?;
     let pid = child.id();
-    // Best-effort: record supervisor_pid on the child's root node.
+    // Best-effort: record supervisor_pid on the child's root node. This
+    // read-modify-write races the child supervisor's own boot writes, so
+    // it must be done under the child run's flock (F11) — without it the
+    // last writer silently clobbers the other's fields.
     let child_paths = run_paths(root, child_run_id);
-    if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {
-        n.supervisor_pid = Some(pid as i32);
-        let _ = octl_core::write_node(&child_paths, &n);
+    if let Ok(_guard) = RunLock::acquire(&child_paths.lock()) {
+        if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {
+            n.supervisor_pid = Some(pid as i32);
+            let _ = octl_core::write_node(&child_paths, &n);
+        }
     }
     // Record on the parent's tracking node too via an event.
     let _ = append_and_apply(

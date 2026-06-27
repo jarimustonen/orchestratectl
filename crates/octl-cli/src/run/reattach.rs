@@ -48,14 +48,15 @@ pub fn run(
         );
     }
     let pid_path = paths.supervisor_pid();
-    if let Some(existing) = pid_file::read_pid(&pid_path) {
-        if pid_file::pid_alive(existing) {
+    if let Some((existing, start_time)) = pid_file::read_pid_record(&pid_path) {
+        if pid_file::pid_live_with_identity(existing, start_time) {
             return Err(CliError::system(
                 "supervisor_already_running",
                 format!("supervisor pid {existing} for run {run_id} is alive (no reattach needed)"),
             ));
         }
-        // Stale PID file: record the dead prior incarnation.
+        // Stale PID file (dead or recycled PID): record the dead prior
+        // incarnation.
         let _ = append_and_apply(
             &paths,
             "supervisor.exited",
