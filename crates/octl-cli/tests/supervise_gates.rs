@@ -55,31 +55,45 @@ fn count_kind(events: &Path, kind: &str) -> usize {
 /// 0–1000ms isolated, far longer on a saturated/handbrake CI runner).
 const POLL_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Poll `predicate` every 50ms until it returns `true` or `deadline` elapses.
-/// `Ok(())` means the condition was met in time; `Err(())` means it timed out.
+/// Poll `predicate` (re-evaluated every 50ms) until it returns `true`, or until
+/// `deadline` elapses. Returns `true` if the condition was met in time, `false`
+/// on timeout.
 ///
 /// Replaces fixed `sleep`s when waiting on a *detached* supervisor process:
 /// its boot+tick+write latency varies, so a single short sleep is inherently
 /// flaky, while the assertion we care about is simply "the condition eventually
 /// holds". The poll returns as soon as the predicate is satisfied.
-fn poll_until<F: Fn() -> bool>(deadline: Duration, predicate: F) -> Result<(), ()> {
-    let stop = std::time::Instant::now() + deadline;
+///
+/// `predicate` is `FnMut` so callers can capture the last observation (see
+/// `wait_for_kind`). Timing uses `Instant::elapsed()` rather than a precomputed
+/// `Instant + Duration` (which can panic on overflow) and sleeps for at most the
+/// remaining budget, so the predicate still gets one final evaluation right at
+/// the deadline instead of being skipped after a budget-consuming sleep.
+fn poll_until<F: FnMut() -> bool>(deadline: Duration, mut predicate: F) -> bool {
+    let start = std::time::Instant::now();
     loop {
         if predicate() {
-            return Ok(());
+            return true;
         }
-        if std::time::Instant::now() >= stop {
-            return Err(());
+        match deadline.checked_sub(start.elapsed()) {
+            Some(remaining) if !remaining.is_zero() => {
+                std::thread::sleep(remaining.min(Duration::from_millis(50)));
+            }
+            _ => return false,
         }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 /// Poll until `events` contains at least `want` lines of `kind`, or time out.
-/// Returns the final observed count so callers can assert on it directly.
+/// Returns the count observed at the moment the predicate last ran, so callers
+/// can assert on it directly (a timeout simply yields the last sub-`want` count).
 fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
-    let _ = poll_until(POLL_DEADLINE, || count_kind(events, kind) >= want);
-    count_kind(events, kind)
+    let mut seen = 0;
+    poll_until(POLL_DEADLINE, || {
+        seen = count_kind(events, kind);
+        seen >= want
+    });
+    seen
 }
 
 fn create_run(home: &TempDir, kind: &str, title: &str) -> String {
@@ -388,7 +402,11 @@ fn signal_exit_codes_and_payload() {
         // installed its signal handlers and entered the loop) rather than a
         // fixed sleep, so the kill never races startup even on a loaded CI.
         let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
-        poll_until(POLL_DEADLINE, || pid_file.exists()).expect("supervisor did not start in time");
+        assert!(
+            poll_until(POLL_DEADLINE, || pid_file.exists()),
+            "supervisor did not start in time: {}",
+            pid_file.display()
+        );
         unsafe {
             libc::kill(child.id() as i32, sig_num(sig));
         }
@@ -452,7 +470,15 @@ fn v8_reattach_end_to_end() {
     // the second reattach sees a genuinely stale (dead) prior supervisor
     // rather than racing the still-dying one (which would refuse).
     let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
-    let _ = poll_until(POLL_DEADLINE, || !pid_file.exists());
+    // Fatal on timeout: if the pid file never disappears the second reattach
+    // would race the still-dying supervisor (the exact condition this wait
+    // guards against) and fail later with a misleading reattach-count error, so
+    // assert the precondition here with a useful message instead.
+    assert!(
+        poll_until(POLL_DEADLINE, || !pid_file.exists()),
+        "prior --once supervisor did not remove its pid file in time: {}",
+        pid_file.display()
+    );
 
     // Second reattach: prior PID is stale.
     run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
