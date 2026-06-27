@@ -125,7 +125,7 @@ fn done_node_ignores_late_failure_report() {
     assert_eq!(n.last_report, Some(success_report));
 }
 
-/// Bare `{}` report expresses neither success nor cancellation → CorruptEventLog.
+/// Bare `{}` report expresses neither success nor cancellation → `CorruptEventLog`.
 #[test]
 fn bare_report_payload_is_corrupt() {
     let mut h = Harness::new();
@@ -142,7 +142,7 @@ fn bare_report_payload_is_corrupt() {
     assert_eq!(n.last_report, None);
 }
 
-/// `success: true` + `cancelled: true` is a contradiction → CorruptEventLog.
+/// `success: true` + `cancelled: true` is a contradiction → `CorruptEventLog`.
 #[test]
 fn success_and_cancelled_both_true_is_corrupt() {
     let mut h = Harness::new();

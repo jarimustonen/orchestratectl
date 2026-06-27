@@ -1,7 +1,7 @@
 //! `--fix` applier: run the checks, then apply the §18 safe subset of
 //! `fix_suggestion`s.
 //!
-//! Only findings carrying a [`FixAction`](super::check::FixAction) are
+//! Only findings carrying a [`FixAction`] are
 //! touched — that is the deliberately small, non-destructive subset
 //! (drifted-skill re-install, stale supervisor-PID removal). Everything
 //! else stays advisory.
@@ -179,7 +179,7 @@ mod tests {
     fn removes_pid_file_that_is_still_dead() {
         // i32::MAX is effectively never a live PID.
         let (_d, p) = pid_file("2147483647");
-        let (applied, msg) = remove_stale_supervisor_pid(&p, 2147483647);
+        let (applied, msg) = remove_stale_supervisor_pid(&p, 2_147_483_647);
         assert!(applied, "should remove a still-dead pid: {msg}");
         assert!(!p.exists(), "file must be gone after removal");
     }
@@ -212,7 +212,7 @@ mod tests {
     fn refuses_when_file_disappeared() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("supervisor.pid");
-        let (applied, msg) = remove_stale_supervisor_pid(&p, 2147483647);
+        let (applied, msg) = remove_stale_supervisor_pid(&p, 2_147_483_647);
         assert!(!applied);
         assert!(msg.contains("no longer holds a PID"), "msg: {msg}");
     }

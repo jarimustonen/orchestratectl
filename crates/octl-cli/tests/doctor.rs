@@ -90,7 +90,7 @@ fn healthy_install_passes_with_exit_zero() {
         .expect("spawn");
     // No FAILs (deps stubbed, home writable, no broken runs) → exit 0,
     // even though skill.sync warns about not-installed skills.
-    assert!(out.status.success(), "expected exit 0; got {:?}", out);
+    assert!(out.status.success(), "expected exit 0; got {out:?}");
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("config.home"));
     assert!(stdout.contains("dep.tmux"));
@@ -339,8 +339,7 @@ fn fix_removes_stale_dead_supervisor_pid() {
         .args(["-t", "202001010000"])
         .arg(&pid_path)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     assert!(ok, "touch -t failed; cannot backdate pid file");
 
     let out = bin(&env)

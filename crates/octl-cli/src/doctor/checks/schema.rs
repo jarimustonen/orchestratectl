@@ -42,7 +42,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     let mut out = Vec::new();
     let mut run_ids: Vec<String> = Vec::new();
     for ent in entries.flatten() {
-        if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        if !ent.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         if let Some(name) = ent.file_name().to_str() {

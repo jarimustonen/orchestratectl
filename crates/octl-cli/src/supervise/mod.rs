@@ -72,12 +72,12 @@ fn install_signal_handlers() -> Result<(), CliError> {
         // SA_RESTART so a signal arriving mid-syscall (e.g. the `flock`
         // / write inside the shutdown `append_and_apply`) does not fail
         // that syscall with EINTR and defeat the clean-shutdown contract.
-        libc::sigemptyset(&mut sa.sa_mask);
-        libc::sigaddset(&mut sa.sa_mask, libc::SIGINT);
-        libc::sigaddset(&mut sa.sa_mask, libc::SIGTERM);
+        libc::sigemptyset(&raw mut sa.sa_mask);
+        libc::sigaddset(&raw mut sa.sa_mask, libc::SIGINT);
+        libc::sigaddset(&raw mut sa.sa_mask, libc::SIGTERM);
         sa.sa_flags = libc::SA_RESTART;
         for sig in [libc::SIGINT, libc::SIGTERM] {
-            if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
+            if libc::sigaction(sig, &raw const sa, std::ptr::null_mut()) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(CliError::system(
                     "signal_install_failed",
@@ -646,16 +646,15 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
                 // Validate before this id becomes a filesystem path on
                 // reseed — a corrupt/stale projection must not let an
                 // unsafe run id escape the runs root.
-                match require_safe_id(&c.run_id, "child-run-id") {
-                    Ok(safe) => {
-                        out.entry(safe).or_insert_with(|| node_id.clone());
-                    }
-                    Err(_) => warn!(
+                if let Ok(safe) = require_safe_id(&c.run_id, "child-run-id") {
+                    out.entry(safe).or_insert_with(|| node_id.clone());
+                } else {
+                    warn!(
                         target: "orchestratectl::supervise",
                         parent_node = %node_id,
                         child = %c.run_id,
                         "node projection has unsafe child run id; skipping"
-                    ),
+                    );
                 }
             }
         }

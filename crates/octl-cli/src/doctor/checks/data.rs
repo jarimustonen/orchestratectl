@@ -42,7 +42,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
 
     let mut run_ids: Vec<String> = entries
         .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .collect();
     run_ids.sort();

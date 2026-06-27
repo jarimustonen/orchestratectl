@@ -376,16 +376,14 @@ struct LoggingInit {
 /// bypasses the guard's `Drop`.
 fn init_logging() -> LoggingInit {
     let mut warnings = Vec::new();
-    let log_path = match log_path() {
-        Some(p) => p,
-        None => {
-            warnings
-                .push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
-            return LoggingInit {
-                warnings,
-                _guard: None,
-            };
-        }
+    let log_path = if let Some(p) = log_path() {
+        p
+    } else {
+        warnings.push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
+        return LoggingInit {
+            warnings,
+            _guard: None,
+        };
     };
 
     if let Some(parent) = log_path.parent() {

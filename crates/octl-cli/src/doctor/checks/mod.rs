@@ -1,7 +1,7 @@
 //! The MVP check set (AGENTS-AI-FIRST-CLI §18).
 //!
 //! Five categories, each in its own module, each emitting one
-//! [`CheckResult`](super::check::CheckResult) per finding (never
+//! [`CheckResult`] per finding (never
 //! summarized into one):
 //!
 //! - [`schema`] — `schema.runs.<id>`: every run manifest deserializes.
