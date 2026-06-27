@@ -58,7 +58,11 @@ pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
 }
 
 /// Atomically write the run manifest (temp file + rename).
-pub fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
+///
+/// `pub(crate)`: projection writes belong to the reducer. External callers
+/// mutate state through [`crate::events::append_and_apply_event`] so a write
+/// can never bypass the event log or the run's `flock`.
+pub(crate) fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
     write_json_atomic(&paths.manifest(), m)
 }
 
@@ -83,6 +87,12 @@ pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>>
 }
 
 /// Atomically write a node's projection file, keyed by its `node_id`.
+///
+/// Stays `pub` (unlike the other `write_*` helpers) as the sanctioned
+/// lock-held composition path for the supervisor batch: the supervisor
+/// mirrors per-child report cursors and a child's `supervisor_pid` directly
+/// onto the node projection while holding the run's `flock` — fields no
+/// event/reducer path manages. Pair it with [`crate::RunLock`].
 pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
     write_json_atomic(&paths.node(&n.node_id), n)
 }
@@ -108,7 +118,9 @@ pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option
 }
 
 /// Atomically write a discussion file, keyed by its `discussion_id`.
-pub fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
+///
+/// `pub(crate)`: see [`write_manifest`].
+pub(crate) fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
     write_json_atomic(&paths.discussion(&d.discussion_id), d)
 }
 
@@ -133,6 +145,8 @@ pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<Spin
 }
 
 /// Atomically write a spin-off proposal file, keyed by its `proposal_id`.
-pub fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
+///
+/// `pub(crate)`: see [`write_manifest`].
+pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
     write_json_atomic(&paths.spinoff(&s.proposal_id), s)
 }

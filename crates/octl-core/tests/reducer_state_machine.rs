@@ -2,10 +2,9 @@
 //! the success-xor-cancelled requirement on `node.report` and the
 //! terminal-state guard on every status reducer.
 
-use octl_core::events::read_all_events;
 use octl_core::{
-    append_event_with_seq, apply_event, ensure_root, read_manifest, read_node_opt, run_dir, Error,
-    Node, NodeId, RunId, RunLock, RunPaths, Status,
+    append_and_apply_event, ensure_root, read_manifest, read_node_opt, run_dir, Error, Node,
+    NodeId, RunId, RunPaths, Status,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -13,7 +12,6 @@ use tempfile::TempDir;
 struct Harness {
     _tmp: TempDir,
     paths: RunPaths,
-    next_seq: u64,
 }
 
 impl Harness {
@@ -26,7 +24,6 @@ impl Harness {
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             paths: RunPaths::new(dir, run_id).unwrap(),
-            next_seq: 0,
             _tmp: tmp,
         }
     }
@@ -36,22 +33,17 @@ impl Harness {
         self.try_append(kind, node_id, data).unwrap();
     }
 
-    /// Append + apply, surfacing the reducer's `Result` to the caller.
+    /// Append + apply through the canonical path, surfacing the reducer's
+    /// `Result` to the caller. (The event line is still appended before the
+    /// reducer runs, so an `Err` here means the projection was rejected on an
+    /// already-written line — exactly the old append-then-apply behaviour.)
     fn try_append(
         &mut self,
         kind: &str,
         node_id: Option<&str>,
         data: Value,
     ) -> octl_core::Result<()> {
-        self.next_seq += 1;
-        let seq = self.next_seq;
-        let paths = &self.paths;
-        RunLock::with_lock(&paths.lock(), || {
-            append_event_with_seq(paths, seq, kind, node_id, None, data)?;
-            let events = read_all_events(&paths.events())?;
-            let ev = events.last().unwrap();
-            apply_event(paths, ev)
-        })
+        append_and_apply_event(&self.paths, kind, node_id, None, data).map(|_| ())
     }
 
     fn node(&self, node_id: &str) -> Node {

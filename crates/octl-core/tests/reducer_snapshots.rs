@@ -2,11 +2,9 @@
 //! snapshot the resulting projection files.
 
 use insta::assert_json_snapshot;
-use octl_core::events::read_all_events;
 use octl_core::{
-    append_event_with_seq, apply_event, ensure_root, read_discussion_opt, read_manifest,
-    read_node_opt, read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunId, RunLock,
-    RunPaths,
+    append_and_apply_event, ensure_root, read_discussion_opt, read_manifest, read_node_opt,
+    read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunId, RunPaths,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -14,7 +12,6 @@ use tempfile::TempDir;
 struct Harness {
     _tmp: TempDir,
     paths: RunPaths,
-    next_seq: u64,
 }
 
 impl Harness {
@@ -27,23 +24,16 @@ impl Harness {
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             paths: RunPaths::new(dir, run_id).unwrap(),
-            next_seq: 0,
             _tmp: tmp,
         }
     }
 
+    // Drive one event through the canonical mutation path (append + fold under
+    // the run's flock). `seq` auto-recovers monotonically — identical to the
+    // old hand-counted seq for these sequential fixtures, and these snapshots
+    // cover projection files (never raw `seq`), so values are unchanged.
     fn append(&mut self, kind: &str, node_id: Option<&str>, data: Value) {
-        self.next_seq += 1;
-        let seq = self.next_seq;
-        let paths = &self.paths;
-        RunLock::with_lock(&paths.lock(), || {
-            append_event_with_seq(paths, seq, kind, node_id, None, data)?;
-            let events = read_all_events(&paths.events())?;
-            let ev = events.last().unwrap();
-            apply_event(paths, ev)?;
-            Ok(())
-        })
-        .unwrap();
+        append_and_apply_event(&self.paths, kind, node_id, None, data).unwrap();
     }
 }
 

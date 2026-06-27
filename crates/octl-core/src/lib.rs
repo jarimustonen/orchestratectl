@@ -7,8 +7,9 @@
 //!   [`Discussion`], [`SpinoffProposal`]).
 //! - Atomic write helpers ([`atomic`]) and per-run advisory `flock`
 //!   ([`RunLock`]).
-//! - The event-append primitive ([`append_event`]) with `seq` recovery.
-//! - The projection reducer ([`apply_event`]).
+//! - The canonical mutation entry point
+//!   ([`append_and_apply_event`][events::append_and_apply_event]): append one
+//!   event and fold it into the projections under the run's `flock`.
 //!
 //! Higher-level supervisor and CLI logic live in their own crates / issues.
 //!
@@ -29,21 +30,22 @@ pub mod reducer;
 pub mod report;
 pub mod schema;
 
+#[cfg(test)]
+mod stress_tests;
+
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
-    append_and_apply, append_and_apply_unlocked, append_event, append_event_with_seq,
-    find_prior_with_key, read_all_events, recover_last_seq, PriorEvent,
+    append_and_apply_event, append_and_apply_unlocked, find_prior_with_key, read_all_events,
+    recover_last_seq, AppendResult, PriorEvent,
 };
 pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
 pub use lock::RunLock;
 pub use paths::{run_dir, validate_run_id, RunPaths};
 pub use projections::{
     read_discussion, read_discussion_opt, read_manifest, read_manifest_opt, read_node,
-    read_node_opt, read_spinoff, read_spinoff_opt, write_discussion, write_manifest, write_node,
-    write_spinoff,
+    read_node_opt, read_spinoff, read_spinoff_opt, write_node,
 };
-pub use reducer::apply_event;
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
     ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,

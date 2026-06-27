@@ -4,6 +4,12 @@
 //! macOS APFS correctly serializes concurrent short-lived writers without
 //! livelock, starvation, or torn lines.
 //!
+//! Lives in-crate (rather than under `tests/`) because it exercises the
+//! `pub(crate)` raw append primitive [`append_event_with_seq`] directly —
+//! the lowest-level lock+seq path, below the canonical
+//! [`append_and_apply_event`](crate::append_and_apply_event). That keeps the
+//! V4 lock-acquire-latency measurement honest (no reducer work per iter).
+//!
 //! Verifies:
 //! - final `events.jsonl` has exactly `50_000` lines
 //! - every `seq` `1..=50_000` appears exactly once
@@ -14,17 +20,18 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use octl_core::events::{append_event_with_seq, read_all_events, recover_last_seq};
-use octl_core::{ensure_root, run_dir, RunId, RunLock, RunPaths};
 use serde_json::json;
 use tempfile::TempDir;
+
+use crate::events::{append_event_with_seq, read_all_events, recover_last_seq};
+use crate::{ensure_root, run_dir, RunId, RunLock, RunPaths};
 
 const THREADS: usize = 50;
 const ITERS_PER_THREAD: usize = 1000;
 const TOTAL: usize = THREADS * ITERS_PER_THREAD;
 
 // Slow (~200s release / multi-minute debug). Run explicitly with:
-//   cargo test --release --test flock_stress -- --nocapture --ignored
+//   cargo test -p octl-core --release stress_tests -- --nocapture --ignored
 #[test]
 #[ignore = "expensive — run explicitly with --ignored"]
 fn flock_stress_50_threads_1000_iters() {

@@ -214,7 +214,14 @@ fn optional_ts(
 /// Apply one event to projections. No-op for unknown `kind`.
 ///
 /// Caller must hold the run's [`crate::lock::RunLock`].
-pub fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+///
+/// `pub(crate)`: applying an event in isolation (without the matching
+/// `events.jsonl` append) is an internal building block of
+/// [`crate::events::append_and_apply_unlocked`] and a future
+/// `rebuild_projections_from_events`. External callers mutate state through
+/// [`crate::events::append_and_apply_event`] so the log and projections can
+/// never diverge.
+pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     // An event whose envelope `run_id` doesn't match the run we're folding it
     // into means the log was copied/misrouted — fold it and projections would
     // be silently cross-contaminated. Reject before any write.
@@ -449,7 +456,7 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
     // `last_report` is left untouched. Guarding first also keeps replay
     // robust: a malformed dead report against a settled node is a clean
     // no-op rather than a `CorruptEventLog` that would brick rebuild of a
-    // log `append_and_apply` already committed. See run-cli-read/handoff.md
+    // log `append_and_apply_event` already committed. See run-cli-read/handoff.md
     // D5. (3/4 of /llm-review preferred guard-before-validate over the
     // reverse the issue spec sketched; the required CorruptEventLog cases
     // all target live nodes, so validation still runs for them.)

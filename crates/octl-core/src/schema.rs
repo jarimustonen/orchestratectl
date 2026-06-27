@@ -574,7 +574,7 @@ pub struct SpinoffProposal {
 ///
 /// Unlike the projection structs, `run_id` / `node_id` here stay `String`
 /// rather than the typed id newtypes. `Event` is the append-only wire envelope
-/// produced generically by [`crate::append_event`] (which takes
+/// produced generically by [`crate::append_and_apply_event`] (which takes
 /// `node_id: Option<&str>`); the reducer is its validating boundary — it parses
 /// every event-sourced id into the appropriate newtype (mapping failures to
 /// [`Error::CorruptEventLog`]) before any of them is used to build a path.

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::atomic::open_events_append;
@@ -142,33 +142,14 @@ fn find_prev_newline(
     }
 }
 
-/// Append one event under the run's `flock`. Returns the assigned `seq`.
-///
-/// `seq` is recovered from the last line of `events.jsonl` on every call.
-/// Long-lived supervisors that hold their own cached counter should use
-/// [`append_event_with_seq`] under their own `flock`-held scope instead.
-pub fn append_event(
-    paths: &RunPaths,
-    kind: &str,
-    node_id: Option<&str>,
-    idempotency_key: Option<&str>,
-    data: Value,
-) -> Result<u64> {
-    RunLock::with_lock(&paths.lock(), || {
-        let last = recover_last_seq(&paths.events())?;
-        let seq = last + 1;
-        write_event_line(paths, seq, kind, node_id, idempotency_key, data)?;
-        Ok(seq)
-    })
-}
-
 /// Append one event with a caller-supplied `seq`. The caller **must** hold
 /// the run's [`RunLock`] for the duration of this call and is responsible
 /// for ensuring `seq` is monotonic. Misuse can corrupt the event log.
 ///
-/// Long-lived supervisors that cache `next_seq` in memory use this path;
-/// short-lived callers should prefer [`append_event`].
-pub fn append_event_with_seq(
+/// `pub(crate)` — this raw, no-reducer, caller-managed-`seq` primitive is an
+/// internal building block (and a footgun outside the crate). It is retained
+/// for the crate's own tests and a future `rebuild_projections_from_events`.
+pub(crate) fn append_event_with_seq(
     paths: &RunPaths,
     seq: u64,
     kind: &str,
@@ -206,32 +187,90 @@ fn write_event_line(
     Ok(())
 }
 
-/// Append one event under the run's `flock` *and* fold it into the
-/// projection files via [`apply_event`]. Returns the assigned `seq`.
+/// Outcome of an [`append_and_apply_event`] call.
 ///
-/// This is the canonical mutate path for short-lived CLI callers: every
-/// `events.jsonl` line is immediately reflected in `manifest.json` /
-/// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one
-/// lock, so a read CLI run a millisecond later never sees a stale
-/// projection.
-pub fn append_and_apply(
+/// `seq` is the value a caller surfaces to a user: the freshly appended
+/// event's `seq`, or — on an idempotent replay — the `seq` of the
+/// pre-existing matching event. A reducer no-op (e.g. an event dropped by
+/// the terminal-state guard) is still a success at this layer: `seq` names
+/// the appended event regardless of whether the reducer changed anything.
+///
+/// There is intentionally no `derived_event_ids` field. This API mutates
+/// exactly one event; the supervisor's report consumption, which emits a
+/// *batch* of derived discussion/spinoff events under one held lock, uses
+/// [`append_and_apply_unlocked`] instead (the sanctioned lock-held
+/// composition path) and tracks its own emitted ids.
+#[derive(Debug, Serialize)]
+pub struct AppendResult {
+    /// `seq` of the appended event, or of the prior event on an idempotent
+    /// replay.
+    pub seq: u64,
+    /// True when `idempotency_key` matched a prior event so nothing new was
+    /// appended or applied; `seq`/`prior` then describe that prior event.
+    pub idempotent_replay: bool,
+    /// On an idempotent replay, the prior event's recorded `node_id` and
+    /// `data`, so a caller can reject a key reused with a conflicting
+    /// request (Stripe-style). `None` on a fresh append.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior: Option<PriorEvent>,
+}
+
+/// The one canonical mutation entry point: append a single event to
+/// `events.jsonl` *and* fold it into the projection files via the reducer,
+/// all under the run's `flock`, with idempotency-key dedup.
+///
+/// Every `events.jsonl` line is immediately reflected in `manifest.json` /
+/// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one lock,
+/// so a read CLI run a millisecond later never sees a stale projection.
+///
+/// When `idempotency_key` is `Some` and a prior event with the same `kind` +
+/// key already exists ([`find_prior_with_key`]), nothing is appended or
+/// applied: the result carries the prior event's `seq`, `idempotent_replay:
+/// true`, and `prior: Some(..)` so the caller can detect a key reused with a
+/// conflicting payload. With `idempotency_key: None` no scan runs.
+///
+/// Callers that must compose several writes — or a read-modify-write
+/// transaction (read a projection, decide, then append) — under one lock
+/// window hold the lock themselves and use [`append_and_apply_unlocked`],
+/// the sanctioned lock-held composition path. Re-entering this function
+/// while already holding the lock would deadlock: `flock` blocks when a
+/// second open of the lock file from the same process tries `LOCK_EX`.
+pub fn append_and_apply_event(
     paths: &RunPaths,
     kind: &str,
     node_id: Option<&str>,
     idempotency_key: Option<&str>,
     data: Value,
-) -> Result<u64> {
+) -> Result<AppendResult> {
     RunLock::with_lock(&paths.lock(), || {
-        append_and_apply_unlocked(paths, kind, node_id, idempotency_key, data)
+        // Idempotency lookup + append share this one lock window so a
+        // concurrent retry can't see "no prior event" and double-append.
+        if let Some(key) = idempotency_key {
+            if let Some(prior) = find_prior_with_key(paths, kind, key)? {
+                return Ok(AppendResult {
+                    seq: prior.seq,
+                    idempotent_replay: true,
+                    prior: Some(prior),
+                });
+            }
+        }
+        let seq = append_and_apply_unlocked(paths, kind, node_id, idempotency_key, data)?;
+        Ok(AppendResult {
+            seq,
+            idempotent_replay: false,
+            prior: None,
+        })
     })
 }
 
-/// Same as [`append_and_apply`] but assumes the caller already holds the
-/// run's [`RunLock`]. Use when you need to fold extra logic (e.g. an
-/// idempotency-key lookup) into the same locked critical section —
-/// calling [`append_and_apply`] recursively would deadlock because
-/// `flock` blocks when a second open of the lock file from the same
-/// process tries to acquire `LOCK_EX`.
+/// Append one event and fold it into projections, assuming the caller
+/// already holds the run's [`RunLock`]. The **sanctioned lock-held
+/// composition path**: use it to fold extra logic (an idempotency-key
+/// lookup, a status precondition) or several writes (the supervisor's
+/// derived discussion/spinoff batch) into one locked critical section.
+/// Calling [`append_and_apply_event`] from within a held lock would
+/// deadlock because `flock` blocks when a second open of the lock file from
+/// the same process tries to acquire `LOCK_EX`.
 pub fn append_and_apply_unlocked(
     paths: &RunPaths,
     kind: &str,
@@ -284,7 +323,7 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
 /// A prior event located by [`find_prior_with_key`]. Carries enough to let
 /// an idempotent-retry caller both return the recorded `seq` and verify the
 /// retry payload matches what was originally written.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PriorEvent {
     /// The recorded `seq` of the matching event.
     pub seq: u64,
@@ -476,12 +515,150 @@ mod tests {
         let run_id = "01jxsnap000000000000000000";
         let paths = RunPaths::new(dir, run_id).unwrap();
 
-        let seq = append_event(&paths, "run.status", None, None, serde_json::json!({})).unwrap();
-        assert_eq!(seq, 1);
+        let r =
+            append_and_apply_event(&paths, "run.status", None, None, serde_json::json!({})).unwrap();
+        assert_eq!(r.seq, 1);
 
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].run_id, run_id);
+    }
+
+    /// Build a fresh, empty run directory with a valid `RunPaths` whose
+    /// `run_id` matches the envelope the reducer will fold.
+    fn fresh_run(tmp: &TempDir) -> RunPaths {
+        let run_id = "01jxsnap000000000000000000";
+        let dir = tmp.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        RunPaths::new(dir, run_id).unwrap()
+    }
+
+    /// Drive a run to a live node so reducer-affecting events have a target.
+    fn bootstrap_live_node(paths: &RunPaths) {
+        append_and_apply_event(
+            paths,
+            "run.created",
+            None,
+            None,
+            serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "fix" }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            paths,
+            "node.created",
+            Some("n-0001"),
+            None,
+            serde_json::json!({ "kind": "spinoff" }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn append_and_apply_event_success_path_appends_and_folds() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+
+        let r = append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
+        )
+        .unwrap();
+        assert_eq!(r.seq, 1);
+        assert!(!r.idempotent_replay);
+        assert!(r.prior.is_none());
+
+        // The reducer ran under the same lock: the manifest projection exists.
+        let m = crate::read_manifest(&paths).unwrap();
+        assert_eq!(m.run_id.as_str(), paths.run_id.as_str());
+    }
+
+    #[test]
+    fn append_and_apply_event_idempotent_replay_returns_prior_without_appending() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+
+        let data = serde_json::json!({ "status": "running" });
+        let first = append_and_apply_event(
+            &paths,
+            "node.status",
+            Some("n-0001"),
+            Some("k1"),
+            data.clone(),
+        )
+        .unwrap();
+        assert!(!first.idempotent_replay);
+        let before = read_all_events(&paths.events()).unwrap().len();
+
+        // Same kind + key: a replay returns the prior event and appends nothing.
+        let replay = append_and_apply_event(
+            &paths,
+            "node.status",
+            Some("n-0001"),
+            Some("k1"),
+            data.clone(),
+        )
+        .unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.seq, first.seq);
+        let prior = replay.prior.expect("replay carries the prior event");
+        assert_eq!(prior.node_id.as_deref(), Some("n-0001"));
+        assert_eq!(prior.data, data);
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before,
+            "replay must not append a new line"
+        );
+    }
+
+    #[test]
+    fn append_and_apply_event_reducer_noop_is_still_a_success() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+
+        // Settle the node terminal.
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some("n-0001"),
+            None,
+            serde_json::json!({ "success": true }),
+        )
+        .unwrap();
+        let nid = crate::schema::NodeId::parse_str("n-0001").unwrap();
+        assert_eq!(
+            crate::read_node(&paths, &nid).unwrap().status,
+            crate::schema::Status::Done
+        );
+
+        // A later status event is dropped by the terminal-state guard, but the
+        // append still happened: the result names the appended event's seq and
+        // is not a replay. The node stays Done.
+        let before = read_all_events(&paths.events()).unwrap().len();
+        let r = append_and_apply_event(
+            &paths,
+            "node.status",
+            Some("n-0001"),
+            None,
+            serde_json::json!({ "status": "running" }),
+        )
+        .unwrap();
+        assert!(!r.idempotent_replay);
+        assert_eq!(r.seq as usize, before + 1);
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before + 1,
+            "the event is appended even when the reducer no-ops"
+        );
+        assert_eq!(
+            crate::read_node(&paths, &nid).unwrap().status,
+            crate::schema::Status::Done,
+            "terminal status is frozen"
+        );
     }
 
     /// Build a `RunPaths` over a fresh tempdir and write `bytes` verbatim to
