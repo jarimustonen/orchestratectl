@@ -6,6 +6,7 @@
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use clap::{ColorChoice, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
@@ -157,17 +158,17 @@ pub fn run() -> ExitCode {
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. It MUST
-    // stay alive for the whole of `run()`: dropping it flushes buffered
-    // events and joins the thread, so binding it here keeps logs flowing
+    // stay alive for the whole of `run()`: its `Drop` drains buffered events
+    // to disk and joins the thread, so binding it here keeps logs flowing
     // until every subcommand (including the long-lived `supervise` loop,
     // which exits its poll loop cooperatively on SIGINT/SIGTERM) has
-    // returned. Caveat: subcommands that bypass unwinding via
-    // `std::process::exit` (currently `event tail --follow`) skip this
-    // drop and may lose this process's own buffered log events — tracked
-    // as a follow-up, see issues/log-guard-flush-on-process-exit.
+    // returned. Subcommands that bypass unwinding via `std::process::exit`
+    // (e.g. `event tail`'s signal exit) skip this `Drop`, so they call
+    // `flush_logs()` explicitly first — `init_logging` registered the same
+    // guard in the process-global `LOG_FLUSH` cell for exactly that.
     let LoggingInit {
         warnings: logging_warnings,
-        _guard: _log_guard,
+        guard: _log_guard,
     } = init_logging();
 
     let cli = match Cli::try_parse() {
@@ -379,18 +380,97 @@ fn format_u32_list(values: &[u32]) -> String {
 /// far more headroom than a healthy disk needs.
 const LOG_BUFFERED_LINES: usize = 128_000;
 
-/// Result of [`init_logging`]: any non-fatal warnings to surface to the
-/// caller, plus the worker guard whose lifetime keeps the background log
-/// writer alive.
+/// Shared cell holding the non-blocking appender's [`WorkerGuard`]. The
+/// guard lives behind `Arc<Mutex<…>>` so the same underlying guard is
+/// reachable from two places: the [`LogGuard`] bound in [`run`] (whose
+/// `Drop` drains on normal unwinding) and the process-global [`LOG_FLUSH`]
+/// cell (drained by [`flush_logs`] on a `process::exit` path that bypasses
+/// `Drop`). `None` whenever the subscriber was never installed.
+type LogCell = Arc<Mutex<Option<WorkerGuard>>>;
+
+/// Process-global handle to the log [`LogCell`], populated by
+/// [`init_logging`]. Lets any subcommand that exits via `std::process::exit`
+/// — which skips the [`LogGuard`]'s `Drop` — drain this process's own
+/// buffered tracing events to disk first, via [`flush_logs`]. Empty until
+/// `init_logging` runs (e.g. the structured-help path returns before it).
+static LOG_FLUSH: OnceLock<LogCell> = OnceLock::new();
+
+/// Drain the non-blocking appender's channel to disk by dropping the
+/// [`WorkerGuard`]. tracing-appender 0.2 exposes no manual flush
+/// (`NonBlocking::flush` is a no-op); the worker only drains and `fsync`s
+/// the file when it receives the `Shutdown` message that `WorkerGuard::drop`
+/// sends. Dropping it blocks until that drain completes.
 ///
-/// `#[must_use]`: the whole point of the struct is that `_guard` must be
-/// bound for the lifetime of the process. Dropping it early flushes and
-/// joins the writer thread, after which all further log events are
-/// silently discarded.
+/// Idempotent: takes the guard out of the shared cell, so the first caller
+/// (whether [`LogGuard::drop`] or [`flush_logs`]) flushes and every later
+/// call is a no-op. After the first flush this process's logging is dead —
+/// any further events are silently discarded — so only flush right before
+/// exit. Poisoned-lock safe: a panic elsewhere must not strand the flush.
+fn drain_cell(cell: &Mutex<Option<WorkerGuard>>) {
+    let taken = match cell.lock() {
+        Ok(mut g) => g.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    // Drop *after* releasing the lock: `WorkerGuard::drop` blocks up to ~1s
+    // waiting for the worker to drain, and there is no reason to hold the
+    // mutex across it.
+    drop(taken);
+}
+
+/// Drain this process's buffered tracing events to disk. Safe to call from
+/// any subcommand; a no-op if logging was never initialised. Intended for
+/// `std::process::exit` paths (e.g. `event tail`'s signal exit) that bypass
+/// the [`LogGuard`]'s `Drop`. See `issues/log-guard-flush-on-process-exit`.
+pub(crate) fn flush_logs() {
+    if let Some(cell) = LOG_FLUSH.get() {
+        drain_cell(cell);
+    }
+}
+
+/// RAII owner of the non-blocking log writer. Holding it keeps the
+/// background writer thread alive; its `Drop` drains the channel to disk on
+/// normal stack unwinding (the common exit path). For exits that bypass
+/// `Drop` (`std::process::exit`), call [`flush_logs`] explicitly first.
+///
+/// `#[must_use]`: binding it for the process lifetime is the whole point —
+/// dropping it early shuts the writer thread down, after which all further
+/// log events are silently discarded.
+#[must_use = "the log writer thread is shut down when the guard is dropped — bind it for the process lifetime"]
+struct LogGuard {
+    cell: LogCell,
+}
+
+impl Drop for LogGuard {
+    fn drop(&mut self) {
+        drain_cell(&self.cell);
+    }
+}
+
+/// Result of [`init_logging`]: any non-fatal warnings to surface to the
+/// caller, plus the [`LogGuard`] whose lifetime keeps the background log
+/// writer alive.
 #[must_use = "the log writer thread is shut down when the guard is dropped — bind it for the process lifetime"]
 struct LoggingInit {
     warnings: Vec<String>,
-    _guard: Option<WorkerGuard>,
+    guard: LogGuard,
+}
+
+/// Build a [`LoggingInit`] from the collected `warnings` and an optional
+/// [`WorkerGuard`], wiring the shared cell into the process-global
+/// [`LOG_FLUSH`] so `process::exit` paths can drain it. `init_logging`'s
+/// every return point funnels through here so the global is always
+/// registered (even when no guard exists — then flushing is a harmless
+/// no-op).
+fn finish_logging(warnings: Vec<String>, guard: Option<WorkerGuard>) -> LoggingInit {
+    let cell: LogCell = Arc::new(Mutex::new(guard));
+    // First (and only) `init_logging` call per process wins; a second call
+    // in a test or re-entrant path keeps the original cell, which is fine —
+    // it owns the live guard.
+    let _ = LOG_FLUSH.set(cell.clone());
+    LoggingInit {
+        warnings,
+        guard: LogGuard { cell },
+    }
 }
 
 /// Initialise the JSONL log subscriber. Logs go to
@@ -398,10 +478,10 @@ struct LoggingInit {
 /// log file cannot be opened, the process still runs and the caller sees
 /// the failure in the success-envelope `warnings` array or on stderr.
 ///
-/// Returns the collected warnings plus the [`WorkerGuard`] for the
+/// Returns the collected warnings plus the [`LogGuard`] owning the
 /// non-blocking writer. The guard owns the background writer thread; the
 /// caller MUST keep it alive until the process is done logging, otherwise
-/// buffered events are dropped on drop. The guard is `None` whenever the
+/// buffered events are dropped on drop. The guard wraps `None` whenever the
 /// subscriber was not installed (no log path, IO error, or an
 /// already-initialised global subscriber).
 ///
@@ -410,18 +490,15 @@ struct LoggingInit {
 /// dropped rather than blocking the caller. This matches the MVP decision
 /// to favour supervisor responsiveness over strict log completeness;
 /// hardening (back-pressure / dropped-event accounting) is deferred. Logs
-/// are also lost on `panic = "abort"` or a `std::process::exit` that
-/// bypasses the guard's `Drop`.
+/// are also lost on `panic = "abort"`. A `std::process::exit` that bypasses
+/// the guard's `Drop` must call [`flush_logs`] first (see `event tail`).
 fn init_logging() -> LoggingInit {
     let mut warnings = Vec::new();
     let log_path = if let Some(p) = log_path() {
         p
     } else {
         warnings.push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
-        return LoggingInit {
-            warnings,
-            _guard: None,
-        };
+        return finish_logging(warnings, None);
     };
 
     if let Some(parent) = log_path.parent() {
@@ -431,10 +508,7 @@ fn init_logging() -> LoggingInit {
                 parent.display(),
                 e
             ));
-            return LoggingInit {
-                warnings,
-                _guard: None,
-            };
+            return finish_logging(warnings, None);
         }
     }
 
@@ -446,10 +520,7 @@ fn init_logging() -> LoggingInit {
                 log_path.display(),
                 e
             ));
-            return LoggingInit {
-                warnings,
-                _guard: None,
-            };
+            return finish_logging(warnings, None);
         }
     };
 
@@ -485,16 +556,10 @@ fn init_logging() -> LoggingInit {
         // (flushing and joining the idle worker) rather than handing back
         // a guard for a writer nobody reads.
         warnings.push(format!("tracing subscriber not installed: {e}"));
-        return LoggingInit {
-            warnings,
-            _guard: None,
-        };
+        return finish_logging(warnings, None);
     }
 
-    LoggingInit {
-        warnings,
-        _guard: Some(guard),
-    }
+    finish_logging(warnings, Some(guard))
 }
 
 fn log_path() -> Option<PathBuf> {
