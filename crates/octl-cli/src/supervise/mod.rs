@@ -112,7 +112,7 @@ pub fn dispatch(
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(CliError {
             kind: ExitKind::User,
@@ -183,7 +183,7 @@ pub fn dispatch(
     // (`last_processed_report_seq_by_child`) so an un-consumed report is
     // re-tailed rather than skipped.
     for (cid, parent_node_id) in discover_children(&paths) {
-        let child_paths = run_paths(&root, &cid);
+        let child_paths = run_paths(&root, &cid)?;
         let seq = state
             .last_processed_report_seq_by_child
             .get(&cid)
@@ -274,7 +274,7 @@ pub fn dispatch(
                     // whether the supervisor fork succeeds — the tail is
                     // the primary consumption path, so a spawn failure must
                     // never orphan the child's reports.
-                    let child_events = run_paths(&root, &child_run_id).events();
+                    let child_events = run_paths(&root, &child_run_id)?.events();
                     let seq = state
                         .last_processed_report_seq_by_child
                         .get(&child_run_id)
@@ -586,7 +586,7 @@ fn spawn_child_supervisor(
     // read-modify-write races the child supervisor's own boot writes, so
     // it must be done under the child run's flock (F11) — without it the
     // last writer silently clobbers the other's fields.
-    let child_paths = run_paths(root, child_run_id);
+    let child_paths = run_paths(root, child_run_id)?;
     match RunLock::acquire(&child_paths.lock()) {
         Ok(_guard) => {
             if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {

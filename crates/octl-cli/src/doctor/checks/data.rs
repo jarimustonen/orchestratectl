@@ -51,7 +51,10 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
 
     let mut out = Vec::new();
     for run_id in &run_ids {
-        let paths = RunPaths::new(runs_dir.join(run_id));
+        let Ok(paths) = RunPaths::new(runs_dir.join(run_id), run_id.clone()) else {
+            // Non-run directory (name isn't a valid run id) — nothing to check.
+            continue;
+        };
         let pid_path = paths.supervisor_pid();
         let id = format!("data.orphan-supervisor.{run_id}");
 

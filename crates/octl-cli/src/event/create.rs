@@ -317,7 +317,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     validate_data_ids(kind, node_id.as_deref(), &data)?;
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     // The run dir must already exist — `event create` is a write path
     // for an existing run; it does NOT bootstrap one. `is_dir()` over

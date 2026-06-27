@@ -46,7 +46,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let status_filter = args.status.map(status_arg_kebab);
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(

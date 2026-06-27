@@ -21,11 +21,11 @@ impl Harness {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         ensure_root(root).unwrap();
-        let run_id = "01jxfixture00000000000000000".to_string();
+        let run_id = "01jxsnap000000000000000000".to_string();
         let dir = run_dir(root, &run_id);
         std::fs::create_dir_all(&dir).unwrap();
         Self {
-            paths: RunPaths::new(dir),
+            paths: RunPaths::new(dir, run_id).unwrap(),
             next_seq: 0,
             _tmp: tmp,
         }
@@ -93,7 +93,7 @@ fn snapshot_run(h: &Harness, name: &str, extras: &[(&str, &str)]) {
 #[test]
 fn run_node_report_spinoff_flow() {
     let mut h = Harness::new();
-    let run_id = "01jxfixture00000000000000000";
+    let run_id = "01jxsnap000000000000000000";
 
     h.append(
         "run.created",

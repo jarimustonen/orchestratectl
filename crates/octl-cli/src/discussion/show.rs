@@ -17,7 +17,7 @@ pub fn run(
     let run_id = require_safe_id(run_id, "run-id")?;
     let discussion_id = require_safe_id(discussion_id, "discussion-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     if !paths.root.is_dir() {
         return Err(

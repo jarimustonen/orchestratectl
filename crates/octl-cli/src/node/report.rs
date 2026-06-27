@@ -74,7 +74,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     validate_report_payload(&data)?;
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     // Both manifest and node must exist — `node report` is only meant
     // to update a live node, not bootstrap one. Reporting against a

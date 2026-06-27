@@ -72,7 +72,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let paths = RunPaths::new(ent.path());
+        // The directory name must be a valid run id; foreign dirs are skipped.
+        let Some(run_id) = ent.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(paths) = RunPaths::new(ent.path(), run_id) else {
+            continue;
+        };
         let m = match read_manifest_opt(&paths).map_err(from_core)? {
             Some(m) => m,
             None => continue, // half-initialized run dir; skip silently

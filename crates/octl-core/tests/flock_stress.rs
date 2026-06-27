@@ -31,10 +31,10 @@ fn flock_stress_50_threads_1000_iters() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     ensure_root(root).unwrap();
-    let run_id = "01jxstresstest0000000000000".to_string();
+    let run_id = "01jxstress0000000000000000".to_string();
     let dir = run_dir(root, &run_id);
     std::fs::create_dir_all(&dir).unwrap();
-    let paths = Arc::new(RunPaths::new(dir));
+    let paths = Arc::new(RunPaths::new(dir, run_id).unwrap());
 
     // Touch the lock and events file once so each thread sees the same root.
     RunLock::with_lock(&paths.lock(), || Ok(())).unwrap();

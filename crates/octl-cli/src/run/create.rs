@@ -230,7 +230,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if is_child {
         let parent_run_id = parent_run_id.as_deref().unwrap();
         let parent_node_id = parent_node_id.as_deref().unwrap();
-        let parent_paths = run_paths(&root, parent_run_id);
+        let parent_paths = run_paths(&root, parent_run_id)?;
         if !parent_paths.manifest().exists() {
             return Err(CliError::user(
                 "parent_not_found",
@@ -258,7 +258,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     std::fs::create_dir_all(&child_dir).map_err(|e| {
         CliError::system("io_error", format!("mkdir {}: {}", child_dir.display(), e))
     })?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     // Materialize the prompt file under <run-dir>/prompt.md unless the
     // caller supplied one outside the run dir (in which case we use the

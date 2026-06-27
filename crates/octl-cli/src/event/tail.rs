@@ -55,7 +55,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = require_safe_id(&args.run_id, "run-id")?;
     let format = resolve_format(args.spec.format)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     // Require the run to exist (consistent with `run show`); reading a
     // non-existent run id is a user error, not "stream of nothing".

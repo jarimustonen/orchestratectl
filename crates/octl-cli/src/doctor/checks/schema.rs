@@ -53,8 +53,11 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     run_ids.sort();
 
     for run_id in &run_ids {
-        let paths = RunPaths::new(runs_dir.join(run_id));
         let id = format!("schema.runs.{run_id}");
+        let Ok(paths) = RunPaths::new(runs_dir.join(run_id), run_id.clone()) else {
+            // Non-run directory (name isn't a valid run id) — not a schema fault.
+            continue;
+        };
         match read_manifest_opt(&paths) {
             Ok(Some(_)) => out.push(CheckResult::ok(id, "manifest valid")),
             // No manifest yet: a run mid-creation, not a schema fault.

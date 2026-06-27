@@ -175,9 +175,16 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
     k.lifecycle()
 }
 
-/// Resolve `<root>/runs/<run-id>` and return `RunPaths`.
-pub fn run_paths(root: &Path, run_id: &str) -> RunPaths {
-    RunPaths::new(octl_core::run_dir(root, run_id))
+/// Resolve `<root>/runs/<run-id>` and return validated `RunPaths`.
+///
+/// A run-id that fails ULID validation cannot name a run that exists, so it
+/// surfaces as `run_not_found` — the same envelope the lookup-miss path emits
+/// — keeping the CLI contract uniform for every "no such run" reason.
+pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
+    RunPaths::new(octl_core::run_dir(root, run_id), run_id).map_err(|_| {
+        CliError::user("run_not_found", format!("no run with id {run_id}"))
+            .with_invalid_value(run_id)
+    })
 }
 
 /// Trim a CLI string argument and reject empty/whitespace-only values.

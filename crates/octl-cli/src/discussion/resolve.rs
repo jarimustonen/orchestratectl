@@ -113,7 +113,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
 
     if !paths.root.is_dir() {
         return Err(

@@ -176,16 +176,11 @@ fn write_event_line(
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<()> {
-    let run_id = paths
-        .root
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let ev = Event {
         ts: Utc::now(),
         seq,
         kind: kind.to_string(),
-        run_id,
+        run_id: paths.run_id.clone(),
         node_id: node_id.map(str::to_string),
         idempotency_key: idempotency_key.map(str::to_string),
         data,
@@ -235,16 +230,11 @@ pub fn append_and_apply_unlocked(
 ) -> Result<u64> {
     let last = recover_last_seq(&paths.events())?;
     let seq = last + 1;
-    let run_id = paths
-        .root
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let ev = Event {
         ts: Utc::now(),
         seq,
         kind: kind.to_string(),
-        run_id,
+        run_id: paths.run_id.clone(),
         node_id: node_id.map(str::to_string),
         idempotency_key: idempotency_key.map(str::to_string),
         data,

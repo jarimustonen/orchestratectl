@@ -40,7 +40,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))

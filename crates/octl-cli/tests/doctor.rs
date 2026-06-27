@@ -146,7 +146,7 @@ fn jsonl_streams_one_check_per_line_then_summary_event() {
 #[test]
 fn broken_manifest_fails_schema_check_and_exits_one() {
     let env = setup();
-    let run_dir = env.orch.join("runs").join("badrun");
+    let run_dir = env.orch.join("runs").join("01jxbad0000000000000000000");
     std::fs::create_dir_all(&run_dir).unwrap();
     std::fs::write(run_dir.join("manifest.json"), "{ this is not json").unwrap();
 
@@ -157,12 +157,12 @@ fn broken_manifest_fails_schema_check_and_exits_one() {
     assert_eq!(out.status.code(), Some(1), "any fail → exit 1");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "schema.runs.badrun");
+    let c = find_check(checks, "schema.runs.01jxbad0000000000000000000");
     assert_eq!(c["status"], "fail");
     assert!(c["fix_suggestion"]
         .as_str()
         .unwrap()
-        .contains("run cancel badrun"));
+        .contains("run cancel 01jxbad0000000000000000000"));
     assert_eq!(v["data"]["summary"]["fail"], 1);
 }
 
@@ -260,10 +260,10 @@ fn dry_run_without_fix_is_rejected() {
 #[test]
 fn dead_supervisor_pid_warns() {
     let env = setup();
-    let run_dir = env.orch.join("runs").join("deadrun");
+    let run_dir = env.orch.join("runs").join("01jxdead000000000000000000");
     std::fs::create_dir_all(&run_dir).unwrap();
     // PID 2^31-1 is effectively never live.
-    write_minimal_manifest(&run_dir, "deadrun");
+    write_minimal_manifest(&run_dir, "01jxdead000000000000000000");
     std::fs::write(run_dir.join("supervisor.pid"), "2147483647").unwrap();
 
     let out = bin(&env)
@@ -272,20 +272,20 @@ fn dead_supervisor_pid_warns() {
         .expect("spawn");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "data.orphan-supervisor.deadrun");
+    let c = find_check(checks, "data.orphan-supervisor.01jxdead000000000000000000");
     assert_eq!(c["status"], "warn");
     assert!(c["fix_suggestion"]
         .as_str()
         .unwrap()
-        .contains("run reattach deadrun"));
+        .contains("run reattach 01jxdead000000000000000000"));
 }
 
 #[test]
 fn corrupt_supervisor_pid_warns() {
     let env = setup();
-    let run_dir = env.orch.join("runs").join("corruptrun");
+    let run_dir = env.orch.join("runs").join("01jxcrpt000000000000000000");
     std::fs::create_dir_all(&run_dir).unwrap();
-    write_minimal_manifest(&run_dir, "corruptrun");
+    write_minimal_manifest(&run_dir, "01jxcrpt000000000000000000");
     std::fs::write(run_dir.join("supervisor.pid"), "not-a-pid").unwrap();
 
     let out = bin(&env)
@@ -294,7 +294,7 @@ fn corrupt_supervisor_pid_warns() {
         .expect("spawn");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "data.orphan-supervisor.corruptrun");
+    let c = find_check(checks, "data.orphan-supervisor.01jxcrpt000000000000000000");
     assert_eq!(c["status"], "warn");
     assert!(c["message"]
         .as_str()
@@ -305,9 +305,9 @@ fn corrupt_supervisor_pid_warns() {
 #[test]
 fn fix_removes_stale_dead_supervisor_pid() {
     let env = setup();
-    let run_dir = env.orch.join("runs").join("stalerun");
+    let run_dir = env.orch.join("runs").join("01jxstp0000000000000000000");
     std::fs::create_dir_all(&run_dir).unwrap();
-    write_minimal_manifest(&run_dir, "stalerun");
+    write_minimal_manifest(&run_dir, "01jxstp0000000000000000000");
     let pid_path = run_dir.join("supervisor.pid");
     std::fs::write(&pid_path, "2147483647").unwrap();
     // Backdate the mtime well past the 24h staleness threshold so the
@@ -330,7 +330,7 @@ fn fix_removes_stale_dead_supervisor_pid() {
         .expect("fixes_applied");
     let f = fixes
         .iter()
-        .find(|f| f["check_id"] == "data.orphan-supervisor.stalerun")
+        .find(|f| f["check_id"] == "data.orphan-supervisor.01jxstp0000000000000000000")
         .expect("stale pid fix applied");
     assert_eq!(f["applied"], true, "fix outcome: {f:?}");
     assert!(!pid_path.exists(), "stale pid file should be removed");

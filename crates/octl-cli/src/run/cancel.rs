@@ -25,7 +25,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id);
+    let paths = run_paths(&root, &run_id)?;
     let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
         Some(m) => m,
         None => {

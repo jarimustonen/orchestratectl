@@ -25,6 +25,9 @@ pub enum Error {
     #[error("corrupt event log at {path}: {reason}")]
     CorruptEventLog { path: PathBuf, reason: String },
 
+    #[error("invalid run_id {run_id:?}: {reason}")]
+    InvalidRunId { run_id: String, reason: String },
+
     #[error("invalid schema_version {found} (supported: {supported:?}) at {path}")]
     UnsupportedSchemaVersion {
         path: PathBuf,
