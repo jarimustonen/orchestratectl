@@ -3,10 +3,16 @@ created: 2026-06-27
 updated: 2026-06-28
 type: task
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, help-json]
+closed: 2026-06-28
+commits:
+- hash: c550387
+  summary: richer arg metadata + schema v2
+- hash: c35207a
+  summary: handoff note + requires-edges follow-up
 ---
 
 # Expand --help --json arg metadata: flag aliases, constraints, arity, custom-parser values

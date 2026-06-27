@@ -3,10 +3,16 @@ created: 2026-06-27
 updated: 2026-06-28
 type: task
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, help-json]
+closed: 2026-06-28
+commits:
+- hash: d191c8c
+  summary: resolve --help --json path via clap lenient parse
+- hash: 0f071c0
+  summary: recursive unknown-subcommand detection (review fix)
 ---
 
 # Resolve --help --json subcommand path via clap lenient-parse instead of hand-rolled argv scan

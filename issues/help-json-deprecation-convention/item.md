@@ -3,10 +3,14 @@ created: 2026-06-27
 updated: 2026-06-28
 type: task
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, help-json]
+closed: 2026-06-28
+commits:
+- hash: ed61799
+  summary: '[deprecated] help-text convention'
 ---
 
 # Adopt a real deprecation-status source for --help --json (deprecated currently always false)
