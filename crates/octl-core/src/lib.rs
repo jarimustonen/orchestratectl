@@ -26,6 +26,7 @@ pub mod lock;
 pub mod paths;
 pub mod projections;
 pub mod reducer;
+pub mod report;
 pub mod schema;
 
 pub use envelope::SCHEMA_VERSION;
@@ -43,6 +44,7 @@ pub use projections::{
     write_spinoff,
 };
 pub use reducer::apply_event;
+pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
     ChildRef, Discussion, DiscussionStatus, Event, Kind, Lifecycle, Manifest, Node,
     SpinoffProposal, SpinoffStatus, Status, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,

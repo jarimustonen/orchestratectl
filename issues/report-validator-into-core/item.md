@@ -1,8 +1,8 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-27
 type: feature
-status: open
+status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 ---
