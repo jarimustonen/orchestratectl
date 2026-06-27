@@ -1,9 +1,9 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 related: ['@supervisor-process-review-followup']
