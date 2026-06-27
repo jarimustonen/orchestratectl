@@ -191,3 +191,242 @@ pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()>
     check_run_id("spinoff_run_id", paths.run_id.as_str(), s.run_id.as_str())?;
     write_json_atomic(&paths.spinoff(&s.proposal_id), s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::STATE_SCHEMA_VERSION;
+    use serde_json::{json, Value};
+    use tempfile::TempDir;
+
+    /// The run this run-directory belongs to, and a *different* well-formed run
+    /// id used to forge the cross-run mismatch the write guards reject.
+    const RUN: &str = "01jxsnap000000000000000000";
+    const FOREIGN_RUN: &str = "02jxsnap000000000000000000";
+
+    /// A run dir under a fresh tempdir, with the projection subdirectories
+    /// created so a hand-written file can be dropped at any key.
+    fn setup() -> (TempDir, RunPaths) {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        let paths = RunPaths::new(&dir, RUN).unwrap();
+        std::fs::create_dir_all(paths.nodes_dir()).unwrap();
+        std::fs::create_dir_all(paths.discussions_dir()).unwrap();
+        std::fs::create_dir_all(paths.spinoffs_dir()).unwrap();
+        (tmp, paths)
+    }
+
+    fn node_json(node_id: &str, run_id: &str) -> Value {
+        json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "node_id": node_id,
+            "run_id": run_id,
+            "parent_node_id": null,
+            "kind": "spinoff",
+            "status": "pending",
+            "task": null,
+            "worktree_path": null,
+            "branch": null,
+            "tmux_window": null,
+            "agent_pid": null,
+            "agent_pid_start_time": null,
+            "supervisor_pid": null,
+            "children": [],
+            "started_at": null,
+            "updated_at": "2026-06-12T00:00:00Z",
+            "last_report": null,
+            "last_processed_report_seq_by_child": {}
+        })
+    }
+
+    fn discussion_json(discussion_id: &str, run_id: &str) -> Value {
+        json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "discussion_id": discussion_id,
+            "run_id": run_id,
+            "node_id": "n-0001",
+            "opened_at": "2026-06-12T00:00:00Z",
+            "severity": "normal",
+            "topic": "fixture",
+            "context": null,
+            "options": [],
+            "status": "open",
+            "resolution": null,
+            "note": null,
+            "resolved_at": null
+        })
+    }
+
+    fn spinoff_json(proposal_id: &str, run_id: &str) -> Value {
+        json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "proposal_id": proposal_id,
+            "run_id": run_id,
+            "node_id": "n-0001",
+            "proposed_at": "2026-06-12T00:00:00Z",
+            "proposed_title": "fixture",
+            "proposed_kind": "spinoff",
+            "rationale": null,
+            "status": "proposed",
+            "accepted_as_issue_slug": null,
+            "rejected_reason": null,
+            "resolved_at": null
+        })
+    }
+
+    fn manifest_json(run_id: &str) -> Value {
+        json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "kind": "spinoff",
+            "lifecycle": "autonomous",
+            "title": "fixture",
+            "status": "pending",
+            "created_at": "2026-06-12T00:00:00Z",
+            "updated_at": "2026-06-12T00:00:00Z",
+            "source_repo": null,
+            "source_branch": null,
+            "worktree_root": null,
+            "node_count": 0,
+            "open_discussions": 0,
+            "pending_spinoffs": 0,
+            "parent_run_id": null,
+            "parent_node_id": null
+        })
+    }
+
+    fn write_raw(path: &Path, v: &Value) {
+        std::fs::write(path, serde_json::to_vec(v).unwrap()).unwrap();
+    }
+
+    // --- read side: body id must equal the requested filename key ---------
+
+    #[test]
+    fn read_node_rejects_body_id_mismatch() {
+        let (_tmp, paths) = setup();
+        let requested = NodeId::parse_str("n-0001").unwrap();
+        // A perfectly valid n-0002 projection, mis-filed at n-0001's path.
+        write_raw(&paths.node(&requested), &node_json("n-0002", RUN));
+        assert!(matches!(
+            read_node(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "node", expected_id, body_id })
+                if expected_id == "n-0001" && body_id == "n-0002"
+        ));
+    }
+
+    #[test]
+    fn read_node_opt_rejects_body_id_mismatch() {
+        // The `_opt` variant is what the reducer and CLI actually call, so the
+        // guard must fire there too — a mismatch is an error, not `None`.
+        let (_tmp, paths) = setup();
+        let requested = NodeId::parse_str("n-0001").unwrap();
+        write_raw(&paths.node(&requested), &node_json("n-0002", RUN));
+        assert!(matches!(
+            read_node_opt(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "node", .. })
+        ));
+    }
+
+    #[test]
+    fn read_node_accepts_matching_key() {
+        // Guard against a false positive: the well-filed case still reads.
+        let (_tmp, paths) = setup();
+        let requested = NodeId::parse_str("n-0001").unwrap();
+        write_raw(&paths.node(&requested), &node_json("n-0001", RUN));
+        let n = read_node(&paths, &requested).unwrap();
+        assert_eq!(n.node_id.as_str(), "n-0001");
+    }
+
+    #[test]
+    fn read_discussion_rejects_body_id_mismatch() {
+        let (_tmp, paths) = setup();
+        let requested = DiscussionId::parse_str("d-01arz3ndektsv4rrffq69g5fav").unwrap();
+        write_raw(
+            &paths.discussion(&requested),
+            &discussion_json("d-01arz3ndektsv4rrffq69g5faw", RUN),
+        );
+        assert!(matches!(
+            read_discussion(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "discussion", expected_id, body_id })
+                if expected_id == "d-01arz3ndektsv4rrffq69g5fav"
+                    && body_id == "d-01arz3ndektsv4rrffq69g5faw"
+        ));
+    }
+
+    #[test]
+    fn read_spinoff_rejects_body_id_mismatch() {
+        let (_tmp, paths) = setup();
+        let requested = ProposalId::parse_str("s-01arz3ndektsv4rrffq69g5fav").unwrap();
+        write_raw(
+            &paths.spinoff(&requested),
+            &spinoff_json("s-01arz3ndektsv4rrffq69g5faw", RUN),
+        );
+        assert!(matches!(
+            read_spinoff(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "spinoff", expected_id, body_id })
+                if expected_id == "s-01arz3ndektsv4rrffq69g5fav"
+                    && body_id == "s-01arz3ndektsv4rrffq69g5faw"
+        ));
+    }
+
+    // --- write side: object run_id must equal the run's RunPaths.run_id ----
+
+    #[test]
+    fn write_node_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let n: Node = serde_json::from_value(node_json("n-0001", FOREIGN_RUN)).unwrap();
+        assert!(matches!(
+            write_node(&paths, &n),
+            Err(Error::CorruptProjection { kind: "node_run_id", expected_id, body_id })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+        // The forged write never touched disk.
+        assert!(!paths.node(&n.node_id).exists());
+    }
+
+    #[test]
+    fn write_node_accepts_matching_run_id() {
+        let (_tmp, paths) = setup();
+        let n: Node = serde_json::from_value(node_json("n-0001", RUN)).unwrap();
+        write_node(&paths, &n).unwrap();
+        assert!(paths.node(&n.node_id).exists());
+    }
+
+    #[test]
+    fn write_discussion_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let d: Discussion =
+            serde_json::from_value(discussion_json("d-01arz3ndektsv4rrffq69g5fav", FOREIGN_RUN))
+                .unwrap();
+        assert!(matches!(
+            write_discussion(&paths, &d),
+            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+    }
+
+    #[test]
+    fn write_spinoff_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let s: SpinoffProposal =
+            serde_json::from_value(spinoff_json("s-01arz3ndektsv4rrffq69g5fav", FOREIGN_RUN))
+                .unwrap();
+        assert!(matches!(
+            write_spinoff(&paths, &s),
+            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+    }
+
+    #[test]
+    fn write_manifest_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let m: Manifest = serde_json::from_value(manifest_json(FOREIGN_RUN)).unwrap();
+        assert!(matches!(
+            write_manifest(&paths, &m),
+            Err(Error::CorruptProjection { kind: "manifest_run_id", expected_id, body_id })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+        assert!(!paths.manifest().exists());
+    }
+}
