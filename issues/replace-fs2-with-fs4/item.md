@@ -6,6 +6,9 @@ status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
+commits:
+- hash: '1101604'
+  summary: swap fs2 → fs4, V4 stress test passes
 ---
 
 # Replace unmaintained fs2 with fs4 (or rustix)
