@@ -141,26 +141,6 @@ pub fn dispatch(
     }
 
     let pid_path = paths.supervisor_pid();
-    if let Some((existing, start_time)) = pid_file::read_pid_record(&pid_path) {
-        if pid_file::pid_live_with_identity(existing, start_time) {
-            return Err(CliError {
-                kind: ExitKind::System,
-                code: "supervisor_already_running".into(),
-                message: format!(
-                    "supervisor pid {existing} for run {run_id} is alive (kill it or use `run reattach`)",
-                ),
-                invalid_value: None,
-                expected: None,
-            });
-        }
-        // Stale PID file (dead, or a recycled PID per the start-time
-        // identity check): log and overwrite.
-        warn!(
-            target: "orchestratectl::supervise",
-            stale_pid = existing,
-            "removing stale supervisor.pid"
-        );
-    }
 
     // Reset the process-global signal flag so a prior in-process
     // dispatch (tests, embedded callers) can't poison this run, then
@@ -171,7 +151,11 @@ pub fn dispatch(
     install_signal_handlers()?;
 
     let our_pid = std::process::id();
-    pid_file::write_pid(&pid_path, our_pid)?;
+    // Atomically claim ownership under the run flock. This closes the §7.6
+    // TOCTOU race where two concurrent `supervise` / reattach-spawned
+    // launches both read a stale pid and both write their own: the loser
+    // here returns `supervisor_already_running` and exits.
+    pid_file::claim_pid_atomic(&paths, our_pid)?;
 
     info!(
         target: "orchestratectl::supervise",

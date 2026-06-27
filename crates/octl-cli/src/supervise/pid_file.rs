@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use octl_core::{RunLock, RunPaths};
+
 use crate::error::CliError;
 
 /// Atomically write `pid` (plus its process start-time, when readable)
@@ -45,6 +47,55 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     std::fs::rename(&tmp, path)
         .map_err(|e| CliError::system("io_error", format!("rename {}: {}", path.display(), e)))?;
     Ok(())
+}
+
+/// Atomically claim supervisor ownership of `paths`' run under the run
+/// `flock`, closing the §7.6 TOCTOU race.
+///
+/// The original startup check read a stale `supervisor.pid`, then wrote its
+/// own with *no lock between* — so two concurrent `supervise` / `run
+/// reattach`-spawned supervisors could both read "stale", both write, and
+/// both enter the main loop, violating one-supervisor-per-run. Holding the
+/// run flock across the read-then-write serializes the claim: exactly one
+/// caller observes the slot free and writes; the loser sees the winner's
+/// live pid and is rejected.
+///
+/// Sequence (all under the lock):
+///  1. Read the existing `supervisor.pid` record (if any).
+///  2. If it records a supervisor still alive (start-time identity check,
+///     §7.6) → return `supervisor_already_running` *without* touching the
+///     file.
+///  3. Otherwise (no file, dead pid, recycled pid, or a legacy plain-integer
+///     file) → write our pid + start-time atomically (tempfile + rename) and
+///     return `Ok`. A legacy bare-integer file is upgraded to the
+///     `"<pid> <start_time>"` format here on first claim — a non-destructive
+///     migration that restores the recycle defense for the new owner.
+///
+/// The lock is released when the returned guard drops at end of scope; the
+/// pid file itself remains as the durable ownership marker.
+pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> {
+    let _guard = RunLock::acquire(&paths.lock())
+        .map_err(|e| CliError::system("lock_error", format!("acquire run lock: {e}")))?;
+    let pid_path = paths.supervisor_pid();
+    if let Some((existing, start_time)) = read_pid_record(&pid_path) {
+        if pid_live_with_identity(existing, start_time) {
+            return Err(CliError::system(
+                "supervisor_already_running",
+                format!(
+                    "supervisor pid {existing} for run {} is alive (kill it or use `run reattach`)",
+                    paths.run_id.as_str(),
+                ),
+            ));
+        }
+        // Stale (dead, or a recycled PID per the start-time check) or a legacy
+        // bare-integer file: log and overwrite under the lock.
+        tracing::warn!(
+            target: "orchestratectl::supervise",
+            stale_pid = existing,
+            "claiming run: removing stale supervisor.pid"
+        );
+    }
+    write_pid(&pid_path, our_pid)
 }
 
 /// Read the recorded supervisor PID from `path`. Returns `None` if the
