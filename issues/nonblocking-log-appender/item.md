@@ -1,11 +1,17 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-27
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
+closed: 2026-06-27
+commits:
+- hash: df77602
+  summary: non-blocking JSONL log writer
+- hash: e78d056
+  summary: apply llm-review findings
 ---
 
 # tracing_appender::non_blocking for JSONL log throughput
