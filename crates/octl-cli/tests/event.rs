@@ -416,6 +416,71 @@ fn tail_follow_emits_cancelled_envelope_on_sigint() {
 
 #[cfg(unix)]
 #[test]
+fn tail_signal_exit_flushes_own_diagnostic_logs() {
+    // Regression for issues/log-guard-flush-on-process-exit: `event tail`'s
+    // signal exit goes through `flush_and_exit` -> `std::process::exit`,
+    // which bypasses the WorkerGuard's `Drop`. Before the fix, this
+    // process's own buffered tracing events (queued in the non-blocking
+    // appender's channel) were silently lost. The exit path now emits a
+    // diagnostic line and calls `flush_logs()` to drain the channel to disk
+    // first — assert that line actually reaches the log file.
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+
+    let mut child = bin(&home)
+        .args(["--output", "jsonl", "event", "tail", &run_id, "--follow"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn follow");
+
+    let collected = read_stdout_in_background(&mut child);
+    // Wait until the initial drain has emitted run.created so the child is
+    // in the poll loop (not racing startup) before we signal it.
+    assert!(
+        wait_for_substring(&collected, "run.created", Duration::from_secs(2)),
+        "initial drain didn't emit"
+    );
+
+    send_sigint(&child).expect("send SIGINT");
+    let status = child.wait().expect("wait");
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "expected exit 130, got {status:?}"
+    );
+
+    let log_path = home.path().join("logs").join("orchestratectl.log.jsonl");
+    let contents = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|e| panic!("read log file {}: {e}", log_path.display()));
+
+    // The diagnostic line is emitted immediately before the flush, so it is
+    // the strongest proof the exit path no longer drops buffered events:
+    // without the flush the worker thread has no chance to write it before
+    // `process::exit` terminates the process.
+    let mut saw_exit_line = false;
+    let mut saw_dispatch = false;
+    for line in contents.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("non-JSON log line {line:?}: {e}"));
+        match v["fields"]["message"].as_str() {
+            Some("event tail exiting via signal") => saw_exit_line = true,
+            Some("command dispatched") => saw_dispatch = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_dispatch,
+        "command-dispatched log line missing — log file:\n{contents}"
+    );
+    assert!(
+        saw_exit_line,
+        "tail's pre-exit diagnostic was lost — guard not flushed before process::exit. log file:\n{contents}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn tail_follow_detects_log_truncation() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);

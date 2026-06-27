@@ -571,3 +571,76 @@ fn log_path() -> Option<PathBuf> {
     };
     Some(root.join("logs").join("orchestratectl.log.jsonl"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::time::Duration;
+
+    /// Underlying log writer that sleeps before each `write`, so the
+    /// non-blocking worker thread cannot drain instantly. This makes the
+    /// "did the flush actually wait for the drain?" question deterministic:
+    /// without a flush the buffered line is provably still in flight; with
+    /// one it is on disk.
+    struct SlowSink {
+        out: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for SlowSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(200));
+            self.out.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `drain_cell` must block until the worker has written every buffered
+    /// line — this is the whole point of the flush hook on the
+    /// `process::exit` path. Regression for
+    /// `issues/log-guard-flush-on-process-exit`: with the slow sink, a line
+    /// enqueued just before the flush is NOT yet on disk, and only the
+    /// blocking drain (dropping the `WorkerGuard`) gets it there.
+    #[test]
+    fn drain_cell_blocks_until_buffered_line_is_written() {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let (mut writer, guard) = NonBlockingBuilder::default()
+            .lossy(true)
+            .finish(SlowSink { out: out.clone() });
+
+        // Enqueue one line. The worker picks it up but stalls inside the
+        // 200ms sleep, so nothing has reached the sink yet.
+        writer.write_all(b"buffered-line\n").unwrap();
+        assert!(
+            out.lock().unwrap().is_empty(),
+            "line reached the sink before the flush — the sink wasn't slow enough"
+        );
+
+        // Draining drops the guard, which blocks until the worker finishes
+        // the in-flight write and drains the channel.
+        let cell: LogCell = Arc::new(Mutex::new(Some(guard)));
+        drain_cell(&cell);
+        assert_eq!(
+            &*out.lock().unwrap(),
+            b"buffered-line\n",
+            "flush did not drain the buffered line to disk"
+        );
+
+        // Idempotent: the guard is gone, so a second drain is a harmless
+        // no-op (and must not panic on the empty cell).
+        drain_cell(&cell);
+        assert_eq!(&*out.lock().unwrap(), b"buffered-line\n");
+    }
+
+    /// `drain_cell` over a cell that never held a guard (the
+    /// logging-uninitialised case) is a no-op, mirroring `flush_logs` when
+    /// `LOG_FLUSH` is empty.
+    #[test]
+    fn drain_cell_on_absent_guard_is_noop() {
+        let cell: LogCell = Arc::new(Mutex::new(None));
+        drain_cell(&cell); // must not panic
+    }
+}
