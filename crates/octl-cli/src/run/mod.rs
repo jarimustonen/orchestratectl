@@ -292,12 +292,26 @@ pub fn runs_root(root: &Path) -> PathBuf {
 /// A corrupt event log is a data-integrity fault the caller must
 /// investigate, not a transient I/O error to retry — it surfaces as a
 /// distinct `corrupt-event-log` user error (exit 1) so a retry loop
-/// doesn't hammer a file that will never parse. Everything else collapses
-/// into the generic `io_error` system class (exit 2).
+/// doesn't hammer a file that will never parse. A corrupt projection is the
+/// same class of fault — a state file whose embedded id contradicts where it
+/// lives on disk — so it gets its own `corrupt_projection` user error (exit 1),
+/// carrying the two ids in `expected` / `invalid_value` for the operator to
+/// diff. Everything else collapses into the generic `io_error` system class
+/// (exit 2).
 pub fn from_core(err: octl_core::Error) -> CliError {
     match err {
         octl_core::Error::CorruptEventLog { .. } => {
             CliError::user("corrupt-event-log", err.to_string())
+        }
+        octl_core::Error::CorruptProjection {
+            ref expected_id,
+            ref body_id,
+            ..
+        } => {
+            let (expected_id, body_id) = (expected_id.clone(), body_id.clone());
+            CliError::user("corrupt_projection", err.to_string())
+                .with_invalid_value(body_id)
+                .with_expected(serde_json::Value::String(expected_id))
         }
         other => CliError::system("io_error", other.to_string()),
     }

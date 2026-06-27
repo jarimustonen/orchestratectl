@@ -63,6 +63,43 @@ pub enum Error {
         reason: String,
     },
 
+    /// A projection file's embedded id contradicts where it lives on disk.
+    ///
+    /// Two distinct integrity faults share this variant, told apart by `kind`:
+    ///
+    /// - **Read side** (`kind` = `"node"` / `"discussion"` / `"spinoff"`): the
+    ///   body's own id newtype is well-formed but does *not* equal the filename
+    ///   key it was requested under — a valid `nodes/n-0002.json` placed at
+    ///   `nodes/n-0001.json` deserializes fine yet describes a different node.
+    ///   Returning it as `n-0002` would let a later `write_node` clobber a
+    ///   third file, so the read is rejected instead.
+    /// - **Write side** (`kind` = `"node_run_id"` / `"discussion_run_id"` /
+    ///   `"spinoff_run_id"` / `"manifest_run_id"`): the object's `run_id` does
+    ///   not equal the [`crate::paths::RunPaths`] run it would be written under,
+    ///   so the write is refused before it can stamp a foreign run's id into
+    ///   this run's directory.
+    ///
+    /// This is the projection-integrity guard, distinct from
+    /// [`Error::CorruptEventLog`] (which guards `events.jsonl`). It is **not** a
+    /// path-traversal vector — the keys are already validated id newtypes that
+    /// cannot name a file outside the run directory — but a corruption /
+    /// mis-placement detector. `kind` is a fixed `&'static str` so a caller can
+    /// branch on it; `expected_id` / `body_id` carry the two ids for an operator
+    /// to diff.
+    #[error("corrupt projection ({kind}): expected id {expected_id:?}, body has {body_id:?}")]
+    CorruptProjection {
+        /// Which check fired: a read-side key mismatch (`"node"`,
+        /// `"discussion"`, `"spinoff"`) or a write-side run-id mismatch
+        /// (`"node_run_id"`, `"discussion_run_id"`, `"spinoff_run_id"`,
+        /// `"manifest_run_id"`).
+        kind: &'static str,
+        /// The id the file was expected to carry — the requested filename key
+        /// (read side) or the `RunPaths` run id (write side).
+        expected_id: String,
+        /// The id actually found in the file body.
+        body_id: String,
+    },
+
     /// A state file declared a `schema_version` this build does not support.
     #[error("invalid schema_version {found} (supported: {supported:?}) at {path}")]
     UnsupportedSchemaVersion {
