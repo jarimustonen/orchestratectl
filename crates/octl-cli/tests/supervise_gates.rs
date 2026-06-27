@@ -351,7 +351,15 @@ fn signal_exit_codes_and_payload() {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn supervisor");
-        std::thread::sleep(Duration::from_millis(700));
+        // Poll for readiness (the PID file appears once the supervisor has
+        // installed its signal handlers and entered the loop) rather than a
+        // fixed sleep, so the kill never races startup even on a loaded CI.
+        let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(pid_file.exists(), "supervisor did not start in time");
         unsafe {
             libc::kill(child.id() as i32, sig_num(sig));
         }
@@ -360,6 +368,11 @@ fn signal_exit_codes_and_payload() {
             status.code(),
             Some(code),
             "{name} must exit {code}, got {status:?}"
+        );
+        // §7.8: a cleanly-signalled supervisor removes its own PID file.
+        assert!(
+            !pid_file.exists(),
+            "{name}: supervisor.pid must be removed on signal exit"
         );
         let events = run_dir(&home, &run_id).join("events.jsonl");
         let mut s = String::new();

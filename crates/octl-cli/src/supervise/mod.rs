@@ -53,8 +53,10 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 static SIGNAL_RECEIVED: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn handle_term_signal(sig: libc::c_int) {
-    // Async-signal-safe: an atomic store is the only work done here.
-    SIGNAL_RECEIVED.store(sig, Ordering::SeqCst);
+    // Async-signal-safe: a single compare-exchange. The FIRST signal
+    // wins, so a SIGINT racing in during a SIGTERM shutdown cannot flip
+    // the recorded signal / exit code out from under the shutdown path.
+    let _ = SIGNAL_RECEIVED.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 /// Install SIGINT/SIGTERM handlers via `sigaction`. Fatal on failure: a
@@ -66,8 +68,14 @@ fn install_signal_handlers() -> Result<(), CliError> {
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = handle_term_signal as extern "C" fn(libc::c_int) as usize;
+        // Block both term signals while the handler runs, and use
+        // SA_RESTART so a signal arriving mid-syscall (e.g. the `flock`
+        // / write inside the shutdown `append_and_apply`) does not fail
+        // that syscall with EINTR and defeat the clean-shutdown contract.
         libc::sigemptyset(&mut sa.sa_mask);
-        sa.sa_flags = 0;
+        libc::sigaddset(&mut sa.sa_mask, libc::SIGINT);
+        libc::sigaddset(&mut sa.sa_mask, libc::SIGTERM);
+        sa.sa_flags = libc::SA_RESTART;
         for sig in [libc::SIGINT, libc::SIGTERM] {
             if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
                 let err = std::io::Error::last_os_error();
@@ -137,9 +145,12 @@ pub fn dispatch(
         );
     }
 
-    // Install signal handlers BEFORE claiming the PID file so a signal
-    // arriving during startup still drives a clean shutdown, and so a
-    // claimed PID file is never left behind by an untrapped signal (§7.8).
+    // Reset the process-global signal flag so a prior in-process
+    // dispatch (tests, embedded callers) can't poison this run, then
+    // install handlers BEFORE claiming the PID file so a signal arriving
+    // during startup still drives a clean shutdown, and so a claimed PID
+    // file is never left behind by an untrapped signal (§7.8).
+    SIGNAL_RECEIVED.store(0, Ordering::SeqCst);
     install_signal_handlers()?;
 
     let our_pid = std::process::id();
@@ -246,10 +257,19 @@ pub fn dispatch(
                         continue;
                     };
                     // The spawning parent node is `ev.node_id` (the CLI
-                    // sets it when it writes child.spawned). Attribute the
-                    // child's report-derived items to THIS node — never
-                    // fall back to a guessed root node.
-                    let parent_node_id = ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
+                    // always sets it when it writes child.spawned). Attribute
+                    // the child's report-derived items to THIS node — never
+                    // fall back to a guessed root node; skip a malformed
+                    // event instead.
+                    let Some(parent_node_id) = ev.node_id.clone() else {
+                        warn!(
+                            target: "orchestratectl::supervise",
+                            seq = ev.seq,
+                            child = %child_run_id,
+                            "child.spawned missing node_id; skipping"
+                        );
+                        continue;
+                    };
                     // Always open a tail for the child, independently of
                     // whether the supervisor fork succeeds — the tail is
                     // the primary consumption path, so a spawn failure must
@@ -372,10 +392,13 @@ pub fn dispatch(
                             Err(e) => {
                                 // Consumption failed (transient IO / lock).
                                 // Do NOT terminalize and do NOT advance the
-                                // durable cursor — rewind this tail to the
-                                // last fully-consumed report seq so the
-                                // report is retried on a later tick instead
-                                // of being silently lost (at-least-once).
+                                // durable cursor — rewind this tail to just
+                                // before THIS report's seq so the report (and
+                                // only it onward) is retried on a later tick
+                                // instead of being silently lost
+                                // (at-least-once). Re-emitting already-written
+                                // discussions/spinoffs is safe: the reducer
+                                // skips any deterministic ID already on disk.
                                 warn!(
                                     target: "orchestratectl::supervise",
                                     child = %cid,
@@ -383,13 +406,13 @@ pub fn dispatch(
                                     error = %e.message,
                                     "node.report consumption failed; will retry"
                                 );
-                                let cursor = state
-                                    .last_processed_report_seq_by_child
-                                    .get(&cid)
-                                    .copied()
-                                    .unwrap_or(0);
+                                let rewind_to = ev.seq.saturating_sub(1);
                                 let p = entry.tail.path().to_path_buf();
-                                entry.tail = tail::EventTail::new(p, cursor);
+                                entry.tail = tail::EventTail::new(p, rewind_to);
+                                // Keep the observational cursor consistent so
+                                // it never points past the un-consumed report.
+                                state.last_seq_by_child.insert(cid.clone(), rewind_to);
+                                entry.terminal = false;
                                 break;
                             }
                         }
@@ -485,8 +508,12 @@ pub fn dispatch(
     // §7.8: a signal-terminated supervisor exits 130 (SIGINT) / 143
     // (SIGTERM), not 0, so wrappers/tests can detect signal termination.
     // We've already flushed the exit event, removed the PID file, and
-    // emitted output, so bypassing destructors here is safe.
+    // emitted output, so bypassing destructors here is safe — but flush
+    // stdout explicitly first, since `process::exit` skips the buffered
+    // writer's drop.
     if signal_num != 0 {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
         let code = if signal_num == libc::SIGINT { 130 } else { 143 };
         std::process::exit(code);
     }
@@ -560,10 +587,23 @@ fn spawn_child_supervisor(
     // it must be done under the child run's flock (F11) — without it the
     // last writer silently clobbers the other's fields.
     let child_paths = run_paths(root, child_run_id);
-    if let Ok(_guard) = RunLock::acquire(&child_paths.lock()) {
-        if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {
-            n.supervisor_pid = Some(pid as i32);
-            let _ = octl_core::write_node(&child_paths, &n);
+    match RunLock::acquire(&child_paths.lock()) {
+        Ok(_guard) => {
+            if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {
+                n.supervisor_pid = Some(pid as i32);
+                let _ = octl_core::write_node(&child_paths, &n);
+            }
+        }
+        Err(e) => {
+            // Non-fatal: the parent already recorded the attach via the
+            // `child.supervisor_attached` event below, so this projection
+            // write is a convenience. Surface it rather than swallowing.
+            warn!(
+                target: "orchestratectl::supervise",
+                child = %child_run_id,
+                error = %e,
+                "could not lock child run to record supervisor_pid"
+            );
         }
     }
     // Record on the parent's tracking node too via an event.
@@ -604,8 +644,20 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
         };
         if let Ok(Some(n)) = read_node_opt(paths, &node_id) {
             for c in &n.children {
-                out.entry(c.run_id.clone())
-                    .or_insert_with(|| node_id.clone());
+                // Validate before this id becomes a filesystem path on
+                // reseed — a corrupt/stale projection must not let an
+                // unsafe run id escape the runs root.
+                match require_safe_id(&c.run_id, "child-run-id") {
+                    Ok(safe) => {
+                        out.entry(safe).or_insert_with(|| node_id.clone());
+                    }
+                    Err(_) => warn!(
+                        target: "orchestratectl::supervise",
+                        parent_node = %node_id,
+                        child = %c.run_id,
+                        "node projection has unsafe child run id; skipping"
+                    ),
+                }
             }
         }
     }
@@ -648,6 +700,12 @@ fn watchdog_tick(
             ));
         }
     };
+    // Nodes that presented the `TmuxGone` half-state on THIS tick. Any
+    // node not in this set (alive, dead, terminal, missing agent_pid,
+    // unreadable) gets its streak dropped at end-of-tick, so the streak
+    // counts strictly *consecutive* half-state ticks and never leaks.
+    let mut tmux_gone_this_tick: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     for entry in entries.flatten() {
         let p = entry.path();
         if p.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -677,22 +735,16 @@ fn watchdog_tick(
         // the `TmuxGone` half-state so a transient `tmux list-windows`
         // hiccup does not kill a live agent.
         let commit = match v {
-            watchdog::Liveness::Alive => {
-                half_state_streak.remove(&node_id);
-                false
-            }
-            watchdog::Liveness::Dead | watchdog::Liveness::Recycled => {
-                half_state_streak.remove(&node_id);
-                true
-            }
+            watchdog::Liveness::Alive => false,
+            watchdog::Liveness::Dead | watchdog::Liveness::Recycled => true,
             watchdog::Liveness::TmuxGone => {
+                tmux_gone_this_tick.insert(node_id.clone());
                 let c = half_state_streak.entry(node_id.clone()).or_insert(0);
                 *c += 1;
                 *c >= HALF_STATE_TICKS
             }
         };
         if commit && n.last_report.is_none() {
-            half_state_streak.remove(&node_id);
             // Synthesize a terminal node.report under the run's flock.
             let data = json!({
                 "success": false,
@@ -714,5 +766,9 @@ fn watchdog_tick(
             }
         }
     }
+    // Drop streaks for every node that did NOT present `TmuxGone` this
+    // tick (committed, recovered, terminal, or no longer scanned) so the
+    // count is strictly consecutive and the map cannot grow unbounded.
+    half_state_streak.retain(|k, _| tmux_gone_this_tick.contains(k));
     Ok(())
 }

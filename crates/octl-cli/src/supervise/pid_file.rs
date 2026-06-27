@@ -27,7 +27,18 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
         .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e)))?;
     let contents = match crate::supervise::watchdog::pid_start_time(pid) {
         Some(st) => format!("{pid} {st}"),
-        None => pid.to_string(),
+        None => {
+            // Degrade to the legacy bare-integer format (a later
+            // stale-check falls back to plain liveness). This loses the
+            // §7.6 PID-reuse defense, so make it visible rather than
+            // silent — we can normally always read our own start-time.
+            tracing::warn!(
+                target: "orchestratectl::supervise",
+                pid,
+                "could not read own start_time; writing legacy pid file (no recycle defense)"
+            );
+            pid.to_string()
+        }
     };
     let tmp = parent.join(format!(".supervisor.pid.tmp.{}", std::process::id()));
     std::fs::write(&tmp, contents)
