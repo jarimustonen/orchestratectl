@@ -4,6 +4,3 @@ expression: value
 ---
 [1] [TS] run.created title=seed-run
 [2] [TS] node.created node=n-0001
-[3] [TS] node.created node=n-1000
-[4] [TS] node.created node=n-1001
-[5] [TS] node.created node=n-1002
