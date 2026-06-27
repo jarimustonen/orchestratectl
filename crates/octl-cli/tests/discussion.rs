@@ -100,12 +100,12 @@ fn seed_discussion(home: &TempDir, run_id: &str, discussion_id: &str, topic: &st
 fn list_returns_open_discussion() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     let v = run_ok(bin(&home).args(["--output", "json", "discussion", "list", &run_id]));
     let arr = v["data"]["discussions"].as_array().expect("array");
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["discussion_id"], "d-0001abcdef");
+    assert_eq!(arr[0]["discussion_id"], "d-abcdefghij");
     assert_eq!(arr[0]["status"], "open");
 }
 
@@ -113,7 +113,7 @@ fn list_returns_open_discussion() {
 fn list_filters_by_status() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     // Resolve it.
     run_ok(bin(&home).args([
@@ -122,7 +122,7 @@ fn list_filters_by_status() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "keep",
     ]));
@@ -180,7 +180,7 @@ fn list_empty_when_no_discussions_dir() {
 fn show_returns_projection() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     let v = run_ok(bin(&home).args([
         "--output",
@@ -188,9 +188,9 @@ fn show_returns_projection() {
         "discussion",
         "show",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
     ]));
-    assert_eq!(v["data"]["discussion_id"], "d-0001abcdef");
+    assert_eq!(v["data"]["discussion_id"], "d-abcdefghij");
     assert_eq!(v["data"]["topic"], "first topic");
     assert_eq!(v["data"]["status"], "open");
 }
@@ -205,7 +205,7 @@ fn show_missing_discussion_rejected() {
         "discussion",
         "show",
         &run_id,
-        "d-missing0000",
+        "d-missingfff",
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "discussion_not_found");
@@ -227,7 +227,7 @@ fn show_invalid_id_rejected() {
 fn resolve_writes_event_and_updates_projection() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     let v = run_ok(bin(&home).args([
         "--output",
@@ -235,7 +235,7 @@ fn resolve_writes_event_and_updates_projection() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--note",
@@ -266,7 +266,7 @@ fn resolve_writes_event_and_updates_projection() {
         .join("runs")
         .join(&run_id)
         .join("discussions")
-        .join("d-0001abcdef.json");
+        .join("d-abcdefghij.json");
     let disc: Value = serde_json::from_slice(&std::fs::read(&disc_path).unwrap()).unwrap();
     assert_eq!(disc["status"], "resolved");
     assert_eq!(disc["resolution"], "drop");
@@ -285,7 +285,7 @@ fn resolve_writes_event_and_updates_projection() {
 fn resolve_same_choice_is_idempotent_noop() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     run_ok(bin(&home).args([
         "--output",
@@ -293,7 +293,7 @@ fn resolve_same_choice_is_idempotent_noop() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
     ]));
@@ -308,7 +308,7 @@ fn resolve_same_choice_is_idempotent_noop() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
     ]));
@@ -325,7 +325,7 @@ fn resolve_same_choice_is_idempotent_noop() {
 fn resolve_different_choice_is_conflict() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     run_ok(bin(&home).args([
         "--output",
@@ -333,7 +333,7 @@ fn resolve_different_choice_is_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
     ]));
@@ -344,7 +344,7 @@ fn resolve_different_choice_is_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "keep",
     ]));
@@ -357,7 +357,7 @@ fn resolve_different_choice_is_conflict() {
 fn resolve_dry_run_does_not_touch_filesystem() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     let events_path = home.path().join("runs").join(&run_id).join("events.jsonl");
     let before = std::fs::read(&events_path).unwrap();
@@ -368,7 +368,7 @@ fn resolve_dry_run_does_not_touch_filesystem() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--dry-run",
@@ -385,7 +385,7 @@ fn resolve_dry_run_does_not_touch_filesystem() {
         .join("runs")
         .join(&run_id)
         .join("discussions")
-        .join("d-0001abcdef.json");
+        .join("d-abcdefghij.json");
     let disc: Value = serde_json::from_slice(&std::fs::read(&disc_path).unwrap()).unwrap();
     assert_eq!(disc["status"], "open");
 }
@@ -394,14 +394,14 @@ fn resolve_dry_run_does_not_touch_filesystem() {
 fn resolve_empty_choice_rejected() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
     let (code, err) = run_fail(bin(&home).args([
         "--output",
         "json",
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "   ",
     ]));
@@ -413,7 +413,7 @@ fn resolve_empty_choice_rejected() {
 fn resolve_idempotency_key_same_payload_replays() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     let v1 = run_ok(bin(&home).args([
         "--output",
@@ -421,7 +421,7 @@ fn resolve_idempotency_key_same_payload_replays() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--idempotency-key",
@@ -436,7 +436,7 @@ fn resolve_idempotency_key_same_payload_replays() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--idempotency-key",
@@ -460,7 +460,7 @@ fn resolve_idempotency_key_same_payload_replays() {
 fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     run_ok(bin(&home).args([
         "--output",
@@ -468,7 +468,7 @@ fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--idempotency-key",
@@ -481,7 +481,7 @@ fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "keep",
         "--idempotency-key",
@@ -497,7 +497,7 @@ fn resolve_idempotency_key_different_choice_is_idempotency_conflict() {
 fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     run_ok(bin(&home).args([
         "--output",
@@ -505,7 +505,7 @@ fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--note",
@@ -520,7 +520,7 @@ fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--note",
@@ -536,7 +536,7 @@ fn resolve_idempotency_key_different_note_is_idempotency_conflict() {
 fn resolve_choice_length_capped() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
     let huge = "x".repeat(2048);
     let (code, err) = run_fail(bin(&home).args([
         "--output",
@@ -544,7 +544,7 @@ fn resolve_choice_length_capped() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         &huge,
     ]));
@@ -559,7 +559,7 @@ fn resolve_dry_run_against_resolved_reports_noop() {
     // a `no-op` preflight, not a falsely-promised `appended`.
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
-    seed_discussion(&home, &run_id, "d-0001abcdef", "first topic");
+    seed_discussion(&home, &run_id, "d-abcdefghij", "first topic");
 
     run_ok(bin(&home).args([
         "--output",
@@ -567,7 +567,7 @@ fn resolve_dry_run_against_resolved_reports_noop() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
     ]));
@@ -579,7 +579,7 @@ fn resolve_dry_run_against_resolved_reports_noop() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "drop",
         "--dry-run",
@@ -594,7 +594,7 @@ fn resolve_dry_run_against_resolved_reports_noop() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001abcdef",
+        "d-abcdefghij",
         "--choice",
         "keep",
         "--dry-run",
@@ -613,7 +613,7 @@ fn resolve_missing_discussion_rejected() {
         "discussion",
         "resolve",
         &run_id,
-        "d-missing0000",
+        "d-missingfff",
         "--choice",
         "drop",
     ]));

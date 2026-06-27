@@ -298,7 +298,7 @@ fn seed_discussion(home: &TempDir, run_id: &str) {
         "discussion.opened",
         None,
         json!({
-            "discussion_id": "d-0001000001",
+            "discussion_id": "d-pqrstuvwxy",
             "node_id": "n-0001",
             "topic": "seed topic",
             "severity": "discuss"
@@ -313,7 +313,7 @@ fn seed_spinoff(home: &TempDir, run_id: &str) {
         "spinoff.proposed",
         None,
         json!({
-            "proposal_id": "s-0001000001",
+            "proposal_id": "s-spinaaaaaa",
             "node_id": "n-0001",
             "proposed_title": "seed proposal",
             "proposed_kind": "spinoff",
@@ -711,7 +711,7 @@ fn discussion_envelopes() {
         "discussion",
         "show",
         &run_id,
-        "d-0001000001",
+        "d-pqrstuvwxy",
     ]));
     snapshot("discussion_show_json", &out, &red);
 
@@ -722,7 +722,7 @@ fn discussion_envelopes() {
         "discussion",
         "resolve",
         &run_id,
-        "d-0001000001",
+        "d-pqrstuvwxy",
         "--choice",
         "keep",
         "--dry-run",
@@ -733,21 +733,21 @@ fn discussion_envelopes() {
     snapshot(
         "discussion_show_not_found_error",
         &err_stderr(
-            bin(&home).args(["discussion", "show", &run_id, "d-nope000001"]),
+            bin(&home).args(["discussion", "show", &run_id, "d-nopereport"]),
             1,
         ),
         &red,
     );
 
     // Wet (non-dry) `discussion resolve` success envelope — locks the real
-    // write shape. Last, since it flips d-0001000001 to resolved.
+    // write shape. Last, since it flips d-pqrstuvwxy to resolved.
     let out = ok_stdout(bin(&home).args([
         "--output",
         "json",
         "discussion",
         "resolve",
         &run_id,
-        "d-0001000001",
+        "d-pqrstuvwxy",
         "--choice",
         "keep",
     ]));
@@ -785,7 +785,7 @@ fn spinoff_envelopes() {
                 "spinoff",
                 "reject",
                 &run_id,
-                "s-0001000001",
+                "s-spinaaaaaa",
                 "--reason",
                 "   ",
             ]),
@@ -801,7 +801,7 @@ fn spinoff_envelopes() {
         "spinoff",
         "reject",
         &run_id,
-        "s-0001000001",
+        "s-spinaaaaaa",
         "--reason",
         "not now",
     ]));

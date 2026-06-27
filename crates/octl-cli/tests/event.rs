@@ -1084,7 +1084,7 @@ fn discussion_opened_updates_manifest_and_writes_discussion_file() {
         &home,
         "disc.json",
         json!({
-            "discussion_id": "d-01test0001",
+            "discussion_id": "d-testevent2",
             "node_id": "n-0001",
             "topic": "should we X?",
             "severity": "discuss"
@@ -1104,7 +1104,7 @@ fn discussion_opened_updates_manifest_and_writes_discussion_file() {
     let projs = v["data"]["projections"].as_array().unwrap();
     assert!(projs
         .iter()
-        .any(|p| p.as_str() == Some("discussions/d-01test0001.json")));
+        .any(|p| p.as_str() == Some("discussions/d-testevent2.json")));
     assert!(projs.iter().any(|p| p.as_str() == Some("manifest.json")));
 
     let disc_path = home
@@ -1112,7 +1112,7 @@ fn discussion_opened_updates_manifest_and_writes_discussion_file() {
         .join("runs")
         .join(&run_id)
         .join("discussions")
-        .join("d-01test0001.json");
+        .join("d-testevent2.json");
     assert!(disc_path.exists());
 
     let manifest: Value = serde_json::from_slice(

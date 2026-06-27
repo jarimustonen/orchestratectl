@@ -2,4 +2,4 @@
 source: crates/octl-cli/tests/envelope_snapshots.rs
 expression: value
 ---
-{"schema_version":1,"error":{"code":"discussion_not_found","message":"no discussion d-nope000001 in run [RUN_ID]","invalid_value":"d-nope000001"}}
+{"schema_version":1,"error":{"code":"discussion_not_found","message":"no discussion d-nopereport in run [RUN_ID]","invalid_value":"d-nopereport"}}

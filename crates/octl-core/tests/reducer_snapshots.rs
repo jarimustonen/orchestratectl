@@ -129,7 +129,7 @@ fn run_node_report_spinoff_flow() {
         "spinoff.proposed",
         Some("n-0001"),
         json!({
-            "proposal_id": "s-fxtrespnff0001",
+            "proposal_id": "s-fxtrspnoff",
             "proposed_title": "drop legacy cookie path",
             "proposed_kind": "spinoff",
             "rationale": "would tidy the auth surface",
@@ -140,18 +140,15 @@ fn run_node_report_spinoff_flow() {
         "spinoff.approved",
         Some("n-0001"),
         json!({
-            "proposal_id": "s-fxtrespnff0001",
+            "proposal_id": "s-fxtrspnoff",
             "issue_slug": "drop-legacy-cookie-path",
         }),
     );
 
     snapshot_run(&h, "report_spinoff", &[("n0001", "n-0001")]);
-    let s = read_spinoff_opt(
-        &h.paths,
-        &ProposalId::parse_str("s-fxtrespnff0001").unwrap(),
-    )
-    .unwrap()
-    .unwrap();
+    let s = read_spinoff_opt(&h.paths, &ProposalId::parse_str("s-fxtrspnoff").unwrap())
+        .unwrap()
+        .unwrap();
     let v = redact_times(serde_json::to_value(&s).unwrap());
     assert_json_snapshot!("report_spinoff__spinoff", v);
 
@@ -184,7 +181,7 @@ fn discussion_open_and_resolve() {
         "discussion.opened",
         Some("n-0001"),
         json!({
-            "discussion_id": "d-fxtredscssn0001",
+            "discussion_id": "d-fxtrdscssn",
             "node_id": "n-0001",
             "topic": "should we drop the legacy cookie path?",
             "severity": "discuss",
@@ -196,17 +193,14 @@ fn discussion_open_and_resolve() {
         "discussion.resolved",
         Some("n-0001"),
         json!({
-            "discussion_id": "d-fxtredscssn0001",
+            "discussion_id": "d-fxtrdscssn",
             "resolution": "drop",
         }),
     );
 
-    let d = read_discussion_opt(
-        &h.paths,
-        &DiscussionId::parse_str("d-fxtredscssn0001").unwrap(),
-    )
-    .unwrap()
-    .unwrap();
+    let d = read_discussion_opt(&h.paths, &DiscussionId::parse_str("d-fxtrdscssn").unwrap())
+        .unwrap()
+        .unwrap();
     let v = redact_times(serde_json::to_value(&d).unwrap());
     assert_json_snapshot!("discussion__resolved", v);
     let m = read_manifest(&h.paths).unwrap();
