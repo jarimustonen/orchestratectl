@@ -1,0 +1,10 @@
+# rustfmt configuration for orchestratectl.
+#
+# Only *stable* rustfmt options live here so `cargo fmt --check` is meaningful
+# on the stable toolchain that CI uses. Import grouping (group_imports =
+# "StdExternalCrate", imports_granularity = "Crate") and wrap_comments are
+# nightly-only as of rustfmt 1.9 — we omit them rather than emit a per-run
+# "requires nightly" warning. Revisit once they stabilise.
+
+edition = "2021"
+max_width = 100
