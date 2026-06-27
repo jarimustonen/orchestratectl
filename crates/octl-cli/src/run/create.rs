@@ -385,6 +385,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "branch": outcome.branch,
         "worktree_path": outcome.worktree_path,
         "tmux_window": outcome.tmux_window,
+        // Qualified tmux identity (null on a create.sh that predates the
+        // fields); the reducer folds these into Node.tmux_identity.
+        "tmux_socket": outcome.tmux_socket,
+        "tmux_session": outcome.tmux_session,
+        "tmux_window_id": outcome.tmux_window_id,
         "agent_pid": outcome.agent_pid_hint,
         "task": args.task,
         "parent_node_id": parent_node_id,

@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use octl_core::schema::TmuxIdentity;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -46,6 +47,37 @@ pub struct SpawnOutcome {
     #[serde(default)]
     #[allow(dead_code)]
     pub workmux_session: Option<String>,
+    /// Server socket path of the tmux window (`#{socket_path}`). Part of the
+    /// qualified tmux identity; `None` on default-socket spawns or a create.sh
+    /// that predates the field. See [`SpawnOutcome::tmux_identity`].
+    #[serde(default)]
+    pub tmux_socket: Option<String>,
+    /// Session that owns the tmux window (`#{session_name}`). `None` if the
+    /// deployed create.sh predates the qualified-identity fields.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+    /// Stable `@NNNN` window id (`#{window_id}`). `None` if the deployed
+    /// create.sh predates the qualified-identity fields.
+    #[serde(default)]
+    pub tmux_window_id: Option<String>,
+}
+
+impl SpawnOutcome {
+    /// The fully-qualified tmux identity, when create.sh supplied it. Returns
+    /// `Some` only when both `tmux_session` and `tmux_window_id` are present —
+    /// the minimum to match a window unambiguously. A create.sh that predates
+    /// these fields yields `None`, and the caller falls back to bare-name
+    /// matching on `tmux_window` (logged once at parse time by
+    /// [`run_create_sh`]).
+    pub fn tmux_identity(&self) -> Option<TmuxIdentity> {
+        let session = self.tmux_session.clone()?;
+        let window_id = self.tmux_window_id.clone()?;
+        Some(TmuxIdentity {
+            socket: self.tmux_socket.clone(),
+            session,
+            window_id,
+        })
+    }
 }
 
 /// Inputs for one create.sh invocation.
@@ -171,12 +203,27 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         )
     })?;
     let trimmed = stdout.trim();
-    serde_json::from_str::<SpawnOutcome>(trimmed).map_err(|e| {
+    let outcome = serde_json::from_str::<SpawnOutcome>(trimmed).map_err(|e| {
         CliError::system(
             "create_sh_unparseable_stdout",
             format!("could not parse create.sh stdout as SpawnOutcome ({e}): {trimmed}"),
         )
-    })
+    })?;
+    // Back-compat: a create.sh that predates the qualified-identity fields
+    // emits no tmux_session/tmux_window_id, so the node will fall back to
+    // bare-name liveness matching (ambiguous across sessions / blind to
+    // non-default sockets). Warn once here, at the spawn boundary, rather than
+    // per watchdog tick.
+    if outcome.tmux_identity().is_none() {
+        tracing::warn!(
+            tmux_window = %outcome.tmux_window,
+            branch = %outcome.branch,
+            "create.sh did not emit a qualified tmux identity \
+             (tmux_session/tmux_window_id); falling back to bare window-name \
+             liveness matching — update the worktree skill's create.sh"
+        );
+    }
+    Ok(outcome)
 }
 
 fn parse_error_envelope(stderr: &str) -> Option<(String, String, Option<String>, Option<Value>)> {
@@ -353,5 +400,119 @@ exit 1
         let dir = TempDir::new().unwrap();
         let p = write_prompt_file(dir.path(), "hello").unwrap();
         assert_eq!(std::fs::read_to_string(p).unwrap(), "hello");
+    }
+
+    /// A `MakeWriter` that appends to a shared buffer so a test can assert on
+    /// what tracing emitted under `with_default`.
+    #[derive(Clone)]
+    struct BufWriter(std::sync::Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufWriter {
+        type Writer = BufWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn run_fixture(dir: &Path, body: &str) -> Result<SpawnOutcome, CliError> {
+        let script = fixture_script(dir, body);
+        std::env::set_var("OCTL_CREATE_SH", &script);
+        let prompt = dir.join("p.md");
+        std::fs::write(&prompt, "x").unwrap();
+        let out = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+        });
+        std::env::remove_var("OCTL_CREATE_SH");
+        out
+    }
+
+    #[test]
+    fn parses_qualified_tmux_identity() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        let out = run_fixture(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":"/private/tmp/tmux-501/default","tmux_session":"octl","tmux_window_id":"@42"}}
+EOF
+"#
+            ),
+        )
+        .unwrap();
+        let id = out.tmux_identity().expect("qualified identity present");
+        assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
+        assert_eq!(id.session, "octl");
+        assert_eq!(id.window_id, "@42");
+    }
+
+    #[test]
+    fn qualified_identity_tolerates_null_socket() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        let out = run_fixture(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":null,"tmux_session":"octl","tmux_window_id":"@7"}}
+EOF
+"#
+            ),
+        )
+        .unwrap();
+        let id = out
+            .tmux_identity()
+            .expect("identity present even without socket");
+        assert_eq!(id.socket, None);
+        assert_eq!(id.window_id, "@7");
+    }
+
+    #[test]
+    fn back_compat_missing_identity_is_none_and_warns() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        // A create.sh that predates the qualified-identity fields: stdout has
+        // no tmux_socket/tmux_session/tmux_window_id.
+        let body = format!(
+            r#"#!/bin/bash
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl"}}
+EOF
+"#
+        );
+        let buf = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(BufWriter(buf.clone()))
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, || {
+            run_fixture(dir.path(), &body).unwrap()
+        });
+        assert!(out.tmux_identity().is_none());
+        assert_eq!(out.tmux_session, None);
+        assert_eq!(out.tmux_window_id, None);
+        let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            logged.contains("qualified tmux identity"),
+            "expected back-compat warning, got: {logged:?}"
+        );
     }
 }

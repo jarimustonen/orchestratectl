@@ -15,6 +15,7 @@ expression: value
     "worktree_path": "/tmp/seed-wt",
     "branch": "wt/seed",
     "tmux_window": "seed-win",
+    "tmux_identity": null,
     "agent_pid": 4242,
     "agent_pid_start_time": null,
     "supervisor_pid": null,
