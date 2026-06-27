@@ -88,10 +88,9 @@ pub fn run(
     // see the PID it claimed or — if a human or test reattach raced us — a
     // different one; either way the contract is that *some* live supervisor
     // now owns the run. With the double-fork we have no usable spawned PID to
-    // report on timeout, so fall back to whatever the file last recorded.
-    let recorded_pid = supervisor_spawn::await_recorded_pid(&paths)
-        .or_else(|| pid_file::read_pid(&pid_path))
-        .unwrap_or(0);
+    // report on timeout, so report 0 ("spawned, pid unconfirmed") rather than
+    // a stale/dead value; the supervisor's own supervisor.pid is the truth.
+    let recorded_pid = supervisor_spawn::await_recorded_pid(&paths).unwrap_or(0);
 
     let _ = append_and_apply_event(
         &paths,

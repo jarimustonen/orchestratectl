@@ -104,6 +104,11 @@ pub fn detached_supervise_command(run_id: &str, log_path: &Path) -> Result<Comma
     let mut cmd = Command::new(exe);
     cmd.arg("supervise")
         .arg(run_id)
+        // A detached daemon must not keep the launching terminal's stdin: an
+        // inherited TTY fd 0 can deliver SIGTTIN or let a stray read consume
+        // terminal input. setsid drops the controlling-terminal relationship
+        // but not the fd itself.
+        .stdin(std::process::Stdio::null())
         .stdout(stderr_file)
         .stderr(stderr_clone);
     apply_detach(&mut cmd);
@@ -119,26 +124,47 @@ pub fn spawn_and_reap(cmd: &mut Command, run_id: &str) -> Result<(), CliError> {
         .spawn()
         .map_err(|e| CliError::system("spawn_failed", format!("spawn supervise {run_id}: {e}")))?;
     // The intermediate `_exit`s immediately after forking the grandchild, so
-    // this wait reaps it without blocking on the actual supervisor.
-    let _ = child.wait();
+    // this wait reaps it without blocking on the actual supervisor. A wait
+    // error (e.g. ECHILD if it was already reaped) is non-fatal — the
+    // grandchild is independent — but surface it rather than swallow it.
+    if let Err(e) = child.wait() {
+        tracing::warn!(
+            target: "orchestratectl::supervise",
+            run = %run_id,
+            error = %e,
+            "failed to reap double-fork intermediate (grandchild unaffected)"
+        );
+    }
     Ok(())
 }
 
+/// Read `<run-dir>/supervisor.pid` ONCE and return the recorded pid iff it is
+/// a live process whose start-time still matches the record (§7.6 identity
+/// check). Non-blocking. Used where the caller must not stall — e.g. the
+/// parent supervisor's tick — and is content with "pid not yet confirmed"
+/// (the child writes its own pid file as the durable source of truth).
+pub fn read_live_recorded_pid(paths: &RunPaths) -> Option<u32> {
+    let (pid, start_time) = pid_file::read_pid_record(&paths.supervisor_pid())?;
+    pid_file::pid_live_with_identity(pid, start_time).then_some(pid)
+}
+
 /// Poll `<run-dir>/supervisor.pid` for up to [`PID_FILE_WAIT`] and return the
-/// live supervisor PID it records. `None` if no live pid file appears in time
-/// — with double-fork we have no usable spawned PID to fall back to (the
-/// intermediate we reaped is gone), so callers decide how to degrade. In
+/// live, identity-verified supervisor PID it records. `None` if none appears
+/// in time — with double-fork we have no usable spawned PID to fall back to
+/// (the intermediate we reaped is gone), so callers decide how to degrade. In
 /// practice the supervisor writes its pid file under the run flock within
 /// milliseconds of `exec`, so the deadline is reached only if the supervisor
 /// failed to boot.
+///
+/// Identity matters: a stale pid file from a prior generation whose pid has
+/// been recycled by an unrelated live process must NOT be accepted as "our"
+/// supervisor — hence `read_pid_record` + `pid_live_with_identity`, not a bare
+/// liveness probe.
 pub fn await_recorded_pid(paths: &RunPaths) -> Option<u32> {
-    let pid_path = paths.supervisor_pid();
     let deadline = Instant::now() + PID_FILE_WAIT;
     loop {
-        if let Some(p) = pid_file::read_pid(&pid_path) {
-            if pid_file::pid_alive(p) {
-                return Some(p);
-            }
+        if let Some(pid) = read_live_recorded_pid(paths) {
+            return Some(pid);
         }
         if Instant::now() >= deadline {
             return None;

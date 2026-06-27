@@ -532,8 +532,16 @@ pub fn dispatch(
         // each child self-terminates within ~3s independently — but a child
         // blocked on a lock or mid-`CHILD_DIR_WAIT` could outlive us. Signal
         // it directly rather than relying on every level's independent
-        // self-terminate.
-        signal_children_term(&root, &state);
+        // self-terminate. Signal the UNION of children we forked this process
+        // (`spawned_children`) and children reseeded from projections on boot
+        // (`child_tails`) — after a crash-restart the former is empty.
+        let child_ids: std::collections::BTreeSet<&str> = state
+            .spawned_children
+            .keys()
+            .map(String::as_str)
+            .chain(child_tails.keys().map(String::as_str))
+            .collect();
+        signal_children_term(&root, child_ids.into_iter());
         // Emit a self-terminate marker only if the events log still
         // exists. When the whole run dir was removed (the common case)
         // there is nothing to append to — and we must NOT recreate the
@@ -606,8 +614,13 @@ pub fn dispatch(
 /// whose identity we can verify against the child's own `supervisor.pid`
 /// record (start-time check, §7.6), so a recycled PID now owned by an
 /// unrelated process is never signalled.
-fn signal_children_term(root: &Path, state: &state::SupervisorState) {
-    for child_run_id in state.spawned_children.keys() {
+///
+/// `child_run_ids` must be the UNION of `state.spawned_children` (children we
+/// forked this process) and the live `child_tails` keys (children reseeded
+/// from projections on boot). After a crash-restart `spawned_children` is
+/// empty, so iterating it alone would silently orphan every adopted child.
+fn signal_children_term<'a>(root: &Path, child_run_ids: impl Iterator<Item = &'a str>) {
+    for child_run_id in child_run_ids {
         let Ok(child_paths) = run_paths(root, child_run_id) else {
             continue;
         };
@@ -620,13 +633,18 @@ fn signal_children_term(root: &Path, state: &state::SupervisorState) {
         else {
             continue;
         };
-        if pid == 0 || !pid_file::pid_live_with_identity(pid, start_time) {
+        // `read_pid_record` already rejects out-of-range pids; re-narrow here
+        // so the `kill` cast can never become a negative process-group target.
+        let Some(pid_t) = pid_file::to_pid_t(pid) else {
+            continue;
+        };
+        if !pid_file::pid_live_with_identity(pid, start_time) {
             continue;
         }
-        // SAFETY: `kill` with a real signal to a pid whose identity we just
-        // verified; ESRCH (it exited in the meantime) is ignored.
+        // SAFETY: `kill` with a real signal to a range-checked pid whose
+        // identity we just verified; ESRCH (it exited meanwhile) is ignored.
         unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            libc::kill(pid_t, libc::SIGTERM);
         }
         info!(
             target: "orchestratectl::supervise",
@@ -685,21 +703,22 @@ fn spawn_child_supervisor(
     cmd.env_remove("RUST_LOG_NOSPAWN");
     crate::run::supervisor_spawn::spawn_and_reap(&mut cmd, child_run_id)?;
 
-    // The double-fork detaches the real supervisor (grandchild), so the PID
-    // `Command::spawn` saw was the reaped intermediate. The authoritative pid
-    // is the one the child wrote into its own `supervisor.pid` under the run
-    // flock during `claim_pid_atomic`; read it back. On timeout we record 0
-    // (unknown) — the child is still tracked by run-id, only the cosmetic
-    // `supervisor_pid` record degrades.
+    // The grandchild is launched and detached; that — not the pid file — is
+    // the success signal, so we never block the single-threaded parent tick
+    // waiting for it to boot. We do a SINGLE non-blocking, identity-verified
+    // read of the child's own `supervisor.pid` (the authoritative record the
+    // child writes under its run flock during `claim_pid_atomic`). It is
+    // usually not there yet — that is fine: the cosmetic `supervisor_pid`
+    // node record and the `child.supervisor_attached` event are only emitted
+    // once a real pid is readable; the durable truth is the child's pid file.
     let child_paths = run_paths(root, child_run_id)?;
-    let pid = crate::run::supervisor_spawn::await_recorded_pid(&child_paths).unwrap_or(0);
+    let pid = crate::run::supervisor_spawn::read_live_recorded_pid(&child_paths).unwrap_or(0);
 
-    // Best-effort: record supervisor_pid on the child's root node. This
-    // read-modify-write races the child supervisor's own boot writes, so
-    // it must be done under the child run's flock (F11) — without it the
-    // last writer silently clobbers the other's fields. Skip when the pid is
-    // unknown (0) rather than recording a bogus value.
     if pid != 0 {
+        // Best-effort: record supervisor_pid on the child's root node. This
+        // read-modify-write races the child supervisor's own boot writes, so
+        // it must be done under the child run's flock (F11) — without it the
+        // last writer silently clobbers the other's fields.
         match RunLock::acquire(&child_paths.lock()) {
             Ok(_guard) => {
                 // The child run's root node is always `n-0001` (a static, valid id).
@@ -710,9 +729,8 @@ fn spawn_child_supervisor(
                 }
             }
             Err(e) => {
-                // Non-fatal: the parent already recorded the attach via the
-                // `child.supervisor_attached` event below, so this projection
-                // write is a convenience. Surface it rather than swallowing.
+                // Non-fatal: the `child.supervisor_attached` event below records
+                // the attach, so this projection write is a convenience.
                 warn!(
                     target: "orchestratectl::supervise",
                     child = %child_run_id,
@@ -721,15 +739,16 @@ fn spawn_child_supervisor(
                 );
             }
         }
+        // Record the attach on the parent log, but only with a real pid —
+        // never emit `supervisor_pid: 0`, which would be a false "attached".
+        let _ = append_and_apply_event(
+            parent_paths,
+            "child.supervisor_attached",
+            None,
+            None,
+            json!({"child_run_id": child_run_id, "supervisor_pid": pid}),
+        );
     }
-    // Record on the parent's tracking node too via an event.
-    let _ = append_and_apply_event(
-        parent_paths,
-        "child.supervisor_attached",
-        None,
-        None,
-        json!({"child_run_id": child_run_id, "supervisor_pid": pid}),
-    );
     info!(
         target: "orchestratectl::supervise",
         child = %child_run_id,

@@ -79,10 +79,21 @@ pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> 
     let pid_path = paths.supervisor_pid();
     if let Some((existing, start_time)) = read_pid_record(&pid_path) {
         if pid_live_with_identity(existing, start_time) {
+            // A legacy (no recorded start-time) file cannot distinguish the
+            // real owner from a recycled pid — say so explicitly so an
+            // operator hit by an upgrade-then-pid-reuse lockout knows to
+            // remove the file, rather than reading "is alive" and assuming a
+            // healthy supervisor.
+            let hint = if start_time.is_none() {
+                "; this is a legacy pid file with no identity, so a recycled \
+                 pid cannot be ruled out — remove supervisor.pid if it is stale"
+            } else {
+                " (kill it or use `run reattach`)"
+            };
             return Err(CliError::system(
                 "supervisor_already_running",
                 format!(
-                    "supervisor pid {existing} for run {} is alive (kill it or use `run reattach`)",
+                    "supervisor pid {existing} for run {} is alive{hint}",
                     paths.run_id.as_str(),
                 ),
             ));
@@ -98,11 +109,27 @@ pub fn claim_pid_atomic(paths: &RunPaths, our_pid: u32) -> Result<(), CliError> 
     write_pid(&pid_path, our_pid)
 }
 
-/// Read the recorded supervisor PID from `path`. Returns `None` if the
-/// file is absent or its first token does not parse as an integer.
+/// Narrow a stored `u32` pid into a `libc::pid_t` (signed `i32` on every
+/// supported Unix), rejecting `0` and any value above `i32::MAX`. The latter
+/// is the security-critical guard: a corrupt or tampered `supervisor.pid`
+/// holding e.g. `4294967295` would otherwise cast to `-1`, and
+/// `kill(-1, SIGTERM)` signals *every* process the user may signal. No
+/// legitimate pid exceeds `i32::MAX`, so out-of-range is treated as "not a
+/// real process".
+pub(crate) fn to_pid_t(pid: u32) -> Option<libc::pid_t> {
+    if pid == 0 || pid > libc::pid_t::MAX as u32 {
+        return None;
+    }
+    Some(pid as libc::pid_t)
+}
+
+/// Read the recorded supervisor PID from `path`. Returns `None` if the file
+/// is absent, its first token does not parse as an integer, or the value is
+/// out of the valid pid range (see [`to_pid_t`]).
 pub fn read_pid(path: &Path) -> Option<u32> {
     let s = std::fs::read_to_string(path).ok()?;
-    s.split_whitespace().next()?.parse::<u32>().ok()
+    let pid = s.split_whitespace().next()?.parse::<u32>().ok()?;
+    to_pid_t(pid).map(|_| pid)
 }
 
 /// Read `(pid, start_time)` from `path`. `start_time` is `None` for a
@@ -112,6 +139,9 @@ pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
     let s = std::fs::read_to_string(path).ok()?;
     let mut it = s.split_whitespace();
     let pid = it.next()?.parse::<u32>().ok()?;
+    // Reject an out-of-range pid (see `to_pid_t`) before it can reach any
+    // `kill()` cast downstream.
+    to_pid_t(pid)?;
     let start_time = it.next().and_then(|t| t.parse::<u64>().ok());
     Some((pid, start_time))
 }
@@ -148,12 +178,14 @@ pub fn remove_if_owner(path: &Path, expected_pid: u32) {
 /// permission to signal it. `ESRCH` → dead, `EPERM` → alive but
 /// foreign-owned (still counts as alive for liveness purposes).
 pub fn pid_alive(pid: u32) -> bool {
-    if pid == 0 {
+    let Some(pid_t) = to_pid_t(pid) else {
+        // 0 or out-of-range (would cast to a negative `pid_t` → process
+        // group / broadcast target): never treat as a live process.
         return false;
-    }
+    };
     // SAFETY: `kill(pid, 0)` is signal-free and side-effect-free on
-    // POSIX; it only probes existence/permission.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    // POSIX; it only probes existence/permission. `pid_t` is range-checked.
+    let rc = unsafe { libc::kill(pid_t, 0) };
     if rc == 0 {
         return true;
     }
@@ -200,6 +232,24 @@ mod tests {
     #[test]
     fn pid_zero_is_dead() {
         assert!(!pid_alive(0));
+    }
+
+    /// Security guard: a corrupt/tampered pid value above `i32::MAX` must
+    /// never reach `kill()` (it would cast to a negative `pid_t` and target a
+    /// process group / broadcast). It is reported dead and never read back.
+    #[test]
+    fn out_of_range_pid_is_dead_and_unreadable() {
+        assert!(!pid_alive(u32::MAX), "u32::MAX would cast to -1");
+        assert!(!pid_alive((i32::MAX as u32) + 1));
+        assert!(to_pid_t(u32::MAX).is_none());
+        assert!(to_pid_t(0).is_none());
+        assert!(to_pid_t(i32::MAX as u32).is_some());
+
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("supervisor.pid");
+        std::fs::write(&p, "4294967295").unwrap();
+        assert_eq!(read_pid(&p), None, "out-of-range pid must read as absent");
+        assert_eq!(read_pid_record(&p), None);
     }
 
     /// The core invariant of the §7.6 fix: many concurrent `claim_pid_atomic`
