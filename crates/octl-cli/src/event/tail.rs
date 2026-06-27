@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
+use tracing::info;
 
 use octl_core::{read_manifest_opt, Event, SCHEMA_VERSION};
 
@@ -402,14 +403,27 @@ fn emit_terminal(
         .map_err(|e| CliError::system("io_error", format!("write terminal: {e}")))
 }
 
-/// Flush the writer AND the global stdout buffer, drop the writer, then
-/// `process::exit`. The global `Stdout` is block-buffered when piped (the
-/// agent case); dropping a `StdoutLock` releases the lock but does NOT
-/// flush that block buffer. Without the explicit flush below, agents
-/// reading through a pipe lose the final `cancelled` envelope.
+/// Flush the writer AND the global stdout buffer, drop the writer, drain
+/// this process's own buffered tracing events, then `process::exit`.
+///
+/// Two distinct buffers must be flushed before the hard exit:
+/// 1. The global `Stdout` is block-buffered when piped (the agent case);
+///    dropping a `StdoutLock` releases the lock but does NOT flush that
+///    block buffer. Without the explicit flush, agents reading through a
+///    pipe lose the final `cancelled` envelope.
+/// 2. The non-blocking log appender holds this process's tracing events in
+///    an in-memory channel; `process::exit` bypasses the `LogGuard`'s
+///    `Drop`, so `flush_logs()` drains them to disk first. Without it the
+///    tail command's own diagnostic logs are silently lost. See
+///    `issues/log-guard-flush-on-process-exit`.
 fn flush_and_exit(mut writer: Box<dyn Write>, code: i32) -> ! {
     let _ = writer.flush();
     drop(writer);
     let _ = std::io::stdout().lock().flush();
+    // Emit *before* the flush so this line is itself drained to disk — it
+    // both records why tail exited and is the regression canary proving the
+    // exit path no longer drops buffered events.
+    info!(target: "orchestratectl::event::tail", code, "event tail exiting via signal");
+    crate::cli::flush_logs();
     process::exit(code);
 }
