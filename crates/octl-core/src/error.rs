@@ -2,9 +2,22 @@
 
 use std::path::PathBuf;
 
+use crate::schema::Status;
+
 /// Errors raised while reading, writing, or validating run state on disk.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A `cancel_run` was refused because the run is already in a *non-cancelled*
+    /// terminal state (`Done` / `Failed`). Cancelling such a run would claim a
+    /// transition the reducer's terminal-state guard refuses, so the operation
+    /// is rejected up front without mutating any state. An already-`Cancelled`
+    /// run is *not* this error — it converges (see [`crate::cancel_run`]).
+    #[error("run is already terminal ({status:?}), cannot cancel")]
+    RunAlreadyTerminal {
+        /// The run's current terminal status (`Done` or `Failed`).
+        status: Status,
+    },
+
     /// Filesystem I/O failure with the offending path attached for context.
     #[error("io error at {path}: {source}")]
     Io {

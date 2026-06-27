@@ -19,6 +19,7 @@
 #![warn(missing_docs)]
 
 pub mod atomic;
+pub mod cancel;
 pub mod envelope;
 pub mod error;
 pub mod events;
@@ -33,6 +34,7 @@ pub mod schema;
 #[cfg(test)]
 mod stress_tests;
 
+pub use cancel::{cancel_run, cancel_run_unlocked, CancelOutcome};
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
