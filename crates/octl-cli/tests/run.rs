@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tempfile::TempDir;
 
 fn bin(home: &TempDir) -> Command {
@@ -368,4 +368,166 @@ fn list_when_root_missing_returns_empty() {
     // No runs created — runs/ dir does not exist yet.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
     assert!(v["data"]["runs"].as_array().unwrap().is_empty());
+}
+
+// --- `run cancel` terminal-run + convergence semantics ---------------------
+//
+// These drive a run's state through the sanctioned `event create` write path
+// (a temp JSON `--from-file` payload), then exercise `run cancel`.
+
+/// Append one event via `event create`, writing `data` to a temp file the
+/// command reads with `--from-file`. The `keep` `TempDir` must outlive the call.
+fn event_create(home: &TempDir, run_id: &str, kind: &str, node_id: Option<&str>, data: Value) {
+    let keep = TempDir::new().unwrap();
+    let f = keep.path().join("data.json");
+    std::fs::write(&f, serde_json::to_vec(&data).unwrap()).unwrap();
+    let mut cmd = bin(home);
+    cmd.args([
+        "--output", "json", "event", "create", run_id, "--kind", kind,
+    ]);
+    if let Some(n) = node_id {
+        cmd.args(["--node-id", n]);
+    }
+    cmd.args(["--from-file", f.to_str().unwrap()]);
+    run_ok(&mut cmd);
+}
+
+fn add_node(home: &TempDir, run_id: &str, node_id: &str) {
+    event_create(
+        home,
+        run_id,
+        "node.created",
+        Some(node_id),
+        json!({ "kind": "spinoff" }),
+    );
+}
+
+/// Settle a node via the §7.3-owned `node report` path (`node.report` is not
+/// routable through `event create`).
+fn node_report(home: &TempDir, run_id: &str, node_id: &str, data: Value) {
+    let keep = TempDir::new().unwrap();
+    let f = keep.path().join("report.json");
+    std::fs::write(&f, serde_json::to_vec(&data).unwrap()).unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "node",
+        "report",
+        run_id,
+        node_id,
+        "--from-file",
+        f.to_str().unwrap(),
+    ]));
+}
+
+#[test]
+fn cancel_done_run_is_refused_run_already_terminal() {
+    let home = TempDir::new().unwrap();
+    let run_id = create(&home, "spinoff", "done-run");
+    add_node(&home, &run_id, "n-0001");
+    // Settle the node, then the run, to Done.
+    node_report(&home, &run_id, "n-0001", json!({ "success": true }));
+    event_create(
+        &home,
+        &run_id,
+        "run.status",
+        None,
+        json!({ "status": "done" }),
+    );
+
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(code, 2);
+    assert_eq!(v["error"]["code"], "run_already_terminal");
+    assert_eq!(v["error"]["invalid_value"], "done");
+    assert_eq!(v["error"]["expected"], "running|pending|blocked");
+
+    // The refusal mutated nothing: the run is still Done.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(v["data"]["manifest"]["status"], "done");
+}
+
+#[test]
+fn cancel_already_cancelled_run_converges_live_node() {
+    let home = TempDir::new().unwrap();
+    let run_id = create(&home, "spinoff", "interrupted-cancel");
+    add_node(&home, &run_id, "n-0001");
+    add_node(&home, &run_id, "n-0002");
+    // Simulate an interrupted cancel: run marked cancelled, but n-0001 settled
+    // while n-0002 is still live (its node.report never landed).
+    node_report(
+        &home,
+        &run_id,
+        "n-0001",
+        json!({ "success": false, "cancelled": true, "reason": "stop" }),
+    );
+    event_create(
+        &home,
+        &run_id,
+        "run.status",
+        None,
+        json!({ "status": "cancelled" }),
+    );
+
+    // Re-cancel converges the straggler and reports it.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(v["data"]["already_cancelled"], true);
+    assert_eq!(
+        v["data"]["cancelled_nodes"].as_array().unwrap(),
+        &vec![Value::from("n-0002")]
+    );
+    assert_eq!(
+        v["data"]["nodes_already_terminal"].as_array().unwrap(),
+        &vec![Value::from("n-0001")]
+    );
+
+    // n-0002 is now cancelled on disk.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(v["data"]["counts"]["nodes"], 2);
+}
+
+#[test]
+fn recancel_fully_converged_run_reports_no_new_changes() {
+    let home = TempDir::new().unwrap();
+    let run_id = create(&home, "spinoff", "converged");
+    add_node(&home, &run_id, "n-0001");
+
+    // First cancel converges everything.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(v["data"]["already_cancelled"], false);
+    assert_eq!(
+        v["data"]["cancelled_nodes"].as_array().unwrap(),
+        &vec![Value::from("n-0001")]
+    );
+
+    // Second cancel: already cancelled, nothing left to converge.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(v["data"]["already_cancelled"], true);
+    assert!(v["data"]["cancelled_nodes"].as_array().unwrap().is_empty());
+    assert_eq!(
+        v["data"]["nodes_already_terminal"].as_array().unwrap(),
+        &vec![Value::from("n-0001")]
+    );
+}
+
+#[test]
+fn cancel_does_not_over_report_already_terminal_node() {
+    let home = TempDir::new().unwrap();
+    let run_id = create(&home, "spinoff", "mixed");
+    add_node(&home, &run_id, "n-0001");
+    add_node(&home, &run_id, "n-0002");
+    // n-0001 finishes on its own (Done) before the cancel; a single lock makes
+    // the cancel read it as terminal and skip it instead of over-reporting.
+    node_report(&home, &run_id, "n-0001", json!({ "success": true }));
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(v["data"]["already_cancelled"], false);
+    assert_eq!(
+        v["data"]["cancelled_nodes"].as_array().unwrap(),
+        &vec![Value::from("n-0002")],
+        "the already-Done node must not appear in cancelled_nodes"
+    );
+    assert_eq!(
+        v["data"]["nodes_already_terminal"].as_array().unwrap(),
+        &vec![Value::from("n-0001")]
+    );
 }
