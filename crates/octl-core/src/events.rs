@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::atomic::open_events_append;
@@ -268,6 +269,143 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
         out.push(ev);
     }
     Ok(out)
+}
+
+/// A prior event located by [`find_prior_with_key`]. Carries enough to let
+/// an idempotent-retry caller both return the recorded `seq` and verify the
+/// retry payload matches what was originally written.
+#[derive(Debug, Clone)]
+pub struct PriorEvent {
+    /// The recorded `seq` of the matching event.
+    pub seq: u64,
+    /// The event's top-level `node_id`, if any.
+    pub node_id: Option<String>,
+    /// The event's `data` payload.
+    pub data: Value,
+}
+
+/// Fields skimmed from every line to test for a match without ever
+/// deserializing the (potentially large) `data` payload.
+#[derive(Deserialize)]
+struct ProbeFields {
+    seq: u64,
+    kind: String,
+    idempotency_key: Option<String>,
+}
+
+/// Fields pulled from the one matching line, including the full payload.
+#[derive(Deserialize)]
+struct FullEventForReplay {
+    seq: u64,
+    node_id: Option<String>,
+    data: Value,
+}
+
+/// Maximum number of characters from a malformed line to surface in a
+/// [`Error::CorruptEventLog`] reason.
+const CORRUPT_LINE_EXCERPT: usize = 100;
+
+/// Stream-scan `events.jsonl` for the first event with matching `kind` and
+/// `idempotency_key`, returning a typed [`PriorEvent`] (or `None` when the
+/// log is missing or holds no such event).
+///
+/// Only `kind` / `idempotency_key` / `seq` are deserialized while skimming,
+/// so the cost stays bounded in log size rather than log size × payload
+/// size; the full `node_id` + `data` payload is parsed only for the one
+/// matching line.
+///
+/// # Torn-line policy
+///
+/// [`recover_last_seq`] tolerates a crash-truncated *final* line that lacks
+/// a trailing newline. This scanner mirrors exactly that contract: a final
+/// line with no trailing `\n` that fails to parse is treated as an
+/// in-flight partial write and ignored. Any *interior* line that fails to
+/// parse (it is newline-terminated, so a later line follows) is a
+/// data-integrity fault — by the time this runs, `recover_last_seq` has
+/// already accepted the same file under the same lock — so it returns
+/// [`Error::CorruptEventLog`] rather than silently skipping a line that
+/// might carry the very key being looked up, which would let the caller
+/// double-append.
+///
+/// Caller must hold the run's [`RunLock`]; the scan is read-only over an
+/// append-only file.
+pub fn find_prior_with_key(
+    paths: &RunPaths,
+    kind: &str,
+    idempotency_key: &str,
+) -> Result<Option<PriorEvent>> {
+    let events_path = paths.events();
+    let f = match std::fs::File::open(&events_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::io(&events_path, e)),
+    };
+    let mut reader = BufReader::new(f);
+    let mut buf = String::new();
+    let mut lineno: u64 = 0;
+    // `seq` of the last successfully-parsed line, for best-effort error
+    // context pointing at where corruption begins.
+    let mut last_good_seq: u64 = 0;
+    loop {
+        buf.clear();
+        // `read_line` preserves the trailing `\n`, which `lines()` strips —
+        // that byte is exactly what distinguishes a torn final line from a
+        // newline-terminated interior line.
+        let n = reader
+            .read_line(&mut buf)
+            .map_err(|e| Error::io(&events_path, e))?;
+        if n == 0 {
+            break;
+        }
+        lineno += 1;
+        let had_newline = buf.ends_with('\n');
+        let line = buf.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            continue;
+        }
+        let probe: ProbeFields = match serde_json::from_str(line) {
+            Ok(p) => p,
+            // Torn final line (no trailing newline): a crash mid-append.
+            // EOF follows on the next `read_line`, so just stop.
+            Err(_) if !had_newline => break,
+            // Newline-terminated line that won't parse: interior corruption.
+            Err(e) => {
+                return Err(Error::CorruptEventLog {
+                    path: events_path.clone(),
+                    reason: format!(
+                        "line {lineno} is not valid JSON (last good seq {last_good_seq}): \
+                         {} [{e}]",
+                        excerpt(line),
+                    ),
+                });
+            }
+        };
+        last_good_seq = probe.seq;
+        if probe.kind != kind || probe.idempotency_key.as_deref() != Some(idempotency_key) {
+            continue;
+        }
+        let full: FullEventForReplay =
+            serde_json::from_str(line).map_err(|e| Error::json(&events_path, e))?;
+        return Ok(Some(PriorEvent {
+            seq: full.seq,
+            node_id: full.node_id,
+            data: full.data,
+        }));
+    }
+    Ok(None)
+}
+
+/// Truncate a log line to a bounded, char-boundary-safe prefix for
+/// inclusion in an error message.
+fn excerpt(line: &str) -> String {
+    if line.len() <= CORRUPT_LINE_EXCERPT {
+        return line.to_string();
+    }
+    let mut end = CORRUPT_LINE_EXCERPT;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &line[..end])
 }
 
 #[cfg(test)]

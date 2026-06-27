@@ -33,7 +33,7 @@ pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
     append_and_apply, append_and_apply_unlocked, append_event, append_event_with_seq,
-    read_all_events, recover_last_seq,
+    find_prior_with_key, read_all_events, recover_last_seq, PriorEvent,
 };
 pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
 pub use lock::RunLock;
