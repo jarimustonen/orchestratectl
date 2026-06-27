@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{ColorChoice, Parser, Subcommand};
 use serde::Serialize;
 use tracing::info;
-use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{CliError, ExitKind};
@@ -141,9 +141,16 @@ pub fn run() -> ExitCode {
     // `_log_guard` owns the non-blocking writer's worker thread. It MUST
     // stay alive for the whole of `run()`: dropping it flushes buffered
     // events and joins the thread, so binding it here keeps logs flowing
-    // until every subcommand (including the long-lived `supervise` loop)
-    // has returned.
-    let (logging_warnings, _log_guard) = init_logging();
+    // until every subcommand (including the long-lived `supervise` loop,
+    // which exits its poll loop cooperatively on SIGINT/SIGTERM) has
+    // returned. Caveat: subcommands that bypass unwinding via
+    // `std::process::exit` (currently `event tail --follow`) skip this
+    // drop and may lose this process's own buffered log events — tracked
+    // as a follow-up, see issues/log-guard-flush-on-process-exit.
+    let LoggingInit {
+        warnings: logging_warnings,
+        _guard: _log_guard,
+    } = init_logging();
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -320,6 +327,27 @@ fn format_u32_list(values: &[u32]) -> String {
         .join(", ")
 }
 
+/// Buffered-message capacity for the non-blocking log channel. Set
+/// explicitly rather than relying on the crate default so the memory
+/// ceiling (and the worst-case drain time on shutdown) is a deliberate,
+/// visible choice. At the supervisor's 500ms × ~100-node cadence this is
+/// far more headroom than a healthy disk needs.
+const LOG_BUFFERED_LINES: usize = 128_000;
+
+/// Result of [`init_logging`]: any non-fatal warnings to surface to the
+/// caller, plus the worker guard whose lifetime keeps the background log
+/// writer alive.
+///
+/// `#[must_use]`: the whole point of the struct is that `_guard` must be
+/// bound for the lifetime of the process. Dropping it early flushes and
+/// joins the writer thread, after which all further log events are
+/// silently discarded.
+#[must_use = "the log writer thread is shut down when the guard is dropped — bind it for the process lifetime"]
+struct LoggingInit {
+    warnings: Vec<String>,
+    _guard: Option<WorkerGuard>,
+}
+
 /// Initialise the JSONL log subscriber. Logs go to
 /// `~/.orchestratectl/logs/orchestratectl.log.jsonl`. Best-effort: if the
 /// log file cannot be opened, the process still runs and the caller sees
@@ -328,17 +356,28 @@ fn format_u32_list(values: &[u32]) -> String {
 /// Returns the collected warnings plus the [`WorkerGuard`] for the
 /// non-blocking writer. The guard owns the background writer thread; the
 /// caller MUST keep it alive until the process is done logging, otherwise
-/// buffered events are dropped on drop. `None` is returned whenever the
+/// buffered events are dropped on drop. The guard is `None` whenever the
 /// subscriber was not installed (no log path, IO error, or an
 /// already-initialised global subscriber).
-fn init_logging() -> (Vec<String>, Option<WorkerGuard>) {
+///
+/// Delivery semantics: the writer runs in **lossy** mode — if the channel
+/// fills (a sustained burst the disk cannot keep up with) new events are
+/// dropped rather than blocking the caller. This matches the MVP decision
+/// to favour supervisor responsiveness over strict log completeness;
+/// hardening (back-pressure / dropped-event accounting) is deferred. Logs
+/// are also lost on `panic = "abort"` or a `std::process::exit` that
+/// bypasses the guard's `Drop`.
+fn init_logging() -> LoggingInit {
     let mut warnings = Vec::new();
     let log_path = match log_path() {
         Some(p) => p,
         None => {
             warnings
                 .push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
-            return (warnings, None);
+            return LoggingInit {
+                warnings,
+                _guard: None,
+            };
         }
     };
 
@@ -349,7 +388,10 @@ fn init_logging() -> (Vec<String>, Option<WorkerGuard>) {
                 parent.display(),
                 e
             ));
-            return (warnings, None);
+            return LoggingInit {
+                warnings,
+                _guard: None,
+            };
         }
     }
 
@@ -361,7 +403,10 @@ fn init_logging() -> (Vec<String>, Option<WorkerGuard>) {
                 log_path.display(),
                 e
             ));
-            return (warnings, None);
+            return LoggingInit {
+                warnings,
+                _guard: None,
+            };
         }
     };
 
@@ -370,32 +415,43 @@ fn init_logging() -> (Vec<String>, Option<WorkerGuard>) {
 
     // Hand the file to a background writer thread. The supervisor polls at
     // 500ms across ~100 nodes; doing the `write(2)` synchronously on the
-    // tracing call path would serialise that hot loop on disk IO and could
-    // interleave records larger than PIPE_BUF. `non_blocking` buffers each
-    // event onto a channel (default ~128K-message capacity) and a single
-    // worker drains it, so every record reaches the file whole, in order,
-    // and off the caller's thread.
-    let (writer, guard) = tracing_appender::non_blocking(file);
+    // tracing call path would serialise that hot loop on disk IO. The
+    // single worker also serialises every record this process emits, so
+    // no JSONL line is split or interleaved with another from *this*
+    // process (cross-process appenders are still only protected at the
+    // kernel's per-`write(2)` O_APPEND granularity). `lossy(true)` keeps
+    // the tracing call path non-blocking under back-pressure; see the
+    // delivery-semantics note above.
+    let (writer, guard) = NonBlockingBuilder::default()
+        .lossy(true)
+        .buffered_lines_limit(LOG_BUFFERED_LINES)
+        .finish(file);
     let layer = fmt::layer()
         .json()
         .with_current_span(false)
         .with_span_list(false)
         .with_writer(writer);
 
-    if tracing_subscriber::registry()
+    if let Err(e) = tracing_subscriber::registry()
         .with(filter)
         .with(layer)
         .try_init()
-        .is_err()
     {
-        // Subscriber already installed: the layer we just built is unused,
-        // so let the guard drop here (flushing and joining the idle worker)
-        // rather than handing back a guard for a writer nobody reads.
-        warnings.push("tracing subscriber already initialised".to_string());
-        return (warnings, None);
+        // Subscriber already installed (or some other install failure):
+        // the layer we just built is unused, so let the guard drop here
+        // (flushing and joining the idle worker) rather than handing back
+        // a guard for a writer nobody reads.
+        warnings.push(format!("tracing subscriber not installed: {e}"));
+        return LoggingInit {
+            warnings,
+            _guard: None,
+        };
     }
 
-    (warnings, Some(guard))
+    LoggingInit {
+        warnings,
+        _guard: Some(guard),
+    }
 }
 
 fn log_path() -> Option<PathBuf> {

@@ -74,22 +74,42 @@ fn repeated_invocations_append_without_truncation() {
     // handle.
     let home = TempDir::new().unwrap();
 
-    bin(&home).arg("version").output().expect("spawn 1");
-    let after_first = std::fs::read_to_string(log_file(&home))
-        .expect("read after first run")
+    let out1 = bin(&home).arg("version").output().expect("spawn 1");
+    assert!(out1.status.success(), "first run failed: {:?}", out1.status);
+    let first = std::fs::read_to_string(log_file(&home)).expect("read after first run");
+    let first_lines: Vec<String> = first
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .count();
+        .map(str::to_owned)
+        .collect();
+    assert!(!first_lines.is_empty(), "first run wrote no log lines");
 
-    bin(&home).arg("version").output().expect("spawn 2");
-    let after_second = std::fs::read_to_string(log_file(&home))
-        .expect("read after second run")
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .count();
-
+    let out2 = bin(&home).arg("version").output().expect("spawn 2");
     assert!(
-        after_second > after_first,
-        "second run did not append (first={after_first}, second={after_second})"
+        out2.status.success(),
+        "second run failed: {:?}",
+        out2.status
+    );
+    let second = std::fs::read_to_string(log_file(&home)).expect("read after second run");
+    let second_lines: Vec<String> = second
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    // Append, not truncate: the first run's lines must survive verbatim as
+    // a prefix of the file after the second run. A plain count check would
+    // also pass against a writer that truncated and happened to re-emit at
+    // least as many lines — comparing content rules that out.
+    assert!(
+        second_lines.len() > first_lines.len(),
+        "second run did not append (first={}, second={})",
+        first_lines.len(),
+        second_lines.len()
+    );
+    assert_eq!(
+        &second_lines[..first_lines.len()],
+        first_lines.as_slice(),
+        "first run's log lines were not preserved as a prefix — file was truncated/rewritten"
     );
 }
