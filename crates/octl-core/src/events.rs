@@ -94,7 +94,17 @@ pub fn recover_last_seq(events_path: &Path) -> Result<u64> {
 }
 
 fn parse_seq(line: &[u8], events_path: &Path) -> Result<u64> {
-    let v: Value = serde_json::from_slice(line).map_err(|e| Error::json(events_path, e))?;
+    // A newline-terminated complete line that won't parse is event-log
+    // corruption, not a transient JSON fault — classify it the same way
+    // `find_prior_with_key` does so both readers map to `CorruptEventLog`
+    // (and the CLI's `corrupt-event-log` exit class) for the same condition.
+    let v: Value = serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason: format!(
+            "last complete line is not valid JSON: {} [{e}]",
+            excerpt(line)
+        ),
+    })?;
     v.get("seq")
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::CorruptEventLog {
@@ -274,7 +284,7 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
 /// A prior event located by [`find_prior_with_key`]. Carries enough to let
 /// an idempotent-retry caller both return the recorded `seq` and verify the
 /// retry payload matches what was originally written.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PriorEvent {
     /// The recorded `seq` of the matching event.
     pub seq: u64,
@@ -285,10 +295,14 @@ pub struct PriorEvent {
 }
 
 /// Fields skimmed from every line to test for a match without ever
-/// deserializing the (potentially large) `data` payload.
+/// allocating the (potentially large) `data` payload. `seq` is optional and
+/// used only for best-effort error context — it is never a match key, so a
+/// line missing it must not change whether a `kind` + `idempotency_key`
+/// match is found.
 #[derive(Deserialize)]
 struct ProbeFields {
-    seq: u64,
+    #[serde(default)]
+    seq: Option<u64>,
     kind: String,
     idempotency_key: Option<String>,
 }
@@ -301,34 +315,47 @@ struct FullEventForReplay {
     data: Value,
 }
 
-/// Maximum number of characters from a malformed line to surface in a
+/// Maximum number of bytes from a malformed line to surface (escaped) in an
 /// [`Error::CorruptEventLog`] reason.
-const CORRUPT_LINE_EXCERPT: usize = 100;
+const CORRUPT_LINE_EXCERPT_BYTES: usize = 100;
 
 /// Stream-scan `events.jsonl` for the first event with matching `kind` and
 /// `idempotency_key`, returning a typed [`PriorEvent`] (or `None` when the
 /// log is missing or holds no such event).
 ///
-/// Only `kind` / `idempotency_key` / `seq` are deserialized while skimming,
-/// so the cost stays bounded in log size rather than log size × payload
-/// size; the full `node_id` + `data` payload is parsed only for the one
-/// matching line.
+/// The skim parses each line's envelope (`kind` / `idempotency_key` / `seq`)
+/// but never materializes `data` for non-matching lines; the full payload
+/// (`node_id` plus `data`) is deserialized only for the one matching line.
+/// JSON parsing still scans every byte of every line, so the scan is linear
+/// in total log bytes under the lock — there is no payload-skipping shortcut.
 ///
 /// # Torn-line policy
 ///
 /// [`recover_last_seq`] tolerates a crash-truncated *final* line that lacks
-/// a trailing newline. This scanner mirrors exactly that contract: a final
-/// line with no trailing `\n` that fails to parse is treated as an
-/// in-flight partial write and ignored. Any *interior* line that fails to
-/// parse (it is newline-terminated, so a later line follows) is a
-/// data-integrity fault — by the time this runs, `recover_last_seq` has
-/// already accepted the same file under the same lock — so it returns
+/// a trailing newline and discards it regardless of whether its bytes
+/// happen to form valid JSON. This scanner mirrors that exactly: a final
+/// line with no trailing `\n` is treated as an in-flight partial write and
+/// ignored — *before* any parse attempt — so the read (dedup) and write
+/// (recovery) paths never disagree about whether that tail is committed.
+///
+/// Any *interior* line that fails to parse (it is newline-terminated, so a
+/// later line follows) is a data-integrity fault, so it returns
 /// [`Error::CorruptEventLog`] rather than silently skipping a line that
 /// might carry the very key being looked up, which would let the caller
-/// double-append.
+/// double-append. This is strictly *more* conservative than
+/// `recover_last_seq` (which only inspects the last complete line) — a
+/// deliberate choice for the dedup read.
+///
+/// Bytes are read with [`std::io::BufRead::read_until`] rather than
+/// `read_line` so a torn tail that cuts a multi-byte UTF-8 sequence is
+/// tolerated as a partial write (matching `recover_last_seq`) instead of
+/// surfacing as an I/O error; a *newline-terminated* line containing
+/// invalid UTF-8 is reported as `CorruptEventLog`, not I/O.
 ///
 /// Caller must hold the run's [`RunLock`]; the scan is read-only over an
-/// append-only file.
+/// append-only file. The contract is documentation-only — a future
+/// higher-level mutation API (tracked as `core-append-and-apply-api`) is
+/// expected to fold this into a lock-holding type.
 pub fn find_prior_with_key(
     paths: &RunPaths,
     kind: &str,
@@ -341,51 +368,60 @@ pub fn find_prior_with_key(
         Err(e) => return Err(Error::io(&events_path, e)),
     };
     let mut reader = BufReader::new(f);
-    let mut buf = String::new();
+    let mut buf: Vec<u8> = Vec::new();
     let mut lineno: u64 = 0;
     // `seq` of the last successfully-parsed line, for best-effort error
     // context pointing at where corruption begins.
     let mut last_good_seq: u64 = 0;
     loop {
         buf.clear();
-        // `read_line` preserves the trailing `\n`, which `lines()` strips —
-        // that byte is exactly what distinguishes a torn final line from a
-        // newline-terminated interior line.
+        // `read_until(b'\n')` keeps the trailing `\n` (which `lines()`
+        // strips) — that byte distinguishes a torn final line from a
+        // newline-terminated interior line — and reads raw bytes so a torn
+        // tail with partial UTF-8 doesn't become an I/O error.
         let n = reader
-            .read_line(&mut buf)
+            .read_until(b'\n', &mut buf)
             .map_err(|e| Error::io(&events_path, e))?;
         if n == 0 {
             break;
         }
         lineno += 1;
-        let had_newline = buf.ends_with('\n');
-        let line = buf.trim_end_matches(['\r', '\n']);
+        let had_newline = buf.last() == Some(&b'\n');
+        let line = trim_line_end(&buf);
         if line.is_empty() {
             continue;
         }
-        let probe: ProbeFields = match serde_json::from_str(line) {
-            Ok(p) => p,
-            // Torn final line (no trailing newline): a crash mid-append.
-            // EOF follows on the next `read_line`, so just stop.
-            Err(_) if !had_newline => break,
-            // Newline-terminated line that won't parse: interior corruption.
-            Err(e) => {
-                return Err(Error::CorruptEventLog {
-                    path: events_path.clone(),
-                    reason: format!(
-                        "line {lineno} is not valid JSON (last good seq {last_good_seq}): \
-                         {} [{e}]",
-                        excerpt(line),
-                    ),
-                });
-            }
-        };
-        last_good_seq = probe.seq;
+        // Mirror `recover_last_seq`: a final line lacking a trailing newline
+        // is an uncommitted partial write, discarded WITHOUT parsing — even
+        // if its bytes form valid JSON. Parsing it could otherwise return a
+        // "match" for an event recovery considers unwritten, double-counting
+        // the seq or skipping a real append.
+        if !had_newline {
+            break;
+        }
+        let probe: ProbeFields =
+            serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+                path: events_path.clone(),
+                reason: format!(
+                    "line {lineno} is not a valid event envelope (last good seq {last_good_seq}): \
+                 {} [{e}]",
+                    excerpt(line),
+                ),
+            })?;
+        if let Some(seq) = probe.seq {
+            last_good_seq = seq;
+        }
         if probe.kind != kind || probe.idempotency_key.as_deref() != Some(idempotency_key) {
             continue;
         }
         let full: FullEventForReplay =
-            serde_json::from_str(line).map_err(|e| Error::json(&events_path, e))?;
+            serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+                path: events_path.clone(),
+                reason: format!(
+                    "line {lineno} matched idempotency key but is not a replayable event: {} [{e}]",
+                    excerpt(line),
+                ),
+            })?;
         return Ok(Some(PriorEvent {
             seq: full.seq,
             node_id: full.node_id,
@@ -395,17 +431,31 @@ pub fn find_prior_with_key(
     Ok(None)
 }
 
-/// Truncate a log line to a bounded, char-boundary-safe prefix for
-/// inclusion in an error message.
-fn excerpt(line: &str) -> String {
-    if line.len() <= CORRUPT_LINE_EXCERPT {
-        return line.to_string();
-    }
-    let mut end = CORRUPT_LINE_EXCERPT;
-    while !line.is_char_boundary(end) {
+/// Strip a single trailing line terminator (`\n`, optionally preceded by
+/// `\r`) from a raw line. Unlike `trim_end_matches`, this removes exactly
+/// one terminator so interior/leading bytes are never altered.
+fn trim_line_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    if end > 0 && buf[end - 1] == b'\n' {
         end -= 1;
+        if end > 0 && buf[end - 1] == b'\r' {
+            end -= 1;
+        }
     }
-    format!("{}…", &line[..end])
+    &buf[..end]
+}
+
+/// Render a bounded, escaped prefix of a malformed log line for inclusion
+/// in an error message. Bytes are lossily decoded (a torn multi-byte tail
+/// becomes the replacement char) and control characters are escaped so an
+/// excerpt can't inject newlines or ANSI sequences into CLI output.
+fn excerpt(line: &[u8]) -> String {
+    let shown = &line[..line.len().min(CORRUPT_LINE_EXCERPT_BYTES)];
+    let mut out: String = String::from_utf8_lossy(shown).escape_debug().to_string();
+    if line.len() > CORRUPT_LINE_EXCERPT_BYTES {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -513,6 +563,115 @@ mod tests {
         assert!(find_prior_with_key(&paths2, "node.report", "k1")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn find_prior_with_key_ignores_valid_json_final_line_without_newline() {
+        // The dangerous case: a crash landed a COMPLETE, valid-JSON event
+        // but the trailing newline never flushed. `recover_last_seq`
+        // discards any newline-less tail, so it considers this event
+        // unwritten (returns 0). The dedup scan MUST agree and return None
+        // — otherwise it would report "already appended", the caller skips
+        // the append, and the event is lost / the seq double-counts.
+        let tmp = TempDir::new().unwrap();
+        let line =
+            br#"{"seq":1,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{}}"#;
+        let paths = paths_with_events(&tmp, line);
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 0);
+        assert!(
+            find_prior_with_key(&paths, "node.report", "k1")
+                .unwrap()
+                .is_none(),
+            "torn tail must be ignored even when it parses as valid JSON"
+        );
+    }
+
+    #[test]
+    fn find_prior_with_key_skips_nonmatching_line_missing_seq() {
+        // `seq` is not a match key, so a NON-matching envelope that happens
+        // to lack `seq` must be skimmed past, not treated as corruption that
+        // aborts the scan before a later match. (The pre-lift scanner's
+        // probe didn't require `seq`; making it required would have been a
+        // regression that hid a real key behind an unrelated seq-less line.)
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"kind":"node.status","idempotency_key":"other","node_id":"n-1","data":{}}"#,
+            "\n",
+            r#"{"seq":2,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{"ok":true}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let got = find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .expect("match after a seq-less non-matching line");
+        assert_eq!(got.seq, 2);
+        assert_eq!(got.node_id.as_deref(), Some("n-1"));
+    }
+
+    #[test]
+    fn find_prior_with_key_matched_line_bad_payload_is_corrupt_log() {
+        // A line that skims fine (kind + key match) but whose full payload
+        // is malformed (`node_id` is a number, not a string) is event-log
+        // corruption — it must surface as CorruptEventLog (exit 1), not a
+        // generic JSON/io error (exit 2).
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"seq":1,"kind":"node.report","idempotency_key":"k1","node_id":42,"data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let err = find_prior_with_key(&paths, "node.report", "k1").unwrap_err();
+        assert!(
+            matches!(err, Error::CorruptEventLog { .. }),
+            "expected CorruptEventLog, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn find_prior_with_key_handles_crlf_line_endings() {
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"seq":1,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{}}"#,
+            "\r\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        let got = find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .expect("CRLF-terminated match");
+        assert_eq!(got.seq, 1);
+    }
+
+    #[test]
+    fn find_prior_with_key_tolerates_partial_utf8_torn_tail() {
+        // A crash can cut a multi-byte UTF-8 sequence mid-character. With
+        // byte-oriented reading this torn (newline-less) tail is tolerated
+        // like any other partial write, not surfaced as an I/O error.
+        let tmp = TempDir::new().unwrap();
+        let mut log = Vec::new();
+        log.extend_from_slice(
+            br#"{"seq":1,"kind":"node.report","idempotency_key":"k1","node_id":"n-1","data":{}}"#,
+        );
+        log.push(b'\n');
+        log.extend_from_slice(&[0xF0, 0x9F]); // start of a 4-byte char, truncated
+        let paths = paths_with_events(&tmp, &log);
+        let got = find_prior_with_key(&paths, "node.report", "k1")
+            .unwrap()
+            .expect("match before the partial-UTF8 tail");
+        assert_eq!(got.seq, 1);
+    }
+
+    #[test]
+    fn recover_last_seq_newline_terminated_garbage_is_corrupt_log() {
+        // Consistency guard with find_prior_with_key: a newline-terminated
+        // final line that isn't valid JSON is CorruptEventLog from BOTH
+        // readers, so the CLI maps both to the same corrupt-event-log exit.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, b"{not json at all\n");
+        let err = recover_last_seq(&paths.events()).unwrap_err();
+        assert!(
+            matches!(err, Error::CorruptEventLog { .. }),
+            "expected CorruptEventLog, got {err:?}"
+        );
     }
 
     #[test]

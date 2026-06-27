@@ -784,6 +784,43 @@ fn idempotency_key_conflict_on_payload_mismatch() {
 }
 
 #[test]
+fn idempotency_scan_over_corrupt_interior_line_is_corrupt_event_log() {
+    // A newline-terminated garbage line in events.jsonl is interior
+    // corruption. The `--idempotency-key` dedup scan must surface it as a
+    // `corrupt-event-log` user error (exit 1), not silently skip it (which
+    // could hide a matching key and double-append) and not collapse it into
+    // the generic `io_error` system class (exit 2).
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let evp = events_path(&home, &run_id);
+
+    // Inject a malformed, newline-terminated line after the bootstrap event.
+    let mut f = OpenOptions::new().append(true).open(&evp).expect("open");
+    f.write_all(b"{not a valid event line\n").unwrap();
+    f.sync_all().unwrap();
+    drop(f);
+
+    let p = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    let (code, err) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        p.to_str().unwrap(),
+        "--idempotency-key",
+        "k1",
+    ]));
+    assert_eq!(code, 1, "expected exit 1; envelope: {err}");
+    assert_eq!(err["error"]["code"], "corrupt-event-log");
+}
+
+#[test]
 fn node_heartbeat_kind_is_rejected() {
     // node.heartbeat is design.md §7.5 "future opt-in" and not in the
     // closed MVP set — the reducer has no case for it.
