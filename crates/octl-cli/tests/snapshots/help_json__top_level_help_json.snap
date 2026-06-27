@@ -5,7 +5,7 @@ expression: value
 {
   "schema_version": 1,
   "data": {
-    "schema_version_help": 1,
+    "schema_version_help": 2,
     "command": "orchestratectl",
     "about": "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
     "aliases": [],
@@ -14,20 +14,36 @@ expression: value
     "version": "[VERSION]",
     "flags": [
       {
+        "name": "help",
         "long": "help",
         "short": "h",
+        "long_aliases": [],
+        "short_aliases": [],
         "help": "Print help",
         "value_names": [],
         "takes_value": false,
         "multiple": false,
         "required": false,
+        "is_global": false,
         "hidden": false,
         "deprecated": false,
         "defaults": [],
-        "accepted_values": []
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
       },
       {
+        "name": "output",
         "long": "output",
+        "long_aliases": [],
+        "short_aliases": [],
         "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
         "value_names": [
           "FMT|PATH"
@@ -35,12 +51,26 @@ expression: value
         "takes_value": true,
         "multiple": false,
         "required": false,
+        "is_global": true,
         "hidden": false,
         "deprecated": false,
         "defaults": [
           "jsonl"
         ],
-        "accepted_values": []
+        "accepted_values": [
+          "json",
+          "jsonl",
+          "text"
+        ],
+        "accepts_file_paths": true,
+        "conflicts_with": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
       }
     ],
     "positionals": [],
@@ -53,20 +83,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -74,12 +120,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -92,20 +152,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -113,15 +189,32 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "status",
                 "long": "status",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Filter by status (`open` or `resolved`). When omitted, all are listed",
                 "value_names": [
                   "STATUS"
@@ -129,13 +222,23 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
                 "accepted_values": [
                   "open",
                   "resolved"
-                ]
+                ],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -148,6 +251,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -161,7 +266,10 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "choice",
                 "long": "choice",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Resolution choice (free-form string from the agent operator)",
                 "value_names": [
                   "CHOICE"
@@ -169,40 +277,79 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print the would-be event and exit 0 without touching the filesystem",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Dedup token for retries (e.g. supervisor crash + replay)",
                 "value_names": [
                   "IDEMPOTENCY_KEY"
@@ -210,13 +357,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "note",
                 "long": "note",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Optional human-readable note recorded with the resolution",
                 "value_names": [
                   "NOTE"
@@ -224,13 +384,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -238,12 +411,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -256,6 +443,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -267,6 +456,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -280,20 +471,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -301,12 +508,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -319,6 +540,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -330,6 +553,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -345,48 +570,90 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "dry_run",
             "long": "dry-run",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "With `--fix`, print the planned fixes via the §11 planning envelope and apply nothing",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "false"
             ],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "fix",
             "long": "fix",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Apply the safe subset of `fix_suggestion`s after running the checks. Opt-in per invocation; never the default (§18)",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "false"
             ],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -394,12 +661,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -413,20 +694,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -434,12 +731,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -452,21 +763,37 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print the would-be event + projection plan and exit 0 without touching the filesystem",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "from_file",
                 "long": "from-file",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "JSON file containing the event's `data` payload",
                 "value_names": [
                   "FROM_FILE"
@@ -474,26 +801,52 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Dedup token — a repeat call with the same key returns the existing event's `seq` instead of appending again",
                 "value_names": [
                   "IDEMPOTENCY_KEY"
@@ -501,13 +854,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "kind",
                 "long": "kind",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Event kind (see design.md §1.4 for the closed MVP set)",
                 "value_names": [
                   "KIND"
@@ -515,13 +881,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "node_id",
                 "long": "node-id",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Node-id for node-scoped kinds (`node.*`, `child.spawned`)",
                 "value_names": [
                   "NODE_ID"
@@ -529,13 +908,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -543,12 +935,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -562,6 +968,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -576,21 +984,37 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "follow",
                 "long": "follow",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Keep polling for new events after reaching EOF",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "from_seq",
                 "long": "from-seq",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Emit only events with `seq >= from_seq` (default 0 = all)",
                 "value_names": [
                   "FROM_SEQ"
@@ -598,28 +1022,54 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "0"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help (see more with '--help')",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -627,15 +1077,32 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "to_file",
                 "long": "to-file",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Write the stream to this file instead of stdout. Truncated on open without `--follow`, append-mode with `--follow`. Must not point at the run's own `events.jsonl`. The format is the global `--output` selection (text or jsonl)",
                 "value_names": [
                   "TO_FILE"
@@ -643,10 +1110,20 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -659,6 +1136,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -674,20 +1153,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -695,12 +1190,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -713,20 +1222,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -734,15 +1259,32 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "status",
                 "long": "status",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Filter by status (e.g. `running`, `done`)",
                 "value_names": [
                   "STATUS"
@@ -750,10 +1292,20 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -766,6 +1318,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -779,21 +1333,37 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Validate the payload and exit 0 without writing anything to the run's events.jsonl or projection files",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "from_file",
                 "long": "from-file",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "JSON file containing the §7.3 report payload",
                 "value_names": [
                   "FROM_FILE"
@@ -801,26 +1371,52 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Dedup token — a repeat call with the same key returns the existing event's `seq` instead of appending again",
                 "value_names": [
                   "IDEMPOTENCY_KEY"
@@ -828,13 +1424,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -842,12 +1451,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -860,6 +1483,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -871,6 +1496,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -884,20 +1511,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -905,12 +1548,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -923,6 +1580,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -934,6 +1593,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -949,20 +1610,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -970,12 +1647,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -988,33 +1679,62 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "note",
                 "long": "note",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "NOTE"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1022,12 +1742,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1040,6 +1774,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1053,52 +1789,95 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "IDEMPOTENCY_KEY"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "kind",
                 "long": "kind",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "KIND"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
@@ -1111,10 +1890,22 @@ expression: value
                   "make-skill",
                   "fan-out",
                   "bugfix"
-                ]
+                ],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "layout",
                 "long": "layout",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Workmux layout name; forwarded to create.sh as `-l <name>`",
                 "value_names": [
                   "LAYOUT"
@@ -1122,27 +1913,53 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "no_hooks",
                 "long": "no-hooks",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Skip workmux post-create hooks; forwarded to create.sh",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1150,41 +1967,84 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "parent_node_id",
                 "long": "parent-node-id",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "PARENT_NODE_ID"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "parent_run_id",
                 "long": "parent-run-id",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "PARENT_RUN_ID"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "prompt_file",
                 "long": "prompt-file",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to create.sh",
                 "value_names": [
                   "PROMPT_FILE"
@@ -1192,76 +2052,153 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "skip_materialize",
                 "long": "skip-materialize",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "**Test-only.** Skip the create.sh shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": true,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "source_branch",
                 "long": "source-branch",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "SOURCE_BRANCH"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "source_repo",
                 "long": "source-repo",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "SOURCE_REPO"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "task",
                 "long": "task",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "TASK"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [
+                  "prompt_file"
+                ],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "title",
                 "long": "title",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "TITLE"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": true,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [],
@@ -1275,33 +2212,62 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "kind",
                 "long": "kind",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "KIND"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1309,25 +2275,52 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "status",
                 "long": "status",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "STATUS"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [],
@@ -1341,20 +2334,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "max_iter",
                 "long": "max-iter",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Pass `--max-iter <n>` to the spawned supervisor (test-only)",
                 "value_names": [
                   "MAX_ITER"
@@ -1362,27 +2371,53 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": true,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "once",
                 "long": "once",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Pass `--once` to the spawned supervisor (test-only)",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": true,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1390,12 +2425,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1408,6 +2457,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1421,20 +2472,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1442,12 +2509,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1460,6 +2541,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1475,20 +2558,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -1496,12 +2595,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -1514,7 +2627,10 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "agent",
                 "long": "agent",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Which agent runtime to install for",
                 "value_names": [
                   "AGENT"
@@ -1522,6 +2638,7 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
@@ -1531,10 +2648,22 @@ expression: value
                   "claude",
                   "codex",
                   "all"
-                ]
+                ],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "dest",
                 "long": "dest",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Override the destination path. Incompatible with `--agent all` and with the install-all (no-name) form",
                 "value_names": [
                   "DEST"
@@ -1542,40 +2671,79 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "force",
                 "long": "force",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Overwrite existing files at the destination(s)",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1583,12 +2751,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1602,6 +2784,8 @@ expression: value
                 "required": false,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1615,20 +2799,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1636,12 +2836,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [],
@@ -1655,20 +2869,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1676,12 +2906,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1695,6 +2939,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1708,20 +2954,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1729,12 +2991,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1748,6 +3024,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1763,20 +3041,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -1784,12 +3078,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],
@@ -1802,33 +3110,62 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Dedupes the *local* `spinoff.approved` event-log write only. Does NOT prevent a duplicate `issuectl new` call on retry — for retry-safe materialization, pass `--issue-slug` so the `issuectl` call is skipped entirely",
                 "value_names": [
                   "IDEMPOTENCY_KEY"
@@ -1836,13 +3173,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "issue_slug",
                 "long": "issue-slug",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Caller asserts the issue is already materialized at this slug; skips the `issuectl new` call",
                 "value_names": [
                   "ISSUE_SLUG"
@@ -1850,13 +3200,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1864,12 +3227,26 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1882,6 +3259,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -1893,6 +3272,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1906,20 +3287,36 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help (see more with '--help')",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -1927,15 +3324,32 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "status",
                 "long": "status",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Filter by status (`pending`, `approved`, `rejected`)",
                 "value_names": [
                   "STATUS"
@@ -1943,6 +3357,7 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
@@ -1950,7 +3365,16 @@ expression: value
                   "pending",
                   "approved",
                   "rejected"
-                ]
+                ],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -1963,6 +3387,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -1976,46 +3402,88 @@ expression: value
             "deprecated": false,
             "flags": [
               {
+                "name": "dry_run",
                 "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "false"
                 ],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "help",
                 "long": "help",
                 "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Print help",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "idempotency_key",
                 "long": "idempotency-key",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "IDEMPOTENCY_KEY"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "output",
                 "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
                 "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
                 "value_names": [
                   "FMT|PATH"
@@ -2023,25 +3491,52 @@ expression: value
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": true,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
                   "jsonl"
                 ],
-                "accepted_values": []
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               },
               {
+                "name": "reason",
                 "long": "reason",
+                "long_aliases": [],
+                "short_aliases": [],
                 "value_names": [
                   "REASON"
                 ],
                 "takes_value": true,
                 "multiple": false,
                 "required": false,
+                "is_global": false,
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
-                "accepted_values": []
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
               }
             ],
             "positionals": [
@@ -2054,6 +3549,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               },
               {
@@ -2065,6 +3562,8 @@ expression: value
                 "required": true,
                 "multiple": false,
                 "accepted_values": [],
+                "accepts_file_paths": false,
+                "defaults": [],
                 "deprecated": false
               }
             ],
@@ -2080,20 +3579,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "max_iter",
             "long": "max-iter",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Tick at most this many iterations, then exit cleanly. **Test-only escape hatch — never set in production.** Note: `--once` takes precedence — when both are set the loop still exits after the first tick, regardless of `--max-iter`",
             "value_names": [
               "MAX_ITER"
@@ -2101,27 +3616,53 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "once",
             "long": "once",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Tick the watchdog + tail loops exactly once, then exit cleanly. **Test-only escape hatch — never set in production.**",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "false"
             ],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -2129,12 +3670,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [
@@ -2148,6 +3703,8 @@ expression: value
             "required": true,
             "multiple": false,
             "accepted_values": [],
+            "accepts_file_paths": false,
+            "defaults": [],
             "deprecated": false
           }
         ],
@@ -2161,20 +3718,36 @@ expression: value
         "deprecated": false,
         "flags": [
           {
+            "name": "help",
             "long": "help",
             "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Print help",
             "value_names": [],
             "takes_value": false,
             "multiple": false,
             "required": false,
+            "is_global": false,
             "hidden": false,
             "deprecated": false,
             "defaults": [],
-            "accepted_values": []
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           },
           {
+            "name": "output",
             "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
             "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
             "value_names": [
               "FMT|PATH"
@@ -2182,12 +3755,26 @@ expression: value
             "takes_value": true,
             "multiple": false,
             "required": false,
+            "is_global": true,
             "hidden": false,
             "deprecated": false,
             "defaults": [
               "jsonl"
             ],
-            "accepted_values": []
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
           }
         ],
         "positionals": [],

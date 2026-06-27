@@ -1,9 +1,9 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: task
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, help-json]

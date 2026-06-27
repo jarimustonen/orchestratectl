@@ -14,10 +14,12 @@
 //! selection (`json` pretty vs `jsonl` single-line), and file routing as
 //! every other command.
 //!
-//! Stability contract (snapshot-tested): flags are sorted by long name,
-//! positionals by index, subcommands by name. Field renames/removals are
-//! breaking changes — bump `SCHEMA_VERSION_HELP`.
+//! Stability contract (snapshot-tested): flags are sorted by `name` (the
+//! clap arg id), positionals by index, subcommands by name; the metadata
+//! lists (`long_aliases`, `short_aliases`, `conflicts_with`) are sorted.
+//! Field renames/removals are breaking changes — bump `SCHEMA_VERSION_HELP`.
 
+use clap::builder::ValueHint;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, Command};
 use serde::Serialize;
@@ -27,7 +29,13 @@ use crate::output::{OutputFormat, OutputSpec};
 /// Schema version of the help payload itself (independent of the
 /// envelope's `schema_version` and of the state-schema version). Bump on
 /// any breaking change to the shapes in this module.
-pub const SCHEMA_VERSION_HELP: u32 = 1;
+///
+/// - v1: initial structured-help projection.
+/// - v2: `name`/optional `long`, alias lists, `is_global`, `conflicts_with`,
+///   `arity`, `help_heading`, `accepts_file_paths`, custom-parser
+///   `accepted_values`, positional `env`/`defaults`, and the
+///   `deprecated`/`deprecation_note` convention on every node.
+pub const SCHEMA_VERSION_HELP: u32 = 2;
 
 /// The `data` body of a `--help --output json|jsonl` response.
 #[derive(Debug, Serialize)]
@@ -65,7 +73,7 @@ pub struct CommandNode {
     /// Command version, when one is set (typically only the root).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Optional (named) flags, sorted by long name.
+    /// Named flags, sorted by `name` (the clap arg id).
     pub flags: Vec<FlagInfo>,
     /// Positional arguments, sorted by position.
     pub positionals: Vec<PositionalInfo>,
@@ -73,21 +81,29 @@ pub struct CommandNode {
     pub subcommands: Vec<CommandNode>,
 }
 
-/// A named (`--long`) flag.
+/// A named flag.
 ///
-/// The several `bool` fields each mirror an independent piece of clap
-/// metadata (takes-value / multiple / required / hidden / deprecated);
-/// collapsing them into an enum would lose the orthogonality and the
-/// stable JSON field names agents read, so the pedantic
-/// `struct_excessive_bools` lint is allowed here.
+/// The many `bool` fields each mirror an independent piece of clap metadata
+/// (takes-value / multiple / required / global / hidden / deprecated /
+/// accepts-file-paths); collapsing them into an enum would lose the
+/// orthogonality and the stable JSON field names agents read, so the
+/// pedantic `struct_excessive_bools` lint is allowed here.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct FlagInfo {
-    /// Long name without the leading `--`.
-    pub long: String,
+    /// Stable clap arg id. Always present (even for short-only flags), and
+    /// the identifier `conflicts_with` entries refer to.
+    pub name: String,
+    /// Long name without the leading `--`, when the flag has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long: Option<String>,
     /// Short name without the leading `-`, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short: Option<String>,
+    /// Additional long spellings (visible and hidden), sorted.
+    pub long_aliases: Vec<String>,
+    /// Additional short spellings (visible and hidden), sorted.
+    pub short_aliases: Vec<String>,
     /// One-line help text, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
@@ -99,6 +115,8 @@ pub struct FlagInfo {
     pub multiple: bool,
     /// Whether the flag is required.
     pub required: bool,
+    /// Whether the flag is global (propagated to every subcommand).
+    pub is_global: bool,
     /// Whether the flag is hidden from the human text help.
     pub hidden: bool,
     /// Whether the flag is deprecated. clap 4.6 exposes no first-class
@@ -113,12 +131,46 @@ pub struct FlagInfo {
     pub defaults: Vec<String>,
     /// Accepted values (the enum) when the flag is value-restricted.
     pub accepted_values: Vec<String>,
+    /// Whether the flag accepts a filesystem path as its value (§13) — by
+    /// clap value-hint, or registered for a custom parser (`--output`).
+    pub accepts_file_paths: bool,
+    /// Ids of flags this one is mutually exclusive with (clap `conflicts_with`),
+    /// sorted. Reflects declared conflicts; may be one-directional.
+    pub conflicts_with: Vec<String>,
+    /// The help section heading this flag is grouped under, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help_heading: Option<String>,
+    /// Value-count / repetition shape.
+    pub arity: Arity,
     /// Environment variable that supplies this flag (per §8), when mapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
 }
 
+/// Value-count and repetition shape of a value-taking arg.
+#[derive(Debug, Serialize)]
+pub struct Arity {
+    /// Minimum number of values per occurrence (0 for boolean flags).
+    pub min: usize,
+    /// Maximum number of values per occurrence.
+    pub max: usize,
+    /// Whether the arg may appear multiple times (`Append` / `Count`).
+    pub repeated: bool,
+    /// Whether a single occurrence may carry more than one value.
+    pub multi_value: bool,
+    /// Delimiter splitting a single value into many, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_delimiter: Option<String>,
+    /// Whether the value must be attached with `=` (`--flag=value`).
+    pub require_equals: bool,
+}
+
 /// A positional argument.
+///
+/// Several orthogonal `bool` markers (required / multiple / accepts-file-paths
+/// / deprecated) earn the same `struct_excessive_bools` allowance as
+/// [`FlagInfo`] — each is an independent, stably-named JSON field.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct PositionalInfo {
     /// Argument id.
@@ -136,6 +188,13 @@ pub struct PositionalInfo {
     pub multiple: bool,
     /// Accepted values (the enum) when the argument is value-restricted.
     pub accepted_values: Vec<String>,
+    /// Whether the argument accepts a filesystem path as its value (§13).
+    pub accepts_file_paths: bool,
+    /// Default value(s) applied when the argument is omitted.
+    pub defaults: Vec<String>,
+    /// Environment variable that supplies this argument (per §8), when mapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
     /// Whether the positional is deprecated (per the `[deprecated]`
     /// help-text convention — see [`parse_deprecation`]).
     pub deprecated: bool,
@@ -277,7 +336,7 @@ pub fn navigate_path<'a>(root: &'a Command, names: &[String]) -> (&'a Command, S
 /// Project a built [`Command`] (and its descendants) onto [`HelpData`].
 ///
 /// `command_path` is the full invocation path of `cmd` (from
-/// [`navigate`]); child paths are derived by appending the child name.
+/// [`navigate_path`]); child paths are derived by appending the child name.
 #[must_use]
 pub fn build_help(cmd: &Command, command_path: &str) -> HelpData {
     HelpData {
@@ -290,9 +349,9 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
     let mut flags: Vec<FlagInfo> = cmd
         .get_arguments()
         .filter(|a| !a.is_positional())
-        .filter_map(build_flag)
+        .map(|a| build_flag(cmd, a))
         .collect();
-    flags.sort_by(|a, b| a.long.cmp(&b.long));
+    flags.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut positionals: Vec<PositionalInfo> =
         cmd.get_positionals().map(build_positional).collect();
@@ -333,16 +392,19 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
     }
 }
 
-/// Build a [`FlagInfo`], or `None` for flags without a stable long name
-/// (per issue default: such flags are skipped from JSON output).
-fn build_flag(arg: &Arg) -> Option<FlagInfo> {
-    let long = arg.get_long()?.to_string();
+/// Build a [`FlagInfo`]. Every non-positional arg has a long or short name,
+/// so (unlike v1) short-only flags are included with `name` falling back to
+/// the clap id. `cmd` is the owning command, needed for `conflicts_with`.
+fn build_flag(cmd: &Command, arg: &Arg) -> FlagInfo {
     let action = arg.get_action();
     let takes_value = takes_value(action);
     let dep = parse_deprecation(arg.get_help().map(ToString::to_string));
-    Some(FlagInfo {
-        long,
+    FlagInfo {
+        name: arg.get_id().as_str().to_string(),
+        long: arg.get_long().map(ToString::to_string),
         short: arg.get_short().map(|c| c.to_string()),
+        long_aliases: long_aliases(arg),
+        short_aliases: short_aliases(arg),
         help: dep.text,
         // Boolean flags carry a derived value-name placeholder in clap;
         // suppress it so agents don't read a value where none is taken.
@@ -354,13 +416,18 @@ fn build_flag(arg: &Arg) -> Option<FlagInfo> {
         takes_value,
         multiple: multiple(arg, action),
         required: arg.is_required_set(),
+        is_global: arg.is_global_set(),
         hidden: arg.is_hide_set(),
         deprecated: dep.deprecated,
         deprecation_note: dep.note,
         defaults: default_values(arg),
         accepted_values: accepted_values(arg),
+        accepts_file_paths: accepts_file_paths(arg),
+        conflicts_with: conflicts_with(cmd, arg),
+        help_heading: arg.get_help_heading().map(ToString::to_string),
+        arity: arity(arg, action),
         env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
-    })
+    }
 }
 
 fn build_positional(arg: &Arg) -> PositionalInfo {
@@ -378,6 +445,9 @@ fn build_positional(arg: &Arg) -> PositionalInfo {
         required: arg.is_required_set(),
         multiple: multiple(arg, arg.get_action()),
         accepted_values: accepted_values(arg),
+        accepts_file_paths: accepts_file_paths(arg),
+        defaults: default_values(arg),
+        env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
         deprecated: dep.deprecated,
         deprecation_note: dep.note,
     }
@@ -398,13 +468,102 @@ fn default_values(arg: &Arg) -> Vec<String> {
         .collect()
 }
 
-/// Accepted (enum) values, excluding any the author hid from help.
+/// Accepted (enum) values, excluding any the author hid from help. Order is
+/// the author's declaration order (semantically meaningful, deterministic),
+/// so this list is *not* re-sorted. Falls back to a registered set for
+/// custom value-parsers (see [`custom_accepted_values`]).
 fn accepted_values(arg: &Arg) -> Vec<String> {
-    arg.get_possible_values()
+    let from_parser: Vec<String> = arg
+        .get_possible_values()
         .into_iter()
         .filter(|p| !p.is_hide_set())
         .map(|p| p.get_name().to_string())
-        .collect()
+        .collect();
+    if from_parser.is_empty() {
+        if let Some(custom) = custom_accepted_values(arg) {
+            return custom;
+        }
+    }
+    from_parser
+}
+
+/// Accepted-value set for args whose custom `value_parser` hides its enum
+/// from clap (so [`Arg::get_possible_values`] is empty). Registered by id;
+/// the sole entry today is the global `--output` (§13). Values are sorted —
+/// unlike a derived enum, they carry no declaration order.
+fn custom_accepted_values(arg: &Arg) -> Option<Vec<String>> {
+    match arg.get_id().as_str() {
+        OUTPUT_ARG_ID => Some(vec![
+            "json".to_string(),
+            "jsonl".to_string(),
+            "text".to_string(),
+        ]),
+        _ => None,
+    }
+}
+
+/// All additional long spellings (visible and hidden), sorted for stability.
+fn long_aliases(arg: &Arg) -> Vec<String> {
+    let mut v: Vec<String> = arg
+        .get_all_aliases()
+        .unwrap_or_default()
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+    v.sort();
+    v
+}
+
+/// All additional short spellings (visible and hidden), sorted.
+fn short_aliases(arg: &Arg) -> Vec<String> {
+    let mut v: Vec<String> = arg
+        .get_all_short_aliases()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Ids of the flags `arg` is mutually exclusive with, sorted and de-duped.
+/// Reflects clap's declared conflicts (`conflicts_with`); clap stores them
+/// on the declaring side, so the relation may be one-directional.
+fn conflicts_with(cmd: &Command, arg: &Arg) -> Vec<String> {
+    let mut v: Vec<String> = cmd
+        .get_arg_conflicts_with(arg)
+        .into_iter()
+        .map(|a| a.get_id().as_str().to_string())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Whether `arg` accepts a filesystem path as its value (§13). Derived from
+/// clap's value hint (PathBuf-typed args default to [`ValueHint::AnyPath`]),
+/// plus an explicit allowance for the custom-parsed `--output`.
+fn accepts_file_paths(arg: &Arg) -> bool {
+    if arg.get_id().as_str() == OUTPUT_ARG_ID {
+        return true;
+    }
+    matches!(
+        arg.get_value_hint(),
+        ValueHint::AnyPath | ValueHint::FilePath | ValueHint::DirPath | ValueHint::ExecutablePath
+    )
+}
+
+/// Value-count / repetition shape of `arg`.
+fn arity(arg: &Arg, action: &ArgAction) -> Arity {
+    let range = arg.get_num_args();
+    Arity {
+        min: range.map_or(0, |r| r.min_values()),
+        max: range.map_or(0, |r| r.max_values()),
+        repeated: matches!(action, ArgAction::Append | ArgAction::Count),
+        multi_value: range.is_some_and(|r| r.max_values() > 1),
+        value_delimiter: arg.get_value_delimiter().map(|c| c.to_string()),
+        require_equals: arg.is_require_equals_set(),
+    }
 }
 
 /// Result of applying the [`parse_deprecation`] help-text convention.
@@ -641,10 +800,34 @@ mod tests {
             .get_arguments()
             .find(|a| a.get_id() == "legacy")
             .unwrap();
-        let flag = build_flag(arg).expect("named flag");
+        let flag = build_flag(&cmd, arg);
         assert!(flag.deprecated);
         assert_eq!(flag.deprecation_note.as_deref(), Some("use --modern"));
         assert_eq!(flag.help.as_deref(), Some("Old toggle."));
+    }
+
+    #[test]
+    fn short_only_flag_is_included_with_id_fallback() {
+        // v2 reconsideration: short-only flags are no longer skipped — they
+        // appear with `name` = clap id and no `long`.
+        let mut cmd = Command::new("tool").arg(
+            Arg::new("verbose")
+                .short('v')
+                .action(ArgAction::Count)
+                .help("Increase verbosity."),
+        );
+        cmd.build();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "verbose")
+            .unwrap();
+        let flag = build_flag(&cmd, arg);
+        assert_eq!(flag.name, "verbose");
+        assert_eq!(flag.long, None);
+        assert_eq!(flag.short.as_deref(), Some("v"));
+        // `Count` is a repeatable, valueless action.
+        assert!(flag.arity.repeated);
+        assert!(!flag.takes_value);
     }
 
     #[test]

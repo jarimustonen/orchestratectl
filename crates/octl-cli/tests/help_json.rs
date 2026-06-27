@@ -53,7 +53,7 @@ fn help_stdout(args: &[&str]) -> String {
     let s = String::from_utf8(out).expect("stdout is utf8");
     let v: Value = serde_json::from_str(s.trim()).expect("help stdout is a JSON envelope");
     assert_eq!(v["schema_version"], 1, "envelope schema: {v}");
-    assert_eq!(v["data"]["schema_version_help"], 1, "help schema: {v}");
+    assert_eq!(v["data"]["schema_version_help"], 2, "help schema: {v}");
     assert!(v.get("error").is_none(), "help envelope carries error: {v}");
     s
 }
@@ -94,20 +94,63 @@ fn noun_only_help_json_lists_verbs() {
 // ----------------------------------------------------------------------
 
 #[test]
-fn flags_are_sorted_by_long_name() {
-    // Success criterion: `… | jq '.data.flags[].long'` is sorted.
+fn flags_are_sorted_by_name() {
+    // Stability contract (v2): flags are sorted by `name` (the clap id),
+    // which is always present even for short-only flags.
     let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
     let v: Value = serde_json::from_str(stdout.trim()).expect("json");
-    let longs: Vec<String> = v["data"]["flags"]
+    let names: Vec<String> = v["data"]["flags"]
         .as_array()
         .expect("flags array")
         .iter()
-        .map(|f| f["long"].as_str().expect("long is string").to_string())
+        .map(|f| f["name"].as_str().expect("name is string").to_string())
         .collect();
-    let mut sorted = longs.clone();
+    let mut sorted = names.clone();
     sorted.sort();
-    assert_eq!(longs, sorted, "flags must be sorted by long name");
-    assert!(!longs.is_empty(), "leaf verb should expose flags");
+    assert_eq!(names, sorted, "flags must be sorted by name");
+    assert!(!names.is_empty(), "leaf verb should expose flags");
+}
+
+#[test]
+fn output_flag_reports_custom_accepted_values_and_arity() {
+    // §14/§13 v2: the custom-parsed global `--output` enumerates its
+    // accepted tokens (clap can't infer them) and is marked file-accepting.
+    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let output = v["data"]["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "output")
+        .expect("output flag present");
+    assert_eq!(
+        output["accepted_values"],
+        serde_json::json!(["json", "jsonl", "text"]),
+        "custom-parser accepted values: {output}"
+    );
+    assert_eq!(output["accepts_file_paths"], true);
+    assert_eq!(output["is_global"], true);
+    assert_eq!(output["arity"]["min"], 1);
+    assert_eq!(output["arity"]["max"], 1);
+}
+
+#[test]
+fn conflicting_flags_expose_the_edge() {
+    // `--task` conflicts with `--prompt-file` (run create); v2 surfaces the
+    // clap `conflicts_with` edge as a list of arg ids.
+    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let task = v["data"]["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "task")
+        .expect("task flag present");
+    assert_eq!(
+        task["conflicts_with"],
+        serde_json::json!(["prompt_file"]),
+        "conflicts_with edge: {task}"
+    );
 }
 
 #[test]
@@ -258,5 +301,5 @@ fn output_file_help_writes_json_file() {
         .success();
     let body = std::fs::read_to_string(&path).expect("help file written");
     let v: Value = serde_json::from_str(&body).expect("file is valid JSON");
-    assert_eq!(v["data"]["schema_version_help"], 1);
+    assert_eq!(v["data"]["schema_version_help"], 2);
 }
