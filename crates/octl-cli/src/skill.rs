@@ -97,6 +97,32 @@ pub enum AgentTarget {
     All,
 }
 
+/// Names of every skill bundled in this binary. Consumed by `doctor`'s
+/// `skill.sync` check so it audits the exact catalog the binary ships.
+pub fn bundled_skill_names() -> Vec<&'static str> {
+    SKILLS.iter().map(|s| s.name).collect()
+}
+
+/// The running binary's version — the authority `skill.sync` compares
+/// each on-disk skill's `cli_version` against.
+pub fn binary_cli_version() -> &'static str {
+    CLI_VERSION
+}
+
+/// Default `claude` install path for a skill (`~/.claude/skills/<name>/
+/// SKILL.md`). `None` when `HOME` is unset. Used by `doctor` to locate
+/// the on-disk copy to compare against the binary.
+pub fn claude_default_path(name: &str) -> Option<PathBuf> {
+    default_path("claude", name).ok()
+}
+
+/// Read the `cli_version` frontmatter field from an on-disk SKILL.md.
+/// `None` when the file is unreadable or has no parseable `cli_version`.
+pub fn read_on_disk_cli_version(path: &Path) -> Option<String> {
+    let body = fs::read_to_string(path).ok()?;
+    parse_frontmatter_field(&body, "cli_version")
+}
+
 #[derive(Serialize)]
 struct SkillSummary {
     name: &'static str,

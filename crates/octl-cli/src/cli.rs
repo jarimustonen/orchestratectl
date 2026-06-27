@@ -85,6 +85,9 @@ enum Command {
     /// agents, consume child `node.report` events with deterministic-
     /// ID dedup. Re-enters the same binary; `run reattach` invokes it.
     Supervise(crate::supervise::SuperviseArgs),
+    /// Read-only self-diagnostic: validate schema, skill-sync, deps,
+    /// config, and data integrity. `--fix` applies the safe subset.
+    Doctor(crate::doctor::DoctorArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -196,6 +199,10 @@ pub fn run() -> ExitCode {
         }
         Command::Spinoff { action } => crate::spinoff::dispatch(action, output, &logging_warnings),
         Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
+        // `doctor` owns its exit code directly: §18 requires exit 1 on any
+        // `fail` *without* an error envelope (the report on stdout is the
+        // answer), which does not map onto the shared `Result` path below.
+        Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
     };
 
     match result {

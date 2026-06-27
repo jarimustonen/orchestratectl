@@ -1,5 +1,6 @@
 mod cli;
 mod discussion;
+mod doctor;
 mod error;
 mod event;
 mod home;
