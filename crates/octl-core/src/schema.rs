@@ -53,6 +53,12 @@ pub enum Lifecycle {
 }
 
 /// Run/node status (design.md §1.2).
+///
+/// `Done`, `Failed`, and `Cancelled` are **terminal**: once a run or node
+/// reaches one of them it must never transition again. The reducer enforces
+/// this — every status transition is a no-op once [`Status::is_terminal`]
+/// holds — so a late-arriving event (e.g. an agent success report racing a
+/// `run cancel`) cannot resurrect a settled state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Status {
@@ -62,6 +68,15 @@ pub enum Status {
     Done,
     Failed,
     Cancelled,
+}
+
+impl Status {
+    /// True for the terminal states `Done | Failed | Cancelled`. A run or
+    /// node in a terminal state is settled: the reducer treats any further
+    /// status transition as a no-op (see `reducer.rs`).
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Status::Done | Status::Failed | Status::Cancelled)
+    }
 }
 
 /// Discussion lifecycle status (design.md §1.5).
