@@ -158,6 +158,14 @@ pub fn dispatch(
         );
     }
 
+    // Per-node count of consecutive ticks a node has presented the
+    // `TmuxGone` half-state. §7.5 requires half-states to "resolve via
+    // short retry then commit to dead" — we only synthesize a terminal
+    // report once the streak crosses `HALF_STATE_TICKS`. Unambiguous
+    // `Dead` / `Recycled` verdicts are committed immediately.
+    let mut half_state_streak: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+
     let mut iter: u32 = 0;
     let exit_reason: &'static str = loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -373,7 +381,7 @@ pub fn dispatch(
         // registry (that's `all-kinds-spawn`'s territory). The current
         // surface exercises liveness for any node that carries an
         // `agent_pid` recorded by `create.sh` integration.
-        if let Err(e) = watchdog_tick(&paths) {
+        if let Err(e) = watchdog_tick(&paths, &mut half_state_streak) {
             warn!(
                 target: "orchestratectl::supervise",
                 error = %e.message,
@@ -570,7 +578,15 @@ fn all_work_done(
     child_tails.values().all(|t| t.terminal)
 }
 
-fn watchdog_tick(paths: &RunPaths) -> Result<(), CliError> {
+/// Number of consecutive ticks a `TmuxGone` half-state must persist
+/// before the watchdog commits to synthesizing a terminal report (§7.5
+/// "resolve via short retry then commit to dead").
+const HALF_STATE_TICKS: u32 = 3;
+
+fn watchdog_tick(
+    paths: &RunPaths,
+    half_state_streak: &mut std::collections::BTreeMap<String, u32>,
+) -> Result<(), CliError> {
     // Scan our own nodes/ for any with an `agent_pid` that is running.
     // If a node is non-terminal and its agent has died (per dual-poll
     // protocol) AND it has not already produced a `node.report`,
@@ -609,7 +625,27 @@ fn watchdog_tick(paths: &RunPaths) -> Result<(), CliError> {
             skip_tmux_check: n.tmux_window.is_none(),
         };
         let v = watchdog::check_liveness(&probe);
-        if v.is_terminal() && n.last_report.is_none() {
+        // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
+        // recycled is unambiguous), but require a short retry streak for
+        // the `TmuxGone` half-state so a transient `tmux list-windows`
+        // hiccup does not kill a live agent.
+        let commit = match v {
+            watchdog::Liveness::Alive => {
+                half_state_streak.remove(&node_id);
+                false
+            }
+            watchdog::Liveness::Dead | watchdog::Liveness::Recycled => {
+                half_state_streak.remove(&node_id);
+                true
+            }
+            watchdog::Liveness::TmuxGone => {
+                let c = half_state_streak.entry(node_id.clone()).or_insert(0);
+                *c += 1;
+                *c >= HALF_STATE_TICKS
+            }
+        };
+        if commit && n.last_report.is_none() {
+            half_state_streak.remove(&node_id);
             // Synthesize a terminal node.report under the run's flock.
             let data = json!({
                 "success": false,

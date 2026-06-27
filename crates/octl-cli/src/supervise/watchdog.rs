@@ -33,10 +33,6 @@ pub enum Liveness {
 }
 
 impl Liveness {
-    pub fn is_terminal(self) -> bool {
-        !matches!(self, Liveness::Alive)
-    }
-
     pub fn reason(self) -> &'static str {
         match self {
             Liveness::Alive => "alive",
