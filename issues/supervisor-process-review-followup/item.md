@@ -3,9 +3,10 @@ created: 2026-06-27
 updated: 2026-06-27
 type: chore
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-27
 ---
 
 # Follow-up: /llm-review on supervisor-process (A3 from decisions-2026-06-12)
