@@ -2,11 +2,21 @@
 created: 2026-06-12
 updated: 2026-06-27
 type: task
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, cargo-scaffolding-review]
 related: ['@help-json-clap-native-resolution', '@help-json-richer-arg-metadata', '@help-json-depth-control', '@help-json-deprecation-convention']
+closed: 2026-06-27
+commits:
+- hash: f8c90ce
+  summary: walker module
+- hash: 911f51b
+  summary: snapshot + contract tests
+- hash: e3e35ed
+  summary: review-driven hardening
+- hash: 5070df5
+  summary: assessment + spin-offs
 ---
 
 # Structured --help --json output across all subcommands
