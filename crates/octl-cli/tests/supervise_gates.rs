@@ -494,6 +494,72 @@ fn signal_exit_codes_and_payload() {
     }
 }
 
+/// log-delivery-hardening: a supervisor signalled with SIGTERM must FLUSH its
+/// buffered tracing events to the JSONL log before exiting. The signal path
+/// exits via `process::exit(143)`, which bypasses the `LogGuard`'s `Drop`, so
+/// `dispatch` calls `flush_logs()` first (the same flush-on-exit contract
+/// `event tail`'s signal path uses). Without it, the supervisor's boot/loop
+/// log events are silently lost on shutdown.
+///
+/// To make this a *real* regression guard (an idle supervisor's worker would
+/// otherwise drain naturally before the signal, hiding a missing flush), the
+/// `OCTL_TEST_SLOW_LOG_WRITES` hook throttles each log `write(2)` so the
+/// buffered "supervisor started" event is provably still in flight at signal
+/// time — only the explicit `flush_logs()` drain gets it to disk before exit.
+#[test]
+fn sigterm_flushes_buffered_supervisor_logs() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "sigterm-flush");
+
+    // Long-lived supervisor (no --once) so it is mid-loop when signalled.
+    // Slow log writes (250ms each) keep the worker behind the shutdown path,
+    // so the flush — not luck — is what lands the event on disk.
+    let mut child = bin(&home)
+        .env("OCTL_TEST_SLOW_LOG_WRITES", "250")
+        .args(["supervise", &run_id])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn supervisor");
+
+    // Wait until it has booted (PID file ⇒ handlers installed, loop entered,
+    // and the "supervisor started" event already emitted into the appender).
+    let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
+    assert!(
+        poll_until(POLL_DEADLINE, || pid_file.exists()),
+        "supervisor did not start in time: {}",
+        pid_file.display()
+    );
+
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let status = child.wait().expect("wait");
+    assert_eq!(status.code(), Some(143), "SIGTERM must exit 143");
+
+    // The supervisor emits a "received termination signal" breadcrumb into the
+    // shared JSONL log (init_logging) immediately before the flush, so under
+    // the slow-write throttle it is provably still buffered at exit. Only the
+    // explicit flush_logs() drain on the signal path lands it on disk; without
+    // that flush, process::exit cuts the worker off mid-write and it is lost.
+    let log = home.path().join("logs").join("orchestratectl.log.jsonl");
+    let contents = std::fs::read_to_string(&log).unwrap_or_default();
+    let saw_shutdown_log = contents
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .any(|v| {
+            v["target"] == "orchestratectl::supervise"
+                && v["fields"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("received termination signal"))
+        });
+    assert!(
+        saw_shutdown_log,
+        "supervisor's buffered shutdown log line was not flushed on SIGTERM; \
+         log contents:\n{contents}"
+    );
+}
+
 /// F15 lock-aware watchdog: when a node already carries a real
 /// `last_report`, the watchdog must DEFER to it and not synthesize a second
 /// terminal `node.report`, even though the agent PID is dead. Regression for

@@ -274,4 +274,74 @@ mod tests {
         assert!(parse_output_value("./out.txt").is_err());
         assert!(parse_output_value("./noext").is_err());
     }
+
+    #[test]
+    fn dropped_log_warning_present_only_when_nonzero() {
+        assert!(dropped_log_warning(0).is_none(), "no warning at zero drops");
+        let w = dropped_log_warning(42).expect("warning at nonzero drops");
+        assert!(
+            w.contains("42"),
+            "count must be embedded in the message: {w}"
+        );
+        assert!(
+            w.contains("buffer overflow"),
+            "message must explain the cause: {w}"
+        );
+    }
+
+    /// The dropped-event count must be visible in the rendered success
+    /// envelope's `warnings` array (issue success criterion). Drives the real
+    /// serialization path via [`emit_envelope_with_dropped`] to a temp file,
+    /// then parses it back. Base warnings are preserved and the drop warning
+    /// is appended after them.
+    #[test]
+    fn dropped_count_visible_in_success_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        let spec = OutputSpec {
+            format: OutputFormat::Json,
+            file: Some(path.clone()),
+        };
+        let body = serde_json::json!({"ok": true});
+        emit_envelope_with_dropped(&body, &spec, &["base warning".to_string()], 7).unwrap();
+
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let warnings: Vec<&str> = v["warnings"]
+            .as_array()
+            .expect("warnings array present")
+            .iter()
+            .map(|w| w.as_str().expect("warning is a string"))
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            2,
+            "base warning + dropped-event warning: {warnings:?}"
+        );
+        assert_eq!(warnings[0], "base warning", "base warnings preserved first");
+        assert!(
+            warnings[1].contains("7 log event"),
+            "dropped count not visible in envelope warnings: {warnings:?}"
+        );
+    }
+
+    /// Zero drops must not pollute the envelope with a spurious warning, and
+    /// must not allocate a new warnings vec (the common path).
+    #[test]
+    fn no_dropped_warning_when_count_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        let spec = OutputSpec {
+            format: OutputFormat::Json,
+            file: Some(path.clone()),
+        };
+        let body = serde_json::json!({"ok": true});
+        emit_envelope_with_dropped(&body, &spec, &[], 0).unwrap();
+
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        // `warnings` is skipped entirely when empty (serde skip_serializing_if).
+        assert!(
+            v.get("warnings").is_none(),
+            "empty warnings must be omitted, not rendered: {v}"
+        );
+    }
 }

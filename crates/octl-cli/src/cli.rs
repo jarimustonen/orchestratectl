@@ -432,9 +432,7 @@ static LOG_DROPPED: OnceLock<ErrorCounter> = OnceLock::new();
 /// subscriber was never installed, or — the steady state — whenever the disk
 /// has kept up. Reads the shared counter lock-free. See [`LOG_DROPPED`].
 pub(crate) fn dropped_log_events() -> u64 {
-    LOG_DROPPED
-        .get()
-        .map_or(0, |c| c.dropped_lines() as u64)
+    LOG_DROPPED.get().map_or(0, |c| c.dropped_lines() as u64)
 }
 
 /// Drain the non-blocking appender's channel by dropping the [`WorkerGuard`].
@@ -558,6 +556,37 @@ fn finish_logging(
     }
 }
 
+/// Test-only writer wrapper that sleeps `delay` before delegating each
+/// `write` to `inner`, throttling the non-blocking log worker so buffered
+/// events provably linger until an explicit flush. Installed only when
+/// `OCTL_TEST_SLOW_LOG_WRITES` is set (see [`slow_log_write_delay`]); never on
+/// a normal run.
+struct SlowLogWriter<W: std::io::Write> {
+    inner: W,
+    delay: std::time::Duration,
+}
+
+impl<W: std::io::Write> std::io::Write for SlowLogWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        std::thread::sleep(self.delay);
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Per-write delay for the [`SlowLogWriter`] test hook, parsed from
+/// `OCTL_TEST_SLOW_LOG_WRITES` (milliseconds). `None` (the production case)
+/// when the var is unset or unparseable, so the plain file is used directly.
+fn slow_log_write_delay() -> Option<std::time::Duration> {
+    std::env::var("OCTL_TEST_SLOW_LOG_WRITES")
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_millis)
+}
+
 /// Initialise the JSONL log subscriber. Logs go to
 /// `~/.orchestratectl/logs/orchestratectl.log.jsonl`. Best-effort: if the
 /// log file cannot be opened, the process still runs and the caller sees
@@ -623,10 +652,19 @@ fn init_logging() -> LoggingInit {
     // kernel's per-`write(2)` O_APPEND granularity). `lossy(true)` keeps
     // the tracing call path non-blocking under back-pressure; see the
     // delivery-semantics note above.
-    let (writer, guard) = NonBlockingBuilder::default()
+    let builder = NonBlockingBuilder::default()
         .lossy(true)
-        .buffered_lines_limit(LOG_BUFFERED_LINES)
-        .finish(file);
+        .buffered_lines_limit(LOG_BUFFERED_LINES);
+    // Test-only: `OCTL_TEST_SLOW_LOG_WRITES=<ms>` wraps the file so each
+    // `write(2)` sleeps, forcing the background worker to fall behind. That
+    // makes the flush-on-exit contract observable end-to-end: events stay
+    // buffered (not yet on disk) at exit, so only an explicit drain
+    // ([`flush_logs`] / [`LogGuard::drop`]) gets them there. Off (no wrapper,
+    // zero overhead) unless the env var is set by a test.
+    let (writer, guard) = match slow_log_write_delay() {
+        Some(delay) => builder.finish(SlowLogWriter { inner: file, delay }),
+        None => builder.finish(file),
+    };
     // Capture the dropped-event counter *before* `writer` is moved into the
     // layer below. It is a cheap `Arc` clone sharing the writer's atomic, so
     // it keeps reflecting live drops; registered into `LOG_DROPPED` via
@@ -783,5 +821,40 @@ mod tests {
         );
         // The surviving Arc's slot is now empty — flushing it is a no-op.
         assert!(cell.lock().unwrap().is_none());
+    }
+
+    /// The lossy non-blocking appender MUST drop *and count* events when the
+    /// channel saturates under back-pressure. This is the counter-intuitive
+    /// guard the issue calls out: if the buffer never overflows in any test,
+    /// the dropped-event warning system ([`dropped_log_events`] →
+    /// `emit_envelope` / supervisor warn) is untested dead code. Uses the
+    /// same `lossy(true)` builder config as [`init_logging`], a tiny channel,
+    /// and the `SlowSink` so the single worker thread provably cannot drain
+    /// fast enough — then bursts ~10x the buffer and asserts the count rose.
+    #[test]
+    fn lossy_appender_counts_dropped_events_on_overflow() {
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let (mut writer, _guard) = NonBlockingBuilder::default()
+            .lossy(true)
+            .buffered_lines_limit(1)
+            .finish(SlowSink { out });
+        // `error_counter()` is the exact handle `init_logging` captures and
+        // `dropped_log_events()` reads — a clone sharing the writer's atomic.
+        let counter = writer.error_counter();
+        assert_eq!(counter.dropped_lines(), 0, "no drops before the burst");
+
+        // Tight burst far exceeding the 1-line channel. The worker is stuck
+        // in the SlowSink's 200ms sleep on the first line, so the channel
+        // fills and every excess line is dropped (lossy mode never blocks
+        // the caller). ~10x would suffice; 50 keeps it robust under load.
+        for _ in 0..50 {
+            let _ = writer.write_all(b"overflow-line\n");
+        }
+
+        assert!(
+            counter.dropped_lines() > 0,
+            "lossy overflow must increment the dropped-event counter, got {}",
+            counter.dropped_lines()
+        );
     }
 }

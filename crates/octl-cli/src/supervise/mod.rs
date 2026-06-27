@@ -625,7 +625,28 @@ pub fn dispatch(
     // writer's drop.
     if signal_num != 0 {
         use std::io::Write as _;
+        // Operational breadcrumb: record the signal-driven shutdown in the
+        // JSONL log (the `supervisor.exited` event lives in events.jsonl; an
+        // operator scanning the process log otherwise sees the supervisor
+        // just stop). Emitted here, immediately before the flush, so it is
+        // the last buffered event — and thus the one that proves the flush
+        // below actually drains in-flight events rather than relying on the
+        // worker having already caught up.
+        info!(
+            target: "orchestratectl::supervise",
+            run_id = %run_id,
+            pid = our_pid,
+            signal = signal_name.unwrap_or("unknown"),
+            "supervisor received termination signal; flushing logs and exiting"
+        );
+        // `process::exit` bypasses the `LogGuard`'s `Drop`, so the buffered
+        // tracing events this supervisor emitted (boot + per-tick + the line
+        // above) would be lost. Drain them to disk first — the same
+        // flush-on-exit contract `event tail`'s signal path uses (see
+        // `issues/log-guard-flush-on-process-exit`). Done after the
+        // envelope/stdout so it is the last act before exiting.
         let _ = std::io::stdout().flush();
+        crate::cli::flush_logs();
         let code = if signal_num == libc::SIGINT { 130 } else { 143 };
         std::process::exit(code);
     }
@@ -1047,4 +1068,51 @@ fn watchdog_tick(
     // count is strictly consecutive and the map cannot grow unbounded.
     half_state_streak.retain(|k, _| tmux_gone_this_tick.contains(k));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `maybe_warn_dropped` warns on the first new drop, then suppresses
+    /// further warnings inside `DROPPED_WARN_INTERVAL`, then warns again once
+    /// the interval has elapsed AND the count has grown further. A static
+    /// count never re-warns. Clock + count are injected so the rate-limit is
+    /// asserted deterministically without real time or a live appender.
+    #[test]
+    fn maybe_warn_dropped_rate_limits_on_increase() {
+        let t0 = Instant::now();
+        let mut last_count = 0u64;
+        let mut last_at: Option<Instant> = None;
+
+        // First observed drops → warns and records the count + timestamp.
+        assert!(maybe_warn_dropped(5, t0, &mut last_count, &mut last_at));
+        assert_eq!(last_count, 5);
+        assert_eq!(last_at, Some(t0));
+
+        // More drops, but well inside the interval → suppressed, state frozen.
+        assert!(!maybe_warn_dropped(
+            9,
+            t0 + Duration::from_secs(30),
+            &mut last_count,
+            &mut last_at
+        ));
+        assert_eq!(last_count, 5);
+        assert_eq!(last_at, Some(t0));
+
+        // Interval elapsed and the count grew further → warns again.
+        let t1 = t0 + DROPPED_WARN_INTERVAL + Duration::from_secs(1);
+        assert!(maybe_warn_dropped(9, t1, &mut last_count, &mut last_at));
+        assert_eq!(last_count, 9);
+        assert_eq!(last_at, Some(t1));
+
+        // No new drops since the last warning → never warns, even much later.
+        assert!(!maybe_warn_dropped(
+            9,
+            t1 + Duration::from_secs(600),
+            &mut last_count,
+            &mut last_at
+        ));
+        assert_eq!(last_count, 9);
+    }
 }
