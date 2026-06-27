@@ -30,3 +30,4 @@ semver = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+libc = { workspace = true }

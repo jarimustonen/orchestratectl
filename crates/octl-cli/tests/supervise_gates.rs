@@ -333,6 +333,58 @@ fn v7_deterministic_id_dedup_under_crash() {
     assert_eq!(n_spin2, 3, "replay must not duplicate spinoffs");
 }
 
+/// §7.8: SIGINT exits 130, SIGTERM exits 143, and the `supervisor.exited`
+/// event records `reason:"signal"` + the specific `signal` name. Regression
+/// guard for the supervisor-process review FIX (F3) — `ctrlc` could not
+/// surface which signal fired, so the old code exited 0 with no signal field.
+#[test]
+fn signal_exit_codes_and_payload() {
+    use std::io::Read;
+    for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
+        let home = TempDir::new().unwrap();
+        let run_id = create_run(&home, "spinoff", "sig");
+        // Long-lived supervisor (no --once): spawn, let it enter the loop,
+        // then deliver the signal and assert the exit code + event.
+        let mut child = bin(&home)
+            .args(["supervise", &run_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn supervisor");
+        std::thread::sleep(Duration::from_millis(700));
+        unsafe {
+            libc::kill(child.id() as i32, sig_num(sig));
+        }
+        let status = child.wait().expect("wait");
+        assert_eq!(
+            status.code(),
+            Some(code),
+            "{name} must exit {code}, got {status:?}"
+        );
+        let events = run_dir(&home, &run_id).join("events.jsonl");
+        let mut s = String::new();
+        std::fs::File::open(&events)
+            .unwrap()
+            .read_to_string(&mut s)
+            .unwrap();
+        let exited = s
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|v| v["kind"] == "supervisor.exited")
+            .expect("supervisor.exited present");
+        assert_eq!(exited["data"]["reason"], "signal");
+        assert_eq!(exited["data"]["signal"], name);
+    }
+}
+
+fn sig_num(sig: &str) -> libc::c_int {
+    match sig {
+        "TERM" => libc::SIGTERM,
+        "INT" => libc::SIGINT,
+        _ => unreachable!(),
+    }
+}
+
 /// V8: `run reattach` end-to-end.
 ///
 /// Start a run, fork a one-shot supervisor via `run reattach --once`,

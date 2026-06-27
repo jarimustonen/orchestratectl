@@ -22,8 +22,7 @@ pub mod watchdog;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Args as ClapArgs;
@@ -43,6 +42,43 @@ const WATCHDOG_TICK: Duration = Duration::from_millis(1000);
 /// Max time we wait for a spawned child run's directory to appear
 /// (handoff D1).
 const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
+
+/// Set by the SIGINT/SIGTERM handler to the received signal number (0 =
+/// none). Read by the main loop to trigger shutdown and by the shutdown
+/// path to pick the §7.8 exit code and `signal` payload field. We use a
+/// raw `sigaction` rather than the `ctrlc` crate because §7.8 requires
+/// distinguishing SIGINT (exit 130) from SIGTERM (exit 143), and `ctrlc`
+/// collapses both into a single edge without surfacing which fired.
+static SIGNAL_RECEIVED: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn handle_term_signal(sig: libc::c_int) {
+    // Async-signal-safe: an atomic store is the only work done here.
+    SIGNAL_RECEIVED.store(sig, Ordering::SeqCst);
+}
+
+/// Install SIGINT/SIGTERM handlers via `sigaction`. Fatal on failure: a
+/// supervisor that cannot trap signals cannot honor §7.8's clean-shutdown
+/// contract (emit `supervisor.exited`, remove its PID file).
+fn install_signal_handlers() -> Result<(), CliError> {
+    // SAFETY: the handler is async-signal-safe (a single atomic store)
+    // and `sa` is zero-initialized then fully populated before use.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = handle_term_signal as extern "C" fn(libc::c_int) as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = 0;
+        for sig in [libc::SIGINT, libc::SIGTERM] {
+            if libc::sigaction(sig, &sa, std::ptr::null_mut()) != 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(CliError::system(
+                    "signal_install_failed",
+                    format!("sigaction({sig}) failed: {err}"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(ClapArgs, Debug)]
 pub struct SuperviseArgs {
@@ -99,21 +135,13 @@ pub fn dispatch(
         );
     }
 
+    // Install signal handlers BEFORE claiming the PID file so a signal
+    // arriving during startup still drives a clean shutdown, and so a
+    // claimed PID file is never left behind by an untrapped signal (§7.8).
+    install_signal_handlers()?;
+
     let our_pid = std::process::id();
     pid_file::write_pid(&pid_path, our_pid)?;
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let s2 = Arc::clone(&shutdown);
-    if let Err(e) = ctrlc::set_handler(move || {
-        s2.store(true, Ordering::SeqCst);
-    }) {
-        // A previously-installed handler isn't fatal; just warn.
-        warn!(
-            target: "orchestratectl::supervise",
-            error = %e,
-            "could not install signal handler"
-        );
-    }
 
     info!(
         target: "orchestratectl::supervise",
@@ -168,7 +196,7 @@ pub fn dispatch(
 
     let mut iter: u32 = 0;
     let exit_reason: &'static str = loop {
-        if shutdown.load(Ordering::SeqCst) {
+        if SIGNAL_RECEIVED.load(Ordering::SeqCst) != 0 {
             break "signal";
         }
         if let Some(max) = args.max_iter {
@@ -413,14 +441,17 @@ pub fn dispatch(
 
     // Clean shutdown.
     let _ = state::save(&paths.root, &state);
-    let _ = append_and_apply(
-        &paths,
-        "supervisor.exited",
-        None,
-        None,
-        json!({"pid": our_pid, "reason": exit_reason}),
-    )
-    .map_err(from_core);
+    let signal_num = SIGNAL_RECEIVED.load(Ordering::SeqCst);
+    let signal_name = match signal_num {
+        libc::SIGINT => Some("SIGINT"),
+        libc::SIGTERM => Some("SIGTERM"),
+        _ => None,
+    };
+    let exited_data = match signal_name {
+        Some(name) => json!({"pid": our_pid, "reason": "signal", "signal": name}),
+        None => json!({"pid": our_pid, "reason": exit_reason}),
+    };
+    let _ = append_and_apply(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
     pid_file::remove_if_owner(&pid_path, our_pid);
 
     #[derive(Serialize)]
@@ -447,6 +478,15 @@ pub fn dispatch(
             );
             output::emit_text_warnings(warnings);
         }
+    }
+
+    // §7.8: a signal-terminated supervisor exits 130 (SIGINT) / 143
+    // (SIGTERM), not 0, so wrappers/tests can detect signal termination.
+    // We've already flushed the exit event, removed the PID file, and
+    // emitted output, so bypassing destructors here is safe.
+    if signal_num != 0 {
+        let code = if signal_num == libc::SIGINT { 130 } else { 143 };
+        std::process::exit(code);
     }
     Ok(())
 }
