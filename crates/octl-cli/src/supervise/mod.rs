@@ -773,7 +773,7 @@ fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &st
         excerpt = %c.line_excerpt,
         "skipping corrupt event-log line and continuing tail"
     );
-    let _ = append_and_apply_event(
+    if let Err(e) = append_and_apply_event(
         paths,
         "supervisor.event_log_skipped_line",
         None,
@@ -783,7 +783,20 @@ fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &st
             "line_excerpt": c.line_excerpt,
             "source": source,
         }),
-    );
+    ) {
+        // The diagnostic could not be persisted — e.g. the corrupt line is the
+        // own-run log's final record, so `recover_last_seq` (called by the
+        // append) trips on it. We still advanced past the line in memory to
+        // keep the tail progressing; surface the failure rather than silently
+        // dropping the only record of it.
+        warn!(
+            target: "orchestratectl::supervise",
+            source = %source,
+            byte_offset = c.byte_offset,
+            error = %e,
+            "failed to persist corrupt-line diagnostic (advanced past it anyway)"
+        );
+    }
 }
 
 fn all_work_done(

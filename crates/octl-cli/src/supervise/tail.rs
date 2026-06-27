@@ -51,10 +51,12 @@ pub struct EventTail {
     /// returns no new events rather than re-erroring on the same bytes — this
     /// is what breaks the supervisor's old warn-spam loop.
     corrupt: Option<CorruptLine>,
-    /// Byte offsets already reported, so a corrupt line is surfaced at most
-    /// once even if the file is truncated+rewritten (which resets `pos`).
-    /// In-memory only; a fresh process re-reports, which is fine.
-    reported_corrupt: HashSet<u64>,
+    /// `(byte_offset, excerpt-hash)` of corrupt lines already reported, so a
+    /// corrupt line is surfaced at most once. Keying on the content hash as
+    /// well as the offset means a *different* corruption that happens to land
+    /// at a previously-reported offset (after a truncate+rewrite) is still
+    /// reported. In-memory only; a fresh process re-reports, which is fine.
+    reported_corrupt: HashSet<(u64, u64)>,
 }
 
 impl EventTail {
@@ -75,13 +77,6 @@ impl EventTail {
     /// existing (a child run's `events.jsonl` may lag the
     /// `child.spawned` event by a few ms).
     pub fn poll(&mut self) -> Result<Vec<Event>, CliError> {
-        // Parked at a known corrupt line: surface nothing new until the caller
-        // reports-and-skips it. This is the loop-breaker — without it, every
-        // tick re-reads the same offset, re-errors, and the tail never
-        // progresses (the F17 warn-spam / CPU-burn bug).
-        if self.corrupt.is_some() {
-            return Ok(Vec::new());
-        }
         let mut f = match File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -104,8 +99,19 @@ impl EventTail {
         if len < self.pos {
             // File truncated under us (unlikely in production, but
             // tests/dev may rm+re-create). Restart from the beginning;
-            // duplicate-seq guard below will skip already-seen events.
+            // duplicate-seq guard below will skip already-seen events. Drop any
+            // parked corrupt line too — its byte offset is meaningless against
+            // the rewritten file.
             self.pos = 0;
+            self.corrupt = None;
+        }
+        // Parked at a known corrupt line: surface nothing new until the caller
+        // reports-and-skips it. This is the loop-breaker — without it, every
+        // tick re-reads the same offset, re-errors, and the tail never
+        // progresses (the F17 warn-spam / CPU-burn bug). Checked AFTER the
+        // truncation reset so a rewritten file un-parks correctly.
+        if self.corrupt.is_some() {
+            return Ok(Vec::new());
         }
         if len == self.pos {
             return Ok(Vec::new());
@@ -116,11 +122,13 @@ impl EventTail {
         let mut reader = BufReader::new(f);
         let mut out = Vec::new();
         let mut consumed: u64 = 0;
+        // Reused across iterations so the tick doesn't allocate per line.
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             // Read raw bytes (not `read_line`) so a torn tail cutting a
             // multi-byte UTF-8 sequence is tolerated as a partial write, and
             // so byte offsets are exact for the corrupt-line cursor.
-            let mut buf: Vec<u8> = Vec::new();
+            buf.clear();
             let n = reader.read_until(b'\n', &mut buf).map_err(|e| {
                 CliError::system("io_error", format!("read {}: {}", self.path.display(), e))
             })?;
@@ -170,7 +178,10 @@ impl EventTail {
         let c = self.corrupt.take()?;
         // Always advance so the tail progresses and never re-stalls here.
         self.pos += c.byte_len;
-        if self.reported_corrupt.insert(c.byte_offset) {
+        if self
+            .reported_corrupt
+            .insert((c.byte_offset, excerpt_hash(&c.line_excerpt)))
+        {
             Some(c)
         } else {
             None
@@ -185,6 +196,15 @@ impl EventTail {
     pub fn last_seq(&self) -> u64 {
         self.last_seq
     }
+}
+
+/// Stable hash of a corrupt-line excerpt, used (with the byte offset) as the
+/// dedup key so distinct corruptions at the same offset are not conflated.
+fn excerpt_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 /// Strip a single trailing line terminator (`\n`, optionally preceded by

@@ -584,14 +584,9 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
-    // so take it directly — no re-parse needed.
-    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: format!(
-            "event seq={} kind=node.created missing top-level `node_id`",
-            ev.seq
-        ),
-    })?;
+    // so take it directly — no re-parse needed. Shared helper so the
+    // missing-id check matches `validate_node_created` verbatim.
+    let node_id = require_envelope_node_id(&events_path, ev)?;
     // Idempotent on replay: skip if the node already exists.
     if read_node_opt(paths, &node_id)?.is_some() {
         return Ok(());
@@ -643,13 +638,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: format!(
-            "event seq={} kind=node.status missing top-level `node_id`",
-            ev.seq
-        ),
-    })?;
+    let node_id = require_envelope_node_id(&events_path, ev)?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),
@@ -671,13 +660,7 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id = ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: format!(
-            "event seq={} kind=node.report missing top-level `node_id`",
-            ev.seq
-        ),
-    })?;
+    let node_id = require_envelope_node_id(&events_path, ev)?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),

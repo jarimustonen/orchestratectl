@@ -70,62 +70,68 @@ pub fn recover_last_seq(events_path: &Path) -> Result<u64> {
     };
 
     // `end` is the byte index of the trailing `\n` of the last complete
-    // record (exclusive of the newline). Find the previous newline to
-    // bracket the line.
-    let line_start = match find_prev_newline(&mut f, end, events_path)? {
-        Some(p) => p + 1,
-        None => 0,
-    };
-    let line_len = end - line_start;
-    f.seek(SeekFrom::Start(line_start))
-        .map_err(|e| Error::io(events_path, e))?;
-    let mut line = vec![0u8; line_len as usize];
-    f.read_exact(&mut line)
-        .map_err(|e| Error::io(events_path, e))?;
-    // Strip trailing CR if present (defensive).
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-    if line.is_empty() {
-        // Two newlines in a row (or trailing-only) — treat as "no event".
-        // Recurse downward by recovering from the next earlier line.
+    // record. Walk backward over complete lines, skipping any that are empty
+    // — consecutive newlines (e.g. from external editing) are tolerated by
+    // the forward reader, so seq recovery must tolerate them too — and recover
+    // the seq from the last non-empty record.
+    loop {
+        let line_start = match find_prev_newline(&mut f, end, events_path)? {
+            Some(p) => p + 1,
+            None => 0,
+        };
+        let line_len = end - line_start;
+        f.seek(SeekFrom::Start(line_start))
+            .map_err(|e| Error::io(events_path, e))?;
+        let mut line = vec![0u8; line_len as usize];
+        f.read_exact(&mut line)
+            .map_err(|e| Error::io(events_path, e))?;
+        // Strip trailing CR if present (defensive).
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if !line.is_empty() {
+            return parse_seq(&line, events_path);
+        }
+        // Empty line: no record here. Step to the newline before it and keep
+        // scanning; reaching the start means the log holds no event.
         if line_start == 0 {
             return Ok(0);
         }
         end = line_start - 1;
-        let prev = match find_prev_newline(&mut f, end, events_path)? {
-            Some(p) => p + 1,
-            None => 0,
-        };
-        let plen = end - prev;
-        f.seek(SeekFrom::Start(prev))
-            .map_err(|e| Error::io(events_path, e))?;
-        let mut prev_line = vec![0u8; plen as usize];
-        f.read_exact(&mut prev_line)
-            .map_err(|e| Error::io(events_path, e))?;
-        return parse_seq(&prev_line, events_path);
     }
-    parse_seq(&line, events_path)
+}
+
+/// The envelope fields recovered from the last complete line. Required fields
+/// mirror [`Event`]'s required shape, so `recover_last_seq` accepts a last line
+/// iff [`read_all_events`] would — the two readers agree on what the last
+/// record is. `data` / `idempotency_key` are skipped (serde ignores unknown
+/// fields) so a multi-KB `node.report` payload isn't re-materialized on the
+/// hot append path just to read `seq`.
+#[derive(Deserialize)]
+#[allow(dead_code)] // fields exist to force serde validation, not to be read
+struct SeqLine {
+    seq: u64,
+    ts: chrono::DateTime<chrono::Utc>,
+    kind: String,
+    run_id: crate::schema::RunId,
+    #[serde(default)]
+    node_id: Option<NodeId>,
 }
 
 fn parse_seq(line: &[u8], events_path: &Path) -> Result<u64> {
-    // A newline-terminated complete line that won't parse is event-log
-    // corruption, not a transient JSON fault — classify it the same way
-    // `find_prior_with_key` does so both readers map to `CorruptEventLog`
-    // (and the CLI's `corrupt-event-log` exit class) for the same condition.
-    let v: Value = serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
+    // The last complete line must be a full, valid event envelope — the same
+    // bar `read_all_events` applies to every line — so a `\n`-terminated line
+    // that parses as JSON but isn't a valid event (e.g. `{"seq":1}` missing
+    // `ts`/`run_id`) is event-log corruption, not a usable seq source. This
+    // keeps the three readers aligned on the last record.
+    let hdr: SeqLine = serde_json::from_slice(line).map_err(|e| Error::CorruptEventLog {
         path: events_path.to_path_buf(),
         reason: format!(
-            "last complete line is not valid JSON: {} [{e}]",
+            "last complete line is not a valid event: {} [{e}]",
             excerpt(line)
         ),
     })?;
-    v.get("seq")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.to_path_buf(),
-            reason: "last complete line missing integer `seq` field".into(),
-        })
+    Ok(hdr.seq)
 }
 
 /// Find the byte offset of the last `\n` strictly before `before`. Returns
@@ -285,16 +291,23 @@ pub struct AppendResult {
 /// `events.jsonl` *and* fold it into the projection files via the reducer,
 /// all under the run's `flock`, with idempotency-key dedup.
 ///
-/// Every `events.jsonl` line is immediately reflected in `manifest.json` /
-/// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` under one lock,
-/// so a read CLI run a millisecond later never sees a stale projection.
+/// On success, every `events.jsonl` line is folded into `manifest.json` /
+/// `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` before the lock
+/// is released, so a read CLI run a millisecond later never sees a stale
+/// projection. This is *not* a crash-atomic transaction: the event is fsynced
+/// before the reducer runs, so a crash (or an I/O error from `apply_event`)
+/// after the append but before the projection write leaves the log ahead of
+/// the projections — recoverable only by a future `rebuild_projections`. The
+/// log is the source of truth; projections are a derived cache.
 ///
-/// The append is transactional against reducer validation: the event is
+/// The append is transactional against reducer *validation*: the event is
 /// first run through [`validate_event`](crate::reducer) under the lock, and
 /// only a validating event is appended (and fsynced) and then folded by the
 /// reducer. A reducer-rejected event (a `CorruptEventLog` for a malformed
 /// payload) errors *before* any bytes are written, so the log never gains a
 /// poison line that a future replay / `rebuild_projections` would choke on.
+/// (A pre-existing torn tail may still be truncated before validation runs —
+/// those bytes are uncommitted by definition; see [`recover_last_seq`].)
 ///
 /// When `idempotency_key` is `Some` and a prior event with the same `kind` +
 /// key already exists ([`find_prior_with_key`]), nothing is appended or
@@ -1195,6 +1208,104 @@ mod tests {
                 "resolve-missing-resolution",
             );
         }
+        // node.created: new node missing `kind` rejected; replay over an
+        // existing node with bad payload is a no-op (existence short-circuit).
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            agree(
+                &paths,
+                &ev(&paths, "node.created", Some("n-0002"), json!({})),
+                "node-created-missing-kind",
+            );
+        }
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(&paths, "node.created", Some("n-0001"), json!({})),
+                "node-created-replay-bad-payload",
+            );
+        }
+        // discussion.opened missing `topic`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "discussion.opened",
+                    Some("n-0001"),
+                    json!({ "discussion_id": "d-abcdefghij", "node_id": "n-0001" }),
+                ),
+                "discussion-opened-missing-topic",
+            );
+        }
+        // spinoff.proposed missing `proposed_title`; spinoff.{approved,rejected}
+        // with an unparseable proposal id.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap_live_node(&paths);
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "spinoff.proposed",
+                    Some("n-0001"),
+                    json!({ "proposal_id": "p-abcdefghij", "proposed_kind": "spinoff", "node_id": "n-0001" }),
+                ),
+                "spinoff-proposed-missing-title",
+            );
+        }
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "spinoff.approved",
+                    None,
+                    json!({ "proposal_id": "not a valid id" }),
+                ),
+                "spinoff-approved-bad-id",
+            );
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "spinoff.rejected",
+                    None,
+                    json!({ "proposal_id": "not a valid id" }),
+                ),
+                "spinoff-rejected-bad-id",
+            );
+        }
+        // child.spawned: missing/invalid child_run_id.
+        {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            agree(
+                &paths,
+                &ev(&paths, "child.spawned", Some("n-0001"), json!({})),
+                "child-spawned-missing-child-run-id",
+            );
+            agree(
+                &paths,
+                &ev(
+                    &paths,
+                    "child.spawned",
+                    Some("n-0001"),
+                    json!({ "child_run_id": "bad" }),
+                ),
+                "child-spawned-bad-child-run-id",
+            );
+        }
         // Cross-run envelope and unknown kind.
         {
             let tmp = TempDir::new().unwrap();
@@ -1237,6 +1348,40 @@ mod tests {
         );
         // And it agrees with the recovery path.
         assert_eq!(recover_last_seq(&paths.events()).unwrap(), 1);
+    }
+
+    #[test]
+    fn recover_last_seq_rejects_seq_only_last_line() {
+        // A `\n`-terminated last line that is valid JSON with a `seq` but is
+        // NOT a valid event envelope (missing ts/kind/run_id) must be rejected
+        // by recover_last_seq, matching read_all_events — otherwise an append
+        // would continue past a line replay can never fold.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, b"{\"seq\":99}\n");
+        let err = recover_last_seq(&paths.events()).unwrap_err();
+        assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
+        // And the forward reader agrees.
+        assert!(matches!(
+            read_all_events(&paths.events()).unwrap_err(),
+            Error::CorruptEventLog { .. }
+        ));
+    }
+
+    #[test]
+    fn recover_last_seq_skips_multiple_trailing_blank_lines() {
+        // External editing can leave several trailing blank lines. The forward
+        // reader skips them; seq recovery must walk back over all of them to
+        // the last real record (not just one), so the two readers agree.
+        let tmp = TempDir::new().unwrap();
+        let mut log = String::new();
+        log.push_str(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":7,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+        );
+        log.push_str("\n\n\n\n");
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 7);
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![7]);
     }
 
     #[test]
@@ -1295,6 +1440,21 @@ mod tests {
         );
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn append_truncates_all_torn_file_to_empty_then_writes_seq_1() {
+        // The whole file is one torn (newline-less) partial write — no complete
+        // record exists. truncate_torn_tail must cut it to empty, and the next
+        // append starts a fresh seq 1.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, br#"{"seq":1,"kind":"marker"#);
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 0);
+
+        let r = append_and_apply_event(&paths, "marker", None, None, json!({})).unwrap();
+        assert_eq!(r.seq, 1);
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
