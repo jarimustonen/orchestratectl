@@ -22,12 +22,13 @@ use serde::Serialize;
 use serde_json::Value;
 
 use octl_core::{
-    append_and_apply_unlocked, read_manifest_opt, read_spinoff_opt, RunLock, SpinoffStatus,
+    append_and_apply_unlocked, read_manifest_opt, read_spinoff_opt, ProposalId, RunLock,
+    SpinoffStatus,
 };
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
+use crate::run::{from_core, kind_kebab, parse_proposal_id, run_paths};
 use crate::spinoff::require_safe_slug;
 
 pub struct Args<'a> {
@@ -76,8 +77,8 @@ enum Outcome {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
-    let proposal_id = require_safe_id(&args.proposal_id, "proposal-id")?;
+    let run_id = args.run_id.clone();
+    let proposal_id = parse_proposal_id(&args.proposal_id)?;
     let issue_slug_arg = match args.issue_slug.as_deref() {
         Some(s) => Some(require_safe_slug(s, "issue-slug")?),
         None => None,
@@ -100,7 +101,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 "proposal_not_found",
                 format!("no proposal with id {proposal_id} in run {run_id}"),
             )
-            .with_invalid_value(&proposal_id));
+            .with_invalid_value(proposal_id.as_str()));
         }
     };
 
@@ -132,7 +133,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 "proposal_already_rejected",
                 format!("proposal {proposal_id} was already rejected; cannot approve"),
             )
-            .with_invalid_value(&proposal_id));
+            .with_invalid_value(proposal_id.as_str()));
         }
         SpinoffStatus::Proposed => {}
     }
@@ -180,7 +181,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let mut data = serde_json::Map::new();
-    data.insert("proposal_id".into(), Value::String(proposal_id.clone()));
+    data.insert("proposal_id".into(), Value::String(proposal_id.to_string()));
     if let Some(s) = &issue_slug {
         data.insert("issue_slug".into(), Value::String(s.clone()));
     }
@@ -263,12 +264,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                  (reason: {reason:?}); cannot approve"
             ),
         )
-        .with_invalid_value(&proposal_id)),
+        .with_invalid_value(proposal_id.as_str())),
         Outcome::ProposalNotFound => Err(CliError::user(
             "proposal_not_found",
             format!("proposal {proposal_id} disappeared from run {run_id}"),
         )
-        .with_invalid_value(&proposal_id)),
+        .with_invalid_value(proposal_id.as_str())),
         Outcome::RunNotFound => Err(CliError::user(
             "run_not_found",
             format!("run {run_id} disappeared"),
@@ -282,7 +283,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// `proposal_already_approved` error. Silent ignores here would let
 /// the caller believe their slug was attached when it wasn't.
 fn mismatch_error(
-    proposal_id: &str,
+    proposal_id: &ProposalId,
     requested: Option<&str>,
     recorded: Option<&str>,
 ) -> Option<CliError> {
@@ -364,7 +365,7 @@ fn materialize_via_issuectl(
 #[allow(clippy::too_many_arguments)]
 fn emit_approved(
     run_id: &str,
-    proposal_id: &str,
+    proposal_id: &ProposalId,
     issue_slug: Option<String>,
     seq: Option<u64>,
     idempotent_replay: Option<bool>,

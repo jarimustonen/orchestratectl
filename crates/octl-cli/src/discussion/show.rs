@@ -4,7 +4,7 @@ use octl_core::{read_discussion_opt, Discussion};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, parse_discussion_id, run_paths};
 
 use super::status_kebab;
 
@@ -14,15 +14,14 @@ pub fn run(
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
-    let run_id = require_safe_id(run_id, "run-id")?;
-    let discussion_id = require_safe_id(discussion_id, "discussion-id")?;
+    let discussion_id = parse_discussion_id(discussion_id)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
 
     if !paths.root.is_dir() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
-                .with_invalid_value(&run_id),
+                .with_invalid_value(run_id),
         );
     }
 
@@ -33,7 +32,7 @@ pub fn run(
                 "discussion_not_found",
                 format!("no discussion {discussion_id} in run {run_id}"),
             )
-            .with_invalid_value(&discussion_id));
+            .with_invalid_value(discussion_id.as_str()));
         }
     };
 

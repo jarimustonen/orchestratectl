@@ -15,7 +15,9 @@ pub mod supervisor_spawn;
 use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
-use octl_core::{Kind, Lifecycle, RunPaths};
+use octl_core::{
+    DiscussionId, IdValidationError, Kind, Lifecycle, NodeId, ProposalId, RunId, RunPaths,
+};
 
 use crate::error::CliError;
 use crate::output::OutputSpec;
@@ -206,29 +208,39 @@ pub fn require_nonempty(value: &str, field: &str) -> Result<String, CliError> {
     Ok(trimmed.to_string())
 }
 
-/// Reject identifier strings that could escape the runs/ directory.
-///
-/// The run-id is user-controlled at the `show`/`cancel`/`reattach` call
-/// sites and at `--parent-run-id`. Without validation, values like
-/// `../../etc` would let an attacker walk outside `<root>/runs/`.
-/// Accepts the ULID charset our own generator emits plus `n-` style
-/// node ids: ASCII alphanumeric plus `-` and `_`.
-pub fn require_safe_id(value: &str, field: &str) -> Result<String, CliError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty()
-        || trimmed == "."
-        || trimmed == ".."
-        || !trimmed
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(CliError::user(
-            "invalid_id",
-            format!("--{field} must be ASCII alphanumeric + `-`/`_` and not `.`/`..`"),
-        )
-        .with_invalid_value(value));
-    }
-    Ok(trimmed.to_string())
+/// Map an id-validation failure to the CLI's `invalid_id` error envelope,
+/// carrying the offending value (`invalid_value`) and the accepted-shape hint
+/// (`expected`, e.g. `n-NNNN`). This is the single boundary where a malformed
+/// id surfaces to an AI caller; the typed newtype is the only thing a path
+/// helper will accept downstream.
+pub fn invalid_id(value: &str, err: &IdValidationError) -> CliError {
+    CliError::user("invalid_id", err.to_string())
+        .with_invalid_value(value)
+        .with_expected(serde_json::Value::String(err.expected().to_string()))
+}
+
+/// Validate a `run_id` clap or event-data argument into a typed [`RunId`].
+/// Most run-id call sites instead go through [`run_paths`], which both
+/// validates and builds the [`RunPaths`]; use this when only validation of a
+/// bare run-id string is needed (e.g. an event-data `child_run_id`).
+pub fn parse_run_id(value: &str) -> Result<RunId, CliError> {
+    RunId::parse_str(value).map_err(|e| invalid_id(value, &e))
+}
+
+/// Validate a `node_id` clap argument into a typed [`NodeId`] before it can
+/// reach any path helper.
+pub fn parse_node_id(value: &str) -> Result<NodeId, CliError> {
+    NodeId::parse_str(value).map_err(|e| invalid_id(value, &e))
+}
+
+/// Validate a `discussion_id` clap argument into a typed [`DiscussionId`].
+pub fn parse_discussion_id(value: &str) -> Result<DiscussionId, CliError> {
+    DiscussionId::parse_str(value).map_err(|e| invalid_id(value, &e))
+}
+
+/// Validate a `proposal_id` clap argument into a typed [`ProposalId`].
+pub fn parse_proposal_id(value: &str) -> Result<ProposalId, CliError> {
+    ProposalId::parse_str(value).map_err(|e| invalid_id(value, &e))
 }
 
 /// Render a `Kind` as its canonical kebab-case wire string. Single

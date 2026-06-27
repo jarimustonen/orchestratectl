@@ -26,7 +26,7 @@ use octl_core::{ensure_root, read_discussion_opt, Discussion, DiscussionStatus, 
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_nonempty, require_safe_id, run_paths};
+use crate::run::{from_core, parse_discussion_id, require_nonempty, run_paths};
 
 /// Hard caps on free-form CLI strings written into the event log.
 /// `event create --from-file` enforces a 1 MiB cap on its JSON payload;
@@ -79,8 +79,8 @@ struct ResolvePayload<'a> {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
-    let discussion_id = require_safe_id(&args.discussion_id, "discussion-id")?;
+    let run_id = args.run_id.clone();
+    let discussion_id = parse_discussion_id(&args.discussion_id)?;
     let choice = require_nonempty(&args.choice, "choice")?;
     if choice.len() > MAX_CHOICE_BYTES {
         return Err(CliError::user(
@@ -183,7 +183,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     .and_then(Value::as_str)
                     .map(str::to_string);
 
-                let matches = prior_discussion_id.as_deref() == Some(&discussion_id)
+                let matches = prior_discussion_id.as_deref() == Some(discussion_id.as_str())
                     && prior_choice.as_deref() == Some(&choice)
                     && prior_note.as_deref() == note.as_deref();
 
@@ -229,7 +229,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
 
         let mut data = json!({
-            "discussion_id": discussion_id,
+            "discussion_id": discussion_id.as_str(),
             "resolution": choice,
         });
         if let Some(n) = &note {
@@ -253,7 +253,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "discussion_not_found",
             format!("no discussion {discussion_id} in run {run_id}"),
         )
-        .with_invalid_value(&discussion_id)),
+        .with_invalid_value(discussion_id.as_str())),
 
         LockResult::IdempotencyConflict {
             prior_seq,
@@ -303,7 +303,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         LockResult::IdempotentReplay { seq, existing } => {
             let payload = ResolvePayload {
                 run_id: &run_id,
-                discussion_id: &discussion_id,
+                discussion_id: discussion_id.as_str(),
                 node_id: &existing.node_id,
                 choice: &choice,
                 note: note.as_deref(),
@@ -318,7 +318,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         LockResult::NoOp { existing } => {
             let payload = ResolvePayload {
                 run_id: &run_id,
-                discussion_id: &discussion_id,
+                discussion_id: discussion_id.as_str(),
                 node_id: &existing.node_id,
                 choice: &choice,
                 note: existing.note.as_deref(),
@@ -333,14 +333,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         LockResult::WouldAppend { existing } => {
             let payload = ResolvePayload {
                 run_id: &run_id,
-                discussion_id: &discussion_id,
+                discussion_id: discussion_id.as_str(),
                 node_id: &existing.node_id,
                 choice: &choice,
                 note: note.as_deref(),
                 outcome: Outcome::DryRun,
                 seq: None,
                 would_be: Some(Outcome::Appended),
-                projections: projections_for(&discussion_id),
+                projections: projections_for(discussion_id.as_str()),
             };
             emit(&payload, args.spec, args.warnings)
         }
@@ -348,14 +348,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         LockResult::Appended { seq, node_id } => {
             let payload = ResolvePayload {
                 run_id: &run_id,
-                discussion_id: &discussion_id,
+                discussion_id: discussion_id.as_str(),
                 node_id: &node_id,
                 choice: &choice,
                 note: note.as_deref(),
                 outcome: Outcome::Appended,
                 seq: Some(seq),
                 would_be: None,
-                projections: projections_for(&discussion_id),
+                projections: projections_for(discussion_id.as_str()),
             };
             emit(&payload, args.spec, args.warnings)
         }

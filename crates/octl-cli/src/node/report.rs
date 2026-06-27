@@ -26,7 +26,7 @@ use octl_core::{
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_nonempty, require_safe_id, run_paths};
+use crate::run::{from_core, parse_node_id, require_nonempty, run_paths};
 
 /// Mirror of `event create`'s 1 MiB cap. `node.report` is the largest
 /// realistic payload (design.md §1.4 cites 10-50 KB); 1 MiB still
@@ -56,8 +56,8 @@ struct ReportPayload<'a> {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
-    let node_id = require_safe_id(&args.node_id, "node-id")?;
+    let run_id = args.run_id.clone();
+    let node_id = parse_node_id(&args.node_id)?;
     // Reject empty-or-whitespace keys. An empty key would silently
     // collapse unrelated retries (every "no key" caller would share
     // the same dedup slot).
@@ -99,13 +99,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "node_not_found",
             format!("no node {node_id} in run {run_id}"),
         )
-        .with_invalid_value(&node_id));
+        .with_invalid_value(node_id.as_str()));
     }
 
     if args.dry_run {
         let payload = ReportPayload {
             run_id: &run_id,
-            node_id: &node_id,
+            node_id: node_id.as_str(),
             event_seq: None,
             idempotent_replay: None,
             dry_run: Some(true),
@@ -130,7 +130,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let seq = octl_core::append_and_apply_unlocked(
             &paths,
             "node.report",
-            Some(&node_id),
+            Some(node_id.as_str()),
             idempotency_key.as_deref(),
             data.clone(),
         )?;
@@ -165,7 +165,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     let payload = ReportPayload {
         run_id: &run_id,
-        node_id: &node_id,
+        node_id: node_id.as_str(),
         event_seq: Some(event_seq),
         idempotent_replay: if replayed { Some(true) } else { None },
         dry_run: None,

@@ -4,12 +4,13 @@ use serde::Serialize;
 use serde_json::Value;
 
 use octl_core::{
-    append_and_apply_unlocked, read_manifest_opt, read_spinoff_opt, RunLock, SpinoffStatus,
+    append_and_apply_unlocked, read_manifest_opt, read_spinoff_opt, ProposalId, RunLock,
+    SpinoffStatus,
 };
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, parse_proposal_id, run_paths};
 use crate::spinoff::validate_reason_like;
 
 pub struct Args<'a> {
@@ -48,8 +49,8 @@ enum Outcome {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
-    let proposal_id = require_safe_id(&args.proposal_id, "proposal-id")?;
+    let run_id = args.run_id.clone();
+    let proposal_id = parse_proposal_id(&args.proposal_id)?;
     let reason = match args.reason.as_deref() {
         Some(r) => Some(validate_reason_like(r, "reason")?),
         None => None,
@@ -72,7 +73,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 "proposal_not_found",
                 format!("no proposal with id {proposal_id} in run {run_id}"),
             )
-            .with_invalid_value(&proposal_id));
+            .with_invalid_value(proposal_id.as_str()));
         }
     };
 
@@ -100,14 +101,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     proposal.rejected_reason, reason
                 ),
             )
-            .with_invalid_value(&proposal_id));
+            .with_invalid_value(proposal_id.as_str()));
         }
         SpinoffStatus::Approved => {
             return Err(CliError::user(
                 "proposal_already_approved",
                 format!("proposal {proposal_id} was already approved; cannot reject"),
             )
-            .with_invalid_value(&proposal_id));
+            .with_invalid_value(proposal_id.as_str()));
         }
         SpinoffStatus::Proposed => {}
     }
@@ -126,7 +127,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let mut data = serde_json::Map::new();
-    data.insert("proposal_id".into(), Value::String(proposal_id.clone()));
+    data.insert("proposal_id".into(), Value::String(proposal_id.to_string()));
     if let Some(r) = &reason {
         data.insert("reason".into(), Value::String(r.clone()));
     }
@@ -195,19 +196,19 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                          different reason (prior: {persisted:?}, current: {reason:?})"
                     ),
                 )
-                .with_invalid_value(&proposal_id))
+                .with_invalid_value(proposal_id.as_str()))
             }
         }
         Outcome::AlreadyApproved => Err(CliError::user(
             "proposal_already_approved",
             format!("proposal {proposal_id} was approved by a concurrent caller; cannot reject"),
         )
-        .with_invalid_value(&proposal_id)),
+        .with_invalid_value(proposal_id.as_str())),
         Outcome::ProposalNotFound => Err(CliError::user(
             "proposal_not_found",
             format!("proposal {proposal_id} disappeared from run {run_id}"),
         )
-        .with_invalid_value(&proposal_id)),
+        .with_invalid_value(proposal_id.as_str())),
         Outcome::RunNotFound => Err(CliError::user(
             "run_not_found",
             format!("run {run_id} disappeared"),
@@ -219,7 +220,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 #[allow(clippy::too_many_arguments)]
 fn emit_rejected(
     run_id: &str,
-    proposal_id: &str,
+    proposal_id: &ProposalId,
     reason: Option<String>,
     seq: Option<u64>,
     idempotent_replay: Option<bool>,

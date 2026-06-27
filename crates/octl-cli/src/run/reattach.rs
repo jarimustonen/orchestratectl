@@ -18,7 +18,7 @@ use octl_core::{append_and_apply, read_manifest_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, run_paths};
 use crate::supervise::pid_file;
 
 const PID_FILE_WAIT: Duration = Duration::from_secs(5);
@@ -38,13 +38,12 @@ pub fn run(
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
-    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
-                .with_invalid_value(&run_id),
+                .with_invalid_value(run_id),
         );
     }
     let pid_path = paths.supervisor_pid();
@@ -91,7 +90,7 @@ pub fn run(
     let exe = std::env::current_exe()
         .map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))?;
     let mut cmd = Command::new(exe);
-    cmd.arg("supervise").arg(&run_id);
+    cmd.arg("supervise").arg(run_id);
     if once {
         cmd.arg("--once");
     }
@@ -133,7 +132,7 @@ pub fn run(
     );
 
     let payload = ReattachPayload {
-        run_id: &run_id,
+        run_id,
         action: "reattached",
         supervisor_pid: recorded_pid,
     };

@@ -8,7 +8,7 @@ use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, parse_node_id, run_paths};
 
 #[derive(Serialize)]
 struct CancelPayload {
@@ -23,15 +23,14 @@ pub fn run(
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
-    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
     let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
         Some(m) => m,
         None => {
             return Err(
                 CliError::user("run_not_found", format!("no run with id {run_id}"))
-                    .with_invalid_value(&run_id),
+                    .with_invalid_value(run_id),
             );
         }
     };
@@ -39,7 +38,7 @@ pub fn run(
     if matches!(manifest.status, Status::Cancelled) {
         return emit(
             CancelPayload {
-                run_id,
+                run_id: run_id.to_string(),
                 cancelled_nodes: vec![],
                 already_cancelled: true,
             },
@@ -78,7 +77,12 @@ pub fn run(
             .collect();
         ids.sort();
         for node_id in ids {
-            let n = match read_node_opt(&paths, &node_id).map_err(from_core)? {
+            // A stem that is not a well-formed node id can't be one of our
+            // projection files; skip it rather than failing the cancel.
+            let Ok(nid) = parse_node_id(&node_id) else {
+                continue;
+            };
+            let n = match read_node_opt(&paths, &nid).map_err(from_core)? {
                 Some(n) => n,
                 None => continue,
             };
@@ -100,7 +104,7 @@ pub fn run(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": []
             });
-            append_and_apply(&paths, "node.report", Some(&node_id), None, data)
+            append_and_apply(&paths, "node.report", Some(nid.as_str()), None, data)
                 .map_err(from_core)?;
             cancelled_nodes.push(node_id);
         }
@@ -116,7 +120,7 @@ pub fn run(
 
     emit(
         CancelPayload {
-            run_id,
+            run_id: run_id.to_string(),
             cancelled_nodes,
             already_cancelled: false,
         },

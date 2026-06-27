@@ -15,8 +15,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use octl_core::{
-    append_and_apply_unlocked, read_node_opt, write_node, RunLock, RunPaths, Status,
-    STATE_SCHEMA_VERSION,
+    append_and_apply_unlocked, read_node_opt, write_node, DiscussionId, NodeId, ProposalId,
+    RunLock, RunPaths, Status, STATE_SCHEMA_VERSION,
 };
 
 use crate::error::CliError;
@@ -163,7 +163,12 @@ pub fn process_node_report(
                     "discussion",
                     i,
                 );
-                if parent_paths.discussion(&id).exists() {
+                // `id` is our own deterministic output, so this parse never
+                // fails in practice; map any failure to a system error rather
+                // than panicking.
+                let did = DiscussionId::parse_str(&id)
+                    .map_err(|e| CliError::system("invalid_generated_id", e.to_string()))?;
+                if parent_paths.discussion(&did).exists() {
                     consumption.skipped_already_present += 1;
                     continue;
                 }
@@ -203,7 +208,9 @@ pub fn process_node_report(
             for (i, item) in items.iter().enumerate() {
                 let id =
                     deterministic_id('s', child_run_id, child_node_id, report_seq, "spinoff", i);
-                if parent_paths.spinoff(&id).exists() {
+                let pid = ProposalId::parse_str(&id)
+                    .map_err(|e| CliError::system("invalid_generated_id", e.to_string()))?;
+                if parent_paths.spinoff(&pid).exists() {
                     consumption.skipped_already_present += 1;
                     continue;
                 }
@@ -240,7 +247,9 @@ pub fn process_node_report(
         // syncing the parent node's `last_processed_report_seq_by_child`
         // map onto its on-disk projection. The state file is the cursor
         // of record; the node-projection mirror is a debugging aid.
-        if let Some(mut n) = read_node_opt(parent_paths, parent_node_id)
+        let parent_nid = NodeId::parse_str(parent_node_id)
+            .map_err(|e| CliError::user("invalid_id", e.to_string()))?;
+        if let Some(mut n) = read_node_opt(parent_paths, &parent_nid)
             .map_err(|e| CliError::system("io_error", e.to_string()))?
         {
             n.last_processed_report_seq_by_child

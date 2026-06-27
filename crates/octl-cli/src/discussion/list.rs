@@ -7,7 +7,7 @@ use octl_core::{read_discussion_opt, DiscussionStatus};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, parse_discussion_id, run_paths};
 
 use super::{status_kebab, StatusArg};
 
@@ -36,14 +36,14 @@ struct DiscussionSummary {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let run_id = &args.run_id;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
 
     if !paths.root.is_dir() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
-                .with_invalid_value(&run_id),
+                .with_invalid_value(run_id.as_str()),
         );
     }
 
@@ -83,6 +83,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
+        // A stem that is not a well-formed discussion id can't be one of our
+        // projection files; skip it rather than erroring the whole listing.
+        let Ok(id) = parse_discussion_id(&id) else {
+            continue;
+        };
         let d = match read_discussion_opt(&paths, &id).map_err(from_core)? {
             Some(d) => d,
             None => continue,
@@ -93,7 +98,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             }
         }
         out.push(DiscussionSummary {
-            discussion_id: d.discussion_id,
+            discussion_id: d.discussion_id.to_string(),
             node_id: d.node_id,
             status: status_kebab(d.status).to_string(),
             severity: d.severity,

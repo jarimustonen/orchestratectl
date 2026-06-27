@@ -7,7 +7,7 @@ use octl_core::{read_manifest_opt, read_spinoff_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, require_safe_id, run_paths};
+use crate::run::{from_core, kind_kebab, parse_proposal_id, run_paths};
 use crate::spinoff::{status_arg_kebab, status_kebab, StatusFilterArg};
 
 pub struct Args<'a> {
@@ -42,16 +42,16 @@ struct Summary {
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Validate inputs at the boundary *before* any filesystem work
     // (AGENTS-AI-FIRST-CLI §1: reject unknown values up front).
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let run_id = &args.run_id;
     let status_filter = args.status.map(status_arg_kebab);
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
 
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
-                .with_invalid_value(&run_id),
+                .with_invalid_value(run_id.as_str()),
         );
     }
 
@@ -80,6 +80,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .collect();
         ids.sort();
         for id in ids {
+            // A stem that is not a well-formed proposal id can't be one of our
+            // projection files; skip it rather than erroring the whole listing.
+            let Ok(id) = parse_proposal_id(&id) else {
+                continue;
+            };
             let s = match read_spinoff_opt(&paths, &id).map_err(from_core)? {
                 Some(s) => s,
                 None => continue,
@@ -91,7 +96,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 }
             }
             out.push(Summary {
-                proposal_id: s.proposal_id,
+                proposal_id: s.proposal_id.to_string(),
                 node_id: s.node_id,
                 status,
                 proposed_title: s.proposed_title,
@@ -114,7 +119,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     emit(
         ListPayload {
-            run_id,
+            run_id: run_id.clone(),
             proposals: out,
         },
         args.spec,

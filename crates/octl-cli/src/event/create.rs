@@ -17,7 +17,9 @@ use octl_core::{ensure_root, find_prior_with_key, PriorEvent, RunLock, RunPaths}
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{
+    from_core, parse_discussion_id, parse_node_id, parse_proposal_id, parse_run_id, run_paths,
+};
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -166,7 +168,7 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
         let s = v
             .as_str()
             .ok_or_else(|| CliError::user("invalid_data_id", "data.node_id must be a string"))?;
-        require_safe_id(s, "data.node_id")?;
+        parse_node_id(s)?;
         if let Some(top) = top_node_id {
             if top != s {
                 return Err(CliError::user(
@@ -181,7 +183,7 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
             let s = v.as_str().ok_or_else(|| {
                 CliError::user("invalid_data_id", "data.discussion_id must be a string")
             })?;
-            require_safe_id(s, "data.discussion_id")?;
+            parse_discussion_id(s)?;
         }
     }
     if matches!(
@@ -192,7 +194,7 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
             let s = v.as_str().ok_or_else(|| {
                 CliError::user("invalid_data_id", "data.proposal_id must be a string")
             })?;
-            require_safe_id(s, "data.proposal_id")?;
+            parse_proposal_id(s)?;
         }
     }
     if kind == "child.spawned" {
@@ -200,20 +202,20 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
             let s = v.as_str().ok_or_else(|| {
                 CliError::user("invalid_data_id", "data.child_run_id must be a string")
             })?;
-            require_safe_id(s, "data.child_run_id")?;
+            parse_run_id(s)?;
         }
         if let Some(v) = data.get("child_node_id") {
             let s = v.as_str().ok_or_else(|| {
                 CliError::user("invalid_data_id", "data.child_node_id must be a string")
             })?;
-            require_safe_id(s, "data.child_node_id")?;
+            parse_node_id(s)?;
         }
     }
     Ok(())
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let run_id = args.run_id.clone();
 
     if !ALLOWED_KINDS.contains(&args.kind.as_str()) {
         return Err(CliError::user(
@@ -250,7 +252,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let node_id = match args.node_id.as_deref() {
-        Some(v) => Some(require_safe_id(v, "node-id")?),
+        Some(v) => Some(parse_node_id(v)?.to_string()),
         None => None,
     };
 

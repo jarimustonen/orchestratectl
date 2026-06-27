@@ -7,7 +7,7 @@ use octl_core::{read_manifest_opt, read_node_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, require_safe_id, run_paths, status_kebab};
+use crate::run::{from_core, kind_kebab, parse_node_id, run_paths, status_kebab};
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -33,7 +33,7 @@ struct NodeSummary {
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let run_id = args.run_id.clone();
     if let Some(s) = &args.status {
         if s.trim().is_empty() {
             return Err(CliError::user(
@@ -88,6 +88,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
         ids.sort();
         for node_id in ids {
+            // A directory entry whose stem is not a well-formed node id can't
+            // be one of our projection files; skip it rather than erroring the
+            // whole listing.
+            let Ok(node_id) = parse_node_id(&node_id) else {
+                continue;
+            };
             let n = match read_node_opt(&paths, &node_id).map_err(from_core)? {
                 Some(n) => n,
                 None => continue,
@@ -104,7 +110,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 }
             }
             out.push(NodeSummary {
-                node_id: n.node_id,
+                node_id: n.node_id.to_string(),
                 kind: kind.to_string(),
                 status: status.to_string(),
                 parent_node_id: n.parent_node_id,

@@ -23,8 +23,8 @@ use crate::error::CliError;
 use crate::idempotency;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
-    from_core, kind_kebab, lifecycle_for, lifecycle_kebab, require_nonempty, require_safe_id,
-    run_paths, spawn, supervisor_spawn,
+    from_core, kind_kebab, lifecycle_for, lifecycle_kebab, parse_node_id, parse_run_id,
+    require_nonempty, run_paths, spawn, supervisor_spawn,
 };
 
 pub struct Args<'a> {
@@ -169,12 +169,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         ));
     }
 
+    // Validate the parent pointers strictly (RunId / NodeId shapes) but keep
+    // them as `String` for the event-data payload and downstream `as_deref`.
     let parent_run_id = match args.parent_run_id.as_deref() {
-        Some(v) => Some(require_safe_id(v, "parent-run-id")?),
+        Some(v) => Some(parse_run_id(v)?.to_string()),
         None => None,
     };
     let parent_node_id = match args.parent_node_id.as_deref() {
-        Some(v) => Some(require_safe_id(v, "parent-node-id")?),
+        Some(v) => Some(parse_node_id(v)?.to_string()),
         None => None,
     };
 

@@ -6,9 +6,7 @@ use octl_core::{read_manifest_opt, Manifest};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{
-    from_core, kind_kebab, lifecycle_kebab, require_safe_id, run_paths, status_kebab,
-};
+use crate::run::{from_core, kind_kebab, lifecycle_kebab, run_paths, status_kebab};
 
 #[derive(Serialize)]
 struct ShowPayload {
@@ -24,15 +22,14 @@ struct Counts {
 }
 
 pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
-    let run_id = require_safe_id(run_id, "run-id")?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(&root, run_id)?;
     let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
         Some(m) => m,
         None => {
             return Err(
                 CliError::user("run_not_found", format!("no run with id {run_id}"))
-                    .with_invalid_value(&run_id),
+                    .with_invalid_value(run_id),
             );
         }
     };

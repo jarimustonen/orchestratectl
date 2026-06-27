@@ -31,11 +31,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, RunLock, RunPaths, Status};
+use octl_core::{
+    append_and_apply, read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status,
+};
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, require_safe_id, run_paths};
+use crate::run::{from_core, parse_run_id, run_paths};
 
 /// Polling cadences (design.md §7.5 defaults).
 const TAIL_TICK: Duration = Duration::from_millis(500);
@@ -110,7 +112,7 @@ pub fn dispatch(
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
-    let run_id = require_safe_id(&args.run_id, "run-id")?;
+    let run_id = args.run_id.clone();
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
@@ -247,7 +249,8 @@ pub fn dispatch(
                     // Validate before using the id to build filesystem
                     // paths — a malformed child_run_id from the event log
                     // must never escape the runs root.
-                    let Ok(child_run_id) = require_safe_id(&child_run_id, "child-run-id") else {
+                    let Ok(child_run_id) = parse_run_id(&child_run_id).map(|r| r.to_string())
+                    else {
                         warn!(
                             target: "orchestratectl::supervise",
                             seq = ev.seq,
@@ -588,7 +591,9 @@ fn spawn_child_supervisor(
     let child_paths = run_paths(root, child_run_id)?;
     match RunLock::acquire(&child_paths.lock()) {
         Ok(_guard) => {
-            if let Ok(Some(mut n)) = read_node_opt(&child_paths, "n-0001") {
+            // The child run's root node is always `n-0001` (a static, valid id).
+            let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
+            if let Ok(Some(mut n)) = read_node_opt(&child_paths, &root_node) {
                 n.supervisor_pid = Some(pid as i32);
                 let _ = octl_core::write_node(&child_paths, &n);
             }
@@ -641,12 +646,17 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
         let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
             continue;
         };
-        if let Ok(Some(n)) = read_node_opt(paths, &node_id) {
+        // A stem that is not a well-formed node id can't be one of our
+        // projection files; skip it.
+        let Ok(nid) = NodeId::parse_str(&node_id) else {
+            continue;
+        };
+        if let Ok(Some(n)) = read_node_opt(paths, &nid) {
             for c in &n.children {
                 // Validate before this id becomes a filesystem path on
                 // reseed — a corrupt/stale projection must not let an
                 // unsafe run id escape the runs root.
-                if let Ok(safe) = require_safe_id(&c.run_id, "child-run-id") {
+                if let Ok(safe) = parse_run_id(&c.run_id).map(|r| r.to_string()) {
                     out.entry(safe).or_insert_with(|| node_id.clone());
                 } else {
                     warn!(
@@ -712,7 +722,10 @@ fn watchdog_tick(
         let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
             continue;
         };
-        let Ok(Some(n)) = read_node_opt(paths, &node_id) else {
+        let Ok(nid) = NodeId::parse_str(&node_id) else {
+            continue;
+        };
+        let Ok(Some(n)) = read_node_opt(paths, &nid) else {
             continue;
         };
         if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
