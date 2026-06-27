@@ -46,8 +46,9 @@ pub use projections::{
 pub use reducer::apply_event;
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
-    ChildRef, Discussion, DiscussionStatus, Event, Kind, Lifecycle, Manifest, Node,
-    SpinoffProposal, SpinoffStatus, Status, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
+    ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,
+    Lifecycle, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal, SpinoffStatus, Status,
+    STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,

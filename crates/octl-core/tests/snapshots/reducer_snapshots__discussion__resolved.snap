@@ -4,7 +4,7 @@ expression: v
 ---
 {
   "context": "the legacy path predates the session-token rework",
-  "discussion_id": "d-fixturediscussion01",
+  "discussion_id": "d-fxtredscssn0001",
   "node_id": "n-0001",
   "note": null,
   "opened_at": "<ts>",

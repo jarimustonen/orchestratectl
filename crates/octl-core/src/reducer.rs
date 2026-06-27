@@ -22,9 +22,22 @@ use crate::projections::{
     write_manifest, write_node, write_spinoff,
 };
 use crate::schema::{
-    ChildRef, Discussion, DiscussionStatus, Event, Kind, Lifecycle, Manifest, Node,
-    SpinoffProposal, SpinoffStatus, Status, STATE_SCHEMA_VERSION,
+    ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,
+    Lifecycle, Manifest, Node, NodeId, ProposalId, SpinoffProposal, SpinoffStatus, Status,
+    STATE_SCHEMA_VERSION,
 };
+
+/// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
+/// error. An id that fails to parse here came off `events.jsonl` (or a forged
+/// event), so the log — not the caller — is the corrupt party.
+///
+/// [`CorruptEventLog`]: Error::CorruptEventLog
+fn corrupt_id(events_path: &Path, ev: &Event, e: &IdValidationError) -> Error {
+    Error::CorruptEventLog {
+        path: events_path.to_path_buf(),
+        reason: format!("event seq={} kind={}: {e}", ev.seq, ev.kind),
+    }
+}
 
 fn data_kind(v: &Value) -> Option<Kind> {
     serde_json::from_value(v.clone()).ok()
@@ -149,12 +162,14 @@ pub fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     // An event whose envelope `run_id` doesn't match the run we're folding it
     // into means the log was copied/misrouted — fold it and projections would
     // be silently cross-contaminated. Reject before any write.
-    if ev.run_id != paths.run_id {
+    if ev.run_id != paths.run_id.as_str() {
         return Err(Error::CorruptEventLog {
             path: paths.events(),
             reason: format!(
                 "event seq={} envelope run_id {:?} does not match run {:?}",
-                ev.seq, ev.run_id, paths.run_id
+                ev.seq,
+                ev.run_id,
+                paths.run_id.as_str()
             ),
         });
     }
@@ -267,7 +282,7 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id = ev
+    let node_id_str = ev
         .node_id
         .as_deref()
         .ok_or_else(|| Error::CorruptEventLog {
@@ -276,8 +291,8 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
                 "event seq={} kind=node.created missing top-level `node_id`",
                 ev.seq
             ),
-        })?
-        .to_string();
+        })?;
+    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
     // Idempotent on replay: skip if the node already exists.
     if read_node_opt(paths, &node_id)?.is_some() {
         return Ok(());
@@ -293,7 +308,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         })?;
     let n = Node {
         schema_version: STATE_SCHEMA_VERSION,
-        node_id: node_id.clone(),
+        node_id,
         run_id: ev.run_id.clone(),
         parent_node_id: d
             .get("parent_node_id")
@@ -331,7 +346,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id = ev
+    let node_id_str = ev
         .node_id
         .as_deref()
         .ok_or_else(|| Error::CorruptEventLog {
@@ -341,7 +356,8 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ev.seq
             ),
         })?;
-    let mut n = match read_node_opt(paths, node_id)? {
+    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),
     };
@@ -362,7 +378,7 @@ fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let node_id = ev
+    let node_id_str = ev
         .node_id
         .as_deref()
         .ok_or_else(|| Error::CorruptEventLog {
@@ -372,7 +388,8 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ev.seq
             ),
         })?;
-    let mut n = match read_node_opt(paths, node_id)? {
+    let node_id = NodeId::parse_str(node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
         None => return Ok(()),
     };
@@ -470,7 +487,8 @@ fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
 fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
     let d = &ev.data;
-    let discussion_id = want_str(&events_path, ev, d, "discussion_id")?.to_string();
+    let discussion_id = DiscussionId::parse_str(want_str(&events_path, ev, d, "discussion_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     if read_discussion_opt(paths, &discussion_id)?.is_some() {
         return Ok(());
     }
@@ -525,8 +543,9 @@ fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let id = want_str(&events_path, ev, &ev.data, "discussion_id")?;
-    let mut disc = match read_discussion_opt(paths, id)? {
+    let id = DiscussionId::parse_str(want_str(&events_path, ev, &ev.data, "discussion_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let mut disc = match read_discussion_opt(paths, &id)? {
         Some(d) => d,
         None => return Ok(()),
     };
@@ -554,7 +573,8 @@ fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
 fn apply_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
     let d = &ev.data;
-    let proposal_id = want_str(&events_path, ev, d, "proposal_id")?.to_string();
+    let proposal_id = ProposalId::parse_str(want_str(&events_path, ev, d, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     if read_spinoff_opt(paths, &proposal_id)?.is_some() {
         return Ok(());
     }
@@ -608,8 +628,9 @@ fn apply_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let id = want_str(&events_path, ev, &ev.data, "proposal_id")?;
-    let mut s = match read_spinoff_opt(paths, id)? {
+    let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let mut s = match read_spinoff_opt(paths, &id)? {
         Some(s) => s,
         None => return Ok(()),
     };
@@ -634,8 +655,9 @@ fn apply_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 fn apply_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<()> {
     let events_path = paths.events();
-    let id = want_str(&events_path, ev, &ev.data, "proposal_id")?;
-    let mut s = match read_spinoff_opt(paths, id)? {
+    let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
+        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let mut s = match read_spinoff_opt(paths, &id)? {
         Some(s) => s,
         None => return Ok(()),
     };
@@ -662,7 +684,7 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
     // `child.spawned` is written to the PARENT run's events; the parent
     // spawning node is `ev.node_id`, the child run/node lives in `data`.
     let events_path = paths.events();
-    let parent_node_id = ev
+    let parent_node_id_str = ev
         .node_id
         .as_deref()
         .ok_or_else(|| Error::CorruptEventLog {
@@ -672,6 +694,8 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ev.seq
             ),
         })?;
+    let parent_node_id =
+        NodeId::parse_str(parent_node_id_str).map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let child_run_id = want_str(&events_path, ev, &ev.data, "child_run_id")?.to_string();
     let child_node_id = ev
         .data
@@ -679,7 +703,7 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("n-0001")
         .to_string();
-    let mut n = match read_node_opt(paths, parent_node_id)? {
+    let mut n = match read_node_opt(paths, &parent_node_id)? {
         Some(n) => n,
         None => return Ok(()),
     };

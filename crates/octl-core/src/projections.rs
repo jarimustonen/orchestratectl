@@ -5,7 +5,10 @@ use std::path::Path;
 use crate::atomic::write_json_atomic;
 use crate::error::{Error, Result};
 use crate::paths::RunPaths;
-use crate::schema::{Discussion, Manifest, Node, SpinoffProposal, SUPPORTED_STATE_SCHEMAS};
+use crate::schema::{
+    Discussion, DiscussionId, Manifest, Node, NodeId, ProposalId, SpinoffProposal,
+    SUPPORTED_STATE_SCHEMAS,
+};
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
@@ -60,7 +63,7 @@ pub fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
 }
 
 /// Read and schema-validate one node. Errors if it is missing.
-pub fn read_node(paths: &RunPaths, node_id: &str) -> Result<Node> {
+pub fn read_node(paths: &RunPaths, node_id: &NodeId) -> Result<Node> {
     let p = paths.node(node_id);
     let n: Node = read_json(&p)?;
     check_schema(&p, n.schema_version)?;
@@ -68,7 +71,7 @@ pub fn read_node(paths: &RunPaths, node_id: &str) -> Result<Node> {
 }
 
 /// Read and schema-validate one node, returning `None` if absent.
-pub fn read_node_opt(paths: &RunPaths, node_id: &str) -> Result<Option<Node>> {
+pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>> {
     let p = paths.node(node_id);
     match read_json_opt::<Node>(&p)? {
         Some(n) => {
@@ -85,7 +88,7 @@ pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
 }
 
 /// Read and schema-validate one discussion. Errors if it is missing.
-pub fn read_discussion(paths: &RunPaths, id: &str) -> Result<Discussion> {
+pub fn read_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<Discussion> {
     let p = paths.discussion(id);
     let d: Discussion = read_json(&p)?;
     check_schema(&p, d.schema_version)?;
@@ -93,7 +96,7 @@ pub fn read_discussion(paths: &RunPaths, id: &str) -> Result<Discussion> {
 }
 
 /// Read and schema-validate one discussion, returning `None` if absent.
-pub fn read_discussion_opt(paths: &RunPaths, id: &str) -> Result<Option<Discussion>> {
+pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option<Discussion>> {
     let p = paths.discussion(id);
     match read_json_opt::<Discussion>(&p)? {
         Some(d) => {
@@ -110,7 +113,7 @@ pub fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
 }
 
 /// Read and schema-validate one spin-off proposal. Errors if it is missing.
-pub fn read_spinoff(paths: &RunPaths, id: &str) -> Result<SpinoffProposal> {
+pub fn read_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<SpinoffProposal> {
     let p = paths.spinoff(id);
     let s: SpinoffProposal = read_json(&p)?;
     check_schema(&p, s.schema_version)?;
@@ -118,7 +121,7 @@ pub fn read_spinoff(paths: &RunPaths, id: &str) -> Result<SpinoffProposal> {
 }
 
 /// Read and schema-validate one spin-off proposal, returning `None` if absent.
-pub fn read_spinoff_opt(paths: &RunPaths, id: &str) -> Result<Option<SpinoffProposal>> {
+pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<SpinoffProposal>> {
     let p = paths.spinoff(id);
     match read_json_opt::<SpinoffProposal>(&p)? {
         Some(s) => {

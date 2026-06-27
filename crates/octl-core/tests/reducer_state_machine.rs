@@ -5,7 +5,7 @@
 use octl_core::events::read_all_events;
 use octl_core::{
     append_event_with_seq, apply_event, ensure_root, read_manifest, read_node_opt, run_dir, Error,
-    Node, RunLock, RunPaths, Status,
+    Node, NodeId, RunLock, RunPaths, Status,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -55,7 +55,8 @@ impl Harness {
     }
 
     fn node(&self, node_id: &str) -> Node {
-        read_node_opt(&self.paths, node_id).unwrap().unwrap()
+        let nid = NodeId::parse_str(node_id).unwrap();
+        read_node_opt(&self.paths, &nid).unwrap().unwrap()
     }
 
     fn bootstrap_node(&mut self) {

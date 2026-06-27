@@ -5,7 +5,7 @@ use insta::assert_json_snapshot;
 use octl_core::events::read_all_events;
 use octl_core::{
     append_event_with_seq, apply_event, ensure_root, read_discussion_opt, read_manifest,
-    read_node_opt, read_spinoff_opt, run_dir, RunLock, RunPaths,
+    read_node_opt, read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunLock, RunPaths,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -83,7 +83,8 @@ fn snapshot_run(h: &Harness, name: &str, extras: &[(&str, &str)]) {
     let manifest_v = redact_times(serde_json::to_value(&manifest).unwrap());
     assert_json_snapshot!(format!("{name}__manifest"), manifest_v);
     for (label, node_id) in extras {
-        if let Some(n) = read_node_opt(&h.paths, node_id).unwrap() {
+        let node_id = NodeId::parse_str(node_id).unwrap();
+        if let Some(n) = read_node_opt(&h.paths, &node_id).unwrap() {
             let v = redact_times(serde_json::to_value(&n).unwrap());
             assert_json_snapshot!(format!("{name}__node_{label}"), v);
         }
@@ -137,7 +138,7 @@ fn run_node_report_spinoff_flow() {
         "spinoff.proposed",
         Some("n-0001"),
         json!({
-            "proposal_id": "s-fixturespinoff0001",
+            "proposal_id": "s-fxtrespnff0001",
             "proposed_title": "drop legacy cookie path",
             "proposed_kind": "spinoff",
             "rationale": "would tidy the auth surface",
@@ -148,15 +149,18 @@ fn run_node_report_spinoff_flow() {
         "spinoff.approved",
         Some("n-0001"),
         json!({
-            "proposal_id": "s-fixturespinoff0001",
+            "proposal_id": "s-fxtrespnff0001",
             "issue_slug": "drop-legacy-cookie-path",
         }),
     );
 
     snapshot_run(&h, "report_spinoff", &[("n0001", "n-0001")]);
-    let s = read_spinoff_opt(&h.paths, "s-fixturespinoff0001")
-        .unwrap()
-        .unwrap();
+    let s = read_spinoff_opt(
+        &h.paths,
+        &ProposalId::parse_str("s-fxtrespnff0001").unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     let v = redact_times(serde_json::to_value(&s).unwrap());
     assert_json_snapshot!("report_spinoff__spinoff", v);
 
@@ -189,7 +193,7 @@ fn discussion_open_and_resolve() {
         "discussion.opened",
         Some("n-0001"),
         json!({
-            "discussion_id": "d-fixturediscussion01",
+            "discussion_id": "d-fxtredscssn0001",
             "node_id": "n-0001",
             "topic": "should we drop the legacy cookie path?",
             "severity": "discuss",
@@ -201,14 +205,17 @@ fn discussion_open_and_resolve() {
         "discussion.resolved",
         Some("n-0001"),
         json!({
-            "discussion_id": "d-fixturediscussion01",
+            "discussion_id": "d-fxtredscssn0001",
             "resolution": "drop",
         }),
     );
 
-    let d = read_discussion_opt(&h.paths, "d-fixturediscussion01")
-        .unwrap()
-        .unwrap();
+    let d = read_discussion_opt(
+        &h.paths,
+        &DiscussionId::parse_str("d-fxtredscssn0001").unwrap(),
+    )
+    .unwrap()
+    .unwrap();
     let v = redact_times(serde_json::to_value(&d).unwrap());
     assert_json_snapshot!("discussion__resolved", v);
     let m = read_manifest(&h.paths).unwrap();
@@ -258,7 +265,9 @@ fn child_spawned_records_parent_child_link() {
         }),
     );
 
-    let n = read_node_opt(&h.paths, "n-0001").unwrap().unwrap();
+    let n = read_node_opt(&h.paths, &NodeId::parse_str("n-0001").unwrap())
+        .unwrap()
+        .unwrap();
     let v = redact_times(serde_json::to_value(&n).unwrap());
     assert_json_snapshot!("child_spawned__parent_node", v);
 }

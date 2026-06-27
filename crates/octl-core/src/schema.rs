@@ -10,6 +10,237 @@ pub const STATE_SCHEMA_VERSION: u32 = 1;
 /// All state-schema versions this crate can read.
 pub const SUPPORTED_STATE_SCHEMAS: &[u32] = &[1];
 
+/// Crockford base32 alphabet in lowercase (excludes `i`, `l`, `o`, `u`). This
+/// is the charset for every id body after its `x-` prefix, and for the bare
+/// ULID of a [`RunId`].
+const CROCKFORD_LOWER: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+
+/// True iff every byte of `s` is a lowercase Crockford base32 character.
+fn all_crockford_lower(s: &str) -> bool {
+    s.bytes().all(|b| CROCKFORD_LOWER.contains(&b))
+}
+
+/// Error returned when a typed identifier fails parse-time validation.
+///
+/// Every [`RunId`], [`NodeId`], [`DiscussionId`], and [`ProposalId`] is
+/// constructed only through its `parse_str` constructor (or the equivalent
+/// validating `Deserialize`), so any value that reaches a path helper has
+/// already been checked for prefix, charset, and length. This is the
+/// path-traversal guard: a raw id containing `/`, `..`, or a leading dot can
+/// never be turned into one of these newtypes, so it can never name a file
+/// outside the run directory.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdValidationError {
+    /// The value carried the right prefix (or needs none) but its body had the
+    /// wrong length or used characters outside the permitted charset.
+    #[error("invalid {kind} id {value:?}: expected {expected}")]
+    InvalidFormat {
+        /// Which id type rejected the value (`run`, `node`, `discussion`, `spinoff`).
+        kind: &'static str,
+        /// The offending raw value.
+        value: String,
+        /// Human-readable description of the accepted shape (e.g. `n-NNNN`).
+        expected: &'static str,
+    },
+    /// The value did not start with the id type's required prefix
+    /// (`n-`, `d-`, `s-`).
+    #[error("invalid {kind} id: wrong prefix, expected {expected}")]
+    WrongPrefix {
+        /// Which id type rejected the value.
+        kind: &'static str,
+        /// Human-readable description of the accepted shape.
+        expected: &'static str,
+    },
+}
+
+impl IdValidationError {
+    /// The id type that rejected the value (`run`, `node`, `discussion`, `spinoff`).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidFormat { kind, .. } | Self::WrongPrefix { kind, .. } => kind,
+        }
+    }
+
+    /// The accepted-shape hint, suitable for the `expected` field of a CLI
+    /// error envelope.
+    pub fn expected(&self) -> &'static str {
+        match self {
+            Self::InvalidFormat { expected, .. } | Self::WrongPrefix { expected, .. } => expected,
+        }
+    }
+}
+
+/// Generate the shared trait surface for a validated id newtype: `as_str`,
+/// `Display`, `Debug`, `Serialize` (as the bare string), and a validating
+/// `Deserialize` (delegates to `parse_str`, so reading an old file with a
+/// malformed id fails loudly rather than silently widening the type). Each
+/// newtype supplies its own `parse_str` in a separate `impl` block.
+macro_rules! id_newtype {
+    ($(#[$m:meta])* $name:ident) => {
+        $(#[$m])*
+        #[derive(Clone, PartialEq, Eq, Hash)]
+        pub struct $name(String);
+
+        impl $name {
+            /// The validated id as a string slice. There is no mutable or
+            /// owned-`String` accessor by design: the inner value can never be
+            /// mutated into an unvalidated state after construction.
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}({:?})", stringify!($name), self.0)
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(d)?;
+                Self::parse_str(&s).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// A validated run identifier: a lowercase ULID (26 Crockford base32
+    /// characters whose first character keeps the encoded timestamp within
+    /// ULID's 48-bit range). Mirrors what [`crate::new_run_id`] emits.
+    RunId
+}
+
+impl RunId {
+    /// Accepted-shape hint shared by every rejection.
+    const EXPECTED: &'static str = "26-char lowercase Crockford base32 ULID";
+    /// Canonical length of a ULID in Crockford base32.
+    const LEN: usize = 26;
+
+    /// Parse and validate a `run_id`. Accepts only the 26-character lowercase
+    /// ULID shape; rejects wrong length, non-Crockford characters, and a first
+    /// character outside `0..=7` (which would overflow ULID's 48-bit timestamp).
+    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
+        let reject = || IdValidationError::InvalidFormat {
+            kind: "run",
+            value: s.to_string(),
+            expected: Self::EXPECTED,
+        };
+        if s.len() != Self::LEN || !all_crockford_lower(s) {
+            return Err(reject());
+        }
+        // The first base32 char carries the top 5 bits of the 128-bit ULID;
+        // the 48-bit timestamp cannot overflow only if it is in `0..=7`.
+        if !(b'0'..=b'7').contains(&s.as_bytes()[0]) {
+            return Err(reject());
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
+id_newtype! {
+    /// A validated node identifier: `n-` followed by 4 or more ASCII digits
+    /// (e.g. `n-0001`). Mirrors what [`crate::format_node_id`] emits.
+    NodeId
+}
+
+impl NodeId {
+    /// Accepted-shape hint shared by every rejection.
+    const EXPECTED: &'static str = "n-NNNN (n- followed by 4+ ASCII digits)";
+
+    /// Parse and validate a `node_id`. Requires the `n-` prefix followed by at
+    /// least four ASCII digits; rejects anything else (wrong prefix, too few
+    /// digits, non-digit body).
+    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
+        let body = s.strip_prefix("n-").ok_or(IdValidationError::WrongPrefix {
+            kind: "node",
+            expected: Self::EXPECTED,
+        })?;
+        if body.len() >= 4 && body.bytes().all(|b| b.is_ascii_digit()) {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(IdValidationError::InvalidFormat {
+                kind: "node",
+                value: s.to_string(),
+                expected: Self::EXPECTED,
+            })
+        }
+    }
+}
+
+id_newtype! {
+    /// A validated discussion identifier: `d-` followed by 10–26 lowercase
+    /// Crockford base32 characters. Covers both the `d-<ulid>` form (26 chars)
+    /// and the shorter `d-<sha-prefix>` deterministic-id form.
+    DiscussionId
+}
+
+impl DiscussionId {
+    /// Accepted-shape hint shared by every rejection.
+    const EXPECTED: &'static str = "d-<10-26 lowercase Crockford base32 chars>";
+
+    /// Parse and validate a `discussion_id`. Requires the `d-` prefix followed
+    /// by 10–26 lowercase Crockford base32 characters.
+    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
+        let body = s.strip_prefix("d-").ok_or(IdValidationError::WrongPrefix {
+            kind: "discussion",
+            expected: Self::EXPECTED,
+        })?;
+        if (10..=26).contains(&body.len()) && all_crockford_lower(body) {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(IdValidationError::InvalidFormat {
+                kind: "discussion",
+                value: s.to_string(),
+                expected: Self::EXPECTED,
+            })
+        }
+    }
+}
+
+id_newtype! {
+    /// A validated spin-off proposal identifier: `s-` followed by 10–26
+    /// lowercase Crockford base32 characters. Covers both the `s-<ulid>` form
+    /// (26 chars) and the shorter `s-<sha-prefix>` deterministic-id form.
+    ProposalId
+}
+
+impl ProposalId {
+    /// Accepted-shape hint shared by every rejection.
+    const EXPECTED: &'static str = "s-<10-26 lowercase Crockford base32 chars>";
+
+    /// Parse and validate a `proposal_id`. Requires the `s-` prefix followed
+    /// by 10–26 lowercase Crockford base32 characters.
+    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
+        let body = s.strip_prefix("s-").ok_or(IdValidationError::WrongPrefix {
+            kind: "spinoff",
+            expected: Self::EXPECTED,
+        })?;
+        if (10..=26).contains(&body.len()) && all_crockford_lower(body) {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(IdValidationError::InvalidFormat {
+                kind: "spinoff",
+                value: s.to_string(),
+                expected: Self::EXPECTED,
+            })
+        }
+    }
+}
+
 /// The run/node kind enum (design.md §1.2).
 ///
 /// All 8 kinds are active in MVP.
@@ -206,8 +437,10 @@ pub struct ChildRef {
 pub struct Node {
     /// State-schema version this file was written with.
     pub schema_version: u32,
-    /// Unique node identifier within its run (e.g. `n-0001`).
-    pub node_id: String,
+    /// Unique node identifier within its run (e.g. `n-0001`). Validated on
+    /// read; this is the projection's filename key, so it can never name a
+    /// path outside `nodes/`.
+    pub node_id: NodeId,
     /// Run this node belongs to.
     pub run_id: String,
     /// Parent node within the same run, if this is a sub-node.
@@ -257,8 +490,10 @@ pub struct Node {
 pub struct Discussion {
     /// State-schema version this file was written with.
     pub schema_version: u32,
-    /// Unique discussion identifier.
-    pub discussion_id: String,
+    /// Unique discussion identifier. Validated on read; this is the
+    /// projection's filename key, so it can never name a path outside
+    /// `discussions/`.
+    pub discussion_id: DiscussionId,
     /// Run this discussion belongs to.
     pub run_id: String,
     /// Node that opened the discussion.
@@ -290,8 +525,9 @@ pub struct Discussion {
 pub struct SpinoffProposal {
     /// State-schema version this file was written with.
     pub schema_version: u32,
-    /// Unique proposal identifier.
-    pub proposal_id: String,
+    /// Unique proposal identifier. Validated on read; this is the projection's
+    /// filename key, so it can never name a path outside `spinoffs/`.
+    pub proposal_id: ProposalId,
     /// Run this proposal belongs to.
     pub run_id: String,
     /// Node that proposed the spin-off.
@@ -355,5 +591,177 @@ mod tests {
                 "serde round-trip diverged from wire_name for {name:?}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    /// Inputs every id type must reject — the path-traversal vectors plus the
+    /// generic malformed cases called out in the issue's success criteria.
+    const TRAVERSAL_VECTORS: &[&str] = &[
+        "..",
+        "../etc",
+        "a/b",
+        "a/../b",
+        ".hidden",
+        "./x",
+        "foo/bar.json",
+        "n-0001/../../etc",
+        "",
+    ];
+
+    #[test]
+    fn run_id_accepts_generator_output_and_rejects_malformed() {
+        let id = crate::new_run_id();
+        assert!(
+            RunId::parse_str(&id).is_ok(),
+            "generator must validate: {id}"
+        );
+        for bad in [
+            "tooshort",
+            "01jxsnap0000000000000000000", // 27 chars
+            "01JXSNAP000000000000000000",  // uppercase
+            "01jxiiiiiiiiiiiiiiiiiiiiii",  // `i` not in Crockford
+            "80000000000000000000000000",  // first char exceeds ULID range
+            "n-0001",                      // wrong shape entirely
+        ] {
+            assert!(RunId::parse_str(bad).is_err(), "expected reject: {bad:?}");
+        }
+        for bad in TRAVERSAL_VECTORS {
+            assert!(
+                RunId::parse_str(bad).is_err(),
+                "traversal not rejected: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_id_accepts_canonical_and_rejects_malformed() {
+        for ok in ["n-0001", "n-0010", "n-123456"] {
+            assert!(NodeId::parse_str(ok).is_ok(), "expected accept: {ok}");
+        }
+        // Wrong prefix is its own error variant.
+        assert!(matches!(
+            NodeId::parse_str("d-0001"),
+            Err(IdValidationError::WrongPrefix { .. })
+        ));
+        assert!(matches!(
+            NodeId::parse_str("0001"),
+            Err(IdValidationError::WrongPrefix { .. })
+        ));
+        for bad in [
+            "n-1",    // too few digits
+            "n-abcd", // non-digit body
+            "n-",     // empty body
+            "n-00a1", // mixed
+        ] {
+            assert!(
+                matches!(
+                    NodeId::parse_str(bad),
+                    Err(IdValidationError::InvalidFormat { .. })
+                ),
+                "expected InvalidFormat: {bad:?}",
+            );
+        }
+        for bad in TRAVERSAL_VECTORS {
+            assert!(
+                NodeId::parse_str(bad).is_err(),
+                "traversal not rejected: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn discussion_id_accepts_both_forms_and_rejects_malformed() {
+        let gen = crate::new_discussion_id();
+        assert!(
+            DiscussionId::parse_str(&gen).is_ok(),
+            "generator must validate: {gen}"
+        );
+        assert!(DiscussionId::parse_str("d-0123456789").is_ok()); // 10-char sha-prefix form
+        assert!(matches!(
+            DiscussionId::parse_str("s-0123456789"),
+            Err(IdValidationError::WrongPrefix { .. })
+        ));
+        for bad in [
+            "d-short",                        // body < 10
+            "d-0123456789012345678901234567", // body > 26
+            "d-ABCDEFGHIJ",                   // uppercase
+            "d-iiiiiiiiii",                   // `i` not in Crockford
+            "d-",                             // empty body
+        ] {
+            assert!(
+                matches!(
+                    DiscussionId::parse_str(bad),
+                    Err(IdValidationError::InvalidFormat { .. })
+                ),
+                "expected InvalidFormat: {bad:?}",
+            );
+        }
+        for bad in TRAVERSAL_VECTORS {
+            assert!(
+                DiscussionId::parse_str(bad).is_err(),
+                "traversal not rejected: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_id_accepts_both_forms_and_rejects_malformed() {
+        let gen = crate::new_proposal_id();
+        assert!(
+            ProposalId::parse_str(&gen).is_ok(),
+            "generator must validate: {gen}"
+        );
+        assert!(ProposalId::parse_str("s-0123456789").is_ok());
+        assert!(matches!(
+            ProposalId::parse_str("d-0123456789"),
+            Err(IdValidationError::WrongPrefix { .. })
+        ));
+        for bad in ["s-short", "s-ABCDEFGHIJ", "s-uuuuuuuuuu", "s-"] {
+            assert!(
+                matches!(
+                    ProposalId::parse_str(bad),
+                    Err(IdValidationError::InvalidFormat { .. })
+                ),
+                "expected InvalidFormat: {bad:?}",
+            );
+        }
+        for bad in TRAVERSAL_VECTORS {
+            assert!(
+                ProposalId::parse_str(bad).is_err(),
+                "traversal not rejected: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deserialize_rejects_malformed_ids() {
+        // The validating Deserialize impl is the on-read guard: a tampered
+        // projection file whose key no longer validates must fail to parse.
+        assert!(serde_json::from_str::<NodeId>("\"n-0001\"").is_ok());
+        assert!(serde_json::from_str::<NodeId>("\"../../etc\"").is_err());
+        assert!(serde_json::from_str::<DiscussionId>("\"d-../escape\"").is_err());
+        assert!(serde_json::from_str::<ProposalId>("\"s-0123456789\"").is_ok());
+    }
+
+    #[test]
+    fn serialize_round_trips_as_bare_string() {
+        let nid = NodeId::parse_str("n-0042").unwrap();
+        let json = serde_json::to_string(&nid).unwrap();
+        assert_eq!(json, "\"n-0042\"");
+        let back: NodeId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, nid);
+        assert_eq!(nid.as_str(), "n-0042");
+        assert_eq!(nid.to_string(), "n-0042");
+    }
+
+    #[test]
+    fn error_exposes_kind_and_expected() {
+        let err = NodeId::parse_str("n-x").unwrap_err();
+        assert_eq!(err.kind(), "node");
+        assert_eq!(err.expected(), "n-NNNN (n- followed by 4+ ASCII digits)");
     }
 }

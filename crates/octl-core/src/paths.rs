@@ -3,49 +3,24 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-
-/// Canonical length of a ULID in Crockford base32.
-const RUN_ID_LEN: usize = 26;
-
-/// Crockford base32 alphabet in lowercase (excludes `i`, `l`, `o`, `u`).
-const CROCKFORD_LOWER: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
 
 /// Validate that `run_id` is a lowercase, ULID-shaped Crockford base32 string.
 ///
-/// The constraint mirrors what [`crate::new_run_id`] emits: 26 lowercase
-/// Crockford base32 characters whose first character keeps the encoded
-/// timestamp within ULID's 48-bit range. Storing only validated ids lets
-/// the event envelope carry `run_id` directly instead of re-deriving it from
-/// a (possibly symlinked or non-canonical) directory name.
+/// Thin wrapper over [`RunId::parse_str`] kept for the `validate_run_id` call
+/// sites that only need a yes/no answer in [`crate::Error`] terms. The
+/// constraint mirrors what [`crate::new_run_id`] emits: 26 lowercase Crockford
+/// base32 characters whose first character keeps the encoded timestamp within
+/// ULID's 48-bit range. Storing only validated ids lets the event envelope
+/// carry `run_id` directly instead of re-deriving it from a (possibly
+/// symlinked or non-canonical) directory name.
 pub fn validate_run_id(run_id: &str) -> Result<()> {
-    let invalid = |reason: String| Error::InvalidRunId {
-        run_id: run_id.to_string(),
-        reason,
-    };
-    if run_id.len() != RUN_ID_LEN {
-        return Err(invalid(format!(
-            "must be {RUN_ID_LEN} characters (got {})",
-            run_id.len()
-        )));
-    }
-    for (pos, b) in run_id.bytes().enumerate() {
-        if !CROCKFORD_LOWER.contains(&b) {
-            return Err(invalid(format!(
-                "character {:?} at position {pos} is not lowercase Crockford base32",
-                b as char
-            )));
-        }
-    }
-    // The first base32 char carries the top 5 bits of the 128-bit ULID; the
-    // 48-bit timestamp cannot overflow only if it is in `0..=7`.
-    let first = run_id.as_bytes()[0];
-    if !(b'0'..=b'7').contains(&first) {
-        return Err(invalid(format!(
-            "first character {:?} exceeds ULID range (must be 0-7)",
-            first as char
-        )));
-    }
-    Ok(())
+    RunId::parse_str(run_id)
+        .map(|_| ())
+        .map_err(|e| Error::InvalidRunId {
+            run_id: run_id.to_string(),
+            reason: e.to_string(),
+        })
 }
 
 /// Per-run paths anchored on `<root>/runs/<run-id>/`.
@@ -54,7 +29,7 @@ pub struct RunPaths {
     pub root: PathBuf,
     /// The validated run id this directory belongs to. Carried explicitly so
     /// event envelopes never re-derive it from `root.file_name()`.
-    pub run_id: String,
+    pub run_id: RunId,
 }
 
 impl RunPaths {
@@ -63,11 +38,16 @@ impl RunPaths {
     /// envelope and projection is stamped with a well-formed id.
     pub fn new(root: impl Into<PathBuf>, run_id: impl Into<String>) -> Result<Self> {
         let run_id = run_id.into();
-        validate_run_id(&run_id)?;
-        Ok(Self {
-            root: root.into(),
-            run_id,
-        })
+        match RunId::parse_str(&run_id) {
+            Ok(rid) => Ok(Self {
+                root: root.into(),
+                run_id: rid,
+            }),
+            Err(e) => Err(Error::InvalidRunId {
+                run_id,
+                reason: e.to_string(),
+            }),
+        }
     }
 
     /// Path to the run manifest (`manifest.json`).
@@ -91,8 +71,11 @@ impl RunPaths {
     }
 
     /// Path to a single node's projection file (`nodes/<node-id>.json`).
-    pub fn node(&self, node_id: &str) -> PathBuf {
-        self.nodes_dir().join(format!("{node_id}.json"))
+    ///
+    /// Takes a validated [`NodeId`], so the filename can never contain `/` or
+    /// `..` and the result can never escape `nodes/`.
+    pub fn node(&self, node_id: &NodeId) -> PathBuf {
+        self.nodes_dir().join(format!("{}.json", node_id.as_str()))
     }
 
     /// Path to the `discussions/` directory.
@@ -101,8 +84,11 @@ impl RunPaths {
     }
 
     /// Path to a single discussion file (`discussions/<id>.json`).
-    pub fn discussion(&self, id: &str) -> PathBuf {
-        self.discussions_dir().join(format!("{id}.json"))
+    ///
+    /// Takes a validated [`DiscussionId`], so the result can never escape
+    /// `discussions/`.
+    pub fn discussion(&self, id: &DiscussionId) -> PathBuf {
+        self.discussions_dir().join(format!("{}.json", id.as_str()))
     }
 
     /// Path to the `spinoffs/` directory.
@@ -111,8 +97,11 @@ impl RunPaths {
     }
 
     /// Path to a single spin-off proposal file (`spinoffs/<id>.json`).
-    pub fn spinoff(&self, id: &str) -> PathBuf {
-        self.spinoffs_dir().join(format!("{id}.json"))
+    ///
+    /// Takes a validated [`ProposalId`], so the result can never escape
+    /// `spinoffs/`.
+    pub fn spinoff(&self, id: &ProposalId) -> PathBuf {
+        self.spinoffs_dir().join(format!("{}.json", id.as_str()))
     }
 
     /// Path to the supervisor pid file (`supervisor.pid`).
@@ -138,7 +127,7 @@ mod tests {
             "generator must satisfy validator: {id}"
         );
         let paths = RunPaths::new("/tmp/x", id.clone()).expect("valid run_id");
-        assert_eq!(paths.run_id, id);
+        assert_eq!(paths.run_id.as_str(), id);
     }
 
     #[test]
