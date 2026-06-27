@@ -1,0 +1,228 @@
+---
+source: crates/octl-cli/tests/help_json.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version_help": 1,
+    "command": "orchestratectl run create",
+    "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
+    "aliases": [],
+    "flags": [
+      {
+        "long": "dry-run",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": []
+      },
+      {
+        "long": "help",
+        "short": "h",
+        "help": "Print help",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "idempotency-key",
+        "value_names": [
+          "IDEMPOTENCY_KEY"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "kind",
+        "value_names": [
+          "KIND"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": true,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [
+          "code",
+          "spinoff",
+          "orchestrated",
+          "research",
+          "technical-decision",
+          "make-skill",
+          "fan-out",
+          "bugfix"
+        ]
+      },
+      {
+        "long": "layout",
+        "help": "Workmux layout name; forwarded to create.sh as `-l <name>`",
+        "value_names": [
+          "LAYOUT"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "no-hooks",
+        "help": "Skip workmux post-create hooks; forwarded to create.sh",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": []
+      },
+      {
+        "long": "output",
+        "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+        "value_names": [
+          "FMT|PATH"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "jsonl"
+        ],
+        "accepted_values": []
+      },
+      {
+        "long": "parent-node-id",
+        "value_names": [
+          "PARENT_NODE_ID"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "parent-run-id",
+        "value_names": [
+          "PARENT_RUN_ID"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "prompt-file",
+        "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to create.sh",
+        "value_names": [
+          "PROMPT_FILE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "skip-materialize",
+        "help": "**Test-only.** Skip the create.sh shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "hidden": true,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": []
+      },
+      {
+        "long": "source-branch",
+        "value_names": [
+          "SOURCE_BRANCH"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "source-repo",
+        "value_names": [
+          "SOURCE_REPO"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "task",
+        "value_names": [
+          "TASK"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "title",
+        "value_names": [
+          "TITLE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": true,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      }
+    ],
+    "positionals": [],
+    "subcommands": []
+  }
+}

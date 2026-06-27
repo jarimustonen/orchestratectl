@@ -1,0 +1,157 @@
+//! Structured-help (`--help --output json|jsonl`) contract suite
+//! (AGENTS-AI-FIRST-CLI §14).
+//!
+//! `--help --output json` projects the clap command surface onto a
+//! schema-versioned payload that trained agents read. A renamed/removed
+//! field, a re-sorted list, or a dropped `schema_version_help` is a
+//! breaking change to that surface — these snapshots catch it the moment
+//! it happens.
+//!
+//! Three drill-down levels are locked, per the issue:
+//!   1. top-level `--help` (the whole tree)
+//!   2. a leaf verb (`run create`)
+//!   3. a noun-only node (`run`, listing its verbs)
+//!
+//! ## Determinism
+//!
+//! The only non-deterministic field is the root `version` (the crate
+//! version, which moves every release); it is redacted to `[VERSION]`.
+//! The help surface carries no ids, timestamps, or commit hashes.
+//!
+//! ## Updating snapshots
+//!
+//! `cargo insta test --review`, or `INSTA_UPDATE=always cargo test
+//! -p octl-cli --test help_json` then inspect the diff.
+
+use assert_cmd::Command;
+use predicates::prelude::*;
+use serde_json::Value;
+
+fn bin() -> Command {
+    let mut c = Command::cargo_bin("orchestratectl").expect("binary builds");
+    // Hermetic: help rendering never touches state, but clear inherited
+    // color/log knobs so a developer's shell can't perturb stdout.
+    c.env_remove("ORCHESTRATECTL_LOG");
+    c.env_remove("NO_COLOR");
+    c.env_remove("CLICOLOR");
+    c
+}
+
+/// Run a structured-help command expected to succeed (exit 0, clean
+/// stderr) and return its stdout. Also asserts the standard success
+/// envelope structurally, so a blanket `cargo insta accept` can't bless a
+/// dropped `data`/`schema_version`.
+fn help_stdout(args: &[&str]) -> String {
+    let out = bin()
+        .args(args)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).expect("stdout is utf8");
+    let v: Value = serde_json::from_str(s.trim()).expect("help stdout is a JSON envelope");
+    assert_eq!(v["schema_version"], 1, "envelope schema: {v}");
+    assert_eq!(v["data"]["schema_version_help"], 1, "help schema: {v}");
+    assert!(v.get("error").is_none(), "help envelope carries error: {v}");
+    s
+}
+
+/// Bind the version redaction and snapshot the raw rendered stdout.
+fn snapshot(name: &str, value: &str) {
+    let mut settings = insta::Settings::clone_current();
+    // Root `version` field — the crate version moves every release.
+    settings.add_filter(r#""version": "[^"]*""#, r#""version": "[VERSION]""#);
+    settings.bind(|| insta::assert_snapshot!(name, value));
+}
+
+#[test]
+fn top_level_help_json_locks_the_whole_surface() {
+    // The entire command tree: every noun, verb, flag, and positional.
+    // This is the §14 "schema as API surface" promise made concrete.
+    let stdout = help_stdout(&["--help", "--output", "json"]);
+    snapshot("top_level_help_json", &stdout);
+}
+
+#[test]
+fn leaf_verb_help_json() {
+    // A leaf verb resolves to its own full flag/positional list,
+    // independent of its parent noun (§14 drill-down).
+    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    snapshot("run_create_help_json", &stdout);
+}
+
+#[test]
+fn noun_only_help_json_lists_verbs() {
+    // A noun-only node lists its verbs as nested subcommands.
+    let stdout = help_stdout(&["run", "--help", "--output", "json"]);
+    snapshot("run_help_json", &stdout);
+}
+
+// ----------------------------------------------------------------------
+// Behavioural guards (not snapshots) for the success-criteria contract.
+// ----------------------------------------------------------------------
+
+#[test]
+fn flags_are_sorted_by_long_name() {
+    // Success criterion: `… | jq '.data.flags[].long'` is sorted.
+    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let longs: Vec<String> = v["data"]["flags"]
+        .as_array()
+        .expect("flags array")
+        .iter()
+        .map(|f| f["long"].as_str().expect("long is string").to_string())
+        .collect();
+    let mut sorted = longs.clone();
+    sorted.sort();
+    assert_eq!(longs, sorted, "flags must be sorted by long name");
+    assert!(!longs.is_empty(), "leaf verb should expose flags");
+}
+
+#[test]
+fn jsonl_is_a_single_line() {
+    // `--output jsonl` emits the same payload as one compact line.
+    let stdout = help_stdout(&["--help", "--output", "jsonl"]);
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "jsonl help must be a single line: {stdout:?}"
+    );
+}
+
+#[test]
+fn bare_help_is_unchanged_text() {
+    // No explicit `--output`: clap's text help is preserved (§14
+    // out-of-scope). Text help is not a JSON envelope.
+    let out = bin()
+        .args(["run", "create", "--help"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.starts_with("Create a new run"),
+        "bare --help should render clap text: {stdout:?}"
+    );
+    assert!(
+        serde_json::from_str::<Value>(stdout.trim()).is_err(),
+        "bare --help must not be JSON"
+    );
+}
+
+#[test]
+fn output_text_with_help_stays_text() {
+    // Explicit `--output text` + `--help` also keeps clap's text help.
+    let out = bin()
+        .args(["run", "create", "--help", "--output", "text"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        serde_json::from_str::<Value>(stdout.trim()).is_err(),
+        "--output text --help must not be JSON: {stdout:?}"
+    );
+}

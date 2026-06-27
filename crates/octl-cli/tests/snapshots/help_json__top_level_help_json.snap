@@ -1,0 +1,2114 @@
+---
+source: crates/octl-cli/tests/help_json.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version_help": 1,
+    "command": "orchestratectl",
+    "about": "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
+    "aliases": [],
+    "version": "[VERSION]",
+    "flags": [
+      {
+        "long": "help",
+        "short": "h",
+        "help": "Print help",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": []
+      },
+      {
+        "long": "output",
+        "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+        "value_names": [
+          "FMT|PATH"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "jsonl"
+        ],
+        "accepted_values": []
+      }
+    ],
+    "positionals": [],
+    "subcommands": [
+      {
+        "command": "orchestratectl discussion",
+        "about": "List, show, or resolve discussions for a run",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl discussion list",
+            "about": "List discussions for a run",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "status",
+                "help": "Filter by status (`open` or `resolved`). When omitted, all are listed",
+                "value_names": [
+                  "STATUS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [
+                  "open",
+                  "resolved"
+                ]
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl discussion resolve",
+            "about": "Resolve a discussion — emits `discussion.resolved`, updates the projection. Idempotent on `--choice`; conflict on `--choice` change",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "choice",
+                "help": "Resolution choice (free-form string from the agent operator)",
+                "value_names": [
+                  "CHOICE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "dry-run",
+                "help": "Print the would-be event and exit 0 without touching the filesystem",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "help": "Dedup token for retries (e.g. supervisor crash + replay)",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "note",
+                "help": "Optional human-readable note recorded with the resolution",
+                "value_names": [
+                  "NOTE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "discussion_id",
+                "value_names": [
+                  "DISCUSSION_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl discussion show",
+            "about": "Show a single discussion projection",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "discussion_id",
+                "value_names": [
+                  "DISCUSSION_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl doctor",
+        "about": "Read-only self-diagnostic: validate schema, skill-sync, deps, config, and data integrity. `--fix` applies the safe subset",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "dry-run",
+            "help": "With `--fix`, print the planned fixes via the §11 planning envelope and apply nothing",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": []
+          },
+          {
+            "long": "fix",
+            "help": "Apply the safe subset of `fix_suggestion`s after running the checks. Opt-in per invocation; never the default (§18)",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": []
+          },
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": []
+      },
+      {
+        "command": "orchestratectl event",
+        "about": "Read (`tail`) or append (`create`) events on a run's event log",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl event create",
+            "about": "Append one event to a run's `events.jsonl` and update projections",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "dry-run",
+                "help": "Print the would-be event + projection plan and exit 0 without touching the filesystem",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "from-file",
+                "help": "JSON file containing the event's `data` payload",
+                "value_names": [
+                  "FROM_FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "help": "Dedup token — a repeat call with the same key returns the existing event's `seq` instead of appending again",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "kind",
+                "help": "Event kind (see design.md §1.4 for the closed MVP set)",
+                "value_names": [
+                  "KIND"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "node-id",
+                "help": "Node-id for node-scoped kinds (`node.*`, `child.spawned`)",
+                "value_names": [
+                  "NODE_ID"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "help": "Target run-id (`<root>/runs/<run-id>` must exist)",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl event tail",
+            "about": "Stream events from a run's `events.jsonl`. Tails to EOF and exits (or follows the file with `--follow`, polling every 500ms)",
+            "long_about": "Stream events from a run's `events.jsonl`. Tails to EOF and exits (or follows the file with `--follow`, polling every 500ms).\n\nJSONL mode emits one object per line and terminates with exactly one `{\"event\":\"result\"|\"cancelled\",\"schema_version\":1, ...}` envelope. With `--follow`, SIGINT exits 130. SIGTERM also exits 130 (known divergence from AGENTS-AI-FIRST-CLI §12's 143 — `ctrlc` does not surface the signal value; see comment in `tail.rs`).",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "follow",
+                "help": "Keep polling for new events after reaching EOF",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "from-seq",
+                "help": "Emit only events with `seq >= from_seq` (default 0 = all)",
+                "value_names": [
+                  "FROM_SEQ"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "0"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help (see more with '--help')",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "to-file",
+                "help": "Write the stream to this file instead of stdout. Truncated on open without `--follow`, append-mode with `--follow`. Must not point at the run's own `events.jsonl`. The format is the global `--output` selection (text or jsonl)",
+                "value_names": [
+                  "TO_FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl node",
+        "about": "List nodes, show a node, or submit a structured terminal report",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl node list",
+            "about": "List nodes belonging to a run",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "status",
+                "help": "Filter by status (e.g. `running`, `done`)",
+                "value_names": [
+                  "STATUS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl node report",
+            "about": "Agent self-submission of a structured terminal report (§7.3)",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "dry-run",
+                "help": "Validate the payload and exit 0 without writing anything to the run's events.jsonl or projection files",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "from-file",
+                "help": "JSON file containing the §7.3 report payload",
+                "value_names": [
+                  "FROM_FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "help": "Dedup token — a repeat call with the same key returns the existing event's `seq` instead of appending again",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "node_id",
+                "value_names": [
+                  "NODE_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl node show",
+            "about": "Print one node's JSON projection",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "node_id",
+                "value_names": [
+                  "NODE_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl run",
+        "about": "Create, list, show, cancel, or reattach a run",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl run cancel",
+            "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "note",
+                "value_names": [
+                  "NOTE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl run create",
+            "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "dry-run",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "kind",
+                "value_names": [
+                  "KIND"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [
+                  "code",
+                  "spinoff",
+                  "orchestrated",
+                  "research",
+                  "technical-decision",
+                  "make-skill",
+                  "fan-out",
+                  "bugfix"
+                ]
+              },
+              {
+                "long": "layout",
+                "help": "Workmux layout name; forwarded to create.sh as `-l <name>`",
+                "value_names": [
+                  "LAYOUT"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "no-hooks",
+                "help": "Skip workmux post-create hooks; forwarded to create.sh",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "parent-node-id",
+                "value_names": [
+                  "PARENT_NODE_ID"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "parent-run-id",
+                "value_names": [
+                  "PARENT_RUN_ID"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "prompt-file",
+                "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to create.sh",
+                "value_names": [
+                  "PROMPT_FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "skip-materialize",
+                "help": "**Test-only.** Skip the create.sh shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": true,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "source-branch",
+                "value_names": [
+                  "SOURCE_BRANCH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "source-repo",
+                "value_names": [
+                  "SOURCE_REPO"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "task",
+                "value_names": [
+                  "TASK"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "title",
+                "value_names": [
+                  "TITLE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl run list",
+            "about": "List runs on disk",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "kind",
+                "value_names": [
+                  "KIND"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "status",
+                "value_names": [
+                  "STATUS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl run reattach",
+            "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "max-iter",
+                "help": "Pass `--max-iter <n>` to the spawned supervisor (test-only)",
+                "value_names": [
+                  "MAX_ITER"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": true,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "once",
+                "help": "Pass `--once` to the spawned supervisor (test-only)",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": true,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl run show",
+            "about": "Show one run's manifest and counters",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl skill",
+        "about": "List, show, or install companion AI-skills shipped with this binary",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl skill install",
+            "about": "Copy a skill's SKILL.md to the agent's skill directory. Installs every embedded skill when no name is given (per §15)",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "agent",
+                "help": "Which agent runtime to install for",
+                "value_names": [
+                  "AGENT"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "claude"
+                ],
+                "accepted_values": [
+                  "claude",
+                  "codex",
+                  "all"
+                ]
+              },
+              {
+                "long": "dest",
+                "help": "Override the destination path. Incompatible with `--agent all` and with the install-all (no-name) form",
+                "value_names": [
+                  "DEST"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "force",
+                "help": "Overwrite existing files at the destination(s)",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "name",
+                "help": "Skill name (see `skill list`). Omit to install every skill",
+                "value_names": [
+                  "NAME"
+                ],
+                "index": 1,
+                "required": false,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl skill list",
+            "about": "List skills embedded in this binary",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl skill print",
+            "about": "Stream a skill's SKILL.md (frontmatter + body) byte-identically to stdout. Read-only twin of `install` (AGENTS-AI-FIRST-CLI §16)",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "name",
+                "help": "Skill name (see `skill list`)",
+                "value_names": [
+                  "NAME"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl skill show",
+            "about": "Print a skill's SKILL.md to stdout",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "name",
+                "help": "Skill name (see `skill list`)",
+                "value_names": [
+                  "NAME"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl spinoff",
+        "about": "List, approve, or reject spin-off proposals on a run",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl spinoff approve",
+            "about": "Approve a proposal: emit `spinoff.approved` and (optionally) materialize an issue via `issuectl new`",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "dry-run",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "help": "Dedupes the *local* `spinoff.approved` event-log write only. Does NOT prevent a duplicate `issuectl new` call on retry — for retry-safe materialization, pass `--issue-slug` so the `issuectl` call is skipped entirely",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "issue-slug",
+                "help": "Caller asserts the issue is already materialized at this slug; skips the `issuectl new` call",
+                "value_names": [
+                  "ISSUE_SLUG"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "proposal_id",
+                "value_names": [
+                  "PROPOSAL_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl spinoff list",
+            "about": "List spin-off proposals for a run",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help (see more with '--help')",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "status",
+                "help": "Filter by status (`pending`, `approved`, `rejected`)",
+                "value_names": [
+                  "STATUS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [
+                  "pending",
+                  "approved",
+                  "rejected"
+                ]
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "command": "orchestratectl spinoff reject",
+            "about": "Reject a proposal: emit `spinoff.rejected`",
+            "aliases": [],
+            "flags": [
+              {
+                "long": "dry-run",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "help",
+                "short": "h",
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "idempotency-key",
+                "value_names": [
+                  "IDEMPOTENCY_KEY"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              },
+              {
+                "long": "output",
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": []
+              },
+              {
+                "long": "reason",
+                "value_names": [
+                  "REASON"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": []
+              }
+            ],
+            "positionals": [
+              {
+                "name": "run_id",
+                "value_names": [
+                  "RUN_ID"
+                ],
+                "index": 1,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              },
+              {
+                "name": "proposal_id",
+                "value_names": [
+                  "PROPOSAL_ID"
+                ],
+                "index": 2,
+                "required": true,
+                "multiple": false,
+                "accepted_values": []
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "command": "orchestratectl supervise",
+        "about": "Long-lived per-run supervisor: tail-follow events, watchdog agents, consume child `node.report` events with deterministic- ID dedup. Re-enters the same binary; `run reattach` invokes it",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "max-iter",
+            "help": "Tick at most this many iterations, then exit cleanly. **Test-only escape hatch — never set in production.** Note: `--once` takes precedence — when both are set the loop still exits after the first tick, regardless of `--max-iter`",
+            "value_names": [
+              "MAX_ITER"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "once",
+            "help": "Tick the watchdog + tail loops exactly once, then exit cleanly. **Test-only escape hatch — never set in production.**",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [
+          {
+            "name": "run_id",
+            "help": "Run id to supervise",
+            "value_names": [
+              "RUN_ID"
+            ],
+            "index": 1,
+            "required": true,
+            "multiple": false,
+            "accepted_values": []
+          }
+        ],
+        "subcommands": []
+      },
+      {
+        "command": "orchestratectl version",
+        "about": "Show binary, commit, and state-schema versions",
+        "aliases": [],
+        "flags": [
+          {
+            "long": "help",
+            "short": "h",
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": []
+          },
+          {
+            "long": "output",
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": []
+          }
+        ],
+        "positionals": [],
+        "subcommands": []
+      }
+    ]
+  }
+}

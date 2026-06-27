@@ -64,6 +64,13 @@ pub struct CommandNode {
 }
 
 /// A named (`--long`) flag.
+///
+/// The several `bool` fields each mirror an independent piece of clap
+/// metadata (takes-value / multiple / required / hidden / deprecated);
+/// collapsing them into an enum would lose the orthogonality and the
+/// stable JSON field names agents read, so the pedantic
+/// `struct_excessive_bools` lint is allowed here.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize)]
 pub struct FlagInfo {
     /// Long name without the leading `--`.
@@ -208,10 +215,8 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         .collect();
     flags.sort_by(|a, b| a.long.cmp(&b.long));
 
-    let mut positionals: Vec<PositionalInfo> = cmd
-        .get_positionals()
-        .map(build_positional)
-        .collect();
+    let mut positionals: Vec<PositionalInfo> =
+        cmd.get_positionals().map(build_positional).collect();
     positionals.sort_by_key(|p| p.index);
 
     let mut subcommands: Vec<CommandNode> = cmd
@@ -227,10 +232,7 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         command: command_path.to_string(),
         about: cmd.get_about().map(ToString::to_string),
         long_about: cmd.get_long_about().map(ToString::to_string),
-        aliases: cmd
-            .get_visible_aliases()
-            .map(ToString::to_string)
-            .collect(),
+        aliases: cmd.get_visible_aliases().map(ToString::to_string).collect(),
         version: cmd.get_version().map(ToString::to_string),
         flags,
         positionals,
@@ -262,9 +264,7 @@ fn build_flag(arg: &Arg) -> Option<FlagInfo> {
         deprecated: false,
         defaults: default_values(arg),
         accepted_values: accepted_values(arg),
-        env: arg
-            .get_env()
-            .map(|e| e.to_string_lossy().into_owned()),
+        env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
     })
 }
 
