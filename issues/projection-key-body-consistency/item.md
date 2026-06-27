@@ -2,10 +2,18 @@
 created: 2026-06-27
 updated: 2026-06-28
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 related: ['@core-path-traversal-id-validation']
+closed: 2026-06-28
+commits:
+- hash: 1cafec0
+  summary: add CorruptProjection variant + read key / write run_id checks
+- hash: 08975a7
+  summary: cover key/run_id mismatch guards (tests)
+- hash: 9fa632a
+  summary: address multi-model review (read-side run_id, manifest, path, typed check_run_id)
 ---
 
 # octl-core: verify projection id key matches file body
