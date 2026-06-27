@@ -80,8 +80,8 @@ fn apply_detach(cmd: &mut Command) {
             // in this forked-but-not-exec'd process.
             match libc::fork() {
                 -1 => Err(std::io::Error::last_os_error()),
-                0 => Ok(()),            // grandchild: continue to exec the supervisor
-                _ => libc::_exit(0),    // intermediate: vanish, orphaning the grandchild
+                0 => Ok(()),         // grandchild: continue to exec the supervisor
+                _ => libc::_exit(0), // intermediate: vanish, orphaning the grandchild
             }
         });
     }

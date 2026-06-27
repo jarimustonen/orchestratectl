@@ -494,6 +494,175 @@ fn signal_exit_codes_and_payload() {
     }
 }
 
+/// F15 lock-aware watchdog: when a node already carries a real
+/// `last_report`, the watchdog must DEFER to it and not synthesize a second
+/// terminal `node.report`, even though the agent PID is dead. Regression for
+/// the duplicate-terminal-report race — the watchdog re-reads `last_report`
+/// (now under the run lock) before committing a synthetic report.
+#[test]
+fn watchdog_defers_when_report_already_present() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "wd-defer");
+    let our_pid = std::process::id();
+    let report = home.path().join("wd-node.json");
+    std::fs::write(
+        &report,
+        format!(r#"{{"kind":"spinoff","task":"x","agent_pid":{our_pid}}}"#),
+    )
+    .unwrap();
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        report.to_str().unwrap(),
+    ]));
+
+    // Forge the projection into the watchdog's danger zone: a NON-terminal
+    // node whose agent PID is dead (so the watchdog wants to synthesize) but
+    // which ALREADY carries a real `last_report` (so it must defer). tmux is
+    // nulled so the probe is pure-PID.
+    let node_p = run_dir(&home, &run_id).join("nodes").join("n-0001.json");
+    let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
+    n["agent_pid"] = Value::from(0x3FFF_FFFE_i64); // guaranteed-dead pid
+    n["tmux_window"] = Value::Null;
+    n["last_report"] = serde_json::json!({"success": true, "summary": "real report"});
+    std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
+
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        count_kind(&events, "node.report"),
+        0,
+        "watchdog must defer to the present last_report and synthesize nothing, events={:?}",
+        read_events(&events)
+            .into_iter()
+            .map(|v| v["kind"].clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// supervisor-child-detach-reap: a supervisor spawned through the detached
+/// path (`run reattach` → `spawn_and_reap`, which `setsid`s into its own
+/// session) must SURVIVE a `SIGHUP` delivered to its spawner's process group
+/// — the exact signal a closing terminal sends. Without `setsid` the
+/// supervisor would share the spawner's group and die.
+#[test]
+fn spawned_supervisor_survives_sighup_to_spawner_group() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use std::time::Instant;
+
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "sighup-survive");
+
+    // The "spawner": a shell, made a process-group LEADER via setpgid(0,0),
+    // that runs `run reattach` (which forks the detached supervisor) and then
+    // sleeps to keep its process group alive until we signal it. A bare
+    // (no `--once`) reattach yields a long-lived supervisor that loops idle
+    // over the node-less run, so it stays alive for us to signal.
+    let bin_path = env!("CARGO_BIN_EXE_orchestratectl");
+    let script =
+        format!("{bin_path} --output json run reattach {run_id} >/dev/null 2>&1; sleep 30");
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(script);
+    cmd.env("ORCHESTRATECTL_HOME", home.path());
+    cmd.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    cmd.env("TMUX_BIN", "/usr/bin/true");
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    // SAFETY: setpgid(0,0) is async-signal-safe; it makes the shell its own
+    // process-group leader (pgid == shell pid) so we can signal that group.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut spawner = cmd.spawn().expect("spawn shell");
+    let spawner_pgid = spawner.id() as i32; // == pid because of setpgid(0,0)
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
+    let sup_pid = loop {
+        if let Some(p) = read_first_token_pid(&pid_file) {
+            if pid_alive(p) {
+                break p;
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = kill_group(spawner_pgid);
+            let _ = spawner.wait();
+            panic!("supervisor did not write a live pid file in time");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // The supervisor must NOT be in the spawner's process group (it setsid'd).
+    // Sending SIGHUP to the spawner group must therefore leave it running.
+    unsafe {
+        libc::kill(-spawner_pgid, libc::SIGHUP);
+    }
+    let _ = spawner.wait(); // reap the (now-HUP'd) shell
+
+    // Give any errant SIGHUP propagation a moment: poll_until returns true
+    // only if the supervisor DIED within the window, so survival means it
+    // returned false (timed out waiting for death).
+    assert!(
+        !poll_until(Duration::from_secs(3), || !pid_alive(sup_pid)),
+        "supervisor (pid {sup_pid}) must survive SIGHUP to the spawner's group"
+    );
+    assert!(
+        pid_alive(sup_pid),
+        "supervisor (pid {sup_pid}) must still be alive after spawner-group SIGHUP"
+    );
+
+    // Cleanup: stop the long-lived supervisor so it does not leak.
+    unsafe {
+        libc::kill(sup_pid as i32, libc::SIGTERM);
+    }
+    // Best-effort reap wait so it is fully gone (it is not our direct child —
+    // it reparented to init — so we poll instead of wait()).
+    poll_until(Duration::from_secs(5), || !pid_alive(sup_pid));
+}
+
+/// Read the first whitespace-delimited token of a pid file as a u32 (the
+/// `"<pid> <start_time>"` or legacy `"<pid>"` format), mirroring the
+/// supervisor's own reader without depending on crate internals.
+fn read_first_token_pid(path: &Path) -> Option<u32> {
+    let s = std::fs::read_to_string(path).ok()?;
+    s.split_whitespace().next()?.parse::<u32>().ok()
+}
+
+/// `kill(pid, 0)` liveness probe (no signal sent). True iff the process
+/// exists and we may signal it (alive, possibly foreign-owned).
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// SIGTERM a whole process group (best-effort cleanup helper).
+fn kill_group(pgid: i32) -> std::io::Result<()> {
+    let rc = unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn sig_num(sig: &str) -> libc::c_int {
     match sig {
         "TERM" => libc::SIGTERM,

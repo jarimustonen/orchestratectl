@@ -201,4 +201,80 @@ mod tests {
     fn pid_zero_is_dead() {
         assert!(!pid_alive(0));
     }
+
+    /// The core invariant of the §7.6 fix: many concurrent `claim_pid_atomic`
+    /// calls racing on one run yield EXACTLY ONE winner; every loser gets
+    /// `supervisor_already_running`. All threads claim our own (alive,
+    /// identity-matching) pid, so the loser always observes the winner's pid
+    /// as live and is rejected.
+    #[test]
+    fn concurrent_claim_exactly_one_wins() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let our_pid = std::process::id();
+
+        const N: usize = 8;
+        let barrier = Arc::new(Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let rd = run_dir.clone();
+                let b = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let paths = RunPaths::new(rd, run_id).unwrap();
+                    // Line every thread up so they genuinely contend on the flock.
+                    b.wait();
+                    claim_pid_atomic(&paths, our_pid)
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(wins, 1, "exactly one concurrent claim must win, got {wins}");
+        for r in &results {
+            if let Err(e) = r {
+                assert_eq!(
+                    e.code, "supervisor_already_running",
+                    "loser must report supervisor_already_running, got {}",
+                    e.code
+                );
+            }
+        }
+
+        // The winner's pid is on disk.
+        let p = run_dir.join("supervisor.pid");
+        assert_eq!(read_pid(&p), Some(our_pid));
+    }
+
+    /// A legacy bare-integer pid file (written before the §7.6 start-time
+    /// identity format) is non-destructively upgraded to `"<pid> <start>"`
+    /// on the next claim, provided the recorded pid is not alive.
+    #[test]
+    fn claim_migrates_legacy_plain_integer_pid_file() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("01jxsnap000000000000000000");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let paths = RunPaths::new(run_dir.clone(), "01jxsnap000000000000000000").unwrap();
+        let pid_path = run_dir.join("supervisor.pid");
+
+        // Legacy format: a single bare integer, no start-time token, for a
+        // guaranteed-dead pid (so the claim is not blocked by a live owner).
+        std::fs::write(&pid_path, "2147483646").unwrap();
+        assert_eq!(read_pid_record(&pid_path), Some((2_147_483_646, None)));
+
+        let our_pid = std::process::id();
+        claim_pid_atomic(&paths, our_pid).expect("claim over a dead legacy pid succeeds");
+
+        // Rewritten in the modern format: pid + start-time (when readable).
+        let (pid, start) = read_pid_record(&pid_path).unwrap();
+        assert_eq!(pid, our_pid);
+        assert!(
+            start.is_some(),
+            "claim must upgrade the legacy file to carry a start-time"
+        );
+    }
 }
