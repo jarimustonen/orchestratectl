@@ -29,3 +29,18 @@ Implemented option (b): LogGuard newtype + process-global flush_logs() hook.
 
 AUDIT of other process::exit sites (out of scope, fixed only event tail's per task):
 - supervise/mod.rs:520 — signal-terminated supervisor exits 130/143 via process::exit, also bypassing the guard's Drop. It already flushes stdout but NOT the non-blocking tracing channel, so the supervisor's own buffered diagnostic logs near signal exit are lost the same way. Candidate follow-up: call cli::flush_logs() there too (flush_logs is already global, so it's a one-liner). Supervisor logs are arguably more valuable than tail's, so worth a spin-off.
+
+### 2026-06-27T18:21:22Z · @claude
+
+Multi-model review (/llm-review: gemini-3.1-pro, gpt-5.5, opus-4.7, deepseek-v4) + inline assessment complete. Report: history/review-log-guard-flush-on-process-exit.md.
+
+All 4 reviewers confirmed the core Arc<Mutex<Option<WorkerGuard>>> + take-then-drop-outside-lock design is correct and that the static Arc clone does NOT defeat the normal-exit Drop flush.
+
+Applied review fixes (commit 6eb75cf): single shared cell via get_or_init in finish_logging (removes the OnceLock stale-cell fragility all 4 flagged); doc corrections (userspace flush not fsync; ~1.1s bounded shutdown budget = best-effort; flush_logs is terminal/destructive); softened the lossy pre-exit diagnostic claim; added log_guard_drop_drains_buffered_line unit test for the normal-exit RAII path.
+
+Refuted: opus #9 (lossy drops the Shutdown msg) — WorkerGuard::drop uses send_timeout, not the lossy try_send write path.
+
+Deferred/out-of-scope: option (a) ExitCode threading; panic=abort hook; supervise/mod.rs:520 process::exit (same class, one-line follow-up); LOG_BUFFERED_LINES vs 1s budget tuning. Pre-existing tail.rs items (broken-pipe exit code, double-ctrl-C, reject_output_alias TOCTOU) noted but unrelated to log flushing.
+
+Quality bar: build + clippy --all-targets + fmt clean; cargo test --all green (18 binaries). Ready to close + merge.
+
