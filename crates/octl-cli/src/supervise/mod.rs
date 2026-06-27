@@ -9,10 +9,11 @@
 //!      tracked agents, synthesizing terminal `node.report` events when
 //!      the agent dies before reporting.
 //!
-//! Lifecycle: trap SIGINT/SIGTERM via `ctrlc`, refuse to launch if the
-//! `<run-dir>/supervisor.pid` PID is alive, atomically write our own
-//! PID on boot, emit `supervisor.exited` and remove the PID file on
-//! exit. `--once` and `--max-iter <n>` are test-only escape hatches.
+//! Lifecycle: trap SIGINT/SIGTERM via `sigaction` (exit 130 / 143 per
+//! §7.8), refuse to launch if the `<run-dir>/supervisor.pid` PID is alive
+//! (start-time identity check, §7.6), atomically write our own PID on
+//! boot, emit `supervisor.exited` and remove the PID file on exit.
+//! `--once` and `--max-iter <n>` are test-only escape hatches.
 
 pub mod pid_file;
 pub mod reducer;
@@ -30,9 +31,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use octl_core::{
-    append_and_apply, read_manifest_opt, read_node_opt, RunLock, RunPaths, Status,
-};
+use octl_core::{append_and_apply, read_manifest_opt, read_node_opt, RunLock, RunPaths, Status};
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -250,8 +249,7 @@ pub fn dispatch(
                     // sets it when it writes child.spawned). Attribute the
                     // child's report-derived items to THIS node — never
                     // fall back to a guessed root node.
-                    let parent_node_id =
-                        ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
+                    let parent_node_id = ev.node_id.clone().unwrap_or_else(|| "n-0001".to_string());
                     // Always open a tail for the child, independently of
                     // whether the supervisor fork succeeds — the tail is
                     // the primary consumption path, so a spawn failure must
@@ -454,7 +452,8 @@ pub fn dispatch(
         Some(name) => json!({"pid": our_pid, "reason": "signal", "signal": name}),
         None => json!({"pid": our_pid, "reason": exit_reason}),
     };
-    let _ = append_and_apply(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
+    let _ =
+        append_and_apply(&paths, "supervisor.exited", None, None, exited_data).map_err(from_core);
     pid_file::remove_if_owner(&pid_path, our_pid);
 
     #[derive(Serialize)]
