@@ -291,6 +291,26 @@ fn unknown_subcommand_after_flags_errors() {
 }
 
 #[test]
+fn nested_unknown_subcommand_after_a_valid_noun_errors() {
+    // A stray token under a *valid* noun must not resolve to that noun's help
+    // (`--output json --help run bogus` once rendered `run`). Recursive
+    // external-subcommand handling makes it a structured error instead.
+    let assert = bin()
+        .args(["--output", "json", "--help", "run", "bogus"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    assert!(
+        out.stdout.is_empty(),
+        "no JSON help on stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+    let v: Value = serde_json::from_str(stderr.trim()).expect("stderr is an error envelope");
+    assert_eq!(v["error"]["code"], "unknown_subcommand", "envelope: {v}");
+}
+
+#[test]
 fn output_file_help_writes_json_file() {
     // A `.json` file destination routes the help envelope to that file.
     let dir = tempfile::tempdir().expect("tempdir");

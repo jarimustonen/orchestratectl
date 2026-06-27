@@ -621,6 +621,21 @@ mod tests {
     use std::io::Write;
     use std::time::Duration;
 
+    /// `help::OUTPUT_ARG_ID` keys the structured-help projection's custom
+    /// `--output` metadata (accepted values, file-path acceptance). If the
+    /// `Cli` field is renamed, the id must move with it — this asserts the
+    /// coupling holds against the real command tree.
+    #[test]
+    fn output_arg_id_matches_real_cli_tree() {
+        let cmd = Cli::command();
+        let output = cmd
+            .get_arguments()
+            .find(|a| a.get_id().as_str() == crate::help::OUTPUT_ARG_ID)
+            .expect("an arg with the OUTPUT_ARG_ID id exists on the root");
+        assert_eq!(output.get_long(), Some("output"));
+        assert!(output.is_global_set(), "--output must be global");
+    }
+
     /// Underlying log writer that sleeps before each `write`, so the
     /// non-blocking worker thread cannot drain instantly. This makes the
     /// "did the flush actually wait for the drain?" question deterministic:

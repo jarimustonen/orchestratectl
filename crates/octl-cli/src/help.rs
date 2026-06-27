@@ -152,8 +152,11 @@ pub struct FlagInfo {
 pub struct Arity {
     /// Minimum number of values per occurrence (0 for boolean flags).
     pub min: usize,
-    /// Maximum number of values per occurrence.
-    pub max: usize,
+    /// Maximum number of values per occurrence. `null` means unbounded —
+    /// clap represents that as `usize::MAX`, which is not safely
+    /// JSON-representable (exceeds `Number.MAX_SAFE_INTEGER`), so it is
+    /// projected as `null` rather than a 2^64-1 literal.
+    pub max: Option<usize>,
     /// Whether the arg may appear multiple times (`Append` / `Count`).
     pub repeated: bool,
     /// Whether a single occurrence may carry more than one value.
@@ -208,10 +211,22 @@ pub struct PositionalInfo {
 /// clear of any real arg id.
 const HELP_FLAG_ID: &str = "__octl_help_request";
 
-/// Id of the global `--output` arg, read back from the lenient parse.
-const OUTPUT_ARG_ID: &str = "output";
+/// Id of the global `--output` arg, read back from the lenient parse and
+/// used to register its custom-parser metadata. Kept `pub(crate)` so a test
+/// can assert it still matches the real `Cli` arg.
+pub(crate) const OUTPUT_ARG_ID: &str = "output";
+
+/// Whether `arg` is *the* global `--output` flag — matched on id, long name,
+/// and global-ness together so a future subcommand-local arg that merely
+/// reuses the id `output` cannot inherit its custom metadata.
+fn is_output_arg(arg: &Arg) -> bool {
+    arg.get_id().as_str() == OUTPUT_ARG_ID
+        && arg.get_long() == Some(OUTPUT_ARG_ID)
+        && arg.is_global_set()
+}
 
 /// Outcome of inspecting raw argv for a structured-help request.
+#[derive(Debug)]
 pub enum HelpRequest {
     /// Not a JSON help request — the caller falls through to clap's normal
     /// dispatch. Covers no `--help`, a bare `--help` (no explicit
@@ -251,8 +266,9 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         // Suppress clap's built-in `--help` (its action short-circuits to
         // text); we detect help via the injected flag below instead.
         .disable_help_flag(true)
-        // Surface an unknown subcommand as an external subcommand in the
-        // matches rather than silently dropping it, so we can error on it.
+        // Surface an unknown token in subcommand position as an external
+        // subcommand in the matches rather than silently dropping it (so we
+        // can error on it).
         .allow_external_subcommands(true)
         .arg(
             Arg::new(HELP_FLAG_ID)
@@ -261,6 +277,11 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
                 .action(ArgAction::SetTrue)
                 .global(true),
         );
+    // `allow_external_subcommands` is a *local* setting — clap does not
+    // propagate it — so also apply it to every descendant, otherwise a stray
+    // token under a valid noun (`--output json --help run bogus`) is swallowed
+    // and the noun resolves cleanly, defeating the unknown-subcommand check.
+    enable_external_subcommands_recursively(&mut lenient);
 
     // clap expects argv[0] to be the program name.
     let with_prog = std::iter::once(root.get_name().to_string()).chain(args.iter().cloned());
@@ -292,7 +313,9 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
     // Walk the resolved subcommand path, validating each name against the
     // real tree. With `allow_external_subcommands`, an unknown token in
     // subcommand position surfaces here as a subcommand whose name the real
-    // tree does not know — that is the unknown-subcommand signal.
+    // tree does not know — that is the unknown-subcommand signal. We record
+    // the *canonical* `child.get_name()` (not the matched token, which clap
+    // may return as a non-canonical alias) so `path` is canonical as documented.
     let mut cur = root;
     let mut path = Vec::new();
     let mut node = &matches;
@@ -300,7 +323,7 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         match cur.find_subcommand(name) {
             Some(child) => {
                 cur = child;
-                path.push(name.to_string());
+                path.push(child.get_name().to_string());
                 node = sub;
             }
             None => {
@@ -312,6 +335,18 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
     }
 
     HelpRequest::Render { spec, path }
+}
+
+/// Set `allow_external_subcommands(true)` on `cmd` and every descendant.
+/// clap's builder methods consume `self`, so each subcommand is swapped out
+/// of the mutable borrow, transformed, and swapped back (the placeholder is
+/// overwritten before it can be observed).
+fn enable_external_subcommands_recursively(cmd: &mut Command) {
+    for sub in cmd.get_subcommands_mut() {
+        let owned = std::mem::replace(sub, Command::new("")).allow_external_subcommands(true);
+        *sub = owned;
+        enable_external_subcommands_recursively(sub);
+    }
 }
 
 /// Walk a canonical subcommand-name path (root excluded) through a built
@@ -366,16 +401,16 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         .collect();
     subcommands.sort_by(|a, b| a.command.cmp(&b.command));
 
-    // A command's deprecation is read from its `about` (the canonical
-    // one-liner); the `[deprecated]` prefix is stripped from both `about`
-    // and `long_about` so it never leaks into the rendered text.
+    // A command's deprecation marker may sit on either `about` (the canonical
+    // one-liner — the recommended place) or `long_about`; the prefix is
+    // stripped from both so it never leaks into the rendered text, and the
+    // command is deprecated if either carries it (note: `about` wins).
     let about_dep = parse_deprecation(cmd.get_about().map(ToString::to_string));
+    let long_dep = parse_deprecation(cmd.get_long_about().map(ToString::to_string));
     let about = about_dep.text;
     // Only surface `long_about` when it adds something over `about`; clap
     // returns the same text for both when only `about` was set.
-    let long_about = parse_deprecation(cmd.get_long_about().map(ToString::to_string))
-        .text
-        .filter(|l| Some(l) != about.as_ref());
+    let long_about = long_dep.text.filter(|l| Some(l) != about.as_ref());
 
     CommandNode {
         command: command_path.to_string(),
@@ -383,8 +418,8 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         long_about,
         aliases: cmd.get_visible_aliases().map(ToString::to_string).collect(),
         hidden: cmd.is_hide_set(),
-        deprecated: about_dep.deprecated,
-        deprecation_note: about_dep.note,
+        deprecated: about_dep.deprecated || long_dep.deprecated,
+        deprecation_note: about_dep.note.or(long_dep.note),
         version: cmd.get_version().map(ToString::to_string),
         flags,
         positionals,
@@ -492,14 +527,7 @@ fn accepted_values(arg: &Arg) -> Vec<String> {
 /// the sole entry today is the global `--output` (§13). Values are sorted —
 /// unlike a derived enum, they carry no declaration order.
 fn custom_accepted_values(arg: &Arg) -> Option<Vec<String>> {
-    match arg.get_id().as_str() {
-        OUTPUT_ARG_ID => Some(vec![
-            "json".to_string(),
-            "jsonl".to_string(),
-            "text".to_string(),
-        ]),
-        _ => None,
-    }
+    is_output_arg(arg).then(|| vec!["json".to_string(), "jsonl".to_string(), "text".to_string()])
 }
 
 /// All additional long spellings (visible and hidden), sorted for stability.
@@ -529,7 +557,17 @@ fn short_aliases(arg: &Arg) -> Vec<String> {
 /// Ids of the flags `arg` is mutually exclusive with, sorted and de-duped.
 /// Reflects clap's declared conflicts (`conflicts_with`); clap stores them
 /// on the declaring side, so the relation may be one-directional.
+///
+/// Global args are skipped: `Command::get_arg_conflicts_with` **panics** when
+/// an arg's conflict target is unknown to the command, and a global flag is
+/// projected into every subcommand where its (root-defined) conflict targets
+/// may be absent. Non-global args only conflict with siblings present in the
+/// same command, so they are safe. Global-flag conflicts are vanishingly rare
+/// and not worth risking a panic on the help-render path.
 fn conflicts_with(cmd: &Command, arg: &Arg) -> Vec<String> {
+    if arg.is_global_set() {
+        return Vec::new();
+    }
     let mut v: Vec<String> = cmd
         .get_arg_conflicts_with(arg)
         .into_iter()
@@ -544,7 +582,7 @@ fn conflicts_with(cmd: &Command, arg: &Arg) -> Vec<String> {
 /// clap's value hint (PathBuf-typed args default to [`ValueHint::AnyPath`]),
 /// plus an explicit allowance for the custom-parsed `--output`.
 fn accepts_file_paths(arg: &Arg) -> bool {
-    if arg.get_id().as_str() == OUTPUT_ARG_ID {
+    if is_output_arg(arg) {
         return true;
     }
     matches!(
@@ -553,14 +591,18 @@ fn accepts_file_paths(arg: &Arg) -> bool {
     )
 }
 
-/// Value-count / repetition shape of `arg`.
+/// Value-count / repetition shape of `arg`. An unbounded maximum
+/// (clap's `usize::MAX` sentinel) is projected as `max: None`.
 fn arity(arg: &Arg, action: &ArgAction) -> Arity {
     let range = arg.get_num_args();
+    let raw_max = range.map_or(0, |r| r.max_values());
+    let max = (raw_max != usize::MAX).then_some(raw_max);
     Arity {
         min: range.map_or(0, |r| r.min_values()),
-        max: range.map_or(0, |r| r.max_values()),
+        max,
         repeated: matches!(action, ArgAction::Append | ArgAction::Count),
-        multi_value: range.is_some_and(|r| r.max_values() > 1),
+        // Unbounded (`max == None`) is inherently multi-value.
+        multi_value: max.is_none_or(|m| m > 1),
         value_delimiter: arg.get_value_delimiter().map(|c| c.to_string()),
         require_equals: arg.is_require_equals_set(),
     }
@@ -586,16 +628,20 @@ struct Deprecation {
 //   - `[deprecated]`                → deprecated, no note
 //   - `[deprecated: use --foo bar]` → deprecated, note = "use --foo bar"
 //
-// The token must be a PREFIX of the help/about text. The walker strips it
-// from the rendered `about`/`long_about`/`help`/positional-help and sets
-// `deprecated: true` (with the optional note). Authors opt something into
-// deprecation purely in its doc-comment / `#[arg(help = ...)]`:
+// The token must be a PREFIX of the help/about text (after any leading
+// whitespace the derive may inject). The walker strips it from the rendered
+// `about`/`long_about`/`help`/positional-help and sets `deprecated: true`
+// (with the optional note). Authors opt something into deprecation purely in
+// its doc-comment / `#[arg(help = ...)]`:
 //
 //   /// [deprecated: use `run create --kind`] Spawn a run.
 //   Spawn { ... }
 //
-// Applies uniformly to flags, positionals, and whole subcommands. There
-// are no deprecations in the tree today; this is the forward path.
+// A malformed `[deprecated:` with no closing `]` is still treated as
+// deprecated (consuming the remainder as the note) rather than silently
+// leaking the marker into the rendered text. Applies uniformly to flags,
+// positionals, and whole subcommands. There are no deprecations in the tree
+// today; this is the forward path.
 
 /// Parse the `[deprecated]` / `[deprecated: <note>]` prefix convention from
 /// a piece of help/about text. See the convention block above.
@@ -607,18 +653,23 @@ fn parse_deprecation(text: Option<String>) -> Deprecation {
             text: None,
         };
     };
-    // `[deprecated: <note>]` — note runs up to the first closing `]`.
-    if let Some(rest) = text.strip_prefix("[deprecated:") {
-        if let Some(end) = rest.find(']') {
-            return Deprecation {
-                deprecated: true,
-                note: non_empty(rest[..end].trim()),
-                text: non_empty(rest[end + 1..].trim_start()),
-            };
-        }
+    // Tolerate leading whitespace/newlines the derive may inject.
+    let trimmed = text.trim_start();
+    // `[deprecated: <note>]` — note runs up to the first closing `]`; a
+    // missing `]` consumes the rest as the note (still deprecated).
+    if let Some(rest) = trimmed.strip_prefix("[deprecated:") {
+        let (note, after) = match rest.find(']') {
+            Some(end) => (rest[..end].trim(), rest[end + 1..].trim_start()),
+            None => (rest.trim(), ""),
+        };
+        return Deprecation {
+            deprecated: true,
+            note: non_empty(note),
+            text: non_empty(after),
+        };
     }
     // `[deprecated]` — bare marker, no note.
-    if let Some(rest) = text.strip_prefix("[deprecated]") {
+    if let Some(rest) = trimmed.strip_prefix("[deprecated]") {
         return Deprecation {
             deprecated: true,
             note: None,
@@ -755,7 +806,7 @@ mod tests {
             &args(&["--help", "--output", "json", "bogus"]),
         ) {
             HelpRequest::UnknownSubcommand { token } => assert_eq!(token, "bogus"),
-            other => panic!("expected UnknownSubcommand, got {:?}", DebugReq(&other)),
+            other => panic!("expected UnknownSubcommand, got {other:?}"),
         }
     }
 
@@ -845,16 +896,63 @@ mod tests {
         assert_eq!(old.about.as_deref(), Some("Legacy verb."));
     }
 
-    // Tiny helper so the panic message above can name the variant without a
-    // `Debug` impl on `HelpRequest` (which would otherwise be dead weight).
-    struct DebugReq<'a>(&'a HelpRequest);
-    impl std::fmt::Debug for DebugReq<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self.0 {
-                HelpRequest::None => write!(f, "None"),
-                HelpRequest::Render { path, .. } => write!(f, "Render({path:?})"),
-                HelpRequest::UnknownSubcommand { token } => write!(f, "Unknown({token})"),
-            }
+    #[test]
+    fn command_deprecation_can_come_from_long_about() {
+        // The marker on `long_about` alone still flags the command (and is
+        // stripped from the rendered long text).
+        let mut cmd = Command::new("tool").subcommand(
+            Command::new("old")
+                .about("Legacy verb.")
+                .long_about("[deprecated: gone in 1.0] Legacy verb, more detail."),
+        );
+        cmd.build();
+        let node = build_node(&cmd, "tool");
+        let old = node
+            .subcommands
+            .iter()
+            .find(|s| s.command == "tool old")
+            .expect("subcommand");
+        assert!(old.deprecated);
+        assert_eq!(old.deprecation_note.as_deref(), Some("gone in 1.0"));
+        assert_eq!(old.long_about.as_deref(), Some("Legacy verb, more detail."));
+    }
+
+    #[test]
+    fn malformed_deprecation_marker_is_not_leaked() {
+        // `[deprecated:` without a closing `]` is still treated as deprecated
+        // and never leaks the raw marker into the rendered text.
+        let d = parse_deprecation(Some("[deprecated: use --modern".to_string()));
+        assert!(d.deprecated);
+        assert_eq!(d.note.as_deref(), Some("use --modern"));
+        assert_eq!(d.text, None);
+    }
+
+    #[test]
+    fn nested_unknown_subcommand_after_flags_is_flagged() {
+        // Regression for the review finding: a stray token under a *valid*
+        // noun must still be rejected (needs recursive
+        // allow_external_subcommands), not resolve to the noun's help.
+        match resolve_help_request(
+            &test_root(),
+            &args(&["--output", "json", "--help", "run", "bogus"]),
+        ) {
+            HelpRequest::UnknownSubcommand { token } => assert_eq!(token, "bogus"),
+            other => panic!("expected UnknownSubcommand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unbounded_arity_max_is_null_not_usize_max() {
+        let mut cmd = Command::new("tool").arg(
+            Arg::new("items")
+                .long("items")
+                .num_args(1..)
+                .action(ArgAction::Append),
+        );
+        cmd.build();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "items").unwrap();
+        let flag = build_flag(&cmd, arg);
+        assert_eq!(flag.arity.max, None, "unbounded max must serialize as null");
+        assert!(flag.arity.multi_value);
     }
 }

@@ -46,6 +46,26 @@ public getter, or implement a side-registry keyed by command-path/arg-id
 authored example content per command, a separate content task), so it was
 not added. Track separately if wanted.
 
+### Deferred multi-model-review items (not blocking; possible v2.x)
+
+A four-model review (`history/review-help-json-v2.md`) landed eight fixes
+(arity `max` nullability, recursive unknown-subcommand detection, conflicts
+panic guard, deprecation robustness, canonical path, `OUTPUT_ARG_ID`
+tightening, etc.). These were judged out of scope / debatable and deferred:
+
+- **Symmetric `conflicts_with`** — current output is the clap-declared
+  (one-directional) edge, documented. A symmetric closure would be friendlier
+  to agents but is a design call.
+- **Positional `arity`** — flags carry `arity`; positionals carry only
+  `multiple`. No variadic positionals exist today.
+- **`long_help`, `default_missing_value`, `supported_help_schemas`, alias
+  visibility split, richer `accepts_file_paths` value-kind shape** — forward
+  schema enrichments none of the current args need.
+- **Rejected as false positives**: carrying `OutputSpec` into the
+  unknown-subcommand error (errors are always JSON-to-stderr per §10,
+  independent of `--output`); "add a real-tree snapshot" (already exists in
+  `tests/help_json.rs`).
+
 ### Notes for the next editor
 
 - `conflicts_with` reflects clap's **declared** direction only
