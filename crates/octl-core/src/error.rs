@@ -84,17 +84,23 @@ pub enum Error {
     /// path-traversal vector — the keys are already validated id newtypes that
     /// cannot name a file outside the run directory — but a corruption /
     /// mis-placement detector. `kind` is a fixed `&'static str` so a caller can
-    /// branch on it; `expected_id` / `body_id` carry the two ids for an operator
-    /// to diff.
-    #[error("corrupt projection ({kind}): expected id {expected_id:?}, body has {body_id:?}")]
+    /// branch on it; `path` localizes the offending file; `expected_id` /
+    /// `body_id` carry the two ids for an operator to diff.
+    #[error(
+        "corrupt projection ({kind}) at {path}: expected id {expected_id:?}, body has {body_id:?}"
+    )]
     CorruptProjection {
-        /// Which check fired: a read-side key mismatch (`"node"`,
-        /// `"discussion"`, `"spinoff"`) or a write-side run-id mismatch
-        /// (`"node_run_id"`, `"discussion_run_id"`, `"spinoff_run_id"`,
-        /// `"manifest_run_id"`).
+        /// Which check fired: a read-side filename-key mismatch (`"node"`,
+        /// `"discussion"`, `"spinoff"`) or a run-id mismatch (`"node_run_id"`,
+        /// `"discussion_run_id"`, `"spinoff_run_id"`, `"manifest_run_id"`),
+        /// which fires on both the read and write side — the fault is identical
+        /// (the object's `run_id` does not equal its directory's run).
         kind: &'static str,
+        /// The offending projection file (read side) or its intended
+        /// destination (write side), so an operator can go straight to it.
+        path: PathBuf,
         /// The id the file was expected to carry — the requested filename key
-        /// (read side) or the `RunPaths` run id (write side).
+        /// (read-side key check) or the `RunPaths` run id (run-id check).
         expected_id: String,
         /// The id actually found in the file body.
         body_id: String,

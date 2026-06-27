@@ -6,7 +6,7 @@ use crate::atomic::write_json_atomic;
 use crate::error::{Error, Result};
 use crate::paths::RunPaths;
 use crate::schema::{
-    Discussion, DiscussionId, Manifest, Node, NodeId, ProposalId, SpinoffProposal,
+    Discussion, DiscussionId, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal,
     SUPPORTED_STATE_SCHEMAS,
 };
 
@@ -42,26 +42,40 @@ fn check_schema(path: &Path, found: u32) -> Result<()> {
 /// well-formed `nodes/n-0002.json` mis-filed as `nodes/n-0001.json` parses
 /// cleanly yet describes a different object, so handing it back would let a
 /// later keyed write clobber a third file. `kind` names the projection type so
-/// a caller can branch on the [`Error::CorruptProjection`] it produces.
-fn check_key(kind: &'static str, expected: &str, body: &str) -> Result<()> {
+/// a caller can branch on the [`Error::CorruptProjection`] it produces; `path`
+/// localizes the offending file.
+fn check_key(path: &Path, kind: &'static str, expected: &str, body: &str) -> Result<()> {
     if expected == body {
         Ok(())
     } else {
         Err(Error::CorruptProjection {
             kind,
+            path: path.to_path_buf(),
             expected_id: expected.to_string(),
             body_id: body.to_string(),
         })
     }
 }
 
-/// Reject a write whose object `run_id` (`body`) does not equal the run the
-/// [`RunPaths`] is anchored on (`expected`). Guards every `write_*` helper
-/// against stamping a foreign run's id into this run's directory — feasible now
-/// that `RunPaths` carries a typed [`crate::RunId`]. `kind` is the write-side
-/// discriminator (`"node_run_id"`, etc.).
-fn check_run_id(kind: &'static str, expected: &str, body: &str) -> Result<()> {
-    check_key(kind, expected, body)
+/// Reject a projection whose object `run_id` (`body`) does not equal the run
+/// the [`RunPaths`] is anchored on (`expected`). Fires on both sides: every
+/// `read_*` rejects a file that belongs to a foreign run before handing it
+/// back, and every `write_*` refuses to stamp a foreign run's id into this
+/// run's directory — feasible now that `RunPaths` carries a typed
+/// [`crate::RunId`]. Takes `&RunId` (not `&str`) so a caller cannot transpose
+/// the arguments or pass an unrelated id. `kind` is the run-id discriminator
+/// (`"node_run_id"`, etc.); `path` localizes the file.
+fn check_run_id(path: &Path, kind: &'static str, expected: &RunId, body: &RunId) -> Result<()> {
+    if expected == body {
+        Ok(())
+    } else {
+        Err(Error::CorruptProjection {
+            kind,
+            path: path.to_path_buf(),
+            expected_id: expected.to_string(),
+            body_id: body.to_string(),
+        })
+    }
 }
 
 /// Read and schema-validate the run manifest. Errors if it is missing.
@@ -69,15 +83,20 @@ pub fn read_manifest(paths: &RunPaths) -> Result<Manifest> {
     let p = paths.manifest();
     let m: Manifest = read_json(&p)?;
     check_schema(&p, m.schema_version)?;
+    check_run_id(&p, "manifest_run_id", &paths.run_id, &m.run_id)?;
     Ok(m)
 }
 
 /// Read and schema-validate the run manifest, returning `None` if absent.
+///
+/// A present manifest whose `run_id` belongs to a foreign run is an error, not
+/// `None`: `_opt` means "missing file is fine", not "corrupt file is absent".
 pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
     let p = paths.manifest();
     match read_json_opt::<Manifest>(&p)? {
         Some(m) => {
             check_schema(&p, m.schema_version)?;
+            check_run_id(&p, "manifest_run_id", &paths.run_id, &m.run_id)?;
             Ok(Some(m))
         }
         None => Ok(None),
@@ -90,8 +109,9 @@ pub fn read_manifest_opt(paths: &RunPaths) -> Result<Option<Manifest>> {
 /// mutate state through [`crate::events::append_and_apply_event`] so a write
 /// can never bypass the event log or the run's `flock`.
 pub(crate) fn write_manifest(paths: &RunPaths, m: &Manifest) -> Result<()> {
-    check_run_id("manifest_run_id", paths.run_id.as_str(), m.run_id.as_str())?;
-    write_json_atomic(&paths.manifest(), m)
+    let p = paths.manifest();
+    check_run_id(&p, "manifest_run_id", &paths.run_id, &m.run_id)?;
+    write_json_atomic(&p, m)
 }
 
 /// Read and schema-validate one node. Errors if it is missing.
@@ -99,17 +119,22 @@ pub fn read_node(paths: &RunPaths, node_id: &NodeId) -> Result<Node> {
     let p = paths.node(node_id);
     let n: Node = read_json(&p)?;
     check_schema(&p, n.schema_version)?;
-    check_key("node", node_id.as_str(), n.node_id.as_str())?;
+    check_key(&p, "node", node_id.as_str(), n.node_id.as_str())?;
+    check_run_id(&p, "node_run_id", &paths.run_id, &n.run_id)?;
     Ok(n)
 }
 
 /// Read and schema-validate one node, returning `None` if absent.
+///
+/// A present node whose body id or `run_id` does not match where it lives is an
+/// error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>> {
     let p = paths.node(node_id);
     match read_json_opt::<Node>(&p)? {
         Some(n) => {
             check_schema(&p, n.schema_version)?;
-            check_key("node", node_id.as_str(), n.node_id.as_str())?;
+            check_key(&p, "node", node_id.as_str(), n.node_id.as_str())?;
+            check_run_id(&p, "node_run_id", &paths.run_id, &n.run_id)?;
             Ok(Some(n))
         }
         None => Ok(None),
@@ -124,8 +149,9 @@ pub fn read_node_opt(paths: &RunPaths, node_id: &NodeId) -> Result<Option<Node>>
 /// onto the node projection while holding the run's `flock` — fields no
 /// event/reducer path manages. Pair it with [`crate::RunLock`].
 pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
-    check_run_id("node_run_id", paths.run_id.as_str(), n.run_id.as_str())?;
-    write_json_atomic(&paths.node(&n.node_id), n)
+    let p = paths.node(&n.node_id);
+    check_run_id(&p, "node_run_id", &paths.run_id, &n.run_id)?;
+    write_json_atomic(&p, n)
 }
 
 /// Read and schema-validate one discussion. Errors if it is missing.
@@ -133,17 +159,22 @@ pub fn read_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<Discussion
     let p = paths.discussion(id);
     let d: Discussion = read_json(&p)?;
     check_schema(&p, d.schema_version)?;
-    check_key("discussion", id.as_str(), d.discussion_id.as_str())?;
+    check_key(&p, "discussion", id.as_str(), d.discussion_id.as_str())?;
+    check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
     Ok(d)
 }
 
 /// Read and schema-validate one discussion, returning `None` if absent.
+///
+/// A present discussion whose body id or `run_id` does not match where it lives
+/// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option<Discussion>> {
     let p = paths.discussion(id);
     match read_json_opt::<Discussion>(&p)? {
         Some(d) => {
             check_schema(&p, d.schema_version)?;
-            check_key("discussion", id.as_str(), d.discussion_id.as_str())?;
+            check_key(&p, "discussion", id.as_str(), d.discussion_id.as_str())?;
+            check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
             Ok(Some(d))
         }
         None => Ok(None),
@@ -154,12 +185,9 @@ pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option
 ///
 /// `pub(crate)`: see [`write_manifest`].
 pub(crate) fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
-    check_run_id(
-        "discussion_run_id",
-        paths.run_id.as_str(),
-        d.run_id.as_str(),
-    )?;
-    write_json_atomic(&paths.discussion(&d.discussion_id), d)
+    let p = paths.discussion(&d.discussion_id);
+    check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
+    write_json_atomic(&p, d)
 }
 
 /// Read and schema-validate one spin-off proposal. Errors if it is missing.
@@ -167,17 +195,22 @@ pub fn read_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<SpinoffProposal
     let p = paths.spinoff(id);
     let s: SpinoffProposal = read_json(&p)?;
     check_schema(&p, s.schema_version)?;
-    check_key("spinoff", id.as_str(), s.proposal_id.as_str())?;
+    check_key(&p, "spinoff", id.as_str(), s.proposal_id.as_str())?;
+    check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
     Ok(s)
 }
 
 /// Read and schema-validate one spin-off proposal, returning `None` if absent.
+///
+/// A present proposal whose body id or `run_id` does not match where it lives
+/// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
 pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<SpinoffProposal>> {
     let p = paths.spinoff(id);
     match read_json_opt::<SpinoffProposal>(&p)? {
         Some(s) => {
             check_schema(&p, s.schema_version)?;
-            check_key("spinoff", id.as_str(), s.proposal_id.as_str())?;
+            check_key(&p, "spinoff", id.as_str(), s.proposal_id.as_str())?;
+            check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
             Ok(Some(s))
         }
         None => Ok(None),
@@ -188,8 +221,9 @@ pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<Spin
 ///
 /// `pub(crate)`: see [`write_manifest`].
 pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
-    check_run_id("spinoff_run_id", paths.run_id.as_str(), s.run_id.as_str())?;
-    write_json_atomic(&paths.spinoff(&s.proposal_id), s)
+    let p = paths.spinoff(&s.proposal_id);
+    check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
+    write_json_atomic(&p, s)
 }
 
 #[cfg(test)]
@@ -299,6 +333,12 @@ mod tests {
         std::fs::write(path, serde_json::to_vec(v).unwrap()).unwrap();
     }
 
+    // Two valid 26-char Crockford ULID bodies differing in the last char —
+    // used as the "requested key" vs "mis-filed body" pair for discussions and
+    // spinoffs (the prefix is supplied per type).
+    const ULID_A: &str = "01arz3ndektsv4rrffq69g5fav";
+    const ULID_B: &str = "01arz3ndektsv4rrffq69g5faw";
+
     // --- read side: body id must equal the requested filename key ---------
 
     #[test]
@@ -306,11 +346,12 @@ mod tests {
         let (_tmp, paths) = setup();
         let requested = NodeId::parse_str("n-0001").unwrap();
         // A perfectly valid n-0002 projection, mis-filed at n-0001's path.
-        write_raw(&paths.node(&requested), &node_json("n-0002", RUN));
+        let p = paths.node(&requested);
+        write_raw(&p, &node_json("n-0002", RUN));
         assert!(matches!(
             read_node(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "node", expected_id, body_id })
-                if expected_id == "n-0001" && body_id == "n-0002"
+            Err(Error::CorruptProjection { kind: "node", path, expected_id, body_id })
+                if path == p && expected_id == "n-0001" && body_id == "n-0002"
         ));
     }
 
@@ -328,6 +369,20 @@ mod tests {
     }
 
     #[test]
+    fn read_node_rejects_foreign_run_id() {
+        // Correct filename key, but the body belongs to another run — the file
+        // was copied/restored from a foreign run directory.
+        let (_tmp, paths) = setup();
+        let requested = NodeId::parse_str("n-0001").unwrap();
+        write_raw(&paths.node(&requested), &node_json("n-0001", FOREIGN_RUN));
+        assert!(matches!(
+            read_node(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "node_run_id", expected_id, body_id, .. })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+    }
+
+    #[test]
     fn read_node_accepts_matching_key() {
         // Guard against a false positive: the well-filed case still reads.
         let (_tmp, paths) = setup();
@@ -340,33 +395,123 @@ mod tests {
     #[test]
     fn read_discussion_rejects_body_id_mismatch() {
         let (_tmp, paths) = setup();
-        let requested = DiscussionId::parse_str("d-01arz3ndektsv4rrffq69g5fav").unwrap();
+        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
         write_raw(
             &paths.discussion(&requested),
-            &discussion_json("d-01arz3ndektsv4rrffq69g5faw", RUN),
+            &discussion_json(&format!("d-{ULID_B}"), RUN),
         );
         assert!(matches!(
             read_discussion(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "discussion", expected_id, body_id })
-                if expected_id == "d-01arz3ndektsv4rrffq69g5fav"
-                    && body_id == "d-01arz3ndektsv4rrffq69g5faw"
+            Err(Error::CorruptProjection { kind: "discussion", expected_id, body_id, .. })
+                if expected_id == format!("d-{ULID_A}") && body_id == format!("d-{ULID_B}")
+        ));
+    }
+
+    #[test]
+    fn read_discussion_opt_rejects_body_id_mismatch() {
+        let (_tmp, paths) = setup();
+        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        write_raw(
+            &paths.discussion(&requested),
+            &discussion_json(&format!("d-{ULID_B}"), RUN),
+        );
+        assert!(matches!(
+            read_discussion_opt(&paths, &requested),
+            Err(Error::CorruptProjection {
+                kind: "discussion",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn read_discussion_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        write_raw(
+            &paths.discussion(&requested),
+            &discussion_json(&format!("d-{ULID_A}"), FOREIGN_RUN),
+        );
+        assert!(matches!(
+            read_discussion(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id, .. })
+                if expected_id == RUN && body_id == FOREIGN_RUN
         ));
     }
 
     #[test]
     fn read_spinoff_rejects_body_id_mismatch() {
         let (_tmp, paths) = setup();
-        let requested = ProposalId::parse_str("s-01arz3ndektsv4rrffq69g5fav").unwrap();
+        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
         write_raw(
             &paths.spinoff(&requested),
-            &spinoff_json("s-01arz3ndektsv4rrffq69g5faw", RUN),
+            &spinoff_json(&format!("s-{ULID_B}"), RUN),
         );
         assert!(matches!(
             read_spinoff(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "spinoff", expected_id, body_id })
-                if expected_id == "s-01arz3ndektsv4rrffq69g5fav"
-                    && body_id == "s-01arz3ndektsv4rrffq69g5faw"
+            Err(Error::CorruptProjection { kind: "spinoff", expected_id, body_id, .. })
+                if expected_id == format!("s-{ULID_A}") && body_id == format!("s-{ULID_B}")
         ));
+    }
+
+    #[test]
+    fn read_spinoff_opt_rejects_body_id_mismatch() {
+        let (_tmp, paths) = setup();
+        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
+        write_raw(
+            &paths.spinoff(&requested),
+            &spinoff_json(&format!("s-{ULID_B}"), RUN),
+        );
+        assert!(matches!(
+            read_spinoff_opt(&paths, &requested),
+            Err(Error::CorruptProjection {
+                kind: "spinoff",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn read_spinoff_rejects_foreign_run_id() {
+        let (_tmp, paths) = setup();
+        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
+        write_raw(
+            &paths.spinoff(&requested),
+            &spinoff_json(&format!("s-{ULID_A}"), FOREIGN_RUN),
+        );
+        assert!(matches!(
+            read_spinoff(&paths, &requested),
+            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id, .. })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+    }
+
+    #[test]
+    fn read_manifest_rejects_foreign_run_id() {
+        // The manifest is keyed by its directory, so a foreign-run manifest
+        // restored into this run's dir is the same class of corruption.
+        let (_tmp, paths) = setup();
+        write_raw(&paths.manifest(), &manifest_json(FOREIGN_RUN));
+        assert!(matches!(
+            read_manifest(&paths),
+            Err(Error::CorruptProjection { kind: "manifest_run_id", expected_id, body_id, .. })
+                if expected_id == RUN && body_id == FOREIGN_RUN
+        ));
+        // `_opt` must reject it too, not paper over it as `None`.
+        assert!(matches!(
+            read_manifest_opt(&paths),
+            Err(Error::CorruptProjection {
+                kind: "manifest_run_id",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn read_manifest_accepts_matching_run_id() {
+        let (_tmp, paths) = setup();
+        write_raw(&paths.manifest(), &manifest_json(RUN));
+        assert_eq!(read_manifest(&paths).unwrap().run_id.as_str(), RUN);
     }
 
     // --- write side: object run_id must equal the run's RunPaths.run_id ----
@@ -377,7 +522,7 @@ mod tests {
         let n: Node = serde_json::from_value(node_json("n-0001", FOREIGN_RUN)).unwrap();
         assert!(matches!(
             write_node(&paths, &n),
-            Err(Error::CorruptProjection { kind: "node_run_id", expected_id, body_id })
+            Err(Error::CorruptProjection { kind: "node_run_id", expected_id, body_id, .. })
                 if expected_id == RUN && body_id == FOREIGN_RUN
         ));
         // The forged write never touched disk.
@@ -396,26 +541,44 @@ mod tests {
     fn write_discussion_rejects_foreign_run_id() {
         let (_tmp, paths) = setup();
         let d: Discussion =
-            serde_json::from_value(discussion_json("d-01arz3ndektsv4rrffq69g5fav", FOREIGN_RUN))
-                .unwrap();
+            serde_json::from_value(discussion_json(&format!("d-{ULID_A}"), FOREIGN_RUN)).unwrap();
         assert!(matches!(
             write_discussion(&paths, &d),
-            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id })
+            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id, .. })
                 if expected_id == RUN && body_id == FOREIGN_RUN
         ));
+        assert!(!paths.discussion(&d.discussion_id).exists());
+    }
+
+    #[test]
+    fn write_discussion_accepts_matching_run_id() {
+        let (_tmp, paths) = setup();
+        let d: Discussion =
+            serde_json::from_value(discussion_json(&format!("d-{ULID_A}"), RUN)).unwrap();
+        write_discussion(&paths, &d).unwrap();
+        assert!(paths.discussion(&d.discussion_id).exists());
     }
 
     #[test]
     fn write_spinoff_rejects_foreign_run_id() {
         let (_tmp, paths) = setup();
         let s: SpinoffProposal =
-            serde_json::from_value(spinoff_json("s-01arz3ndektsv4rrffq69g5fav", FOREIGN_RUN))
-                .unwrap();
+            serde_json::from_value(spinoff_json(&format!("s-{ULID_A}"), FOREIGN_RUN)).unwrap();
         assert!(matches!(
             write_spinoff(&paths, &s),
-            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id })
+            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id, .. })
                 if expected_id == RUN && body_id == FOREIGN_RUN
         ));
+        assert!(!paths.spinoff(&s.proposal_id).exists());
+    }
+
+    #[test]
+    fn write_spinoff_accepts_matching_run_id() {
+        let (_tmp, paths) = setup();
+        let s: SpinoffProposal =
+            serde_json::from_value(spinoff_json(&format!("s-{ULID_A}"), RUN)).unwrap();
+        write_spinoff(&paths, &s).unwrap();
+        assert!(paths.spinoff(&s.proposal_id).exists());
     }
 
     #[test]
@@ -424,9 +587,17 @@ mod tests {
         let m: Manifest = serde_json::from_value(manifest_json(FOREIGN_RUN)).unwrap();
         assert!(matches!(
             write_manifest(&paths, &m),
-            Err(Error::CorruptProjection { kind: "manifest_run_id", expected_id, body_id })
+            Err(Error::CorruptProjection { kind: "manifest_run_id", expected_id, body_id, .. })
                 if expected_id == RUN && body_id == FOREIGN_RUN
         ));
         assert!(!paths.manifest().exists());
+    }
+
+    #[test]
+    fn write_manifest_accepts_matching_run_id() {
+        let (_tmp, paths) = setup();
+        let m: Manifest = serde_json::from_value(manifest_json(RUN)).unwrap();
+        write_manifest(&paths, &m).unwrap();
+        assert!(paths.manifest().exists());
     }
 }
