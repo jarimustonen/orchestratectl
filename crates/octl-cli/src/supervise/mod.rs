@@ -387,6 +387,9 @@ pub fn dispatch(
                 _ => {}
             }
         }
+        // If the own-run tail stopped at a corrupt line, surface it once and
+        // skip past it so the tail keeps progressing.
+        report_corrupt_line(&mut own_tail, &paths, "own");
 
         // Loop 2: child-run events.
         let child_ids: Vec<String> = child_tails.keys().cloned().collect();
@@ -480,6 +483,10 @@ pub fn dispatch(
                     _ => {}
                 }
             }
+            // A corrupt line in a child's log is reported on our own run log
+            // (keyed by source = child id) and skipped, so one child's bit
+            // rot can't wedge the whole supervisor.
+            report_corrupt_line(&mut entry.tail, &paths, &cid);
         }
 
         // Loop 3: watchdog. We don't yet have a generalized agent
@@ -744,6 +751,39 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
         }
     }
     out
+}
+
+/// If `tail`'s last [`poll`](tail::EventTail::poll) parked at a corrupt line,
+/// advance past it and — the first time that byte offset is seen — emit a
+/// one-shot `supervisor.event_log_skipped_line` event on *our own* run log
+/// (`paths`), regardless of which tail (own or child) hit the bad line.
+///
+/// Combined with the unified physical-reader + validate-before-append fixes,
+/// a corrupt middle line should only arise from external tampering or bit
+/// rot; when it does, we surface it once and keep tailing rather than
+/// re-erroring on the same offset forever (F17).
+fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &str) {
+    let Some(c) = tail.take_new_corrupt() else {
+        return;
+    };
+    warn!(
+        target: "orchestratectl::supervise",
+        source = %source,
+        byte_offset = c.byte_offset,
+        excerpt = %c.line_excerpt,
+        "skipping corrupt event-log line and continuing tail"
+    );
+    let _ = append_and_apply_event(
+        paths,
+        "supervisor.event_log_skipped_line",
+        None,
+        None,
+        json!({
+            "byte_offset": c.byte_offset,
+            "line_excerpt": c.line_excerpt,
+            "source": source,
+        }),
+    );
 }
 
 fn all_work_done(

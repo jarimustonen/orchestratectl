@@ -9,6 +9,7 @@
 //! offset corresponding to `since_seq`; subsequent calls start at the
 //! cached `pos`.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,24 @@ use std::path::{Path, PathBuf};
 use octl_core::Event;
 
 use crate::error::CliError;
+
+/// Maximum bytes of a corrupt line surfaced (escaped) in a
+/// `supervisor.event_log_skipped_line` event / log line.
+const CORRUPT_EXCERPT_BYTES: usize = 100;
+
+/// A newline-terminated line that failed to parse, parked by [`EventTail::poll`]
+/// for the caller to report-and-skip via [`EventTail::take_new_corrupt`].
+#[derive(Debug, Clone)]
+pub struct CorruptLine {
+    /// Byte offset of the start of the bad line within the file. Doubles as
+    /// the dedup key so the same position is reported at most once.
+    pub byte_offset: u64,
+    /// Length of the bad line in bytes, including its trailing `\n`. Used to
+    /// advance the cursor past it.
+    byte_len: u64,
+    /// Bounded, escaped excerpt of the line for diagnostics.
+    pub line_excerpt: String,
+}
 
 pub struct EventTail {
     path: PathBuf,
@@ -25,6 +44,17 @@ pub struct EventTail {
     /// `seq <= last_seq` are skipped — defends against a torn read or
     /// a replayed `--from-seq` cursor.
     last_seq: u64,
+    /// Set when [`poll`](Self::poll) stopped at a newline-terminated line that
+    /// failed to parse. The valid prefix was committed and `pos` parked at the
+    /// bad line's start; the caller reports-and-skips via
+    /// [`take_new_corrupt`](Self::take_new_corrupt). Until then every `poll`
+    /// returns no new events rather than re-erroring on the same bytes — this
+    /// is what breaks the supervisor's old warn-spam loop.
+    corrupt: Option<CorruptLine>,
+    /// Byte offsets already reported, so a corrupt line is surfaced at most
+    /// once even if the file is truncated+rewritten (which resets `pos`).
+    /// In-memory only; a fresh process re-reports, which is fine.
+    reported_corrupt: HashSet<u64>,
 }
 
 impl EventTail {
@@ -35,6 +65,8 @@ impl EventTail {
             path: path.into(),
             pos: 0,
             last_seq: since_seq,
+            corrupt: None,
+            reported_corrupt: HashSet::new(),
         }
     }
 
@@ -43,6 +75,13 @@ impl EventTail {
     /// existing (a child run's `events.jsonl` may lag the
     /// `child.spawned` event by a few ms).
     pub fn poll(&mut self) -> Result<Vec<Event>, CliError> {
+        // Parked at a known corrupt line: surface nothing new until the caller
+        // reports-and-skips it. This is the loop-breaker — without it, every
+        // tick re-reads the same offset, re-errors, and the tail never
+        // progresses (the F17 warn-spam / CPU-burn bug).
+        if self.corrupt.is_some() {
+            return Ok(Vec::new());
+        }
         let mut f = match File::open(&self.path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -78,37 +117,42 @@ impl EventTail {
         let mut out = Vec::new();
         let mut consumed: u64 = 0;
         loop {
-            let mut line = String::new();
-            let n = reader.read_line(&mut line).map_err(|e| {
+            // Read raw bytes (not `read_line`) so a torn tail cutting a
+            // multi-byte UTF-8 sequence is tolerated as a partial write, and
+            // so byte offsets are exact for the corrupt-line cursor.
+            let mut buf: Vec<u8> = Vec::new();
+            let n = reader.read_until(b'\n', &mut buf).map_err(|e| {
                 CliError::system("io_error", format!("read {}: {}", self.path.display(), e))
             })?;
             if n == 0 {
                 break;
             }
-            if !line.ends_with('\n') {
+            if buf.last() != Some(&b'\n') {
                 // Partial line (mid-append). Don't consume its bytes —
                 // the next poll will retry from this offset.
                 break;
             }
-            consumed += n as u64;
-            let trimmed = line.trim_end_matches(['\n', '\r']);
+            let trimmed = trim_line_end(&buf);
             if trimmed.is_empty() {
+                consumed += n as u64;
                 continue;
             }
-            let ev: Event = match serde_json::from_str(trimmed) {
+            let ev: Event = match serde_json::from_slice(trimmed) {
                 Ok(v) => v,
-                Err(e) => {
-                    return Err(CliError::system(
-                        "corrupt_event_log",
-                        format!(
-                            "parse {}: {} (line: {})",
-                            self.path.display(),
-                            e,
-                            trimmed.chars().take(120).collect::<String>()
-                        ),
-                    ));
+                Err(_) => {
+                    // Newline-terminated, unparseable: interior corruption.
+                    // Commit the valid prefix, park `pos` at this line's start,
+                    // and return what we have. The caller reports-and-skips.
+                    self.pos += consumed;
+                    self.corrupt = Some(CorruptLine {
+                        byte_offset: self.pos,
+                        byte_len: n as u64,
+                        line_excerpt: excerpt(trimmed),
+                    });
+                    return Ok(out);
                 }
             };
+            consumed += n as u64;
             if ev.seq <= self.last_seq {
                 continue;
             }
@@ -119,7 +163,23 @@ impl EventTail {
         Ok(out)
     }
 
-    #[allow(dead_code)]
+    /// If [`poll`](Self::poll) parked at a corrupt line not yet reported,
+    /// advance the cursor past it and return its details (exactly once per
+    /// byte offset). Returns `None` when there is no parked line, or the
+    /// parked line's offset was already reported (still advancing past it so
+    /// the tail makes progress). The caller emits the one-shot
+    /// `supervisor.event_log_skipped_line` event for a `Some`.
+    pub fn take_new_corrupt(&mut self) -> Option<CorruptLine> {
+        let c = self.corrupt.take()?;
+        // Always advance so the tail progresses and never re-stalls here.
+        self.pos += c.byte_len;
+        if self.reported_corrupt.insert(c.byte_offset) {
+            Some(c)
+        } else {
+            None
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -128,6 +188,31 @@ impl EventTail {
     pub fn last_seq(&self) -> u64 {
         self.last_seq
     }
+}
+
+/// Strip a single trailing line terminator (`\n`, optionally preceded by
+/// `\r`) from a raw line, leaving interior/leading bytes untouched.
+fn trim_line_end(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    if end > 0 && buf[end - 1] == b'\n' {
+        end -= 1;
+        if end > 0 && buf[end - 1] == b'\r' {
+            end -= 1;
+        }
+    }
+    &buf[..end]
+}
+
+/// Render a bounded, escaped prefix of a corrupt line for an event payload /
+/// log message. Bytes are lossily decoded and control characters escaped so
+/// the excerpt can't inject newlines or ANSI sequences into output.
+fn excerpt(line: &[u8]) -> String {
+    let shown = &line[..line.len().min(CORRUPT_EXCERPT_BYTES)];
+    let mut out: String = String::from_utf8_lossy(shown).escape_debug().to_string();
+    if line.len() > CORRUPT_EXCERPT_BYTES {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]
