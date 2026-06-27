@@ -114,15 +114,59 @@ struct SuccessEnvelope<'a, T: Serialize> {
     warnings: &'a [String],
 }
 
+/// Build the warning string for `dropped` lossy-mode log-event drops, or
+/// `None` when nothing was dropped (the steady state). Kept separate from
+/// [`emit_envelope`] so the count→message mapping is unit-testable without a
+/// live appender. Plain-string form matches every other entry in the
+/// `warnings` array (the array is `[String]`, not structured objects); the
+/// count is embedded so an agent can still read it.
+fn dropped_log_warning(dropped: u64) -> Option<String> {
+    (dropped > 0).then(|| {
+        format!(
+            "{dropped} log event(s) dropped due to buffer overflow \
+             (lossy non-blocking appender under sustained back-pressure)"
+        )
+    })
+}
+
 /// Serialize `body` inside the canonical success envelope and emit it
 /// according to `spec`. `OutputFormat::Text` is a programmer error — the
 /// caller is responsible for text rendering (this helper covers only the
 /// JSON envelope branches).
+///
+/// This is the single chokepoint where the process's lossy-mode dropped-event
+/// count ([`crate::cli::dropped_log_events`]) is folded into the envelope's
+/// `warnings`: a subcommand renders its envelope *after* doing its work, so
+/// this is the first place the final count is known. Long-lived commands that
+/// never render an envelope (`event tail --follow`, `supervise`) surface drops
+/// via a periodic `warn!` instead.
 pub fn emit_envelope<T: Serialize>(
     body: &T,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
+    emit_envelope_with_dropped(body, spec, warnings, crate::cli::dropped_log_events())
+}
+
+/// [`emit_envelope`] with the dropped-event count injected explicitly, so the
+/// drop→warning→serialization path is testable without a live appender.
+fn emit_envelope_with_dropped<T: Serialize>(
+    body: &T,
+    spec: &OutputSpec,
+    warnings: &[String],
+    dropped: u64,
+) -> Result<(), CliError> {
+    // Append the dropped-event warning (if any) to the caller's base
+    // warnings. Allocate only when there is something to add — the common
+    // case (no drops) borrows the caller's slice unchanged.
+    let augmented: Vec<String>;
+    let warnings: &[String] = match dropped_log_warning(dropped) {
+        Some(w) => {
+            augmented = warnings.iter().cloned().chain(std::iter::once(w)).collect();
+            &augmented
+        }
+        None => warnings,
+    };
     let envelope = SuccessEnvelope {
         schema_version: SCHEMA_VERSION,
         data: body,
@@ -177,9 +221,14 @@ pub fn emit_envelope<T: Serialize>(
 }
 
 /// Emit trailing text-mode warnings (each on its own `warning: ` line on
-/// stderr). Shared across every subcommand's text branch.
+/// stderr). Shared across every subcommand's text branch. The lossy-mode
+/// dropped-event warning is appended here too, so text and JSON renderings
+/// surface the same drops (mirrors [`emit_envelope`]).
 pub fn emit_text_warnings(warnings: &[String]) {
     for w in warnings {
+        eprintln!("warning: {w}");
+    }
+    if let Some(w) = dropped_log_warning(crate::cli::dropped_log_events()) {
         eprintln!("warning: {w}");
     }
 }

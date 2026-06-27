@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use clap::{ColorChoice, CommandFactory, Parser, Subcommand};
 use serde::Serialize;
 use tracing::info;
-use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
+use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use crate::error::{CliError, ExitKind};
@@ -409,6 +409,34 @@ type LogCell = Arc<Mutex<Option<WorkerGuard>>>;
 /// `init_logging` runs (e.g. the structured-help path returns before it).
 static LOG_FLUSH: OnceLock<LogCell> = OnceLock::new();
 
+/// Process-global handle to the non-blocking appender's dropped-event
+/// counter. In **lossy** mode (see [`init_logging`]) a sustained burst the
+/// disk cannot keep up with overflows the bounded channel and new events —
+/// including `error!`/`warn!` — are discarded; this counter records how
+/// many. Populated by [`init_logging`] (via [`finish_logging`]) and read by
+/// [`dropped_log_events`].
+///
+/// It is a *clone* of the same `Arc<AtomicUsize>` the live writer increments
+/// (tracing-appender's [`NonBlocking::error_counter`] hands out a shared
+/// handle), so reads always see the current count without holding the log
+/// flush lock. Both readers that need it — the success-envelope warning
+/// injected in [`output::emit_envelope`] (rendered *inside* a subcommand)
+/// and the supervisor's periodic warn — run where the [`LogGuard`] is not in
+/// scope, so a process-global accessor is the only thing that reaches them.
+///
+/// [`NonBlocking::error_counter`]: tracing_appender::non_blocking::NonBlocking::error_counter
+static LOG_DROPPED: OnceLock<ErrorCounter> = OnceLock::new();
+
+/// Number of log events this process has dropped due to lossy back-pressure
+/// (bounded-channel overflow). `0` before [`init_logging`] runs, when the
+/// subscriber was never installed, or — the steady state — whenever the disk
+/// has kept up. Reads the shared counter lock-free. See [`LOG_DROPPED`].
+pub(crate) fn dropped_log_events() -> u64 {
+    LOG_DROPPED
+        .get()
+        .map_or(0, |c| c.dropped_lines() as u64)
+}
+
 /// Drain the non-blocking appender's channel by dropping the [`WorkerGuard`].
 /// tracing-appender 0.2 exposes no manual flush (`NonBlocking::flush` is a
 /// no-op); the worker drains the channel and calls `Write::flush` on the
@@ -497,7 +525,21 @@ struct LoggingInit {
 /// is a no-op. (In the real binary `init_logging` runs once; a second call
 /// would in any case get `guard: None`, since `try_init` refuses to install
 /// a second subscriber.)
-fn finish_logging(warnings: Vec<String>, guard: Option<WorkerGuard>) -> LoggingInit {
+///
+/// `dropped` is the live writer's [`ErrorCounter`] on the success path (and
+/// `None` on every early-return / re-entry path where no writer was
+/// installed). The first non-`None` value wins the set-once [`LOG_DROPPED`]
+/// slot, matching the guard's "first init owns the live handle" rule.
+fn finish_logging(
+    warnings: Vec<String>,
+    guard: Option<WorkerGuard>,
+    dropped: Option<ErrorCounter>,
+) -> LoggingInit {
+    if let Some(counter) = dropped {
+        // Set-once: a second `init_logging` (tests, re-entry) keeps the
+        // original counter, mirroring the WorkerGuard handling below.
+        let _ = LOG_DROPPED.set(counter);
+    }
     let cell = LOG_FLUSH.get_or_init(|| Arc::new(Mutex::new(None))).clone();
     {
         let mut slot = match cell.lock() {
@@ -531,17 +573,19 @@ fn finish_logging(warnings: Vec<String>, guard: Option<WorkerGuard>) -> LoggingI
 /// Delivery semantics: the writer runs in **lossy** mode — if the channel
 /// fills (a sustained burst the disk cannot keep up with) new events are
 /// dropped rather than blocking the caller. This matches the MVP decision
-/// to favour supervisor responsiveness over strict log completeness;
-/// hardening (back-pressure / dropped-event accounting) is deferred. Logs
-/// are also lost on `panic = "abort"`. A `std::process::exit` that bypasses
-/// the guard's `Drop` must call [`flush_logs`] first (see `event tail`).
+/// to favour supervisor responsiveness over strict log completeness. Drops
+/// are no longer silent: the count is surfaced via [`dropped_log_events`] —
+/// rendered into the success-envelope `warnings` by [`output::emit_envelope`]
+/// and periodically `warn!`-ed by the long-lived supervisor. Logs are still
+/// lost on `panic = "abort"`. A `std::process::exit` that bypasses the
+/// guard's `Drop` must call [`flush_logs`] first (see `event tail`).
 fn init_logging() -> LoggingInit {
     let mut warnings = Vec::new();
     let log_path = if let Some(p) = log_path() {
         p
     } else {
         warnings.push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
-        return finish_logging(warnings, None);
+        return finish_logging(warnings, None, None);
     };
 
     if let Some(parent) = log_path.parent() {
@@ -551,7 +595,7 @@ fn init_logging() -> LoggingInit {
                 parent.display(),
                 e
             ));
-            return finish_logging(warnings, None);
+            return finish_logging(warnings, None, None);
         }
     }
 
@@ -563,7 +607,7 @@ fn init_logging() -> LoggingInit {
                 log_path.display(),
                 e
             ));
-            return finish_logging(warnings, None);
+            return finish_logging(warnings, None, None);
         }
     };
 
@@ -583,6 +627,11 @@ fn init_logging() -> LoggingInit {
         .lossy(true)
         .buffered_lines_limit(LOG_BUFFERED_LINES)
         .finish(file);
+    // Capture the dropped-event counter *before* `writer` is moved into the
+    // layer below. It is a cheap `Arc` clone sharing the writer's atomic, so
+    // it keeps reflecting live drops; registered into `LOG_DROPPED` via
+    // `finish_logging` on the success path only.
+    let dropped = writer.error_counter();
     let layer = fmt::layer()
         .json()
         .with_current_span(false)
@@ -599,10 +648,10 @@ fn init_logging() -> LoggingInit {
         // (flushing and joining the idle worker) rather than handing back
         // a guard for a writer nobody reads.
         warnings.push(format!("tracing subscriber not installed: {e}"));
-        return finish_logging(warnings, None);
+        return finish_logging(warnings, None, None);
     }
 
-    finish_logging(warnings, Some(guard))
+    finish_logging(warnings, Some(guard), Some(dropped))
 }
 
 fn log_path() -> Option<PathBuf> {
