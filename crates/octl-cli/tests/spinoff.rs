@@ -178,7 +178,7 @@ fn list_unknown_run_id_is_run_not_found() {
         "json",
         "spinoff",
         "list",
-        "01XXXXXXXXXXXXXXXXXXXXXXXX",
+        "01jzabsent0000000000000000",
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");

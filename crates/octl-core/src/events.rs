@@ -269,3 +269,30 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RunPaths;
+    use tempfile::TempDir;
+
+    #[test]
+    fn envelope_run_id_comes_from_paths_not_directory_basename() {
+        // The whole point of storing run_id: even when the on-disk directory
+        // name disagrees with the run id (symlinked/non-canonical root, the
+        // original `root.file_name()` bug), the envelope must carry the stored
+        // run_id verbatim — never the basename.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("not-a-ulid-basename");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        let seq = append_event(&paths, "run.status", None, None, serde_json::json!({})).unwrap();
+        assert_eq!(seq, 1);
+
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].run_id, run_id);
+    }
+}

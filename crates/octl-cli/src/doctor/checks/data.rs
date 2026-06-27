@@ -11,8 +11,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use octl_core::RunPaths;
-
 use crate::doctor::check::{CheckResult, FixAction};
 use crate::supervise::pid_file;
 
@@ -51,11 +49,11 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
 
     let mut out = Vec::new();
     for run_id in &run_ids {
-        let Ok(paths) = RunPaths::new(runs_dir.join(run_id), run_id.clone()) else {
-            // Non-run directory (name isn't a valid run id) — nothing to check.
-            continue;
-        };
-        let pid_path = paths.supervisor_pid();
+        // The orphan-supervisor check is pure path + PID logic, so it runs for
+        // every directory regardless of whether its name is a valid run id — a
+        // stale pid in an oddly-named dir must still be caught. (Invalid dir
+        // names are surfaced by the schema check.)
+        let pid_path = runs_dir.join(run_id).join("supervisor.pid");
         let id = format!("data.orphan-supervisor.{run_id}");
 
         // Distinguish "no PID file" (nothing to orphan-check) from "PID

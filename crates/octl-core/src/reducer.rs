@@ -134,8 +134,8 @@ pub fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
         return Err(Error::CorruptEventLog {
             path: paths.events(),
             reason: format!(
-                "event seq={} run_id={} does not belong to run {} (expected={}, found={})",
-                ev.seq, ev.run_id, paths.run_id, paths.run_id, ev.run_id
+                "event seq={} envelope run_id {:?} does not match run {:?}",
+                ev.seq, ev.run_id, paths.run_id
             ),
         });
     }

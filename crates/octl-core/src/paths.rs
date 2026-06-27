@@ -131,6 +131,26 @@ mod tests {
     }
 
     #[test]
+    fn validator_stays_in_lockstep_with_the_generator() {
+        // Guards against drift between `new_run_id()` and the hand-rolled
+        // validator: every id the generator can emit must validate, including
+        // ones whose timestamp pushes the first character toward the bound.
+        for _ in 0..2000 {
+            let id = crate::new_run_id();
+            assert!(validate_run_id(&id).is_ok(), "generator emitted {id:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_the_first_char_boundary_and_rejects_just_past_it() {
+        assert!(validate_run_id("7zzzzzzzzzzzzzzzzzzzzzzzzz").is_ok());
+        assert!(matches!(
+            RunPaths::new("/tmp/x", "8zzzzzzzzzzzzzzzzzzzzzzzzz"),
+            Err(Error::InvalidRunId { .. })
+        ));
+    }
+
+    #[test]
     fn rejects_malformed_run_ids_at_construction() {
         for bad in [
             "tooshort",                    // wrong length

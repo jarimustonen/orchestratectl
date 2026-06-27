@@ -249,18 +249,56 @@ fn create_rejects_unbalanced_parent_flags() {
 #[test]
 fn show_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "show", "nope"]));
+    // A well-formed ULID that simply names no run → run_not_found.
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "show",
+        "01jzabsent0000000000000000",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
+    assert_eq!(v["error"]["invalid_value"], "01jzabsent0000000000000000");
+}
+
+#[test]
+fn show_malformed_run_id_returns_invalid_run_id() {
+    let home = TempDir::new().unwrap();
+    // A malformed id is a distinct error class from a missing run.
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "show", "nope"]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "invalid_run_id");
     assert_eq!(v["error"]["invalid_value"], "nope");
 }
 
 #[test]
 fn cancel_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", "nope"]));
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "cancel",
+        "01jzabsent0000000000000000",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
+}
+
+#[test]
+fn cancel_malformed_run_id_returns_invalid_run_id() {
+    let home = TempDir::new().unwrap();
+    // Uppercase ULID-shaped input is non-canonical → invalid_run_id.
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "cancel",
+        "01JZABSENT0000000000000000",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "invalid_run_id");
 }
 
 #[test]
@@ -297,7 +335,13 @@ fn reattach_spawns_supervisor_and_records_events() {
 #[test]
 fn reattach_missing_run_returns_run_not_found() {
     let home = TempDir::new().unwrap();
-    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "reattach", "nope"]));
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "reattach",
+        "01jzabsent0000000000000000",
+    ]));
     assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_not_found");
 }

@@ -265,7 +265,7 @@ fn tail_unknown_run_fails_with_run_not_found() {
             "jsonl",
             "event",
             "tail",
-            "01J0000000000000000000000X",
+            "01jzabsent0000000000000000",
         ])
         .output()
         .expect("spawn");
@@ -897,7 +897,7 @@ fn run_not_found_is_user_error() {
         "json",
         "event",
         "create",
-        "01JXBOGUSRUNIDNOTHERE",
+        "01jzabsent0000000000000000",
         "--kind",
         "node.status",
         "--node-id",

@@ -177,13 +177,19 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
 
 /// Resolve `<root>/runs/<run-id>` and return validated `RunPaths`.
 ///
-/// A run-id that fails ULID validation cannot name a run that exists, so it
-/// surfaces as `run_not_found` — the same envelope the lookup-miss path emits
-/// — keeping the CLI contract uniform for every "no such run" reason.
+/// A malformed run-id is a distinct, machine-actionable error class from a
+/// well-formed id that simply names no run, so it surfaces as `invalid_run_id`
+/// carrying the core validator's reason (length, charset, ULID range) rather
+/// than being collapsed into `run_not_found`. Callers that look a run up by id
+/// still emit their own `run_not_found` for the valid-but-missing case.
 pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
-    RunPaths::new(octl_core::run_dir(root, run_id), run_id).map_err(|_| {
-        CliError::user("run_not_found", format!("no run with id {run_id}"))
-            .with_invalid_value(run_id)
+    RunPaths::new(octl_core::run_dir(root, run_id), run_id).map_err(|err| match err {
+        octl_core::Error::InvalidRunId { reason, .. } => CliError::user(
+            "invalid_run_id",
+            format!("run id {run_id:?} is not a valid ULID: {reason}"),
+        )
+        .with_invalid_value(run_id),
+        other => from_core(other),
     })
 }
 

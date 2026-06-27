@@ -167,6 +167,29 @@ fn broken_manifest_fails_schema_check_and_exits_one() {
 }
 
 #[test]
+fn invalid_run_directory_name_is_surfaced_as_warn() {
+    let env = setup();
+    // A directory under runs/ whose name isn't a valid run id must not be
+    // silently ignored — the doctor surfaces it so a failed migration or
+    // foreign dir is visible rather than quarantined.
+    let run_dir = env.orch.join("runs").join("badname");
+    std::fs::create_dir_all(&run_dir).unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "schema.runs.badname");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"]
+        .as_str()
+        .unwrap()
+        .contains("not a valid run directory"));
+}
+
+#[test]
 fn skill_drift_warns_with_install_suggestion() {
     let env = setup();
     install_skill(&env, "octl-run-overview", "0.0.0");

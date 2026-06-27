@@ -160,7 +160,7 @@ fn list_unknown_run_is_run_not_found() {
         "json",
         "discussion",
         "list",
-        "01J0000000000000000000000X",
+        "01jzabsent0000000000000000",
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");

@@ -54,9 +54,21 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
 
     for run_id in &run_ids {
         let id = format!("schema.runs.{run_id}");
-        let Ok(paths) = RunPaths::new(runs_dir.join(run_id), run_id.clone()) else {
-            // Non-run directory (name isn't a valid run id) — not a schema fault.
-            continue;
+        let paths = match RunPaths::new(runs_dir.join(run_id), run_id.clone()) {
+            Ok(p) => p,
+            // A directory under runs/ whose name isn't a valid run id is an
+            // anomaly the doctor must surface, not hide: a failed migration,
+            // manual damage, or a foreign dir dropped in the runs tree.
+            Err(e) => {
+                out.push(CheckResult::warn(
+                    id,
+                    format!("runs/{run_id} is not a valid run directory: {e}"),
+                    format!(
+                        "remove runs/{run_id} if it is not a run, or rename it to a valid run id"
+                    ),
+                ));
+                continue;
+            }
         };
         match read_manifest_opt(&paths) {
             Ok(Some(_)) => out.push(CheckResult::ok(id, "manifest valid")),

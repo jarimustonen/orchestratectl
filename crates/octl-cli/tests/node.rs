@@ -135,7 +135,7 @@ fn list_unknown_run_rejected() {
         "json",
         "node",
         "list",
-        "01J0000000000000000000000X",
+        "01jzabsent0000000000000000",
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "run_not_found");
@@ -366,7 +366,7 @@ fn report_unknown_run_rejected() {
         "json",
         "node",
         "report",
-        "01J0000000000000000000000X",
+        "01jzabsent0000000000000000",
         "n-0001",
         "--from-file",
         p.to_str().unwrap(),
