@@ -82,7 +82,12 @@ pub fn run(
                 Some(n) => n,
                 None => continue,
             };
-            if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
+            // Skip already-settled nodes: synthesizing a cancel report for
+            // them would be a no-op anyway (the reducer's terminal-state
+            // guard rejects transitions out of a terminal state), so this
+            // just avoids appending a dead event. The reducer remains the
+            // canonical gate.
+            if n.status.is_terminal() {
                 continue;
             }
             let reason = note.unwrap_or("cancelled by user");
