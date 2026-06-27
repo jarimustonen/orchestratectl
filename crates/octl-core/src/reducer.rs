@@ -158,6 +158,9 @@ pub fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
             ),
         });
     }
+    // Each event kind is listed explicitly as documentation of the known set;
+    // `supervisor.exited` and the `_` fallthrough share a body intentionally.
+    #[allow(clippy::match_same_arms)]
     match ev.kind.as_str() {
         "run.created" => apply_run_created(paths, ev),
         "run.status" => apply_run_status(paths, ev),

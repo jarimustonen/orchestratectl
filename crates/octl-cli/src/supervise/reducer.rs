@@ -291,6 +291,9 @@ pub fn child_terminal_status_from_report(report: &Value) -> Status {
     if cancelled {
         return Status::Cancelled;
     }
+    // `Some(false)` (explicit failure) and `None` (missing field) both mean
+    // Failed; listed separately to document the missing-field case.
+    #[allow(clippy::match_same_arms)]
     match report.get("success").and_then(Value::as_bool) {
         Some(true) => Status::Done,
         Some(false) => Status::Failed,

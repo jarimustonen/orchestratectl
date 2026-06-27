@@ -116,6 +116,9 @@ fn allows_node_id(kind: &str) -> bool {
 /// trace of the reducer side-effects.
 fn projected_paths(kind: &str, node_id: Option<&str>, data: &Value) -> Vec<String> {
     let mut out = Vec::new();
+    // Event kinds are enumerated explicitly; some distinct kinds map to the same
+    // projection-file set, which clippy would flag as duplicate arms.
+    #[allow(clippy::match_same_arms)]
     match kind {
         "run.created" | "run.status" => out.push("manifest.json".into()),
         "node.created" => {

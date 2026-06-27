@@ -5,12 +5,18 @@
 # Run locally with `cargo deny check`.
 
 [advisories]
+# Opt into the modern (v2) advisories schema explicitly so behaviour is stable
+# regardless of which cargo-deny version the CI action pulls.
+version = 2
 # Fail on any crate with an active RUSTSEC advisory or that has been yanked.
 yanked = "deny"
-# Unmaintained/unsound advisories are warnings until we decide to act on them.
-unmaintained = "workspace"
+# Scope of the unmaintained check ("all" = the whole dependency tree, not just
+# our own crates). In the v2 schema unmaintained is a fail-by-default advisory
+# class scoped here, not a warn/deny severity knob.
+unmaintained = "all"
 
 [licenses]
+version = 2
 # Allow-list of licenses acceptable for this MIT-licensed project. Anything
 # outside this set (notably the copyleft GPL/AGPL family) fails the check.
 allow = [

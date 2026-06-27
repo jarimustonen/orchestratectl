@@ -127,6 +127,9 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     })?;
 
     if !output.status.success() {
+        // The exit-code mapping is documented per-arm; `Some(2)` and the `_`
+        // fallthrough deliberately both map to System.
+        #[allow(clippy::match_same_arms)]
         let exit_kind = match output.status.code() {
             // create.sh exit 2 = refused-but-actionable (precondition).
             // create.sh exit 1 = mid-flow failure with cleanup done.
@@ -215,7 +218,16 @@ pub fn verify_agent_pid(pid: i64) -> Result<(), CliError> {
             format!("create.sh returned non-positive agent_pid_hint: {pid}"),
         ));
     }
-    if !crate::supervise::pid_file::pid_alive(pid as u32) {
+    // `agent_pid_hint` is external input from create.sh. Validate the upper
+    // bound explicitly rather than letting `as u32` truncate silently — a
+    // hint above u32::MAX would otherwise check liveness of the wrong process.
+    let pid = u32::try_from(pid).map_err(|_| {
+        CliError::system(
+            "agent_pid_invalid",
+            format!("create.sh returned out-of-range agent_pid_hint: {pid}"),
+        )
+    })?;
+    if !crate::supervise::pid_file::pid_alive(pid) {
         return Err(CliError::system(
             "agent_pid_discovery_failed",
             format!("agent_pid {pid} was not alive after create.sh returned"),

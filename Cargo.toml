@@ -37,7 +37,9 @@ lto = "thin"
 codegen-units = 1
 
 # Workspace-wide lint policy. Each crate opts in with `lints.workspace = true`.
-# octl-core layers `missing_docs = "warn"` on top via its own [lints] table.
+# octl-core layers `missing_docs` on top via a crate-root `#![warn(missing_docs)]`
+# in its lib.rs — Cargo rejects mixing `lints.workspace = true` with a per-crate
+# `[lints.rust]` override in the same table, so the attribute is the clean path.
 [workspace.lints.clippy]
 # Pedantic is a strong default for a CLI that will grow many subcommands —
 # it catches API-consistency and correctness-adjacent smells early. We keep it
@@ -72,9 +74,9 @@ needless_pass_by_value = "allow"
 # The flagged fields (e.g. `Node.node_id`, `ChildRef.run_id`) are part of the
 # serialized on-disk schema — renaming them would break stored state files.
 struct_field_names = "allow"
-# Event-dispatch and projection-path matches list each event kind explicitly as
-# a documentation of the known set; identical bodies across arms are intentional.
-match_same_arms = "allow"
 # Local enums/structs/`use`s are deliberately defined next to their use site
 # (e.g. the lock-result enums in the discussion/report handlers) for locality.
 items_after_statements = "allow"
+# NOTE: `match_same_arms` is intentionally NOT allow-listed here — a global allow
+# would hide copy-paste bugs in the reducer/dispatch matches. The few intentional
+# all-variants-enumerated matches carry a local `#[allow(clippy::match_same_arms)]`.
