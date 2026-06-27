@@ -31,23 +31,23 @@ pub fn run(
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, run_id)?;
 
-    // A missing manifest is a definitive "no such run" — surface the friendly
-    // `run_not_found` (exit 1) before taking the lock. core::cancel_run re-reads
-    // the manifest under the lock, so this pre-check is purely for the nicer
-    // error class; a run that races into existence afterward still cancels
-    // correctly.
+    // Friendly `run_not_found` (exit 1) for a missing manifest, BEFORE taking
+    // the lock — and, importantly, before `cancel_run` calls `RunLock::acquire`,
+    // which would create `<run-dir>/.lock` (and its parent) as a side effect for
+    // a bogus run-id. This pre-check is best-effort, not authoritative: if the
+    // run is deleted in the window between here and the lock, `cancel_run`'s own
+    // manifest read fails with a NotFound I/O error, which the match below maps
+    // back to the same `run_not_found` envelope so the race can't leak an
+    // `io_error`.
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
-        return Err(
-            CliError::user("run_not_found", format!("no run with id {run_id}"))
-                .with_invalid_value(run_id),
-        );
+        return Err(run_not_found(run_id));
     }
 
     let outcome = match cancel_run(&paths, note) {
         Ok(o) => o,
-        // A Done/Failed run can't be cancelled: refusing here (exit 2) is
-        // honest where the old path appended events the reducer then dropped
-        // while still printing success.
+        // A Done/Failed run can't be cancelled: refusing here is honest where
+        // the old path appended events the reducer then dropped while still
+        // printing success.
         Err(octl_core::Error::RunAlreadyTerminal { status }) => {
             let s = status_kebab(status);
             return Err(CliError::system(
@@ -57,10 +57,21 @@ pub fn run(
             .with_invalid_value(s)
             .with_expected(json!("running|pending|blocked")));
         }
+        // The run vanished between the pre-check and the lock: report it as the
+        // same missing-run condition rather than a generic system I/O error.
+        Err(octl_core::Error::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(run_not_found(run_id));
+        }
         Err(e) => return Err(from_core(e)),
     };
 
     emit(run_id, &outcome, spec, warnings)
+}
+
+fn run_not_found(run_id: &str) -> CliError {
+    CliError::user("run_not_found", format!("no run with id {run_id}")).with_invalid_value(run_id)
 }
 
 fn emit(
@@ -84,17 +95,17 @@ fn emit(
             output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
+            let cancelled = payload.cancelled_nodes.len();
+            let already = payload.nodes_already_terminal.len();
             if payload.already_cancelled {
                 println!(
-                    "no-op: run {} was already cancelled, converged {} additional node(s)",
+                    "no-op: run {} was already cancelled, converged {cancelled} additional node(s) ({already} already terminal)",
                     payload.run_id,
-                    payload.cancelled_nodes.len()
                 );
             } else {
                 println!(
-                    "cancelled run {} ({} node(s))",
+                    "cancelled run {} ({cancelled} node(s) cancelled, {already} already terminal)",
                     payload.run_id,
-                    payload.cancelled_nodes.len()
                 );
             }
             output::emit_text_warnings(warnings);

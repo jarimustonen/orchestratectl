@@ -1,15 +1,21 @@
-//! Single-transaction run cancellation.
+//! Single-lock run cancellation.
 //!
-//! `run cancel` must do three things atomically: refuse a run that is already
-//! in a non-cancelled terminal state, synthesize a terminal `node.report` for
-//! every still-live node, and append `run.status: cancelled` exactly once. The
-//! whole transaction runs under **one** held [`RunLock`] so the node reads and
-//! the node-report appends can't interleave with a concurrent writer — which
-//! is what made the pre-refactor CLI loop both racy and prone to over-reporting
-//! `cancelled_nodes` (it pushed a node id even when the per-node append landed
-//! after another process had already settled the node, so the reducer dropped
-//! it). Under one lock the node we read is the node we cancel, so the reported
-//! count is honest by construction.
+//! `run cancel` does three things under **one** held [`RunLock`]: refuse a run
+//! that is already in a non-cancelled terminal state, synthesize a terminal
+//! `node.report` for every still-live node, and append `run.status: cancelled`
+//! once. Holding one lock for the whole operation serializes it against other
+//! *cooperating* writers (those that honor the lock) so the node reads and the
+//! node-report appends can't interleave — which is what made the pre-refactor
+//! CLI loop both racy and prone to over-reporting `cancelled_nodes` (it pushed
+//! a node id even when the per-node append landed after another process had
+//! already settled the node, so the reducer dropped it). Under one lock the
+//! node we read is the node we cancel, so the reported count is honest.
+//!
+//! This is **not crash-atomic**: each `append_and_apply_unlocked` is its own
+//! durable append, so a crash or I/O error partway through can leave some nodes
+//! cancelled and `run.status` not yet appended. Recovery is convergent — a
+//! re-`cancel` of an already-`Cancelled` run scans the still-live stragglers
+//! and finishes the job — not transactional rollback.
 
 use serde_json::json;
 
@@ -36,9 +42,8 @@ pub struct CancelOutcome {
     /// durably appended a terminal cancel `node.report`. Honest: a node only
     /// lands here when its append actually applied under the held lock.
     pub nodes_cancelled: Vec<NodeId>,
-    /// Nodes that were already in a terminal state (or already carried a
-    /// terminal report) and so were skipped — never double-reported as
-    /// freshly cancelled.
+    /// Nodes whose *status* was already terminal on entry and so were skipped —
+    /// never double-reported as freshly cancelled.
     pub nodes_already_terminal: Vec<NodeId>,
 }
 
@@ -77,31 +82,39 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
     }
     let run_was_already_cancelled = manifest.status == Status::Cancelled;
 
+    // Normalize the cancel reason ONCE up front. An empty or whitespace-only
+    // `--note` would otherwise flow into the synthesized report as `reason: ""`,
+    // which the reducer rejects (`CancelledRequiresReason`) — aborting the whole
+    // transaction mid-loop and, since retries reuse the same bad note, leaving
+    // the run permanently un-cancellable. A blank note falls back to the
+    // default.
+    let reason = note
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("cancelled by user");
+
     let mut nodes_cancelled = Vec::new();
     let mut nodes_already_terminal = Vec::new();
 
     for nid in live_node_ids(paths)? {
-        // Read each node fresh under the held lock. Because no other writer
-        // can settle it between this read and the append below, a node we see
-        // as live here is still live at append time — so pushing it to
+        // Read each node fresh under the held lock. Because no cooperating
+        // writer can settle it between this read and the append below, a node we
+        // see as live here is still live at append time — so pushing it to
         // `nodes_cancelled` can never over-report a reducer no-op.
         let Some(n) = read_node_opt(paths, &nid)? else {
             continue;
         };
+        // Only a genuinely terminal *status* means "already settled". We do NOT
+        // also skip a non-terminal node that happens to carry `last_report`
+        // (a should-never-happen anomaly): the reducer gates on status, so
+        // synthesizing a cancel report there still transitions — and silently
+        // skipping it would strand a live node in a cancelled run while lying
+        // that it was "already terminal".
         if n.status.is_terminal() {
             nodes_already_terminal.push(nid);
             continue;
         }
-        // A non-terminal node should never already carry a terminal report
-        // (reports are written only on the transition), but guard defensively:
-        // synthesizing another would be a redundant event we'd then dishonestly
-        // count as a fresh cancel.
-        if n.last_report.is_some() {
-            nodes_already_terminal.push(nid);
-            continue;
-        }
 
-        let reason = note.unwrap_or("cancelled by user");
         let data = json!({
             "success": false,
             "cancelled": true,
@@ -118,7 +131,10 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
     if !run_was_already_cancelled {
         let mut status_data = serde_json::Map::new();
         status_data.insert("status".into(), "cancelled".into());
-        if let Some(n) = note {
+        // Record the operator note only when one was actually supplied (the
+        // trimmed, non-blank value); a blank `--note` leaves the field unset
+        // rather than writing an empty string.
+        if let Some(n) = note.map(str::trim).filter(|s| !s.is_empty()) {
             status_data.insert("note".into(), n.into());
         }
         append_and_apply_unlocked(
@@ -141,8 +157,16 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
 /// rather than trusting `manifest.node_count` so a dropped event (listing vs.
 /// counter drift) can't hide a live node from cancellation. A stem that is not
 /// a well-formed node id can't be one of our projection files, so it is
-/// skipped rather than failing the whole cancel. Returns a sorted list for
-/// deterministic output.
+/// skipped rather than failing the whole cancel.
+///
+/// A `read_dir` *iterator* error (a `DirEntry` that fails mid-scan: transient
+/// I/O, `EMFILE`, a permission fault) is propagated, never silently dropped —
+/// skipping it would hide a live node, mark the run `cancelled`, and strand
+/// that node, the exact dishonesty this refactor removes.
+///
+/// Returns ids sorted by their numeric suffix (not lexically), so output and
+/// the cancel order stay intuitive past the digit-width boundary where
+/// `n-10000` would otherwise sort before `n-9999` (see [`NodeId`]).
 fn live_node_ids(paths: &RunPaths) -> Result<Vec<NodeId>> {
     let nodes_dir = paths.nodes_dir();
     let entries = match std::fs::read_dir(&nodes_dir) {
@@ -151,18 +175,27 @@ fn live_node_ids(paths: &RunPaths) -> Result<Vec<NodeId>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(Error::io(&nodes_dir, e)),
     };
-    let mut ids: Vec<NodeId> = entries
-        .filter_map(std::result::Result::ok)
-        .filter_map(|e| {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                return None;
-            }
-            let stem = p.file_stem().and_then(|s| s.to_str())?;
-            NodeId::parse_str(stem).ok()
-        })
-        .collect();
-    ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let mut ids: Vec<NodeId> = Vec::new();
+    for entry in entries {
+        let p = entry.map_err(|e| Error::io(&nodes_dir, e))?.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if let Ok(id) = NodeId::parse_str(stem) {
+            ids.push(id);
+        }
+    }
+    // A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits in u64); the
+    // unwrap_or keeps the sort total even for a hypothetical unparseable body.
+    ids.sort_by_key(|id| {
+        id.as_str()
+            .strip_prefix("n-")
+            .and_then(|d| d.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
     Ok(ids)
 }
 
@@ -403,6 +436,70 @@ mod tests {
         assert_eq!(
             crate::read_manifest(&paths).unwrap().status,
             Status::Cancelled
+        );
+    }
+
+    #[test]
+    fn blank_note_falls_back_to_default_reason_and_does_not_brick_cancel() {
+        // A `--note ""` (or whitespace-only) must NOT flow an empty `reason`
+        // into the synthesized report — that would be rejected by the reducer
+        // mid-loop and leave the run permanently un-cancellable. It normalizes
+        // to the default reason and the cancel completes cleanly.
+        for blank in ["", "   ", "\n\t"] {
+            let tmp = TempDir::new().unwrap();
+            let paths = fresh_run(&tmp);
+            bootstrap(&paths, 1);
+
+            let out = cancel_run(&paths, Some(blank)).unwrap();
+            assert_eq!(
+                out.nodes_cancelled
+                    .iter()
+                    .map(NodeId::as_str)
+                    .collect::<Vec<_>>(),
+                vec!["n-0001"],
+                "blank note {blank:?} still converges the live node"
+            );
+            assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
+            let report = crate::read_node(&paths, &NodeId::parse_str("n-0001").unwrap())
+                .unwrap()
+                .last_report
+                .expect("cancel report recorded");
+            assert_eq!(report["reason"], "cancelled by user");
+        }
+    }
+
+    #[test]
+    fn nodes_are_converged_in_numeric_not_lexical_order() {
+        // Past the digit-width boundary, lexical order would place n-10000
+        // before n-9999. The numeric sort keeps the reported order intuitive.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
+        )
+        .unwrap();
+        for nid in ["n-9999", "n-10000", "n-0001"] {
+            append_and_apply_event(
+                &paths,
+                "node.created",
+                Some(nid),
+                None,
+                json!({ "kind": "spinoff" }),
+            )
+            .unwrap();
+        }
+
+        let out = cancel_run(&paths, None).unwrap();
+        assert_eq!(
+            out.nodes_cancelled
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001", "n-9999", "n-10000"],
         );
     }
 }
