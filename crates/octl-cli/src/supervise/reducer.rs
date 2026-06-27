@@ -180,7 +180,13 @@ pub fn process_node_report(
                 // as a recoverable error.
                 let did = DiscussionId::parse_str(&id)
                     .expect("deterministic_id must produce a valid DiscussionId");
-                if parent_paths.discussion(&did).exists() {
+                // Fail-closed dedup: `try_exists()` errs only on permission/IO
+                // faults that leave existence genuinely unknown. For a dedup
+                // guard the safe default on "unknown" is *assume seen* and skip
+                // — re-emitting would risk a duplicate discussion. `Path::exists()`
+                // collapses such errors to `false` (assume-not-seen, re-emit),
+                // the wrong bias here; `try_exists().unwrap_or(true)` flips it.
+                if parent_paths.discussion(&did).try_exists().unwrap_or(true) {
                     consumption.skipped_already_present += 1;
                     continue;
                 }
@@ -222,7 +228,9 @@ pub fn process_node_report(
                     deterministic_id('s', child_run_id, child_node_id, report_seq, "spinoff", i);
                 let pid = ProposalId::parse_str(&id)
                     .expect("deterministic_id must produce a valid ProposalId");
-                if parent_paths.spinoff(&pid).exists() {
+                // Fail-closed dedup: assume-seen/skip on an unknowable
+                // existence error (see the discussion-loop note above).
+                if parent_paths.spinoff(&pid).try_exists().unwrap_or(true) {
                     consumption.skipped_already_present += 1;
                     continue;
                 }

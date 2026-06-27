@@ -97,14 +97,19 @@ impl IdValidationError {
 }
 
 /// Generate the shared trait surface for a validated id newtype: `as_str`,
-/// `Display`, `Debug`, `Serialize` (as the bare string), and a validating
+/// `FromStr`, `Display`, `Debug`, `Ord` / `PartialOrd` (lexicographic over the
+/// inner string), `Serialize` (as the bare string), and a validating
 /// `Deserialize` (delegates to `parse_str`, so reading an old file with a
 /// malformed id fails loudly rather than silently widening the type). Each
 /// newtype supplies its own `parse_str` in a separate `impl` block.
+///
+/// `Ord` / `PartialOrd` are derived, so they forward to the inner `String`'s
+/// ordering — i.e. plain `&str` byte comparison. For the ULID forms this
+/// preserves the natural time ordering ULIDs encode in their lexical sort.
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
-        #[derive(Clone, PartialEq, Eq, Hash)]
+        #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(String);
 
         impl $name {
@@ -113,6 +118,16 @@ macro_rules! id_newtype {
             /// mutated into an unvalidated state after construction.
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = IdValidationError;
+
+            /// Parse via the newtype's own `parse_str`; lets callers use the
+            /// `str::parse` / `FromStr` ecosystem (`s.parse::<RunId>()?`).
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Self::parse_str(s)
             }
         }
 
@@ -857,5 +872,23 @@ mod id_tests {
         // Invalid top-level `node_id` (too few digits) also fails the parse.
         let bad_node = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"node.status","run_id":"01jxsnap000000000000000000","node_id":"n-1","data":{}}"#;
         assert!(serde_json::from_str::<Event>(bad_node).is_err());
+    }
+
+    #[test]
+    fn from_str_and_ord_delegate_to_inner() {
+        use std::str::FromStr;
+        // `FromStr` mirrors `parse_str`, so the `str::parse` ecosystem works.
+        assert!(RunId::from_str("01jxsnap000000000000000000").is_ok());
+        assert!("n-0001".parse::<NodeId>().is_ok());
+        assert!("n-x".parse::<NodeId>().is_err());
+
+        // `Ord` is lexicographic over the inner string; for ULIDs that is the
+        // natural time-encoded order.
+        let a = RunId::parse_str("01jxsnap000000000000000000").unwrap();
+        let b = RunId::parse_str("02jxsnap000000000000000000").unwrap();
+        assert!(a < b);
+        let mut v = vec![b.clone(), a.clone()];
+        v.sort();
+        assert_eq!(v, vec![a, b]);
     }
 }
