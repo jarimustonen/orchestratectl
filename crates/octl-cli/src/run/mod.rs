@@ -33,6 +33,7 @@ pub enum KindArg {
     MakeSkill,
     FanOut,
     Bugfix,
+    Orchestrate,
 }
 
 impl From<KindArg> for Kind {
@@ -46,6 +47,7 @@ impl From<KindArg> for Kind {
             KindArg::MakeSkill => Kind::MakeSkill,
             KindArg::FanOut => Kind::FanOut,
             KindArg::Bugfix => Kind::Bugfix,
+            KindArg::Orchestrate => Kind::Orchestrate,
         }
     }
 }
@@ -262,6 +264,7 @@ pub fn kind_kebab(k: Kind) -> &'static str {
         Kind::MakeSkill => "make-skill",
         Kind::FanOut => "fan-out",
         Kind::Bugfix => "bugfix",
+        Kind::Orchestrate => "orchestrate",
     }
 }
 

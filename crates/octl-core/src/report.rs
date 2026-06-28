@@ -537,7 +537,8 @@ mod tests {
                 "technical-decision",
                 "make-skill",
                 "fan-out",
-                "bugfix"
+                "bugfix",
+                "orchestrate",
             ]))
         );
     }

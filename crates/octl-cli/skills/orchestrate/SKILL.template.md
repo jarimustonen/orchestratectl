@@ -161,14 +161,13 @@ orchestratectl run create \
   [--idempotency-key <key>]
 ```
 
-> **CLI status note.** `--kind orchestrate` is the top-level driver
-> kind. If `orchestratectl --help run create` does not list
-> `orchestrate` as a possible value, the CLI build is older than this
-> skill expects — refer to the "Install or upgrade" section and stop.
-> The driver run does NOT spawn a worktree (`lifecycle: interactive`,
+> **About the driver run.** `--kind orchestrate` is the top-level
+> driver kind. It does NOT spawn a worktree (`lifecycle: interactive`,
 > the orchestrator agent runs in the user's main conversation), only a
 > run dir under `~/.orchestratectl/runs/<id>/` to hold the event log,
-> manifest, and final report files.
+> manifest, and final report files. The success envelope's
+> `supervisor` field reads `"orchestrator-in-main-conversation"` —
+> that is correct; you are the supervisor.
 
 Capture `data.run_id` — this is the **driver run id**. Every child
 worker references it via `--parent-run-id`. Also capture
@@ -237,28 +236,46 @@ While there are features not yet `done` or `failed`:
 ### 5. Decision logging
 
 Every autonomous choice the orchestrator makes — large or small — gets
-appended as an event on the parent run's log:
+appended as an event on the driver run's log via `event create`:
 
-```
-orchestratectl event append --run <driver-run-id> \
-  --type orchestrator.decision \
-  --data '{"id":"d-NNN","summary":"<one line>","options":["A","B"],"chose":"A","because":"<reason>","scope":"<which feature(s) this affects>","reversibility":"low|medium|high"}'
-```
+1. Write the decision payload to a temp file:
 
-(If `event append` is not yet exposed in this CLI, write the entry
-directly to `<run-dir>/decisions.jsonl`; the orchestrator owns the
-file and the supervisor mirrors it into the canonical event log
-when the build supports the verb. Either way, the entry MUST land
-somewhere `report.yaml` can pick it up.)
+   ```bash
+   cat > /tmp/decision-<id>.json <<'JSON'
+   {
+     "id": "d-NNN",
+     "summary": "<one line>",
+     "options": ["A", "B"],
+     "chose": "A",
+     "because": "<reason>",
+     "scope": "<which feature(s) this affects>",
+     "reversibility": "low|medium|high"
+   }
+   JSON
+   ```
+
+2. Append it to the driver run's event log:
+
+   ```
+   orchestratectl event create <driver-run-id> \
+     --kind orchestrator.decision \
+     --from-file /tmp/decision-<id>.json \
+     --idempotency-key d-NNN
+   ```
+
+3. Remove the temp file.
 
 Decision IDs are stable strings (`d-001`, `d-002`, ...) so
 `report.yaml` can reference them and the future UI can link to them.
+The `--idempotency-key` (matching the decision id) makes the append
+safe to retry if the orchestrator restarts mid-write.
 
 ### 6. Handling pakkopysäytys
 
 When any of the three triggers fires:
 
-1. Append `discuss.critical` to the parent run's event log with:
+1. Append a `discuss.critical` event to the driver run's log via
+   `event create`. The payload includes:
    - `summary` — one sentence describing what is blocked.
    - `trigger` — `cross_cutting | cannot_do | out_of_competence`.
    - `options` — what the orchestrator considered; never present
@@ -267,6 +284,16 @@ When any of the three triggers fires:
      the user overrides).
    - `affected_features` — which downstream features will sit idle
      until resolved.
+
+   ```bash
+   cat > /tmp/discuss-<id>.json <<'JSON'
+   { ... payload ... }
+   JSON
+   orchestratectl event create <driver-run-id> \
+     --kind discuss.critical \
+     --from-file /tmp/discuss-<id>.json \
+     --idempotency-key <discuss-id>
+   ```
 2. Play the audible alert (macOS: `afplay
    /System/Library/Sounds/Sosumi.aiff`; Linux: `paplay`/`aplay` on a
    short bell if available; silent fallback only if no audio path
@@ -403,8 +430,6 @@ Likely codes (driver-level — child-level codes belong to
 
 - `invalid_arguments` — missing/empty `--title` or `--task`, bad
   source branch.
-- `kind_unsupported` — the running CLI does not yet expose
-  `--kind orchestrate`. Bump the CLI per "Install or upgrade".
 - `branch_not_found` — `--source-branch` does not exist.
 - `integration_branch_exists` — a prior campaign with the same slug
   left its integration branch around. Pick a new slug or

@@ -88,6 +88,7 @@ enum KindStr {
     MakeSkill,
     FanOut,
     Bugfix,
+    Orchestrate,
 }
 impl From<Kind> for KindStr {
     fn from(k: Kind) -> Self {
@@ -100,6 +101,7 @@ impl From<Kind> for KindStr {
             Kind::MakeSkill => KindStr::MakeSkill,
             Kind::FanOut => KindStr::FanOut,
             Kind::Bugfix => KindStr::Bugfix,
+            Kind::Orchestrate => KindStr::Orchestrate,
         }
     }
 }
@@ -151,8 +153,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without a real create.sh available. The env var implies
     // `--skip-materialize` and is set by the `bin()` helper in
     // `tests/`. Production callers never set it.
-    let skip_materialize =
-        args.skip_materialize || std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok();
+    // `Kind::Orchestrate` is the top-level DAG driver — the orchestrator
+    // agent runs in the user's main conversation, not in a detached
+    // worktree, so there is nothing for `create.sh` to materialize and
+    // nothing for the watchdog to supervise. Force-skip materialization
+    // for this kind so the driver run is just a run dir + event log +
+    // manifest, ready for the orchestrator to append decisions and spawn
+    // `Kind::Orchestrated` children that reference it.
+    let skip_materialize = args.skip_materialize
+        || args.kind == Kind::Orchestrate
+        || std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok();
     let prompt_source = if skip_materialize {
         None
     } else {
@@ -539,12 +549,18 @@ struct EmitInput<'a> {
 }
 
 fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
-    let supervisor = match (i.supervisor_pid, i.dry_run, i.idempotent_replay) {
-        (Some(pid), _, _) => SupervisorField::Pid(pid),
-        (None, Some(true), _) => SupervisorField::Note("not-spawned-dry-run"),
-        (None, _, Some(true)) => SupervisorField::Note("recorded-on-prior-run"),
+    let supervisor = match (i.supervisor_pid, i.dry_run, i.idempotent_replay, i.kind) {
+        (Some(pid), _, _, _) => SupervisorField::Pid(pid),
+        (None, Some(true), _, _) => SupervisorField::Note("not-spawned-dry-run"),
+        (None, _, Some(true), _) => SupervisorField::Note("recorded-on-prior-run"),
+        // Orchestrate driver runs in the user's main conversation — there
+        // is no detached worker for a supervisor to watch. Children
+        // (`Kind::Orchestrated`) spawn their own supervisors.
+        (None, _, _, Kind::Orchestrate) => {
+            SupervisorField::Note("orchestrator-in-main-conversation")
+        }
         // Child-spawn: parent supervisor handles supervisor creation.
-        (None, _, _) => SupervisorField::Note("delegated-to-parent-supervisor"),
+        (None, _, _, _) => SupervisorField::Note("delegated-to-parent-supervisor"),
     };
     let payload = CreatedPayload {
         run_id: i.run_id,

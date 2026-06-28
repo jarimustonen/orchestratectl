@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
-{"schema_version":1,"error":{"code":"invalid_value","message":"error: invalid value 'bogus' for '--kind <KIND>'   [possible values: code, spinoff, orchestrated, research, technical-decision, make-skill, fan-out, bugfix]"}}
+{"schema_version":1,"error":{"code":"invalid_value","message":"error: invalid value 'bogus' for '--kind <KIND>'   [possible values: code, spinoff, orchestrated, research, technical-decision, make-skill, fan-out, bugfix, orchestrate]"}}

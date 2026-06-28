@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
+assertion_line: 66
 expression: value
 ---
 {
@@ -308,7 +309,8 @@ expression: value
               "technical-decision",
               "make-skill",
               "fan-out",
-              "bugfix"
+              "bugfix",
+              "orchestrate"
             ],
             "accepts_file_paths": false,
             "conflicts_with": [],

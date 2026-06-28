@@ -333,6 +333,11 @@ pub enum Kind {
     FanOut,
     /// End-to-end bug investigate-fix-review worktree (`/worktree-bugfix`).
     Bugfix,
+    /// Top-level DAG driver run (`/orchestrate`). Coordinates `Kind::Orchestrated`
+    /// child workers. Has no worktree of its own — the orchestrator agent runs
+    /// in the user's main conversation and uses the run dir only to host the
+    /// event log, manifest, and final hierarchical report.
+    Orchestrate,
 }
 
 impl Kind {
@@ -354,6 +359,7 @@ impl Kind {
             Kind::MakeSkill => "make-skill",
             Kind::FanOut => "fan-out",
             Kind::Bugfix => "bugfix",
+            Kind::Orchestrate => "orchestrate",
         }
     }
 
@@ -368,6 +374,7 @@ impl Kind {
         Kind::MakeSkill.wire_name(),
         Kind::FanOut.wire_name(),
         Kind::Bugfix.wire_name(),
+        Kind::Orchestrate.wire_name(),
     ];
 
     /// Default lifecycle for a kind (design.md §7.4). `code` is
@@ -375,7 +382,11 @@ impl Kind {
     /// autonomous (agent runs to completion, watchdog adjudicates).
     pub fn lifecycle(self) -> Lifecycle {
         match self {
-            Kind::Code => Lifecycle::Interactive,
+            // `Code` is human-driven inside tmux. `Orchestrate` is also
+            // interactive in the sense that the orchestrator agent runs in
+            // the user's main conversation — there is no detached worker
+            // for the watchdog to adjudicate, only the children it spawns.
+            Kind::Code | Kind::Orchestrate => Lifecycle::Interactive,
             Kind::Spinoff
             | Kind::Orchestrated
             | Kind::Research
