@@ -49,6 +49,23 @@ fn count_kind(events: &Path, kind: &str) -> usize {
         .count()
 }
 
+/// Lenient sibling of [`count_kind`]: parses each line individually and
+/// *skips* any that fails (`filter_map(.. .ok())`) instead of panicking.
+///
+/// Used ONLY inside readiness polling ([`wait_for_kind`]): a detached
+/// supervisor may be mid-append when a poll reads the file, leaving a torn
+/// trailing line whose strict parse would turn a transient state into a test
+/// failure. Final assertions keep the strict [`count_kind`]/[`read_events`] so
+/// a genuinely corrupt log still fails the test.
+fn count_kind_lenient(events: &Path, kind: &str) -> usize {
+    std::fs::read_to_string(events)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["kind"] == kind)
+        .count()
+}
+
 /// How long readiness polls wait before giving up. Generous on purpose: the
 /// suite runs many process-spawning supervisor tests in parallel, so under
 /// contention a detached spawn+boot+write can take several seconds (observed
@@ -90,7 +107,9 @@ fn poll_until<F: FnMut() -> bool>(deadline: Duration, mut predicate: F) -> bool 
 fn wait_for_kind(events: &Path, kind: &str, want: usize) -> usize {
     let mut seen = 0;
     poll_until(POLL_DEADLINE, || {
-        seen = count_kind(events, kind);
+        // Lenient parse: tolerate a torn trailing line the supervisor may be
+        // mid-append on (see `count_kind_lenient`).
+        seen = count_kind_lenient(events, kind);
         seen >= want
     });
     seen
@@ -291,6 +310,37 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
     );
 }
 
+/// supervise-gates-jsonl-poll-tolerance: readiness polling must tolerate a
+/// torn trailing JSONL line — the half-written record a detached supervisor is
+/// mid-append on when a poll happens to read the file. The strict `read_events`
+/// would panic on it; the lenient `count_kind_lenient` (used by `wait_for_kind`)
+/// skips it and still counts the intact records before it.
+#[test]
+fn lenient_poll_skips_torn_trailing_line() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "torn-tail");
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+
+    // Append one intact record of a known kind, then a torn trailing line
+    // (truncated mid-object, no closing brace) as if a write were caught
+    // in flight.
+    let mut contents = std::fs::read_to_string(&events).unwrap();
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(r#"{"kind":"torn.marker","seq":99}"#);
+    contents.push('\n');
+    contents.push_str(r#"{"kind":"torn.marker","seq":100"#); // torn: no closing brace / newline
+    std::fs::write(&events, contents).unwrap();
+
+    // Strict parse would panic on the torn tail; the lenient counter skips it
+    // and counts only the intact marker.
+    assert_eq!(count_kind_lenient(&events, "torn.marker"), 1);
+    // And `wait_for_kind`, which polls via the lenient counter, resolves
+    // immediately instead of hanging until the deadline.
+    assert_eq!(wait_for_kind(&events, "torn.marker", 1), 1);
+}
+
 /// V7: Deterministic-ID dedup under crash-recovery.
 ///
 /// Drives the in-process `reducer::process_node_report` (rather than
@@ -464,10 +514,32 @@ fn signal_exit_codes_and_payload() {
             "supervisor did not start in time: {}",
             pid_file.display()
         );
-        unsafe {
-            libc::kill(child.id() as i32, sig_num(sig));
-        }
-        let status = child.wait().expect("wait");
+        // Check the kill(2) return: a dropped signal (ESRCH/EPERM) would
+        // otherwise manifest only as the unbounded-wait hang below.
+        let rc = unsafe { libc::kill(child.id() as i32, sig_num(sig)) };
+        assert_eq!(
+            rc,
+            0,
+            "{name}: kill({sig}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        // Bound the wait: on a saturated runner the exit can lag the signal by
+        // several seconds, and a dropped signal / hung handler must not hang
+        // the test forever. Poll try_wait (WNOHANG-equivalent) every 50ms, and
+        // kill+reap on timeout. The exit-code assertion happens AT THE END,
+        // once we have a real status — never mid-wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(s) = child.try_wait().expect("try_wait") {
+                break s;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{name}: supervisor did not exit within 10s of {sig}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         assert_eq!(
             status.code(),
             Some(code),
