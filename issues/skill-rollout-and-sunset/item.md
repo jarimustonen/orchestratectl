@@ -3,9 +3,10 @@ created: 2026-06-28
 updated: 2026-06-28
 type: chore
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: skill-bundling-campaign
+closed: 2026-06-28
 ---
 
 # Phase 7: rollout, smoke-test, sunset homebase skills + import-existing-tmux
