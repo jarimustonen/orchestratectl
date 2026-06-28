@@ -31,6 +31,8 @@ expression: value
         "accepted_values": [],
         "accepts_file_paths": false,
         "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
         "arity": {
           "min": 0,
           "max": 0,
@@ -64,6 +66,8 @@ expression: value
         ],
         "accepts_file_paths": true,
         "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
         "arity": {
           "min": 1,
           "max": 1,
@@ -100,6 +104,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -133,6 +139,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -169,6 +177,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -202,6 +212,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -232,6 +244,8 @@ expression: value
                 ],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -284,6 +298,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -311,6 +327,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -337,6 +355,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -364,6 +384,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -391,6 +413,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -424,6 +448,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -488,6 +514,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -521,6 +549,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -588,6 +618,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -615,6 +647,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -641,6 +675,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -674,6 +710,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -711,6 +749,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -744,6 +784,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -781,6 +823,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -808,6 +852,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -834,6 +880,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -861,6 +909,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -888,6 +938,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -915,6 +967,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -948,6 +1002,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1002,6 +1058,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1031,6 +1089,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1057,6 +1117,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1090,6 +1152,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1117,6 +1181,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1170,6 +1236,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -1203,6 +1271,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -1239,6 +1309,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1272,6 +1344,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1299,6 +1373,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1351,6 +1427,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1378,6 +1456,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1404,6 +1484,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1431,6 +1513,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1464,6 +1548,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1528,6 +1614,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1561,6 +1649,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1627,6 +1717,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -1660,6 +1752,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -1696,6 +1790,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1722,6 +1818,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1755,6 +1853,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1806,6 +1906,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1832,6 +1934,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1858,6 +1962,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1893,6 +1999,8 @@ expression: value
                 ],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1920,6 +2028,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -1947,6 +2057,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -1980,6 +2092,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2006,6 +2120,10 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [
+                  "parent_run_id"
+                ],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2032,6 +2150,10 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [
+                  "parent_node_id"
+                ],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2059,6 +2181,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2086,6 +2210,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2112,6 +2238,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2138,6 +2266,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2166,6 +2296,8 @@ expression: value
                 "conflicts_with": [
                   "prompt_file"
                 ],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2192,6 +2324,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2229,6 +2363,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2255,6 +2391,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2288,6 +2426,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2314,6 +2454,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2351,6 +2493,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2378,6 +2522,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2405,6 +2551,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2438,6 +2586,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2489,6 +2639,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2522,6 +2674,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2575,6 +2729,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -2608,6 +2764,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -2651,6 +2809,8 @@ expression: value
                 ],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2678,6 +2838,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2705,6 +2867,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2731,6 +2895,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2764,6 +2930,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2816,6 +2984,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2849,6 +3019,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2886,6 +3058,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -2919,6 +3093,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -2971,6 +3147,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3004,6 +3182,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3058,6 +3238,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -3091,6 +3273,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -3127,6 +3311,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3153,6 +3339,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3180,6 +3368,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3207,6 +3397,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3240,6 +3432,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3304,6 +3498,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3337,6 +3533,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3368,6 +3566,8 @@ expression: value
                 ],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3419,6 +3619,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3445,6 +3647,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 0,
                   "max": 0,
@@ -3471,6 +3675,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3504,6 +3710,8 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3530,6 +3738,8 @@ expression: value
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
@@ -3596,6 +3806,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -3623,6 +3835,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -3650,6 +3864,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -3683,6 +3899,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,
@@ -3735,6 +3953,8 @@ expression: value
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 0,
               "max": 0,
@@ -3768,6 +3988,8 @@ expression: value
             ],
             "accepts_file_paths": true,
             "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
             "arity": {
               "min": 1,
               "max": 1,

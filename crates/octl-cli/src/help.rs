@@ -16,8 +16,9 @@
 //!
 //! Stability contract (snapshot-tested): flags are sorted by `name` (the
 //! clap arg id), positionals by index, subcommands by name; the metadata
-//! lists (`long_aliases`, `short_aliases`, `conflicts_with`) are sorted.
-//! Field renames/removals are breaking changes — bump `SCHEMA_VERSION_HELP`.
+//! lists (`long_aliases`, `short_aliases`, `conflicts_with`, `requires`,
+//! `required_unless_present`) are sorted. Field renames/removals are breaking
+//! changes — bump `SCHEMA_VERSION_HELP`.
 
 use clap::builder::ValueHint;
 use clap::parser::ValueSource;
@@ -32,9 +33,12 @@ use crate::output::{OutputFormat, OutputSpec};
 ///
 /// - v1: initial structured-help projection.
 /// - v2: `name`/optional `long`, alias lists, `is_global`, `conflicts_with`,
-///   `arity`, `help_heading`, `accepts_file_paths`, custom-parser
-///   `accepted_values`, positional `env`/`defaults`, and the
-///   `deprecated`/`deprecation_note` convention on every node.
+///   `requires`, `required_unless_present`, `arity`, `help_heading`,
+///   `accepts_file_paths`, custom-parser `accepted_values`, positional
+///   `env`/`defaults`, and the `deprecated`/`deprecation_note` convention on
+///   every node. (`requires` / `required_unless_present` were added after the
+///   initial v2 cut; they are strictly additive — default `[]` — so they ride
+///   v2 rather than forcing a bump, per the convention above.)
 pub const SCHEMA_VERSION_HELP: u32 = 2;
 
 /// The `data` body of a `--help --output json|jsonl` response.
@@ -137,6 +141,16 @@ pub struct FlagInfo {
     /// Ids of flags this one is mutually exclusive with (clap `conflicts_with`),
     /// sorted. Reflects declared conflicts; may be one-directional.
     pub conflicts_with: Vec<String>,
+    /// Ids of args this one unconditionally pulls in (clap `requires` /
+    /// `requires_all`), sorted. Reflects declared requirements; may be
+    /// one-directional. Conditional `requires_if` edges are excluded (see
+    /// [`requires`]).
+    pub requires: Vec<String>,
+    /// Ids of args whose presence makes this one no longer required (clap
+    /// `required_unless_present` / `_any`), sorted. The all-of variant
+    /// (`required_unless_present_all`) is not represented — see
+    /// [`required_unless_present`].
+    pub required_unless_present: Vec<String>,
     /// The help section heading this flag is grouped under, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help_heading: Option<String>,
@@ -459,6 +473,8 @@ fn build_flag(cmd: &Command, arg: &Arg) -> FlagInfo {
         accepted_values: accepted_values(arg),
         accepts_file_paths: accepts_file_paths(arg),
         conflicts_with: conflicts_with(cmd, arg),
+        requires: requires(arg),
+        required_unless_present: required_unless_present(arg),
         help_heading: arg.get_help_heading().map(ToString::to_string),
         arity: arity(arg, action),
         env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
@@ -576,6 +592,107 @@ fn conflicts_with(cmd: &Command, arg: &Arg) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+// ----------------------------------------------------------------------
+// Requirement edges via the `Arg` Debug projection
+// ----------------------------------------------------------------------
+//
+// clap 4.6 exposes a public getter for *conflicts*
+// (`Command::get_arg_conflicts_with`, used by [`conflicts_with`]) but **none**
+// for *requirements*: the data lives in private `Arg` fields with no accessor
+// (`requires: Vec<(ArgPredicate, Id)>`, `r_unless: Vec<Id>` — verified against
+// `clap_builder-4.6.0/src/builder/arg.rs`). The CLI declares real requirements
+// today (`run create` `--parent-run-id` ⇄ `--parent-node-id`), so omitting the
+// edges leaves a genuine gap.
+//
+// The faithful alternative to a hand-maintained side-registry — which would
+// silently drift from the `#[arg(requires = ...)]` declarations — is to read
+// the *real* private fields back through `Arg`'s `Debug` projection, the only
+// drift-free source. The Debug format is not a stability guarantee, so guard
+// tests (`requires_edge_is_recovered_from_a_synthetic_arg`,
+// `required_unless_present_is_recovered_from_a_synthetic_arg`) pin the recovery
+// — a clap upgrade that changes the format fails CI loudly rather than silently
+// emptying the field. A real-tree assertion lives in `tests/help_json.rs`.
+
+/// Ids of the args `arg` unconditionally depends on (clap `requires` /
+/// `requires_all`), sorted and de-duped. Only the unconditional `IsPresent`
+/// predicate is surfaced; a conditional `requires_if` target (`Equals(..)`) is
+/// a different relationship and is excluded. See the module note above on why
+/// this reads `Arg`'s `Debug` rather than a getter.
+fn requires(arg: &Arg) -> Vec<String> {
+    let debug = format!("{arg:?}");
+    let Some(seg) = debug_field_list(&debug, "requires") else {
+        return Vec::new();
+    };
+    // Entries are `(<predicate>, "<id>")`; keep only the `IsPresent` ones.
+    let mut v: Vec<String> = seg
+        .match_indices("(IsPresent, \"")
+        .filter_map(|(i, m)| {
+            let rest = &seg[i + m.len()..];
+            rest.find('"').map(|end| rest[..end].to_string())
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Ids of the args whose presence makes `arg` no longer required (clap
+/// `required_unless_present` / `_any`), sorted and de-duped.
+///
+/// The all-of variant `required_unless_present_all` writes a *separate*
+/// `r_unless_all` field that `Arg`'s `Debug` does not print, so an all-of
+/// requirement is **not** represented here (a documented gap — there are none
+/// in the tree today). See the module note above on the Debug-projection
+/// approach.
+fn required_unless_present(arg: &Arg) -> Vec<String> {
+    let debug = format!("{arg:?}");
+    let Some(seg) = debug_field_list(&debug, "r_unless") else {
+        return Vec::new();
+    };
+    // Entries are bare `"<id>"`.
+    let mut v: Vec<String> = quoted_tokens(seg);
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Return the `[...]` payload of a named field in an `Arg` `Debug` string —
+/// the slice *between* the outer brackets (exclusive), bracket-depth-aware so a
+/// nested list cannot truncate it. `None` if the field is absent. The `Arg`
+/// field names (`requires`, `r_unless`) are unique substrings, so the first
+/// match is the right one.
+fn debug_field_list<'a>(debug: &'a str, field: &str) -> Option<&'a str> {
+    let needle = format!("{field}: [");
+    let start = debug.find(&needle)? + needle.len();
+    let mut depth = 1usize;
+    for (i, c) in debug[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&debug[start..start + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every double-quoted token in a slice (the bare-id form used by `r_unless`).
+fn quoted_tokens(seg: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = seg;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        out.push(after[..close].to_string());
+        rest = &after[close + 1..];
+    }
+    out
 }
 
 /// Whether `arg` accepts a filesystem path as its value (§13). Derived from
@@ -939,6 +1056,72 @@ mod tests {
             HelpRequest::UnknownSubcommand { token } => assert_eq!(token, "bogus"),
             other => panic!("expected UnknownSubcommand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn requires_edge_is_recovered_from_a_synthetic_arg() {
+        // End-to-end through the walker: an arg declaring `requires` surfaces
+        // the target id; a sibling with no requirement stays empty (the edge
+        // is one-directional, like `conflicts_with`).
+        let mut cmd = Command::new("tool")
+            .arg(Arg::new("a").long("a").requires("b"))
+            .arg(Arg::new("b").long("b"));
+        cmd.build();
+        let flag = |id: &str| {
+            let arg = cmd.get_arguments().find(|a| a.get_id() == id).unwrap();
+            build_flag(&cmd, arg)
+        };
+        assert_eq!(flag("a").requires, vec!["b".to_string()]);
+        assert!(flag("b").requires.is_empty());
+    }
+
+    #[test]
+    fn conditional_requires_if_is_excluded() {
+        // `requires_if` is a conditional (`Equals`) predicate, not an
+        // unconditional edge — it must not leak into `requires`, and the
+        // predicate value ("x") must never be mistaken for an arg id.
+        let mut cmd = Command::new("tool")
+            .arg(Arg::new("a").long("a").requires_if("x", "b").requires("c"))
+            .arg(Arg::new("b").long("b"))
+            .arg(Arg::new("c").long("c"));
+        cmd.build();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "a").unwrap();
+        let flag = build_flag(&cmd, arg);
+        // Only the unconditional `requires("c")` survives.
+        assert_eq!(flag.requires, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn required_unless_present_is_recovered_from_a_synthetic_arg() {
+        // `required_unless_present` / `_any` land in clap's `r_unless`, which
+        // the Debug projection recovers (sorted, de-duped).
+        let mut cmd = Command::new("tool")
+            .arg(
+                Arg::new("a")
+                    .long("a")
+                    .required_unless_present_any(["c", "b"]),
+            )
+            .arg(Arg::new("b").long("b"))
+            .arg(Arg::new("c").long("c"));
+        cmd.build();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "a").unwrap();
+        let flag = build_flag(&cmd, arg);
+        assert_eq!(
+            flag.required_unless_present,
+            vec!["b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn requirement_edges_default_empty() {
+        // A plain flag carries empty edge lists (the additive default that
+        // lets the new fields ride schema v2).
+        let mut cmd = Command::new("tool").arg(Arg::new("a").long("a"));
+        cmd.build();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "a").unwrap();
+        let flag = build_flag(&cmd, arg);
+        assert!(flag.requires.is_empty());
+        assert!(flag.required_unless_present.is_empty());
     }
 
     #[test]

@@ -154,6 +154,44 @@ fn conflicting_flags_expose_the_edge() {
 }
 
 #[test]
+fn requiring_flags_expose_the_edge() {
+    // `--parent-run-id` and `--parent-node-id` are mutually required (run
+    // create child-spawn); v2 surfaces the clap `requires` edge as a list of
+    // arg ids. Recovered from the real tree, this also guards the
+    // Debug-projection in `help::requires` against a clap format change.
+    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let flag = |name: &str| {
+        v["data"]["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap_or_else(|| panic!("{name} flag present"))
+            .clone()
+    };
+    assert_eq!(
+        flag("parent_run_id")["requires"],
+        serde_json::json!(["parent_node_id"]),
+        "requires edge: {}",
+        flag("parent_run_id")
+    );
+    assert_eq!(
+        flag("parent_node_id")["requires"],
+        serde_json::json!(["parent_run_id"]),
+        "requires edge (reverse): {}",
+        flag("parent_node_id")
+    );
+    // A flag with no requirement carries the additive empty default.
+    assert_eq!(
+        flag("title")["requires"],
+        serde_json::json!([]),
+        "non-requiring flag defaults to []: {}",
+        flag("title")
+    );
+}
+
+#[test]
 fn jsonl_is_a_single_line() {
     // `--output jsonl` emits the same payload as one compact line.
     let stdout = help_stdout(&["--help", "--output", "jsonl"]);

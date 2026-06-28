@@ -19,7 +19,13 @@ Status of the three coordinated §14 improvements landed on the
 
 ## Still missing / deferred
 
-### `requires` edges — BLOCKED (no clap getter)
+### `requires` edges — RESOLVED (see help-json-requires-edges, 2026-06-28)
+
+> Update: clap still exposes no getter, but `requires` /
+> `required_unless_present` are now projected by reading `Arg`'s `Debug` (the
+> real private fields, drift-free) instead of a hand-maintained side-registry.
+> See `issues/help-json-requires-edges/item.md`. The original analysis below
+> stands as the context for that decision.
 
 The richer-metadata issue asked for `requires` edges alongside
 `conflicts_with`. clap 4.6 exposes a public getter for conflicts
