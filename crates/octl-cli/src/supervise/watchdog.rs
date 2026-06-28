@@ -58,63 +58,94 @@ pub fn pid_start_time(pid: u32) -> Option<u64> {
         .map(sysinfo::Process::start_time)
 }
 
-/// Check whether `tmux list-windows` includes a window whose name
-/// matches `window_name`. A tmux server that is not running counts as
-/// "window not present" (returns `false`).
+/// Outcome of a tmux window probe.
 ///
-/// Network-namespace / non-default socket considerations: callers may
-/// override the tmux invocation via `TMUX_BIN` env var (mostly for
-/// tests that mock tmux out).
-pub fn tmux_window_present(window_name: &str) -> bool {
-    let bin = std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_string());
-    let out = match Command::new(bin)
-        .args(["list-windows", "-a", "-F", "#{window_name}"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
-    if !out.status.success() {
-        return false;
-    }
-    out.stdout
-        .split(|b| *b == b'\n')
-        .any(|line| line == window_name.as_bytes())
+/// The distinction between [`Absent`](TmuxProbe::Absent) and
+/// [`Unknown`](TmuxProbe::Unknown) is load-bearing for liveness: only `Absent`
+/// (the server answered and the window is genuinely not there) may flip a node
+/// to `TmuxGone`. `Unknown` (tmux binary missing, server down on the recorded
+/// socket, spawn error — we could not get a definitive answer) must NOT, or a
+/// transient/operational hiccup would falsely reap a live agent. Process
+/// liveness still governs in the `Unknown` case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmuxProbe {
+    /// The server answered and the target window is present.
+    Present,
+    /// The server answered and the target window is definitively gone.
+    Absent,
+    /// Could not get a definitive answer (tmux missing, server down, error).
+    Unknown,
 }
 
-/// Check whether the *exact* window named by a [`TmuxIdentity`] is present,
-/// querying the server on its recorded socket and scoping to its session:
-/// `tmux [-S <socket>] list-windows -t <session> -F '#{window_id}'`, then an
-/// exact (not substring) match against `window_id`. This is the precise form:
-/// unlike [`tmux_window_present`] it cannot false-positive on a same-named
-/// window in another session, and it can see a window on a non-default socket.
+/// Decide present/absent from a successful `list-windows` run: an exit-0 tmux
+/// means the server answered, so a missing `needle` line is a *definitive*
+/// absence. Any spawn error or non-zero exit is [`TmuxProbe::Unknown`].
+fn classify_list_windows(out: std::io::Result<std::process::Output>, needle: &[u8]) -> TmuxProbe {
+    let out = match out {
+        Ok(o) => o,
+        // tmux binary missing / spawn failure — we learned nothing.
+        Err(_) => return TmuxProbe::Unknown,
+    };
+    if !out.status.success() {
+        // No server on this socket, permission error, etc. — not a verdict.
+        return TmuxProbe::Unknown;
+    }
+    // Trim each line so a stray `\r` (anomalous terminals) does not defeat the
+    // exact match.
+    if out
+        .stdout
+        .split(|b| *b == b'\n')
+        .any(|line| trim_ascii(line) == needle)
+    {
+        TmuxProbe::Present
+    } else {
+        TmuxProbe::Absent
+    }
+}
+
+fn trim_ascii(b: &[u8]) -> &[u8] {
+    let start = b.iter().position(|c| !c.is_ascii_whitespace());
+    let Some(start) = start else { return &[] };
+    let end = b.iter().rposition(|c| !c.is_ascii_whitespace()).unwrap();
+    &b[start..=end]
+}
+
+/// Probe for a window by its bare *name* on the default socket
+/// (`tmux list-windows -a -F '#{window_name}'`). This is the legacy,
+/// ambiguous match — names are not unique across sessions — kept only for nodes
+/// registered before create.sh emitted the qualified identity.
 ///
-/// A tmux server that is not running, an unknown session, or any non-zero exit
-/// all count as "window not present" (`false`). Honors the `TMUX_BIN` override
-/// for tests.
-pub fn tmux_window_present_qualified(identity: &TmuxIdentity) -> bool {
+/// Callers may override the tmux invocation via `TMUX_BIN` (mostly for tests).
+pub fn probe_window_by_name(window_name: &str) -> TmuxProbe {
+    let bin = std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_string());
+    let out = Command::new(bin)
+        .args(["list-windows", "-a", "-F", "#{window_name}"])
+        .output();
+    classify_list_windows(out, window_name.as_bytes())
+}
+
+/// Probe for the *exact* window named by a [`TmuxIdentity`] on its recorded
+/// server: `tmux [-S <socket>] list-windows -a -F '#{window_id}'`, matching the
+/// stable `window_id` line-exactly.
+///
+/// `window_id` (`@NNNN`) is unique within a tmux *server*, so we deliberately
+/// list ALL windows on the socket (`-a`) rather than scoping to the recorded
+/// session. That makes the match immune to `rename-session` and to a window
+/// being linked/moved between sessions — failure modes a `-t <session>` scope
+/// would turn into false absences. The recorded `session` is retained for human
+/// display only; it is not part of the match.
+///
+/// Returns [`TmuxProbe::Unknown`] when the server cannot be reached (binary
+/// missing, server down on the recorded socket, error) — see [`TmuxProbe`].
+/// Honors the `TMUX_BIN` override for tests.
+pub fn probe_window_qualified(identity: &TmuxIdentity) -> TmuxProbe {
     let bin = std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_string());
     let mut cmd = Command::new(bin);
     if let Some(socket) = identity.socket.as_deref() {
         cmd.args(["-S", socket]);
     }
-    cmd.args([
-        "list-windows",
-        "-t",
-        &identity.session,
-        "-F",
-        "#{window_id}",
-    ]);
-    let out = match cmd.output() {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
-    if !out.status.success() {
-        return false;
-    }
-    out.stdout
-        .split(|b| *b == b'\n')
-        .any(|line| line == identity.window_id.as_bytes())
+    cmd.args(["list-windows", "-a", "-F", "#{window_id}"]);
+    classify_list_windows(cmd.output(), identity.window_id.as_bytes())
 }
 
 /// Snapshot of what we know about an agent at spawn time. Compared
@@ -129,15 +160,21 @@ pub struct AgentProbe {
     pub start_time: Option<u64>,
     pub tmux_window: Option<String>,
     /// Fully-qualified tmux identity captured at spawn. When `Some`, the tmux
-    /// probe matches on `session:window_id` + socket (precise); when `None`
-    /// (a node registered before create.sh emitted the qualified fields), it
-    /// falls back to a bare-name match on [`AgentProbe::tmux_window`].
+    /// probe matches the stable `window_id` on the recorded socket (precise);
+    /// when `None` (a node registered before create.sh emitted the qualified
+    /// fields), it falls back to a bare-name match on [`AgentProbe::tmux_window`].
     pub tmux_identity: Option<TmuxIdentity>,
     /// When `true`, skip the tmux probe. Used when tmux is not the
     /// host (e.g. fake-spawn test fixtures) or tmux unavailability is
     /// not a failure signal.
     pub skip_tmux_check: bool,
 }
+
+/// Cap on distinct window names retained for warn-once dedup. Bounds the
+/// `WARNED` set for a long-running supervisor: once the cap is hit we stop
+/// tracking new names (and warn once that we're capping), accepting that a few
+/// later legacy windows may re-warn rather than letting the set grow unbounded.
+const MAX_LEGACY_WARN_KEYS: usize = 1024;
 
 /// Warn — at most once per window name per process — that a node lacks a
 /// qualified tmux identity and is using the ambiguous bare-name fallback. The
@@ -149,16 +186,22 @@ fn warn_legacy_bare_name_once(window_name: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let mut seen = WARNED
-        .get_or_init(|| Mutex::new(HashSet::new()))
+    let mutex = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    // A poisoned mutex must not abort liveness checks — this is only log dedup,
+    // so recover the guard and carry on. Decide-then-release: never hold the
+    // lock across the `tracing::warn!` emit.
+    let mut guard = mutex
         .lock()
-        .unwrap();
-    if seen.insert(window_name.to_string()) {
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cap_hit = guard.len() >= MAX_LEGACY_WARN_KEYS;
+    let is_new = !cap_hit && guard.insert(window_name.to_string());
+    drop(guard);
+    if is_new {
         tracing::warn!(
             tmux_window = window_name,
             "node has no qualified tmux identity; falling back to bare \
              window-name liveness matching (registered before create.sh \
-             emitted session/window_id) — this is ambiguous across sessions"
+             emitted the qualified fields) — this is ambiguous across sessions"
         );
     }
 }
@@ -179,20 +222,29 @@ pub fn check_liveness(probe: &AgentProbe) -> Liveness {
         }
     }
     if !probe.skip_tmux_check {
-        let present = match probe.tmux_identity.as_ref() {
-            // Precise path: match the exact window on its own socket+session.
-            Some(identity) => Some(tmux_window_present_qualified(identity)),
+        let probe_result = match probe.tmux_identity.as_ref() {
+            // Precise path: match the stable window_id on the recorded socket.
+            Some(identity) => Some(probe_window_qualified(identity)),
             // Legacy path: node registered before create.sh emitted the
             // qualified fields. Fall back to the ambiguous bare-name match.
             None => probe.tmux_window.as_deref().map(|name| {
                 warn_legacy_bare_name_once(name);
-                tmux_window_present(name)
+                probe_window_by_name(name)
             }),
         };
-        // `None` means we have nothing to probe with — don't fail liveness on
-        // that absence (matches the prior bare-name behavior).
-        if present == Some(false) {
-            return Liveness::TmuxGone;
+        // Only a *definitive* absence (server answered, window not there) flips
+        // the node to TmuxGone. `Unknown` (server unreachable / tmux missing)
+        // and "nothing to probe" leave liveness to the PID check above — a
+        // transient or operational tmux failure must not reap a live agent.
+        match probe_result {
+            Some(TmuxProbe::Absent) => return Liveness::TmuxGone,
+            Some(TmuxProbe::Unknown) => {
+                tracing::debug!(
+                    "tmux liveness probe inconclusive (server unreachable or \
+                     tmux unavailable); deferring to PID liveness"
+                );
+            }
+            Some(TmuxProbe::Present) | None => {}
         }
     }
     Liveness::Alive
@@ -259,15 +311,43 @@ mod tests {
 
     static TMUX_BIN_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Write an executable fake `tmux` that records its args to `<dir>/args`
-    /// and prints `stdout_body` verbatim, exiting 0. `stdout_body` is the set
-    /// of `#{window_id}` lines the fake "server" reports.
-    fn fake_tmux(dir: &Path, stdout_body: &str) -> PathBuf {
+    /// RAII guard for a process-global env var: restores the prior value (or
+    /// unsets) on drop, so a panicking assertion cannot leak `TMUX_BIN` into
+    /// another test.
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let old = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Write an executable fake `tmux` that records its argv (one arg per line)
+    /// to `<dir>/args` and replays the lines in `<dir>/stdout`, exiting `code`.
+    /// Passing a non-zero `code` simulates "server unreachable" for the
+    /// `Unknown` path. `stdout_lines` is written to a file (not interpolated
+    /// into the script) so arbitrary content — including quotes — is safe.
+    fn fake_tmux(dir: &Path, stdout_lines: &[&str], code: i32) -> PathBuf {
+        let out = dir.join("stdout");
+        std::fs::write(&out, stdout_lines.join("\n")).unwrap();
         let p = dir.join("fake-tmux.sh");
         let body = format!(
-            "#!/bin/bash\nprintf '%s' \"$*\" > \"{}/args\"\nprintf '%s\\n' '{}'\n",
-            dir.display(),
-            stdout_body
+            "#!/bin/bash\nprintf '%s\\n' \"$@\" > {args:?}\ncat {out:?}\nexit {code}\n",
+            args = dir.join("args"),
+            out = out,
+            code = code,
         );
         std::fs::write(&p, body).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -275,6 +355,14 @@ mod tests {
         perms.set_mode(0o755);
         std::fs::set_permissions(&p, perms).unwrap();
         p
+    }
+
+    fn args_lines(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("args"))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     fn id(socket: Option<&str>, session: &str, window_id: &str) -> TmuxIdentity {
@@ -289,35 +377,51 @@ mod tests {
     fn qualified_present_when_window_id_listed() {
         let _g = TMUX_BIN_LOCK.lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();
-        // Server reports two windows; ours (@42) is among them.
-        let bin = fake_tmux(dir.path(), "@7\n@42\n@99");
-        std::env::set_var("TMUX_BIN", &bin);
-        let present = tmux_window_present_qualified(&id(Some("/tmp/sock"), "octl", "@42"));
-        // The probe scoped to the recorded socket + session.
-        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
-        std::env::remove_var("TMUX_BIN");
-        assert!(present, "window @42 should be reported present");
-        assert!(args.contains("-S /tmp/sock"), "socket not passed: {args}");
-        assert!(args.contains("-t octl"), "session not scoped: {args}");
+        // Server reports three windows; ours (@42) is among them.
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@7", "@42", "@99"], 0));
+        let r = probe_window_qualified(&id(Some("/tmp/sock"), "octl", "@42"));
+        assert_eq!(r, TmuxProbe::Present);
+        // The probe targeted the recorded socket and listed ALL windows (-a),
+        // NOT scoped to a session (so a session rename can't break the match).
+        let args = args_lines(dir.path());
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-S".to_string(), "/tmp/sock".to_string()]),
+            "socket not passed: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "-a"), "expected -a: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "-t"),
+            "must not session-scope: {args:?}"
+        );
     }
 
     #[test]
     fn qualified_absent_when_window_id_missing() {
         let _g = TMUX_BIN_LOCK.lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();
-        // Same-named-but-different windows exist; ours (@42) does not — this is
-        // exactly the cross-session false-positive the bare-name match made.
-        let bin = fake_tmux(dir.path(), "@7\n@99");
-        std::env::set_var("TMUX_BIN", &bin);
-        let present = tmux_window_present_qualified(&id(None, "octl", "@42"));
-        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
-        std::env::remove_var("TMUX_BIN");
-        assert!(!present, "window @42 should be reported absent");
+        // Same-named-but-different windows exist on the server; ours (@42) does
+        // not — exactly the cross-session false-positive the bare-name match
+        // made. Server answered (exit 0), so this is a *definitive* absence.
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@7", "@99"], 0));
+        let r = probe_window_qualified(&id(None, "octl", "@42"));
+        assert_eq!(r, TmuxProbe::Absent);
         // No socket recorded → no `-S` flag (default socket).
         assert!(
-            !args.contains("-S"),
-            "unexpected -S with null socket: {args}"
+            !args_lines(dir.path()).iter().any(|a| a == "-S"),
+            "unexpected -S with null socket"
         );
+    }
+
+    #[test]
+    fn qualified_unknown_when_server_unreachable() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        // Non-zero exit == "no server running on <socket>" / error. This must
+        // NOT be read as absence.
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server running"], 1));
+        let r = probe_window_qualified(&id(Some("/tmp/dead-sock"), "octl", "@42"));
+        assert_eq!(r, TmuxProbe::Unknown);
     }
 
     #[test]
@@ -326,8 +430,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         // Live PID (self) + start_time skipped, so the verdict turns purely on
         // the tmux probe. The fake server lists @99, not our @42 → TmuxGone.
-        let bin = fake_tmux(dir.path(), "@99");
-        std::env::set_var("TMUX_BIN", &bin);
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@99"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
             start_time: None,
@@ -335,17 +438,14 @@ mod tests {
             tmux_identity: Some(id(Some("/tmp/sock"), "octl", "@42")),
             skip_tmux_check: false,
         };
-        let v = check_liveness(&probe);
-        std::env::remove_var("TMUX_BIN");
-        assert_eq!(v, Liveness::TmuxGone);
+        assert_eq!(check_liveness(&probe), Liveness::TmuxGone);
     }
 
     #[test]
     fn check_liveness_alive_when_qualified_window_present() {
         let _g = TMUX_BIN_LOCK.lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();
-        let bin = fake_tmux(dir.path(), "@42");
-        std::env::set_var("TMUX_BIN", &bin);
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
             start_time: None,
@@ -353,9 +453,25 @@ mod tests {
             tmux_identity: Some(id(None, "octl", "@42")),
             skip_tmux_check: false,
         };
-        let v = check_liveness(&probe);
-        std::env::remove_var("TMUX_BIN");
-        assert_eq!(v, Liveness::Alive);
+        assert_eq!(check_liveness(&probe), Liveness::Alive);
+    }
+
+    #[test]
+    fn check_liveness_stays_alive_when_probe_unknown() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        // Recorded socket's server is down (non-zero exit). The agent PID (self)
+        // is alive, so an inconclusive tmux probe must NOT reap it — this is the
+        // regression the tri-state fixes (wrong/dead socket → false TmuxGone).
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server"], 1));
+        let probe = AgentProbe {
+            pid: std::process::id(),
+            start_time: None,
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(Some("/tmp/dead-sock"), "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        assert_eq!(check_liveness(&probe), Liveness::Alive);
     }
 
     #[test]
@@ -364,8 +480,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         // Legacy node: no identity. The fallback queries by window NAME, so the
         // fake returns the bare name we expect.
-        let bin = fake_tmux(dir.path(), "legacy-win");
-        std::env::set_var("TMUX_BIN", &bin);
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["legacy-win"], 0));
         let probe = AgentProbe {
             pid: std::process::id(),
             start_time: None,
@@ -373,8 +488,6 @@ mod tests {
             tmux_identity: None,
             skip_tmux_check: false,
         };
-        let v = check_liveness(&probe);
-        std::env::remove_var("TMUX_BIN");
-        assert_eq!(v, Liveness::Alive);
+        assert_eq!(check_liveness(&probe), Liveness::Alive);
     }
 }

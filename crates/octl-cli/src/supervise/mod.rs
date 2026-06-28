@@ -999,11 +999,11 @@ fn watchdog_tick(
             start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
             tmux_window: n.tmux_window.clone(),
             tmux_identity: n.tmux_identity.clone(),
-            // Heuristic: if neither a window name nor a qualified identity is
-            // recorded we can't probe tmux. Don't fail liveness on that
-            // absence alone. (A qualified identity always implies a window, so
-            // checking tmux_window is sufficient.)
-            skip_tmux_check: n.tmux_window.is_none() && n.tmux_identity.is_none(),
+            // Skip the tmux probe only when there is neither a qualified
+            // identity nor a legacy window name to probe with — don't fail
+            // liveness on that absence alone. When present, the qualified
+            // identity is preferred; the window name is the legacy fallback.
+            skip_tmux_check: n.tmux_identity.is_none() && n.tmux_window.is_none(),
         };
         let v = watchdog::check_liveness(&probe);
         // §7.5: commit `Dead`/`Recycled` immediately (PID gone or

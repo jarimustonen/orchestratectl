@@ -583,19 +583,24 @@ fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
 
 /// Reconstruct the fully-qualified tmux identity from `node.created` event
 /// data. Returns `Some` only when both `tmux_session` and `tmux_window_id` are
-/// present and non-null — the minimum needed to match a window unambiguously.
-/// `tmux_socket` is optional (a default-socket spawn may emit null). Legacy
-/// events from a create.sh that predates the qualified fields yield `None`, so
-/// the node falls back to bare-name matching on `tmux_window`.
+/// present and non-empty — the minimum needed to match a window. `tmux_socket`
+/// is optional (a default-socket spawn may emit null); an empty socket is
+/// normalized to `None` so the watchdog never invokes `tmux -S ""`. Legacy
+/// events from a create.sh that predates the qualified fields (or that emit a
+/// partial/empty identity) yield `None`, so the node falls back to bare-name
+/// matching on `tmux_window`.
 fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
-    let session = d.get("tmux_session").and_then(Value::as_str)?.to_string();
-    let window_id = d.get("tmux_window_id").and_then(Value::as_str)?.to_string();
-    let socket = d
-        .get("tmux_socket")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let nonempty = |key| {
+        d.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let session = nonempty("tmux_session")?;
+    let window_id = nonempty("tmux_window_id")?;
     Some(TmuxIdentity {
-        socket,
+        socket: nonempty("tmux_socket"),
         session,
         window_id,
     })

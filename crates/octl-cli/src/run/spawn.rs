@@ -48,8 +48,9 @@ pub struct SpawnOutcome {
     #[allow(dead_code)]
     pub workmux_session: Option<String>,
     /// Server socket path of the tmux window (`#{socket_path}`). Part of the
-    /// qualified tmux identity; `None` on default-socket spawns or a create.sh
-    /// that predates the field. See [`SpawnOutcome::tmux_identity`].
+    /// qualified tmux identity. create.sh emits the resolved path even for the
+    /// default socket, so `None` means either the deployed create.sh predates
+    /// the field or its socket query failed. See [`SpawnOutcome::tmux_identity`].
     #[serde(default)]
     pub tmux_socket: Option<String>,
     /// Session that owns the tmux window (`#{session_name}`). `None` if the
@@ -64,16 +65,23 @@ pub struct SpawnOutcome {
 
 impl SpawnOutcome {
     /// The fully-qualified tmux identity, when create.sh supplied it. Returns
-    /// `Some` only when both `tmux_session` and `tmux_window_id` are present —
-    /// the minimum to match a window unambiguously. A create.sh that predates
-    /// these fields yields `None`, and the caller falls back to bare-name
-    /// matching on `tmux_window` (logged once at parse time by
-    /// [`run_create_sh`]).
+    /// `Some` only when both `tmux_session` and `tmux_window_id` are present and
+    /// non-empty — the minimum to match a window. An empty `tmux_socket` is
+    /// normalized to `None` (never `tmux -S ""`). A create.sh that predates
+    /// these fields — or that emits a partial/empty identity — yields `None`,
+    /// and the caller falls back to bare-name matching on `tmux_window` (warned
+    /// at the spawn boundary by [`run_create_sh`]).
     pub fn tmux_identity(&self) -> Option<TmuxIdentity> {
-        let session = self.tmux_session.clone()?;
-        let window_id = self.tmux_window_id.clone()?;
+        let nonempty = |v: &Option<String>| {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let session = nonempty(&self.tmux_session)?;
+        let window_id = nonempty(&self.tmux_window_id)?;
         Some(TmuxIdentity {
-            socket: self.tmux_socket.clone(),
+            socket: nonempty(&self.tmux_socket),
             session,
             window_id,
         })
@@ -209,18 +217,19 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
             format!("could not parse create.sh stdout as SpawnOutcome ({e}): {trimmed}"),
         )
     })?;
-    // Back-compat: a create.sh that predates the qualified-identity fields
-    // emits no tmux_session/tmux_window_id, so the node will fall back to
-    // bare-name liveness matching (ambiguous across sessions / blind to
-    // non-default sockets). Warn once here, at the spawn boundary, rather than
-    // per watchdog tick.
+    // Back-compat / contract check: a create.sh that predates the
+    // qualified-identity fields — or that emits a partial/empty identity —
+    // yields no usable identity, so the node falls back to bare-name liveness
+    // matching (ambiguous across sessions / blind to non-default sockets). Warn
+    // here, at the spawn boundary, rather than per watchdog tick. Fires once per
+    // spawn whose outcome lacks a usable identity.
     if outcome.tmux_identity().is_none() {
         tracing::warn!(
             tmux_window = %outcome.tmux_window,
             branch = %outcome.branch,
-            "create.sh did not emit a qualified tmux identity \
-             (tmux_session/tmux_window_id); falling back to bare window-name \
-             liveness matching — update the worktree skill's create.sh"
+            "create.sh did not emit a usable qualified tmux identity \
+             (tmux_session + tmux_window_id, non-empty); falling back to bare \
+             window-name liveness matching — update the worktree skill's create.sh"
         );
     }
     Ok(outcome)
