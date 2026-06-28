@@ -2,7 +2,7 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: feature
-status: open
+status: in-progress
 priority: normal
 ---
 
