@@ -38,8 +38,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, NodeId,
-    RunLock, RunPaths, Status,
+    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Node,
+    NodeId, RunLock, RunPaths, Status,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -976,6 +976,12 @@ fn watchdog_tick(
     // counts strictly *consecutive* half-state ticks and never leaks.
     let mut tmux_gone_this_tick: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
+    // First pass: collect every non-terminal node that has a live `agent_pid`,
+    // and union the distinct tmux sockets they probe. This lets the tick issue
+    // ONE `tmux list-windows` per socket (`watchdog-batch-tmux-probe`) instead
+    // of one subprocess per node — at ~100 agents that is 1 fork/tick, not 100.
+    let mut candidates: Vec<(String, NodeId, Node, watchdog::AgentProbe)> = Vec::new();
+    let mut sockets: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
     for entry in entries.flatten() {
         let p = entry.path();
         if p.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -1005,7 +1011,21 @@ fn watchdog_tick(
             // identity is preferred; the window name is the legacy fallback.
             skip_tmux_check: n.tmux_identity.is_none() && n.tmux_window.is_none(),
         };
-        let v = watchdog::check_liveness(&probe);
+        let (probes_tmux, socket) = probe.probe_socket();
+        if probes_tmux {
+            sockets.insert(socket);
+        }
+        candidates.push((node_id, nid, n, probe));
+    }
+
+    // One timed `tmux list-windows -a` per distinct socket for the whole tick.
+    // A wedged server is bounded by an internal timeout and yields an
+    // "unreachable" socket (→ PID-only liveness), not a stalled tick
+    // (`watchdog-tmux-probe-timeout`).
+    let tmux_snapshot = watchdog::WatchdogTmuxSnapshot::collect(&sockets);
+
+    for (node_id, nid, n, probe) in candidates {
+        let v = watchdog::check_liveness(&probe, &tmux_snapshot);
         // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
         // recycled is unambiguous), but require a short retry streak for
         // the `TmuxGone` half-state so a transient `tmux list-windows`
