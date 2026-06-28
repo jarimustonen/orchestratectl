@@ -625,13 +625,12 @@ pub fn dispatch(
     // writer's drop.
     if signal_num != 0 {
         use std::io::Write as _;
-        // Operational breadcrumb: record the signal-driven shutdown in the
-        // JSONL log (the `supervisor.exited` event lives in events.jsonl; an
-        // operator scanning the process log otherwise sees the supervisor
-        // just stop). Emitted here, immediately before the flush, so it is
-        // the last buffered event — and thus the one that proves the flush
-        // below actually drains in-flight events rather than relying on the
-        // worker having already caught up.
+        // Operational breadcrumb: record *why* the supervisor stopped in the
+        // process log. `supervisor.exited` lives in events.jsonl, so an
+        // operator scanning only the JSONL tracing log would otherwise see the
+        // supervisor just go silent. (It also doubles as the
+        // last-event-before-flush that the SIGTERM-flush test asserts on, but
+        // it earns its place on operational grounds alone.)
         info!(
             target: "orchestratectl::supervise",
             run_id = %run_id,
@@ -895,6 +894,12 @@ fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &st
 /// `current` and `now` are passed in (rather than read inside) so the
 /// rate-limit logic is deterministically unit-testable; production callers
 /// pass [`crate::cli::dropped_log_events`] and [`Instant::now`].
+///
+/// The warning goes to **stderr as well as `tracing::warn!`**: the `warn!`
+/// travels through the very lossy appender that is dropping events, so under
+/// sustained back-pressure the drop-warning could itself be dropped — the
+/// stderr line is the reliable channel that always survives (the supervisor's
+/// stderr is captured to `supervisor.stderr.log` when detached).
 fn maybe_warn_dropped(
     current: u64,
     now: Instant,
@@ -904,15 +909,25 @@ fn maybe_warn_dropped(
     if current <= *last_count {
         return false;
     }
-    let due = last_at.is_none_or(|t| now.duration_since(t) >= DROPPED_WARN_INTERVAL);
+    // `saturating_duration_since`: `now` is injected, so never panic / wrap if
+    // a caller passes a non-monotonic timestamp (production passes monotonic).
+    let due = last_at.is_none_or(|t| now.saturating_duration_since(t) >= DROPPED_WARN_INTERVAL);
     if !due {
         return false;
     }
+    let newly_dropped = current - *last_count;
     warn!(
         target: "orchestratectl::supervise",
         dropped = current,
-        newly_dropped = current - *last_count,
+        newly_dropped,
         "log events dropped due to buffer overflow (lossy non-blocking appender under sustained back-pressure)"
+    );
+    // Reliable fallback: the `warn!` above can be dropped by the same lossy
+    // channel it reports on, so also emit to stderr, which never routes
+    // through the appender.
+    eprintln!(
+        "warning: {current} log events dropped due to buffer overflow \
+         ({newly_dropped} new since last warning)"
     );
     *last_count = current;
     *last_at = Some(now);

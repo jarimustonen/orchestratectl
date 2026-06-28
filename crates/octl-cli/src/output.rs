@@ -3,12 +3,13 @@
 //! Every machine-readable payload is shaped as:
 //!
 //! ```json
-//! {"schema_version": 1, "data": {...subcommand body...}, "warnings": [...]?}
+//! {"schema_version": 1, "data": {...subcommand body...},
+//!  "dropped_log_events": 7?, "warnings": [...]?}
 //! ```
 //!
 //! The body lives under a dedicated `data` key so the envelope can grow
-//! reserved fields (`warnings`, `dry_run`, `trace_id`, ...) over time
-//! without colliding with payload field names.
+//! reserved fields (`warnings`, `dropped_log_events`, `dry_run`,
+//! `trace_id`, ...) over time without colliding with payload field names.
 //!
 //! The `--output` flag (per AGENTS-AI-FIRST-CLI §9 + §13) is the single
 //! switch that selects between the three rendering modes — `text`,
@@ -110,6 +111,15 @@ fn looks_like_path(s: &str) -> bool {
 struct SuccessEnvelope<'a, T: Serialize> {
     schema_version: u32,
     data: &'a T,
+    /// Process-cumulative count of log events dropped by the lossy
+    /// non-blocking appender (buffer overflow). The machine-readable
+    /// companion to the human-readable `warnings` entry, so agents read a
+    /// number instead of regex-parsing prose. Omitted (and the warning
+    /// suppressed) when zero, so the field is purely additive — no
+    /// `schema_version` bump (AGENTS-AI-FIRST-CLI §10: new fields are
+    /// additive). See [`dropped_log_warning`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dropped_log_events: Option<u64>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     warnings: &'a [String],
 }
@@ -117,13 +127,16 @@ struct SuccessEnvelope<'a, T: Serialize> {
 /// Build the warning string for `dropped` lossy-mode log-event drops, or
 /// `None` when nothing was dropped (the steady state). Kept separate from
 /// [`emit_envelope`] so the count→message mapping is unit-testable without a
-/// live appender. Plain-string form matches every other entry in the
-/// `warnings` array (the array is `[String]`, not structured objects); the
-/// count is embedded so an agent can still read it.
+/// live appender.
+///
+/// This is the *human* rendering; agents should prefer the structured
+/// `dropped_log_events` envelope field (and the supervisor's structured
+/// `warn!` fields). The count is process-cumulative since logging init.
 fn dropped_log_warning(dropped: u64) -> Option<String> {
     (dropped > 0).then(|| {
+        let events = if dropped == 1 { "event" } else { "events" };
         format!(
-            "{dropped} log event(s) dropped due to buffer overflow \
+            "{dropped} log {events} dropped due to buffer overflow \
              (lossy non-blocking appender under sustained back-pressure)"
         )
     })
@@ -156,20 +169,23 @@ fn emit_envelope_with_dropped<T: Serialize>(
     warnings: &[String],
     dropped: u64,
 ) -> Result<(), CliError> {
-    // Append the dropped-event warning (if any) to the caller's base
-    // warnings. Allocate only when there is something to add — the common
-    // case (no drops) borrows the caller's slice unchanged.
+    // Surface drops two ways: the structured `dropped_log_events` field (for
+    // agents) and a human-readable `warnings` entry. Allocate the warnings
+    // vec only when there is something to add — the common case (no drops)
+    // borrows the caller's slice unchanged.
     let augmented: Vec<String>;
-    let warnings: &[String] = match dropped_log_warning(dropped) {
-        Some(w) => {
-            augmented = warnings.iter().cloned().chain(std::iter::once(w)).collect();
-            &augmented
-        }
-        None => warnings,
-    };
+    let (warnings, dropped_log_events): (&[String], Option<u64>) =
+        match dropped_log_warning(dropped) {
+            Some(w) => {
+                augmented = warnings.iter().cloned().chain(std::iter::once(w)).collect();
+                (&augmented, Some(dropped))
+            }
+            None => (warnings, None),
+        };
     let envelope = SuccessEnvelope {
         schema_version: SCHEMA_VERSION,
         data: body,
+        dropped_log_events,
         warnings,
     };
     let bytes = match spec.format {
@@ -287,13 +303,22 @@ mod tests {
             w.contains("buffer overflow"),
             "message must explain the cause: {w}"
         );
+        // Grammar: singular for exactly one, plural otherwise.
+        assert!(
+            dropped_log_warning(1).unwrap().contains("1 log event "),
+            "singular grammar for one drop"
+        );
+        assert!(
+            dropped_log_warning(2).unwrap().contains("2 log events "),
+            "plural grammar for many"
+        );
     }
 
     /// The dropped-event count must be visible in the rendered success
-    /// envelope's `warnings` array (issue success criterion). Drives the real
+    /// envelope — both as the structured `dropped_log_events` field (for
+    /// agents) and as a `warnings` entry (for humans). Drives the real
     /// serialization path via [`emit_envelope_with_dropped`] to a temp file,
-    /// then parses it back. Base warnings are preserved and the drop warning
-    /// is appended after them.
+    /// then parses it back. Base warnings are preserved before the drop one.
     #[test]
     fn dropped_count_visible_in_success_envelope() {
         let dir = tempfile::tempdir().unwrap();
@@ -306,6 +331,13 @@ mod tests {
         emit_envelope_with_dropped(&body, &spec, &["base warning".to_string()], 7).unwrap();
 
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        // Structured field — the machine-readable contract.
+        assert_eq!(
+            v["dropped_log_events"].as_u64(),
+            Some(7),
+            "structured dropped count not visible: {v}"
+        );
+        // Human-readable warnings, base preserved first.
         let warnings: Vec<&str> = v["warnings"]
             .as_array()
             .expect("warnings array present")
@@ -319,13 +351,13 @@ mod tests {
         );
         assert_eq!(warnings[0], "base warning", "base warnings preserved first");
         assert!(
-            warnings[1].contains("7 log event"),
+            warnings[1].contains("7 log events"),
             "dropped count not visible in envelope warnings: {warnings:?}"
         );
     }
 
-    /// Zero drops must not pollute the envelope with a spurious warning, and
-    /// must not allocate a new warnings vec (the common path).
+    /// Zero drops must add neither the structured field nor a warning — both
+    /// are purely additive (omitted in the steady state).
     #[test]
     fn no_dropped_warning_when_count_is_zero() {
         let dir = tempfile::tempdir().unwrap();
@@ -338,10 +370,14 @@ mod tests {
         emit_envelope_with_dropped(&body, &spec, &[], 0).unwrap();
 
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        // `warnings` is skipped entirely when empty (serde skip_serializing_if).
+        // Both `warnings` and `dropped_log_events` are skipped when empty/zero.
         assert!(
             v.get("warnings").is_none(),
             "empty warnings must be omitted, not rendered: {v}"
+        );
+        assert!(
+            v.get("dropped_log_events").is_none(),
+            "zero drops must omit the structured field: {v}"
         );
     }
 }

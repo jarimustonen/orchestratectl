@@ -534,8 +534,13 @@ fn finish_logging(
     dropped: Option<ErrorCounter>,
 ) -> LoggingInit {
     if let Some(counter) = dropped {
-        // Set-once: a second `init_logging` (tests, re-entry) keeps the
-        // original counter, mirroring the WorkerGuard handling below.
+        // Set-once is correct here, not a race: `dropped` is `Some` only on
+        // the path where `try_init` *installed* the subscriber, and `try_init`
+        // installs at most one per process. A second `init_logging` (tests,
+        // re-entry) fails `try_init`, so it reaches here with `dropped: None`
+        // and never contends for the slot. Thus the live counter — the one the
+        // installed writer actually increments — always wins. (Mirrors the
+        // WorkerGuard "first init owns the live handle" rule below.)
         let _ = LOG_DROPPED.set(counter);
     }
     let cell = LOG_FLUSH.get_or_init(|| Arc::new(Mutex::new(None))).clone();
@@ -569,7 +574,11 @@ struct SlowLogWriter<W: std::io::Write> {
 impl<W: std::io::Write> std::io::Write for SlowLogWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         std::thread::sleep(self.delay);
-        self.inner.write(buf)
+        // `write_all`, not `write`: a short delegated write would let the
+        // non-blocking worker emit a truncated JSONL line. Report the full
+        // length so the caller never retries (and re-sleeps).
+        self.inner.write_all(buf)?;
+        Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
@@ -577,14 +586,27 @@ impl<W: std::io::Write> std::io::Write for SlowLogWriter<W> {
 }
 
 /// Per-write delay for the [`SlowLogWriter`] test hook, parsed from
-/// `OCTL_TEST_SLOW_LOG_WRITES` (milliseconds). `None` (the production case)
-/// when the var is unset or unparseable, so the plain file is used directly.
+/// `OCTL_TEST_SLOW_LOG_WRITES` (milliseconds).
+///
+/// **Debug builds only.** In a release build this always returns `None`, so
+/// the env var has zero effect and the plain file is used directly — the hook
+/// can never throttle a shipped binary's logging (a reviewer-flagged footgun:
+/// a stray exported var would otherwise stall every log write). Integration
+/// tests run the debug binary, where the hook is live.
+#[cfg(debug_assertions)]
 fn slow_log_write_delay() -> Option<std::time::Duration> {
     std::env::var("OCTL_TEST_SLOW_LOG_WRITES")
         .ok()?
         .parse::<u64>()
         .ok()
         .map(std::time::Duration::from_millis)
+}
+
+/// Release-build stub: the slow-write test hook is compiled out, so the env
+/// var is inert. See the debug variant above.
+#[cfg(not(debug_assertions))]
+fn slow_log_write_delay() -> Option<std::time::Duration> {
+    None
 }
 
 /// Initialise the JSONL log subscriber. Logs go to
@@ -846,14 +868,18 @@ mod tests {
         // Tight burst far exceeding the 1-line channel. The worker is stuck
         // in the SlowSink's 200ms sleep on the first line, so the channel
         // fills and every excess line is dropped (lossy mode never blocks
-        // the caller). ~10x would suffice; 50 keeps it robust under load.
+        // the caller). The synchronous burst completes in microseconds, well
+        // inside that sleep, so the worker drains nothing more meanwhile.
         for _ in 0..50 {
             let _ = writer.write_all(b"overflow-line\n");
         }
 
+        // Assert a *substantial* fraction dropped, not merely > 0: with a
+        // 1-line channel and a stalled worker, ~48 of the 50 must overflow.
+        // A loose `> 0` would pass even if the lossy path barely engaged.
         assert!(
-            counter.dropped_lines() > 0,
-            "lossy overflow must increment the dropped-event counter, got {}",
+            counter.dropped_lines() >= 40,
+            "lossy overflow must drop the bulk of the burst, got {}",
             counter.dropped_lines()
         );
     }
