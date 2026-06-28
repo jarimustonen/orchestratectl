@@ -1,11 +1,15 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
+commits:
+- hash: 71b05e1
+  summary: quarantine corrupt event-log lines
 ---
 
 # Corrupt-line durability: quarantine/sidecar so strict replay survives a poisoned events.jsonl

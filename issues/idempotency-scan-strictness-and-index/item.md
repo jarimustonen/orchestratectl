@@ -1,11 +1,15 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: wontfix
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
+commits:
+- hash: f0ec2b4
+  summary: dedup-scan bench, defer index to F12
 ---
 
 # find_prior_with_key: full-envelope strictness vs perf, and an idempotency index for O(n) scans
