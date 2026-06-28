@@ -121,16 +121,27 @@ Tell the user:
 
 ## Terminal report (mandatory)
 
-Merging is **not** the final step. The run stays alive until the agent
-submits a terminal `node report`. Until that report lands the per-run
+The merge and the terminal `node report` are now **one call**. The run
+stays alive until a terminal `node report` lands; until then the per-run
 supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
 pending` forever, and the tmux window never closes — the user sees a
 worktree that looks stuck when the work is actually done.
 
-So the brief MUST instruct the agent to run this **immediately after
-`/worktree-merge` succeeds, before its session ends** (a genuine lens
-tie reports `success: false` with a `discussion_items[]` entry instead —
-but it still reports):
+There are two closing paths, and the brief MUST instruct the agent to
+take exactly one of them before its session ends:
+
+- **Decision made + ADR committed → close with `run merge`.** A single
+  `orchestratectl run merge` rebases + merges the worktree branch into
+  its source branch **and** submits the terminal `node report` for you
+  (stamped `via: "explicit-merge"`). Pass your §7.3 payload with
+  `--report-file` so the rich `discussion_items` / `spinoff_proposals` /
+  `wrap_up_recommendations` ride along in the same call. There is no
+  separate `node report` step on this path, and no `/worktree-merge`.
+- **Genuinely blocked / needs the user → `node report` with
+  `success: false`, no merge.** A real lens tie (see Errors) does NOT
+  merge; it stops and submits a direct `node report` carrying the
+  unresolved trade-off. The branch stays unmerged until the user breaks
+  the tie and re-spawns.
 
 1. **Discover the run id and node id** from inside the worktree. The
    branch is `wt/<short>-<slug>`, where `<short>` is the first 10
@@ -175,26 +186,42 @@ but it still reports):
    Even a clean, no-follow-up run submits `{"success": true}` with the
    arrays empty — the call itself is what releases the supervisor.
 
-3. **Submit it:**
+3. **Close the run.**
+
+   **Success path — ADR committed, ready to land.** One call merges and
+   reports; the `--report-file` payload is validated *before* the merge:
+
+   ```bash
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   ```
+
+   `run merge` rebases + merges the branch into the run's recorded
+   `source_branch` (override with `--source <branch>`; it auto-detects
+   main/master if none is recorded), then submits the §7.3 report it
+   was handed. On a clean merge the per-run supervisor winds the run
+   down and tears down the worktree, tmux window, and branch
+   automatically — do **not** manually run tmux/git cleanup, and do not
+   call `node report` yourself on this path. A merge conflict/failure
+   exits non-zero with `error.code: "merge_failed"` and submits **no**
+   report (the node stays live); resolve the conflict (or
+   `/complex-rebase`) and re-run `run merge`.
+
+   **Blocked path — needs the user, no merge.** Submit the report
+   directly, with `success: false` and a populated `discussion_items[]`:
 
    ```bash
    orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
    ```
 
-   On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with your report attached.
-   Submitting the report is the agent's **final action**: the per-run
-   supervisor consumes it to wind the run down and (for autonomous
-   kinds) close the worktree window. Do not wait for, re-verify, or
-   re-submit it if `run show` still reads `pending` for a moment —
-   supervisor-side completion on an agent-submitted report is still
-   being wired up (issues `supervisor-complete-run-on-terminal-report`
-   and `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
-   <run-id>` is the documented manual cleanup until they land.
+   This records the node terminal without merging — `orchestratectl
+   node show <node-id>` reports `status: done` with your report
+   attached. The supervisor still winds the run down, but the branch is
+   left unmerged for the user.
 
-This step is **not optional**. A successful merge with no report leaves
-the run dangling exactly as before, with no structured outcome for the
-caller to read.
+This step is **not optional**. A successful merge needs the report in
+the same `run merge` call; a blocked run needs the direct `node report`.
+Either way, no terminal report leaves the run dangling with no
+structured outcome for the caller to read.
 
 ## Issue Management
 
@@ -208,10 +235,12 @@ links the merged ADR back to the issue and closes it on completion:
 
 Same envelope and codes as `worktree-spinoff`. One technical-decision
 specific behavior: if the lens panel returns a genuine tie, the agent
-does NOT pick randomly — it stops with `node report.success: false`
-plus a `discussion_items[]` entry naming the unresolved trade-off (see
-"Terminal report (mandatory)" for the payload shape). The user breaks
-the tie and re-spawns.
+does NOT pick randomly — it does **not** merge; it stops and submits a
+direct `node report` with `success: false` plus a `discussion_items[]`
+entry naming the unresolved trade-off (see "Terminal report (mandatory)"
+for the payload shape). The user breaks the tie and re-spawns. A decision
+that *is* resolved (ADR committed) lands the other way — via `run merge`,
+which merges and reports in one call.
 
 ## Install or upgrade `orchestratectl`
 

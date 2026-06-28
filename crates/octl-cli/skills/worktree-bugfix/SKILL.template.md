@@ -134,16 +134,25 @@ Tell the user:
 
 ## Terminal report (mandatory)
 
-Merging is **not** the final step. The run stays alive until the agent
-submits a terminal `node report`. Until that report lands the per-run
+Closing the run is **not** a separate step from merging. The run stays
+alive until a terminal `node report` lands — until then the per-run
 supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
-pending` forever, and the tmux window never closes — the user sees a
-worktree that looks stuck when the work is actually done.
+pending` forever, and the tmux window never closes. A bugfix has exactly
+two terminal outcomes, and each owns the report differently:
 
-So the brief MUST instruct the agent to run this **immediately after
-`/worktree-merge` succeeds, before its session ends** (a bugfix that
-cannot reproduce reports `success: false` with a `discussion_items[]`
-entry instead — but it still reports):
+- **Fix complete → merge it.** `orchestratectl run merge` does the whole
+  closing step in one call: it rebases + merges the worktree branch into
+  its source branch **and** submits the terminal report itself (stamped
+  `via: "explicit-merge"`). There is no separate `node report` on this
+  path — the merge IS the closing call.
+- **Blocked / needs a human → nothing to merge.** A bugfix that cannot
+  reproduce, or whose fix needs a human decision, does NOT merge. It
+  submits a plain `node report` with `success: false` plus a
+  `discussion_items[]` entry, and leaves the branch unmerged for the
+  human to pick up.
+
+The brief MUST instruct the agent to run one of these as its **final
+action, before its session ends**.
 
 1. **Discover the run id and node id** from inside the worktree. The
    branch is `wt/<short>-<slug>`, where `<short>` is the first 10
@@ -172,8 +181,8 @@ entry instead — but it still reports):
    JSON
    ```
 
-   - `success` — **required** boolean. `true` when the work merged
-     cleanly; `false` when reporting a blocked or failed outcome.
+   - `success` — **required** boolean. `true` when the fix is done and
+     ready to land; `false` when reporting a blocked or failed outcome.
    - `summary` — optional one-line human-readable result.
    - `discussion_items[]` — decisions that genuinely needed a human
      call. Each: `{"topic": "<non-empty>", "severity":
@@ -185,29 +194,46 @@ entry instead — but it still reports):
    - `wrap_up_recommendations[]` — array of strings; advice for the
      caller (further reviews, doc updates, additional siblings).
 
-   Even a clean, no-follow-up run submits `{"success": true}` with the
-   arrays empty — the call itself is what releases the supervisor.
+   Even a clean, no-follow-up run still carries this payload — the rich
+   `discussion_items` / `spinoff_proposals` / `wrap_up_recommendations`
+   travel with it in a single call.
 
-3. **Submit it:**
+3. **Close the run — pick the path:**
+
+   **Success (fix done, ready to land)** — one call merges and reports:
+
+   ```bash
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   ```
+
+   `run merge` validates the `--report-file` payload *before* it
+   rebases + merges the worktree branch into the run's recorded source
+   branch (override with `--source <branch>`; it falls back to
+   auto-detected main/master). It then submits that §7.3 payload as the
+   terminal report itself. On a clean merge the supervisor winds the run
+   down and tears down the worktree, tmux window, and branch
+   automatically — do **not** run any manual `tmux`/`git worktree`/
+   branch-delete cleanup yourself.
+
+   - Conflict / merge failure → `run merge` exits non-zero with
+     `error.code: "merge_failed"` and submits **no** report; the node
+     stays live. Resolve the conflict (or run `/complex-rebase`) and
+     re-run `run merge`.
+
+   **Blocked (needs a human, nothing merged)** — report `success:
+   false` and leave the branch for the human:
 
    ```bash
    orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
    ```
 
    On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with your report attached.
-   Submitting the report is the agent's **final action**: the per-run
-   supervisor consumes it to wind the run down and (for autonomous
-   kinds) close the worktree window. Do not wait for, re-verify, or
-   re-submit it if `run show` still reads `pending` for a moment —
-   supervisor-side completion on an agent-submitted report is still
-   being wired up (issues `supervisor-complete-run-on-terminal-report`
-   and `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
-   <run-id>` is the documented manual cleanup until they land.
+   <node-id>` reports `status: done` with your report attached, and the
+   supervisor winds the run down even though nothing landed.
 
-This step is **not optional**. A successful merge with no report leaves
-the run dangling exactly as before, with no structured outcome for the
-caller to read.
+This step is **not optional**. A finished fix with neither a `run merge`
+nor a `node report` leaves the run dangling, with no structured outcome
+for the caller to read.
 
 ## Issue Management
 
@@ -227,7 +253,9 @@ behavior:
   should not merge a speculative fix; it stops with the run in
   `lifecycle: completed` but `node report.success: false` plus a
   `discussion_items[]` entry describing the gap (see "Terminal report
-  (mandatory)" for the payload shape).
+  (mandatory)" for the payload shape). That blocked outcome is a plain
+  `node report` — no merge happened. Once a human resolves it, the fix
+  lands via `run merge`, not a separate `node report`.
 - If classification slips (light → complex mid-stream), the agent
   re-routes to the heavier review automatically; no manual
   intervention needed.

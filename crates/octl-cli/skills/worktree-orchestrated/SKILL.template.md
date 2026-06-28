@@ -59,9 +59,11 @@ self-contained and explicit about:
 4. **Self-review expectation** — the child runs `/llm-review` (or
    `/llm-panel` for design/decision artefacts) and `/assess-findings`
    on its own diff and applies "fix now" items autonomously.
-5. **Structured terminal report** — when the child finishes, it submits
-   a `node report` envelope (see "Terminal report (mandatory)" below for
-   the exact command and §7.3 field names) carrying:
+5. **Structured terminal report** — when the child finishes, it closes
+   the run with a single `orchestratectl run merge` call (see "Terminal
+   report (mandatory)" below for the exact command and §7.3 field names)
+   that merges into the integration branch and submits a `node report`
+   envelope carrying:
    - `success: true|false`
    - `discussion_items[]` — items that needed a human call; each is
      `{"topic": "<non-empty>", "severity": "discuss|critical|info",
@@ -161,15 +163,15 @@ and `orchestratectl event tail <parent-run-id> --follow`.
 
 ## Terminal report (mandatory)
 
-Merging into the integration branch is **not** the final step. The child
-run stays alive until the agent submits a terminal `node report`. Until
-that report lands the child's supervisor keeps polling, the child's
-`lifecycle` reads `pending` forever, the `child.report` event the parent
-waits on never arrives, and the tmux window never closes.
+Closing the child is a **single** call: `orchestratectl run merge`
+rebases + merges the worktree branch into its source branch and submits
+the terminal `node report` in the same step. The child run stays alive
+until that call lands — until then the child's supervisor keeps polling,
+the child's `lifecycle` reads `pending` forever, the `child.report` event
+the parent waits on never arrives, and the tmux window never closes.
 
-So the child's brief MUST instruct it to run this **immediately after
-`/worktree-merge` into the integration branch succeeds, before its
-session ends**:
+So the child's brief MUST instruct it to run this **as its final action,
+before its session ends**:
 
 1. **Discover the run id and node id** from inside the worktree. The
    branch is `wt/<short>-<slug>`, where `<short>` is the first 10
@@ -216,23 +218,30 @@ session ends**:
    arrays empty — the call itself is what releases the supervisor and
    delivers `child.report` to the parent.
 
-3. **Submit it:**
+3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
    ```
 
-   On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with the report attached.
-   Submitting it is the child's **final action**: the child's supervisor
-   consumes the report to wind the child run down, mirror `child.report`
-   onto the parent's log, and close the worktree window. The child does
-   not wait for, re-verify, or re-submit it if `run show` briefly still
-   reads `pending` — supervisor-side completion on an agent-submitted
-   report is still being wired up (issues
-   `supervisor-complete-run-on-terminal-report` and
-   `supervisor-close-tmux-on-terminal`); `run cancel <run-id>` is the
-   documented manual cleanup until they land.
+   This rebases + merges the worktree branch into its source branch and
+   submits the terminal `node report` (stamped `via: "explicit-merge"`)
+   in the same step. `node_id` defaults to `n-0001`, so no `--node-id` is
+   needed for a single-worker child. No `--source` is needed either: an
+   orchestrated child's recorded `source_branch` is the integration
+   branch it was spawned on (e.g. `orchestrate/<run-id>`), and `run merge`
+   merges into that by default. The `--report-file` payload is validated
+   *before* the merge runs.
+
+   On a clean merge the node is recorded terminal — `orchestratectl node
+   show <node-id>` reports `status: done` with the report attached — and
+   the child's supervisor winds the run down, mirrors `child.report` onto
+   the parent's log, and tears down the worktree, tmux window, and branch
+   automatically. The child does NOT run any manual tmux/git cleanup.
+
+   If `run merge` exits non-zero with `error.code: "merge_failed"` (a
+   conflict), no report is submitted and the node stays live: resolve the
+   conflict (or run `/complex-rebase`) and re-run the same `run merge`.
 
 This step is **not optional**. A successful merge with no report leaves
 the child dangling and the parent waiting forever.
@@ -277,8 +286,8 @@ driver only needs to tail the parent:
   `child.lifecycle`, and `child.report` events arrive here.
 - `orchestratectl run show <child-run-id>` — child-only detail.
 - `orchestratectl node show <child-node-id>` — the structured terminal
-  report the child submits at the end (the `node report` verb is for
-  *writing* it; see "Terminal report (mandatory)"). This is what the
+  report the child submits at the end (the `run merge` verb writes it as
+  the closing step; see "Terminal report (mandatory)"). This is what the
   orchestrator synthesizes across siblings.
 
 `lifecycle: completed` on the child means the child merged into the

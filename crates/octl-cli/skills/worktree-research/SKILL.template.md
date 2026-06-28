@@ -120,30 +120,32 @@ Tell the user:
 - Run id, branch, tmux window.
 - Expected output path: `research/<slug>.md` (or the override they
   specified).
-- That the research worktree merges itself — no `/worktree-merge`
-  handoff.
+- That the research worktree merges-and-reports itself via
+  `orchestratectl run merge` — no `/worktree-merge` handoff.
 - How to follow progress: `orchestratectl run show <run-id>` and
   `orchestratectl event tail <run-id> --follow`.
 
 ## Terminal report (mandatory)
 
-Merging is **not** the final step. The run stays alive until the agent
-submits a terminal `node report`. Until that report lands the per-run
-supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
-pending` forever, and the tmux window never closes — the user sees a
-worktree that looks stuck when the work is actually done.
+Closing is **one call**. `orchestratectl run merge` owns the entire
+merge-and-report step: it rebases + merges the worktree branch into its
+source branch, then submits the terminal `node report` itself (stamped
+`via: "explicit-merge"`). The run stays alive until that report lands —
+until then the per-run supervisor keeps polling, `orchestratectl run
+show` reads `lifecycle: pending`, and the tmux window never closes. So
+the brief MUST instruct the agent to run the single closing call below
+before its session ends. A research worktree's summary and wrap-up
+matter, so it passes a `--report-file` carrying the full §7.3 payload
+(the file is validated **before** the merge runs).
 
-So the brief MUST instruct the agent to run this **immediately after
-`/worktree-merge` succeeds, before its session ends**:
-
-1. **Discover the run id and node id** from inside the worktree. The
-   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
-   alphanumerics of the run id:
+1. **Discover the run id** from inside the worktree. The branch is
+   `wt/<short>-<slug>`, where `<short>` is the first 10 alphanumerics of
+   the run id (the node id defaults to `n-0001` — a single-worker kind
+   always has exactly one node):
 
    ```bash
    short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
    run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
-   node_id="n-0001"   # a single-worker kind always has exactly one node
    ```
 
 2. **Write the §7.3 payload** to a temp file. These exact field names are
@@ -179,26 +181,26 @@ So the brief MUST instruct the agent to run this **immediately after
    Even a clean, no-follow-up run submits `{"success": true}` with the
    arrays empty — the call itself is what releases the supervisor.
 
-3. **Submit it:**
+3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
    ```
 
-   On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with your report attached.
-   Submitting the report is the agent's **final action**: the per-run
-   supervisor consumes it to wind the run down and (for autonomous
-   kinds) close the worktree window. Do not wait for, re-verify, or
-   re-submit it if `run show` still reads `pending` for a moment —
-   supervisor-side completion on an agent-submitted report is still
-   being wired up (issues `supervisor-complete-run-on-terminal-report`
-   and `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
-   <run-id>` is the documented manual cleanup until they land.
+   This rebases + merges the worktree branch into its source branch and
+   submits the §7.3 report in the same call. On a clean merge the per-run
+   supervisor consumes the report, winds the run down, and tears down the
+   worktree, tmux window, and branch automatically — do **not** manually
+   run any tmux/git cleanup. If the source branch is not the run's
+   recorded `source_branch`, pass `--source <branch>`.
 
-This step is **not optional**. A successful merge with no report leaves
-the run dangling exactly as before, with no structured outcome for the
-caller to read.
+   On a merge conflict the call exits non-zero with `error.code:
+   "merge_failed"` and submits **no** report — the node stays live.
+   Resolve the conflict (or run `/complex-rebase`) and re-run the same
+   `run merge` call.
+
+This step is **not optional**. No closing call leaves the run dangling,
+with no structured outcome for the caller to read.
 
 ## Issue Management
 

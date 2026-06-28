@@ -52,12 +52,21 @@ If `schema_version` is a value you do not recognise, refuse to proceed
   `octl-spawn-spinoff` skill for the spinoff specifics.
 - `orchestratectl run list` / `run show <id>` — inspect runs. See the
   `octl-run-overview` skill for payload shapes.
+- `orchestratectl run merge <run-id> [--source <branch>] [--report-file <path>]`
+  — the closing step for a worktree run: rebase + merge the branch back
+  to its source, submit the terminal `node report` (stamped
+  `via: "explicit-merge"`), and let the supervisor tear the worktree down.
+  One call replaces the old `/worktree-merge` + `node report` pair. See
+  the `worktree-merge` skill.
 - `orchestratectl supervise <run-id>` — the long-lived per-run
   supervisor process; `run reattach` invokes it. Most agents do not call
   this directly.
 - `orchestratectl node list` / `node show <id>` / `node report` —
   per-unit detail inside a run, and the structured terminal report a
-  spinoff submits when it merges itself back. Node ids have the form
+  worker submits to end its run. A worktree worker usually submits this
+  report *as part of* `run merge` (its closing step) rather than calling
+  `node report` directly; a direct `node report` is for a blocked
+  outcome with nothing to merge. Node ids have the form
   `n-` followed by 4–10 ASCII digits (e.g. `n-0001`, the first node of
   every run); the binary rejects any other shape. Never invent a slug
   like `n-driver-001` — discover the id from `run create`'s `node_id`
@@ -82,9 +91,11 @@ The flow every workflow follows:
    drives the worker agent(s). State transitions land in the run's
    event log; `run show <id>` reads them.
 3. **Collect**: when the worker finishes, it submits a structured
-   `node report` describing the outcome (success, failures, spin-off
-   proposals, discussion items, wrap-up recommendations). The
-   orchestrator reads these via `node show` and `discussion list`.
+   terminal report describing the outcome (success, failures, spin-off
+   proposals, discussion items, wrap-up recommendations) — usually as
+   part of its `run merge` closing step, which merges the branch and
+   submits the report in one call. The orchestrator reads these via
+   `node show` and `discussion list`.
 
 Two distinct fields, two distinct meanings — do not conflate them:
 

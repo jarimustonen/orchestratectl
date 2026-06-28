@@ -63,12 +63,13 @@ The template should include:
 5. **No spin-offs, no discuss items** — children should run silently
    to completion; surfacing every receipt OCR run as a discussion
    item drowns the user.
-6. **Terminal report** — every child MUST end with the mandatory
-   terminal `node report` (see "Terminal report (mandatory)" below),
-   even though its arrays are empty. Without it the unit's node never
-   reaches `completed`, the driver never sees `child.report`, and that
-   slot stays occupied — stalling the whole batch at the concurrency
-   limit.
+6. **Closing step** — every child MUST end with a single
+   `orchestratectl run merge "$run_id"` call (see "Terminal report
+   (mandatory)" below), which merges the unit back AND submits its
+   terminal report in one step. Without that report the unit's node
+   never reaches `completed`, the driver never sees `child.report`, and
+   that slot stays occupied — stalling the whole batch at the
+   concurrency limit.
 
 ### 2. Create the driver run
 
@@ -164,29 +165,53 @@ Tell the user:
 
 ## Terminal report (mandatory)
 
-Merging is **not** the final step for a child unit. Each child's node
-stays alive until the child submits a terminal `node report`. Until that
-report lands the child's supervisor keeps polling, the unit never reaches
-`completed`, the driver never sees `child.report`, and the slot stays
-occupied — so the batch stalls at the concurrency limit instead of
-fanning out the next pending unit.
+The merge **is** the closing step for a child unit. A single
+`orchestratectl run merge "$run_id"` rebases + merges the unit's branch
+back into its source branch AND submits the terminal report (stamped
+`via: "explicit-merge"`) in one call. Until that report lands the child's
+supervisor keeps polling, the unit never reaches `completed`, the driver
+never sees `child.report`, and the slot stays occupied — so the batch
+stalls at the concurrency limit instead of fanning out the next pending
+unit.
 
-So the unit brief MUST instruct each child to run this **immediately
-after `/worktree-merge` succeeds, before its session ends**:
+A typical fan-out unit runs silently and has nothing structured to
+surface, so the minimal form is what the unit brief should instruct each
+child to run **as its final action, before its session ends**:
 
-1. **Discover the run id and node id** from inside the worktree. The
-   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
-   alphanumerics of the run id:
+1. **Discover the run id** from inside the worktree. The branch is
+   `wt/<short>-<slug>`, where `<short>` is the first 10 alphanumerics of
+   the run id:
 
    ```bash
    short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
    run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
-   node_id="n-0001"   # each fan-out child has exactly one node
    ```
 
-2. **Write the §7.3 payload** to a temp file. Fan-out children run
-   silently, so the arrays stay empty — but `success` is still required.
-   Use these exact field names; an unknown key like `discuss` /
+2. **Merge and report in one step.** No `--source` is needed — the
+   fan-out source/integration branch is the child's recorded
+   `source_branch`, and `run merge` defaults to it:
+
+   ```bash
+   orchestratectl run merge "$run_id"
+   ```
+
+   With no `--report-file`, `run merge` submits a minimal
+   `{success: true, summary}` report — exactly what a silent fan-out unit
+   needs. On a clean merge the child's supervisor winds the unit down,
+   mirrors `child.report` onto the driver's log, closes the tmux window,
+   removes the worktree, deletes the branch, and frees the slot for the
+   next pending unit. No manual tmux/git cleanup.
+
+   On a merge conflict/failure `run merge` exits non-zero with
+   `error.code: "merge_failed"` and submits **no** report — the node
+   stays live. Resolve the conflict (or run `/complex-rebase`) and re-run
+   `orchestratectl run merge "$run_id"`.
+
+3. **If the unit genuinely has follow-up** — discussion items, spin-off
+   proposals, or wrap-up recommendations — write a §7.3 payload to a temp
+   file and pass it with `--report-file`. The file is validated **before**
+   the merge, so a malformed report aborts cleanly without merging. Use
+   these exact field names; an unknown key like `discuss` /
    `spinoff_candidates` / `wrap_up` passes validation but its contents
    are silently dropped.
 
@@ -200,6 +225,8 @@ after `/worktree-merge` succeeds, before its session ends**:
      "wrap_up_recommendations": []
    }
    JSON
+
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
    ```
 
    - `success` — **required** boolean. `true` when the unit's output
@@ -212,25 +239,9 @@ after `/worktree-merge` succeeds, before its session ends**:
      `worktree-spinoff` for the full per-field shape if a unit genuinely
      needs to surface one.
 
-3. **Submit it:**
-
-   ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
-   ```
-
-   On success the unit's node is recorded terminal — `node show
-   <node-id>` reports `status: done`. Submitting the report is the
-   child's **final action**: the child's supervisor consumes it to wind
-   the unit down, mirror `child.report` onto the driver's log, and free
-   the slot for the next pending unit. The child does not wait for or
-   re-submit it if `run show` briefly still reads `pending` —
-   supervisor-side completion on an agent-submitted report is still being
-   wired up (issues `supervisor-complete-run-on-terminal-report` and
-   `supervisor-close-tmux-on-terminal`); the driver may use `run cancel`
-   as manual cleanup until they land.
-
-This step is **not optional**. A merged unit with no report holds its
-concurrency slot forever.
+This closing step is **not optional**. A merged unit with no report holds
+its concurrency slot forever — and `run merge` is what submits that
+report, so there is nothing extra to run after it.
 
 ## Issue Management
 
@@ -264,7 +275,8 @@ Likely codes:
   `child.report` events arrive here per unit.
 - `orchestratectl node list <driver-run-id>` — per-unit table.
 - `orchestratectl node show <child-node-id>` — terminal report for one
-  unit (the `node report` verb is for *writing* it; see "Terminal report
+  unit (the child's closing `orchestratectl run merge` is what *writes*
+  it, merging and reporting in one step; see "Terminal report
   (mandatory)").
 
 ## Install or upgrade `orchestratectl`

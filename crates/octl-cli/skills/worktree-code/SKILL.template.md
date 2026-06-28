@@ -88,9 +88,9 @@ re-ask the user about the original brief. The prompt should include:
    now" rows, decides autonomously whether a second review round is
    needed, and finally runs `/wrap-up` (which IS user-interactive — it
    waits for the user to confirm before saving session context). After
-   `/wrap-up`, the user runs `/worktree-merge` themselves. The terminal
-   `node report` that moves the run to `completed` is the post-merge
-   closeout — see "Terminal report (mandatory)" below.
+   `/wrap-up`, the user runs `/worktree-merge` themselves. That single
+   command merges the branch, submits the terminal `node report`, and
+   tears the worktree down — see "Closing out" below.
 
 For long or special-character-heavy prompts, write them to a temp file
 (`mktemp -t worktree-code-prompt-XXXXXX.md`) and pass `--prompt-file
@@ -164,75 +164,39 @@ Tell the user:
 - How to attach: `tmux attach -t octl <window>`.
 - How to follow progress: `orchestratectl run show <run-id>`.
 
-## Terminal report (mandatory)
+## Closing out (merge + report)
 
 A `code` run is **interactive**: the agent works autonomously up to
-`/wrap-up`, then the human reviews and runs `/worktree-merge`. But the
-run is not finished until a terminal `node report` lands — without it the
-supervisor keeps polling and `orchestratectl run show` reads `lifecycle:
-pending` forever, the same dangling-worktree symptom autonomous kinds
-hit. The difference is only *when* the report fires: it is the
-**post-merge closeout**, run once the human's `/worktree-merge` has
-landed and the worktree is done being used — NOT during the agent's
-session (a terminal report mid-session would try to close the window the
-user is still working in).
+`/wrap-up`, then the human reviews and, when satisfied, runs
+`/worktree-merge` themselves. That is the whole closeout — there is no
+separate manual `node report` step anymore.
 
-Submit it once the merge is complete:
+`/worktree-merge` invokes `orchestratectl run merge`, which in ONE call
+merges the branch into the source, submits the terminal `node report`
+(stamped `via: "explicit-merge"`), and signals the per-run supervisor —
+which then closes the tmux window, removes the worktree, and deletes the
+branch within a second or two. The run moves to `completed` and the
+window the user was reviewing in disappears. No `tmux kill-window`, `git
+worktree remove`, or `git branch -d` by hand.
 
-1. **Discover the run id and node id** from inside the worktree. The
-   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
-   alphanumerics of the run id:
+Crucially this fires **only when the human runs the merge** — never
+mid-session. At spawn time the user owns the review window; the explicit
+`/worktree-merge` is the signal that it may close. So do NOT submit a
+terminal `node report` during the agent's working session (it would try
+to close the window the user is still in).
 
-   ```bash
-   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
-   node_id="n-0001"   # a single-worker kind always has exactly one node
-   ```
+If the work produced decisions worth recording, follow-up work worth
+spawning, or wrap-up advice, write a §7.3 payload to a temp file and the
+merge carries it — `/worktree-merge` accepts `--report-file` and passes
+it to `run merge`. A plain merge with nothing to record needs no file;
+`run merge` submits a minimal `{success, summary}` report on its own.
+(See the `worktree-merge` skill for the payload field reference and the
+run-id discovery snippet.)
 
-2. **Write the §7.3 payload** to a temp file. These exact field names are
-   what the supervisor consumes — do NOT use `discuss`,
-   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
-   validation, but its contents are silently dropped.
-
-   ```bash
-   cat > /tmp/node-report.json <<'JSON'
-   {
-     "success": true,
-     "summary": "<one-line outcome>",
-     "discussion_items": [],
-     "spinoff_proposals": [],
-     "wrap_up_recommendations": []
-   }
-   JSON
-   ```
-
-   - `success` — **required** boolean. `true` when the work merged
-     cleanly; `false` when reporting a blocked or abandoned outcome.
-   - `summary` — optional one-line human-readable result.
-   - `discussion_items[]` — decisions that needed a human call. Each:
-     `{"topic": "<non-empty>", "severity": "discuss|critical|info",
-     "options": ["…"]}`.
-   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
-     `{"proposed_title": "<non-empty>", "proposed_kind":
-     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
-     "rationale": "<why>"}`.
-   - `wrap_up_recommendations[]` — array of strings; advice for the
-     caller (further reviews, doc updates, follow-up work).
-
-3. **Submit it:**
-
-   ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
-   ```
-
-   On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with the report attached. The
-   per-run supervisor consumes it to wind the interactive run down. Do
-   not re-submit if `run show` briefly still reads `pending` —
-   supervisor-side completion on an agent-submitted report is still being
-   wired up (issues `supervisor-complete-run-on-terminal-report` and
-   `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
-   <run-id>` is the documented manual cleanup until they land.
+On a merge conflict the merge stops with `error.code: "merge_failed"` and
+submits no report — the run stays live, so resolve the conflict (or run
+`/complex-rebase` for deeply-diverged branches) and re-run
+`/worktree-merge`.
 
 ## Issue Management
 

@@ -71,9 +71,11 @@ self-contained. Include:
    clippy warnings, specific file exists).
 4. **Quality bar** — does the spinoff need to run `/llm-review` before
    merging? Default is no review for spinoffs.
-5. **Terminal report** — the brief MUST end with the mandatory terminal
-   `node report` step (see "Terminal report (mandatory)" below). Without
-   it the run never reaches `completed` and the worktree dangles.
+5. **Terminal report** — the brief MUST end with the mandatory closing
+   `orchestratectl run merge` step (see "Terminal report (mandatory)"
+   below), which merges the branch and submits the terminal report in one
+   call. Without it the run never reaches `completed` and the worktree
+   dangles.
 
 If the prompt is longer than ~2 KB or contains characters that complicate
 shell quoting, write it to a temp file and pass `--prompt-file
@@ -87,6 +89,7 @@ misinterprets the task wastes a worktree and a merge cycle.
 ### 3. Create the run
 
 ```
+# skill-example-ci: skip
 orchestratectl run create \
   --kind spinoff \
   --title "<2–4 word title>" \
@@ -150,8 +153,8 @@ Tell the user:
 - Run id, kind (`spinoff`), source/merge branch.
 - Tmux window name (so they can attach with `tmux attach -t
   octl <window>` if curious).
-- That the spinoff merges itself — no `/worktree-merge` handoff from
-  them.
+- That the spinoff merges-and-reports itself via `orchestratectl run
+  merge` — no `/worktree-merge` handoff from them.
 - How to follow progress: `orchestratectl run show <run-id>` (or
   `--output jsonl` for one-line summaries).
 
@@ -161,23 +164,26 @@ summary — the driver needs the IDs to poll completion.
 
 ## Terminal report (mandatory)
 
-Merging is **not** the final step. The run stays alive until the agent
-submits a terminal `node report`. Until that report lands the per-run
+Closing a spinoff is now **one call**. `orchestratectl run merge` owns
+the entire closing step: it rebases + merges the worktree branch into
+its source branch, then submits the terminal `node report` itself
+(stamped `via: "explicit-merge"`). There is no separate
+`/worktree-merge` step and no separate `node report` call — the merge
+*is* the closing call. Until it runs the run stays alive: the per-run
 supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
-pending` forever, and the tmux window never closes — the user sees a
-worktree that looks stuck when the work is actually done.
+pending`, and the tmux window never closes — the user sees a worktree
+that looks stuck when the work is actually done.
 
-So the brief MUST instruct the spinoff to run this **immediately after
-`/worktree-merge` succeeds, before its session ends**:
+So the brief MUST instruct the spinoff to run this **once the work is
+committed and ready to land, before its session ends**:
 
-1. **Discover the run id and node id** from inside the worktree. The
-   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
-   alphanumerics of the run id:
+1. **Discover the run id** from inside the worktree. The branch is
+   `wt/<short>-<slug>`, where `<short>` is the first 10 alphanumerics of
+   the run id:
 
    ```bash
    short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
    run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
-   node_id="n-0001"   # a single-worker kind always has exactly one node
    ```
 
 2. **Write the §7.3 payload** to a temp file. These exact field names are
@@ -210,29 +216,44 @@ So the brief MUST instruct the spinoff to run this **immediately after
    - `wrap_up_recommendations[]` — array of strings; advice for the
      caller (further reviews, doc updates, additional siblings).
 
-   Even a clean, no-follow-up run submits `{"success": true}` with the
-   arrays empty — the call itself is what releases the supervisor.
-
-3. **Submit it:**
+3. **Merge and report in one call** by passing that payload to
+   `run merge` via `--report-file`. The file is validated *before* the
+   merge runs, and the rich §7.3 fields are carried in the same call:
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
    ```
 
-   On success the node is recorded terminal — `orchestratectl node show
-   <node-id>` reports `status: done` with your report attached.
-   Submitting the report is the agent's **final action**: the per-run
-   supervisor consumes it to wind the run down and (for autonomous
-   kinds) close the worktree window. Do not wait for, re-verify, or
-   re-submit it if `run show` still reads `pending` for a moment —
-   supervisor-side completion on an agent-submitted report is still
-   being wired up (issues `supervisor-complete-run-on-terminal-report`
-   and `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
-   <run-id>` is the documented manual cleanup until they land.
+   `run merge` defaults to node `n-0001` (a single-worker kind always
+   has exactly one node), so the node id is no longer needed. A spinoff
+   with **no** follow-up items (empty discussion_items / spinoff_proposals
+   / wrap_up_recommendations) may skip the temp file entirely and submit a
+   minimal auto-report:
 
-This step is **not optional**. A successful merge with no report leaves
-the run dangling exactly as before, with no structured outcome for the
-caller to read.
+   ```bash
+   orchestratectl run merge "$run_id"
+   ```
+
+   This rebases + merges the worktree branch into its recorded source
+   branch and submits a minimal `{success, summary}` report. The call
+   itself is what releases the supervisor.
+
+   On a clean merge the supervisor winds the run down and tears down the
+   worktree, tmux window, and branch automatically within a second or
+   two — the agent's session ends as the window closes. Do **not** run
+   `tmux kill-window`, `git worktree remove`, or `git branch -d`
+   yourself, and do not re-verify or re-submit if `run show` still reads
+   `pending` for a moment.
+
+   **Conflict path:** if `run merge` exits non-zero with
+   `error.code: "merge_failed"` it does **not** submit a report and the
+   node stays live — resolve the conflict (or run `/complex-rebase` for
+   deeply-diverged branches) and re-run `orchestratectl run merge
+   "$run_id" --report-file /tmp/node-report.json`.
+
+This step is **not optional**. A finished worktree with no `run merge`
+call leaves the run dangling, unmerged, with no structured outcome for
+the caller to read.
 
 ## Issue Management
 
@@ -295,8 +316,8 @@ The spinoff runs asynchronously. To check status:
 - `orchestratectl node list <run-id>` — per-unit detail (a
   spinoff has exactly one worker node).
 - `orchestratectl node show <node-id>` — the structured terminal
-  report the spinoff submits when it merges (the `node report` verb is
-  for *writing* that report; see "Terminal report (mandatory)").
+  report `orchestratectl run merge` submits as it merges the branch (see
+  "Terminal report (mandatory)").
 
 `lifecycle` is the only field that tells you the run is finished:
 `completed` (worker merged), `failed` (worker errored), `cancelled`
