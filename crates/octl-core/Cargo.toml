@@ -27,3 +27,9 @@ libc = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 tempfile = { workspace = true }
+
+# Plain `fn main()` bench (no nightly `#[bench]` / criterion dependency); run
+# with `cargo bench -p octl-core --bench idempotency_scan`.
+[[bench]]
+name = "idempotency_scan"
+harness = false
