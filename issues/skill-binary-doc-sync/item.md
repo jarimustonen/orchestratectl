@@ -2,8 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-28
+commits:
+- hash: 5eb862a
+  summary: sync SKILL examples with binary CLI surface
 ---
 
 # Bundled SKILLs document flag forms, terminology, and envelope shapes that don't match the binary
