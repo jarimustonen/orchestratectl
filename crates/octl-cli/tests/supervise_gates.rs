@@ -129,6 +129,258 @@ fn run_dir(home: &TempDir, run_id: &str) -> std::path::PathBuf {
     home.path().join("runs").join(run_id)
 }
 
+/// Write an executable shell script `name` under `dir` that records each
+/// invocation's full argv (space-joined, one line per call) to `<dir>/<log>`
+/// and runs `extra` (raw bash, e.g. to emit canned stdout) before `exit 0`.
+/// Used to stub `tmux` / `git` so the cleanup path's external commands are
+/// asserted on argv rather than really run.
+fn fake_recorder(dir: &Path, name: &str, log: &str, extra: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join(name);
+    let log_path = dir.join(log);
+    // Single-quote the log path for the shell (tempdir paths carry no quotes).
+    let log = log_path.to_str().unwrap();
+    let body = format!(
+        "#!/bin/bash\nprintf '%s ' \"$@\" >> '{log}'\nprintf '\\n' >> '{log}'\n{extra}\nexit 0\n",
+    );
+    std::fs::write(&p, body).unwrap();
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    p
+}
+
+/// A fresh fake `tmux` recording to `<dir>/tmux.log`.
+fn fake_tmux_recorder(dir: &Path) -> std::path::PathBuf {
+    fake_recorder(dir, "fake-tmux.sh", "tmux.log", "")
+}
+
+/// A fresh fake `git` recording to `<dir>/git.log`. `worktree list` invocations
+/// return a canned main-worktree path so the cleanup's `main_worktree_of` probe
+/// resolves without a real repo.
+fn fake_git_recorder(dir: &Path) -> std::path::PathBuf {
+    fake_recorder(
+        dir,
+        "fake-git.sh",
+        "git.log",
+        "case \"$*\" in *'worktree list'*) echo 'worktree /fake/main';; esac",
+    )
+}
+
+fn log_contents(dir: &Path, log: &str) -> String {
+    std::fs::read_to_string(dir.join(log)).unwrap_or_default()
+}
+
+/// Forge a `node.created` carrying the worktree/branch/tmux fields the cleanup
+/// path consumes, then a terminal `node.report` so the node is settled before
+/// the supervisor ticks (keeps the watchdog out of it).
+fn forge_terminal_worker_node(home: &TempDir, run_id: &str, kind: &str, report: &str) {
+    let node = home.path().join(format!("node-{run_id}.json"));
+    std::fs::write(
+        &node,
+        format!(
+            r#"{{"kind":"{kind}","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42"}}"#
+        ),
+    )
+    .unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node.to_str().unwrap(),
+    ]));
+    let report_file = home.path().join(format!("report-{run_id}.json"));
+    std::fs::write(&report_file, report).unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "node",
+        "report",
+        run_id,
+        "n-0001",
+        "--from-file",
+        report_file.to_str().unwrap(),
+    ]));
+}
+
+/// Read the latest `run.status` value recorded in the event log, if any.
+fn latest_run_status(events: &Path) -> Option<String> {
+    read_events(events)
+        .into_iter()
+        .filter(|v| v["kind"] == "run.status")
+        .filter_map(|v| v["data"]["status"].as_str().map(str::to_string))
+        .next_back()
+}
+
+/// supervisor-complete-run-on-terminal-report + supervisor-close-tmux-on-terminal:
+/// an autonomous run whose node submits a successful terminal `node.report` must
+/// (1) be rolled up to `run.status: done` by the supervisor — no `run cancel`
+/// needed — and (2) have its tmux window closed, worktree removed, and branch
+/// deleted on the same terminal transition.
+#[test]
+fn terminal_report_rolls_run_to_done_and_cleans_up() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "rollup-done");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "spinoff",
+        r#"{"success": true, "summary": "ok", "discussion_items": [], "spinoff_proposals": [], "wrap_up_recommendations": []}"#,
+    );
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        latest_run_status(&events).as_deref(),
+        Some("done"),
+        "supervisor must roll the run up to done"
+    );
+
+    let tmux = log_contents(dir.path(), "tmux.log");
+    assert!(
+        tmux.contains("kill-window -t @42"),
+        "tmux window not closed: {tmux:?}"
+    );
+    let git = log_contents(dir.path(), "git.log");
+    assert!(
+        git.contains("worktree remove /fake/wt"),
+        "worktree not removed: {git:?}"
+    );
+    assert!(
+        git.contains("branch -D wt/test-x"),
+        "branch not deleted: {git:?}"
+    );
+}
+
+/// The failure path: a `node.report {success:false}` drives the run to
+/// `run.status: failed`, and cleanup still fires (a failed autonomous run is
+/// just as much in need of teardown as a successful one).
+#[test]
+fn failed_report_rolls_run_to_failed_and_cleans_up() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "rollup-failed");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "spinoff",
+        r#"{"success": false, "summary": "boom"}"#,
+    );
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(latest_run_status(&events).as_deref(), Some("failed"));
+    assert!(log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"));
+    assert!(log_contents(dir.path(), "git.log").contains("worktree remove /fake/wt"));
+}
+
+/// Terminal-via-cancel: a `run cancel` already drove the run to `cancelled`
+/// (the existing path). The supervisor must still perform the autonomous
+/// teardown when it next ticks over the now-terminal run.
+#[test]
+fn terminal_via_cancel_still_cleans_up() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "cancel-clean");
+    // Forge the worker node (with worktree/tmux) but DO NOT report — cancel
+    // synthesizes the terminal node.report itself.
+    let node = home.path().join("cancel-node.json");
+    std::fs::write(
+        &node,
+        r#"{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42"}"#,
+    )
+    .unwrap();
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node.to_str().unwrap(),
+    ]));
+    run_ok(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(latest_run_status(&events).as_deref(), Some("cancelled"));
+    assert!(
+        log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"),
+        "cancel path must still close the tmux window"
+    );
+    assert!(log_contents(dir.path(), "git.log").contains("worktree remove /fake/wt"));
+}
+
+/// Interactive kinds (`code`) must roll up to a terminal run status like any
+/// other run, but must NOT have their tmux window / worktree torn down — the
+/// human owns that window.
+#[test]
+fn interactive_kind_completes_but_skips_cleanup() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "code", "interactive-noclean");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "code",
+        r#"{"success": true, "summary": "ok"}"#,
+    );
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        latest_run_status(&events).as_deref(),
+        Some("done"),
+        "run completion (criterion 1) applies to interactive kinds too"
+    );
+    assert_eq!(
+        log_contents(dir.path(), "tmux.log"),
+        "",
+        "interactive kind must not close the tmux window"
+    );
+    assert_eq!(
+        log_contents(dir.path(), "git.log"),
+        "",
+        "interactive kind must not touch the worktree"
+    );
+}
+
 /// V2: `agent_pid` discovery and PID-based liveness probe.
 ///
 /// Real tmux-pane PID re-discovery requires a live tmux server, which

@@ -22,6 +22,7 @@
 //! event when the events log survives) rather than poll a deleted
 //! directory forever and keep forking children.
 
+pub mod cleanup;
 pub mod pid_file;
 pub mod reducer;
 pub mod state;
@@ -39,8 +40,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Node,
-    NodeId, RunLock, RunPaths, Status,
+    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Lifecycle,
+    Node, NodeId, RunLock, RunPaths, Status,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -229,6 +230,13 @@ pub fn dispatch(
     // to 0 on any tick where it exists; once it crosses
     // `SELF_TERMINATE_TICKS` we self-terminate (run dir vanished).
     let mut manifest_missing_streak: u32 = 0;
+
+    // Whether terminal-transition cleanup (tmux window close + worktree
+    // remove + branch delete, autonomous kinds only) has already run this
+    // process. Performed once when the run is first observed terminal; the
+    // steps are idempotent/lenient anyway, but the flag avoids re-shelling
+    // out every tick between the terminal transition and the loop exit.
+    let mut cleaned = false;
 
     // Rate-limit state for the periodic lossy-drop warning (see
     // `maybe_warn_dropped`). The supervisor renders no envelope mid-run, so
@@ -517,6 +525,66 @@ pub fn dispatch(
                 error = %e.message,
                 "watchdog tick failed"
             );
+        }
+
+        // Roll the run up to a terminal status once all of its own nodes —
+        // and every tracked child — are terminal. The reducer terminalizes
+        // nodes from `node.report` but never the run, so without this an
+        // agent's successful terminal report would leave the run `pending`
+        // forever and this supervisor polling indefinitely
+        // (supervisor-complete-run-on-terminal-report). We are the single
+        // arbiter of our run's lifecycle, so — like `run cancel` — we append
+        // the `run.status`, here under a deterministic idempotency key so the
+        // per-tick re-evaluation appends at most once and a racing cancel is a
+        // clean no-op (its terminal manifest makes `rollup_status` return None).
+        let children_all_terminal = child_tails.values().all(|t| t.terminal);
+        if let Some(status) = cleanup::rollup_status(&paths, children_all_terminal) {
+            let status_str = match status {
+                Status::Done => "done",
+                // Failed is the only other value `rollup_status` returns.
+                _ => "failed",
+            };
+            let key = format!("supervisor-rollup:{run_id}:run-status");
+            if let Err(e) = append_and_apply_event(
+                &paths,
+                "run.status",
+                None,
+                Some(&key),
+                json!({ "status": status_str }),
+            ) {
+                warn!(
+                    target: "orchestratectl::supervise",
+                    error = %e,
+                    "failed to record terminal run.status; will retry next tick"
+                );
+            } else {
+                info!(
+                    target: "orchestratectl::supervise",
+                    run_id = %run_id,
+                    status = status_str,
+                    "rolled run up to terminal status from terminal node(s)"
+                );
+            }
+        }
+
+        // Terminal-transition cleanup: once the run is terminal AND its kind is
+        // autonomous, close each node's tmux window, remove its worktree, and
+        // delete its branch so a fire-and-forget run tears itself fully down
+        // (supervisor-close-tmux-on-terminal). Interactive kinds (`code`,
+        // `orchestrate`) are skipped — the human owns that window. This runs the
+        // same tick the rollup above (or a `run cancel`) made the manifest
+        // terminal, since `append_and_apply_event` folded it before this read.
+        if !cleaned {
+            if let Ok(Some(m)) = read_manifest_opt(&paths) {
+                if m.status.is_terminal() {
+                    if m.kind.lifecycle() == Lifecycle::Autonomous {
+                        cleanup::cleanup_terminal_autonomous(&paths);
+                    }
+                    // Mark done even for interactive kinds so we don't re-read
+                    // the manifest every tick until the loop exits.
+                    cleaned = true;
+                }
+            }
         }
 
         // Surface lossy-mode log drops periodically. A long-lived
