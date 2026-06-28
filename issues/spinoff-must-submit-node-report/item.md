@@ -2,8 +2,11 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: in-progress
 priority: normal
+commits:
+- hash: 74be081
+  summary: add mandatory terminal node report step to 8 autonomous-merge SKILLs
 ---
 
 # Autonomous-merge SKILLs do not tell agent to submit terminal node.report
