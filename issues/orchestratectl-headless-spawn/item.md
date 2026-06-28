@@ -2,8 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: feature
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-28
+commits:
+- hash: a76ae97
+  summary: 'feat(run): --headless / --tmux-session for run create'
 ---
 
 # Add --headless / --tmux-session flag to run create
@@ -49,3 +53,51 @@ Severity: nice-to-have but increasingly important now that the cleanup loop work
 Possibly small follow-up: a `--detached` flag that uses tmux native detached-session features rather than relying on workmux's `--parent-session`. But starting with workmux delegation is simpler.
 
 Related: `workmux-extract-libs` (if/when raine accepts the split) would let us call multiplexer logic directly from Rust without workmux flag forwarding — even cleaner headless implementation. For now, flag forwarding is sufficient.
+
+## Resolution (2026-06-28)
+
+Implemented in `a76ae97`:
+
+- `run create` gains `--headless` (boolean) and `--tmux-session <name>`
+  (string). They resolve to `SpawnRequest.parent_session`
+  (`crate::run::create::resolve_parent_session`): explicit name wins and
+  implies headless; `--headless` alone yields the default `headless`
+  session; neither keeps the unchanged foreground spawn. The name is
+  validated (non-empty, no whitespace / `:` / `.` tmux separators).
+- `spawn::run_create_sh` forwards it to create.sh as
+  `--parent-session <name>`.
+- SKILL examples added to `worktree-spinoff` and `fan-out`; help-surface
+  snapshots updated.
+
+Auto-cleanup needed no change: `supervise::cleanup` already keys window
+kills off the recorded qualified tmux identity (`tmux_session` +
+`tmux_window_id`), so it closes a headless window wherever it landed.
+
+**Companion create.sh change (homebase).** create.sh had to learn
+`--parent-session`: forward it to `workmux add`, pre-create the target
+session detached if missing, discover the window in the *target* session
+(not the ambient one), and record `tmux_session = TARGET_SESSION` so
+cleanup's qualified identity points at the right session. Committed on
+homebase branch `create-sh-tmux-identity` (`7acff49`), stacked on the
+qualified-identity commits (`3130460`, `2ea0eca`) that issue
+`supervisor-tmux-window-identity` already marks done but that are **not
+yet deployed to homebase main**.
+
+**Deploy dependency.** Until `create-sh-tmux-identity` lands on homebase
+main (the `~/.claude/skills/worktree/scripts/create.sh` symlink target),
+`--headless` forwards `--parent-session` to a deployed create.sh that
+rejects it as an unknown flag. This is the same pending-deploy state the
+already-merged qualified-identity Rust is in (every spawn currently logs
+the back-compat warning because create.sh doesn't yet emit the identity
+fields). Deploying that one branch unblocks both.
+
+**Live verification** (against the updated create.sh via `OCTL_CREATE_SH`,
+real tmux + workmux + agent):
+
+- `--headless`: window landed in `headless:` (`@113`), absent from
+  `default:`; node recorded `tmux_session=headless`,
+  `tmux_window_id=@113`, full socket. After `run cancel`, the supervisor
+  closed it in ~2s via `tmux kill-window -t @113` (+ worktree/branch
+  removed).
+- `--tmux-session campaign-x`: window in `campaign-x:` (`@115`), absent
+  from `default:` and `headless:`; cleanup closed `@115` the same way.
