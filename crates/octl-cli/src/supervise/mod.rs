@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use clap::Args as ClapArgs;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -127,6 +128,15 @@ pub struct SuperviseArgs {
     /// first tick, regardless of `--max-iter`.
     #[arg(long)]
     pub max_iter: Option<u32>,
+    /// Opt out of corrupt-line quarantine. By default the supervisor heals a
+    /// poisoned `events.jsonl` it tails over: the corrupt line is renamed
+    /// aside to `events.jsonl.corrupt-<ts>.bak` and a recovered log is written
+    /// in its place, then a `supervisor.event_log_quarantined` event is
+    /// emitted. With this flag the corrupt line is only skipped in memory and
+    /// surfaced via `supervisor.event_log_skipped_line` (the P2 behavior),
+    /// leaving the poison bytes on disk for a future strict reader to trip on.
+    #[arg(long)]
+    pub no_quarantine_corrupt_lines: bool,
 }
 
 pub fn dispatch(
@@ -225,6 +235,10 @@ pub fn dispatch(
     // this is its only channel for surfacing dropped log events.
     let mut last_dropped_warned: u64 = 0;
     let mut last_dropped_warn_at: Option<Instant> = None;
+
+    // Quarantine a poisoned `events.jsonl` by default; the operator can opt
+    // out (then a corrupt line is only skipped in memory, P2 behavior).
+    let quarantine = !args.no_quarantine_corrupt_lines;
 
     let mut iter: u32 = 0;
     let exit_reason: &'static str = loop {
@@ -384,9 +398,9 @@ pub fn dispatch(
                 _ => {}
             }
         }
-        // If the own-run tail stopped at a corrupt line, surface it once and
+        // If the own-run tail stopped at a corrupt line, heal (quarantine) or
         // skip past it so the tail keeps progressing.
-        report_corrupt_line(&mut own_tail, &paths, "own");
+        report_corrupt_line(&mut own_tail, &paths, &paths, quarantine, "own");
 
         // Loop 2: child-run events.
         let child_ids: Vec<String> = child_tails.keys().cloned().collect();
@@ -481,9 +495,16 @@ pub fn dispatch(
                 }
             }
             // A corrupt line in a child's log is reported on our own run log
-            // (keyed by source = child id) and skipped, so one child's bit
-            // rot can't wedge the whole supervisor.
-            report_corrupt_line(&mut entry.tail, &paths, &cid);
+            // (keyed by source = child id), and quarantined out of the child's
+            // own log under that child's lock, so one child's bit rot can't
+            // wedge the whole supervisor or strand poison bytes on disk. If the
+            // child's paths can't be rebuilt, fall back to an in-memory skip.
+            let child_owner = run_paths(&root, &cid).ok();
+            let (owner, q) = match child_owner.as_ref() {
+                Some(cp) => (cp, quarantine),
+                None => (&paths, false),
+            };
+            report_corrupt_line(&mut entry.tail, &paths, owner, q, &cid);
         }
 
         // Loop 3: watchdog. We don't yet have a generalized agent
@@ -840,15 +861,33 @@ fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, Str
 }
 
 /// If `tail`'s last [`poll`](tail::EventTail::poll) parked at a corrupt line,
-/// advance past it and — the first time that byte offset is seen — emit a
-/// one-shot `supervisor.event_log_skipped_line` event on *our own* run log
-/// (`paths`), regardless of which tail (own or child) hit the bad line.
+/// react to it on *our own* run log (`own`), regardless of which tail (own or
+/// child) hit the bad line.
 ///
-/// Combined with the unified physical-reader + validate-before-append fixes,
-/// a corrupt middle line should only arise from external tampering or bit
-/// rot; when it does, we surface it once and keep tailing rather than
-/// re-erroring on the same offset forever (F17).
-fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &str) {
+/// With `quarantine` set (the supervisor default), the corrupt line is healed
+/// out of `log_owner`'s `events.jsonl`: under that run's lock the original is
+/// renamed to `events.jsonl.corrupt-<ts>.bak`, a recovered log is written in
+/// its place, the tail is restarted at offset 0 (every byte offset shifted),
+/// and a single `supervisor.event_log_quarantined` event is emitted. This
+/// makes strict replay survive a poisoned log instead of leaving the bytes on
+/// disk for every future reader (corrupt-line-quarantine).
+///
+/// Without `quarantine` (operator opt-out) — or if the quarantine itself fails
+/// — we fall back to the P2 behavior: advance past the line in memory and emit
+/// a one-shot `supervisor.event_log_skipped_line` the first time that offset is
+/// seen, leaving the poison bytes on disk.
+///
+/// Combined with the unified physical-reader + validate-before-append fixes, a
+/// corrupt middle line should only arise from external tampering or bit rot;
+/// when it does, we surface it once and keep tailing rather than re-erroring on
+/// the same offset forever (F17).
+fn report_corrupt_line(
+    tail: &mut tail::EventTail,
+    own: &RunPaths,
+    log_owner: &RunPaths,
+    quarantine: bool,
+    source: &str,
+) {
     let Some(c) = tail.take_new_corrupt() else {
         return;
     };
@@ -857,10 +896,64 @@ fn report_corrupt_line(tail: &mut tail::EventTail, paths: &RunPaths, source: &st
         source = %source,
         byte_offset = c.byte_offset,
         excerpt = %c.line_excerpt,
-        "skipping corrupt event-log line and continuing tail"
+        quarantine,
+        "corrupt event-log line detected; continuing tail"
     );
+
+    if quarantine {
+        // Filename-safe basic-ISO stamp (no colons) for the `.bak` sibling.
+        let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        match octl_core::quarantine_corrupt_lines(log_owner, &ts) {
+            Ok(Some(q)) => {
+                // The corrupt bytes are gone and every offset shifted: re-read
+                // the healed log from the start. `last_seq` is preserved, so
+                // already-consumed events are skipped, not reprocessed.
+                tail.restart();
+                info!(
+                    target: "orchestratectl::supervise",
+                    source = %source,
+                    backup = %q.backup_path.display(),
+                    removed = q.removed_byte_offsets.len(),
+                    "quarantined corrupt event-log line(s)"
+                );
+                if let Err(e) = append_and_apply_event(
+                    own,
+                    "supervisor.event_log_quarantined",
+                    None,
+                    None,
+                    json!({
+                        "backup_path": q.backup_path.display().to_string(),
+                        "removed_byte_offsets": q.removed_byte_offsets,
+                        "source": source,
+                    }),
+                ) {
+                    warn!(
+                        target: "orchestratectl::supervise",
+                        source = %source,
+                        error = %e,
+                        "failed to persist quarantine diagnostic (log already healed)"
+                    );
+                }
+                return;
+            }
+            Ok(None) => {
+                // The corrupt line vanished between the tail's read and the
+                // locked re-read (e.g. an external truncate). Nothing to heal;
+                // fall through to the skip diagnostic.
+            }
+            Err(e) => {
+                warn!(
+                    target: "orchestratectl::supervise",
+                    source = %source,
+                    error = %e,
+                    "quarantine failed; falling back to in-memory skip"
+                );
+            }
+        }
+    }
+
     if let Err(e) = append_and_apply_event(
-        paths,
+        own,
         "supervisor.event_log_skipped_line",
         None,
         None,

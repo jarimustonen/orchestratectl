@@ -3846,6 +3846,35 @@ expression: value
             }
           },
           {
+            "name": "no_quarantine_corrupt_lines",
+            "long": "no-quarantine-corrupt-lines",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Opt out of corrupt-line quarantine. By default the supervisor heals a poisoned `events.jsonl` it tails over: the corrupt line is renamed aside to `events.jsonl.corrupt-<ts>.bak` and a recovered log is written in its place, then a `supervisor.event_log_quarantined` event is emitted. With this flag the corrupt line is only skipped in memory and surfaced via `supervisor.event_log_skipped_line` (the P2 behavior), leaving the poison bytes on disk for a future strict reader to trip on",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "once",
             "long": "once",
             "long_aliases": [],

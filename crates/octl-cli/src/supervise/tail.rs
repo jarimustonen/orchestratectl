@@ -188,6 +188,17 @@ impl EventTail {
         }
     }
 
+    /// Restart the read cursor at the start of the file after the log was
+    /// rewritten in place (e.g. a corrupt line was quarantined out, shifting
+    /// every byte offset). `last_seq` is preserved so already-returned events
+    /// are skipped by the duplicate-seq guard in [`poll`](Self::poll) rather
+    /// than reprocessed; the parked corrupt line — now excised from disk — is
+    /// cleared so the next poll re-reads the healed prefix cleanly.
+    pub fn restart(&mut self) {
+        self.pos = 0;
+        self.corrupt = None;
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

@@ -253,21 +253,14 @@ fn v3_kill_and_start_time_identity() {
     assert_eq!(reports[0]["data"]["reason"], "agent-pid-recycled");
 }
 
-/// F17: a corrupt JSONL line in the own-run tail is reported once and
-/// skipped, instead of re-erroring on the same offset every tick (the
-/// old infinite warn-spam / CPU-burn loop).
-#[test]
-fn corrupt_tail_line_is_skipped_once_without_looping() {
-    let home = TempDir::new().unwrap();
-    let run_id = create_run(&home, "spinoff", "corrupt-tail");
-    let events = run_dir(&home, &run_id).join("events.jsonl");
-
-    // Wedge a newline-terminated garbage line into the MIDDLE of the log
-    // (a valid record before AND after it), so the supervisor's own
-    // backward-scanning appends still land on a parseable last record.
-    let original = std::fs::read_to_string(&events).unwrap();
+/// Wedge a newline-terminated garbage line into the MIDDLE of `events`
+/// (a valid record before AND after it), so the supervisor's own
+/// backward-scanning appends still land on a parseable last record. Returns
+/// the rewritten contents written to disk.
+fn wedge_corrupt_middle_line(events: &Path) {
+    let original = std::fs::read_to_string(events).unwrap();
     let mut trailing: Value = serde_json::from_str(original.lines().next().unwrap()).unwrap();
-    trailing["seq"] = Value::from(2);
+    trailing["seq"] = Value::from(900);
     let trailing = serde_json::to_string(&trailing).unwrap();
     let mut rewritten = String::new();
     rewritten.push_str(original.trim_end_matches('\n'));
@@ -275,11 +268,84 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
     rewritten.push_str("{this is not valid json at all\n");
     rewritten.push_str(&trailing);
     rewritten.push('\n');
-    std::fs::write(&events, rewritten).unwrap();
+    std::fs::write(events, rewritten).unwrap();
+}
 
-    // Several ticks. With the fix this terminates promptly and emits exactly
-    // one skip event; the old behavior errored every tick and emitted none.
+/// corrupt-line-quarantine: by default the supervisor *heals* a poisoned
+/// own-run `events.jsonl` — the corrupt line is renamed aside to a
+/// `.corrupt-<ts>.bak` backup, a recovered log is written in its place, and a
+/// single `supervisor.event_log_quarantined` event is emitted. After the heal
+/// the log replays strictly (no poison bytes left for a future reader).
+#[test]
+fn corrupt_tail_line_is_quarantined_and_log_heals() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "corrupt-tail");
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    wedge_corrupt_middle_line(&events);
+
     run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "4"]));
+
+    // The healed log now parses strictly end-to-end (no corrupt line left),
+    // and carries exactly one quarantine event — never a skip event.
+    let evs = read_events(&events);
+    let quarantined: Vec<&Value> = evs
+        .iter()
+        .filter(|v| v["kind"] == "supervisor.event_log_quarantined")
+        .collect();
+    assert_eq!(
+        quarantined.len(),
+        1,
+        "expected exactly one quarantine event"
+    );
+    assert_eq!(
+        count_kind(&events, "supervisor.event_log_skipped_line"),
+        0,
+        "quarantine replaces the in-memory skip diagnostic"
+    );
+    assert!(
+        !std::fs::read_to_string(&events)
+            .unwrap()
+            .contains("not valid json"),
+        "the corrupt line must be excised from the recovered log"
+    );
+
+    // The quarantine event names a backup file that exists and holds the
+    // original (still-poisoned) bytes.
+    let backup = quarantined[0]["data"]["backup_path"].as_str().unwrap();
+    let backup = Path::new(backup);
+    assert!(
+        backup.exists(),
+        "backup file must exist: {}",
+        backup.display()
+    );
+    assert!(std::fs::read_to_string(backup)
+        .unwrap()
+        .contains("not valid json"));
+    assert!(quarantined[0]["data"]["removed_byte_offsets"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty()));
+}
+
+/// F17 (opt-out path): with `--no-quarantine-corrupt-lines` the supervisor
+/// keeps the P2 behavior — a corrupt line is reported once via
+/// `supervisor.event_log_skipped_line` and skipped in memory, the bytes left
+/// on disk, never re-erroring on the same offset every tick.
+#[test]
+fn corrupt_tail_line_is_skipped_once_without_looping() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "corrupt-tail");
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    wedge_corrupt_middle_line(&events);
+
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--max-iter",
+        "4",
+        "--no-quarantine-corrupt-lines",
+    ]));
 
     // Tolerant read: the corrupt line is intentionally still on disk (we skip
     // in memory, never mutate the file), so `read_events`' strict parse can't
@@ -308,6 +374,10 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
         "skip event carries a line excerpt: {:?}",
         skipped[0]["data"]
     );
+    // The poison bytes are intentionally left on disk in the opt-out path.
+    assert!(std::fs::read_to_string(&events)
+        .unwrap()
+        .contains("not valid json"));
 }
 
 /// supervise-gates-jsonl-poll-tolerance: readiness polling must tolerate a

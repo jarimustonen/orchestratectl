@@ -1,13 +1,13 @@
 //! Event append primitive + `seq` recovery (design.md §1.4, §4).
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::atomic::open_events_append;
+use crate::atomic::{open_events_append, write_atomic};
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
@@ -509,6 +509,137 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
         out.push(ev);
     }
     Ok(out)
+}
+
+/// Outcome of a [`quarantine_corrupt_lines`] call that removed at least one
+/// poison line. `backup_path` is the renamed copy of the original log (kept
+/// verbatim for operator forensics / hand-repair); `removed_byte_offsets`
+/// are the start offsets, in that original, of every newline-terminated line
+/// that failed to parse as an [`Event`] and was excised from the recovered
+/// `events.jsonl`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Quarantine {
+    /// Path to the timestamped `.bak` holding the original poisoned log.
+    pub backup_path: PathBuf,
+    /// Byte offsets (in the original log) of every excised corrupt line.
+    pub removed_byte_offsets: Vec<u64>,
+}
+
+/// Heal a poisoned `events.jsonl` by excising its corrupt physical lines.
+///
+/// P2 made the supervisor *skip* a corrupt JSONL line in memory and keep
+/// tailing, but the bytes stayed on disk forever — so every fresh strict
+/// reader ([`read_all_events`] / a future `rebuild_projections`) still
+/// hard-errors on them, and the skip diagnostic is unreachable to a strict
+/// replay (the corrupt line aborts the read before it). This is the durable
+/// repair: under the run's [`RunLock`], the original log is renamed to
+/// `events.jsonl.corrupt-<ts>.bak` and a recovered `events.jsonl` is written
+/// in its place containing every line *except* the corrupt ones.
+///
+/// "Corrupt" means exactly what the strict readers reject: a
+/// newline-terminated, non-empty line that does not parse as a full [`Event`]
+/// envelope. Empty lines and a torn (newline-less) final line are retained
+/// verbatim — the readers already tolerate both, so excising them would be a
+/// behavior change, not a repair.
+///
+/// Returns `Ok(None)` when the log is missing or already clean (no rename, no
+/// rewrite — the common case is cheap: one read, no corrupt line found).
+/// Returns `Ok(Some(_))` with the backup path and removed offsets when at
+/// least one line was excised. Caller is expected to surface the outcome
+/// (e.g. a `supervisor.event_log_quarantined` diagnostic) and, for a live
+/// tail, restart its read cursor at offset 0 since every byte offset shifts.
+///
+/// `backup_ts` is supplied by the caller (kept out of core so the rename is
+/// deterministic in tests); a filename-safe basic-ISO stamp like
+/// `20260628T120000Z` is the intended form.
+///
+/// # Operator recovery
+///
+/// The excised bytes are never destroyed — they survive verbatim in the
+/// `events.jsonl.corrupt-<ts>.bak` sibling (named by the emitted
+/// `supervisor.event_log_quarantined { backup_path }` diagnostic). To recover
+/// a line the automated repair dropped: open the `.bak`, inspect the line(s)
+/// at the reported `removed_byte_offsets`, hand-fix any salvageable JSON, and —
+/// if you want the record back — stop the run's supervisor, append the
+/// corrected line to the live `events.jsonl` (or replace the file wholesale
+/// from a fixed copy of the backup), then restart the supervisor. The healed
+/// log is the source of truth; projections rebuild from it.
+pub fn quarantine_corrupt_lines(paths: &RunPaths, backup_ts: &str) -> Result<Option<Quarantine>> {
+    RunLock::with_lock(&paths.lock(), || {
+        quarantine_corrupt_lines_unlocked(paths, backup_ts)
+    })
+}
+
+/// As [`quarantine_corrupt_lines`] but assumes the caller already holds the
+/// run's [`RunLock`] — the sanctioned lock-held composition path, mirroring
+/// [`append_and_apply_unlocked`]. Re-entering [`quarantine_corrupt_lines`]
+/// under a held lock would deadlock on the second `flock` open.
+pub fn quarantine_corrupt_lines_unlocked(
+    paths: &RunPaths,
+    backup_ts: &str,
+) -> Result<Option<Quarantine>> {
+    // Guard the run root + event log against symlink redirection before the
+    // rename/rewrite, exactly as the append path does.
+    let events_path = paths.checked_events()?;
+    let raw = match std::fs::read(&events_path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::io(&events_path, e)),
+    };
+
+    // Walk physical lines, keeping the raw bytes (terminator included) of every
+    // retained line so the recovered file is byte-identical save for the
+    // excised corruption. A line is corrupt iff it is newline-terminated,
+    // non-empty, and fails the same strict `Event` parse `read_all_events`
+    // applies — so the recovered log is guaranteed to pass a strict replay.
+    let mut recovered: Vec<u8> = Vec::with_capacity(raw.len());
+    let mut removed_byte_offsets: Vec<u64> = Vec::new();
+    let mut offset: u64 = 0;
+    let mut i = 0usize;
+    while i < raw.len() {
+        let (line_end, complete) = match raw[i..].iter().position(|b| *b == b'\n') {
+            Some(p) => (i + p + 1, true), // include the trailing '\n'
+            None => (raw.len(), false),   // torn final line, no '\n'
+        };
+        let raw_line = &raw[i..line_end];
+        let content = trim_line_end(raw_line);
+        let corrupt =
+            complete && !content.is_empty() && serde_json::from_slice::<Event>(content).is_err();
+        if corrupt {
+            removed_byte_offsets.push(offset);
+        } else {
+            recovered.extend_from_slice(raw_line);
+        }
+        offset += raw_line.len() as u64;
+        i = line_end;
+    }
+
+    if removed_byte_offsets.is_empty() {
+        return Ok(None);
+    }
+
+    // Rename the poisoned log aside (forensics), then atomically drop the
+    // recovered log in its place. Order matters: the rename frees the path for
+    // `write_atomic`'s tempfile+rename and preserves the original even if the
+    // rewrite then fails.
+    let backup_path = backup_path_for(&events_path, backup_ts);
+    std::fs::rename(&events_path, &backup_path).map_err(|e| Error::io(&backup_path, e))?;
+    write_atomic(&events_path, &recovered)?;
+    Ok(Some(Quarantine {
+        backup_path,
+        removed_byte_offsets,
+    }))
+}
+
+/// Build the `events.jsonl.corrupt-<ts>.bak` sibling path for a quarantine
+/// backup, preserving the original file name as a prefix.
+fn backup_path_for(events_path: &Path, ts: &str) -> PathBuf {
+    let mut name = events_path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(format!(".corrupt-{ts}.bak"));
+    events_path.with_file_name(name)
 }
 
 /// A prior event located by [`find_prior_with_key`]. Carries enough to let
@@ -1479,6 +1610,98 @@ mod tests {
         assert_eq!(r.seq, 1);
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn quarantine_excises_corrupt_middle_line_and_recovers() {
+        // A valid record, a newline-terminated garbage line, then another
+        // valid record. Quarantine must rename the original aside, write a
+        // recovered log holding only the two valid lines, and report the bad
+        // line's byte offset.
+        let tmp = TempDir::new().unwrap();
+        let good1 = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#;
+        let bad = "{not valid json at all";
+        let good3 = r#"{"ts":"2026-06-12T00:00:00Z","seq":3,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#;
+        let log = format!("{good1}\n{bad}\n{good3}\n");
+        let paths = paths_with_events(&tmp, log.as_bytes());
+
+        // Strict replay chokes on the poison line beforehand.
+        assert!(matches!(
+            read_all_events(&paths.events()).unwrap_err(),
+            Error::CorruptEventLog { .. }
+        ));
+
+        let q = quarantine_corrupt_lines(&paths, "20260612T000000Z")
+            .unwrap()
+            .expect("a corrupt line was excised");
+        // The bad line started at the byte after `good1\n`.
+        assert_eq!(q.removed_byte_offsets, vec![(good1.len() + 1) as u64]);
+        assert_eq!(
+            q.backup_path.file_name().unwrap().to_str().unwrap(),
+            "events.jsonl.corrupt-20260612T000000Z.bak"
+        );
+
+        // The backup is the verbatim original; the recovered log now replays
+        // strictly with only the two valid records.
+        assert_eq!(std::fs::read(&q.backup_path).unwrap(), log.as_bytes());
+        let events = read_all_events(&paths.events()).unwrap();
+        assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    #[test]
+    fn quarantine_clean_log_is_noop() {
+        // A log with no corruption must not be renamed or rewritten.
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        assert!(quarantine_corrupt_lines(&paths, "20260612T000000Z")
+            .unwrap()
+            .is_none());
+        // No backup created; original untouched.
+        assert_eq!(std::fs::read(paths.events()).unwrap(), log.as_bytes());
+        let bak = paths
+            .events()
+            .with_file_name("events.jsonl.corrupt-20260612T000000Z.bak");
+        assert!(!bak.exists());
+    }
+
+    #[test]
+    fn quarantine_missing_log_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+        assert!(quarantine_corrupt_lines(&paths, "20260612T000000Z")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn quarantine_preserves_torn_tail_and_excises_only_corruption() {
+        // A valid record, a corrupt newline-terminated line, then a torn
+        // (newline-less) final line. Only the corrupt middle line is excised;
+        // the torn tail is retained verbatim (the readers tolerate it as an
+        // in-flight partial write — excising it would change behavior).
+        let tmp = TempDir::new().unwrap();
+        let good = r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#;
+        let bad = "{garbage";
+        let torn = r#"{"seq":2,"kind":"node.rep"#; // mid-write, no newline
+        let mut log = Vec::new();
+        log.extend_from_slice(format!("{good}\n{bad}\n{torn}").as_bytes());
+        let paths = paths_with_events(&tmp, &log);
+
+        let q = quarantine_corrupt_lines(&paths, "20260612T000000Z")
+            .unwrap()
+            .expect("the corrupt middle line was excised");
+        assert_eq!(q.removed_byte_offsets, vec![(good.len() + 1) as u64]);
+
+        let recovered = std::fs::read(paths.events()).unwrap();
+        assert_eq!(recovered, format!("{good}\n{torn}").as_bytes());
+        // The torn tail still recovers the last complete seq as 1.
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 1);
     }
 
     #[test]
