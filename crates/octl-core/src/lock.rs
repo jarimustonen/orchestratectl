@@ -27,6 +27,11 @@ impl RunLock {
     /// the projections (both re-guard the root before writing). See
     /// [`crate::paths::reject_symlink`] for the check-then-open TOCTOU caveat.
     pub fn acquire(lock_path: &Path) -> Result<Self> {
+        // Test-only spy: count this acquisition so a test can assert a
+        // multi-write transaction (e.g. `cancel_run`) takes the lock exactly
+        // once, not once per appended event.
+        #[cfg(test)]
+        ACQUIRE_COUNT.with(|c| c.set(c.get() + 1));
         if let Some(p) = lock_path.parent() {
             std::fs::create_dir_all(p).map_err(|e| Error::io(p, e))?;
         }
@@ -67,6 +72,16 @@ impl Drop for RunLock {
             let _ = <File as FileExt>::unlock(&f);
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only spy counter for [`RunLock::acquire`] calls on the current
+    /// thread. `cargo test` runs each test on its own thread and `cancel_run`
+    /// does all its work synchronously on the calling thread, so a test can
+    /// reset this and assert the exact number of lock acquisitions a
+    /// transaction performed without cross-test interference.
+    pub(crate) static ACQUIRE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

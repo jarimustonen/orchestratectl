@@ -16,15 +16,40 @@
 //! cancelled and `run.status` not yet appended. Recovery is convergent — a
 //! re-`cancel` of an already-`Cancelled` run scans the still-live stragglers
 //! and finishes the job — not transactional rollback.
+//!
+//! Two consistency properties beyond the single lock:
+//!
+//! - **Enumeration is from the event log, not the projection directory.** The
+//!   node set is replayed from `events.jsonl` (the source of truth) rather than
+//!   scanned from `nodes/*.json`. A `node.created` can be appended+fsynced while
+//!   its projection write is crash-interrupted (`events.rs` documents the log
+//!   leading the projections); a `nodes/` scan would silently drop that node,
+//!   mark the run `cancelled`, and let a future `rebuild_projections` resurrect
+//!   it as live under a `Cancelled` run. Walking the log closes that window.
+//!   (The manifest's `node_count` is *also* a projection written in the same
+//!   interrupted fold, so it is no more authoritative than `nodes/` — and it
+//!   carries no node ids — which is why we replay the log rather than trust the
+//!   counter.)
+//!
+//! - **Each synthesized event carries a deterministic idempotency key**
+//!   (`run-cancel:<run_id>:node:<node_id>` and `run-cancel:<run_id>:run-status`).
+//!   If a crash lands an append+fsync but interrupts the projection fold, the
+//!   node/run still reads non-terminal, so a re-`cancel` would append a *second*
+//!   logical-cancel event (duplicating it for auditors, metrics, and rebuild).
+//!   The keys already present in the log are collected in the same replay pass,
+//!   so the loop skips a node/run whose cancel event is already durably recorded
+//!   without a per-node rescan.
+
+use std::collections::HashSet;
 
 use serde_json::json;
 
 use crate::error::{Error, Result};
-use crate::events::append_and_apply_unlocked;
+use crate::events::{append_and_apply_unlocked, read_all_events};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest, read_node_opt};
-use crate::schema::{NodeId, Status};
+use crate::schema::{NodeId, RunId, Status};
 
 /// Outcome of a [`cancel_run`] transaction. Lets a thin CLI wrapper report
 /// honestly what actually changed: which live nodes it converged, which were
@@ -38,9 +63,14 @@ pub struct CancelOutcome {
     /// is a SUCCESS, not an error: "no-op: run was already cancelled,
     /// converged N additional nodes".
     pub run_was_already_cancelled: bool,
-    /// Nodes that were live on entry and for which this call synthesized and
-    /// durably appended a terminal cancel `node.report`. Honest: a node only
-    /// lands here when its append actually applied under the held lock.
+    /// Nodes this cancel transaction ensured are terminally cancelled in the
+    /// log: live (or projection-missing) nodes for which it synthesized and
+    /// durably appended a terminal cancel `node.report`, plus any node whose
+    /// cancel `node.report` a prior interrupted cancel had already durably
+    /// appended (matched by idempotency key) and which this call converged
+    /// without re-appending. Honest either way — every node here has a terminal
+    /// cancel recorded in the source-of-truth log by the time the call returns;
+    /// none is double-reported against a node that was already terminal on entry.
     pub nodes_cancelled: Vec<NodeId>,
     /// Nodes whose *status* was already terminal on entry and so were skipped —
     /// never double-reported as freshly cancelled.
@@ -68,6 +98,7 @@ pub fn cancel_run(paths: &RunPaths, note: Option<&str>) -> Result<CancelOutcome>
 /// [`append_and_apply_unlocked`], never [`crate::append_and_apply_event`],
 /// which would deadlock by re-locking).
 pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<CancelOutcome> {
+    let started = std::time::Instant::now();
     let manifest = read_manifest(paths)?;
 
     // Refuse a non-cancelled terminal run BEFORE touching any node: cancelling
@@ -93,28 +124,45 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
         .filter(|s| !s.is_empty())
         .unwrap_or("cancelled by user");
 
+    // One replay pass over the source-of-truth log: the authoritative node set
+    // (immune to the projection crash window) and the idempotency keys already
+    // recorded (so a prior interrupted cancel isn't duplicated).
+    let CancelLedger {
+        node_ids,
+        seen_keys,
+    } = read_cancel_ledger(paths)?;
+
     let mut nodes_cancelled = Vec::new();
     let mut nodes_already_terminal = Vec::new();
 
-    for nid in live_node_ids(paths)? {
-        // Read each node fresh under the held lock. Because no cooperating
-        // writer can settle it between this read and the append below, a node we
-        // see as live here is still live at append time — so pushing it to
-        // `nodes_cancelled` can never over-report a reducer no-op.
-        let Some(n) = read_node_opt(paths, &nid)? else {
-            continue;
-        };
-        // Only a genuinely terminal *status* means "already settled". We do NOT
-        // also skip a non-terminal node that happens to carry `last_report`
-        // (a should-never-happen anomaly): the reducer gates on status, so
-        // synthesizing a cancel report there still transitions — and silently
-        // skipping it would strand a live node in a cancelled run while lying
-        // that it was "already terminal".
-        if n.status.is_terminal() {
-            nodes_already_terminal.push(nid);
+    for nid in node_ids {
+        // A node whose *status* is already terminal on entry is settled — report
+        // it under `nodes_already_terminal`, never as freshly cancelled. Checked
+        // before the idempotency key so a normally-converged re-cancel still
+        // lands here (matching the pre-refactor projection-based behavior). We
+        // do NOT also skip a non-terminal node that happens to carry
+        // `last_report` (a should-never-happen anomaly): the reducer gates on
+        // status, so synthesizing a cancel report there still transitions.
+        if let Some(n) = read_node_opt(paths, &nid)? {
+            if n.status.is_terminal() {
+                nodes_already_terminal.push(nid);
+                continue;
+            }
+        }
+        // Reached for a live node OR one whose projection is missing entirely —
+        // a `node.created` fsynced into the log but its projection write
+        // interrupted (the crash window a `nodes/*.json` scan would silently
+        // drop). Both must get a terminal cancel report so the log records the
+        // node as cancelled and a future rebuild can't resurrect it as live.
+        let key = node_cancel_key(&paths.run_id, &nid);
+        if seen_keys.contains(&key) {
+            // A prior interrupted cancel already durably appended this node's
+            // cancel report (fsynced) but never folded its projection, so it
+            // still reads non-terminal here. Converge it WITHOUT appending a
+            // duplicate logical-cancel event.
+            nodes_cancelled.push(nid);
             continue;
         }
-
         let data = json!({
             "success": false,
             "cancelled": true,
@@ -124,27 +172,42 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
             "spinoff_proposals": [],
             "wrap_up_recommendations": []
         });
-        append_and_apply_unlocked(paths, "node.report", Some(nid.as_str()), None, data)?;
+        append_and_apply_unlocked(paths, "node.report", Some(nid.as_str()), Some(&key), data)?;
         nodes_cancelled.push(nid);
     }
 
     if !run_was_already_cancelled {
-        let mut status_data = serde_json::Map::new();
-        status_data.insert("status".into(), "cancelled".into());
-        // Record the operator note only when one was actually supplied (the
-        // trimmed, non-blank value); a blank `--note` leaves the field unset
-        // rather than writing an empty string.
-        if let Some(n) = note.map(str::trim).filter(|s| !s.is_empty()) {
-            status_data.insert("note".into(), n.into());
+        let key = run_status_cancel_key(&paths.run_id);
+        // Skip if a prior interrupted cancel already logged the terminal
+        // `run.status` (fsynced before its manifest fold), so the log never
+        // gains a duplicate `run.status: cancelled`.
+        if !seen_keys.contains(&key) {
+            let mut status_data = serde_json::Map::new();
+            status_data.insert("status".into(), "cancelled".into());
+            // Record the operator note only when one was actually supplied (the
+            // trimmed, non-blank value); a blank `--note` leaves the field unset
+            // rather than writing an empty string.
+            if let Some(n) = note.map(str::trim).filter(|s| !s.is_empty()) {
+                status_data.insert("note".into(), n.into());
+            }
+            append_and_apply_unlocked(
+                paths,
+                "run.status",
+                None,
+                Some(&key),
+                serde_json::Value::Object(status_data),
+            )?;
         }
-        append_and_apply_unlocked(
-            paths,
-            "run.status",
-            None,
-            None,
-            serde_json::Value::Object(status_data),
-        )?;
     }
+
+    tracing::debug!(
+        target: "octl_core::cancel",
+        run_id = %paths.run_id,
+        held_ms = started.elapsed().as_millis() as u64,
+        nodes_cancelled = nodes_cancelled.len(),
+        nodes_already_terminal = nodes_already_terminal.len(),
+        "cancel transaction complete",
+    );
 
     Ok(CancelOutcome {
         run_was_already_cancelled,
@@ -153,57 +216,96 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
     })
 }
 
-/// Enumerate candidate node ids by scanning `nodes/`. Reads the directory
-/// rather than trusting `manifest.node_count` so a dropped event (listing vs.
-/// counter drift) can't hide a live node from cancellation. A stem that is not
-/// a well-formed node id can't be one of our projection files, so it is
-/// skipped rather than failing the whole cancel.
+/// Cancel-relevant facts replayed from `events.jsonl` in one pass under the
+/// held lock.
+struct CancelLedger {
+    /// Every node id a `node.created` event ever introduced, deduped and sorted
+    /// by numeric suffix. The authoritative live-node *candidate* set (per-node
+    /// status is then read from the projection): replayed from the source of
+    /// truth, so it includes a node whose projection write was crash-interrupted
+    /// — the exact node a `nodes/*.json` scan would miss.
+    node_ids: Vec<NodeId>,
+    /// Every `idempotency_key` already present in the log, so the cancel loop
+    /// skips a node/run whose cancel event a prior interrupted cancel already
+    /// durably appended — without a per-node rescan.
+    seen_keys: HashSet<String>,
+}
+
+/// Replay `events.jsonl` once to build the [`CancelLedger`].
 ///
-/// A `read_dir` *iterator* error (a `DirEntry` that fails mid-scan: transient
-/// I/O, `EMFILE`, a permission fault) is propagated, never silently dropped —
-/// skipping it would hide a live node, mark the run `cancelled`, and strand
-/// that node, the exact dishonesty this refactor removes.
+/// Uses [`read_all_events`], which shares the crate's torn-tail policy: a
+/// crash-truncated final line is dropped as an uncommitted partial write, while
+/// any *interior* unparseable line is surfaced as [`Error::CorruptEventLog`] —
+/// so a corrupt log fails the cancel loudly rather than silently dropping a
+/// node. A missing log yields an empty ledger (run never appended an event —
+/// nothing to cancel).
 ///
-/// Returns ids sorted by their numeric suffix (not lexically), so output and
-/// the cancel order stay intuitive past the digit-width boundary where
-/// `n-10000` would otherwise sort before `n-9999` (see [`NodeId`]).
-fn live_node_ids(paths: &RunPaths) -> Result<Vec<NodeId>> {
-    let nodes_dir = paths.nodes_dir();
-    let entries = match std::fs::read_dir(&nodes_dir) {
-        Ok(e) => e,
-        // No nodes/ yet (run never reached create.sh) — nothing to cancel.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(Error::io(&nodes_dir, e)),
-    };
-    let mut ids: Vec<NodeId> = Vec::new();
-    for entry in entries {
-        let p = entry.map_err(|e| Error::io(&nodes_dir, e))?.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
+/// Node ids are sorted by numeric suffix (not lexically), so output and the
+/// cancel order stay intuitive past the digit-width boundary where `n-10000`
+/// would otherwise sort before `n-9999` (see [`NodeId`]).
+fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
+    let events = read_all_events(&paths.events())?;
+    let mut node_ids: Vec<NodeId> = Vec::new();
+    let mut seen_nodes: HashSet<NodeId> = HashSet::new();
+    let mut seen_keys: HashSet<String> = HashSet::new();
+    for ev in events {
+        if ev.kind == "node.created" {
+            if let Some(nid) = ev.node_id {
+                if seen_nodes.insert(nid.clone()) {
+                    node_ids.push(nid);
+                }
+            }
         }
-        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if let Ok(id) = NodeId::parse_str(stem) {
-            ids.push(id);
+        if let Some(key) = ev.idempotency_key {
+            seen_keys.insert(key);
         }
     }
     // A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits in u64); the
     // unwrap_or keeps the sort total even for a hypothetical unparseable body.
-    ids.sort_by_key(|id| {
+    node_ids.sort_by_key(|id| {
         id.as_str()
             .strip_prefix("n-")
             .and_then(|d| d.parse::<u64>().ok())
             .unwrap_or(0)
     });
-    Ok(ids)
+    Ok(CancelLedger {
+        node_ids,
+        seen_keys,
+    })
+}
+
+/// Deterministic idempotency key for the synthesized cancel `node.report` of
+/// one node. Stable in `(run_id, node_id)` so a re-`cancel` after a crash that
+/// fsynced the report but never folded its projection finds the prior event and
+/// does not append a duplicate logical-cancel.
+fn node_cancel_key(run_id: &RunId, node_id: &NodeId) -> String {
+    format!("run-cancel:{}:node:{}", run_id.as_str(), node_id.as_str())
+}
+
+/// Deterministic idempotency key for the run's terminal `run.status: cancelled`
+/// event. Stable in `run_id` for the same crash-retry reason as
+/// [`node_cancel_key`].
+fn run_status_cancel_key(run_id: &RunId) -> String {
+    format!("run-cancel:{}:run-status", run_id.as_str())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{append_and_apply_event, read_all_events};
+    use crate::events::{append_and_apply_event, append_event_with_seq, read_all_events};
+    use crate::lock::ACQUIRE_COUNT;
     use tempfile::TempDir;
+
+    /// Count `node.report` events recorded in the log for one node id.
+    fn report_count(paths: &RunPaths, nid: &str) -> usize {
+        read_all_events(&paths.events())
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.kind == "node.report" && e.node_id.as_ref().map(NodeId::as_str) == Some(nid)
+            })
+            .count()
+    }
 
     fn fresh_run(tmp: &TempDir) -> RunPaths {
         let run_id = "01jxsnap000000000000000000";
@@ -500,6 +602,153 @@ mod tests {
                 .map(NodeId::as_str)
                 .collect::<Vec<_>>(),
             vec!["n-0001", "n-9999", "n-10000"],
+        );
+    }
+
+    #[test]
+    fn cancel_synthesizes_report_for_node_with_missing_projection() {
+        // The crash window this fix closes: a `node.created` was appended+fsynced
+        // to the log, but its projection write (`nodes/n-NNNN.json`) was
+        // interrupted. A `nodes/*.json` scan would not see n-0002 and would
+        // cancel the run while leaving a created-but-never-cancelled node a
+        // future rebuild could resurrect as live. Enumerating from the event log
+        // sees it and synthesizes the cancel report.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        // Delete n-0002's projection file, leaving its `node.created` event in
+        // the log — exactly the interrupted-fold state.
+        let n2 = NodeId::parse_str("n-0002").unwrap();
+        std::fs::remove_file(paths.node(&n2)).unwrap();
+        assert!(
+            read_node_opt(&paths, &n2).unwrap().is_none(),
+            "projection gone"
+        );
+
+        let out = cancel_run(&paths, Some("stop")).unwrap();
+        // Both nodes are cancelled — the projection-present n-0001 AND the
+        // projection-missing n-0002.
+        assert_eq!(
+            out.nodes_cancelled
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001", "n-0002"],
+            "the node with a missing projection is still cancelled"
+        );
+        assert!(out.nodes_already_terminal.is_empty());
+        // The source-of-truth log now carries a terminal cancel report for the
+        // node whose projection was missing — so a rebuild reconstructs it as
+        // Cancelled, not live.
+        assert_eq!(report_count(&paths, "n-0002"), 1);
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().status,
+            Status::Cancelled
+        );
+    }
+
+    #[test]
+    fn cancel_takes_the_run_lock_exactly_once() {
+        // The single-lock honesty guarantee: the whole transaction (N node
+        // reports + the run.status append) runs under ONE flock acquisition, not
+        // one per appended event. Spy on `RunLock::acquire` to prove it.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 5);
+
+        // Bootstrap itself takes the lock once per append; only the cancel call
+        // is under measurement.
+        ACQUIRE_COUNT.with(|c| c.set(0));
+        let out = cancel_run(&paths, Some("stop")).unwrap();
+        assert_eq!(out.nodes_cancelled.len(), 5);
+        assert_eq!(
+            ACQUIRE_COUNT.with(std::cell::Cell::get),
+            1,
+            "cancel must take the run lock exactly once, not once per node (N+1)"
+        );
+    }
+
+    #[test]
+    fn cancel_does_not_duplicate_a_node_report_already_in_the_log() {
+        // Crash-retry idempotency: a prior cancel appended+fsynced a node's
+        // cancel `node.report` (carrying the deterministic key) but crashed
+        // before folding its projection, so the node still reads live. A
+        // re-cancel must NOT append a second logical-cancel event for it.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1); // run.created (seq 1) + node.created (seq 2)
+
+        // Durably append the cancel report WITH the deterministic key, but
+        // without folding it — the node stays Pending (live), modeling the
+        // fsynced-but-not-applied window.
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        let key = node_cancel_key(&paths.run_id, &nid);
+        append_event_with_seq(
+            &paths,
+            3,
+            "node.report",
+            Some("n-0001"),
+            Some(&key),
+            json!({ "success": false, "cancelled": true, "reason": "x" }),
+        )
+        .unwrap();
+        assert_eq!(node_status(&paths, "n-0001"), Status::Pending);
+        assert_eq!(report_count(&paths, "n-0001"), 1);
+
+        let out = cancel_run(&paths, None).unwrap();
+        // The node converges (it is reported cancelled) but no duplicate report
+        // is appended — the log still holds exactly one `node.report` for it.
+        assert_eq!(
+            out.nodes_cancelled
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001"],
+        );
+        assert_eq!(
+            report_count(&paths, "n-0001"),
+            1,
+            "the already-logged cancel report must not be duplicated"
+        );
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().status,
+            Status::Cancelled
+        );
+    }
+
+    #[test]
+    fn cancel_does_not_duplicate_run_status_already_in_the_log() {
+        // The run-status analogue: a prior cancel fsynced `run.status: cancelled`
+        // (with its deterministic key) but crashed before folding the manifest,
+        // so the manifest still reads non-terminal. A re-cancel must not append a
+        // second `run.status: cancelled`.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // run.created only (seq 1)
+
+        let key = run_status_cancel_key(&paths.run_id);
+        append_event_with_seq(
+            &paths,
+            2,
+            "run.status",
+            None,
+            Some(&key),
+            json!({ "status": "cancelled" }),
+        )
+        .unwrap();
+        // Manifest never folded the cancel, so it is not terminal here.
+        assert_ne!(
+            crate::read_manifest(&paths).unwrap().status,
+            Status::Cancelled
+        );
+        let before = read_all_events(&paths.events()).unwrap().len();
+
+        let out = cancel_run(&paths, None).unwrap();
+        assert!(!out.run_was_already_cancelled);
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before,
+            "no duplicate run.status appended when one is already logged"
         );
     }
 }
