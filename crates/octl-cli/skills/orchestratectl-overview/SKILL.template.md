@@ -55,7 +55,11 @@ If `schema_version` is a value you do not recognise, refuse to proceed
   this directly.
 - `orchestratectl node list` / `node show <id>` / `node report` —
   per-unit detail inside a run, and the structured terminal report a
-  spinoff submits when it merges itself back.
+  spinoff submits when it merges itself back. Node ids have the form
+  `n-` followed by 4–10 ASCII digits (e.g. `n-0001`, the first node of
+  every run); the binary rejects any other shape. Never invent a slug
+  like `n-driver-001` — discover the id from `run create`'s `node_id`
+  field or from `node list`.
 - `orchestratectl discussion list` / `discussion resolve` —
   human-blocking decisions a worker raised; agents resolve these
   before the run can continue.

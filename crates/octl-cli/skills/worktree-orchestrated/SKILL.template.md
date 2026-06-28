@@ -119,7 +119,7 @@ Flag rules:
     "kind": "orchestrated",
     "lifecycle": "autonomous",
     "parent_run_id": "01HZ-PARENT",
-    "parent_node_id": "n-driver-001",
+    "parent_node_id": "n-0001",
     "node_id": "n-...",
     "tmux_window": "🎼 wt/<title>",
     "worktree_path": "/Users/<you>/.../worktrees/<title>",
@@ -307,6 +307,6 @@ orchestratectl run create \
   --task "@/tmp/f-003-receipts-brief.md" \
   --source-branch orchestrate/integration-2026-06-28 \
   --parent-run-id 01HZ-PARENT \
-  --parent-node-id n-driver-001 \
+  --parent-node-id n-0001 \
   --idempotency-key f-003-receipts-v1
 ```

@@ -171,7 +171,9 @@ orchestratectl run create \
 
 Capture `data.run_id` — this is the **driver run id**. Every child
 worker references it via `--parent-run-id`. Also capture
-`data.node_id` — every child references it via `--parent-node-id`.
+`data.node_id` — every child references it via `--parent-node-id`. For
+a fresh driver run it is always `n-0001` (the driver node), but read it
+from the envelope rather than hard-coding it.
 
 ### 3. Create the integration branch
 

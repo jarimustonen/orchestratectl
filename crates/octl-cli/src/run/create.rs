@@ -209,6 +209,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 lifecycle: lifecycle_for(args.kind),
                 parent_run_id: parent_run_id.as_deref(),
                 parent_node_id: parent_node_id.as_deref(),
+                // An orchestrate driver always carries its `n-0001` driver node,
+                // so a replay can truthfully report it. Worker replays don't
+                // re-read their node here, so they stay `None` (unchanged).
+                node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
                 spawn: None,
                 supervisor_pid: None,
                 idempotent_replay: Some(true),
@@ -234,6 +238,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             lifecycle,
             parent_run_id: None,
             parent_node_id: None,
+            // Dry-run writes nothing to disk, so there is no node to report.
+            node_id: None,
             spawn: None,
             supervisor_pid: None,
             idempotent_replay: None,
@@ -328,6 +334,31 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     octl_core::append_and_apply_event(&paths, "run.created", None, None, Value::Object(data))
         .map_err(from_core)?;
 
+    // Orchestrate driver: synthesize the `n-0001` driver node. The
+    // orchestrator agent runs in the user's main conversation (no worktree
+    // to materialize), but children spawned via `--kind orchestrated` REQUIRE
+    // a `--parent-node-id`. Without a node on disk the orchestrator would have
+    // to guess that id. Emitting `node.created` here makes `n-0001` the
+    // discoverable, programmatic answer: it lands in the envelope's `node_id`,
+    // bumps `manifest.node_count` to 1, and shows up in `node list`. The node
+    // carries no tmux/branch/pid metadata — it is the DAG root, not a worker.
+    let driver_node_id = if args.kind == Kind::Orchestrate {
+        octl_core::append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
+            None,
+            json!({
+                "kind": kind_kebab(args.kind),
+                "task": args.task,
+            }),
+        )
+        .map_err(from_core)?;
+        Some("n-0001")
+    } else {
+        None
+    };
+
     // `--skip-materialize` short-circuit: skeleton-only run, used by
     // tests that need a run dir without booting a real worktree/agent.
     if skip_materialize {
@@ -346,6 +377,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             lifecycle,
             parent_run_id: parent_run_id.as_deref(),
             parent_node_id: parent_node_id.as_deref(),
+            node_id: driver_node_id,
             spawn: None,
             supervisor_pid: None,
             idempotent_replay: None,
@@ -446,6 +478,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         lifecycle,
         parent_run_id: parent_run_id.as_deref(),
         parent_node_id: parent_node_id.as_deref(),
+        node_id: Some("n-0001"),
         spawn: Some(&spawn_result),
         supervisor_pid,
         idempotent_replay: None,
@@ -540,6 +573,11 @@ struct EmitInput<'a> {
     lifecycle: Lifecycle,
     parent_run_id: Option<&'a str>,
     parent_node_id: Option<&'a str>,
+    /// The id of this run's own primary node, surfaced as the envelope's
+    /// `node_id` so callers can discover it without guessing. `Some("n-0001")`
+    /// once the node exists on disk (materialized worker, or the synthetic
+    /// orchestrate driver node); `None` for dry-run / test-skip skeletons.
+    node_id: Option<&'a str>,
     spawn: Option<&'a SpawnResult>,
     supervisor_pid: Option<u32>,
     idempotent_replay: Option<bool>,
@@ -570,7 +608,7 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
         lifecycle: i.lifecycle.into(),
         parent_run_id: i.parent_run_id,
         parent_node_id: i.parent_node_id,
-        node_id: i.spawn.map(|_| "n-0001"),
+        node_id: i.node_id,
         tmux_window: i.spawn.map(|s| s.tmux_window.as_str()),
         worktree_path: i.spawn.map(|s| s.worktree_path.as_str()),
         branch: i.spawn.map(|s| s.branch.as_str()),

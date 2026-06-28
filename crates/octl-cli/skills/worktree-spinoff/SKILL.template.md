@@ -341,5 +341,5 @@ orchestratectl run create --kind spinoff \
   --task "..." \
   --source-branch fan-out/2026-05 \
   --parent-run-id 01HZ... \
-  --parent-node-id n-driver-001
+  --parent-node-id n-0001
 ```

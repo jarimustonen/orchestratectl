@@ -2,7 +2,7 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: fixed
 priority: normal
 ---
 
@@ -48,3 +48,29 @@ Acceptance:
 - Every SKILL example referencing `n-driver-001` is corrected.
 
 Severity: BLOCKING for /orchestrate (child-spawn is unreachable without it).
+
+## Resolution (2026-06-28, fixed)
+
+`run create --kind orchestrate` now synthesizes the `n-0001` driver node:
+it emits a `node.created` event for `n-0001` before the materialize
+short-circuit, so the node lands on disk with no tmux/branch/pid metadata
+(it is the DAG root, not a worker). Implemented in
+`crates/octl-cli/src/run/create.rs` — the envelope now carries
+`node_id` from an explicit `EmitInput.node_id` field rather than deriving
+it from spawn presence.
+
+Verified by the new integration test
+`orchestrate_driver_exposes_discoverable_node_id` (`tests/run.rs`):
+- envelope contains `node_id: "n-0001"`;
+- `run show` reports `manifest.node_count: 1` / `counts.nodes: 1`;
+- `node list` returns the single `n-0001` node;
+- a child spawn with `--parent-node-id n-0001` succeeds and records
+  `child.spawned` under the driver node.
+
+Docs/skills:
+- replaced every invalid `n-driver-001` placeholder with `n-0001` in
+  `worktree-spinoff` and `worktree-orchestrated` SKILLs;
+- `/orchestrate` §2 now says the driver node is `n-0001` but to read it
+  from the envelope rather than hard-code it;
+- `orchestratectl-overview` documents the node-id format (`n-` + 4–10
+  ASCII digits) and warns against inventing slugs.

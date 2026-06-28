@@ -179,6 +179,72 @@ fn create_child_writes_child_spawned_to_parent_events() {
 }
 
 #[test]
+fn orchestrate_driver_exposes_discoverable_node_id() {
+    let home = TestHome::new();
+
+    // 1. Creating an orchestrate driver returns its driver node id in the
+    //    envelope — no guessing required.
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "orchestrate",
+        "--title",
+        "campaign",
+    ]));
+    let driver = v["data"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(v["data"]["node_id"], "n-0001");
+    assert_eq!(v["data"]["kind"], "orchestrate");
+    assert_eq!(v["data"]["supervisor"], "orchestrator-in-main-conversation");
+
+    // 2. The driver node is real on disk: run show counts it.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &driver]));
+    assert_eq!(v["data"]["manifest"]["node_count"], 1);
+    assert_eq!(v["data"]["counts"]["nodes"], 1);
+
+    // 3. node list surfaces exactly the driver node.
+    let v = run_ok(bin(&home).args(["--output", "json", "node", "list", &driver]));
+    let nodes = v["data"]["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["node_id"], "n-0001");
+    assert_eq!(nodes[0]["kind"], "orchestrate");
+
+    // 4. A child spawn pointed at the discovered node id succeeds — the
+    //    whole reason the node has to exist.
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "orchestrated",
+        "--title",
+        "feature-a",
+        "--parent-run-id",
+        &driver,
+        "--parent-node-id",
+        "n-0001",
+    ]));
+    let child = v["data"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(v["data"]["parent_run_id"], driver);
+    assert_eq!(v["data"]["parent_node_id"], "n-0001");
+
+    // The parent's event log records the child.spawned under the driver node.
+    let parent_events =
+        std::fs::read_to_string(home.path().join("runs").join(&driver).join("events.jsonl"))
+            .expect("driver events readable");
+    assert!(
+        parent_events.lines().any(|l| {
+            let ev: Value = serde_json::from_str(l).unwrap();
+            ev["kind"] == "child.spawned" && ev["data"]["child_run_id"] == child
+        }),
+        "driver events missing child.spawned for {child}: {parent_events}"
+    );
+}
+
+#[test]
 fn create_with_idempotency_key_returns_same_run_id() {
     let home = TestHome::new();
     let v1 = run_ok(bin(&home).args([
