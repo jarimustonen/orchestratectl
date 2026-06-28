@@ -72,7 +72,16 @@ impl Drop for TestHome {
 /// SIGTERM, then — after [`REAP_GRACE`] — SIGKILL every live supervisor whose
 /// pid file lives under `<home>/runs/*/supervisor.pid`.
 pub fn reap_supervisors_under(home: &Path) {
-    let pids = scan_supervisor_pids(home);
+    // Only signal pids that are genuinely *our* detached supervisor processes
+    // (command line names `orchestratectl supervise`). A `supervisor.pid` file
+    // can hold an unrelated pid — e.g. `run_error_envelopes` parks the test's
+    // own pid to exercise the "supervisor already running" refusal — and a pid
+    // can be recycled to a stranger after the supervisor exits; signalling
+    // either would be a serious bug (we would SIGTERM the test runner itself).
+    let pids: Vec<libc::pid_t> = scan_supervisor_pids(home)
+        .into_iter()
+        .filter(|&p| is_supervisor_process(p))
+        .collect();
     if pids.is_empty() {
         return;
     }
@@ -107,11 +116,11 @@ pub fn reap_supervisors_under(home: &Path) {
 /// otherwise just the pid. `getpgid` failing (e.g. the pid just exited) falls
 /// back to a per-pid signal.
 fn signal_target(pid: libc::pid_t, our_pgid: libc::pid_t, sig: libc::c_int) {
-    let pgid = unsafe { libc::getpgid(pid) };
-    if pgid > 1 && pgid != our_pgid {
+    let group = unsafe { libc::getpgid(pid) };
+    if group > 1 && group != our_pgid {
         // Detached session created by the supervisor's `setsid`: the group
         // holds only its own lineage, so a group-wide signal is safe.
-        unsafe { libc::kill(-pgid, sig) };
+        unsafe { libc::kill(-group, sig) };
     } else {
         unsafe { libc::kill(pid, sig) };
     }
@@ -123,6 +132,23 @@ fn signal_target(pid: libc::pid_t, our_pgid: libc::pid_t, sig: libc::c_int) {
 /// now holds the pid.
 fn process_gone(pid: libc::pid_t) -> bool {
     unsafe { libc::kill(pid, 0) != 0 }
+}
+
+/// True iff `pid` names a live `orchestratectl supervise <run-id>` process —
+/// the precise command our supervisors run. Matched via `ps` (portable across
+/// macOS and Linux), so a parked test pid or a recycled pid (whose command is
+/// the test binary or something unrelated) is never mistaken for a supervisor.
+/// The `" supervise"` arg distinguishes a real supervisor from the
+/// `supervise_gates` *test* binary, whose path also contains "supervise".
+fn is_supervisor_process(pid: libc::pid_t) -> bool {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return false;
+    };
+    out.status.success()
+        && String::from_utf8_lossy(&out.stdout).contains("orchestratectl supervise")
 }
 
 /// Collect the deduplicated, positive supervisor PIDs recorded under

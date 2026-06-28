@@ -9,6 +9,9 @@ use std::process::Command;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+mod common;
+use common::TestHome;
+
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     c.env("ORCHESTRATECTL_HOME", home.path());
@@ -49,7 +52,7 @@ fn create(home: &TempDir, kind: &str, title: &str) -> String {
 
 #[test]
 fn create_then_list_then_show_then_cancel_flow() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "integration");
 
     // list returns the just-created run with status pending and
@@ -82,7 +85,7 @@ fn create_then_list_then_show_then_cancel_flow() {
 
 #[test]
 fn create_dry_run_does_not_touch_filesystem() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let v = run_ok(bin(&home).args([
         "--output",
         "json",
@@ -102,7 +105,7 @@ fn create_dry_run_does_not_touch_filesystem() {
 
 #[test]
 fn create_child_dry_run_is_unsupported() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let parent = create(&home, "orchestrated", "parent");
     let (code, v) = run_fail(bin(&home).args([
         "--output",
@@ -125,7 +128,7 @@ fn create_child_dry_run_is_unsupported() {
 
 #[test]
 fn create_child_writes_child_spawned_to_parent_events() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let parent = create(&home, "orchestrated", "parent");
     let v = run_ok(bin(&home).args([
         "--output",
@@ -177,7 +180,7 @@ fn create_child_writes_child_spawned_to_parent_events() {
 
 #[test]
 fn create_with_idempotency_key_returns_same_run_id() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let v1 = run_ok(bin(&home).args([
         "--output",
         "json",
@@ -214,7 +217,7 @@ fn create_with_idempotency_key_returns_same_run_id() {
 
 #[test]
 fn create_rejects_empty_title() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let (code, v) = run_fail(bin(&home).args([
         "--output", "json", "run", "create", "--kind", "spinoff", "--title", "   ",
     ]));
@@ -224,7 +227,7 @@ fn create_rejects_empty_title() {
 
 #[test]
 fn create_rejects_unbalanced_parent_flags() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     // Only --parent-run-id without --parent-node-id is rejected by clap
     // (requires=...) with the structured envelope.
     let (code, v) = run_fail(bin(&home).args([
@@ -248,7 +251,7 @@ fn create_rejects_unbalanced_parent_flags() {
 
 #[test]
 fn show_missing_run_returns_run_not_found() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     // A well-formed ULID that simply names no run → run_not_found.
     let (code, v) = run_fail(bin(&home).args([
         "--output",
@@ -264,7 +267,7 @@ fn show_missing_run_returns_run_not_found() {
 
 #[test]
 fn show_malformed_run_id_returns_invalid_run_id() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     // A malformed id is a distinct error class from a missing run.
     let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "show", "nope"]));
     assert_eq!(code, 1);
@@ -274,7 +277,7 @@ fn show_malformed_run_id_returns_invalid_run_id() {
 
 #[test]
 fn cancel_missing_run_returns_run_not_found() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let (code, v) = run_fail(bin(&home).args([
         "--output",
         "json",
@@ -288,7 +291,7 @@ fn cancel_missing_run_returns_run_not_found() {
 
 #[test]
 fn cancel_malformed_run_id_returns_invalid_run_id() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     // Uppercase ULID-shaped input is non-canonical → invalid_run_id.
     let (code, v) = run_fail(bin(&home).args([
         "--output",
@@ -303,7 +306,7 @@ fn cancel_malformed_run_id_returns_invalid_run_id() {
 
 #[test]
 fn reattach_spawns_supervisor_and_records_events() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "x");
     let v = run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
     assert_eq!(v["data"]["action"], "reattached");
@@ -334,7 +337,7 @@ fn reattach_spawns_supervisor_and_records_events() {
 
 #[test]
 fn reattach_missing_run_returns_run_not_found() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let (code, v) = run_fail(bin(&home).args([
         "--output",
         "json",
@@ -348,7 +351,7 @@ fn reattach_missing_run_returns_run_not_found() {
 
 #[test]
 fn list_filters_by_kind_and_status() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let a = create(&home, "spinoff", "a");
     let _b = create(&home, "orchestrated", "b");
 
@@ -364,7 +367,7 @@ fn list_filters_by_kind_and_status() {
 
 #[test]
 fn list_when_root_missing_returns_empty() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     // No runs created — runs/ dir does not exist yet.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
     assert!(v["data"]["runs"].as_array().unwrap().is_empty());
@@ -422,7 +425,7 @@ fn node_report(home: &TempDir, run_id: &str, node_id: &str, data: Value) {
 
 #[test]
 fn cancel_done_run_is_refused_run_already_terminal() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "done-run");
     add_node(&home, &run_id, "n-0001");
     // Settle the node, then the run, to Done.
@@ -448,7 +451,7 @@ fn cancel_done_run_is_refused_run_already_terminal() {
 
 #[test]
 fn cancel_already_cancelled_run_converges_live_node() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "interrupted-cancel");
     add_node(&home, &run_id, "n-0001");
     add_node(&home, &run_id, "n-0002");
@@ -487,7 +490,7 @@ fn cancel_already_cancelled_run_converges_live_node() {
 
 #[test]
 fn recancel_fully_converged_run_reports_no_new_changes() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "converged");
     add_node(&home, &run_id, "n-0001");
 
@@ -511,7 +514,7 @@ fn recancel_fully_converged_run_reports_no_new_changes() {
 
 #[test]
 fn cancel_does_not_over_report_already_terminal_node() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create(&home, "spinoff", "mixed");
     add_node(&home, &run_id, "n-0001");
     add_node(&home, &run_id, "n-0002");
