@@ -210,9 +210,17 @@ session ends**:
    orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
    ```
 
-   On success the child's supervisor marks the node terminal, transitions
-   the child run to `lifecycle: completed`, mirrors `child.report` onto
-   the parent's log, exits, and closes the tmux window.
+   On success the node is recorded terminal — `orchestratectl node show
+   <node-id>` reports `status: done` with the report attached.
+   Submitting it is the child's **final action**: the child's supervisor
+   consumes the report to wind the child run down, mirror `child.report`
+   onto the parent's log, and close the worktree window. The child does
+   not wait for, re-verify, or re-submit it if `run show` briefly still
+   reads `pending` — supervisor-side completion on an agent-submitted
+   report is still being wired up (issues
+   `supervisor-complete-run-on-terminal-report` and
+   `supervisor-close-tmux-on-terminal`); `run cancel <run-id>` is the
+   documented manual cleanup until they land.
 
 This step is **not optional**. A successful merge with no report leaves
 the child dangling and the parent waiting forever.

@@ -194,11 +194,20 @@ entry instead — but it still reports):
    orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
    ```
 
-   On success the supervisor marks the node terminal, transitions the
-   run to `lifecycle: completed`, and exits — closing the tmux window.
+   On success the node is recorded terminal — `orchestratectl node show
+   <node-id>` reports `status: done` with your report attached.
+   Submitting the report is the agent's **final action**: the per-run
+   supervisor consumes it to wind the run down and (for autonomous
+   kinds) close the worktree window. Do not wait for, re-verify, or
+   re-submit it if `run show` still reads `pending` for a moment —
+   supervisor-side completion on an agent-submitted report is still
+   being wired up (issues `supervisor-complete-run-on-terminal-report`
+   and `supervisor-close-tmux-on-terminal`); `orchestratectl run cancel
+   <run-id>` is the documented manual cleanup until they land.
 
 This step is **not optional**. A successful merge with no report leaves
-the run dangling exactly as before.
+the run dangling exactly as before, with no structured outcome for the
+caller to read.
 
 ## Issue Management
 

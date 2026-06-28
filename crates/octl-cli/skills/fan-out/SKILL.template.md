@@ -211,10 +211,16 @@ after `/worktree-merge` succeeds, before its session ends**:
    orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
    ```
 
-   On success the child's supervisor marks the node terminal, transitions
-   the unit to `lifecycle: completed`, mirrors `child.report` onto the
-   driver's log, exits, and closes the tmux window — freeing the slot for
-   the next pending unit.
+   On success the unit's node is recorded terminal — `node show
+   <node-id>` reports `status: done`. Submitting the report is the
+   child's **final action**: the child's supervisor consumes it to wind
+   the unit down, mirror `child.report` onto the driver's log, and free
+   the slot for the next pending unit. The child does not wait for or
+   re-submit it if `run show` briefly still reads `pending` —
+   supervisor-side completion on an agent-submitted report is still being
+   wired up (issues `supervisor-complete-run-on-terminal-report` and
+   `supervisor-close-tmux-on-terminal`); the driver may use `run cancel`
+   as manual cleanup until they land.
 
 This step is **not optional**. A merged unit with no report holds its
 concurrency slot forever.
