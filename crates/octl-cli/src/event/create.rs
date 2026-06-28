@@ -363,11 +363,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // The canonical mutation entry folds the idempotency-key lookup and the
     // append into one lock window, so a concurrent retry can't see "no prior
-    // event" and double-append.
+    // event" and double-append. `node_id` was validated above; re-parse the
+    // canonical string into the typed envelope id the append API now takes.
+    let envelope_node = node_id.as_deref().map(parse_node_id).transpose()?;
     let result = octl_core::append_and_apply_event(
         &paths,
         kind,
-        node_id.as_deref(),
+        envelope_node.as_ref(),
         idempotency_key.as_deref(),
         data.clone(),
     )

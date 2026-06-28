@@ -232,7 +232,7 @@ pub fn process_node_report(
                 append_and_apply_unlocked(
                     parent_paths,
                     "discussion.opened",
-                    Some(parent_node_id),
+                    Some(&parent_nid),
                     None,
                     Value::Object(data),
                 )
@@ -272,7 +272,7 @@ pub fn process_node_report(
                 append_and_apply_unlocked(
                     parent_paths,
                     "spinoff.proposed",
-                    Some(parent_node_id),
+                    Some(&parent_nid),
                     None,
                     Value::Object(data),
                 )

@@ -191,7 +191,7 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
             "spinoff_proposals": [],
             "wrap_up_recommendations": []
         });
-        append_and_apply_unlocked(paths, "node.report", Some(nid.as_str()), Some(&key), data)?;
+        append_and_apply_unlocked(paths, "node.report", Some(&nid), Some(&key), data)?;
         nodes_cancelled.push(nid);
     }
 
@@ -350,6 +350,11 @@ mod tests {
         RunPaths::new(dir, run_id).unwrap()
     }
 
+    /// Parse a `NodeId` for a test append call (the typed envelope id).
+    fn nid(s: &str) -> NodeId {
+        NodeId::parse_str(s).unwrap()
+    }
+
     /// Drive a run to `count` live nodes (n-0001..) under a created manifest.
     fn bootstrap(paths: &RunPaths, count: usize) {
         append_and_apply_event(
@@ -361,11 +366,11 @@ mod tests {
         )
         .unwrap();
         for i in 1..=count {
-            let nid = format!("n-{i:04}");
+            let node_id = nid(&format!("n-{i:04}"));
             append_and_apply_event(
                 paths,
                 "node.created",
-                Some(&nid),
+                Some(&node_id),
                 None,
                 json!({ "kind": "spinoff" }),
             )
@@ -410,7 +415,7 @@ mod tests {
         append_and_apply_event(
             &paths,
             "node.report",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             None,
             json!({ "success": true }),
         )
@@ -453,7 +458,7 @@ mod tests {
         append_and_apply_event(
             &paths,
             "node.report",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             None,
             json!({ "success": false, "cancelled": true, "reason": "x" }),
         )
@@ -525,7 +530,7 @@ mod tests {
         append_and_apply_event(
             &paths,
             "node.report",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             None,
             json!({ "success": true }),
         )
@@ -620,11 +625,11 @@ mod tests {
             json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
         )
         .unwrap();
-        for nid in ["n-9999", "n-10000", "n-0001"] {
+        for node in ["n-9999", "n-10000", "n-0001"] {
             append_and_apply_event(
                 &paths,
                 "node.created",
-                Some(nid),
+                Some(&nid(node)),
                 None,
                 json!({ "kind": "spinoff" }),
             )
@@ -717,13 +722,13 @@ mod tests {
         // Durably append the cancel report WITH the deterministic key, but
         // without folding it — the node stays Pending (live), modeling the
         // fsynced-but-not-applied window.
-        let nid = NodeId::parse_str("n-0001").unwrap();
-        let key = node_cancel_key(&paths.run_id, &nid);
+        let node = nid("n-0001");
+        let key = node_cancel_key(&paths.run_id, &node);
         append_event_with_seq(
             &paths,
             3,
             "node.report",
-            Some("n-0001"),
+            Some(&node),
             Some(&key),
             json!({ "success": false, "cancelled": true, "reason": "x" }),
         )

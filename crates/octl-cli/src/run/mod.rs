@@ -291,29 +291,51 @@ pub fn runs_root(root: &Path) -> PathBuf {
 
 /// Map a `core::Error` into a `CliError`.
 ///
-/// A corrupt event log is a data-integrity fault the caller must
-/// investigate, not a transient I/O error to retry — it surfaces as a
-/// distinct `corrupt-event-log` user error (exit 1) so a retry loop
-/// doesn't hammer a file that will never parse. A corrupt projection is the
-/// same class of fault — a state file whose embedded id contradicts where it
-/// lives on disk — so it gets its own `corrupt_projection` user error (exit 1),
-/// carrying the two ids in `expected` / `invalid_value` for the operator to
-/// diff. Everything else collapses into the generic `io_error` system class
-/// (exit 2).
+/// Every flavor of *corrupt persisted state* collapses into one non-retryable
+/// `corrupt_state` user error (exit 1): a malformed `events.jsonl` line
+/// ([`CorruptEventLog`]), a projection whose embedded id contradicts its path
+/// ([`CorruptProjection`]), malformed state-file JSON ([`Json`]/[`JsonBare`]),
+/// and a state file written by an unsupported build
+/// ([`UnsupportedSchemaVersion`]). These are all data-integrity faults the
+/// caller must investigate, not transient I/O to retry — surfacing them under
+/// one user code (exit 1) keeps an AI caller's retry loop from hammering a file
+/// that will never parse. Where the variant carries them, the two mismatched
+/// ids / the bad-vs-supported schema versions ride along in `invalid_value` /
+/// `expected` for the operator to diff.
+///
+/// A symlinked run dir, subdir, or state file is a separate tampered-run fault
+/// (`corrupt_run`, exit 1). Everything else — genuine transient I/O — collapses
+/// into the generic `io_error` system class (exit 2).
+///
+/// [`CorruptEventLog`]: octl_core::Error::CorruptEventLog
+/// [`CorruptProjection`]: octl_core::Error::CorruptProjection
+/// [`Json`]: octl_core::Error::Json
+/// [`JsonBare`]: octl_core::Error::JsonBare
+/// [`UnsupportedSchemaVersion`]: octl_core::Error::UnsupportedSchemaVersion
 pub fn from_core(err: octl_core::Error) -> CliError {
     match err {
-        octl_core::Error::CorruptEventLog { .. } => {
-            CliError::user("corrupt-event-log", err.to_string())
-        }
+        octl_core::Error::CorruptEventLog { .. }
+        | octl_core::Error::Json { .. }
+        | octl_core::Error::JsonBare(_) => CliError::user("corrupt_state", err.to_string()),
         octl_core::Error::CorruptProjection {
             ref expected_id,
             ref body_id,
             ..
         } => {
             let (expected_id, body_id) = (expected_id.clone(), body_id.clone());
-            CliError::user("corrupt_projection", err.to_string())
+            CliError::user("corrupt_state", err.to_string())
                 .with_invalid_value(body_id)
                 .with_expected(serde_json::Value::String(expected_id))
+        }
+        octl_core::Error::UnsupportedSchemaVersion {
+            found,
+            ref supported,
+            ..
+        } => {
+            let supported = supported.clone();
+            CliError::user("corrupt_state", err.to_string())
+                .with_invalid_value(found.to_string())
+                .with_expected(serde_json::json!({ "supported_schema_versions": supported }))
         }
         // A symlinked run dir, subdir, or state file is a tampered or corrupted
         // run, not a transient I/O fault to retry — it surfaces as a distinct

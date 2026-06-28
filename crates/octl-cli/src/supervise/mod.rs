@@ -357,7 +357,7 @@ pub fn dispatch(
                             let _ = append_and_apply_event(
                                 &paths,
                                 "child.spawn_failed",
-                                ev.node_id.as_ref().map(NodeId::as_str),
+                                ev.node_id.as_ref(),
                                 None,
                                 json!({
                                     "child_run_id": child_run_id,
@@ -1088,8 +1088,7 @@ fn watchdog_tick(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": [],
             });
-            if let Err(e) =
-                append_and_apply_unlocked(paths, "node.report", Some(&node_id), None, data)
+            if let Err(e) = append_and_apply_unlocked(paths, "node.report", Some(&nid), None, data)
             {
                 warn!(
                     target: "orchestratectl::supervise",

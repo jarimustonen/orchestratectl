@@ -118,7 +118,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let result = octl_core::append_and_apply_event(
         &paths,
         "node.report",
-        Some(node_id.as_str()),
+        Some(&node_id),
         idempotency_key.as_deref(),
         data.clone(),
     )

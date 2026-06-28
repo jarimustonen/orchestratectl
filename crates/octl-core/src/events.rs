@@ -11,23 +11,8 @@ use crate::atomic::open_events_append;
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
-use crate::reducer::{apply_event, validate_event};
+use crate::reducer::{commit_ops, reduce_event_to_ops};
 use crate::schema::{Event, NodeId};
-
-/// Parse the optional envelope `node_id` (`Option<&str>` from a caller) into the
-/// typed `Option<NodeId>` an [`Event`] now carries. Callers are expected to pass
-/// an already-validated id; a malformed one is rejected here ([`Error::InvalidNodeId`])
-/// so it can never be written into `events.jsonl` as an unvalidated string.
-fn parse_envelope_node_id(node_id: Option<&str>) -> Result<Option<NodeId>> {
-    node_id
-        .map(|s| {
-            NodeId::parse_str(s).map_err(|e| Error::InvalidNodeId {
-                node_id: s.to_string(),
-                reason: e.to_string(),
-            })
-        })
-        .transpose()
-}
 
 /// Backward-scan chunk size when looking for the previous newline.
 const SCAN_CHUNK: u64 = 64 * 1024;
@@ -224,7 +209,7 @@ pub(crate) fn append_event_with_seq(
     paths: &RunPaths,
     seq: u64,
     kind: &str,
-    node_id: Option<&str>,
+    node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<()> {
@@ -236,7 +221,7 @@ fn write_event_line(
     paths: &RunPaths,
     seq: u64,
     kind: &str,
-    node_id: Option<&str>,
+    node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<()> {
@@ -245,7 +230,7 @@ fn write_event_line(
         seq,
         kind: kind.to_string(),
         run_id: paths.run_id.clone(),
-        node_id: parse_envelope_node_id(node_id)?,
+        node_id: node_id.cloned(),
         idempotency_key: idempotency_key.map(str::to_string),
         data,
     };
@@ -301,11 +286,13 @@ pub struct AppendResult {
 /// log is the source of truth; projections are a derived cache.
 ///
 /// The append is transactional against reducer *validation*: the event is
-/// first run through [`validate_event`](crate::reducer) under the lock, and
-/// only a validating event is appended (and fsynced) and then folded by the
-/// reducer. A reducer-rejected event (a `CorruptEventLog` for a malformed
-/// payload) errors *before* any bytes are written, so the log never gains a
-/// poison line that a future replay / `rebuild_projections` would choke on.
+/// first reduced through [`reduce_event_to_ops`](crate::reducer) under the
+/// lock — the single plan-then-commit path that both validates and computes
+/// the projection writes — and only a validating event is appended (and
+/// fsynced) and then committed by the reducer. A reducer-rejected event (a
+/// `CorruptEventLog` for a malformed payload) errors *before* any bytes are
+/// written, so the log never gains a poison line that a future replay /
+/// `rebuild_projections` would choke on.
 /// (A pre-existing torn tail may still be truncated before validation runs —
 /// those bytes are uncommitted by definition; see [`recover_last_seq`].)
 ///
@@ -324,7 +311,7 @@ pub struct AppendResult {
 pub fn append_and_apply_event(
     paths: &RunPaths,
     kind: &str,
-    node_id: Option<&str>,
+    node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<AppendResult> {
@@ -360,7 +347,7 @@ pub fn append_and_apply_event(
 pub fn append_and_apply_unlocked(
     paths: &RunPaths,
     kind: &str,
-    node_id: Option<&str>,
+    node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<u64> {
@@ -380,23 +367,27 @@ pub fn append_and_apply_unlocked(
         seq,
         kind: kind.to_string(),
         run_id: paths.run_id.clone(),
-        node_id: parse_envelope_node_id(node_id)?,
+        node_id: node_id.cloned(),
         idempotency_key: idempotency_key.map(str::to_string),
         data,
     };
-    // Transactional gate: validate against current projection state BEFORE
-    // the durable append. A reducer-rejected event errors here and is never
-    // written, so a later replay / rebuild can't trip on a poison line. On
-    // success, `apply_event` below sees the same locked state and folds it
-    // without error.
-    validate_event(paths, &ev)?;
+    // Transactional gate, plan-then-commit: reduce the event against current
+    // projection state BEFORE the durable append. `reduce_event_to_ops` both
+    // validates and computes the exact projection writes to make; a reducer-
+    // rejected event errors here and is never written, so a later replay /
+    // rebuild can't trip on a poison line. The planned ops are then committed
+    // *after* the fsynced append — nothing mutates the projections between the
+    // plan and the commit (the append only touches `events.jsonl`), so the
+    // planned writes are still valid. One reduce pass serves both the gate and
+    // the apply, so there is no validate/apply branch pair to drift apart.
+    let ops = reduce_event_to_ops(paths, &ev)?;
     let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
     line.push(b'\n');
     let mut f = open_events_append(&events_path)?;
     f.write_all(&line)
         .map_err(|e| Error::io(events_path.clone(), e))?;
     f.sync_all().map_err(|e| Error::io(events_path, e))?;
-    apply_event(paths, &ev)?;
+    commit_ops(paths, ops)?;
     Ok(seq)
 }
 
@@ -743,6 +734,11 @@ mod tests {
         RunPaths::new(dir, run_id).unwrap()
     }
 
+    /// Parse a `NodeId` for a test append call (the typed envelope id).
+    fn nid(s: &str) -> NodeId {
+        NodeId::parse_str(s).unwrap()
+    }
+
     /// Drive a run to a live node so reducer-affecting events have a target.
     fn bootstrap_live_node(paths: &RunPaths) {
         append_and_apply_event(
@@ -756,7 +752,7 @@ mod tests {
         append_and_apply_event(
             paths,
             "node.created",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             None,
             serde_json::json!({ "kind": "spinoff" }),
         )
@@ -795,7 +791,7 @@ mod tests {
         let first = append_and_apply_event(
             &paths,
             "node.status",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             Some("k1"),
             data.clone(),
         )
@@ -807,7 +803,7 @@ mod tests {
         let replay = append_and_apply_event(
             &paths,
             "node.status",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             Some("k1"),
             data.clone(),
         )
@@ -831,17 +827,17 @@ mod tests {
         bootstrap_live_node(&paths);
 
         // Settle the node terminal.
+        let n0001 = nid("n-0001");
         append_and_apply_event(
             &paths,
             "node.report",
-            Some("n-0001"),
+            Some(&n0001),
             None,
             serde_json::json!({ "success": true }),
         )
         .unwrap();
-        let nid = crate::schema::NodeId::parse_str("n-0001").unwrap();
         assert_eq!(
-            crate::read_node(&paths, &nid).unwrap().status,
+            crate::read_node(&paths, &n0001).unwrap().status,
             crate::schema::Status::Done
         );
 
@@ -852,7 +848,7 @@ mod tests {
         let r = append_and_apply_event(
             &paths,
             "node.status",
-            Some("n-0001"),
+            Some(&n0001),
             None,
             serde_json::json!({ "status": "running" }),
         )
@@ -865,7 +861,7 @@ mod tests {
             "the event is appended even when the reducer no-ops"
         );
         assert_eq!(
-            crate::read_node(&paths, &nid).unwrap().status,
+            crate::read_node(&paths, &n0001).unwrap().status,
             crate::schema::Status::Done,
             "terminal status is frozen"
         );
@@ -1071,8 +1067,9 @@ mod tests {
         let before = read_all_events(&paths.events()).unwrap().len();
 
         // `node.report` with neither success nor cancelled → reducer rejects.
-        let err = append_and_apply_event(&paths, "node.report", Some("n-0001"), None, json!({}))
-            .unwrap_err();
+        let err =
+            append_and_apply_event(&paths, "node.report", Some(&nid("n-0001")), None, json!({}))
+                .unwrap_err();
         assert!(matches!(err, Error::CorruptEventLog { .. }), "got {err:?}");
 
         assert_eq!(
@@ -1085,7 +1082,7 @@ mod tests {
         let next = append_and_apply_event(
             &paths,
             "node.report",
-            Some("n-0001"),
+            Some(&nid("n-0001")),
             None,
             json!({ "success": true }),
         )
@@ -1179,7 +1176,7 @@ mod tests {
             append_and_apply_event(
                 &paths,
                 "node.report",
-                Some("n-0001"),
+                Some(&nid("n-0001")),
                 None,
                 json!({ "success": true }),
             )
@@ -1219,7 +1216,7 @@ mod tests {
             append_and_apply_event(
                 &paths,
                 "discussion.opened",
-                Some("n-0001"),
+                Some(&nid("n-0001")),
                 None,
                 json!({ "discussion_id": "d-abcdefghij", "topic": "t", "node_id": "n-0001" }),
             )

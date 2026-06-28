@@ -853,12 +853,12 @@ fn idempotency_key_conflict_on_payload_mismatch() {
 }
 
 #[test]
-fn idempotency_scan_over_corrupt_interior_line_is_corrupt_event_log() {
+fn idempotency_scan_over_corrupt_interior_line_is_corrupt_state() {
     // A newline-terminated garbage line in events.jsonl is interior
     // corruption. The `--idempotency-key` dedup scan must surface it as a
-    // `corrupt-event-log` user error (exit 1), not silently skip it (which
-    // could hide a matching key and double-append) and not collapse it into
-    // the generic `io_error` system class (exit 2).
+    // non-retryable `corrupt_state` user error (exit 1), not silently skip it
+    // (which could hide a matching key and double-append) and not collapse it
+    // into the generic `io_error` system class (exit 2).
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
     let evp = events_path(&home, &run_id);
@@ -886,7 +886,23 @@ fn idempotency_scan_over_corrupt_interior_line_is_corrupt_event_log() {
         "k1",
     ]));
     assert_eq!(code, 1, "expected exit 1; envelope: {err}");
-    assert_eq!(err["error"]["code"], "corrupt-event-log");
+    assert_eq!(err["error"]["code"], "corrupt_state");
+}
+
+#[test]
+fn malformed_state_file_json_is_corrupt_state_not_io_error() {
+    // A malformed `manifest.json` on disk is a non-retryable data-integrity
+    // fault, not transient I/O: it must surface as the `corrupt_state` user
+    // error (exit 1) so an AI caller's retry loop doesn't hammer a file that
+    // will never parse — never the generic `io_error` system class (exit 2).
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let manifest = home.path().join("runs").join(&run_id).join("manifest.json");
+    std::fs::write(&manifest, b"{ not valid json").unwrap();
+
+    let (code, err) = run_fail(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(code, 1, "expected exit 1; envelope: {err}");
+    assert_eq!(err["error"]["code"], "corrupt_state");
 }
 
 #[test]

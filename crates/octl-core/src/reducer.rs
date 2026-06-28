@@ -211,20 +211,64 @@ fn optional_ts(
     }
 }
 
-/// Apply one event to projections. No-op for unknown `kind`.
+/// A projection write planned by [`reduce_event_to_ops`] and performed by
+/// [`commit_ops`].
+///
+/// Splitting the reducer into a pure *plan* phase (compute these ops from the
+/// current projection state, validating as it goes) and a *commit* phase
+/// (write them) means a single branch per kind implements both the pre-append
+/// validation gate and the post-append apply — there is no validate/apply
+/// mirror to drift out of lockstep, and the projection state is read once
+/// rather than twice.
+pub(crate) enum ProjectionOp {
+    /// Write the run manifest.
+    Manifest(Manifest),
+    /// Write a node projection.
+    Node(Node),
+    /// Write a discussion projection.
+    Discussion(Discussion),
+    /// Write a spinoff-proposal projection.
+    Spinoff(SpinoffProposal),
+}
+
+/// Commit a planned batch of projection writes, in order.
+///
+/// Caller must hold the run's [`crate::lock::RunLock`]. Pairs with
+/// [`reduce_event_to_ops`]: the ops were computed against the same locked
+/// state, and nothing mutates the projections between the plan and this commit
+/// (in the append path only `events.jsonl` is written in between), so the
+/// planned writes are still valid.
+pub(crate) fn commit_ops(paths: &RunPaths, ops: Vec<ProjectionOp>) -> Result<()> {
+    for op in ops {
+        match op {
+            ProjectionOp::Manifest(m) => write_manifest(paths, &m)?,
+            ProjectionOp::Node(n) => write_node(paths, &n)?,
+            ProjectionOp::Discussion(d) => write_discussion(paths, &d)?,
+            ProjectionOp::Spinoff(s) => write_spinoff(paths, &s)?,
+        }
+    }
+    Ok(())
+}
+
+/// Plan the projection writes one event implies, *without* performing them.
+///
+/// This is the single source of truth for both validation and application: it
+/// reads the current projection state, enforces every event-payload invariant
+/// (returning [`Error::CorruptEventLog`] for a malformed or cross-run event),
+/// and returns the exact [`ProjectionOp`]s to commit (empty for a no-op or an
+/// unknown `kind`). Because it never writes, it is also the transactional gate
+/// run *before* the durable append in
+/// [`crate::events::append_and_apply_unlocked`]: a reducer-rejected event is
+/// caught here and never reaches `events.jsonl`, so a later replay /
+/// `rebuild_projections` can't trip over a poison line. The state-dependent
+/// no-op guards live here too (a settled node/run/discussion swallows a late
+/// or even malformed event as a clean no-op rather than erroring).
 ///
 /// Caller must hold the run's [`crate::lock::RunLock`].
-///
-/// `pub(crate)`: applying an event in isolation (without the matching
-/// `events.jsonl` append) is an internal building block of
-/// [`crate::events::append_and_apply_unlocked`] and a future
-/// `rebuild_projections_from_events`. External callers mutate state through
-/// [`crate::events::append_and_apply_event`] so the log and projections can
-/// never diverge.
-pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     // An event whose envelope `run_id` doesn't match the run we're folding it
-    // into means the log was copied/misrouted — fold it and projections would
-    // be silently cross-contaminated. Reject before any write.
+    // into means the log was copied/misrouted — folding it would silently
+    // cross-contaminate projections. Reject before planning anything.
     if ev.run_id != paths.run_id {
         return Err(Error::CorruptEventLog {
             path: paths.events(),
@@ -240,70 +284,48 @@ pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     // `supervisor.exited` and the `_` fallthrough share a body intentionally.
     #[allow(clippy::match_same_arms)]
     match ev.kind.as_str() {
-        "run.created" => apply_run_created(paths, ev),
-        "run.status" => apply_run_status(paths, ev),
-        "node.created" => apply_node_created(paths, ev),
-        "node.status" => apply_node_status(paths, ev),
-        "node.report" => apply_node_report(paths, ev),
-        "discussion.opened" => apply_discussion_opened(paths, ev),
-        "discussion.resolved" => apply_discussion_resolved(paths, ev),
-        "spinoff.proposed" => apply_spinoff_proposed(paths, ev),
-        "spinoff.approved" => apply_spinoff_approved(paths, ev),
-        "spinoff.rejected" => apply_spinoff_rejected(paths, ev),
-        "child.spawned" => apply_child_spawned(paths, ev),
-        "supervisor.exited" => Ok(()),
-        _ => Ok(()),
+        "run.created" => reduce_run_created(paths, ev),
+        "run.status" => reduce_run_status(paths, ev),
+        "node.created" => reduce_node_created(paths, ev),
+        "node.status" => reduce_node_status(paths, ev),
+        "node.report" => reduce_node_report(paths, ev),
+        "discussion.opened" => reduce_discussion_opened(paths, ev),
+        "discussion.resolved" => reduce_discussion_resolved(paths, ev),
+        "spinoff.proposed" => reduce_spinoff_proposed(paths, ev),
+        "spinoff.approved" => reduce_spinoff_approved(paths, ev),
+        "spinoff.rejected" => reduce_spinoff_rejected(paths, ev),
+        "child.spawned" => reduce_child_spawned(paths, ev),
+        "supervisor.exited" => Ok(vec![]),
+        _ => Ok(vec![]),
     }
 }
 
-/// Validate an event WITHOUT writing anything, returning `Err` in exactly
-/// the cases [`apply_event`] would (for the same projection state) and `Ok`
-/// otherwise.
+/// Apply one event to projections: plan via [`reduce_event_to_ops`], then
+/// [`commit_ops`]. No-op for unknown `kind`. Caller must hold the run's
+/// [`crate::lock::RunLock`].
 ///
-/// This is the transactional gate run *before* the durable append in
-/// [`crate::events::append_and_apply_unlocked`]: a reducer-rejected event is
-/// caught here and never reaches `events.jsonl`, so a later replay /
-/// `rebuild_projections` can't trip over a poison line
-/// (append-and-apply-transactional-validation).
+/// `pub(crate)`: applying an event in isolation (without the matching
+/// `events.jsonl` append) is an internal building block used by `cancel` (to
+/// re-fold a crash-stranded event) and a future `rebuild_projections_from_events`.
+/// External callers mutate state through
+/// [`crate::events::append_and_apply_event`] so the log and projections can
+/// never diverge.
+pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+    let ops = reduce_event_to_ops(paths, ev)?;
+    commit_ops(paths, ops)
+}
+
+/// Validate an event WITHOUT writing anything — [`reduce_event_to_ops`] with
+/// the planned writes discarded. Returns `Err` in exactly the cases
+/// [`apply_event`] would (they share the one plan), so a dry-run check can
+/// never drift from the apply.
 ///
-/// It mirrors `apply_event` branch-for-branch, including the state-dependent
-/// no-op guards (a settled node/run/discussion swallows a late or even
-/// malformed event as a clean no-op, so validation must NOT reject it). The
-/// read-only projection reads here see the same state `apply_event` will,
-/// because the caller holds the run's [`crate::lock::RunLock`] across both.
-///
-/// `pub(crate)`: an internal building block of `append_and_apply_unlocked`.
-/// Keep it in lockstep with `apply_event` — the
-/// `validate_matches_apply_rejection` test asserts they agree.
+/// `#[cfg(test)]`: the append path validates by inspecting
+/// `reduce_event_to_ops` directly (it needs the planned ops anyway), so this
+/// discard-the-ops wrapper exists only for the reducer's agreement tests.
+#[cfg(test)]
 pub(crate) fn validate_event(paths: &RunPaths, ev: &Event) -> Result<()> {
-    // Same cross-run guard as `apply_event`'s entry.
-    if ev.run_id != paths.run_id {
-        return Err(Error::CorruptEventLog {
-            path: paths.events(),
-            reason: format!(
-                "event seq={} envelope run_id {:?} does not match run {:?}",
-                ev.seq,
-                ev.run_id.as_str(),
-                paths.run_id.as_str()
-            ),
-        });
-    }
-    #[allow(clippy::match_same_arms)]
-    match ev.kind.as_str() {
-        "run.created" => validate_run_created(paths, ev),
-        "run.status" => validate_run_status(paths, ev),
-        "node.created" => validate_node_created(paths, ev),
-        "node.status" => validate_node_status(paths, ev),
-        "node.report" => validate_node_report(paths, ev),
-        "discussion.opened" => validate_discussion_opened(paths, ev),
-        "discussion.resolved" => validate_discussion_resolved(paths, ev),
-        "spinoff.proposed" => validate_spinoff_proposed(paths, ev),
-        "spinoff.approved" => validate_spinoff_approved(paths, ev),
-        "spinoff.rejected" => validate_spinoff_rejected(paths, ev),
-        "child.spawned" => validate_child_spawned(paths, ev),
-        "supervisor.exited" => Ok(()),
-        _ => Ok(()),
-    }
+    reduce_event_to_ops(paths, ev).map(|_| ())
 }
 
 /// The envelope `node_id` that a `node.*` event must carry, with the same
@@ -319,187 +341,7 @@ fn require_envelope_node_id(events_path: &Path, ev: &Event) -> Result<NodeId> {
     })
 }
 
-fn validate_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
-    if let Some(existing) = read_manifest_opt(paths)? {
-        if existing.run_id != ev.run_id {
-            return Err(Error::CorruptEventLog {
-                path: paths.manifest(),
-                reason: format!(
-                    "run.created run_id={} conflicts with existing manifest run_id={}",
-                    ev.run_id, existing.run_id
-                ),
-            });
-        }
-        return Ok(());
-    }
-    let events_path = paths.events();
-    let d = &ev.data;
-    data_kind(d.get("kind").unwrap_or(&Value::Null)).ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: "run.created missing/invalid `kind`".into(),
-    })?;
-    serde_json::from_value::<Lifecycle>(d.get("lifecycle").cloned().unwrap_or(Value::Null))
-        .map_err(|_| Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: "run.created missing/invalid `lifecycle`".into(),
-        })?;
-    want_str(&events_path, ev, d, "title")?;
-    opt_run_id(&events_path, ev, d, "parent_run_id")?;
-    opt_node_id(&events_path, ev, d, "parent_node_id")?;
-    Ok(())
-}
-
-fn validate_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
-    // Missing manifest → `apply_run_status` no-ops without inspecting status.
-    if read_manifest_opt(paths)?.is_none() {
-        return Ok(());
-    }
-    // `require_status` runs whether or not the run is terminal (the terminal
-    // guard only short-circuits *after* it), so validate it unconditionally.
-    require_status(ev, paths.events())?;
-    Ok(())
-}
-
-fn validate_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let node_id = require_envelope_node_id(&events_path, ev)?;
-    if read_node_opt(paths, &node_id)?.is_some() {
-        return Ok(());
-    }
-    let d = &ev.data;
-    data_kind(d.get("kind").unwrap_or(&Value::Null)).ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: format!(
-            "event seq={} kind=node.created missing/invalid `kind`",
-            ev.seq
-        ),
-    })?;
-    opt_node_id(&events_path, ev, d, "parent_node_id")?;
-    optional_i32(d, "agent_pid", &events_path, ev)?;
-    optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
-    optional_i32(d, "supervisor_pid", &events_path, ev)?;
-    Ok(())
-}
-
-fn validate_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let node_id = require_envelope_node_id(&events_path, ev)?;
-    // Missing node → no-op (no status validation). A live OR terminal node
-    // both run `require_status` (terminal guard short-circuits after it).
-    if read_node_opt(paths, &node_id)?.is_none() {
-        return Ok(());
-    }
-    require_status(ev, events_path)?;
-    Ok(())
-}
-
-fn validate_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let node_id = require_envelope_node_id(&events_path, ev)?;
-    let n = match read_node_opt(paths, &node_id)? {
-        Some(n) => n,
-        None => return Ok(()),
-    };
-    // Terminal-state guard runs BEFORE payload validation in `apply_node_report`:
-    // a late report against a settled node is a dead no-op, even if malformed.
-    if n.status.is_terminal() {
-        return Ok(());
-    }
-    report_terminal_status(&events_path, ev)?;
-    Ok(())
-}
-
-fn validate_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let d = &ev.data;
-    let discussion_id = DiscussionId::parse_str(want_str(&events_path, ev, d, "discussion_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    if read_discussion_opt(paths, &discussion_id)?.is_some() {
-        return Ok(());
-    }
-    want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
-    want_str(&events_path, ev, d, "topic")?;
-    Ok(())
-}
-
-fn validate_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let id = DiscussionId::parse_str(want_str(&events_path, ev, &ev.data, "discussion_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    let disc = match read_discussion_opt(paths, &id)? {
-        Some(d) => d,
-        None => return Ok(()),
-    };
-    if matches!(disc.status, DiscussionStatus::Resolved) {
-        return Ok(());
-    }
-    want_str(&events_path, ev, &ev.data, "resolution")?;
-    optional_str(&events_path, ev, &ev.data, "note")?;
-    Ok(())
-}
-
-fn validate_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    let d = &ev.data;
-    let proposal_id = ProposalId::parse_str(want_str(&events_path, ev, d, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    if read_spinoff_opt(paths, &proposal_id)?.is_some() {
-        return Ok(());
-    }
-    data_kind(d.get("proposed_kind").unwrap_or(&Value::Null)).ok_or_else(|| {
-        Error::CorruptEventLog {
-            path: events_path.clone(),
-            reason: format!(
-                "event seq={} kind=spinoff.proposed missing/invalid `proposed_kind`",
-                ev.seq
-            ),
-        }
-    })?;
-    want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
-    want_str(&events_path, ev, d, "proposed_title")?;
-    Ok(())
-}
-
-fn validate_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
-    // `apply_spinoff_approved` can only reject on the id parse; the
-    // existence/terminal guards and optional `issue_slug` never error.
-    let events_path = paths.events();
-    ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    Ok(())
-}
-
-fn validate_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    Ok(())
-}
-
-fn validate_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
-    let events_path = paths.events();
-    // All three id checks precede the parent-node existence no-op in
-    // `apply_child_spawned`, so they are unconditional.
-    ev.node_id.clone().ok_or_else(|| Error::CorruptEventLog {
-        path: events_path.clone(),
-        reason: format!(
-            "event seq={} kind=child.spawned missing parent `node_id`",
-            ev.seq
-        ),
-    })?;
-    RunId::parse_str(want_str(&events_path, ev, &ev.data, "child_run_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    NodeId::parse_str(
-        ev.data
-            .get("child_node_id")
-            .and_then(Value::as_str)
-            .unwrap_or("n-0001"),
-    )
-    .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    Ok(())
-}
-
-fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     // Idempotent: a replayed `run.created` against an existing manifest is a
     // no-op (but validates that `run_id` matches; otherwise the event log
     // is being applied to the wrong run).
@@ -513,7 +355,7 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
                 ),
             });
         }
-        return Ok(());
+        return Ok(vec![]);
     }
     let events_path = paths.events();
     let d = &ev.data;
@@ -532,7 +374,7 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let title = want_str(&events_path, ev, d, "title")?.to_string();
     let m = Manifest {
         schema_version: STATE_SCHEMA_VERSION,
-        // `run_id == paths.run_id` was verified at `apply_event` entry.
+        // `run_id == paths.run_id` was verified at `reduce_event_to_ops` entry.
         run_id: paths.run_id.clone(),
         kind,
         lifecycle,
@@ -558,27 +400,27 @@ fn apply_run_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
     };
-    write_manifest(paths, &m)
+    Ok(vec![ProjectionOp::Manifest(m)])
 }
 
-fn apply_run_status(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_run_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let mut m = match read_manifest_opt(paths)? {
         Some(m) => m,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     let new_status = require_status(ev, paths.events())?;
     // Terminal-state guard: a settled run never transitions again (e.g. a
     // late `run.status running` after a cancel). See run-cli-read/handoff.md D5.
     if m.status.is_terminal() {
         trace_terminal_noop(ev, m.status, new_status);
-        return Ok(());
+        return Ok(vec![]);
     }
     if m.status == new_status {
-        return Ok(());
+        return Ok(vec![]);
     }
     m.status = new_status;
     m.updated_at = ev.ts;
-    write_manifest(paths, &m)
+    Ok(vec![ProjectionOp::Manifest(m)])
 }
 
 /// Reconstruct the fully-qualified tmux identity from `node.created` event
@@ -606,15 +448,14 @@ fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
     })
 }
 
-fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
-    // so take it directly — no re-parse needed. Shared helper so the
-    // missing-id check matches `validate_node_created` verbatim.
+    // so take it directly — no re-parse needed.
     let node_id = require_envelope_node_id(&events_path, ev)?;
     // Idempotent on replay: skip if the node already exists.
     if read_node_opt(paths, &node_id)?.is_some() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let d = &ev.data;
     let kind =
@@ -628,7 +469,7 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
     let n = Node {
         schema_version: STATE_SCHEMA_VERSION,
         node_id,
-        // `run_id == paths.run_id` was verified at `apply_event` entry.
+        // `run_id == paths.run_id` was verified at `reduce_event_to_ops` entry.
         run_id: paths.run_id.clone(),
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
         kind,
@@ -653,43 +494,43 @@ fn apply_node_created(paths: &RunPaths, ev: &Event) -> Result<()> {
         last_report: None,
         last_processed_report_seq_by_child: serde_json::Map::default(),
     };
-    write_node(paths, &n)?;
+    let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.node_count = m.node_count.saturating_add(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_node_status(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_node_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let node_id = require_envelope_node_id(&events_path, ev)?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     let new_status = require_status(ev, events_path)?;
     // Terminal-state guard: a settled node never transitions again. See
     // run-cli-read/handoff.md D5.
     if n.status.is_terminal() {
         trace_terminal_noop(ev, n.status, new_status);
-        return Ok(());
+        return Ok(vec![]);
     }
     if n.status == new_status {
-        return Ok(());
+        return Ok(vec![]);
     }
     n.status = new_status;
     n.updated_at = ev.ts;
-    write_node(paths, &n)
+    Ok(vec![ProjectionOp::Node(n)])
 }
 
-fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let node_id = require_envelope_node_id(&events_path, ev)?;
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     // Terminal-state guard *before* payload validation: a node that already
     // reached a terminal state is settled, so a late-arriving report (e.g. an
@@ -708,7 +549,7 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
             seq = ev.seq, kind = %ev.kind, node_id = %node_id, current = ?n.status,
             "no-op: node.report against terminal node"
         );
-        return Ok(());
+        return Ok(vec![]);
     }
     // Live node: validate the report's terminal outcome. A `node.report`
     // must express exactly one terminal outcome — success/failure XOR
@@ -721,7 +562,7 @@ fn apply_node_report(paths: &RunPaths, ev: &Event) -> Result<()> {
     n.last_report = Some(ev.data.clone());
     n.status = new_status;
     n.updated_at = ev.ts;
-    write_node(paths, &n)
+    Ok(vec![ProjectionOp::Node(n)])
 }
 
 /// Emit an observability trace for a status event dropped by the terminal
@@ -782,13 +623,13 @@ fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
     }
 }
 
-fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let d = &ev.data;
     let discussion_id = DiscussionId::parse_str(want_str(&events_path, ev, d, "discussion_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     if read_discussion_opt(paths, &discussion_id)?.is_some() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let node_id = want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
     let options = d
@@ -819,25 +660,25 @@ fn apply_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<()> {
         note: None,
         resolved_at: None,
     };
-    write_discussion(paths, &disc)?;
+    let mut ops = vec![ProjectionOp::Discussion(disc)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.open_discussions = m.open_discussions.saturating_add(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let id = DiscussionId::parse_str(want_str(&events_path, ev, &ev.data, "discussion_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let mut disc = match read_discussion_opt(paths, &id)? {
         Some(d) => d,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     if matches!(disc.status, DiscussionStatus::Resolved) {
-        return Ok(());
+        return Ok(vec![]);
     }
     disc.status = DiscussionStatus::Resolved;
     // `discussion.resolved` must carry a string `resolution` — without
@@ -848,22 +689,22 @@ fn apply_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<()> {
     disc.resolution = Some(want_str(&events_path, ev, &ev.data, "resolution")?.to_string());
     disc.note = optional_str(&events_path, ev, &ev.data, "note")?;
     disc.resolved_at = Some(ev.ts);
-    write_discussion(paths, &disc)?;
+    let mut ops = vec![ProjectionOp::Discussion(disc)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.open_discussions = m.open_discussions.saturating_sub(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let d = &ev.data;
     let proposal_id = ProposalId::parse_str(want_str(&events_path, ev, d, "proposal_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     if read_spinoff_opt(paths, &proposal_id)?.is_some() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let proposed_kind =
         data_kind(d.get("proposed_kind").unwrap_or(&Value::Null)).ok_or_else(|| {
@@ -893,25 +734,25 @@ fn apply_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<()> {
         rejected_reason: None,
         resolved_at: None,
     };
-    write_spinoff(paths, &s)?;
+    let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.pending_spinoffs = m.pending_spinoffs.saturating_add(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let mut s = match read_spinoff_opt(paths, &id)? {
         Some(s) => s,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     if matches!(s.status, SpinoffStatus::Approved | SpinoffStatus::Rejected) {
-        return Ok(());
+        return Ok(vec![]);
     }
     s.status = SpinoffStatus::Approved;
     s.accepted_as_issue_slug = ev
@@ -920,25 +761,25 @@ fn apply_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<()> {
         .and_then(Value::as_str)
         .map(str::to_string);
     s.resolved_at = Some(ev.ts);
-    write_spinoff(paths, &s)?;
+    let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.pending_spinoffs = m.pending_spinoffs.saturating_sub(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     let events_path = paths.events();
     let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
         .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let mut s = match read_spinoff_opt(paths, &id)? {
         Some(s) => s,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     if matches!(s.status, SpinoffStatus::Approved | SpinoffStatus::Rejected) {
-        return Ok(());
+        return Ok(vec![]);
     }
     s.status = SpinoffStatus::Rejected;
     s.rejected_reason = ev
@@ -947,16 +788,16 @@ fn apply_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<()> {
         .and_then(Value::as_str)
         .map(str::to_string);
     s.resolved_at = Some(ev.ts);
-    write_spinoff(paths, &s)?;
+    let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
         m.pending_spinoffs = m.pending_spinoffs.saturating_sub(1);
         m.updated_at = ev.ts;
-        write_manifest(paths, &m)?;
+        ops.push(ProjectionOp::Manifest(m));
     }
-    Ok(())
+    Ok(ops)
 }
 
-fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
+fn reduce_child_spawned(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
     // `child.spawned` is written to the PARENT run's events; the parent
     // spawning node is `ev.node_id`, the child run/node lives in `data`.
     let events_path = paths.events();
@@ -978,7 +819,7 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
     .map_err(|e| corrupt_id(&events_path, ev, &e))?;
     let mut n = match read_node_opt(paths, &parent_node_id)? {
         Some(n) => n,
-        None => return Ok(()),
+        None => return Ok(vec![]),
     };
     let new_ref = ChildRef {
         run_id: child_run_id,
@@ -987,11 +828,11 @@ fn apply_child_spawned(paths: &RunPaths, ev: &Event) -> Result<()> {
     if n.children.iter().any(|c| c == &new_ref) {
         // Already recorded — pure no-op so replayed events don't churn
         // `updated_at` or the projection file.
-        return Ok(());
+        return Ok(vec![]);
     }
     n.children.push(new_ref);
     n.updated_at = ev.ts;
-    write_node(paths, &n)
+    Ok(vec![ProjectionOp::Node(n)])
 }
 
 #[cfg(test)]
@@ -1088,7 +929,7 @@ mod tests {
             "tmux_session": "octl",
             "tmux_window_id": "@42",
         });
-        apply_node_created(&paths, &ev).expect("node.created applies");
+        apply_event(&paths, &ev).expect("node.created applies");
         let n = read_node_opt(&paths, &NodeId::parse_str("n-0001").unwrap())
             .unwrap()
             .unwrap();
@@ -1108,7 +949,7 @@ mod tests {
         ev2.kind = "node.created".into();
         ev2.node_id = Some(NodeId::parse_str("n-0001").unwrap());
         ev2.data = serde_json::json!({ "kind": "spinoff", "tmux_window": "🚀 wt/y" });
-        apply_node_created(&paths2, &ev2).expect("legacy node.created applies");
+        apply_event(&paths2, &ev2).expect("legacy node.created applies");
         let n2 = read_node_opt(&paths2, &NodeId::parse_str("n-0001").unwrap())
             .unwrap()
             .unwrap();

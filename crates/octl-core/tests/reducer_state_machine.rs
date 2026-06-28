@@ -44,7 +44,10 @@ impl Harness {
         node_id: Option<&str>,
         data: Value,
     ) -> octl_core::Result<()> {
-        append_and_apply_event(&self.paths, kind, node_id, None, data).map(|_| ())
+        // The fixtures carry node ids as `&str`; parse to the typed envelope id
+        // the append API now takes.
+        let node_id = node_id.map(|s| NodeId::parse_str(s).unwrap());
+        append_and_apply_event(&self.paths, kind, node_id.as_ref(), None, data).map(|_| ())
     }
 
     /// Number of events durably written to `events.jsonl`.

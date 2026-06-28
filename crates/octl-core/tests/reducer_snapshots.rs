@@ -33,7 +33,10 @@ impl Harness {
     // old hand-counted seq for these sequential fixtures, and these snapshots
     // cover projection files (never raw `seq`), so values are unchanged.
     fn append(&mut self, kind: &str, node_id: Option<&str>, data: Value) {
-        append_and_apply_event(&self.paths, kind, node_id, None, data).unwrap();
+        // The fixtures carry node ids as `&str`; parse to the typed envelope id
+        // the append API now takes.
+        let node_id = node_id.map(|s| NodeId::parse_str(s).unwrap());
+        append_and_apply_event(&self.paths, kind, node_id.as_ref(), None, data).unwrap();
     }
 }
 

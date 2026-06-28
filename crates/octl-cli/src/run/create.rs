@@ -262,7 +262,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
-            Some(parent_node_id),
+            Some(&parse_node_id(parent_node_id)?),
             None,
             child_data,
         )
@@ -366,7 +366,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let _ = octl_core::append_and_apply_event(
             &paths,
             "node.failed",
-            Some("n-0001"),
+            Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
             None,
             json!({
                 "reason": "agent-pid-discovery-failed",
@@ -394,8 +394,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "task": args.task,
         "parent_node_id": parent_node_id,
     });
-    octl_core::append_and_apply_event(&paths, "node.created", Some("n-0001"), None, node_data)
-        .map_err(from_core)?;
+    octl_core::append_and_apply_event(
+        &paths,
+        "node.created",
+        Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
+        None,
+        node_data,
+    )
+    .map_err(from_core)?;
 
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent

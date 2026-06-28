@@ -240,7 +240,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let seq = octl_core::append_and_apply_unlocked(
             &paths,
             "discussion.resolved",
-            Some(node_id.as_str()),
+            Some(&node_id),
             args.idempotency_key.as_deref(),
             data,
         )?;
