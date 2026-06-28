@@ -2,11 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: feature
-status: in-progress
+status: fixed
 priority: normal
 commits:
 - hash: b35db3c
   summary: run merge verb + interactive cleanup-on-explicit-merge
+closed: 2026-06-28
 ---
 
 # Bundle /worktree-merge into orchestratectl + interactive-kind cleanup-on-merge
