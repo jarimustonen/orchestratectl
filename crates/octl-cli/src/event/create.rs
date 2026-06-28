@@ -56,6 +56,12 @@ struct CreatedPayload<'a> {
 /// intentionally absent — design.md §7.5 names it "future opt-in" and
 /// no reducer case exists yet. Adding a new kind here is intentional:
 /// the reducer must learn it first.
+///
+/// `orchestrator.decision` and `discuss.critical` are append-only audit
+/// records emitted by `/orchestrate` (its decision log and pakkopysäytys
+/// mechanism). They carry no projection — the reducer folds them to a clean
+/// no-op — so the canonical event log is their sole home. They are NOT
+/// `node.report`, so the supervisor's terminal-cleanup roll-up ignores them.
 const ALLOWED_KINDS: &[&str] = &[
     "run.created",
     "run.status",
@@ -70,6 +76,8 @@ const ALLOWED_KINDS: &[&str] = &[
     "child.spawned",
     "supervisor.exited",
     "supervisor.reattach-requested",
+    "orchestrator.decision",
+    "discuss.critical",
 ];
 
 /// `run.created` is the bootstrap event owned by `orchestratectl run

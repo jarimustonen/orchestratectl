@@ -156,6 +156,7 @@ One JSON object per line. Common envelope:
 - `discussion.opened`, `discussion.resolved`
 - `spinoff.proposed`, `spinoff.approved`, `spinoff.rejected`
 - `supervisor.started`, `supervisor.exited` — tracks per-run supervisor lifecycle for debuggability
+- `orchestrator.decision`, `discuss.critical` — append-only audit records from `/orchestrate` (its decision log and pakkopysäytys). They carry no projection (the reducer folds them to a no-op); the event log is their canonical home. Not `node.report`, so the supervisor's terminal roll-up ignores them.
 
 The `data` payload is event-specific. Consumers ignore unknown `kind` values for forward compatibility.
 

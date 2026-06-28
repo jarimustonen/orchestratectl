@@ -676,6 +676,100 @@ fn node_created_then_node_status_updates_projection() {
 }
 
 #[test]
+fn orchestrator_decision_and_discuss_critical_are_appended_and_visible_in_tail() {
+    // /orchestrate's decision log (`orchestrator.decision`) and pakkopysäytys
+    // (`discuss.critical`) are append-only audit records on the driver run.
+    // Both must be accepted by `event create`, appear in `event tail`, and
+    // leave projections untouched (they carry no projection of their own).
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home); // seq 1 = run.created
+
+    let decision = write_json(
+        &home,
+        "decision.json",
+        json!({
+            "id": "d-001",
+            "decision": "merge integration branch eagerly",
+            "because": "downstream features block on it",
+            "scope": "feature-b, feature-c",
+            "reversibility": "medium"
+        }),
+    );
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "orchestrator.decision",
+        "--from-file",
+        decision.to_str().unwrap(),
+        "--idempotency-key",
+        "d-001",
+    ]));
+    assert_eq!(v["data"]["kind"], "orchestrator.decision");
+    assert_eq!(v["data"]["seq"].as_u64().unwrap(), 2);
+    // Append-only: the event touches no projection file.
+    assert!(
+        v["data"]["projections"].as_array().unwrap().is_empty(),
+        "audit kind must not project: {}",
+        v["data"]
+    );
+
+    let discuss = write_json(
+        &home,
+        "discuss.json",
+        json!({
+            "summary": "two features need the same schema migration",
+            "trigger": "cross_cutting",
+            "options": ["serialize", "split the migration"],
+            "recommended": "serialize",
+            "affected_features": ["feature-b", "feature-c"]
+        }),
+    );
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "discuss.critical",
+        "--from-file",
+        discuss.to_str().unwrap(),
+        "--idempotency-key",
+        "disc-001",
+    ]));
+    assert_eq!(v["data"]["kind"], "discuss.critical");
+    assert_eq!(v["data"]["seq"].as_u64().unwrap(), 3);
+    assert!(v["data"]["projections"].as_array().unwrap().is_empty());
+
+    // Both events are durable and visible in `event tail`.
+    let (stdout, _) =
+        run_ok_output(bin(&home).args(["--output", "jsonl", "event", "tail", &run_id]));
+    let lines: Vec<&str> = stdout.lines().collect();
+    let kinds: Vec<String> = lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["kind"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        kinds.iter().any(|k| k == "orchestrator.decision"),
+        "{kinds:?}"
+    );
+    assert!(kinds.iter().any(|k| k == "discuss.critical"), "{kinds:?}");
+
+    // The run manifest is still `pending` — these audit kinds never roll the
+    // run toward a terminal state (only `node.report` does, via the supervisor).
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(home.path().join("runs").join(&run_id).join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["status"], "pending");
+}
+
+#[test]
 fn unknown_kind_is_rejected_with_expected_list() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);

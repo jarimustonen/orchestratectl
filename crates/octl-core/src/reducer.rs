@@ -296,6 +296,14 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "spinoff.rejected" => reduce_spinoff_rejected(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
         "supervisor.exited" => Ok(vec![]),
+        // Append-only audit records from `/orchestrate` (decision log +
+        // pakkopysäytys). They mutate no projection — the event log is their
+        // canonical home — so they fold to a clean no-op. Listed explicitly
+        // (rather than relying on the `_` fallthrough) so the append path's
+        // transactional gate runs the same no-op plan for them and the intent
+        // is documented at the match site. They are NOT `node.report`, so the
+        // supervisor never mistakes them for a terminal signal.
+        "orchestrator.decision" | "discuss.critical" => Ok(vec![]),
         _ => Ok(vec![]),
     }
 }
@@ -852,6 +860,49 @@ mod tests {
             idempotency_key: None,
             data: serde_json::json!({ "status": "running" }),
         }
+    }
+
+    #[test]
+    fn orchestrator_decision_and_discuss_critical_reduce_to_noop() {
+        // The /orchestrate audit kinds are append-only: the reducer must plan
+        // ZERO projection ops for them regardless of payload, so the event log
+        // is their sole home and no projection is created or mutated.
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        // Bootstrap a manifest so we can prove the audit events leave it
+        // byte-for-byte untouched (no counter churn, no status drift).
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data = serde_json::json!({
+            "kind": "spinoff", "lifecycle": "autonomous", "title": "t"
+        });
+        apply_event(&paths, &created).expect("run.created applies");
+        let manifest_before = std::fs::read(paths.manifest()).unwrap();
+
+        for (seq, kind) in [(10u64, "orchestrator.decision"), (11, "discuss.critical")] {
+            let mut ev = event(run_id);
+            ev.seq = seq;
+            ev.kind = kind.into();
+            // A non-trivial payload to prove the reducer ignores it wholesale.
+            ev.data = serde_json::json!({ "summary": "x", "arbitrary": [1, 2, 3] });
+            let ops = reduce_event_to_ops(&paths, &ev).expect("audit kind reduces cleanly");
+            assert!(ops.is_empty(), "{kind} must plan no projection ops");
+            // apply_event is the plan+commit path; it must also be a clean no-op.
+            apply_event(&paths, &ev).expect("audit kind applies as no-op");
+        }
+
+        // The manifest is unchanged and no stray projection dirs appeared.
+        assert_eq!(
+            std::fs::read(paths.manifest()).unwrap(),
+            manifest_before,
+            "audit events must not mutate the manifest"
+        );
+        assert!(!paths.nodes_dir().exists(), "no node projection created");
     }
 
     #[test]
