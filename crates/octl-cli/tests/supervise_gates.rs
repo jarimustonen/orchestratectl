@@ -13,6 +13,9 @@ use std::time::Duration;
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod common;
+use common::TestHome;
+
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     c.env("ORCHESTRATECTL_HOME", home.path());
@@ -136,7 +139,7 @@ fn run_dir(home: &TempDir, run_id: &str) -> std::path::PathBuf {
 /// reason: "agent-died"}` event for the supervisor's reducer to fold.
 #[test]
 fn v2_agent_pid_discovery_via_liveness_probe() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v2-pid");
     // Forge a node.created carrying an agent_pid that points at our
     // own PID (definitely alive, so the watchdog must NOT synthesize a
@@ -214,7 +217,7 @@ fn v3_kill_and_start_time_identity() {
     // additionally drive it through the public CLI by running
     // `supervise --once` repeatedly and confirming the supervisor does
     // not falsely declare itself dead.)
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v3-st");
     let our_pid = std::process::id();
     let report = home.path().join("v3.json");
@@ -278,7 +281,7 @@ fn wedge_corrupt_middle_line(events: &Path) {
 /// the log replays strictly (no poison bytes left for a future reader).
 #[test]
 fn corrupt_tail_line_is_quarantined_and_log_heals() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
     let events = run_dir(&home, &run_id).join("events.jsonl");
     wedge_corrupt_middle_line(&events);
@@ -332,7 +335,7 @@ fn corrupt_tail_line_is_quarantined_and_log_heals() {
 /// on disk, never re-erroring on the same offset every tick.
 #[test]
 fn corrupt_tail_line_is_skipped_once_without_looping() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
     let events = run_dir(&home, &run_id).join("events.jsonl");
     wedge_corrupt_middle_line(&events);
@@ -387,7 +390,7 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
 /// skips it and still counts the intact records before it.
 #[test]
 fn lenient_poll_skips_torn_trailing_line() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "torn-tail");
     let events = run_dir(&home, &run_id).join("events.jsonl");
 
@@ -425,7 +428,7 @@ fn v7_deterministic_id_dedup_under_crash() {
     // Second supervise pass on the same child run: must be a no-op
     // (every deterministic ID already exists in the parent's
     // discussions/ or spinoffs/ directory).
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let parent = create_run(&home, "orchestrated", "v7-parent");
 
     // Forge a parent-side spawning node + child-spawned link so the
@@ -565,7 +568,7 @@ fn v7_deterministic_id_dedup_under_crash() {
 fn signal_exit_codes_and_payload() {
     use std::io::Read;
     for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
-        let home = TempDir::new().unwrap();
+        let home = TestHome::new();
         let run_id = create_run(&home, "spinoff", "sig");
         // Long-lived supervisor (no --once): spawn, let it enter the loop,
         // then deliver the signal and assert the exit code + event.
@@ -650,7 +653,7 @@ fn signal_exit_codes_and_payload() {
 /// time — only the explicit `flush_logs()` drain gets it to disk before exit.
 #[test]
 fn sigterm_flushes_buffered_supervisor_logs() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "sigterm-flush");
 
     // Long-lived supervisor (no --once) so it is mid-loop when signalled.
@@ -709,7 +712,7 @@ fn sigterm_flushes_buffered_supervisor_logs() {
 /// (now under the run lock) before committing a synthetic report.
 #[test]
 fn watchdog_defers_when_report_already_present() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "wd-defer");
     let our_pid = std::process::id();
     let report = home.path().join("wd-node.json");
@@ -768,7 +771,7 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
     use std::process::Command;
     use std::time::Instant;
 
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "sighup-survive");
 
     // The "spawner": a shell, made a process-group LEADER via setpgid(0,0),
@@ -887,7 +890,7 @@ fn sig_num(sig: &str) -> libc::c_int {
 /// boots cleanly. Demonstrates the stale-PID detection path.
 #[test]
 fn v8_reattach_end_to_end() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v8");
 
     run_ok(bin(&home).args(["--output", "json", "run", "reattach", &run_id, "--once"]));
@@ -928,7 +931,7 @@ fn v8_reattach_end_to_end() {
 /// `last_processed_report_seq_by_child` so a replay is a no-op.
 #[test]
 fn v9_cancel_synthesizes_report_no_spinoffs() {
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let parent = create_run(&home, "orchestrated", "v9-parent");
     let p_node = home.path().join("v9-pn.json");
     std::fs::write(&p_node, r#"{"kind":"orchestrated","task":"x"}"#).unwrap();
@@ -1027,7 +1030,7 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
 fn self_terminate_when_run_dir_vanishes() {
     use std::time::Instant;
 
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "self-term");
     let rdir = run_dir(&home, &run_id);
 
@@ -1098,7 +1101,7 @@ fn self_terminate_when_run_dir_vanishes() {
 fn self_terminate_when_whole_run_dir_removed() {
     use std::time::Instant;
 
-    let home = TempDir::new().unwrap();
+    let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "self-term-dir");
     let rdir = run_dir(&home, &run_id);
 
