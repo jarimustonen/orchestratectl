@@ -2,8 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: fixed
 priority: normal
+commits:
+- hash: 1b9a2c6
+  summary: 'fix(events): accept orchestrator.decision + discuss.critical kinds'
+closed: 2026-06-28
 ---
 
 # /orchestrate decision-log and pakkopysäytys event kinds rejected by binary
