@@ -66,6 +66,11 @@ const SKILLS: &[EmbeddedSkill] = &[
         path_in_repo: "crates/octl-cli/skills/worktree-code/SKILL.template.md",
     },
     EmbeddedSkill {
+        name: "worktree-merge",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-merge/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/worktree-merge/SKILL.template.md",
+    },
+    EmbeddedSkill {
         name: "worktree-orchestrated",
         body: include_str!(concat!(
             env!("OUT_DIR"),
