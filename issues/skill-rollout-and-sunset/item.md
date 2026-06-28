@@ -1,0 +1,15 @@
+---
+created: 2026-06-28
+updated: 2026-06-28
+type: chore
+assignee: jari
+status: open
+priority: normal
+epic: skill-bundling-campaign
+---
+
+# Phase 7: rollout, smoke-test, sunset homebase skills + import-existing-tmux
+
+## Description
+
+After all skills bundled: orchestratectl skill install --all --force into ~/.claude/skills/. Smoke-test each kind end-to-end. Add 'orchestratectl import-existing-tmux' (or 'run adopt') to adopt pre-existing wm-* / 🎬-prefixed windows as synthetic runs. Sunset homebase ~/.claude/skills/worktree-* etc. (or keep as fallback for one release).
