@@ -285,12 +285,12 @@ While the supervisor watches:
 
 - `orchestratectl run show <run-id>` — lifecycle, node states, recent
   events.
-- `orchestratectl event tail --run <run-id> --follow` — streaming event
+- `orchestratectl event tail <run-id> --follow` — streaming event
   log.
-- `orchestratectl discussion list --run <run-id>` — decisions the
+- `orchestratectl discussion list <run-id>` — decisions the
   agent surfaced that need human input. Resolve via `discussion
   resolve` before the run can continue past them.
-- `orchestratectl spinoff list --run <run-id>` — spin-off proposals
+- `orchestratectl spinoff list <run-id>` — spin-off proposals
   the agent raised during review. The user approves/rejects with
   `spinoff approve` / `spinoff reject`.
 

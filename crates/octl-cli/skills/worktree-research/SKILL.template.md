@@ -123,7 +123,7 @@ Tell the user:
 - That the research worktree merges itself — no `/worktree-merge`
   handoff.
 - How to follow progress: `orchestratectl run show <run-id>` and
-  `orchestratectl event tail --run <run-id> --follow`.
+  `orchestratectl event tail <run-id> --follow`.
 
 ## Terminal report (mandatory)
 

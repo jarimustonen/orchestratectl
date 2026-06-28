@@ -115,27 +115,39 @@ Flag rules:
   "data": {
     "run_id": "01HZ-CHILD",
     "dir": "/Users/<you>/.orchestratectl/runs/01HZ-CHILD",
-    "supervisor": {"note": "child supervisor spawned by parent"},
+    "supervisor": "delegated-to-parent-supervisor",
     "kind": "orchestrated",
     "lifecycle": "autonomous",
     "parent_run_id": "01HZ-PARENT",
     "parent_node_id": "n-0001",
     "node_id": "n-...",
-    "tmux_window": "🎼 wt/<title>",
-    "worktree_path": "/Users/<you>/.../worktrees/<title>",
-    "branch": "wt/<title>"
+    "tmux_window": "🇩🇪 🎼 wt-<short>-<title>",
+    "worktree_path": "/Users/<you>/Sources/<repo>__worktrees/wt-<short>-<title>",
+    "branch": "wt/<short>-<title>"
   }
 }
 ```
 
-The `supervisor` field is intentionally a `{"note": "..."}` here — the
-parent's supervisor spawns the child's. Do NOT treat the note as an
-error.
+Field-shape notes (match these exactly — parsers key on them):
+
+- `supervisor` is the plain **string** `"delegated-to-parent-supervisor"`,
+  not an object. The parent's supervisor spawns the child's, so the
+  child-spawn create starts none of its own. Do NOT treat this value as
+  an error and do NOT parse it as an object (`.supervisor.note` does not
+  exist).
+- `<short>` is the first 10 alphanumerics of the run id — the same value
+  the "Discover the run id and node id" snippet below extracts with
+  `sed -E 's#^wt/([0-9a-z]{10}).*#\1#'`.
+- `tmux_window` and `worktree_path` use `wt-<short>-<title>` (dash,
+  filesystem-safe); `branch` uses `wt/<short>-<title>` (slash).
+- The leading `🇩🇪` in `tmux_window` is the per-repo prefix emoji
+  (configured per repo); `🎼` marks an orchestrated window. The emoji
+  varies — do not match on it.
 
 Return the structured payload (run id, node id, branch, parent
 pointers) to the calling `/orchestrate` driver. The driver polls the
 child's lifecycle and `node report` via `orchestratectl run show <id>`
-and `orchestratectl event tail --run <parent-run-id> --follow`.
+and `orchestratectl event tail <parent-run-id> --follow`.
 
 ### 4. Report to the driver
 
@@ -260,7 +272,7 @@ The child writes its events to **its own** run log, and the parent's
 supervisor mirrors lifecycle transitions onto the parent's log so a
 driver only needs to tail the parent:
 
-- `orchestratectl event tail --run <parent-run-id> --follow` —
+- `orchestratectl event tail <parent-run-id> --follow` —
   authoritative stream for the driver; `child.spawned`,
   `child.lifecycle`, and `child.report` events arrive here.
 - `orchestratectl run show <child-run-id>` — child-only detail.

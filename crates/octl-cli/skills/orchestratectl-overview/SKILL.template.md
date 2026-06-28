@@ -45,9 +45,11 @@ If `schema_version` is a value you do not recognise, refuse to proceed
 - `orchestratectl skill list` / `skill print <name>` / `skill install <name>`
   — discover, stream, and persist the operating manual for each
   workflow.
-- `orchestratectl run create --kind <kind> --prompt "..."` — start a
-  new run (kinds: `worktree-code`, `spinoff`, `fan-out`, `orchestrate`).
-  See the `octl-spawn-spinoff` skill for the spinoff specifics.
+- `orchestratectl run create --kind <kind> --title "..." --task "..."`
+  — start a new run (kinds: `worktree-code`, `spinoff`, `fan-out`,
+  `orchestrate`). The brief is `--task "<inline>"` or, for a long brief,
+  `--prompt-file <path>` — there is no `--prompt` flag. See the
+  `octl-spawn-spinoff` skill for the spinoff specifics.
 - `orchestratectl run list` / `run show <id>` — inspect runs. See the
   `octl-run-overview` skill for payload shapes.
 - `orchestratectl supervise <run-id>` — the long-lived per-run
@@ -71,9 +73,11 @@ If `schema_version` is a value you do not recognise, refuse to proceed
 
 The flow every workflow follows:
 
-1. **Create**: `orchestratectl run create --kind <kind> --prompt "<the
-   brief>"` returns a `data.run` object with `id` and
-   `lifecycle: pending`.
+1. **Create**: `orchestratectl run create --kind <kind> --title
+   "<title>" --task "<the brief>"` returns a `data` payload with
+   `run_id`, `kind`, and `lifecycle` (the kind's classification —
+   `autonomous` or `interactive`, not a progress value). The run's
+   progress starts at `status: pending`, read later via `run show`.
 2. **Supervise**: a background supervisor process picks the run up and
    drives the worker agent(s). State transitions land in the run's
    event log; `run show <id>` reads them.
@@ -82,10 +86,21 @@ The flow every workflow follows:
    proposals, discussion items, wrap-up recommendations). The
    orchestrator reads these via `node show` and `discussion list`.
 
-Decision rule: never assume a run is finished from `status`'s human
-label. Read `lifecycle` — only that field is authoritative
-(`pending` / `running` / `paused` / `completed` / `failed` /
-`cancelled`).
+Two distinct fields, two distinct meanings — do not conflate them:
+
+- **`lifecycle`** carries the run's *classification*, derived from its
+  kind and fixed for the run's whole life: `autonomous` (spinoff,
+  fan-out, research, bugfix, technical-decision, make-skill,
+  orchestrated — runs to completion unattended) or `interactive`
+  (`code`, `orchestrate` — human-driven in a tmux window). It is **not**
+  a progress signal: a brand-new orchestrated child already reads
+  `lifecycle: autonomous`.
+- **`status`** carries the run's *progress* and is the field to read
+  when deciding whether a run is finished: `pending` / `running` /
+  `blocked` / `done` / `failed` / `cancelled`. `done`, `failed`, and
+  `cancelled` are terminal. Read `status` (via `run show <id>` →
+  `data.manifest.status`), never `lifecycle`, to tell whether work is
+  complete.
 
 ## When to use which skill
 

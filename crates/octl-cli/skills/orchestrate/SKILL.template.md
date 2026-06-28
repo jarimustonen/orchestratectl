@@ -207,7 +207,7 @@ While there are features not yet `done` or `failed`:
 3. Tail the parent's event log:
 
    ```
-   orchestratectl event tail --run <driver-run-id> --follow
+   orchestratectl event tail <driver-run-id> --follow
    ```
 
    Events to act on:
@@ -303,7 +303,7 @@ When any of the three triggers fires:
 3. Surface the discussion to the user via:
 
    ```
-   orchestratectl discussion list --run <driver-run-id>
+   orchestratectl discussion list <driver-run-id>
    ```
 
    Tell the user what came up, your recommendation, and what is
@@ -453,10 +453,10 @@ peek at any moment:
 
 - `orchestratectl run show <driver-run-id>` — aggregate counts of
   features per state, open discussions, decision count.
-- `orchestratectl event tail --run <driver-run-id> --follow` —
+- `orchestratectl event tail <driver-run-id> --follow` —
   authoritative live stream of children, decisions, and pakkopysäytys
   events.
-- `orchestratectl discussion list --run <driver-run-id>` — open
+- `orchestratectl discussion list <driver-run-id>` — open
   pakkopysäytys discussions (should be 0 most of the time).
 - `cat ~/.orchestratectl/runs/<driver-run-id>/report.yaml` — current
   state of the in-progress report (regenerated on every milestone).
@@ -482,7 +482,7 @@ first invocation in a session, run
   (Publishing channels are TBD.)
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading. Stop — the
-  `--kind orchestrate` driver kind, `event append`, `discussion
+  `--kind orchestrate` driver kind, `event create`, `discussion
   resolve`, and `run reattach` semantics referenced by this skill may
   have changed.
 - **Newer than `{{CLI_VERSION}}`**: refresh the catalog:

@@ -130,7 +130,7 @@ Tell the user:
   classify, it will stop and surface the reason via the run's event
   log.
 - How to follow: `orchestratectl run show <run-id>` and
-  `event tail --run <run-id> --follow`.
+  `event tail <run-id> --follow`.
 
 ## Terminal report (mandatory)
 

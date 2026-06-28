@@ -36,7 +36,7 @@ done. No interactive review. The canonical way to launch one is via
 ```
 orchestratectl run create \
   --kind spinoff \
-  --prompt "<the task in one paragraph>" \
+  --task "<the task in one paragraph>" \
   --source-branch <branch> \
   [--target-branch <branch>]
 ```
@@ -46,9 +46,11 @@ stdout. Add `--output text` for a human-readable summary or `--output
 json` for pretty-printed JSON.)
 
 - `--kind spinoff` is required; it picks the autonomous worker recipe.
-- `--prompt` is the *entire* brief the spinoff agent will see. It must
+- `--task` is the *entire* brief the spinoff agent will see. It must
   be self-contained — the spinoff does not share your conversation
   history. State the goal, the constraints, and what "done" looks like.
+  For a long brief, write it to a file and pass `--prompt-file <path>`
+  instead of inlining via `--task`.
 - `--source-branch` is the branch the worktree forks from. Default is
   the current branch when omitted.
 - `--target-branch` is where the spinoff merges back. Defaults to
@@ -108,7 +110,7 @@ that misinterprets the task wastes a worktree and a merge cycle.
 
 Standard error envelope on stderr, non-zero exit. Likely codes:
 
-- `invalid_argument` — bad branch name, missing `--prompt`
+- `invalid_argument` — bad branch name, missing `--task`/`--prompt-file`
 - `branch_not_found` — `--source-branch` does not exist locally
 - `worktree_create_failed` — git refused (uncommitted changes,
   conflicting worktree)

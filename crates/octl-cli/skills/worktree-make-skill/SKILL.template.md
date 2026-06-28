@@ -119,7 +119,7 @@ Tell the user:
 - Run id, branch, tmux window, target file path.
 - That the worktree self-merges after the review loop converges.
 - How to follow: `orchestratectl run show <run-id>`,
-  `orchestratectl event tail --run <run-id> --follow`.
+  `orchestratectl event tail <run-id> --follow`.
 
 ## Terminal report (mandatory)
 

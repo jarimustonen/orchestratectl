@@ -151,7 +151,7 @@ Tell the user:
 - Driver run id, total unit count, concurrency.
 - Source/merge branch (every child merges here).
 - How to follow: `run show <driver-run-id>` for aggregate counts,
-  `event tail --run <driver-run-id> --follow` for per-unit events.
+  `event tail <driver-run-id> --follow` for per-unit events.
 - Estimated wall-clock if the per-unit cost is known.
 - That `run reattach` is the resume path on interruption.
 
@@ -252,10 +252,10 @@ Likely codes:
 
 - `orchestratectl run show <driver-run-id>` — aggregate counts
   (pending / running / done / failed) and the next units to fan out.
-- `orchestratectl event tail --run <driver-run-id> --follow` —
+- `orchestratectl event tail <driver-run-id> --follow` —
   authoritative stream; `child.spawned`, `child.lifecycle`, and
   `child.report` events arrive here per unit.
-- `orchestratectl node list --run <driver-run-id>` — per-unit table.
+- `orchestratectl node list <driver-run-id>` — per-unit table.
 - `orchestratectl node show <child-node-id>` — terminal report for one
   unit (the `node report` verb is for *writing* it; see "Terminal report
   (mandatory)").

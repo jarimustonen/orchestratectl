@@ -282,9 +282,9 @@ The spinoff runs asynchronously. To check status:
 
 - `orchestratectl run show <run-id>` — current lifecycle, node states,
   recent events.
-- `orchestratectl event tail --run <run-id> --follow` — streaming
+- `orchestratectl event tail <run-id> --follow` — streaming
   event log (use for "wait until merged" loops).
-- `orchestratectl node list --run <run-id>` — per-unit detail (a
+- `orchestratectl node list <run-id>` — per-unit detail (a
   spinoff has exactly one worker node).
 - `orchestratectl node show <node-id>` — the structured terminal
   report the spinoff submits when it merges (the `node report` verb is
