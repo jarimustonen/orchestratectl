@@ -469,25 +469,36 @@ impl<R: BufRead> PhysicalLineReader<R> {
     }
 }
 
-/// Read every event from `events.jsonl`. Used by tests and reducer replays.
+/// Stream `events.jsonl` line by line, deserializing each complete line into a
+/// caller-chosen envelope probe `T` and invoking `visit(probe, raw_line)`.
 ///
-/// # Torn-line policy
+/// This is the streaming counterpart to [`read_all_events`]: it shares the exact
+/// [`PhysicalLineReader`] torn-tail / [`Error::CorruptEventLog`] policy (a torn
+/// final line lacking a trailing `\n` is dropped *without* parsing even if its
+/// bytes are valid JSON; any newline-terminated unparseable line is interior
+/// corruption surfaced as [`Error::CorruptEventLog`]) but never materializes the
+/// whole log — the caller accumulates only what it needs into its own state.
 ///
-/// Built on the shared [`PhysicalLineReader`] so it matches
-/// [`find_prior_with_key`] and [`recover_last_seq`] exactly: a torn final
-/// line lacking a trailing `\n` is an in-flight partial write, dropped
-/// *without* parsing even if its bytes happen to be valid JSON. Any
-/// newline-terminated line that fails to parse is interior corruption and
-/// surfaces as [`Error::CorruptEventLog`] — not a transient JSON fault — so a
-/// replay rejects a poisoned log loudly instead of silently dropping a line.
-pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
+/// `T` deserializes only the envelope fields it declares; serde ignores the
+/// rest, so a multi-KB `node.report` `data` payload is scanned but never
+/// allocated. The raw line bytes are *lent* to `visit` (a streaming
+/// lending-iterator borrow into the reader's reused buffer), so the closure can
+/// re-parse the full payload for the rare line it must materialize without the
+/// reader holding more than one line at a time.
+///
+/// A missing log is an empty stream (`Ok(())` with no calls). Caller must hold
+/// the run's [`RunLock`]; the scan is read-only over an append-only file.
+pub(crate) fn for_each_event_probe<T, F>(events_path: &Path, mut visit: F) -> Result<()>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut(T, &[u8]) -> Result<()>,
+{
     let f = match std::fs::File::open(events_path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(Error::io(events_path, e)),
     };
     let mut reader = PhysicalLineReader::new(BufReader::new(f));
-    let mut out = Vec::new();
     while let Some(line) = reader.next_line().map_err(|e| Error::io(events_path, e))? {
         // Torn final line (no trailing newline): uncommitted partial write,
         // discarded without parsing — mirrors `recover_last_seq`.
@@ -497,7 +508,7 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
         if line.content.is_empty() {
             continue;
         }
-        let ev: Event =
+        let probe: T =
             serde_json::from_slice(line.content).map_err(|e| Error::CorruptEventLog {
                 path: events_path.to_path_buf(),
                 reason: format!(
@@ -506,8 +517,28 @@ pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
                     excerpt(line.content)
                 ),
             })?;
-        out.push(ev);
+        visit(probe, line.content)?;
     }
+    Ok(())
+}
+
+/// Read every event from `events.jsonl`. Used by tests and reducer replays.
+///
+/// # Torn-line policy
+///
+/// Built on the shared [`for_each_event_probe`] (hence [`PhysicalLineReader`]),
+/// so it matches [`find_prior_with_key`] and [`recover_last_seq`] exactly: a
+/// torn final line lacking a trailing `\n` is an in-flight partial write,
+/// dropped *without* parsing even if its bytes happen to be valid JSON. Any
+/// newline-terminated line that fails to parse is interior corruption and
+/// surfaces as [`Error::CorruptEventLog`] — not a transient JSON fault — so a
+/// replay rejects a poisoned log loudly instead of silently dropping a line.
+pub fn read_all_events(events_path: &Path) -> Result<Vec<Event>> {
+    let mut out = Vec::new();
+    for_each_event_probe::<Event, _>(events_path, |ev, _raw| {
+        out.push(ev);
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -799,7 +830,7 @@ fn trim_line_end(buf: &[u8]) -> &[u8] {
 /// in an error message. Bytes are lossily decoded (a torn multi-byte tail
 /// becomes the replacement char) and control characters are escaped so an
 /// excerpt can't inject newlines or ANSI sequences into CLI output.
-fn excerpt(line: &[u8]) -> String {
+pub(crate) fn excerpt(line: &[u8]) -> String {
     let shown = &line[..line.len().min(CORRUPT_LINE_EXCERPT_BYTES)];
     let mut out: String = String::from_utf8_lossy(shown).escape_debug().to_string();
     if line.len() > CORRUPT_LINE_EXCERPT_BYTES {

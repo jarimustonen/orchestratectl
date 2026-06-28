@@ -3,9 +3,10 @@ created: 2026-06-28
 updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
 ---
 
 # run cancel: derive node/run liveness from the event log, not stale projections

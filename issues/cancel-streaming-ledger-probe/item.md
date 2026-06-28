@@ -3,9 +3,10 @@ created: 2026-06-28
 updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
 ---
 
 # run cancel: stream an envelope-only ledger probe instead of materializing the full log

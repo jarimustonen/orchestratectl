@@ -19,17 +19,24 @@
 //!
 //! Two consistency properties beyond the single lock:
 //!
-//! - **Enumeration is from the event log, not the projection directory.** The
-//!   node set is replayed from `events.jsonl` (the source of truth) rather than
-//!   scanned from `nodes/*.json`. A `node.created` can be appended+fsynced while
-//!   its projection write is crash-interrupted (`events.rs` documents the log
-//!   leading the projections); a `nodes/` scan would silently drop that node,
-//!   mark the run `cancelled`, and let a future `rebuild_projections` resurrect
-//!   it as live under a `Cancelled` run. Walking the log closes that window.
-//!   (The manifest's `node_count` is *also* a projection written in the same
-//!   interrupted fold, so it is no more authoritative than `nodes/` — and it
-//!   carries no node ids — which is why we replay the log rather than trust the
-//!   counter.)
+//! - **Enumeration *and per-node liveness* are from the event log, not the
+//!   projection directory.** The node set and each node's current status are
+//!   both replayed from `events.jsonl` (the source of truth) in one streaming
+//!   pass rather than scanned from `nodes/*.json`. A `node.created` can be
+//!   appended+fsynced while its projection write is crash-interrupted
+//!   (`events.rs` documents the log leading the projections); a `nodes/` scan
+//!   would silently drop that node, mark the run `cancelled`, and let a future
+//!   `rebuild_projections` resurrect it as live under a `Cancelled` run. Walking
+//!   the log closes that window. Crucially, replaying `node.status` / `node.report`
+//!   to derive each node's status (rather than trusting `read_node_opt`) closes a
+//!   second window: a *non-cancel* terminal event (e.g. a `node.report`
+//!   `success: true`) fsynced but not yet folded leaves a stale-live projection,
+//!   and a projection-derived liveness check would over-write that node with a
+//!   fresh cancel that diverges on rebuild. The log-derived status settles it as
+//!   already-terminal instead — the log wins. (The manifest's `node_count` is
+//!   *also* a projection written in the same interrupted fold, so it is no more
+//!   authoritative than `nodes/` — and it carries no node ids — which is why we
+//!   replay the log rather than trust the counter.)
 //!
 //! - **Each synthesized event carries a deterministic idempotency key**
 //!   (`run-cancel:<run_id>:node:<node_id>` and `run-cancel:<run_id>:run-status`).
@@ -43,21 +50,31 @@
 //!   clean no-op when the projection already agrees). The whole transaction is
 //!   then both non-duplicating and projection-convergent.
 //!
-//! What is still *not* fixed here (deliberately out of scope, tracked as
-//! follow-ups): node/run **liveness is read from projections, not replayed from
-//! the log**, so an unfolded non-cancel terminal event (e.g. a `node.report`
-//! `success: true` fsynced but not applied before the crash) can still be
-//! over-written by a freshly appended cancel and diverge on rebuild. Closing
-//! that needs authoritative log-replayed liveness or a `rebuild_projections`
-//! primitive (the parent issue gated this on exactly that). The full-payload
-//! `read_all_events` materialization under the lock is likewise a known cost.
+//! The cancel ledger is built by a *streaming* pass: [`for_each_event_probe`]
+//! walks `events.jsonl` line by line, parsing only the small envelope + status
+//! fields each line needs and materializing a full [`Event`] payload solely for
+//! the handful of lines in this run's `run-cancel:<run_id>:` key namespace (the
+//! events the re-fold path replays). The whole log is never held in memory, so
+//! lock-hold time and peak memory stay bounded even for a run with hundreds of
+//! nodes and multi-KB `node.report` payloads.
+//!
+//! What is still *not* derived from the log here: **run-level** liveness (the
+//! terminal-refusal check and `run_was_already_cancelled`) is read from the
+//! manifest projection, with the prior-cancel re-fold converging a crash-stranded
+//! `run.status`. Deriving the run status from the log too would conflate a
+//! crash-stranded `run.status: cancelled` (manifest stale, must re-fold and
+//! report a *fresh* cancel) with an already-folded one, since the log is
+//! identical in both cases — so the manifest read stays authoritative for the
+//! run-level decision, exactly as the per-node convergence path consults
+//! `read_node_opt` only to tell those two cases apart.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::events::{append_and_apply_unlocked, read_all_events};
+use crate::events::{append_and_apply_unlocked, excerpt, for_each_event_probe};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest, read_node_opt};
@@ -139,47 +156,52 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
         .filter(|s| !s.is_empty())
         .unwrap_or("cancelled by user");
 
-    // One replay pass over the source-of-truth log: the authoritative node set
-    // (immune to the projection crash window) and the prior cancel events
-    // already recorded (so a prior interrupted cancel isn't duplicated — it is
-    // re-folded instead).
+    // One streaming replay pass over the source-of-truth log: the authoritative
+    // node set *and each node's current status* (both immune to the projection
+    // crash window), plus the prior cancel events already recorded (so a prior
+    // interrupted cancel isn't duplicated — it is re-folded instead).
     let CancelLedger {
-        node_ids,
+        node_status,
         prior_cancel,
     } = read_cancel_ledger(paths)?;
 
     let mut nodes_cancelled = Vec::new();
     let mut nodes_already_terminal = Vec::new();
 
-    for nid in node_ids {
-        // A node whose *status* is already terminal on entry is settled — report
-        // it under `nodes_already_terminal`, never as freshly cancelled. Checked
-        // before the idempotency key so a normally-converged re-cancel still
-        // lands here (matching the pre-refactor projection-based behavior). We
-        // do NOT also skip a non-terminal node that happens to carry
-        // `last_report` (a should-never-happen anomaly): the reducer gates on
-        // status, so synthesizing a cancel report there still transitions.
-        if let Some(n) = read_node_opt(paths, &nid)? {
-            if n.status.is_terminal() {
-                nodes_already_terminal.push(nid);
-                continue;
-            }
-        }
-        // Reached for a live node OR one whose projection is missing entirely —
-        // a `node.created` fsynced into the log but its projection write
-        // interrupted (the crash window a `nodes/*.json` scan would silently
-        // drop). Both must get a terminal cancel report so the log records the
-        // node as cancelled and a future rebuild can't resurrect it as live.
+    for (nid, log_status) in node_status {
         let key = node_cancel_key(&paths.run_id, &nid);
+        // Convergence path first: this run's cancel already logged a
+        // `node.report` for this node (a prior, possibly crash-interrupted,
+        // cancel). The log is identical whether that report's projection fold
+        // landed or not, so `read_node_opt` is what tells the two apart — an
+        // already-folded terminal projection is a clean no-op reported as
+        // already-terminal, while a crash-stranded still-live projection is
+        // converged by re-folding the already-logged event (no duplicate append)
+        // and reported as cancelled. This is the only remaining projection read,
+        // and it serves convergence, not the liveness decision below.
         if let Some(prior) = prior_cancel.get(&("node.report".to_owned(), key.clone())) {
-            // A prior interrupted cancel already durably appended this node's
-            // cancel report (fsynced) but may never have folded its projection,
-            // so it can still read non-terminal here. Converge it WITHOUT a
-            // duplicate log line by re-folding the already-logged event (a clean
-            // no-op if the projection already agrees; for a still-missing
-            // projection `apply_node_report` no-ops and the rebuild heals it).
+            if let Some(n) = read_node_opt(paths, &nid)? {
+                if n.status.is_terminal() {
+                    nodes_already_terminal.push(nid);
+                    continue;
+                }
+            }
             apply_event(paths, prior)?;
             nodes_cancelled.push(nid);
+            continue;
+        }
+        // No prior cancel for this node: the event log is authoritative for
+        // liveness. A node the log replays as terminal — a non-cancel terminal
+        // (`node.report success` / a `node.status` to a terminal value), or a
+        // cancel logged outside this run's key namespace — is already settled
+        // and skipped, even if a stale projection still reads live (the window
+        // cancel-liveness-from-log closes: the log wins). Only a node the log
+        // shows non-terminal (including a `node.created` whose projection write
+        // was interrupted — the crash window a `nodes/*.json` scan would drop)
+        // gets a synthesized terminal cancel report so the log records it as
+        // cancelled and a future rebuild can't resurrect it as live.
+        if log_status.is_terminal() {
+            nodes_already_terminal.push(nid);
             continue;
         }
         let data = json!({
@@ -237,15 +259,18 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
     })
 }
 
-/// Cancel-relevant facts replayed from `events.jsonl` in one pass under the
-/// held lock.
+/// Cancel-relevant facts replayed from `events.jsonl` in one streaming pass
+/// under the held lock.
 struct CancelLedger {
-    /// Every node id a `node.created` event ever introduced, deduped and sorted
-    /// by numeric suffix. The authoritative live-node *candidate* set (per-node
-    /// status is then read from the projection): replayed from the source of
-    /// truth, so it includes a node whose projection write was crash-interrupted
-    /// — the exact node a `nodes/*.json` scan would miss.
-    node_ids: Vec<NodeId>,
+    /// Every node a `node.created` event introduced, paired with the status the
+    /// log replays for it, deduped and sorted by numeric suffix. The
+    /// authoritative live-node set *and* per-node liveness: replayed from the
+    /// source of truth, so it includes a node whose projection write was
+    /// crash-interrupted (the node a `nodes/*.json` scan would miss) and reports
+    /// a node terminal whenever the log says so even if the projection still
+    /// reads live (the window [`crate::events`] documents the log leading the
+    /// projections through).
+    node_status: Vec<(NodeId, Status)>,
     /// Cancel events this run already logged, keyed by `(kind, idempotency_key)`
     /// and limited to this run's `run-cancel:<run_id>:` key namespace (first
     /// occurrence wins, mirroring [`crate::events::find_prior_with_key`]). The
@@ -253,61 +278,185 @@ struct CancelLedger {
     /// re-appending a duplicate and (b) re-fold the event so a crash-stranded
     /// projection converges. Keying by `(kind, key)` — not the bare string —
     /// keeps a coincidental or forged key on an unrelated `kind` from masking a
-    /// real cancel append.
+    /// real cancel append. Only these few lines have their full [`Event`] payload
+    /// materialized; every other line is skimmed envelope-only.
     prior_cancel: HashMap<(String, String), Event>,
 }
 
-/// Replay `events.jsonl` once to build the [`CancelLedger`].
+/// Envelope + the few small `data` fields the cancel ledger needs from each
+/// line, skimmed by [`for_each_event_probe`] without materializing the
+/// (potentially multi-KB) full `data` payload. serde ignores every other field,
+/// so a rich `node.report` is scanned but never allocated.
+#[derive(Deserialize)]
+struct CancelProbe {
+    kind: String,
+    #[serde(default)]
+    node_id: Option<NodeId>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    data: CancelProbeData,
+}
+
+/// The status-bearing `data` fields of `node.status` / `node.report`. All
+/// optional: any other event kind simply leaves them `None`.
+#[derive(Deserialize, Default)]
+struct CancelProbeData {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(default)]
+    cancelled: Option<bool>,
+}
+
+/// Replay `events.jsonl` once, streaming, to build the [`CancelLedger`].
 ///
 /// Reads through [`RunPaths::checked_events`] so a symlinked event log is
 /// refused, matching the mutation path — the cancel decision must not be made
-/// from content redirected outside the run tree. Uses [`read_all_events`], which
-/// shares the crate's torn-tail policy: a crash-truncated final line is dropped
-/// as an uncommitted partial write, while any *interior* unparseable line is
-/// surfaced as [`Error::CorruptEventLog`] — so a corrupt log fails the cancel
-/// loudly rather than silently dropping a node. A missing log yields an empty
-/// ledger (run never appended an event — nothing to cancel).
+/// from content redirected outside the run tree. Uses [`for_each_event_probe`],
+/// which shares the crate's torn-tail policy: a crash-truncated final line is
+/// dropped as an uncommitted partial write, while any *interior* unparseable
+/// line is surfaced as [`Error::CorruptEventLog`] — so a corrupt log fails the
+/// cancel loudly rather than silently dropping a node. A missing log yields an
+/// empty ledger (run never appended an event — nothing to cancel).
+///
+/// Per-node status is accumulated by a tiny per-node state machine that mirrors
+/// the reducer's terminal-state guard: `node.created` seeds [`Status::Pending`]
+/// (idempotent on replay), and `node.status` / `node.report` transition a node
+/// only while it is still non-terminal. A `node.status` / `node.report` for a
+/// node id never introduced by a `node.created` is ignored, exactly as the
+/// reducer no-ops a status/report against a non-existent node. Malformed status
+/// fields degrade gracefully (the node is left non-terminal, hence cancelled)
+/// rather than aborting the whole cancel — the append path already validates
+/// every committed event, so this only matters for a hand-corrupted log.
 ///
 /// Node ids are sorted by numeric suffix (not lexically), so output and the
 /// cancel order stay intuitive past the digit-width boundary where `n-10000`
 /// would otherwise sort before `n-9999` (see [`NodeId`]).
 fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
-    let events = read_all_events(&paths.checked_events()?)?;
+    let events_path = paths.checked_events()?;
     let prefix = format!("run-cancel:{}:", paths.run_id.as_str());
-    let mut node_ids: Vec<NodeId> = Vec::new();
-    let mut seen_nodes: HashSet<NodeId> = HashSet::new();
+    // Creation order is preserved here and re-sorted by numeric suffix below.
+    let mut order: Vec<NodeId> = Vec::new();
+    let mut status: HashMap<NodeId, Status> = HashMap::new();
     let mut prior_cancel: HashMap<(String, String), Event> = HashMap::new();
-    for ev in events {
-        if ev.kind == "node.created" {
-            if let Some(nid) = &ev.node_id {
-                if seen_nodes.insert(nid.clone()) {
-                    node_ids.push(nid.clone());
+
+    for_each_event_probe::<CancelProbe, _>(&events_path, |probe, raw| {
+        match probe.kind.as_str() {
+            "node.created" => {
+                if let Some(nid) = &probe.node_id {
+                    // Idempotent on replay: a second `node.created` for the same
+                    // id is a no-op, mirroring the reducer's existence guard.
+                    if !status.contains_key(nid) {
+                        order.push(nid.clone());
+                        status.insert(nid.clone(), Status::Pending);
+                    }
                 }
             }
+            "node.status" => {
+                if let Some(nid) = &probe.node_id {
+                    if let Some(cur) = status.get_mut(nid) {
+                        if !cur.is_terminal() {
+                            if let Some(ns) = probe.data.status.as_deref().and_then(parse_status) {
+                                *cur = ns;
+                            }
+                        }
+                    }
+                }
+            }
+            "node.report" => {
+                if let Some(nid) = &probe.node_id {
+                    if let Some(cur) = status.get_mut(nid) {
+                        // Terminal guard *before* deriving the outcome, mirroring
+                        // the reducer: a report against an already-terminal node
+                        // is a dead event (its payload may even be a bare `{}`).
+                        if !cur.is_terminal() {
+                            if let Some(ns) =
+                                report_terminal_status(probe.data.success, probe.data.cancelled)
+                            {
+                                *cur = ns;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
-        // Capture only this run's cancel events, keyed by (kind, key). The
-        // `as_deref`/`map` releases the borrow before `ev` is moved below.
-        let cancel_key = ev
+        // Capture only this run's cancel events, keyed by (kind, key), and only
+        // for those materialize the full payload the re-fold path needs.
+        if let Some(key) = probe
             .idempotency_key
             .as_deref()
             .filter(|k| k.starts_with(&prefix))
-            .map(str::to_owned);
-        if let Some(key) = cancel_key {
-            prior_cancel.entry((ev.kind.clone(), key)).or_insert(ev);
+        {
+            let entry = (probe.kind.clone(), key.to_owned());
+            if let std::collections::hash_map::Entry::Vacant(slot) = prior_cancel.entry(entry) {
+                let ev: Event =
+                    serde_json::from_slice(raw).map_err(|e| Error::CorruptEventLog {
+                        path: events_path.clone(),
+                        reason: format!(
+                            "cancel ledger: line matched a run-cancel key but is not a \
+                         replayable event: {} [{e}]",
+                            excerpt(raw)
+                        ),
+                    })?;
+                slot.insert(ev);
+            }
         }
-    }
+        Ok(())
+    })?;
+
     // A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits in u64); the
     // unwrap_or keeps the sort total even for a hypothetical unparseable body.
-    node_ids.sort_by_key(|id| {
+    order.sort_by_key(|id| {
         id.as_str()
             .strip_prefix("n-")
             .and_then(|d| d.parse::<u64>().ok())
             .unwrap_or(0)
     });
+    let node_status = order
+        .into_iter()
+        .map(|id| {
+            let s = status[&id];
+            (id, s)
+        })
+        .collect();
     Ok(CancelLedger {
-        node_ids,
+        node_status,
         prior_cancel,
     })
+}
+
+/// Parse a `node.status` / `run.status` status string into a [`Status`],
+/// returning `None` for an unrecognized value (treated as "no transition" so a
+/// corrupt status never aborts the cancel). Goes through serde so the kebab-case
+/// mapping can never drift from the [`Status`] enum.
+fn parse_status(s: &str) -> Option<Status> {
+    serde_json::from_value(Value::String(s.to_owned())).ok()
+}
+
+/// Derive the terminal status a `node.report` asserts from its `success` /
+/// `cancelled` flags, mirroring the reducer's success-XOR-cancelled rule but
+/// *lenient*: a bare/contradictory report yields `None` (no transition — the
+/// node stays live and is cancelled) rather than the reducer's
+/// [`Error::CorruptEventLog`]. The append path rejects such a report before it
+/// is ever committed against a live node, so a `None` here only arises from a
+/// hand-corrupted log, where leaving the node cancellable is the safe default.
+fn report_terminal_status(success: Option<bool>, cancelled: Option<bool>) -> Option<Status> {
+    if cancelled.unwrap_or(false) {
+        // `cancelled: true` with `success: true` is contradictory → no transition.
+        if success == Some(true) {
+            return None;
+        }
+        Some(Status::Cancelled)
+    } else {
+        match success {
+            Some(true) => Some(Status::Done),
+            Some(false) => Some(Status::Failed),
+            None => None,
+        }
+    }
 }
 
 /// Deterministic idempotency key for the synthesized cancel `node.report` of
@@ -805,6 +954,149 @@ mod tests {
             crate::read_manifest(&paths).unwrap().status,
             Status::Cancelled,
             "the already-logged run.status must be re-folded, not just skipped"
+        );
+    }
+
+    #[test]
+    fn cancel_skips_node_terminal_in_log_despite_stale_live_projection() {
+        // cancel-liveness-from-log: a non-cancel terminal event (here a
+        // `node.status` to a terminal value) was fsynced to the log but its
+        // projection fold was crash-interrupted, so `nodes/n-0001.json` still
+        // reads the stale live (Pending) status. The cancel must derive liveness
+        // from the LOG and treat the node as already-terminal — never
+        // synthesizing a cancel that would over-write the log's terminal and
+        // diverge on a future rebuild (which replays node.status: done FIRST and
+        // drops the later cancel).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2); // run.created(1) + node.created n-0001(2), n-0002(3)
+
+        // Raw-append (no fold) a terminal `node.status` for n-0001: the log
+        // records it Done, but the projection stays the stale crash-window
+        // Pending.
+        let n1 = nid("n-0001");
+        append_event_with_seq(
+            &paths,
+            4,
+            "node.status",
+            Some(&n1),
+            None,
+            json!({ "status": "done" }),
+        )
+        .unwrap();
+        assert_eq!(
+            node_status(&paths, "n-0001"),
+            Status::Pending,
+            "projection is the stale, crash-stranded live status"
+        );
+
+        let out = cancel_run(&paths, Some("stop")).unwrap();
+        // n-0001 is settled by the log, NOT freshly cancelled; only the
+        // genuinely live n-0002 is cancelled.
+        assert_eq!(
+            out.nodes_already_terminal
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001"],
+            "the log-terminal node is reported already-terminal, not cancelled"
+        );
+        assert_eq!(
+            out.nodes_cancelled
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0002"],
+        );
+        // No cancel report was synthesized for n-0001: the log still holds zero
+        // `node.report` lines for it, so a rebuild reconstructs it from the
+        // `node.status: done` (Done), not a divergent Cancelled.
+        assert_eq!(
+            report_count(&paths, "n-0001"),
+            0,
+            "no cancel over-write was appended for the log-terminal node"
+        );
+    }
+
+    #[test]
+    fn cancel_skips_node_with_unfolded_success_report_in_log() {
+        // The issue's headline case: a `node.report { success: true }` fsynced
+        // but not folded leaves a stale-live projection. Liveness from the log
+        // settles the node as Done (already-terminal); the old projection-derived
+        // check would have wrongly cancelled it over its already-logged success.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1); // run.created(1) + node.created n-0001(2)
+        let n1 = nid("n-0001");
+        append_event_with_seq(
+            &paths,
+            3,
+            "node.report",
+            Some(&n1),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap();
+        assert_eq!(
+            node_status(&paths, "n-0001"),
+            Status::Pending,
+            "stale live projection (success report fsynced but not folded)"
+        );
+
+        let out = cancel_run(&paths, None).unwrap();
+        assert_eq!(
+            out.nodes_already_terminal
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001"],
+        );
+        assert!(
+            out.nodes_cancelled.is_empty(),
+            "a node the log shows Done must not be cancelled"
+        );
+        assert_eq!(
+            report_count(&paths, "n-0001"),
+            1,
+            "only the original success report remains; no cancel was appended"
+        );
+    }
+
+    #[test]
+    fn cancel_ledger_streams_large_report_payloads() {
+        // The streaming ledger skims each line's envelope + a few small status
+        // fields, never materializing the (here multi-KB) `node.report` `data`
+        // payload. A node settled by such a report is still correctly seen as
+        // terminal from the log, and a live sibling is still cancelled — proving
+        // liveness is derived without holding whole reports in memory.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        let big = "x".repeat(64 * 1024);
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "success": true, "summary": big }),
+        )
+        .unwrap();
+        assert_eq!(node_status(&paths, "n-0001"), Status::Done);
+
+        let out = cancel_run(&paths, Some("stop")).unwrap();
+        assert_eq!(
+            out.nodes_already_terminal
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0001"],
+        );
+        assert_eq!(
+            out.nodes_cancelled
+                .iter()
+                .map(NodeId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["n-0002"],
         );
     }
 }
