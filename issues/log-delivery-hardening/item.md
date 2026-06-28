@@ -3,10 +3,11 @@ created: 2026-06-27
 updated: 2026-06-28
 type: improvement
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff]
+closed: 2026-06-28
 ---
 
 # Harden log delivery: back-pressure or dropped-event accounting
