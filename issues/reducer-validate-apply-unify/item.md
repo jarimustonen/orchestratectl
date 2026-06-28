@@ -1,11 +1,15 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
+commits:
+- hash: 088d63f
+  summary: 'refactor(core): typed node id + reducer plan-then-commit + corrupt-state error class'
 ---
 
 # Reducer: collapse validate_event/apply_event into one plan-then-commit path

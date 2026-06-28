@@ -1,11 +1,15 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
 related: ['@id-canonical-form-validation']
+closed: 2026-06-28
+commits:
+- hash: 088d63f
+  summary: 'refactor(core): typed node id + reducer plan-then-commit + corrupt-state error class'
 ---
 
 # octl-core: append API should take Option<&NodeId> instead of Option<&str>
