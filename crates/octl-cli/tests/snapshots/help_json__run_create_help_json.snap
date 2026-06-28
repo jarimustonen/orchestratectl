@@ -42,6 +42,35 @@ expression: value
         }
       },
       {
+        "name": "headless",
+        "long": "headless",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Spawn the worker's tmux window in a detached \"headless\" session instead of the foreground one, so a campaign of many spawns does not clutter the user's window list. Attach later with `tmux attach -t headless`. Opt-in; default is foreground",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
         "name": "help",
         "long": "help",
         "short": "h",
@@ -443,6 +472,35 @@ expression: value
         "takes_value": true,
         "multiple": false,
         "required": true,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "tmux_session",
+        "long": "tmux-session",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Explicit tmux session name for the worker's window. Implies headless placement and overrides `--headless`'s default session name. Forwarded to create.sh / workmux as `--parent-session <name>`",
+        "value_names": [
+          "TMUX_SESSION"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
         "is_global": false,
         "hidden": false,
         "deprecated": false,

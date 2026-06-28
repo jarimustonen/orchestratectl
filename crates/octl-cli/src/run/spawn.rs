@@ -104,6 +104,11 @@ pub struct SpawnRequest<'a> {
     /// Pass `--keep-tmux-on-error` so a debugging human can inspect the
     /// half-finished tmux window. Only set by tests / `--debug`.
     pub keep_tmux_on_error: bool,
+    /// Target tmux session for the worker's window, forwarded to create.sh
+    /// as `--parent-session <name>`. `Some` only for a headless spawn
+    /// (`--headless` / `--tmux-session`); `None` keeps the default
+    /// foreground placement in the caller's own session.
+    pub parent_session: Option<&'a str>,
 }
 
 /// Locate the create.sh binary. Tests override via `OCTL_CREATE_SH`
@@ -156,6 +161,9 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     }
     if req.keep_tmux_on_error {
         cmd.arg("--keep-tmux-on-error");
+    }
+    if let Some(session) = req.parent_session {
+        cmd.arg("--parent-session").arg(session);
     }
     cmd.arg(req.branch).arg(req.prompt_file);
 
@@ -338,6 +346,7 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            parent_session: None,
         })
         .unwrap();
         assert_eq!(out.branch, "wt/x");
@@ -368,6 +377,7 @@ exit 2
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            parent_session: None,
         })
         .unwrap_err();
         assert_eq!(err.code, "create_sh_error_branch-exists");
@@ -397,6 +407,7 @@ exit 1
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            parent_session: None,
         })
         .unwrap_err();
         assert!(matches!(err.kind, ExitKind::User));
@@ -443,6 +454,7 @@ exit 1
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            parent_session: None,
         });
         std::env::remove_var("OCTL_CREATE_SH");
         out
@@ -491,6 +503,61 @@ EOF
             .expect("identity present even without socket");
         assert_eq!(id.socket, None);
         assert_eq!(id.window_id, "@7");
+    }
+
+    #[test]
+    fn forwards_parent_session_flag() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        // Fixture echoes back whichever `--parent-session <name>` it was given
+        // (default `none` if absent) as the emitted `tmux_session`, so the test
+        // can assert the flag actually reached the script's argv.
+        let script = fixture_script(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+sess="none"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parent-session) sess="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$sess","tmux_window_id":"@9"}}
+EOF
+"#
+            ),
+        );
+        std::env::set_var("OCTL_CREATE_SH", &script);
+        let prompt = dir.path().join("p.md");
+        std::fs::write(&prompt, "x").unwrap();
+
+        let with = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            parent_session: Some("headless"),
+        })
+        .unwrap();
+        assert_eq!(with.tmux_session.as_deref(), Some("headless"));
+
+        let without = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            parent_session: None,
+        })
+        .unwrap();
+        assert_eq!(without.tmux_session.as_deref(), Some("none"));
+        std::env::remove_var("OCTL_CREATE_SH");
     }
 
     #[test]

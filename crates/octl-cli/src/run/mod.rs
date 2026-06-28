@@ -77,6 +77,18 @@ pub enum RunAction {
         /// Skip workmux post-create hooks; forwarded to create.sh.
         #[arg(long)]
         no_hooks: bool,
+        /// Spawn the worker's tmux window in a detached "headless"
+        /// session instead of the foreground one, so a campaign of many
+        /// spawns does not clutter the user's window list. Attach later
+        /// with `tmux attach -t headless`. Opt-in; default is foreground.
+        #[arg(long)]
+        headless: bool,
+        /// Explicit tmux session name for the worker's window. Implies
+        /// headless placement and overrides `--headless`'s default
+        /// session name. Forwarded to create.sh / workmux as
+        /// `--parent-session <name>`.
+        #[arg(long)]
+        tmux_session: Option<String>,
         #[arg(long, requires = "parent_node_id")]
         parent_run_id: Option<String>,
         #[arg(long, requires = "parent_run_id")]
@@ -134,6 +146,8 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             no_hooks,
+            headless,
+            tmux_session,
             parent_run_id,
             parent_node_id,
             idempotency_key,
@@ -149,6 +163,8 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             no_hooks,
+            headless,
+            tmux_session,
             parent_run_id,
             parent_node_id,
             idempotency_key,

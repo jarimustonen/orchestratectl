@@ -27,6 +27,10 @@ use crate::run::{
     require_nonempty, run_paths, spawn, supervisor_spawn,
 };
 
+/// A flat 1:1 mirror of `run create`'s clap flags (skip-materialize,
+/// no-hooks, headless, dry-run), so the pedantic `struct_excessive_bools`
+/// lint is allowed here — same allowance as the help-module arg bags.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Args<'a> {
     pub skip_materialize: bool,
     pub kind: Kind,
@@ -37,6 +41,11 @@ pub struct Args<'a> {
     pub prompt_file: Option<String>,
     pub layout: Option<String>,
     pub no_hooks: bool,
+    /// Place the worker's tmux window in a detached "headless" session.
+    pub headless: bool,
+    /// Explicit tmux session name; implies headless and overrides the
+    /// `--headless` default name.
+    pub tmux_session: Option<String>,
     pub parent_run_id: Option<String>,
     pub parent_node_id: Option<String>,
     pub idempotency_key: Option<String>,
@@ -133,6 +142,12 @@ struct SpawnResult {
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let title = require_nonempty(&args.title, "title")?;
+
+    // Resolve the optional headless target session up-front so a malformed
+    // `--tmux-session` fails before we touch disk or the parent log — same
+    // fail-fast contract as the prompt-source resolution below. `None` keeps
+    // the existing foreground-spawn behavior (opt-in only).
+    let parent_session = resolve_parent_session(args.headless, args.tmux_session.as_deref())?;
 
     let is_child = args.parent_run_id.is_some();
     if args.parent_run_id.is_some() ^ args.parent_node_id.is_some() {
@@ -399,6 +414,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         layout: args.layout.as_deref(),
         no_hooks: args.no_hooks,
         keep_tmux_on_error: false,
+        parent_session: parent_session.as_deref(),
     };
     let outcome = spawn::run_create_sh(&spawn_req)?;
     // V2: re-verify the discovered PID is still alive. If it died
@@ -486,6 +502,52 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         spec: args.spec,
         warnings: args.warnings,
     })
+}
+
+/// Default detached session name used when `--headless` is set without an
+/// explicit `--tmux-session`. The user attaches with `tmux attach -t headless`.
+const DEFAULT_HEADLESS_SESSION: &str = "headless";
+
+/// Resolve the optional `--parent-session` value forwarded to create.sh from
+/// the `--headless` / `--tmux-session` pair:
+///
+/// - `--tmux-session <name>` always wins (it also implies headless placement),
+/// - `--headless` alone yields the [`DEFAULT_HEADLESS_SESSION`] name,
+/// - neither yields `None` — the existing foreground spawn (opt-in only).
+///
+/// An explicit name is validated strictly: a tmux session name must be
+/// non-empty and may not contain whitespace or tmux's `:`/`.` target
+/// separators, which would otherwise be silently mis-parsed by tmux as a
+/// `session:window.pane` target. The default `headless` name trivially passes.
+fn resolve_parent_session(
+    headless: bool,
+    tmux_session: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    match tmux_session {
+        Some(raw) => {
+            let name = raw.trim();
+            if name.is_empty() {
+                return Err(CliError::user(
+                    "invalid_value",
+                    "--tmux-session must not be empty or whitespace-only",
+                )
+                .with_invalid_value(raw));
+            }
+            if name
+                .chars()
+                .any(|c| c.is_whitespace() || c == ':' || c == '.')
+            {
+                return Err(CliError::user(
+                    "invalid_value",
+                    "--tmux-session must not contain whitespace or the ':'/'.' tmux target separators",
+                )
+                .with_invalid_value(raw));
+            }
+            Ok(Some(name.to_string()))
+        }
+        None if headless => Ok(Some(DEFAULT_HEADLESS_SESSION.to_string())),
+        None => Ok(None),
+    }
 }
 
 #[derive(Debug)]
@@ -688,5 +750,59 @@ mod tests {
     fn empty_task_rejected() {
         let e = resolve_prompt_source(Some("   "), None).unwrap_err();
         assert_eq!(e.code, "invalid_value");
+    }
+
+    #[test]
+    fn parent_session_defaults_to_none() {
+        assert_eq!(resolve_parent_session(false, None).unwrap(), None);
+    }
+
+    #[test]
+    fn headless_yields_default_session() {
+        assert_eq!(
+            resolve_parent_session(true, None).unwrap().as_deref(),
+            Some("headless")
+        );
+    }
+
+    #[test]
+    fn explicit_tmux_session_wins_and_implies_headless() {
+        // Explicit name overrides the default even with --headless unset.
+        assert_eq!(
+            resolve_parent_session(false, Some("campaign"))
+                .unwrap()
+                .as_deref(),
+            Some("campaign")
+        );
+        assert_eq!(
+            resolve_parent_session(true, Some("campaign"))
+                .unwrap()
+                .as_deref(),
+            Some("campaign")
+        );
+    }
+
+    #[test]
+    fn tmux_session_trimmed() {
+        assert_eq!(
+            resolve_parent_session(false, Some("  bg  "))
+                .unwrap()
+                .as_deref(),
+            Some("bg")
+        );
+    }
+
+    #[test]
+    fn empty_tmux_session_rejected() {
+        let e = resolve_parent_session(false, Some("   ")).unwrap_err();
+        assert_eq!(e.code, "invalid_value");
+    }
+
+    #[test]
+    fn tmux_session_with_separator_rejected() {
+        for bad in ["a:b", "a.b", "a b"] {
+            let e = resolve_parent_session(false, Some(bad)).unwrap_err();
+            assert_eq!(e.code, "invalid_value", "expected reject for {bad:?}");
+        }
     }
 }

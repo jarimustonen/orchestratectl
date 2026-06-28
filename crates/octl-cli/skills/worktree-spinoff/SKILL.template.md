@@ -92,6 +92,7 @@ orchestratectl run create \
   --title "<2–4 word title>" \
   --task "<self-contained brief>" \
   [--source-branch <branch>] \
+  [--headless | --tmux-session <name>] \
   [--parent-run-id <id> --parent-node-id <id>] \
   [--idempotency-key <key>]
 ```
@@ -99,6 +100,13 @@ orchestratectl run create \
 Flag rules:
 
 - `--kind spinoff` and `--title` are required.
+- `--headless` places the agent's tmux window in a detached `headless`
+  session instead of the foreground one, so a batch of spinoffs does not
+  clutter the user's window list; attach later with `tmux attach -t
+  headless`. `--tmux-session <name>` overrides the default session name
+  (and implies headless). Auto-cleanup still closes the window on
+  terminal. Example: `orchestratectl run create --kind spinoff
+  --headless --title fix-lint --task "..."`.
 - `--task` OR `--prompt-file` (exactly one). Empty/whitespace-only
   strings are rejected upstream — do not strip silently.
 - `--source-branch` defaults to the current branch captured in step 0.

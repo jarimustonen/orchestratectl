@@ -95,6 +95,7 @@ orchestratectl run create \
   --title "<batch-slug>/<unit-id>" \
   --task "<unit-specific brief>" \
   --source-branch <integration-branch-or-source> \
+  --headless \
   --parent-run-id <driver-run-id> \
   --parent-node-id <driver-node-id> \
   --idempotency-key <batch-slug>-<unit-id>
@@ -105,6 +106,12 @@ Per-unit notes:
 - Use a stable `--idempotency-key` per unit (e.g.
   `<batch-slug>-<unit-id>`) so retries on transient errors do not
   double-spawn the unit.
+- Prefer `--headless` for fan-out children: a batch of N≥5 (often 20)
+  windows would otherwise flood the user's foreground tmux session. With
+  `--headless` they land in a detached `headless` session
+  (`tmux attach -t headless` to watch); auto-cleanup still closes each
+  window on terminal. Use one shared `--tmux-session <batch-slug>` if you
+  want the whole batch in its own named session.
 - The `child.spawned` event lands on the driver's log; the driver's
   supervisor spawns each child's supervisor (single-arbiter
   invariant).
