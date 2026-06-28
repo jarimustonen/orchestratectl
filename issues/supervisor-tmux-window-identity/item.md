@@ -17,6 +17,10 @@ commits:
   summary: 'cli: watchdog qualified-identity match + spawn parse + back-compat warn'
 - hash: e6c248c
   summary: 'docs: design.md §8.1/§1.3 qualified tmux identity'
+- hash: 2ea0eca
+  summary: homebase create.sh review hardening (socket scoped to window + window-id guard)
+- hash: 32b5d0a
+  summary: review hardening — tri-state probe + socket-scoped window_id + empty-string normalization
 ---
 
 # supervisor: qualify tmux liveness by session:window_id + socket
