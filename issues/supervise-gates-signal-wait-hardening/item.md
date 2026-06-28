@@ -1,13 +1,17 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-28
 type: improvement
 assignee: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
 related: ['@supervise-gate-test-flake']
 labels: [test, review-spinoff]
+closed: 2026-06-28
+commits:
+- hash: 1dea693
+  summary: bounded signal wait
 ---
 
 # supervise_gates signal test: bound child.wait() and check libc::kill return
