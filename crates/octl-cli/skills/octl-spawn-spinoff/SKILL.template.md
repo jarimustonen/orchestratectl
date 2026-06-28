@@ -36,6 +36,7 @@ done. No interactive review. The canonical way to launch one is via
 ```
 orchestratectl run create \
   --kind spinoff \
+  --title "<2–4 word slug>" \
   --task "<the task in one paragraph>" \
   --source-branch <branch> \
   [--target-branch <branch>]
@@ -46,6 +47,8 @@ stdout. Add `--output text` for a human-readable summary or `--output
 json` for pretty-printed JSON.)
 
 - `--kind spinoff` is required; it picks the autonomous worker recipe.
+- `--title` is required; a short slug that names the run, the branch
+  (`wt/<short>-<title>`), and the tmux window.
 - `--task` is the *entire* brief the spinoff agent will see. It must
   be self-contained — the spinoff does not share your conversation
   history. State the goal, the constraints, and what "done" looks like.
