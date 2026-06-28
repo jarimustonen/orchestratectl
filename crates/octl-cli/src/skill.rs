@@ -107,6 +107,11 @@ const SKILLS: &[EmbeddedSkill] = &[
         body: include_str!(concat!(env!("OUT_DIR"), "/skills/fan-out/SKILL.md")),
         path_in_repo: "crates/octl-cli/skills/fan-out/SKILL.template.md",
     },
+    EmbeddedSkill {
+        name: "orchestrate",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/orchestrate/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/orchestrate/SKILL.template.md",
+    },
 ];
 
 /// Binary version embedded at build time. `build.rs` substitutes this

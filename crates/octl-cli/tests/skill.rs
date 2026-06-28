@@ -52,6 +52,7 @@ fn skill_list_json_pins_catalog_shape() {
             "fan-out",
             "octl-run-overview",
             "octl-spawn-spinoff",
+            "orchestrate",
             "orchestratectl-overview",
             "worktree-bugfix",
             "worktree-code",

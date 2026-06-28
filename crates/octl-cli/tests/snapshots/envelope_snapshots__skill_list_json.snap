@@ -50,6 +50,10 @@ expression: value
       {
         "name": "fan-out",
         "description": "Fan out N≥5 similar, fully independent units of work as parallel autonomous worktrees via `orchestratectl run create --kind fan-out` (top-level driver) plus one `--kind fan-out` child per unit (parent-pointed). Each child commits a disjoint output file inside the current git repo and merges itself back. Manages enumeration, concurrency (default 10), manifest-tracked state, and resume. Requires a git repo with a clean source branch. NOT for generic parallel commands, dependent workflows, shared-file edits, or tasks needing per-unit human review. For heterogeneous dependency-ordered features (a DAG rather than identical units), use `/orchestrate` instead."
+      },
+      {
+        "name": "orchestrate",
+        "description": "Plan and execute a set of heterogeneous, dependency-ordered features with meaningful parallelism. Spawns one top-level driver run via `orchestratectl run create --kind orchestrate` and then one autonomous child per ready feature via `--kind orchestrated --parent-run-id <id> --parent-node-id <id>`. Runs autonomously by default — bold first, ask later — logging every judgment call to the parent run's event log and writing a hierarchical `report.yaml` + `report.md` to `~/.orchestratectl/runs/<id>/` for the user to read at the end. Pauses (audible alert) ONLY when a decision would massively constrain remaining children, when something genuinely cannot be done, or when the orchestrator is outside its own competence. Use when the user asks to \"drive this whole thing\", \"deliver feature X end-to-end\", or \"ship this campaign\". NOT for software/container orchestration (Docker/Kubernetes), N identical units (`/fan-out`), one interactive task (`/worktree-code`), one autonomous task (`/worktree-spinoff`), or a fully serial chain (`/worktree-code` in sequence)."
       }
     ]
   }
