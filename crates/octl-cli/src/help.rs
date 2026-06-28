@@ -144,12 +144,12 @@ pub struct FlagInfo {
     /// Ids of args this one unconditionally pulls in (clap `requires` /
     /// `requires_all`), sorted. Reflects declared requirements; may be
     /// one-directional. Conditional `requires_if` edges are excluded (see
-    /// [`requires`]).
+    /// [`requirement_edges`]).
     pub requires: Vec<String>,
     /// Ids of args whose presence makes this one no longer required (clap
     /// `required_unless_present` / `_any`), sorted. The all-of variant
     /// (`required_unless_present_all`) is not represented — see
-    /// [`required_unless_present`].
+    /// [`requirement_edges`].
     pub required_unless_present: Vec<String>,
     /// The help section heading this flag is grouped under, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -448,6 +448,7 @@ fn build_flag(cmd: &Command, arg: &Arg) -> FlagInfo {
     let action = arg.get_action();
     let takes_value = takes_value(action);
     let dep = parse_deprecation(arg.get_help().map(ToString::to_string));
+    let (requires, required_unless_present) = requirement_edges(arg);
     FlagInfo {
         name: arg.get_id().as_str().to_string(),
         long: arg.get_long().map(ToString::to_string),
@@ -473,8 +474,8 @@ fn build_flag(cmd: &Command, arg: &Arg) -> FlagInfo {
         accepted_values: accepted_values(arg),
         accepts_file_paths: accepts_file_paths(arg),
         conflicts_with: conflicts_with(cmd, arg),
-        requires: requires(arg),
-        required_unless_present: required_unless_present(arg),
+        requires,
+        required_unless_present,
         help_heading: arg.get_help_heading().map(ToString::to_string),
         arity: arity(arg, action),
         env: arg.get_env().map(|e| e.to_string_lossy().into_owned()),
@@ -611,61 +612,87 @@ fn conflicts_with(cmd: &Command, arg: &Arg) -> Vec<String> {
 // the *real* private fields back through `Arg`'s `Debug` projection, the only
 // drift-free source. The Debug format is not a stability guarantee, so guard
 // tests (`requires_edge_is_recovered_from_a_synthetic_arg`,
-// `required_unless_present_is_recovered_from_a_synthetic_arg`) pin the recovery
-// — a clap upgrade that changes the format fails CI loudly rather than silently
-// emptying the field. A real-tree assertion lives in `tests/help_json.rs`.
+// `required_unless_present_is_recovered_from_a_synthetic_arg`,
+// `requirement_edges_ignore_lookalike_help_text`) pin the recovery — a clap
+// upgrade that changes the format fails CI loudly rather than silently emptying
+// the field. A real-tree assertion lives in `tests/help_json.rs`.
 
-/// Ids of the args `arg` unconditionally depends on (clap `requires` /
-/// `requires_all`), sorted and de-duped. Only the unconditional `IsPresent`
-/// predicate is surfaced; a conditional `requires_if` target (`Equals(..)`) is
-/// a different relationship and is excluded. See the module note above on why
-/// this reads `Arg`'s `Debug` rather than a getter.
-fn requires(arg: &Arg) -> Vec<String> {
-    let debug = format!("{arg:?}");
-    let Some(seg) = debug_field_list(&debug, "requires") else {
-        return Vec::new();
-    };
-    // Entries are `(<predicate>, "<id>")`; keep only the `IsPresent` ones.
-    let mut v: Vec<String> = seg
-        .match_indices("(IsPresent, \"")
-        .filter_map(|(i, m)| {
-            let rest = &seg[i + m.len()..];
-            rest.find('"').map(|end| rest[..end].to_string())
-        })
-        .collect();
-    v.sort();
-    v.dedup();
-    v
-}
-
-/// Ids of the args whose presence makes `arg` no longer required (clap
-/// `required_unless_present` / `_any`), sorted and de-duped.
+/// Both requirement-edge lists for `arg`, recovered from a single `Arg` Debug
+/// projection: `(requires, required_unless_present)`, each sorted and de-duped.
 ///
-/// The all-of variant `required_unless_present_all` writes a *separate*
-/// `r_unless_all` field that `Arg`'s `Debug` does not print, so an all-of
-/// requirement is **not** represented here (a documented gap — there are none
-/// in the tree today). See the module note above on the Debug-projection
-/// approach.
-fn required_unless_present(arg: &Arg) -> Vec<String> {
+/// - `requires` (clap `requires` / `requires_all`): only the unconditional
+///   `IsPresent` predicate is surfaced; a conditional `requires_if`
+///   (`Equals(..)`) target is a different relationship and is excluded.
+/// - `required_unless_present` (clap `required_unless_present` / `_any`): from
+///   the `r_unless` field. The all-of variant `required_unless_present_all`
+///   writes a *separate* `r_unless_all` field that `Arg`'s `Debug` does not
+///   print, so an all-of requirement is **not** represented (a documented gap —
+///   none in the tree today).
+///
+/// See the module note above on why this reads `Arg`'s `Debug` rather than a
+/// getter.
+fn requirement_edges(arg: &Arg) -> (Vec<String>, Vec<String>) {
     let debug = format!("{arg:?}");
-    let Some(seg) = debug_field_list(&debug, "r_unless") else {
-        return Vec::new();
-    };
-    // Entries are bare `"<id>"`.
-    let mut v: Vec<String> = quoted_tokens(seg);
-    v.sort();
-    v.dedup();
-    v
+
+    // `requires` entries are `(<predicate>, "<id>")`; keep only `IsPresent`.
+    let requires = debug_field_list(&debug, "requires").map_or_else(Vec::new, |seg| {
+        sorted_dedup(
+            seg.match_indices("(IsPresent, \"")
+                .filter_map(|(i, m)| {
+                    let rest = &seg[i + m.len()..];
+                    rest.find('"').map(|end| rest[..end].to_string())
+                })
+                .collect(),
+        )
+    });
+
+    // `r_unless` entries are bare `"<id>"`.
+    let required_unless_present = debug_field_list(&debug, "r_unless")
+        .map_or_else(Vec::new, |seg| sorted_dedup(quoted_tokens(seg)));
+
+    (requires, required_unless_present)
 }
 
 /// Return the `[...]` payload of a named field in an `Arg` `Debug` string —
-/// the slice *between* the outer brackets (exclusive), bracket-depth-aware so a
-/// nested list cannot truncate it. `None` if the field is absent. The `Arg`
-/// field names (`requires`, `r_unless`) are unique substrings, so the first
-/// match is the right one.
+/// the slice *between* the field's brackets (exclusive), bracket-depth-aware so
+/// a nested list cannot truncate it. `None` if the field is absent.
+///
+/// The field name is matched only **outside** any quoted string: clap prints
+/// the user-controlled `help` / `long_help` text (quoted) *before*
+/// `requires` / `r_unless`, so a help string that happens to contain
+/// `requires: [` must not shadow the real field. Quote tracking honors `\\`
+/// and `\"` escapes (the derive uses `escape_debug`). Outside quotes the Debug
+/// output is pure ASCII, so byte indexing stays on char boundaries.
 fn debug_field_list<'a>(debug: &'a str, field: &str) -> Option<&'a str> {
     let needle = format!("{field}: [");
-    let start = debug.find(&needle)? + needle.len();
+    let bytes = debug.as_bytes();
+    let mut i = 0;
+    let mut in_quote = false;
+    let mut escaped = false;
+    while i < bytes.len() {
+        if in_quote {
+            match bytes[i] {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_quote = false,
+                _ => {}
+            }
+            i += 1;
+        } else if bytes[i] == b'"' {
+            in_quote = true;
+            i += 1;
+        } else if debug[i..].starts_with(&needle) {
+            return bracket_payload(debug, i + needle.len());
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Slice from `start` to the matching close bracket of the list opened just
+/// before it, bracket-depth-aware. `start` is the byte after the opening `[`.
+fn bracket_payload(debug: &str, start: usize) -> Option<&str> {
     let mut depth = 1usize;
     for (i, c) in debug[start..].char_indices() {
         match c {
@@ -693,6 +720,13 @@ fn quoted_tokens(seg: &str) -> Vec<String> {
         rest = &after[close + 1..];
     }
     out
+}
+
+/// Sort and de-duplicate a list of ids (the stable form every edge list emits).
+fn sorted_dedup(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v.dedup();
+    v
 }
 
 /// Whether `arg` accepts a filesystem path as its value (§13). Derived from
@@ -1110,6 +1144,29 @@ mod tests {
             flag.required_unless_present,
             vec!["b".to_string(), "c".to_string()]
         );
+    }
+
+    #[test]
+    fn requirement_edges_ignore_lookalike_help_text() {
+        // `Arg`'s Debug prints the user-controlled `help` text (quoted) BEFORE
+        // the real `requires` / `r_unless` fields. A help string containing the
+        // field needle must neither shadow the real edge (false negative) nor
+        // fabricate one (false positive) — the parse skips quoted text.
+        let mut cmd = Command::new("tool")
+            .arg(
+                Arg::new("a")
+                    .long("a")
+                    .help("needs requires: [(IsPresent, \"ghost\")] and r_unless: [\"ghost\"]")
+                    .requires("realdep")
+                    .required_unless_present("alt"),
+            )
+            .arg(Arg::new("realdep").long("realdep"))
+            .arg(Arg::new("alt").long("alt"));
+        cmd.build();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "a").unwrap();
+        let flag = build_flag(&cmd, arg);
+        assert_eq!(flag.requires, vec!["realdep".to_string()]);
+        assert_eq!(flag.required_unless_present, vec!["alt".to_string()]);
     }
 
     #[test]
