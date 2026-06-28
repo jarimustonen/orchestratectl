@@ -88,7 +88,9 @@ re-ask the user about the original brief. The prompt should include:
    now" rows, decides autonomously whether a second review round is
    needed, and finally runs `/wrap-up` (which IS user-interactive — it
    waits for the user to confirm before saving session context). After
-   `/wrap-up`, the user runs `/worktree-merge` themselves.
+   `/wrap-up`, the user runs `/worktree-merge` themselves. The terminal
+   `node report` that moves the run to `completed` is the post-merge
+   closeout — see "Terminal report (mandatory)" below.
 
 For long or special-character-heavy prompts, write them to a temp file
 (`mktemp -t worktree-code-prompt-XXXXXX.md`) and pass `--prompt-file
@@ -161,6 +163,70 @@ Tell the user:
   `/worktree-merge`. Do NOT promise auto-merge; that would mislead.
 - How to attach: `tmux attach -t octl <window>`.
 - How to follow progress: `orchestratectl run show <run-id>`.
+
+## Terminal report (mandatory)
+
+A `code` run is **interactive**: the agent works autonomously up to
+`/wrap-up`, then the human reviews and runs `/worktree-merge`. But the
+run is not finished until a terminal `node report` lands — without it the
+supervisor keeps polling and `orchestratectl run show` reads `lifecycle:
+pending` forever, the same dangling-worktree symptom autonomous kinds
+hit. The difference is only *when* the report fires: it is the
+**post-merge closeout**, run once the human's `/worktree-merge` has
+landed and the worktree is done being used — NOT during the agent's
+session (a terminal report mid-session would try to close the window the
+user is still working in).
+
+Submit it once the merge is complete:
+
+1. **Discover the run id and node id** from inside the worktree. The
+   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
+   alphanumerics of the run id:
+
+   ```bash
+   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
+   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   node_id="n-0001"   # a single-worker kind always has exactly one node
+   ```
+
+2. **Write the §7.3 payload** to a temp file. These exact field names are
+   what the supervisor consumes — do NOT use `discuss`,
+   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
+   validation, but its contents are silently dropped.
+
+   ```bash
+   cat > /tmp/node-report.json <<'JSON'
+   {
+     "success": true,
+     "summary": "<one-line outcome>",
+     "discussion_items": [],
+     "spinoff_proposals": [],
+     "wrap_up_recommendations": []
+   }
+   JSON
+   ```
+
+   - `success` — **required** boolean. `true` when the work merged
+     cleanly; `false` when reporting a blocked or abandoned outcome.
+   - `summary` — optional one-line human-readable result.
+   - `discussion_items[]` — decisions that needed a human call. Each:
+     `{"topic": "<non-empty>", "severity": "discuss|critical|info",
+     "options": ["…"]}`.
+   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
+     `{"proposed_title": "<non-empty>", "proposed_kind":
+     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
+     "rationale": "<why>"}`.
+   - `wrap_up_recommendations[]` — array of strings; advice for the
+     caller (further reviews, doc updates, follow-up work).
+
+3. **Submit it:**
+
+   ```bash
+   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   ```
+
+   On success the supervisor marks the node terminal, transitions the run
+   to `lifecycle: completed`, and exits — closing the tmux window.
 
 ## Issue Management
 

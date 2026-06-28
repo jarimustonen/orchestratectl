@@ -60,14 +60,18 @@ self-contained and explicit about:
    `/llm-panel` for design/decision artefacts) and `/assess-findings`
    on its own diff and applies "fix now" items autonomously.
 5. **Structured terminal report** — when the child finishes, it submits
-   a `node report` envelope with:
+   a `node report` envelope (see "Terminal report (mandatory)" below for
+   the exact command and §7.3 field names) carrying:
    - `success: true|false`
-   - `discuss[]` — items that needed a human call; for each, record
-     `chosen_path` and `severity: info|warn|critical`
-   - `spinoff_candidates[]` — follow-up work proposals (one-line
-     summary + suggested kind)
-   - `wrap_up[]` — recommendations for the orchestrator (further
-     reviews, additional siblings, doc updates)
+   - `discussion_items[]` — items that needed a human call; each is
+     `{"topic": "<non-empty>", "severity": "discuss|critical|info",
+     "options": ["…"]}`
+   - `spinoff_proposals[]` — follow-up work proposals; each is
+     `{"proposed_title": "<non-empty>", "proposed_kind": "<known kind>",
+     "rationale": "<why>"}`
+   - `wrap_up_recommendations[]` — array of strings; recommendations for
+     the orchestrator (further reviews, additional siblings, doc
+     updates)
 6. **Merge target** — the integration branch, supplied via
    `--source-branch`. The child's `--kind orchestrated` recipe merges
    itself into this branch on success.
@@ -143,6 +147,76 @@ and `orchestratectl event tail --run <parent-run-id> --follow`.
 - Reminder that the parent supervisor — not the driver — will spawn
   the child's supervisor.
 
+## Terminal report (mandatory)
+
+Merging into the integration branch is **not** the final step. The child
+run stays alive until the agent submits a terminal `node report`. Until
+that report lands the child's supervisor keeps polling, the child's
+`lifecycle` reads `pending` forever, the `child.report` event the parent
+waits on never arrives, and the tmux window never closes.
+
+So the child's brief MUST instruct it to run this **immediately after
+`/worktree-merge` into the integration branch succeeds, before its
+session ends**:
+
+1. **Discover the run id and node id** from inside the worktree. The
+   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
+   alphanumerics of the run id:
+
+   ```bash
+   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
+   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   node_id="n-0001"   # a single-worker kind always has exactly one node
+   ```
+
+2. **Write the §7.3 payload** to a temp file. These exact field names are
+   what the parent supervisor consumes — do NOT use `discuss`,
+   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
+   validation, but its contents are silently dropped.
+
+   ```bash
+   cat > /tmp/node-report.json <<'JSON'
+   {
+     "success": true,
+     "summary": "<one-line outcome>",
+     "discussion_items": [],
+     "spinoff_proposals": [],
+     "wrap_up_recommendations": []
+   }
+   JSON
+   ```
+
+   - `success` — **required** boolean. `true` when the feature merged
+     cleanly; `false` when reporting a blocked or failed outcome (a
+     truthful `success: false` is a recorded result, not a CLI error).
+   - `summary` — optional one-line human-readable result.
+   - `discussion_items[]` — decisions that genuinely needed a human
+     call. Each: `{"topic": "<non-empty>", "severity":
+     "discuss|critical|info", "options": ["…"]}`.
+   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
+     `{"proposed_title": "<non-empty>", "proposed_kind":
+     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
+     "rationale": "<why>"}`.
+   - `wrap_up_recommendations[]` — array of strings; advice for the
+     orchestrator (further reviews, additional siblings, doc updates).
+
+   Even a clean, no-follow-up child submits `{"success": true}` with the
+   arrays empty — the call itself is what releases the supervisor and
+   delivers `child.report` to the parent.
+
+3. **Submit it:**
+
+   ```bash
+   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   ```
+
+   On success the child's supervisor marks the node terminal, transitions
+   the child run to `lifecycle: completed`, mirrors `child.report` onto
+   the parent's log, exits, and closes the tmux window.
+
+This step is **not optional**. A successful merge with no report leaves
+the child dangling and the parent waiting forever.
+
 ## Issue Management
 
 Orchestrated children do NOT touch `issuectl`. The parent
@@ -182,8 +256,9 @@ driver only needs to tail the parent:
   authoritative stream for the driver; `child.spawned`,
   `child.lifecycle`, and `child.report` events arrive here.
 - `orchestratectl run show <child-run-id>` — child-only detail.
-- `orchestratectl node report <child-node-id>` — the structured
-  terminal report the child submits at the end. This is what the
+- `orchestratectl node show <child-node-id>` — the structured terminal
+  report the child submits at the end (the `node report` verb is for
+  *writing* it; see "Terminal report (mandatory)"). This is what the
   orchestrator synthesizes across siblings.
 
 `lifecycle: completed` on the child means the child merged into the

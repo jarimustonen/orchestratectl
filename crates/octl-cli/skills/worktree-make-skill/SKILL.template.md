@@ -121,6 +121,72 @@ Tell the user:
 - How to follow: `orchestratectl run show <run-id>`,
   `orchestratectl event tail --run <run-id> --follow`.
 
+## Terminal report (mandatory)
+
+Merging is **not** the final step. The run stays alive until the agent
+submits a terminal `node report`. Until that report lands the per-run
+supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
+pending` forever, and the tmux window never closes — the user sees a
+worktree that looks stuck when the work is actually done.
+
+So the brief MUST instruct the agent to run this **immediately after
+`/worktree-merge` succeeds, before its session ends**:
+
+1. **Discover the run id and node id** from inside the worktree. The
+   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
+   alphanumerics of the run id:
+
+   ```bash
+   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
+   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   node_id="n-0001"   # a single-worker kind always has exactly one node
+   ```
+
+2. **Write the §7.3 payload** to a temp file. These exact field names are
+   what the supervisor consumes — do NOT use `discuss`,
+   `spinoff_candidates`, or `wrap_up`: an unknown key still passes
+   validation, but its contents are silently dropped.
+
+   ```bash
+   cat > /tmp/node-report.json <<'JSON'
+   {
+     "success": true,
+     "summary": "<one-line outcome>",
+     "discussion_items": [],
+     "spinoff_proposals": [],
+     "wrap_up_recommendations": []
+   }
+   JSON
+   ```
+
+   - `success` — **required** boolean. `true` when the work merged
+     cleanly; `false` when reporting a blocked or failed outcome.
+   - `summary` — optional one-line human-readable result.
+   - `discussion_items[]` — decisions that genuinely needed a human
+     call. Each: `{"topic": "<non-empty>", "severity":
+     "discuss|critical|info", "options": ["…"]}`.
+   - `spinoff_proposals[]` — follow-up work worth spawning. Each:
+     `{"proposed_title": "<non-empty>", "proposed_kind":
+     "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
+     "rationale": "<why>"}`.
+   - `wrap_up_recommendations[]` — array of strings; advice for the
+     caller (further reviews, doc updates, additional siblings).
+
+   Even a clean, no-follow-up run submits `{"success": true}` with the
+   arrays empty — the call itself is what releases the supervisor.
+
+3. **Submit it:**
+
+   ```bash
+   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   ```
+
+   On success the supervisor marks the node terminal, transitions the
+   run to `lifecycle: completed`, and exits — closing the tmux window.
+
+This step is **not optional**. A successful merge with no report leaves
+the run dangling exactly as before.
+
 ## Issue Management
 
 Same as `worktree-spinoff`: skip in driver mode; when issue-driven,
