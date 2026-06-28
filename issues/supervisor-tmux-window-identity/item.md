@@ -3,7 +3,7 @@ created: 2026-06-27
 updated: 2026-06-28
 type: improvement
 assignee: jari
-status: in-progress
+status: done
 priority: normal
 epic: orchestratectl-mvp
 related: ['@supervisor-process-review-followup']
@@ -21,6 +21,7 @@ commits:
   summary: homebase create.sh review hardening (socket scoped to window + window-id guard)
 - hash: 32b5d0a
   summary: review hardening — tri-state probe + socket-scoped window_id + empty-string normalization
+closed: 2026-06-28
 ---
 
 # supervisor: qualify tmux liveness by session:window_id + socket
