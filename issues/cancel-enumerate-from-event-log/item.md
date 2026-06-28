@@ -2,9 +2,15 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: improvement
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-28
+commits:
+- hash: 335cf7a
+  summary: enumerate from event log + idempotency-keyed single-lock cancel
+- hash: c0cd26b
+  summary: re-fold already-logged cancel events to converge projections
 ---
 
 # run cancel: enumerate live nodes from the event log, not the projection directory
