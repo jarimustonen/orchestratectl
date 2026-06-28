@@ -2,11 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 commits:
 - hash: daca558
   summary: grace window stops watchdog mis-firing on fresh spawns
+closed: 2026-06-28
 ---
 
 # Watchdog mis-fires agent-died on fresh spawn, destroying agent's work
