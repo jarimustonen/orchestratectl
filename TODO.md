@@ -10,7 +10,7 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 - ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — `done`. Binary spawns runs end-to-end through all 8 worktree kinds, supervisor watchdog, dedup, signal handling, etc.
 - ✅ **Follow-up campaign** (21 review-spinoff issues + 9 packs) — all merged.
-- 🟡 **Skill-bundling campaign** [`skill-bundling-campaign`](issues/skill-bundling-campaign/item.md) — **active**, this is what TODO.md tracks below.
+- 🟡 **Skill-bundling campaign** [`skill-bundling-campaign`](issues/skill-bundling-campaign/item.md) — **8/10 phases authored**. Phases 1, 2, 3, 4a–d, 6 merged (all `worktree-*` + `fan-out` bundled SKILL.md files committed, registry/tests/snapshots updated, build/clippy/fmt clean, `skill print`/`skill install --dest ...` smoke-pass). **Phase 5 (`/orchestrate` DAG runtime SKILL.md)** still open — needs design conversation with Jari before authoring. **Phase 7 (rollout: `skill install --all --force` + sunset homebase)** still open — gated on Phase 5 so the install is one atomic catalog swap, and on Jari's contract review of Phase 1 (which set the template every subsequent phase mirrored — if it shifts, all 8 need a regress edit).
 - ⏸ **Held items** (not in current scope):
   - [`help-json-depth-control`](issues/help-json-depth-control/item.md) — schema bump for `--help --json` top-level depth, needs Jari's product decision before authoring.
   - [`runwriter-batched-append-api`](issues/runwriter-batched-append-api/item.md) — V4 latency (639ms p99 vs 10ms budget). Per B1 decision: accepted as-is post-MVP unless `/orchestrate`/`/fan-out` actually scale to where it matters.
