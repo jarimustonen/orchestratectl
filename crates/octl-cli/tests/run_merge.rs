@@ -143,6 +143,92 @@ fn successful_merge_submits_explicit_merge_report() {
     assert_eq!(reports[0]["data"]["via"], "explicit-merge");
 }
 
+/// `--report-file` carries a rich §7.3 payload (discussion_items,
+/// spinoff_proposals) so an autonomous kind merges AND delivers its structured
+/// report in one call. `run merge` stamps `via: "explicit-merge"` and submits
+/// the agent's payload verbatim otherwise.
+#[test]
+fn report_file_payload_is_submitted_with_marker() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "research", "merge-rich");
+    forge_worker_node(&home, &run_id, "research", worktree.path(), "wt/test-x");
+
+    let report = scratch.path().join("report.json");
+    std::fs::write(
+        &report,
+        r#"{
+            "success": true,
+            "summary": "research delivered",
+            "discussion_items": [{"topic": "scope creep", "severity": "discuss"}],
+            "spinoff_proposals": [{"proposed_title": "follow-up", "proposed_kind": "research"}],
+            "wrap_up_recommendations": ["read sources/"]
+        }"#,
+    )
+    .unwrap();
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output",
+        "json",
+        "run",
+        "merge",
+        &run_id,
+        "--report-file",
+        report.to_str().unwrap(),
+    ]));
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    let reports = node_reports(&events);
+    assert_eq!(reports.len(), 1);
+    let data = &reports[0]["data"];
+    assert_eq!(data["via"], "explicit-merge");
+    assert_eq!(data["summary"], "research delivered");
+    assert_eq!(data["discussion_items"][0]["topic"], "scope creep");
+    assert_eq!(data["spinoff_proposals"][0]["proposed_title"], "follow-up");
+    assert_eq!(data["wrap_up_recommendations"][0], "read sources/");
+}
+
+/// A malformed `--report-file` is rejected BEFORE the merge runs — the backend
+/// is never invoked and no event is appended.
+#[test]
+fn bad_report_file_rejected_before_merge() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "merge-badreport");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    // Missing the required `success` field.
+    let report = scratch.path().join("bad.json");
+    std::fs::write(&report, r#"{"summary": "no success field"}"#).unwrap();
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output",
+            "json",
+            "run",
+            "merge",
+            &run_id,
+            "--report-file",
+            report.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr JSON");
+    assert_eq!(err["error"]["code"], "schema_violation");
+    assert!(
+        !scratch.path().join("merge.log").exists(),
+        "merge must not run when the report file is invalid"
+    );
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(node_reports(&events).len(), 0);
+}
+
 /// A merge failure (conflict / dirty tree / lock timeout): the backend exits
 /// non-zero, `run merge` surfaces `merge_failed`, and NO terminal report is
 /// appended — the node stays live for the agent to recover and retry.

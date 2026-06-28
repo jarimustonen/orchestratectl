@@ -136,6 +136,13 @@ pub enum RunAction {
         /// Reporting node id (defaults to `n-0001`).
         #[arg(long)]
         node_id: Option<String>,
+        /// Optional §7.3 report payload (JSON file) to submit on a clean
+        /// merge. Lets an autonomous kind carry its rich `discussion_items`
+        /// / `spinoff_proposals` / `wrap_up_recommendations` in the same
+        /// call. `run merge` stamps it `via: "explicit-merge"`. Omit it for
+        /// a minimal `{success, summary}` report.
+        #[arg(long)]
+        report_file: Option<std::path::PathBuf>,
         /// Resolve inputs and report the planned merge without running it
         /// or appending any event.
         #[arg(long)]
@@ -204,11 +211,13 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             run_id,
             source,
             node_id,
+            report_file,
             dry_run,
         } => merge::run(merge::Args {
             run_id,
             source,
             node_id,
+            report_file,
             dry_run,
             spec,
             warnings,

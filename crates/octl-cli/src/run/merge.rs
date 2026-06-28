@@ -24,9 +24,9 @@
 //! NOT submitted — the node stays live so the agent can recover (e.g.
 //! `/complex-rebase`) and re-run `run merge`.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -49,6 +49,9 @@ const MERGE_SH: &str = include_str!("../../scripts/merge.sh");
 /// `run merge` targets has exactly one node.
 const DEFAULT_NODE_ID: &str = "n-0001";
 
+/// Cap on `--report-file` size, mirroring `node report`'s 1 MiB bound.
+const MAX_REPORT_BYTES: u64 = 1024 * 1024;
+
 pub struct Args<'a> {
     pub run_id: String,
     /// Override the merge target branch. Falls back to the manifest's
@@ -56,6 +59,13 @@ pub struct Args<'a> {
     pub source: Option<String>,
     /// Reporting node id; defaults to `n-0001`.
     pub node_id: Option<String>,
+    /// Optional §7.3 report payload to submit on a clean merge. When set,
+    /// `run merge` stamps it with `via: "explicit-merge"` and submits it —
+    /// so an autonomous kind can carry its rich `discussion_items` /
+    /// `spinoff_proposals` / `wrap_up_recommendations` in the SAME call
+    /// that merges. When absent, a minimal `{success, summary, via}` report
+    /// is submitted (enough for a simple spinoff).
+    pub report_file: Option<PathBuf>,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
@@ -130,6 +140,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // main/master itself.
     let effective_source = source.clone().or_else(|| manifest.source_branch.clone());
 
+    // Build the terminal report up front — BEFORE the merge — so a malformed
+    // `--report-file` is rejected without having already merged. The report
+    // is only submitted after a clean merge; here we just validate its shape
+    // and stamp the `via: "explicit-merge"` marker.
+    let report = build_report(
+        args.report_file.as_deref(),
+        branch,
+        effective_source.as_deref(),
+    )?;
+
     if args.dry_run {
         let payload = MergePayload {
             run_id: &run_id,
@@ -152,24 +172,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         effective_source.as_deref(),
     )?;
 
-    // Merge succeeded: submit the terminal report carrying the
-    // explicit-merge marker so the supervisor's cleanup gate extends
-    // teardown to interactive kinds. The report payload validates against
-    // the §7.3 schema (unknown `via` rides along harmlessly).
-    let summary = match effective_source.as_deref() {
-        Some(src) => format!("merged {branch} into {src} via run merge"),
-        None => format!("merged {branch} via run merge"),
-    };
-    let report: Value = json!({
-        "success": true,
-        "summary": summary,
-        "via": "explicit-merge",
-    });
-    // Defensive: the literal above is always valid, but route any drift
-    // through the same boundary the agent-facing `node report` uses.
-    validate_report_payload(&report)
-        .map_err(|e| CliError::user("schema_violation", e.to_string()))?;
-
+    // Merge succeeded: submit the terminal report (built above, stamped with
+    // `via: "explicit-merge"`) so the supervisor's cleanup gate extends
+    // teardown to interactive kinds and any rich `discussion_items` /
+    // `spinoff_proposals` reach the parent.
+    //
     // Idempotent: a retried `run merge` (e.g. the report append failed but
     // the merge already landed) re-uses the same key and returns the prior
     // seq instead of double-appending. The merge itself is also a clean
@@ -200,6 +207,84 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// well-formed worktree node always has it.
 fn branch_for(node: &Node) -> Option<&str> {
     node.branch.as_deref().filter(|s| !s.is_empty())
+}
+
+/// Build (and validate) the terminal §7.3 report to submit on a clean merge.
+///
+/// With `report_file`, read the agent's payload (so an autonomous kind can
+/// carry its `discussion_items` / `spinoff_proposals` /
+/// `wrap_up_recommendations` in the same call) and stamp it with the
+/// `via: "explicit-merge"` marker, overriding any caller-set `via`. Without
+/// one, synthesize a minimal `{success, summary, via}` report — enough for a
+/// simple spinoff. Either way the result is validated against the §7.3 schema
+/// before it can reach the event log.
+fn build_report(
+    report_file: Option<&Path>,
+    branch: &str,
+    source: Option<&str>,
+) -> Result<Value, CliError> {
+    let mut report = match report_file {
+        Some(path) => read_report_file(path)?,
+        None => {
+            let summary = match source {
+                Some(src) => format!("merged {branch} into {src} via run merge"),
+                None => format!("merged {branch} via run merge"),
+            };
+            json!({ "success": true, "summary": summary })
+        }
+    };
+    // `run merge` owns the marker: stamp it regardless of what the file held.
+    let obj = report.as_object_mut().ok_or_else(|| {
+        CliError::user(
+            "report_not_object",
+            "--report-file payload must be a JSON object",
+        )
+    })?;
+    obj.insert(
+        "via".to_string(),
+        Value::String("explicit-merge".to_string()),
+    );
+
+    validate_report_payload(&report)
+        .map_err(|e| CliError::user("schema_violation", e.to_string()))?;
+    Ok(report)
+}
+
+/// Read and JSON-parse a `--report-file`, enforcing the size cap during the
+/// read (TOCTOU-safe, mirroring `node report`'s `read_capped`).
+fn read_report_file(path: &Path) -> Result<Value, CliError> {
+    let mut f = std::fs::File::open(path).map_err(|e| {
+        CliError::user(
+            "report_file_unreadable",
+            format!("open {}: {}", path.display(), e),
+        )
+        .with_invalid_value(path.display().to_string())
+    })?;
+    let mut buf = Vec::new();
+    std::io::Read::by_ref(&mut f)
+        .take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| {
+            CliError::user(
+                "report_file_unreadable",
+                format!("read {}: {}", path.display(), e),
+            )
+            .with_invalid_value(path.display().to_string())
+        })?;
+    if buf.len() as u64 > MAX_REPORT_BYTES {
+        return Err(CliError::user(
+            "report_file_too_large",
+            format!("--report-file exceeds maximum of {MAX_REPORT_BYTES} bytes"),
+        )
+        .with_invalid_value(path.display().to_string()));
+    }
+    serde_json::from_slice(&buf).map_err(|e| {
+        CliError::user(
+            "report_file_invalid_json",
+            format!("parse {}: {}", path.display(), e),
+        )
+        .with_invalid_value(path.display().to_string())
+    })
 }
 
 /// Resolve the merge backend: `OCTL_MERGE_SH` override (tests) or the
