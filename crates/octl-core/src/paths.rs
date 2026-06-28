@@ -1,10 +1,36 @@
 //! Directory layout helpers for a single run.
 
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
+
+/// Apply `O_NOFOLLOW` to `opts` on Unix, so opening an existing symlink at the
+/// path's *final* component fails atomically (`ELOOP`) instead of following it.
+///
+/// This closes the **file-level** half of the [`reject_symlink`] check-then-open
+/// TOCTOU window: even if an attacker swaps the leaf for a symlink in the gap
+/// between the `symlink_metadata` check and this open, the kernel refuses to
+/// traverse it at open time. The complementary **directory-level** half — a
+/// swapped *intermediate* component — is still covered only by the per-level
+/// `symlink_metadata` checks (`O_NOFOLLOW` does not constrain intermediate
+/// components; that needs Linux-only `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`,
+/// deliberately deferred). Together the two guards cover the practical attack
+/// surface under the MVP per-user-`0700` trust model.
+///
+/// Returns `opts` for call-chaining. No-op on non-Unix, where the
+/// `symlink_metadata` check is the only guard (Windows reparse points are out
+/// of scope — orchestratectl targets darwin/linux).
+pub fn nofollow(opts: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts
+}
 
 /// Reject `path` when it exists and is a symlink — best-effort containment so a
 /// replaced run-tree component cannot redirect a read or write outside the run
@@ -29,10 +55,14 @@ use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
 /// **Residual TOCTOU gap.** This is check-then-open: a pure TOCTOU attacker can
 /// swap `path` for a symlink in the window between this `symlink_metadata` call
 /// and the caller's subsequent open — and, across the per-level calls, swap an
-/// already-checked parent so a later level resolves through it. All of that
-/// shares one accepted window; closing it needs `O_NOFOLLOW` / `openat2`
-/// (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), which the standard library does
-/// not expose portably and which is out of scope for the MVP threat model.
+/// already-checked parent so a later level resolves through it. Callers that
+/// open the leaf pair this check with [`nofollow`] (`O_NOFOLLOW`), which closes
+/// the **file-level** half of that window atomically at open time; the
+/// **directory-level** half (a swapped intermediate component) remains covered
+/// only by these per-level checks. Closing that last half needs Linux-only
+/// `openat2` (`RESOLVE_BENEATH` / `RESOLVE_NO_SYMLINKS`), deliberately deferred —
+/// the two portable guards cover the practical attack surface for the MVP
+/// per-user-`0700` trust model.
 pub(crate) fn reject_symlink(path: &Path, mk_err: impl FnOnce() -> Error) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(md) if md.file_type().is_symlink() => Err(mk_err()),

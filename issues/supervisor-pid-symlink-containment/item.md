@@ -3,10 +3,11 @@ created: 2026-06-28
 updated: 2026-06-28
 type: improvement
 reporter: jari
-status: open
+status: done
 priority: normal
 epic: orchestratectl-mvp
 related: ['@run-state-symlink-containment']
+closed: 2026-06-28
 ---
 
 # octl-cli: extend symlink containment to supervisor.pid

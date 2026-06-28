@@ -6,11 +6,56 @@
 //! the supervisor removes the file. After a crash the file is stale and
 //! `run reattach` (or a manual `kill`) is required.
 
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 
 use octl_core::{RunLock, RunPaths};
 
 use crate::error::CliError;
+
+/// Reject a `supervisor.pid` whose final component is a symlink before any
+/// open follows it, mapping the refusal to a clean `pid_file_symlink_rejected`
+/// envelope. `supervisor.pid` is CLI-owned (it does not route through
+/// `octl_core`'s run-state guards), so this mirrors `octl_core`'s best-effort
+/// `symlink_metadata` containment here. Paired with `O_NOFOLLOW` on the actual
+/// open (see [`octl_core::nofollow`]) so a leaf swapped *after* this check but
+/// *before* the open is still refused at the file level.
+///
+/// An absent file is accepted (`Ok`): a not-yet-written pid file is normal. Any
+/// other `symlink_metadata` failure surfaces as `io_error`.
+fn reject_pid_symlink(path: &Path) -> Result<(), CliError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => Err(CliError::system(
+            "pid_file_symlink_rejected",
+            format!(
+                "supervisor pid file {} is a symlink (refusing to follow it)",
+                path.display()
+            ),
+        )),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CliError::system(
+            "io_error",
+            format!("stat {}: {}", path.display(), e),
+        )),
+    }
+}
+
+/// Read `path` to a string with `O_NOFOLLOW`, returning `None` on any failure
+/// (absent, unreadable, or — the security-relevant case — a symlink, which
+/// fails the open with `ELOOP` instead of being followed). Callers treat a
+/// `None` here as "no valid owner record", which is the safe default: a forged
+/// symlink never redirects the read, and the recorded owner is read as absent
+/// rather than from an attacker-chosen target.
+fn read_pid_string(path: &Path) -> Option<String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    octl_core::nofollow(&mut opts);
+    let mut f = opts.open(path).ok()?;
+    let mut s = String::new();
+    f.read_to_string(&mut s).ok()?;
+    Some(s)
+}
 
 /// Atomically write `pid` (plus its process start-time, when readable)
 /// to `path` via tempfile + rename. The on-disk format is one line:
@@ -27,6 +72,10 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
     })?;
     std::fs::create_dir_all(parent)
         .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e)))?;
+    // Refuse a symlinked destination before we build the temp + rename over it
+    // (rename does not follow the leaf, but the reject keeps the failure mode a
+    // clean `pid_file_symlink_rejected` rather than silently clobbering the link).
+    reject_pid_symlink(path)?;
     let contents = if let Some(st) = crate::supervise::watchdog::pid_start_time(pid) {
         format!("{pid} {st}")
     } else {
@@ -42,10 +91,43 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), CliError> {
         pid.to_string()
     };
     let tmp = parent.join(format!(".supervisor.pid.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, contents)
-        .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
+    write_tmp_exclusive(&tmp, contents.as_bytes())?;
     std::fs::rename(&tmp, path)
         .map_err(|e| CliError::system("io_error", format!("rename {}: {}", path.display(), e)))?;
+    Ok(())
+}
+
+/// Write `bytes` to `tmp` via an exclusive create (`O_CREAT|O_EXCL` +
+/// `O_NOFOLLOW`), mirroring `octl_core::atomic`: `create_new` refuses an
+/// existing temp (and any symlink planted there), so a stale or forged temp
+/// cannot be followed or appended to. A leftover temp from a crashed write
+/// (same pid, same run) is removed and the create retried once.
+fn write_tmp_exclusive(tmp: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    let open = || {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create_new(true).write(true);
+        octl_core::nofollow(&mut opts);
+        opts.open(tmp)
+    };
+    let mut f = match open() {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            std::fs::remove_file(tmp).map_err(|e| {
+                CliError::system("io_error", format!("rm stale {}: {}", tmp.display(), e))
+            })?;
+            open().map_err(|e| {
+                CliError::system("io_error", format!("write {}: {}", tmp.display(), e))
+            })?
+        }
+        Err(e) => {
+            return Err(CliError::system(
+                "io_error",
+                format!("write {}: {}", tmp.display(), e),
+            ))
+        }
+    };
+    f.write_all(bytes)
+        .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
     Ok(())
 }
 
@@ -127,7 +209,7 @@ pub(crate) fn to_pid_t(pid: u32) -> Option<libc::pid_t> {
 /// is absent, its first token does not parse as an integer, or the value is
 /// out of the valid pid range (see [`to_pid_t`]).
 pub fn read_pid(path: &Path) -> Option<u32> {
-    let s = std::fs::read_to_string(path).ok()?;
+    let s = read_pid_string(path)?;
     let pid = s.split_whitespace().next()?.parse::<u32>().ok()?;
     to_pid_t(pid).map(|_| pid)
 }
@@ -136,7 +218,7 @@ pub fn read_pid(path: &Path) -> Option<u32> {
 /// legacy single-integer file (written before §7.6 identity landed) or
 /// when the start-time could not be captured at write time.
 pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
-    let s = std::fs::read_to_string(path).ok()?;
+    let s = read_pid_string(path)?;
     let mut it = s.split_whitespace();
     let pid = it.next()?.parse::<u32>().ok()?;
     // Reject an out-of-range pid (see `to_pid_t`) before it can reach any
@@ -249,6 +331,41 @@ mod tests {
         let p = dir.path().join("supervisor.pid");
         std::fs::write(&p, "4294967295").unwrap();
         assert_eq!(read_pid(&p), None, "out-of-range pid must read as absent");
+        assert_eq!(read_pid_record(&p), None);
+    }
+
+    /// A `supervisor.pid` replaced by a symlink must not be followed on write:
+    /// `write_pid` refuses it with a clean `pid_file_symlink_rejected` envelope
+    /// rather than renaming over (or, pre-rename, opening through) the link.
+    #[cfg(unix)]
+    #[test]
+    fn write_pid_rejects_a_symlinked_pid_file() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("outside.pid");
+        let p = dir.path().join("supervisor.pid");
+        symlink(&target, &p).unwrap();
+
+        let err = write_pid(&p, 4321).expect_err("must refuse a symlinked pid file");
+        assert_eq!(err.code, "pid_file_symlink_rejected");
+        // The forged link's target was never written through.
+        assert!(!target.exists(), "write must not follow the symlink");
+    }
+
+    /// A symlinked `supervisor.pid` reads as absent (`None`) rather than being
+    /// followed: `O_NOFOLLOW` fails the open with `ELOOP`, so a forged link
+    /// never redirects the owner-record read to an attacker-chosen file.
+    #[cfg(unix)]
+    #[test]
+    fn read_pid_does_not_follow_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("outside.pid");
+        std::fs::write(&target, "4321 100").unwrap();
+        let p = dir.path().join("supervisor.pid");
+        symlink(&target, &p).unwrap();
+
+        assert_eq!(read_pid(&p), None, "symlinked pid file must read as absent");
         assert_eq!(read_pid_record(&p), None);
     }
 

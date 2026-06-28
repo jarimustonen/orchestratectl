@@ -74,13 +74,30 @@ fn checked_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<PathBuf> {
     )
 }
 
+/// Read `path` into bytes with `O_NOFOLLOW`: a projection file replaced by a
+/// symlink fails the open (`ELOOP`) rather than redirecting the read. This is
+/// the file-level TOCTOU backstop to the `reject_symlink` check the `checked_*`
+/// resolvers run before calling in here — projection *writes* go via temp-file +
+/// rename (never opening the leaf), so the read is the projection's only
+/// follow-through-a-symlink surface. See [`crate::paths::nofollow`].
+fn read_nofollow(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    crate::paths::nofollow(&mut opts);
+    let mut f = opts.open(path)?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let bytes = std::fs::read(path).map_err(|e| Error::io(path, e))?;
+    let bytes = read_nofollow(path).map_err(|e| Error::io(path, e))?;
     serde_json::from_slice(&bytes).map_err(|e| Error::json(path, e))
 }
 
 fn read_json_opt<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    match std::fs::read(path) {
+    match read_nofollow(path) {
         Ok(bytes) => Ok(Some(
             serde_json::from_slice(&bytes).map_err(|e| Error::json(path, e))?,
         )),
@@ -701,6 +718,31 @@ mod tests {
             read_node(&paths, &id),
             Err(Error::SymlinkStateFile { name: "node", .. })
         ));
+    }
+
+    /// The `O_NOFOLLOW` backstop, isolated from the `symlink_metadata` check
+    /// the `checked_*` resolvers run first: calling the leaf reader directly on
+    /// a symlinked projection must fail the *open* with `ELOOP` rather than
+    /// following it. This is the half of the TOCTOU window that survives a leaf
+    /// swapped *after* the `symlink_metadata` check but *before* the open.
+    #[cfg(unix)]
+    #[test]
+    fn read_json_refuses_to_follow_a_symlinked_projection() {
+        use std::os::unix::fs::symlink;
+        let (tmp, _paths) = setup();
+        let target = tmp.path().join("evil-node.json");
+        write_raw(&target, &node_json("n-0001", RUN));
+        let link = tmp.path().join("link-node.json");
+        symlink(&target, &link).unwrap();
+        let err = read_json::<Node>(&link).expect_err("must refuse a symlinked projection");
+        match err {
+            Error::Io { source, .. } => assert_eq!(
+                source.raw_os_error(),
+                Some(libc::ELOOP),
+                "O_NOFOLLOW open of a symlink must report ELOOP, got {source:?}"
+            ),
+            other => panic!("expected Error::Io(ELOOP), got {other:?}"),
+        }
     }
 
     #[cfg(unix)]

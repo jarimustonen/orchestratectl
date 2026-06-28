@@ -39,13 +39,12 @@ impl RunLock {
             name: "lock",
             path: lock_path.to_path_buf(),
         })?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)
-            .map_err(|e| Error::io(lock_path, e))?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).read(true).write(true).truncate(false);
+        // `O_NOFOLLOW`: refuse to take `flock` through a symlinked `.lock`, the
+        // file-level backstop to the `reject_symlink` check above.
+        crate::paths::nofollow(&mut opts);
+        let file = opts.open(lock_path).map_err(|e| Error::io(lock_path, e))?;
         // Fully-qualified to call fs4's trait method, not `std::fs::File::lock`
         // (an inherent method stable since 1.89 that would otherwise shadow it
         // on newer toolchains). fs4 renamed `fs2`'s `lock_exclusive` to `lock`

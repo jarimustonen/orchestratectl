@@ -163,11 +163,11 @@ fn find_prev_newline(
 /// empty, or already `\n`-terminated (the common, clean case — one `stat` +
 /// one-byte read, no rewrite).
 fn truncate_torn_tail(events_path: &Path) -> Result<()> {
-    let mut f = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(events_path)
-    {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true).write(true);
+    // `O_NOFOLLOW`: refuse to rewrite the tail through a symlinked event log.
+    crate::paths::nofollow(&mut opts);
+    let mut f = match opts.open(events_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(Error::io(events_path, e)),

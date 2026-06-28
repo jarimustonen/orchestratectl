@@ -51,11 +51,12 @@ fn write_atomic_inner(path: &Path, bytes: &[u8], create_parent: bool) -> Result<
     let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{fname}.tmp.{}.{seq}", std::process::id()));
     {
-        let mut f = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp)
-            .map_err(|e| Error::io(&tmp, e))?;
+        let mut opts = OpenOptions::new();
+        opts.create_new(true).write(true);
+        // `create_new` (O_CREAT|O_EXCL) already refuses an existing symlink at
+        // the temp path; `O_NOFOLLOW` is belt-and-suspenders on the same open.
+        crate::paths::nofollow(&mut opts);
+        let mut f = opts.open(&tmp).map_err(|e| Error::io(&tmp, e))?;
         f.write_all(bytes).map_err(|e| Error::io(&tmp, e))?;
         f.sync_all().map_err(|e| Error::io(&tmp, e))?;
     }
@@ -83,13 +84,17 @@ pub fn write_json_atomic_no_create<T: serde::Serialize>(path: &Path, value: &T) 
 }
 
 /// Open `events.jsonl` for `O_APPEND` writes (creating it if absent).
+///
+/// `O_NOFOLLOW` so an existing `events.jsonl` that has been replaced by a
+/// symlink fails the open (`ELOOP`) rather than redirecting the highest-leverage
+/// run write through it — the file-level backstop to the caller's
+/// `symlink_metadata` check (see [`crate::paths::nofollow`]).
 pub fn open_events_append(path: &Path) -> Result<File> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).map_err(|e| Error::io(p, e))?;
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| Error::io(path, e))
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    crate::paths::nofollow(&mut opts);
+    opts.open(path).map_err(|e| Error::io(path, e))
 }
