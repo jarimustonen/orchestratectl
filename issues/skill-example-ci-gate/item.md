@@ -2,8 +2,9 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: feature
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-06-28
 ---
 
 # CI gate: validate every orchestratectl invocation in SKILLs against the binary
