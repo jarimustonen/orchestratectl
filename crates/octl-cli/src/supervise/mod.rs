@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::Args as ClapArgs;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -62,6 +62,30 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 /// We require a short streak rather than reacting to a single missed read
 /// so a transient `stat` hiccup cannot kill a live supervisor.
 const SELF_TERMINATE_TICKS: u32 = 3;
+
+/// Minimum age a node must reach before the watchdog will synthesize a
+/// terminal `agent-died` (or `agent-tmux-window-gone` / `agent-pid-recycled`)
+/// report for it. Within this window the watchdog leaves a non-Alive verdict
+/// alone.
+///
+/// Rationale: `run::spawn::verify_agent_pid` already confirmed the agent PID
+/// was alive at the instant `node.created` was emitted, so an apparent
+/// "dead"/"recycled"/"tmux-gone" verdict in the first seconds is almost always
+/// a *spawn race* (the OS has not finished mapping the PID, `sysinfo` cannot
+/// yet read its `start_time`, or the agent has not yet checkpointed that it is
+/// alive) rather than a real death. Firing here would terminalize a live,
+/// freshly-spawned agent — and, with auto-cleanup landed, destroy its
+/// worktree, branch, and tmux window mid-flight. The grace is anchored on the
+/// node's `started_at` (the immutable `node.created` timestamp), so it is
+/// measured from spawn, not from supervisor start. Overridable via the
+/// [`SPAWN_GRACE_ENV`] env var; tests set it to `0` to exercise pure liveness
+/// semantics without the delay.
+const WATCHDOG_SPAWN_GRACE: Duration = Duration::from_secs(5);
+
+/// Env var that overrides [`WATCHDOG_SPAWN_GRACE`] (whole seconds). `0`
+/// disables the grace entirely (a non-Alive verdict fires on the first tick),
+/// which is how the liveness-semantics integration tests opt out of the delay.
+const SPAWN_GRACE_ENV: &str = "OCTL_WATCHDOG_GRACE_SECS";
 
 /// Minimum gap between successive "log events dropped" warnings. The
 /// supervisor never renders a success envelope while it runs, so unlike
@@ -1113,10 +1137,53 @@ fn all_work_done(
 /// "resolve via short retry then commit to dead").
 const HALF_STATE_TICKS: u32 = 3;
 
+/// The effective spawn grace this process uses: [`WATCHDOG_SPAWN_GRACE`]
+/// unless [`SPAWN_GRACE_ENV`] overrides it with a parseable whole-second
+/// count (an unparseable value is ignored, keeping the safe default).
+fn spawn_grace() -> Duration {
+    match std::env::var(SPAWN_GRACE_ENV) {
+        Ok(v) => match v.trim().parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => WATCHDOG_SPAWN_GRACE,
+        },
+        Err(_) => WATCHDOG_SPAWN_GRACE,
+    }
+}
+
+/// Whether a node is still inside its spawn grace window and must therefore
+/// be left untouched by the watchdog this tick.
+///
+/// `true` only when `started_at` is known AND `now` is less than `grace`
+/// past it. A node with no `started_at` (legacy / malformed projection) is
+/// treated as eligible (`false`): we cannot prove it is fresh, and
+/// suppressing forever would be worse than the original race. A clock that
+/// went backwards (`now < started_at`) is also treated as in-grace — the
+/// node cannot be older than its own creation, so the conservative read is
+/// "too fresh to judge".
+fn within_spawn_grace(
+    started_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    grace: Duration,
+) -> bool {
+    let Some(started_at) = started_at else {
+        return false;
+    };
+    match (now - started_at).to_std() {
+        // `to_std` succeeds only for a non-negative delta; a node younger
+        // than `grace` is still in the window.
+        Ok(age) => age < grace,
+        // Negative delta (clock skew / `now` before creation): conservatively
+        // in-grace.
+        Err(_) => true,
+    }
+}
+
 fn watchdog_tick(
     paths: &RunPaths,
     half_state_streak: &mut std::collections::BTreeMap<String, u32>,
 ) -> Result<(), CliError> {
+    let now = Utc::now();
+    let grace = spawn_grace();
     // Scan our own nodes/ for any with an `agent_pid` that is running.
     // If a node is non-terminal and its agent has died (per dual-poll
     // protocol) AND it has not already produced a `node.report`,
@@ -1158,6 +1225,15 @@ fn watchdog_tick(
             continue;
         };
         if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
+            continue;
+        }
+        // Spawn-grace gate (see `WATCHDOG_SPAWN_GRACE`): a node younger than
+        // the grace window is skipped entirely — not probed, not streak-
+        // tracked — so a fresh-spawn PID-discovery race can never synthesize a
+        // terminal report that auto-cleanup would then act on. The PID was
+        // verified alive at `node.created`, so the agent gets these seconds to
+        // become visible before the watchdog is allowed to judge it dead.
+        if within_spawn_grace(n.started_at, now, grace) {
             continue;
         }
         let Some(pid) = n.agent_pid else { continue };
@@ -1312,5 +1388,44 @@ mod tests {
             &mut last_at
         ));
         assert_eq!(last_count, 9);
+    }
+
+    /// The spawn-grace predicate: a node younger than `grace` is in-grace; at
+    /// or past `grace` it is eligible; a missing `started_at` is eligible (we
+    /// cannot prove it fresh); and a backwards clock is conservatively
+    /// in-grace. All timestamps are injected so the comparison is exact and
+    /// does not depend on wall-clock timing.
+    #[test]
+    fn within_spawn_grace_boundaries() {
+        let grace = Duration::from_secs(5);
+        let created = "2026-06-28T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        // Fresh: 1s old, well inside the 5s window → in-grace.
+        let now = created + chrono::Duration::seconds(1);
+        assert!(within_spawn_grace(Some(created), now, grace));
+
+        // Just under the boundary (4.999s) → still in-grace.
+        let now = created + chrono::Duration::milliseconds(4_999);
+        assert!(within_spawn_grace(Some(created), now, grace));
+
+        // Exactly at the boundary (5s) → eligible (age < grace is strict).
+        let now = created + chrono::Duration::seconds(5);
+        assert!(!within_spawn_grace(Some(created), now, grace));
+
+        // Well past the window → eligible.
+        let now = created + chrono::Duration::seconds(60);
+        assert!(!within_spawn_grace(Some(created), now, grace));
+
+        // No started_at → eligible (cannot prove freshness).
+        let now = created + chrono::Duration::seconds(1);
+        assert!(!within_spawn_grace(None, now, grace));
+
+        // Clock ran backwards (now before creation) → conservatively in-grace.
+        let now = created - chrono::Duration::seconds(1);
+        assert!(within_spawn_grace(Some(created), now, grace));
+
+        // A zero grace disables suppression for any known-age node.
+        let now = created + chrono::Duration::milliseconds(1);
+        assert!(!within_spawn_grace(Some(created), now, Duration::ZERO));
     }
 }

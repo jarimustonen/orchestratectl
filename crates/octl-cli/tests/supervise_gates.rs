@@ -429,8 +429,16 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     n["tmux_window"] = Value::Null;
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
-    // Now supervise --once: alive PID + no tmux probe → no synthesis.
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+    // Now supervise --once: alive PID + no tmux probe → no synthesis. Disable
+    // the spawn grace (this test is about PID liveness, not freshness); the
+    // grace itself is covered by the dedicated `*_within_grace` regressions.
+    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(
         count_kind(&events, "node.report"),
@@ -445,7 +453,13 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
     n["agent_pid"] = Value::from(0x3FFF_FFFE_i64);
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
     assert!(
         count_kind(&events, "node.report") >= 1,
         "dead PID must synthesize a failed node.report. events={:?}",
@@ -498,7 +512,14 @@ fn v3_kill_and_start_time_identity() {
     n["tmux_window"] = Value::Null;
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+    // Grace disabled: this test asserts the recycled-PID verdict, not freshness.
+    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
     let events = run_dir(&home, &run_id).join("events.jsonl");
     let reports = read_events(&events)
         .into_iter()
@@ -506,6 +527,121 @@ fn v3_kill_and_start_time_identity() {
         .collect::<Vec<_>>();
     assert_eq!(reports.len(), 1, "recycled PID must synthesize one report");
     assert_eq!(reports[0]["data"]["reason"], "agent-pid-recycled");
+}
+
+/// Forge a `node.created` for `n-0001` carrying `agent_pid`, then null its
+/// `tmux_window` so the watchdog's verdict turns purely on PID liveness (no
+/// tmux probe). Returns the node projection path so the caller can mutate it
+/// further (e.g. backdate `started_at` to age the node past the spawn grace).
+fn forge_pid_node(home: &TempDir, run_id: &str, agent_pid: i64) -> std::path::PathBuf {
+    let node = home.path().join(format!("wd-node-{run_id}.json"));
+    std::fs::write(
+        &node,
+        format!(r#"{{"kind":"spinoff","task":"x","agent_pid":{agent_pid}}}"#),
+    )
+    .unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node.to_str().unwrap(),
+    ]));
+    let node_p = run_dir(home, run_id).join("nodes").join("n-0001.json");
+    let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
+    n["tmux_window"] = Value::Null;
+    std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
+    node_p
+}
+
+/// supervisor-watchdog-misfire-on-fresh-spawn (regression): a node whose
+/// recorded `agent_pid` reads *dead* but which was created only moments ago
+/// (well within the default spawn grace) must NOT be terminalized. This is the
+/// destructive bug — the watchdog used to synthesize `agent-died` within
+/// milliseconds of `node.created`, before the real agent had a chance to
+/// checkpoint that it is alive, and auto-cleanup would then tear down the live
+/// agent's worktree. The default grace (no `OCTL_WATCHDOG_GRACE_SECS` override)
+/// must suppress the synthesis. The test runs far inside the 5s window, so no
+/// `sleep` is needed.
+#[test]
+fn fresh_spawn_dead_pid_suppressed_within_grace() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "fresh-dead-grace");
+    // Guaranteed-dead PID + a node created just now (started_at ≈ now).
+    forge_pid_node(&home, &run_id, 0x3FFF_FFFE_i64);
+
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        count_kind(&events, "node.report"),
+        0,
+        "a fresh node within the spawn grace must not be terminalized even \
+         though its PID reads dead, events={:?}",
+        read_events(&events)
+            .into_iter()
+            .map(|v| v["kind"].clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Companion to the regression above: a fresh node whose agent PID is genuinely
+/// alive (our own) is likewise left alone — the grace never *causes* a false
+/// positive, it only suppresses one. Covers criterion 4's "fresh spawn with
+/// alive agent does not trigger watchdog".
+#[test]
+fn fresh_spawn_alive_pid_no_synthesis() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "fresh-alive");
+    forge_pid_node(&home, &run_id, i64::from(std::process::id()));
+
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        count_kind(&events, "node.report"),
+        0,
+        "an alive fresh node must not be terminalized"
+    );
+}
+
+/// The other half of the contract: once a node has aged past the spawn grace,
+/// a dead agent PID DOES synthesize a terminal `agent-died` report — the grace
+/// delays the verdict, it does not disable it. Mirrors "spawn then immediately
+/// kill -9 the agent" by backdating `started_at` so the node is comfortably
+/// older than the grace. Covers criterion 4's "fresh spawn with dead agent does
+/// trigger watchdog (after grace)" and criterion 2.
+#[test]
+fn dead_pid_synthesizes_after_grace() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "dead-after-grace");
+    let node_p = forge_pid_node(&home, &run_id, 0x3FFF_FFFE_i64);
+
+    // Age the node well past the 5s grace without sleeping: rewrite started_at.
+    let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
+    n["started_at"] = Value::String("2020-01-01T00:00:00Z".into());
+    std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
+
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    let reports = read_events(&events)
+        .into_iter()
+        .filter(|v| v["kind"] == "node.report")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reports.len(),
+        1,
+        "a node past the spawn grace with a dead PID must synthesize one \
+         terminal report"
+    );
+    assert_eq!(reports[0]["data"]["reason"], "agent-died");
 }
 
 /// Wedge a newline-terminated garbage line into the MIDDLE of `events`
@@ -998,7 +1134,15 @@ fn watchdog_defers_when_report_already_present() {
     n["last_report"] = serde_json::json!({"success": true, "summary": "real report"});
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+    // Grace disabled so the deferral (present last_report) — not freshness — is
+    // what blocks synthesis; otherwise this could pass for the wrong reason.
+    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
 
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(
