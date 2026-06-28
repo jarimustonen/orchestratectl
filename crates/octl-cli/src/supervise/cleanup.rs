@@ -15,14 +15,19 @@
 //!      The existing `all_work_done` loop then sees the manifest terminal and
 //!      exits naturally.
 //!
-//!   2. **Cleanup on terminal transition** ([`cleanup_terminal_autonomous`]).
-//!      Once the run is terminal *and* its kind is autonomous
-//!      ([`Lifecycle::Autonomous`]), the supervisor closes each node's tmux
-//!      window, removes its git worktree, and deletes its branch — so a
-//!      `/worktree-spinoff` (and every other fire-and-forget kind) tears itself
-//!      fully down with no manual `tmux kill-window` / `git worktree remove` /
-//!      `git branch -D` (`supervisor-close-tmux-on-terminal`). Interactive
-//!      kinds (`code`, `orchestrate`) are skipped: the human owns that window.
+//!   2. **Cleanup on terminal transition** ([`cleanup_terminal_nodes`]).
+//!      Once the run is terminal *and* cleanup is warranted, the supervisor
+//!      closes each node's tmux window, removes its git worktree, and deletes
+//!      its branch — so a `/worktree-spinoff` (and every other fire-and-forget
+//!      kind) tears itself fully down with no manual `tmux kill-window` / `git
+//!      worktree remove` / `git branch -D` (`supervisor-close-tmux-on-terminal`).
+//!      Cleanup is warranted when the kind is autonomous
+//!      ([`Lifecycle::Autonomous`]) OR an interactive kind (`code`,
+//!      `orchestrate`) reached terminal via an explicit `run merge`
+//!      ([`any_node_merged_explicitly`]). At spawn time the human owns an
+//!      interactive review window, so it is excluded; but running `run merge`
+//!      is the user's signal that the window may close (issue
+//!      `bundle-worktree-merge`).
 //!
 //! Every external command is best-effort and lenient: a missing tmux window, an
 //! already-removed worktree, or a `git` refusal (locked / dirty tree) is logged
@@ -93,15 +98,37 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
     })
 }
 
+/// True when any node's terminal `node.report` was submitted by an explicit
+/// `run merge` — i.e. its `last_report` carries `via: "explicit-merge"`.
+///
+/// This is the gate that lets *interactive* kinds (`code`, `orchestrate`) be
+/// torn down. At spawn time the human owns the review window, so interactive
+/// kinds are excluded from auto-cleanup. But running `run merge` IS the user's
+/// signal that the window has served its purpose: the verb stamps the report
+/// with `via: "explicit-merge"`, and the supervisor reads that here to extend
+/// the same teardown autonomous kinds always get (issue `bundle-worktree-merge`).
+/// Autonomous kinds don't depend on this — they clean up on any terminal report.
+pub fn any_node_merged_explicitly(paths: &RunPaths) -> bool {
+    list_nodes(paths).iter().any(|n| {
+        n.last_report
+            .as_ref()
+            .and_then(|r| r.get("via"))
+            .and_then(serde_json::Value::as_str)
+            == Some("explicit-merge")
+    })
+}
+
 /// Close the tmux window, remove the worktree, and delete the branch for every
 /// node of a run that has just reached a terminal status.
 ///
-/// The caller must have already confirmed the run is terminal AND its kind is
-/// [`Lifecycle::Autonomous`](octl_core::Lifecycle::Autonomous); this function
-/// does not re-check (it is the cleanup mechanism, not the gate). Every step is
-/// best-effort and never panics, so a partially-torn-down run still makes
-/// forward progress.
-pub fn cleanup_terminal_autonomous(paths: &RunPaths) {
+/// The caller must have already confirmed the run is terminal AND that cleanup
+/// is warranted — either the kind is
+/// [`Lifecycle::Autonomous`](octl_core::Lifecycle::Autonomous) or an
+/// interactive kind reached terminal via an explicit `run merge`
+/// ([`any_node_merged_explicitly`]). This function does not re-check (it is the
+/// cleanup mechanism, not the gate). Every step is best-effort and never
+/// panics, so a partially-torn-down run still makes forward progress.
+pub fn cleanup_terminal_nodes(paths: &RunPaths) {
     let tmux = tmux_bin();
     let git = git_bin();
     for n in list_nodes(paths) {
@@ -366,6 +393,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rollup_status(&paths, true), None);
+    }
+
+    #[test]
+    fn explicit_merge_marker_detected() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        // A plain success report (autonomous path) carries no `via`.
+        report(&paths, "n-0001", json!({ "success": true }));
+        assert!(!any_node_merged_explicitly(&paths));
+    }
+
+    #[test]
+    fn explicit_merge_marker_present() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        report(&paths, "n-0001", json!({ "success": true }));
+        // The `run merge` verb stamps the terminal report; any one node
+        // carrying it warrants interactive-kind cleanup.
+        report(
+            &paths,
+            "n-0002",
+            json!({ "success": true, "via": "explicit-merge" }),
+        );
+        assert!(any_node_merged_explicitly(&paths));
+    }
+
+    #[test]
+    fn other_via_value_does_not_trigger_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        // A non-explicit-merge `via` (e.g. a future watchdog source) must
+        // NOT extend cleanup to interactive kinds.
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "via": "watchdog" }),
+        );
+        assert!(!any_node_merged_explicitly(&paths));
     }
 
     #[test]

@@ -591,21 +591,27 @@ pub fn dispatch(
             }
         }
 
-        // Terminal-transition cleanup: once the run is terminal AND its kind is
-        // autonomous, close each node's tmux window, remove its worktree, and
-        // delete its branch so a fire-and-forget run tears itself fully down
-        // (supervisor-close-tmux-on-terminal). Interactive kinds (`code`,
-        // `orchestrate`) are skipped — the human owns that window. This runs the
-        // same tick the rollup above (or a `run cancel`) made the manifest
-        // terminal, since `append_and_apply_event` folded it before this read.
+        // Terminal-transition cleanup: once the run is terminal, close each
+        // node's tmux window, remove its worktree, and delete its branch so the
+        // run tears itself fully down (supervisor-close-tmux-on-terminal).
+        // Cleanup fires when the kind is autonomous (a fire-and-forget run
+        // always self-destructs) OR an interactive kind reached terminal via an
+        // explicit `run merge` (the user ran the merge, so the review window may
+        // close — issue `bundle-worktree-merge`). A plain interactive run that
+        // ended without an explicit merge is left alone — the human owns that
+        // window. This runs the same tick the rollup above (or a `run cancel`)
+        // made the manifest terminal, since `append_and_apply_event` folded it
+        // before this read.
         if !cleaned {
             if let Ok(Some(m)) = read_manifest_opt(&paths) {
                 if m.status.is_terminal() {
-                    if m.kind.lifecycle() == Lifecycle::Autonomous {
-                        cleanup::cleanup_terminal_autonomous(&paths);
+                    let warranted = m.kind.lifecycle() == Lifecycle::Autonomous
+                        || cleanup::any_node_merged_explicitly(&paths);
+                    if warranted {
+                        cleanup::cleanup_terminal_nodes(&paths);
                     }
-                    // Mark done even for interactive kinds so we don't re-read
-                    // the manifest every tick until the loop exits.
+                    // Mark done even when cleanup was not warranted so we don't
+                    // re-read the manifest every tick until the loop exits.
                     cleaned = true;
                 }
             }

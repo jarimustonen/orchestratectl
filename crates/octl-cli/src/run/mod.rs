@@ -7,6 +7,7 @@
 pub mod cancel;
 pub mod create;
 pub mod list;
+pub mod merge;
 pub mod reattach;
 pub mod show;
 pub mod spawn;
@@ -121,6 +122,25 @@ pub enum RunAction {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Merge a worktree run's branch back to its source, then submit the
+    /// terminal `node.report` so the supervisor winds the run down and
+    /// tears the worktree/window/branch down. Owns the full merge
+    /// lifecycle: rebase + merge (via the bundled merge backend) AND the
+    /// report, in one call.
+    Merge {
+        run_id: String,
+        /// Merge target branch. Defaults to the run's recorded
+        /// `source_branch`, then to main/master auto-detection.
+        #[arg(long)]
+        source: Option<String>,
+        /// Reporting node id (defaults to `n-0001`).
+        #[arg(long)]
+        node_id: Option<String>,
+        /// Resolve inputs and report the planned merge without running it
+        /// or appending any event.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Restart the run's supervisor process. Refuses if the recorded
     /// supervisor PID is still alive. Spawns `orchestratectl supervise
     /// <run-id>` detached with stdout/stderr → `supervisor.stderr.log`.
@@ -180,6 +200,19 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
         }),
         RunAction::Show { run_id } => show::run(&run_id, spec, warnings),
         RunAction::Cancel { run_id, note } => cancel::run(&run_id, note.as_deref(), spec, warnings),
+        RunAction::Merge {
+            run_id,
+            source,
+            node_id,
+            dry_run,
+        } => merge::run(merge::Args {
+            run_id,
+            source,
+            node_id,
+            dry_run,
+            spec,
+            warnings,
+        }),
         RunAction::Reattach {
             run_id,
             once,

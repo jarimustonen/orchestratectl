@@ -381,6 +381,48 @@ fn interactive_kind_completes_but_skips_cleanup() {
     );
 }
 
+/// bundle-worktree-merge: an interactive kind (`code`) that reaches terminal
+/// via an explicit `run merge` — its `node.report` carries
+/// `via: "explicit-merge"` — MUST be torn down like an autonomous run. The
+/// user ran the merge, so the review window has served its purpose. This
+/// closes the last manual-cleanup gap in the interactive worktree lifecycle.
+#[test]
+fn interactive_kind_with_explicit_merge_cleans_up() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "code", "interactive-merged");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "code",
+        r#"{"success": true, "summary": "merged wt/test-x into main via run merge", "via": "explicit-merge"}"#,
+    );
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(latest_run_status(&events).as_deref(), Some("done"));
+    let tmux = log_contents(dir.path(), "tmux.log");
+    assert!(
+        tmux.contains("kill-window -t @42"),
+        "explicit-merge must close the interactive window: {tmux:?}"
+    );
+    let git = log_contents(dir.path(), "git.log");
+    assert!(
+        git.contains("worktree remove /fake/wt"),
+        "explicit-merge must remove the worktree: {git:?}"
+    );
+    assert!(
+        git.contains("branch -D wt/test-x"),
+        "explicit-merge must delete the branch: {git:?}"
+    );
+}
+
 /// V2: `agent_pid` discovery and PID-based liveness probe.
 ///
 /// Real tmux-pane PID re-discovery requires a live tmux server, which
