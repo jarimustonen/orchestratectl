@@ -49,10 +49,17 @@ fn skill_list_json_pins_catalog_shape() {
     assert_eq!(
         names,
         vec![
+            "fan-out",
             "octl-run-overview",
             "octl-spawn-spinoff",
             "orchestratectl-overview",
+            "worktree-bugfix",
+            "worktree-code",
+            "worktree-make-skill",
+            "worktree-orchestrated",
+            "worktree-research",
             "worktree-spinoff",
+            "worktree-technical-decision",
         ]
     );
     for s in skills {

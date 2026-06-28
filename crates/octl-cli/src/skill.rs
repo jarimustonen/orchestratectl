@@ -60,6 +60,53 @@ const SKILLS: &[EmbeddedSkill] = &[
         )),
         path_in_repo: "crates/octl-cli/skills/worktree-spinoff/SKILL.template.md",
     },
+    EmbeddedSkill {
+        name: "worktree-code",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-code/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/worktree-code/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-orchestrated",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-orchestrated/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-orchestrated/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-research",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-research/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-research/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-make-skill",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-make-skill/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-make-skill/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-bugfix",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-bugfix/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/worktree-bugfix/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-technical-decision",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-technical-decision/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-technical-decision/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "fan-out",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/fan-out/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/fan-out/SKILL.template.md",
+    },
 ];
 
 /// Binary version embedded at build time. `build.rs` substitutes this
