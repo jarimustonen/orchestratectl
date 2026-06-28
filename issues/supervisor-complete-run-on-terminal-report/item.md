@@ -2,8 +2,11 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: in-progress
 priority: normal
+commits:
+- hash: ed99cc7
+  summary: supervisor rolls run up to terminal run.status from terminal node.report
 ---
 
 # Supervisor never completes run on agent-submitted terminal node.report
