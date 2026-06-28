@@ -2,8 +2,13 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: open
+status: in-progress
 priority: normal
+commits:
+- hash: dfcd92e
+  summary: reap leaked supervisors via shared TestHome fixture
+- hash: 514c743
+  summary: verify pid is a real supervisor before reaping; cover run reattach
 ---
 
 # Integration tests leak supervisor processes on teardown
