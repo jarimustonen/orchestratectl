@@ -52,6 +52,14 @@ const SKILLS: &[EmbeddedSkill] = &[
         )),
         path_in_repo: "crates/octl-cli/skills/octl-spawn-spinoff/SKILL.template.md",
     },
+    EmbeddedSkill {
+        name: "worktree-spinoff",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-spinoff/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-spinoff/SKILL.template.md",
+    },
 ];
 
 /// Binary version embedded at build time. `build.rs` substitutes this

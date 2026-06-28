@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -20,6 +21,11 @@ expression: value
       },
       {
         "name": "octl-spawn-spinoff",
+        "cli_version": "0.0.1",
+        "schema_version": 1
+      },
+      {
+        "name": "worktree-spinoff",
         "cli_version": "0.0.1",
         "schema_version": 1
       }

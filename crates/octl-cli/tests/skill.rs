@@ -52,6 +52,7 @@ fn skill_list_json_pins_catalog_shape() {
             "octl-run-overview",
             "octl-spawn-spinoff",
             "orchestratectl-overview",
+            "worktree-spinoff",
         ]
     );
     for s in skills {
