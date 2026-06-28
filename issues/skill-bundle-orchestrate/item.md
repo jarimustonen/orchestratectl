@@ -3,9 +3,10 @@ created: 2026-06-28
 updated: 2026-06-28
 type: feature
 assignee: jari
-status: open
+status: done
 priority: high
 epic: skill-bundling-campaign
+closed: 2026-06-28
 ---
 
 # Phase 5: bundle /orchestrate SKILL.md (DAG runtime in prose)
