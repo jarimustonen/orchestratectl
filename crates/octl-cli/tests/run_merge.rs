@@ -143,10 +143,10 @@ fn successful_merge_submits_explicit_merge_report() {
     assert_eq!(reports[0]["data"]["via"], "explicit-merge");
 }
 
-/// `--report-file` carries a rich §7.3 payload (discussion_items,
-/// spinoff_proposals) so an autonomous kind merges AND delivers its structured
-/// report in one call. `run merge` stamps `via: "explicit-merge"` and submits
-/// the agent's payload verbatim otherwise.
+/// `--report-file` carries a rich §7.3 payload (`discussion_items`,
+/// `spinoff_proposals`) so an autonomous kind merges AND delivers its
+/// structured report in one call. `run merge` stamps `via: "explicit-merge"`
+/// and submits the agent's payload verbatim otherwise.
 #[test]
 fn report_file_payload_is_submitted_with_marker() {
     let home = TestHome::new();

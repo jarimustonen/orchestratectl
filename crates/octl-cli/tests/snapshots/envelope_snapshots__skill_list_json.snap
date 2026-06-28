@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
-assertion_line: 233
 expression: value
 ---
 {
@@ -26,6 +25,10 @@ expression: value
       {
         "name": "worktree-code",
         "description": "Spawn an INTERACTIVE coding agent in its own git worktree via `orchestratectl run create --kind code` — human-reviewed parallel work where the user finalizes the merge with `/worktree-merge`. Use when the user says `/worktree-code <task>`, `/worktree <task>` (router picks this for review-oriented work), invokes with an `issuectl` slug, or asks to \"spawn a worktree to do X\" without saying \"spinoff\", \"research\", or another variant. NOT for autonomous fire-and-forget (`/worktree-spinoff`), N identical units (`/fan-out`), dependency-ordered features (`/orchestrate`), research (`/worktree-research`), ADRs (`/worktree-technical-decision`), or skill authoring (`/worktree-make-skill`)."
+      },
+      {
+        "name": "worktree-merge",
+        "description": "Merge a completed orchestratectl worktree branch back to its source/parent branch and tear the worktree down — branch rebased + merged, terminal `node report` submitted, and the tmux window + worktree + branch removed by the supervisor, all in ONE `orchestratectl run merge` call. Use when the user runs `/worktree-merge` from inside an interactive `/worktree-code` worktree, or when an autonomous worktree (spinoff, research, orchestrated, bugfix, …) reaches its merge-and-report step. Replaces the old two-step `/worktree-merge` + `orchestratectl node report` sequence. For a feature branch and main that have both diverged so far an ordinary rebase fails, recover with `/complex-rebase` then re-run."
       },
       {
         "name": "worktree-orchestrated",

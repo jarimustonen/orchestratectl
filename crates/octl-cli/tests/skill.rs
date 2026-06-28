@@ -57,6 +57,7 @@ fn skill_list_json_pins_catalog_shape() {
             "worktree-bugfix",
             "worktree-code",
             "worktree-make-skill",
+            "worktree-merge",
             "worktree-orchestrated",
             "worktree-research",
             "worktree-spinoff",

@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
-assertion_line: 233
 expression: value
 ---
-{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: orchestratectl-overview, octl-run-overview, octl-spawn-spinoff, worktree-spinoff, worktree-code, worktree-orchestrated, worktree-research, worktree-make-skill, worktree-bugfix, worktree-technical-decision, fan-out, orchestrate","invalid_value":"no-such-skill","expected":{"one_of":["orchestratectl-overview","octl-run-overview","octl-spawn-spinoff","worktree-spinoff","worktree-code","worktree-orchestrated","worktree-research","worktree-make-skill","worktree-bugfix","worktree-technical-decision","fan-out","orchestrate"]}}}
+{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: orchestratectl-overview, octl-run-overview, octl-spawn-spinoff, worktree-spinoff, worktree-code, worktree-merge, worktree-orchestrated, worktree-research, worktree-make-skill, worktree-bugfix, worktree-technical-decision, fan-out, orchestrate","invalid_value":"no-such-skill","expected":{"one_of":["orchestratectl-overview","octl-run-overview","octl-spawn-spinoff","worktree-spinoff","worktree-code","worktree-merge","worktree-orchestrated","worktree-research","worktree-make-skill","worktree-bugfix","worktree-technical-decision","fan-out","orchestrate"]}}}

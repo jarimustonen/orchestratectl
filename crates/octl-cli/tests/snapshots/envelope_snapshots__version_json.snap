@@ -35,6 +35,11 @@ expression: value
         "schema_version": 1
       },
       {
+        "name": "worktree-merge",
+        "cli_version": "0.0.1",
+        "schema_version": 1
+      },
+      {
         "name": "worktree-orchestrated",
         "cli_version": "0.0.1",
         "schema_version": 1

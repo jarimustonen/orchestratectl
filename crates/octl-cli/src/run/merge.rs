@@ -223,15 +223,14 @@ fn build_report(
     branch: &str,
     source: Option<&str>,
 ) -> Result<Value, CliError> {
-    let mut report = match report_file {
-        Some(path) => read_report_file(path)?,
-        None => {
-            let summary = match source {
-                Some(src) => format!("merged {branch} into {src} via run merge"),
-                None => format!("merged {branch} via run merge"),
-            };
-            json!({ "success": true, "summary": summary })
-        }
+    let mut report = if let Some(path) = report_file {
+        read_report_file(path)?
+    } else {
+        let summary = source.map_or_else(
+            || format!("merged {branch} via run merge"),
+            |src| format!("merged {branch} into {src} via run merge"),
+        );
+        json!({ "success": true, "summary": summary })
     };
     // `run merge` owns the marker: stamp it regardless of what the file held.
     let obj = report.as_object_mut().ok_or_else(|| {
