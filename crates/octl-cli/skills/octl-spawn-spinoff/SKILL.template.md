@@ -38,8 +38,7 @@ orchestratectl run create \
   --kind spinoff \
   --title "<2–4 word slug>" \
   --task "<the task in one paragraph>" \
-  --source-branch <branch> \
-  [--target-branch <branch>]
+  --source-branch <branch>
 ```
 
 (The default is `--output jsonl` — one compact envelope per line on
@@ -54,10 +53,9 @@ json` for pretty-printed JSON.)
   history. State the goal, the constraints, and what "done" looks like.
   For a long brief, write it to a file and pass `--prompt-file <path>`
   instead of inlining via `--task`.
-- `--source-branch` is the branch the worktree forks from. Default is
-  the current branch when omitted.
-- `--target-branch` is where the spinoff merges back. Defaults to
-  `--source-branch`.
+- `--source-branch` is the branch the worktree forks from, and the
+  branch the spinoff merges itself back into when done. Default is the
+  current branch when omitted.
 
 ## Success envelope
 
