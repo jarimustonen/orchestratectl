@@ -2,11 +2,12 @@
 created: 2026-06-28
 updated: 2026-06-28
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 commits:
 - hash: ed99cc7
   summary: supervisor closes tmux window + removes worktree + deletes branch on terminal autonomous run
+closed: 2026-06-28
 ---
 
 # Supervisor does not close worker tmux window on terminal state (autonomous kinds)
