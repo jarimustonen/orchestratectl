@@ -73,3 +73,31 @@ Twice in one session this rule was learned the hard way: `pgrep -lf "orchestrate
 macOS limits concurrent pseudo-terminals; ~5–6 simultaneous worktree spawns can hit `fork failed: Device not configured` from tmux. Symptom: `create.sh` fails with `workmux-add-failed` mid-batch.
 
 Use `--headless` (or `--tmux-session <name>`) on `orchestratectl run create` to spawn into a detached tmux session that doesn't consume a foreground PTY. Mandatory for `/fan-out` of N≥5; recommended for any parallel `/worktree-spinoff` batch larger than 3. Attach later with `tmux attach -t headless` to inspect.
+
+## State integrity invariants
+
+These five invariants govern correctness of the on-disk run state and the autonomous-spinoff loop. They were established by the 2026-06-29 pre-publication campaign (`B1.1–B1.4`, `C1`, the in-session safety bugs) and are easy to violate from inside a hot code path without realising it. Read them before touching the reducer, the lock layer, or the `run merge` / supervisor cleanup paths.
+
+1. **`applied_seq` watermark**
+   (`crates/octl-core/src/events.rs`)
+   The reducer advances `manifest.applied_seq` only after every projection an event touches has been fsynced. On the next lock acquisition, events with `seq > applied_seq` are replayed before any new append. Any new event-appending path MUST go through the `LockedRun` witness and the `append_and_apply_*` API — never call `write_*` projection helpers directly.
+
+2. **`LockedRun` witness**
+   (`crates/octl-core/src/lock.rs`)
+   Compile-time proof that the caller holds the run flock before calling `append_event_with_seq` / `append_and_apply_unlocked`. Don't add `#[allow(...)]` to bypass; thread the witness through.
+
+3. **`LOCK_SH` on every multi-file read path**
+   (`crates/octl-core/src/lock.rs::with_shared_lock`)
+   Every reader that touches more than one of `manifest.json` / `nodes/*` / `discussions/*` / `spinoffs/*` in one decision wraps the scan in `RunLock::with_shared_lock`. The reducer holds the exclusive lock while it writes; without the shared lock a reader can observe a half-applied projection set. Don't add new readers that skip it.
+
+4. **Progress polling branches on `manifest.status`, NOT `lifecycle`**
+   (every `crates/octl-cli/skills/*/SKILL.template.md`, and any agent prose elsewhere)
+   `Lifecycle` is `Autonomous | Interactive` — a *category* derived from `kind`, never transitions. `Status` is `Pending | Running | Done | Failed | Cancelled` — terminal states are `Done | Failed | Cancelled`. An agent that polls `lifecycle` for `completed | failed | cancelled` hangs forever; the field never matches. This was a real bug (`skill-progress-polling-wrong-field`); never re-introduce it.
+
+5. **Supervisor is the canonical worktree + tmux teardown actor**
+   (`crates/octl-cli/src/supervise/cleanup.rs`)
+   `merge.sh` no longer touches tmux or `git worktree remove` — the supervisor sees the terminal `node.report`, rolls the run up via `rollup_status`, and tears down. `find_window_by_path` is **session-scoped + exact-cwd-match**: it queries only the spawn-session via `tmux list-windows -t <session>` and requires `pane_current_path == worktree_path` (no sub-path prefix). Without these constraints the recovery would kill an unrelated pane that happened to `cd` into the worktree, including the user's master session.
+
+### Related conventions
+
+- **Concurrent spinoff reports** — bundled SKILLs use `/tmp/node-report-${run_id}.json`, never the shared `/tmp/node-report.json`. Drift re-introduces the clobber race.
