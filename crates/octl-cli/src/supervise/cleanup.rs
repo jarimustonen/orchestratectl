@@ -22,7 +22,7 @@
 //!      kind) tears itself fully down with no manual `tmux kill-window` / `git
 //!      worktree remove` / `git branch -D` (`supervisor-close-tmux-on-terminal`).
 //!      Cleanup is warranted when the kind is autonomous
-//!      ([`Lifecycle::Autonomous`]) OR an interactive kind (`code`,
+//!      ([`octl_core::Lifecycle::Autonomous`]) OR an interactive kind (`code`,
 //!      `orchestrate`) reached terminal via an explicit `run merge`
 //!      ([`any_node_merged_explicitly`]). At spawn time the human owns an
 //!      interactive review window, so it is excluded; but running `run merge`

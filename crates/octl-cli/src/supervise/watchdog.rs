@@ -249,7 +249,7 @@ enum ProbeOutcome {
 }
 
 /// Spawn `cmd` and wait at most `timeout`. The std library has no built-in
-/// process timeout, so this polls [`Child::try_wait`] against a deadline and
+/// process timeout, so this polls [`std::process::Child::try_wait`] against a deadline and
 /// SIGKILLs the child's process *group* on overrun. The group kill (the child
 /// is placed in its own group via `process_group(0)`) reaps any tmux subprocess
 /// it forked, which closes the stdout pipe and lets the reader thread finish.
