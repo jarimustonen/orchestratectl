@@ -503,7 +503,7 @@ pub enum AppendOutcome {
 /// applied-seq watermark and the path-traversal defense exactly as
 /// [`append_and_apply_unlocked`] does — it catches the projections up to the log
 /// (`truncate_torn_tail` + `replay_unapplied`) before scanning, guards the run
-/// root + event log via [`RunPaths::checked_events`], and routes the fresh
+/// root + event log via `RunPaths::checked_events`, and routes the fresh
 /// append through `append_and_apply_unlocked`.
 ///
 /// `build` lazily produces the event's `data` payload given the sequence the

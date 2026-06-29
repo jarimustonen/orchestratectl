@@ -307,33 +307,36 @@ If `--dry-run` is set, the CLI validates inputs and emits a
 
 ## Following progress
 
-The spinoff runs asynchronously. To check status:
+The spinoff runs asynchronously. To inspect status **once**:
 
 - `orchestratectl run show <run-id>` — current status, node states,
   recent events.
 - `orchestratectl event tail <run-id> --follow` — streaming
-  event log (use for "wait until merged" loops).
+  event log.
 - `orchestratectl node list <run-id>` — per-unit detail (a
   spinoff has exactly one worker node).
 - `orchestratectl node show <node-id>` — the structured terminal
   report `orchestratectl run merge` submits as it merges the branch (see
   "Terminal report (mandatory)").
 
-**Completion polling.** Branch on `data.manifest.status`. The terminal
-values are **`done | failed | cancelled`**; anything else (`pending` /
-`running`) means the run is still live. Once a terminal value is set
-the reducer freezes the field — the supervisor will tear the worktree
-down within ~1s. Do NOT branch on `lifecycle` — it is the run's
-*category* (`autonomous` for a spinoff) and never transitions.
+**Completion: block with `run wait`.** To wait until the run settles,
+use the binary's blocking primitive instead of a hand-rolled poll loop —
+the correct backoff, the terminal set (**`done | failed | cancelled`**),
+and the "branch on `manifest.status`, never `lifecycle`" rule all live
+inside `run wait`:
 
 ```bash
-# Block until the run settles.
-while true; do
-  s=$(orchestratectl run show "$run_id" --output json | jq -r '.data.manifest.status')
-  case "$s" in done|failed|cancelled) break;; esac
-  sleep 30
-done
+# Block until the run reaches a terminal state (exit 0 = settled).
+orchestratectl run wait "$run_id"
 ```
+
+`run wait` exits `0` once the run is terminal, `2` if `--timeout`
+elapsed first, and `3` under `--fail-on-error` when the settled run was
+`failed`/`cancelled`. Its JSON folds the terminal report `summary` in,
+so you rarely need a follow-up `run show`. Pass several run-ids to block
+until **all** settle (add `--any` to return on the first). This
+supersedes the old `while … run show … case` snippet, which broke under
+zsh word-splitting and routinely polled the wrong field.
 
 ## Install or upgrade `orchestratectl`
 

@@ -280,6 +280,13 @@ Likely codes:
   unit (the child's closing `orchestratectl run merge` is what *writes*
   it, merging and reporting in one step; see "Terminal report
   (mandatory)").
+- `orchestratectl run wait <child-id> <child-id> …` — **block until
+  every** listed child settles (terminal `done | failed | cancelled`),
+  with the correct backoff baked in. This is the multi-run primitive:
+  pass all child run-ids to wait for the whole batch in one process
+  (add `--any` to return on the first, `--fail-on-error` to exit
+  non-zero if any child failed). Use it instead of a `for id in …`
+  shell loop — that pattern silently word-splits under zsh.
 
 ## Install or upgrade `orchestratectl`
 

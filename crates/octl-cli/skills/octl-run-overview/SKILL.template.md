@@ -24,7 +24,13 @@ canonical state under `~/.orchestratectl/runs/<run-id>/`. Two commands
 will expose that state to you once they ship:
 
 - `orchestratectl run list` — every run, newest first
-- `orchestratectl run show <run-id>` — one run, full detail
+- `orchestratectl run show <run-id>` — one run, full detail (one-shot)
+- `orchestratectl run wait <run-id> …` — the blocking counterpart to
+  `run show`: poll one or more runs with sane backoff until they reach a
+  terminal state (`done | failed | cancelled`), then emit a structured
+  summary. Use this instead of hand-rolling a `while … run show … case`
+  loop (`--any` returns on the first terminal run; `--timeout <dur>` and
+  `--fail-on-error` shape the exit code).
 
 The default output is `--output jsonl` — one compact JSON envelope per
 line on stdout. Agents read this directly with `serde_json::from_str`

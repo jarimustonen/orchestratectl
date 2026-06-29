@@ -129,8 +129,10 @@ Tell the user:
 - That the bugfix worktree self-merges; if it cannot reproduce or
   classify, it will stop and surface the reason via the run's event
   log.
-- How to follow: `orchestratectl run show <run-id>` and
-  `event tail <run-id> --follow`.
+- How to follow: `orchestratectl run show <run-id>` for a one-shot
+  snapshot, `event tail <run-id> --follow` for the streaming log, or
+  `orchestratectl run wait <run-id>` to block until the run is terminal
+  (`done | failed | cancelled`) instead of hand-rolling a poll loop.
 
 ## Terminal report (mandatory)
 

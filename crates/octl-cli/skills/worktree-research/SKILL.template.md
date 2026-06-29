@@ -122,8 +122,11 @@ Tell the user:
   specified).
 - That the research worktree merges-and-reports itself via
   `orchestratectl run merge` — no `/worktree-merge` handoff.
-- How to follow progress: `orchestratectl run show <run-id>` and
-  `orchestratectl event tail <run-id> --follow`.
+- How to follow progress: `orchestratectl run show <run-id>` for a
+  one-shot snapshot, `orchestratectl event tail <run-id> --follow` for
+  the streaming log, or `orchestratectl run wait <run-id>` to block until
+  the run is terminal (`done | failed | cancelled`) — no hand-rolled poll
+  loop, no wrong-field footgun.
 
 ## Terminal report (mandatory)
 

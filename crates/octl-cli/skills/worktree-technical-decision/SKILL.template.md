@@ -116,8 +116,10 @@ Tell the user:
 
 - Run id, branch, tmux window, expected ADR path.
 - That the worktree self-merges once the ADR is committed.
-- How to follow: `run show <run-id>`, `event tail <run-id>
-  --follow`.
+- How to follow: `run show <run-id>` for a one-shot snapshot, `event
+  tail <run-id> --follow` for the streaming log, or `run wait <run-id>`
+  to block until the run is terminal (`done | failed | cancelled`)
+  instead of hand-rolling a poll loop.
 
 ## Terminal report (mandatory)
 

@@ -376,20 +376,20 @@ fn op_path(paths: &RunPaths, op: &ProjectionOp) -> PathBuf {
 }
 
 /// Enumerate the projection files the reducer would write for `event`, in the
-/// order [`commit_ops`] would write them, *without* performing any write.
+/// order `commit_ops` would write them, *without* performing any write.
 ///
 /// This is the single source of truth that ends the CLI/reducer divergence the
 /// `projected-paths-into-reducer` issue describes: rather than a hand-maintained
 /// list in `octl-cli` that drifts whenever a new projection is added, both the
 /// reducer and a caller's preflight (`event create --dry-run`) read the *same*
-/// [`reduce_event_to_ops`] plan. This function maps that plan to file paths;
-/// [`apply_event`] commits it. A new projection added to a reducer arm is
+/// `reduce_event_to_ops` plan. This function maps that plan to file paths;
+/// `apply_event` commits it. A new projection added to a reducer arm is
 /// therefore reflected here automatically.
 ///
 /// Because it runs the real reducer plan against current projection state, the
 /// result is exact, not a guess: a state-dependent no-op (a settled node, an
 /// already-created projection, a terminal-guarded transition) yields an empty
-/// list — precisely the files [`apply_event`] would touch, which is none. A
+/// list — precisely the files `apply_event` would touch, which is none. A
 /// malformed-payload event surfaces the same [`Error::CorruptEventLog`] the
 /// real apply would, so a dry-run preflight cannot report success for an event
 /// the write path would reject.

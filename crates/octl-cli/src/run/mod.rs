@@ -13,8 +13,10 @@ pub mod reattach;
 pub mod show;
 pub mod spawn;
 pub mod supervisor_spawn;
+pub mod wait;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
 use octl_core::{
@@ -149,6 +151,37 @@ pub enum RunAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Block until one or more runs reach a terminal state
+    /// (`done | failed | cancelled`) and emit a structured summary, so
+    /// callers stop hand-rolling `run show` poll loops. Read-only: never
+    /// mutates run state. Exit codes: `0` condition met, `1` usage/unknown
+    /// run, `2` timeout, `3` (`--fail-on-error`) a settled run failed.
+    Wait {
+        /// One or more run ids to wait on.
+        #[arg(required = true, num_args = 1..)]
+        run_id: Vec<String>,
+        /// Return once *every* listed run is terminal (default).
+        #[arg(long, conflicts_with = "any")]
+        all: bool,
+        /// Return as soon as *one* listed run is terminal.
+        #[arg(long)]
+        any: bool,
+        /// Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code
+        /// `2` distinguishes timeout from a met condition.
+        #[arg(long, value_parser = wait::parse_duration)]
+        timeout: Option<Duration>,
+        /// Exit `3` if the condition is met but a settled run was
+        /// `failed`/`cancelled` (default: exit `0` for any terminal state).
+        #[arg(long)]
+        fail_on_error: bool,
+        /// Emit one JSONL line per run state-transition to stderr for live UIs.
+        #[arg(long)]
+        progress: bool,
+        /// Override the internal poll cadence (default: bounded backoff,
+        /// 100ms→2s). Callers shouldn't normally need this.
+        #[arg(long, value_parser = wait::parse_duration)]
+        poll_interval: Option<Duration>,
+    },
     /// Restart the run's supervisor process. Refuses if the recorded
     /// supervisor PID is still alive. Spawns `orchestratectl supervise
     /// <run-id>` detached with stdout/stderr → `supervisor.stderr.log`.
@@ -220,6 +253,24 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             node_id,
             report_file,
             dry_run,
+            spec,
+            warnings,
+        }),
+        RunAction::Wait {
+            run_id,
+            all: _,
+            any,
+            timeout,
+            fail_on_error,
+            progress,
+            poll_interval,
+        } => wait::run(wait::Args {
+            run_ids: run_id,
+            any,
+            timeout,
+            fail_on_error,
+            progress,
+            poll_interval,
             spec,
             warnings,
         }),

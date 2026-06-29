@@ -8,7 +8,7 @@ expression: value
   "data": {
     "schema_version_help": 3,
     "command": "orchestratectl run",
-    "about": "Create, list, show, cancel, or reattach a run",
+    "about": "Create, list, show, wait on, cancel, merge, or reattach a run",
     "aliases": [],
     "hidden": false,
     "deprecated": false,
@@ -122,6 +122,14 @@ expression: value
       {
         "command": "orchestratectl run show",
         "about": "Show one run's manifest and counters",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
+        "command": "orchestratectl run wait",
+        "about": "Block until one or more runs reach a terminal state (`done | failed | cancelled`) and emit a structured summary, so callers stop hand-rolling `run show` poll loops. Read-only: never mutates run state. Exit codes: `0` condition met, `1` usage/unknown run, `2` timeout, `3` (`--fail-on-error`) a settled run failed",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

@@ -288,6 +288,10 @@ driver only needs to tail the parent:
 - `orchestratectl run show <child-run-id>` — child-only detail. Read
   `data.manifest.status` to learn child progress (terminal values:
   `done | failed | cancelled`).
+- `orchestratectl run wait <child-run-id>` — block until the child is
+  terminal instead of re-polling `run show`; pass several child run-ids
+  to wait for a whole wave at once. Backoff and the terminal-field rule
+  are baked in.
 - `orchestratectl node show <child-node-id>` — the structured terminal
   report the child submits at the end (the `run merge` verb writes it as
   the closing step; see "Terminal report (mandatory)"). This is what the

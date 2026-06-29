@@ -215,7 +215,11 @@ While there are features not yet `done` or `failed`:
    - `run.status` (on the parent log) — driver-side roll-up; not
      authoritative for child status. To learn a child's progress,
      `orchestratectl run show <child-id>` and read `data.manifest.status`
-     (terminal values: `done | failed | cancelled`).
+     (terminal values: `done | failed | cancelled`). To *block* until one
+     or more in-flight children settle instead of re-polling, run
+     `orchestratectl run wait <child-id> <child-id> …` (add `--any` to
+     wake on the first; it has the backoff and the terminal-field rule
+     baked in — never hand-roll a `for id in …` loop).
    - `child.report` — the worker's structured terminal report.
      Read it, decide next action (next ready features, retry, skip).
    - `discuss.critical` (from a worker) — this IS a pakkopysäytys for
