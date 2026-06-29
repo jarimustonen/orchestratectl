@@ -4,13 +4,17 @@
 //! materialize worktree + tmux window + agent, emits `node.created`
 //! with the discovered agent PID, and spawns the supervisor.
 //!
-//! Child-spawn (`--parent-run-id` + `--parent-node-id`): emits
-//! `child.spawned` on the parent's events (per design.md §7.2 step 3),
-//! initializes the child run dir, then shells out to create.sh for the
-//! child. The CLI does NOT spawn a supervisor for the child — the
-//! parent's supervisor sees `child.spawned` in its tail-follow loop and
-//! is the sole spawner of child supervisors (single-arbiter invariant,
-//! design.md §7.2).
+//! Child-spawn (`--parent-run-id` + `--parent-node-id`): initializes the
+//! child run dir and shells out to create.sh for the child, then — only
+//! once create.sh has returned success and the agent PID is verified —
+//! emits `child.spawned` on the parent's events. This emit-after-success
+//! ordering keeps the parent's DAG bookkeeping transactional: a create.sh
+//! failure removes the half-built child run dir and emits NO `child.spawned`,
+//! so a failed spawn never leaves a phantom 0-node child in `pending` on the
+//! parent (issue: failed-spawn-leaves-phantom-child). The CLI does NOT spawn
+//! a supervisor for the child — the parent's supervisor sees `child.spawned`
+//! in its tail-follow loop and is the sole spawner of child supervisors
+//! (single-arbiter invariant, design.md §7.2).
 
 use std::path::PathBuf;
 
@@ -267,8 +271,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     ensure_root(&root).map_err(from_core)?;
 
     if is_child {
+        // Validate the parent exists up front (fail fast before we create the
+        // child run dir or shell out to create.sh). The `child.spawned` event
+        // itself is emitted only AFTER create.sh succeeds — see below — so a
+        // create.sh failure never pollutes the parent's DAG bookkeeping.
         let parent_run_id = parent_run_id.as_deref().unwrap();
-        let parent_node_id = parent_node_id.as_deref().unwrap();
         let parent_paths = run_paths(&root, parent_run_id)?;
         if !parent_paths.manifest().exists() {
             return Err(CliError::user(
@@ -277,27 +284,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             )
             .with_invalid_value(parent_run_id));
         }
-        let child_data = json!({
-            "child_run_id": run_id,
-            "child_node_id": "n-0001",
-            "child_kind": kind_kebab(args.kind),
-            "child_title": title,
-        });
-        // No idempotency key on the parent's `child.spawned`: `run create`'s
-        // own dedup is the CLI-level `idempotency::store` (key -> run_id) that
-        // short-circuits a retry *before* this point. Passing the key here
-        // would instead make `append_and_apply_event` scan the parent log and,
-        // on a retry that slipped past the store (e.g. a crash before
-        // `idempotency::store`), return an idempotent replay of the *first*
-        // child — silently orphaning the freshly generated `run_id`.
-        octl_core::append_and_apply_event(
-            &parent_paths,
-            "child.spawned",
-            Some(&parse_node_id(parent_node_id)?),
-            None,
-            child_data,
-        )
-        .map_err(from_core)?;
     }
 
     // Initialize the child (or top-level) run directory.
@@ -316,7 +302,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     // Write run.created BEFORE shelling out so a create.sh crash leaves
-    // a recoverable run on disk that `run show`/`run cancel` can see.
+    // a recoverable run on disk that `run show`/`run cancel` can see. For a
+    // child spawn this run dir is instead removed wholesale on create.sh
+    // failure (see the spawn-failure arms below) — nothing references it yet
+    // because `child.spawned` is emitted only after success.
     let mut data = serde_json::Map::new();
     data.insert("kind".into(), Value::String(kind_kebab(args.kind).into()));
     data.insert(
@@ -374,9 +363,51 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         None
     };
 
+    // Emit `child.spawned` on the parent's log. This is what makes the parent
+    // supervisor discover and adopt the child (§7.2). It is emitted only once
+    // the child is known-live: for a materialized child that means AFTER
+    // create.sh returns success (see the call site below the spawn); for a
+    // `--skip-materialize` skeleton child there is no create.sh that can fail,
+    // so the child is live the moment its run dir exists. Either way a failed
+    // spawn emits no `child.spawned` and leaves no phantom child on the parent.
+    let emit_child_spawned = || -> Result<(), CliError> {
+        if !is_child {
+            return Ok(());
+        }
+        let parent_run_id = parent_run_id.as_deref().unwrap();
+        let parent_node_id = parent_node_id.as_deref().unwrap();
+        let parent_paths = run_paths(&root, parent_run_id)?;
+        let child_data = json!({
+            "child_run_id": run_id,
+            "child_node_id": "n-0001",
+            "child_kind": kind_kebab(args.kind),
+            "child_title": title,
+        });
+        // No idempotency key on the parent's `child.spawned`: `run create`'s
+        // own dedup is the CLI-level `idempotency::store` (key -> run_id) that
+        // short-circuits a retry *before* this point. Passing the key here
+        // would instead make `append_and_apply_event` scan the parent log and,
+        // on a retry that slipped past the store (e.g. a crash before
+        // `idempotency::store`), return an idempotent replay of the *first*
+        // child — silently orphaning the freshly generated `run_id`.
+        octl_core::append_and_apply_event(
+            &parent_paths,
+            "child.spawned",
+            Some(&parse_node_id(parent_node_id)?),
+            None,
+            child_data,
+        )
+        .map_err(from_core)?;
+        Ok(())
+    };
+
     // `--skip-materialize` short-circuit: skeleton-only run, used by
     // tests that need a run dir without booting a real worktree/agent.
     if skip_materialize {
+        // The skeleton child is live as soon as its run dir exists — emit
+        // `child.spawned` before storing the idempotency key (same ordering
+        // rationale as the materialized path).
+        emit_child_spawned()?;
         if let Some(key) = args.idempotency_key.as_deref() {
             idempotency::store(
                 args.source_repo.as_deref(),
@@ -403,9 +434,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let prompt_path = prompt_path.expect("non-skip path resolves prompt source");
-    // Shell out to create.sh. A failure here leaves the run on disk in
-    // `pending` with no node — `run cancel` / `run show` still work,
-    // and a retry with the same `--idempotency-key` short-circuits.
+    // Shell out to create.sh. For a TOP-LEVEL run a failure here leaves the
+    // run on disk in `pending` with no node — `run cancel` / `run show` still
+    // work, and a retry with the same `--idempotency-key` short-circuits. For
+    // a CHILD spawn we instead remove the half-built run dir on failure: no
+    // `child.spawned` has been emitted yet, so nothing references this run, and
+    // leaving it would strand a phantom 0-node child in `pending` (the bug this
+    // module fixes). The cleanup is helper-wrapped so both failure arms (the
+    // create.sh non-zero exit and the PID-liveness re-check) share it.
     let branch_name = derive_branch_name(args.kind, &run_id, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
@@ -420,11 +456,30 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `None` for runs without --source-branch keeps the prior behaviour.
         source_branch: args.source_branch.as_deref(),
     };
-    let outcome = spawn::run_create_sh(&spawn_req)?;
+    // On any spawn failure for a child, drop the orphan run dir before
+    // returning the error. Best-effort: a leftover dir is far less harmful
+    // than a panic mid-error-handling, so a remove failure is swallowed.
+    let cleanup_orphan_child = || {
+        if is_child {
+            let _ = std::fs::remove_dir_all(&child_dir);
+        }
+    };
+    let outcome = match spawn::run_create_sh(&spawn_req) {
+        Ok(o) => o,
+        Err(e) => {
+            cleanup_orphan_child();
+            return Err(e);
+        }
+    };
     // V2: re-verify the discovered PID is still alive. If it died
-    // between create.sh's check and ours, emit node.failed and return
-    // a structured error rather than silently recording a dead PID.
+    // between create.sh's check and ours, emit node.failed (top-level) or
+    // remove the orphan child run dir, then return a structured error rather
+    // than silently recording a dead PID.
     if let Err(e) = spawn::verify_agent_pid(outcome.agent_pid_hint) {
+        if is_child {
+            cleanup_orphan_child();
+            return Err(e);
+        }
         let _ = octl_core::append_and_apply_event(
             &paths,
             "node.failed",
@@ -464,6 +519,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         node_data,
     )
     .map_err(from_core)?;
+
+    // Emit-after-success: only now that create.sh returned a live, verified
+    // child does the parent learn about it. Emitting `child.spawned` here
+    // (rather than before the spawn) makes the parent's DAG bookkeeping
+    // transactional — a failed spawn leaves no parent event and no child run
+    // dir, so the parent supervisor never tracks a phantom 0-node child.
+    // Emitted before `idempotency::store` below so a crash in between can only
+    // lose the key (a retry re-spawns cleanly), never replay a stored key while
+    // the parent is missing its `child.spawned`.
+    emit_child_spawned()?;
 
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent

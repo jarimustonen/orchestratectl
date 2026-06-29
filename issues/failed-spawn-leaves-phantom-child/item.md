@@ -1,10 +1,11 @@
 ---
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: normal
 related: ['@headless-parent-session-rejected']
+closed: 2026-06-29
 ---
 
 # Failed create.sh leaves a phantom child run + child.spawned event on parent log

@@ -326,3 +326,177 @@ fn task_writes_prompt_file_in_run_dir() {
         std::fs::read_to_string(home.path().join("runs").join(run_id).join("prompt.md")).unwrap();
     assert_eq!(prompt, "investigate the bug");
 }
+
+/// Spawn a top-level `--kind orchestrate` driver run and return its run id.
+/// The driver is skip-materialize (no create.sh, no supervisor — it runs in
+/// the user's main conversation), so it makes a clean parent for child-spawn
+/// tests without booting any process.
+fn spawn_parent_orchestrate(home: &TempDir, script: &std::path::Path) -> String {
+    let v = run_ok(bin(home, script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "orchestrate",
+        "--title",
+        "driver",
+        "--task",
+        "drive the dag",
+    ]));
+    v["data"]["run_id"].as_str().unwrap().to_string()
+}
+
+/// Count `child.spawned` events in a run's event log.
+fn count_child_spawned(home: &TempDir, run_id: &str) -> usize {
+    let path = home.path().join("runs").join(run_id).join("events.jsonl");
+    let Ok(events) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    events
+        .lines()
+        .filter(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v["kind"] == "child.spawned"))
+        .count()
+}
+
+#[test]
+fn failed_child_spawn_leaves_no_phantom_child() {
+    // Regression for `failed-spawn-leaves-phantom-child`: a create.sh failure
+    // during an orchestrated child spawn must be transactional — no
+    // `child.spawned` on the parent and no child run dir left behind in
+    // `pending`. (Before the fix, the parent log carried a child.spawned and a
+    // 0-node phantom child sat in `pending` forever.)
+    let home = TestHome::new();
+    let ok_script = write_fake_create_sh(&home, &fake_success_stdout("orchestrate", 0), 0);
+    let parent = spawn_parent_orchestrate(&home, &ok_script);
+
+    // A create.sh that fails the way the original bug did (exit 2, error
+    // envelope on stderr) instead of materializing the child.
+    let fail_path = home.path().join("fail-create.sh");
+    std::fs::write(
+        &fail_path,
+        "#!/bin/bash\necho '{\"schema_version\":1,\"error\":{\"code\":\"workmux-add-failed\",\"message\":\"boom\"}}' >&2\nexit 2\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&fail_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fail_path, perms).unwrap();
+
+    // Snapshot the runs dir so we can prove the failed spawn created no new run.
+    let runs_dir = home.path().join("runs");
+    let before: std::collections::BTreeSet<_> = std::fs::read_dir(&runs_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+
+    let (code, v) = run_fail(bin(&home, &fail_path).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "orchestrated",
+        "--title",
+        "doomed child",
+        "--task",
+        "do work",
+        "--parent-run-id",
+        &parent,
+        "--parent-node-id",
+        "n-0001",
+    ]));
+    assert_eq!(code, 2, "create.sh exit 2 should surface as exit 2: {v}");
+    assert!(
+        v["error"]["code"]
+            .as_str()
+            .unwrap()
+            .starts_with("create_sh_error_"),
+        "expected create_sh_error_ prefix: {v}"
+    );
+
+    // (a) No child.spawned landed on the parent.
+    assert_eq!(
+        count_child_spawned(&home, &parent),
+        0,
+        "failed spawn must not emit child.spawned on the parent"
+    );
+
+    // (b) No new child run dir exists — the orphan was cleaned up.
+    let after: std::collections::BTreeSet<_> = std::fs::read_dir(&runs_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        before, after,
+        "failed child spawn must leave no new run dir behind"
+    );
+}
+
+#[test]
+fn successful_child_spawn_emits_child_spawned() {
+    // Regression guard for the happy path: a successful orchestrated child
+    // spawn still emits exactly one `child.spawned` on the parent, the child
+    // run is materialized (node.created + autonomous lifecycle), and the child
+    // run dir exists.
+    let home = TestHome::new();
+    let script = write_fake_create_sh(
+        &home,
+        &fake_success_stdout("orchestrated", std::process::id()),
+        0,
+    );
+    let parent = spawn_parent_orchestrate(&home, &script);
+
+    let v = run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "orchestrated",
+        "--title",
+        "live child",
+        "--task",
+        "do work",
+        "--parent-run-id",
+        &parent,
+        "--parent-node-id",
+        "n-0001",
+    ]));
+    let child_run_id = v["data"]["run_id"].as_str().unwrap();
+    assert_eq!(v["data"]["node_id"], "n-0001");
+    assert_eq!(v["data"]["parent_run_id"], parent);
+    assert_eq!(v["data"]["lifecycle"], "autonomous");
+
+    // Exactly one child.spawned on the parent, referencing this child.
+    let parent_events =
+        std::fs::read_to_string(home.path().join("runs").join(&parent).join("events.jsonl"))
+            .unwrap();
+    let spawned: Vec<Value> = parent_events
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["kind"] == "child.spawned")
+        .collect();
+    assert_eq!(
+        spawned.len(),
+        1,
+        "expected one child.spawned: {parent_events}"
+    );
+    assert_eq!(spawned[0]["data"]["child_run_id"], child_run_id);
+    assert_eq!(spawned[0]["data"]["child_kind"], "orchestrated");
+    assert_eq!(spawned[0]["node_id"], "n-0001");
+
+    // The child run is materialized: its dir exists and carries node.created.
+    let child_events = std::fs::read_to_string(
+        home.path()
+            .join("runs")
+            .join(child_run_id)
+            .join("events.jsonl"),
+    )
+    .unwrap();
+    assert!(
+        child_events
+            .lines()
+            .any(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v["kind"] == "node.created")),
+        "child run must have node.created: {child_events}"
+    );
+}

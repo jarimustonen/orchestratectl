@@ -389,6 +389,8 @@ The CLI invocation `orchestratectl run create --parent-run-id <P> --parent-node-
 
 **Top-level runs** (no `--parent-*` flags) skip step 3 and 6 — the CLI itself spawns the supervisor directly because there's no parent to delegate that to.
 
+**Transactional spawn (implementation note).** The shipped CLI materializes the child's worktree inline via `create.sh` (rather than deferring it to the child supervisor as the numbered steps above sketch). To keep the parent's DAG bookkeeping transactional, the CLI emits `child.spawned` (step 3) **only after** `create.sh` returns success and the agent PID is verified — never before. If `create.sh` fails, the CLI removes the half-built child run dir and returns the error envelope with **no** `child.spawned` on the parent, so a failed spawn can never strand a phantom 0-node child in `pending` (issue: `failed-spawn-leaves-phantom-child`). The `--skip-materialize` skeleton path has no `create.sh` to fail, so it emits `child.spawned` as soon as the child run dir exists.
+
 **Why the parent spawns the child supervisor rather than the CLI:** single source of authority. If the CLI spawned the supervisor, a duplicate `run create` (retry, race) could create two competing supervisors. By making spawn-of-supervisor the parent's responsibility, the parent's in-memory tracking set is the single arbiter — exact-once supervisor spawn is automatic.
 
 ### 7.3 Decision report (`node.report`) protocol
