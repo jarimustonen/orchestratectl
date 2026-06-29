@@ -18,6 +18,15 @@ pub enum ExitKind {
 pub struct ErrorPayload {
     pub schema_version: u32,
     pub error: ErrorBody,
+    /// Process-cumulative count of log events dropped by the lossy
+    /// non-blocking appender (buffer overflow). Mirrors the success
+    /// envelope's `dropped_log_events` field — without it, a command
+    /// that drops `error!`/`warn!` events and then fails would emit
+    /// the error with no signal that logs were lost (the worst case).
+    /// Omitted when zero so the field is purely additive
+    /// (issue: passably-shaggy-parent; AGENTS-AI-FIRST-CLI §10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped_log_events: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +83,7 @@ impl CliError {
     }
 
     fn payload(&self) -> ErrorPayload {
+        let dropped = crate::cli::dropped_log_events();
         ErrorPayload {
             schema_version: SCHEMA_VERSION,
             error: ErrorBody {
@@ -82,6 +92,7 @@ impl CliError {
                 invalid_value: self.invalid_value.clone(),
                 expected: self.expected.clone(),
             },
+            dropped_log_events: (dropped > 0).then_some(dropped),
         }
     }
 

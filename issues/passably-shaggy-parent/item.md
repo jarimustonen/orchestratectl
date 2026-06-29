@@ -1,10 +1,11 @@
 ---
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
 labels: [review-spinoff]
+closed: 2026-06-29
 ---
 
 # Surface dropped-log count on error envelopes too
