@@ -2,8 +2,9 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: high
+closed: 2026-06-29
 ---
 
 # find_window_by_path can kill an unrelated tmux pane that cd'd into the worktree

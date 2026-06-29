@@ -224,8 +224,21 @@ fn close_tmux_window(paths: &RunPaths, n: &Node, tmux: &str) {
     // the window or leave it on a detached HEAD, so the spawn-time id/name no
     // longer matches — but the window's pane is still parked in the worktree.
     // Re-find it by path and kill that before giving up.
+    //
+    // **Safety constraint** (issue `find-window-by-path-cross-session-kill`):
+    // scope the lookup to the spawn-time session and require the pane's cwd
+    // to *equal* the worktree root, not just live inside it. Without this an
+    // unrelated tmux pane (the user's main work pane, a sibling spinoff, a
+    // `/worktree-code` review pane in another session) that happened to cd
+    // into the worktree would be killed by `tmux kill-window`. The supervisor
+    // already knows which session owns its window; query only that one.
+    let session = n
+        .tmux_identity
+        .as_ref()
+        .map(|id| id.session.as_str())
+        .filter(|s| !s.is_empty());
     if let Some(worktree) = n.worktree_path.as_deref() {
-        if let Some(recovered) = find_window_by_path(tmux, socket, worktree) {
+        if let Some(recovered) = find_window_by_path(tmux, socket, session, worktree) {
             if recovered != target && tmux_kill_window(tmux, socket, &recovered) {
                 info!(
                     target: "orchestratectl::supervise",
@@ -260,39 +273,52 @@ fn tmux_kill_window(tmux: &str, socket: Option<&str>, target: &str) -> bool {
     run_lenient(cmd, &format!("tmux kill-window -t {target}"))
 }
 
-/// Find the `window_id` of a tmux window whose active pane is parked inside
-/// `worktree_path` (exact dir or a sub-path), across all sessions on the given
-/// socket. This is the rename-proof handle the orphan-recovery path keys off:
-/// a manually-resolved rebase mutates the branch/window name but not the pane's
-/// cwd. `None` if tmux is unavailable, the server errors, or no pane matches.
-fn find_window_by_path(tmux: &str, socket: Option<&str>, worktree_path: &str) -> Option<String> {
+/// Find the `window_id` of a tmux window whose active pane's cwd is **exactly**
+/// `worktree_path`, scoped to a single session when possible.
+///
+/// This is the rename-proof handle the orphan-recovery path keys off — a
+/// manually-resolved rebase mutates the branch/window name but not the pane's
+/// cwd. Two safety constraints (issue `find-window-by-path-cross-session-kill`):
+///
+/// 1. **Session-scoped.** When `session` is `Some`, query `tmux list-windows -t
+///    <session>`; otherwise fall back to `-a` (the supervisor lacks a session
+///    record — pre-qualified-identity nodes). Without this scope, an unrelated
+///    pane in a different session that happened to cd into the worktree would
+///    match and get killed.
+/// 2. **Exact-match cwd.** Match only `path == worktree_path`; never a
+///    sub-path. A sibling pane that cd'd one level deeper into the worktree
+///    (`worktree/src/foo`) would otherwise match and die.
+///
+/// `None` if tmux is unavailable, the server errors, or no pane matches.
+fn find_window_by_path(
+    tmux: &str,
+    socket: Option<&str>,
+    session: Option<&str>,
+    worktree_path: &str,
+) -> Option<String> {
     let mut cmd = Command::new(tmux);
     if let Some(s) = socket {
         cmd.args(["-S", s]);
     }
-    cmd.args([
-        "list-windows",
-        "-a",
-        "-F",
-        "#{window_id}\t#{pane_current_path}",
-    ]);
+    match session {
+        Some(name) => cmd.args(["list-windows", "-t", name]),
+        None => cmd.args(["list-windows", "-a"]),
+    };
+    cmd.args(["-F", "#{window_id}\t#{pane_current_path}"]);
     cmd.stderr(Stdio::null());
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let prefix = format!("{worktree_path}/");
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .find_map(|line| {
             let (wid, path) = line.split_once('\t')?;
-            let path = path.trim_end();
-            if path == worktree_path || path.starts_with(&prefix) {
-                let wid = wid.trim();
-                (!wid.is_empty()).then(|| wid.to_string())
-            } else {
-                None
+            if path.trim_end() != worktree_path {
+                return None;
             }
+            let wid = wid.trim();
+            (!wid.is_empty()).then(|| wid.to_string())
         })
 }
 
