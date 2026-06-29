@@ -6,6 +6,7 @@ use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, parse_discussion_id, run_paths};
 
+use super::dto::DiscussionView;
 use super::status_kebab;
 
 pub fn run(
@@ -42,7 +43,7 @@ pub fn run(
 fn emit(d: &Discussion, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(d, spec, warnings)?;
+            output::emit_envelope(&DiscussionView::from(d), spec, warnings)?;
         }
         OutputFormat::Text => {
             println!("discussion-id: {}", d.discussion_id);

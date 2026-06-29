@@ -3,6 +3,7 @@
 use octl_core::{read_manifest_opt, read_node_opt, RunLock};
 
 use crate::error::CliError;
+use crate::node::dto::NodeView;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, parse_node_id, run_paths, status_kebab};
 
@@ -45,7 +46,7 @@ pub fn run(
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&node, spec, warnings)?;
+            output::emit_envelope(&NodeView::from(&node), spec, warnings)?;
         }
         OutputFormat::Text => {
             println!("run-id:        {}", node.run_id);

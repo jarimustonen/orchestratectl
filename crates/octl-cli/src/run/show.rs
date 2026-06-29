@@ -2,15 +2,16 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, Manifest, RunLock};
+use octl_core::{read_manifest_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, lifecycle_kebab, run_paths, status_kebab};
+use crate::run::dto::ManifestView;
+use crate::run::{from_core, run_paths};
 
 #[derive(Serialize)]
-struct ShowPayload {
-    manifest: Manifest,
+struct ShowPayload<'a> {
+    manifest: ManifestView<'a>,
     counts: Counts,
 }
 
@@ -49,7 +50,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
-    let payload = ShowPayload { manifest, counts };
+    let payload = ShowPayload {
+        manifest: ManifestView::from(&manifest),
+        counts,
+    };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, spec, warnings)?;
@@ -58,14 +62,11 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("run-id:        {}", payload.manifest.run_id);
             println!(
                 "title:         {}",
-                output::escape_one_line(&payload.manifest.title)
+                output::escape_one_line(payload.manifest.title)
             );
-            println!("status:        {}", status_kebab(payload.manifest.status));
-            println!("kind:          {}", kind_kebab(payload.manifest.kind));
-            println!(
-                "lifecycle:     {}",
-                lifecycle_kebab(payload.manifest.lifecycle)
-            );
+            println!("status:        {}", payload.manifest.status);
+            println!("kind:          {}", payload.manifest.kind);
+            println!("lifecycle:     {}", payload.manifest.lifecycle);
             println!("created_at:    {}", payload.manifest.created_at);
             println!("updated_at:    {}", payload.manifest.updated_at);
             println!("nodes:         {}", payload.counts.nodes);

@@ -4,6 +4,7 @@
 //! Verbs follow the noun-module pattern set by `run` and `event`:
 //! one file per verb, shared types + dispatch in `mod.rs`.
 
+pub mod dto;
 pub mod list;
 pub mod resolve;
 pub mod show;

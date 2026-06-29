@@ -23,8 +23,7 @@ expression: value
     "children": [],
     "started_at": "[TS]",
     "updated_at": "[TS]",
-    "last_report": null,
-    "last_processed_report_seq_by_child": {}
+    "last_report": null
   },
   "warnings": []
 }

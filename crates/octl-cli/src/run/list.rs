@@ -1,12 +1,12 @@
 //! `run list` — walk `<root>/runs/` and emit a manifest summary per run.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use octl_core::{read_manifest_opt, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
+use crate::run::dto::RunSummary;
 use crate::run::{from_core, runs_root};
 
 pub struct Args<'a> {
@@ -19,16 +19,6 @@ pub struct Args<'a> {
 #[derive(Serialize)]
 struct ListPayload {
     runs: Vec<RunSummary>,
-}
-
-#[derive(Serialize)]
-struct RunSummary {
-    run_id: String,
-    kind: String,
-    status: String,
-    title: String,
-    created_at: DateTime<Utc>,
-    node_count: u32,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -89,32 +79,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             Some(m) => m,
             None => continue, // half-initialized run dir; skip silently
         };
-        let kind = serde_json::to_value(m.kind)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
-        let status = serde_json::to_value(m.status)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
+        // Shape the manifest into its wire DTO once, then filter on the
+        // canonical kebab strings it carries — the DTO's `From` renders
+        // `kind` / `status` through the `run/mod.rs` helpers rather than
+        // round-tripping the enums through `serde_json::to_value`.
+        let summary = RunSummary::from(&m);
         if let Some(filter) = &args.status {
-            if &status != filter {
+            if &summary.status != filter {
                 continue;
             }
         }
         if let Some(filter) = &args.kind {
-            if &kind != filter {
+            if &summary.kind != filter {
                 continue;
             }
         }
-        out.push(RunSummary {
-            run_id: m.run_id.to_string(),
-            kind,
-            status,
-            title: m.title,
-            created_at: m.created_at,
-            node_count: m.node_count,
-        });
+        out.push(summary);
     }
 
     out.sort_by_key(|r| std::cmp::Reverse(r.created_at));

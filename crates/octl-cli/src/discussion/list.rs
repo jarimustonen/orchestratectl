@@ -1,6 +1,5 @@
 //! `discussion list` — walk `<run>/discussions/` and return a summary.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use octl_core::{read_discussion_opt, DiscussionStatus, RunLock};
@@ -9,7 +8,8 @@ use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{from_core, parse_discussion_id, run_paths};
 
-use super::{status_kebab, StatusArg};
+use super::dto::DiscussionSummary;
+use super::StatusArg;
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -21,18 +21,6 @@ pub struct Args<'a> {
 #[derive(Serialize)]
 struct ListPayload {
     discussions: Vec<DiscussionSummary>,
-}
-
-#[derive(Serialize)]
-struct DiscussionSummary {
-    discussion_id: String,
-    node_id: String,
-    status: String,
-    severity: String,
-    topic: String,
-    opened_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resolved_at: Option<DateTime<Utc>>,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -94,15 +82,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     continue;
                 }
             }
-            out.push(DiscussionSummary {
-                discussion_id: d.discussion_id.to_string(),
-                node_id: d.node_id.to_string(),
-                status: status_kebab(d.status).to_string(),
-                severity: d.severity,
-                topic: d.topic,
-                opened_at: d.opened_at,
-                resolved_at: d.resolved_at,
-            });
+            out.push(DiscussionSummary::from(&d));
         }
         Ok(out)
     })

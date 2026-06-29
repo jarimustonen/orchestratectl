@@ -1,13 +1,13 @@
 //! `spinoff list` — enumerate spin-off proposals for a run.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use octl_core::{read_manifest_opt, read_spinoff_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, parse_proposal_id, run_paths};
+use crate::run::{from_core, parse_proposal_id, run_paths};
+use crate::spinoff::dto::SpinoffSummary;
 use crate::spinoff::{status_arg_kebab, status_kebab, StatusFilterArg};
 
 pub struct Args<'a> {
@@ -20,23 +20,7 @@ pub struct Args<'a> {
 #[derive(Serialize)]
 struct ListPayload {
     run_id: String,
-    proposals: Vec<Summary>,
-}
-
-#[derive(Serialize)]
-struct Summary {
-    proposal_id: String,
-    node_id: String,
-    status: &'static str,
-    proposed_title: String,
-    proposed_kind: &'static str,
-    proposed_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    accepted_as_issue_slug: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rejected_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resolved_at: Option<DateTime<Utc>>,
+    proposals: Vec<SpinoffSummary>,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -57,7 +41,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if read_manifest_opt(&paths)?.is_none() {
             return Ok(None);
         }
-        let mut out: Vec<Summary> = Vec::new();
+        let mut out: Vec<SpinoffSummary> = Vec::new();
         let read = match std::fs::read_dir(&dir) {
             Ok(e) => Some(e),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -85,23 +69,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     Some(s) => s,
                     None => continue,
                 };
-                let status = status_kebab(s.status);
                 if let Some(filter) = status_filter {
-                    if status != filter {
+                    if status_kebab(s.status) != filter {
                         continue;
                     }
                 }
-                out.push(Summary {
-                    proposal_id: s.proposal_id.to_string(),
-                    node_id: s.node_id.to_string(),
-                    status,
-                    proposed_title: s.proposed_title,
-                    proposed_kind: kind_kebab(s.proposed_kind),
-                    proposed_at: s.proposed_at,
-                    accepted_as_issue_slug: s.accepted_as_issue_slug,
-                    rejected_reason: s.rejected_reason,
-                    resolved_at: s.resolved_at,
-                });
+                out.push(SpinoffSummary::from(&s));
             }
         }
         Ok(Some(out))

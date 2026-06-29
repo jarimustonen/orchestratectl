@@ -6,6 +6,7 @@
 //! — it's the agent's structured-report sink and accepts the §7.3
 //! payload schema directly rather than going through `event create`.
 
+pub mod dto;
 pub mod list;
 pub mod report;
 pub mod show;

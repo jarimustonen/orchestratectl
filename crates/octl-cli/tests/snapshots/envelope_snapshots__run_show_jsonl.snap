@@ -3,4 +3,4 @@ source: crates/octl-cli/tests/envelope_snapshots.rs
 assertion_line: 233
 expression: value
 ---
-{"schema_version":1,"data":{"manifest":{"schema_version":1,"applied_seq":1,"run_id":"[RUN_ID]","kind":"spinoff","lifecycle":"autonomous","title":"seed-run","status":"pending","created_at":"[TS]","updated_at":"[TS]","source_repo":null,"source_branch":null,"worktree_root":null,"node_count":0,"open_discussions":0,"pending_spinoffs":0,"parent_run_id":null,"parent_node_id":null},"counts":{"nodes":0,"discussions":0,"spinoffs":0}},"warnings":[]}
+{"schema_version":1,"data":{"manifest":{"schema_version":1,"run_id":"[RUN_ID]","kind":"spinoff","lifecycle":"autonomous","title":"seed-run","status":"pending","created_at":"[TS]","updated_at":"[TS]","source_repo":null,"source_branch":null,"worktree_root":null,"node_count":0,"open_discussions":0,"pending_spinoffs":0,"parent_run_id":null,"parent_node_id":null},"counts":{"nodes":0,"discussions":0,"spinoffs":0}},"warnings":[]}

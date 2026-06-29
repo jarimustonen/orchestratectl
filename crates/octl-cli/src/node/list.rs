@@ -1,13 +1,13 @@
 //! `node list` — enumerate `nodes/*.json` for one run.
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use octl_core::{read_manifest_opt, read_node_opt, RunLock};
 
 use crate::error::CliError;
+use crate::node::dto::NodeSummary;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, kind_kebab, parse_node_id, run_paths, status_kebab};
+use crate::run::{from_core, parse_node_id, run_paths, status_kebab};
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -20,16 +20,6 @@ pub struct Args<'a> {
 struct ListPayload {
     run_id: String,
     nodes: Vec<NodeSummary>,
-}
-
-#[derive(Serialize)]
-struct NodeSummary {
-    node_id: String,
-    kind: String,
-    status: String,
-    parent_node_id: Option<String>,
-    updated_at: DateTime<Utc>,
-    children: u32,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -90,25 +80,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     Some(n) => n,
                     None => continue,
                 };
-                // Use the canonical kebab-case helpers from `run/mod.rs`
-                // rather than round-tripping the enum through
-                // `serde_json::to_value`. Adding a new variant is then a
-                // pattern-match compile error, not a silent `""`.
-                let kind = kind_kebab(n.kind);
-                let status = status_kebab(n.status);
+                // The `status` filter compares against the canonical
+                // kebab string (`run/mod.rs` helper) rather than
+                // round-tripping the enum through `serde_json::to_value`;
+                // a new variant is then a pattern-match compile error, not
+                // a silent `""`. Wire shaping happens in the DTO `From`.
                 if let Some(f) = filter {
-                    if status != f {
+                    if status_kebab(n.status) != f {
                         continue;
                     }
                 }
-                out.push(NodeSummary {
-                    node_id: n.node_id.to_string(),
-                    kind: kind.to_string(),
-                    status: status.to_string(),
-                    parent_node_id: n.parent_node_id.map(|p| p.to_string()),
-                    updated_at: n.updated_at,
-                    children: n.children.len() as u32,
-                });
+                out.push(NodeSummary::from(&n));
             }
         }
         Ok(Some(out))

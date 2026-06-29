@@ -5,6 +5,7 @@
 //! from `cli.rs`.
 
 pub mod approve;
+pub mod dto;
 pub mod list;
 pub mod reject;
 
