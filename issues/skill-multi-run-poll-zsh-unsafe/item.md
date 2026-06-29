@@ -2,8 +2,12 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: high
+closed: 2026-06-29
+commits:
+- hash: 9a21aef
+  summary: replaced by 'run wait' in SKILL templates
 ---
 
 # SKILL templates: multi-run polling snippet breaks under zsh (no word-split)

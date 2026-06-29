@@ -2,8 +2,12 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: high
+closed: 2026-06-29
+commits:
+- hash: 9a21aef
+  summary: implement 'run wait' subcommand, tests, SKILL migration
 ---
 
 # Add 'orchestratectl run wait' completion-blocking primitive
