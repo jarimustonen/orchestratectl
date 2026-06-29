@@ -7,14 +7,35 @@
 //! can decide whether to retry `issuectl new` themselves. The approval
 //! is recorded either way.
 //!
-//! ## `--idempotency-key` scope
+//! ## Lock-first materialization (atomicity)
 //!
-//! The key dedupes the *local* `spinoff.approved` event-log write
-//! only. It does NOT plumb through to `issuectl new`, so retrying an
-//! approve with the same key after a partial failure can still create
-//! a second issuectl issue. For retry-safe materialization, pass
-//! `--issue-slug <slug>` — that skips the `issuectl` call entirely
-//! and binds the approval to a known-existing issue.
+//! The whole approve — the "is this proposal still pending?" recheck,
+//! the `issuectl new` subprocess, and the `spinoff.approved` append —
+//! runs inside ONE hold of the run flock (see [`run`]). The flock is
+//! held across the subprocess on purpose: it is the only thing that
+//! makes "materialize at most once" true. The earlier design called
+//! `issuectl` *before* the lock, so two concurrent approvers both
+//! created external tickets — one canonical, one orphan that no
+//! projection pointed at. Holding the lock costs the run's event log a
+//! few hundred ms per approve; that is the deliberate trade chosen over
+//! orphan tickets.
+//!
+//! ## Idempotency / retry-safety
+//!
+//! Two layers make a retried approve safe:
+//!
+//! 1. The lock-time status recheck: an already-`Approved` proposal
+//!    returns its persisted slug and never shells out again.
+//! 2. A deterministic per-proposal `issuectl --slug` (see
+//!    [`derive_materialization_slug`]). `issuectl new` has no
+//!    `--idempotency-key`; it instead *refuses* a duplicate `--slug`.
+//!    So if a prior approve created the ticket but crashed before
+//!    appending `spinoff.approved`, the retry's `issuectl new` collides
+//!    on the known slug — we detect that and re-attach the existing
+//!    ticket instead of creating a second one.
+//!
+//! Passing `--issue-slug <slug>` still skips `issuectl` entirely and
+//! binds the approval to a known-existing issue.
 
 use std::process::Command;
 use std::time::Duration;
@@ -64,6 +85,14 @@ struct ApprovePayload {
 enum Outcome {
     Applied {
         seq: u64,
+        /// The slug recorded on the `spinoff.approved` event — either the
+        /// caller's `--issue-slug` or the freshly materialized one. Computed
+        /// *inside* the lock (materialization is now lock-held), so it rides
+        /// back out in the outcome rather than being known before the lock.
+        issue_slug: Option<String>,
+        /// Warnings raised by the in-lock `issuectl` materialization (e.g. a
+        /// non-idempotent failure). Surfaced on the success envelope.
+        warnings: Vec<String>,
     },
     AlreadyApproved {
         issue_slug: Option<String>,
@@ -140,54 +169,27 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         SpinoffStatus::Proposed => {}
     }
 
-    // Resolve the issue slug, possibly via issuectl. Calling issuectl
-    // *before* the lock means two concurrent approvers can both create
-    // external issues (one orphan, one canonical). Mitigations:
-    //   - the lock-time recheck below returns the persisted slug, never
-    //     the locally-computed one, when the loser detects a race;
-    //   - the user can pass `--issue-slug` to skip materialization;
-    //   - a follow-up issue (`spinoff-issuectl-materialization-arch`)
-    //     redesigns this into a reserve→materialize→attach flow.
-    let mut local_warnings: Vec<String> = Vec::new();
-    let issue_slug: Option<String> = if let Some(s) = &issue_slug_arg {
-        Some(s.clone())
-    } else if args.dry_run {
-        None
-    } else {
-        match materialize_via_issuectl(
-            &proposal.proposed_title,
-            proposal.proposed_kind,
-            proposal.rationale.as_deref(),
-        ) {
-            Ok(Some(slug)) => Some(slug),
-            Ok(None) => None,
-            Err(w) => {
-                local_warnings.push(w);
-                None
-            }
-        }
-    };
-
+    // `--dry-run` is answered without touching the lock or `issuectl`: report
+    // the slug the caller pinned (or `None` — auto-materialization is a real
+    // side effect we will not perform in a plan).
     if args.dry_run {
         return emit_approved(
             &run_id,
             &proposal_id,
-            issue_slug,
+            issue_slug_arg.clone(),
             None,
             None,
             Some(true),
             args.spec,
             args.warnings,
-            &local_warnings,
+            &[],
         );
     }
 
-    let mut data = serde_json::Map::new();
-    data.insert("proposal_id".into(), Value::String(proposal_id.to_string()));
-    if let Some(s) = &issue_slug {
-        data.insert("issue_slug".into(), Value::String(s.clone()));
-    }
-    let data = Value::Object(data);
+    // The deterministic external slug used to make `issuectl new` idempotent.
+    // Only consumed on the auto-materialize path (no `--issue-slug`), but
+    // computed up front so the lock closure borrows a ready value.
+    let materialization_slug = derive_materialization_slug(&proposal_id);
 
     let outcome = RunLock::with_lock(&paths.lock(), || {
         // Re-validate run + proposal under the lock — the unlocked reads
@@ -203,6 +205,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         };
         match cur.status {
             SpinoffStatus::Approved => {
+                // Already materialized: return the persisted slug and do NOT
+                // shell out again. This is the "has it already been
+                // materialized?" check — the proposal's own settled status is
+                // the dedup, so a retry (or the loser of a race) never makes a
+                // second `issuectl new` call.
                 return Ok(Outcome::AlreadyApproved {
                     issue_slug: cur.accepted_as_issue_slug.clone(),
                 });
@@ -214,6 +221,40 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             }
             SpinoffStatus::Proposed => {}
         }
+
+        // LOCK-FIRST MATERIALIZATION. We hold the run flock across the
+        // `issuectl new` subprocess deliberately. Materializing *before* the
+        // lock (the old design) let two concurrent approvers each create an
+        // external ticket — one canonical, one orphan no projection points at.
+        // Inside the lock only the proposal's first approver reaches this code
+        // (every later caller short-circuits on the `Approved` status above),
+        // so at most one ticket is ever created per proposal.
+        let mut warnings: Vec<String> = Vec::new();
+        let issue_slug: Option<String> = if let Some(s) = &issue_slug_arg {
+            Some(s.clone())
+        } else {
+            match materialize_via_issuectl(
+                &cur.proposed_title,
+                cur.proposed_kind,
+                cur.rationale.as_deref(),
+                &materialization_slug,
+            ) {
+                Ok(Some(slug)) => Some(slug),
+                Ok(None) => None,
+                Err(w) => {
+                    warnings.push(w);
+                    None
+                }
+            }
+        };
+
+        let mut data = serde_json::Map::new();
+        data.insert("proposal_id".into(), Value::String(proposal_id.to_string()));
+        if let Some(s) = &issue_slug {
+            data.insert("issue_slug".into(), Value::String(s.clone()));
+        }
+        let data = Value::Object(data);
+
         let seq = append_and_apply_unlocked(
             &paths,
             "spinoff.approved",
@@ -221,12 +262,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             args.idempotency_key.as_deref(),
             data,
         )?;
-        Ok(Outcome::Applied { seq })
+        Ok(Outcome::Applied {
+            seq,
+            issue_slug,
+            warnings,
+        })
     })
     .map_err(from_core)?;
 
     match outcome {
-        Outcome::Applied { seq } => emit_approved(
+        Outcome::Applied {
+            seq,
+            issue_slug,
+            warnings,
+        } => emit_approved(
             &run_id,
             &proposal_id,
             issue_slug,
@@ -235,7 +284,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             None,
             args.spec,
             args.warnings,
-            &local_warnings,
+            &warnings,
         ),
         Outcome::AlreadyApproved {
             issue_slug: persisted,
@@ -256,7 +305,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 None,
                 args.spec,
                 args.warnings,
-                &local_warnings,
+                &[],
             )
         }
         Outcome::AlreadyRejected { reason } => Err(CliError::user(
@@ -408,6 +457,35 @@ fn preview(bytes: &[u8]) -> String {
     }
 }
 
+/// The deterministic external slug for a proposal's `issuectl` ticket.
+///
+/// Keyed on the proposal id (globally unique — a ULID or sha-prefix body), so
+/// it is stable across retries of the same approve and distinct across
+/// proposals. Stability is the whole point: it lets `issuectl new --slug` act
+/// as an idempotency key even though `issuectl` has no `--idempotency-key`
+/// flag. The `s-` prefix is swapped for `spinoff-` so the external slug reads
+/// as a slug, not as an internal id; the body stays `[a-z0-9]`, so the result
+/// is valid kebab-case.
+fn derive_materialization_slug(proposal_id: &ProposalId) -> String {
+    let body = proposal_id
+        .as_str()
+        .strip_prefix("s-")
+        .unwrap_or(proposal_id.as_str());
+    format!("spinoff-{body}")
+}
+
+/// Does `issuectl new`'s stderr signal "this slug already exists"?
+///
+/// `issuectl new` rejects a duplicate `--slug` with a `command-failed` error
+/// whose message contains `already exists` (verified against its actual
+/// output). It carries no machine-stable code distinguishing this from other
+/// `command-failed` errors, so we match the message substring. The coupling to
+/// issuectl's wording is deliberate and localized here; if `issuectl new` ever
+/// grows `--idempotency-key`, prefer that and delete this.
+fn stderr_signals_slug_exists(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).contains("already exists")
+}
+
 /// Try to materialize an issue via `issuectl new`. Returns:
 ///
 /// - `Ok(Some(slug))` on success.
@@ -416,15 +494,14 @@ fn preview(bytes: &[u8]) -> String {
 /// - `Err(warning)` if `issuectl` was found but failed (including a timeout);
 ///   the caller attaches the message to the response `warnings` array.
 ///
-/// NOTE for `spinoff-issuectl-materialization-arch` (the follow-up that
-/// redesigns the reserve→materialize→attach lock ordering): this diff is
-/// deliberately confined to the `Command` *setup* (timeout, output cap, env
-/// scrub, `current_dir`, kind→`--type` mapping). The surrounding approval flow
-/// and lock placement are untouched — keep them yours.
+/// `slug` is the deterministic per-proposal slug from
+/// [`derive_materialization_slug`]: passing it as `issuectl new --slug` is what
+/// makes materialization idempotent (see the module-level "Idempotency" note).
 fn materialize_via_issuectl(
     title: &str,
     kind: Kind,
     rationale: Option<&str>,
+    slug: &str,
 ) -> Result<Option<String>, String> {
     let bin = std::env::var(ISSUECTL_BIN_ENV).unwrap_or_else(|_| "issuectl".to_string());
     materialize_via_issuectl_with(
@@ -432,6 +509,7 @@ fn materialize_via_issuectl(
         title,
         kind,
         rationale,
+        slug,
         issuectl_timeout(),
         ISSUECTL_OUTPUT_CAP,
     )
@@ -444,6 +522,7 @@ fn materialize_via_issuectl_with(
     title: &str,
     kind: Kind,
     rationale: Option<&str>,
+    slug: &str,
     timeout: Duration,
     cap: usize,
 ) -> Result<Option<String>, String> {
@@ -461,6 +540,10 @@ fn materialize_via_issuectl_with(
     let mut cmd = Command::new(bin);
     cmd.args(["--json", "new", "--type", issue_type]);
     cmd.args(["--title", title, "--description", &description]);
+    // The deterministic slug is the idempotency mechanism: `issuectl new` has no
+    // `--idempotency-key`, so a stable `--slug` per proposal is how a retry
+    // collides with (instead of duplicating) an already-created ticket.
+    cmd.args(["--slug", slug]);
     scrub_env(&mut cmd);
     if let Some(dir) = workspace_dir() {
         cmd.current_dir(dir);
@@ -490,6 +573,15 @@ fn materialize_via_issuectl_with(
     }
 
     if !status.success() {
+        // Idempotent recovery: a non-zero exit whose error says the slug
+        // already exists means a *prior* approve for this proposal already
+        // created the ticket (and then crashed before appending
+        // `spinoff.approved`). Because the slug is deterministic, that ticket
+        // is the one we want — re-attach it instead of surfacing an error or
+        // creating a duplicate.
+        if stderr_signals_slug_exists(&stderr.bytes) {
+            return Ok(Some(slug.to_string()));
+        }
         return Err(format!(
             "issuectl exited {:?}: {}{}",
             status.code(),
@@ -644,6 +736,7 @@ mod tests {
             "Fix the bug",
             Kind::Bugfix,
             None,
+            "spinoff-01aaaaaaaaaaaaaaaaaaaaaaaa",
             Duration::from_secs(10),
             1 << 20,
         );
@@ -659,6 +752,16 @@ mod tests {
             argv.windows(2)
                 .any(|w| w == ["--type".to_string(), "bug".to_string()]),
             "expected `--type bug`, got {argv:?}"
+        );
+        // The deterministic slug must be forwarded as `--slug <slug>` — this is
+        // the idempotency key for `issuectl new`.
+        assert!(
+            argv.windows(2).any(|w| w
+                == [
+                    "--slug".to_string(),
+                    "spinoff-01aaaaaaaaaaaaaaaaaaaaaaaa".to_string()
+                ]),
+            "expected `--slug spinoff-01aaaaaaaaaaaaaaaaaaaaaaaa`, got {argv:?}"
         );
     }
 
@@ -676,6 +779,7 @@ mod tests {
             "stuck",
             Kind::Spinoff,
             None,
+            "spinoff-stuck",
             Duration::from_millis(150),
             1 << 20,
         );
@@ -700,6 +804,7 @@ mod tests {
             "noisy",
             Kind::Spinoff,
             None,
+            "spinoff-noisy",
             Duration::from_secs(10),
             1024, // cap well below the produced output
         );
@@ -724,6 +829,7 @@ mod tests {
             "Login redirect loops",
             Kind::Code,
             None,
+            "spinoff-login",
             Duration::from_secs(10),
             1 << 20,
         );
@@ -737,6 +843,7 @@ mod tests {
             "x",
             Kind::Spinoff,
             None,
+            "spinoff-x",
             Duration::from_secs(5),
             1 << 20,
         );
@@ -756,6 +863,7 @@ mod tests {
             "x",
             Kind::Spinoff,
             None,
+            "spinoff-x",
             Duration::from_secs(10),
             1 << 20,
         );
@@ -765,5 +873,46 @@ mod tests {
             "stderr not surfaced: {err}"
         );
         assert!(err.contains("Some(3)"), "exit code not surfaced: {err}");
+    }
+
+    // ---- Idempotent recovery (slug already exists) ----------------------
+
+    #[test]
+    fn slug_already_exists_is_idempotent_success() {
+        // A prior approve created the ticket then crashed before appending
+        // `spinoff.approved`. The retry's `issuectl new --slug <det>` collides:
+        // issuectl exits non-zero with an `already exists` message. We must
+        // recover — return the known slug, NOT an error, and NOT create a
+        // duplicate.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = fake_issuectl(
+            dir.path(),
+            "echo '{\"error\":{\"code\":\"command-failed\",\"message\":\"slug \\\"spinoff-dup\\\" already exists\"}}' 1>&2; exit 1",
+        );
+        let got = materialize_via_issuectl_with(
+            bin.to_str().unwrap(),
+            "dup",
+            Kind::Spinoff,
+            None,
+            "spinoff-dup",
+            Duration::from_secs(10),
+            1 << 20,
+        );
+        assert_eq!(
+            got,
+            Ok(Some("spinoff-dup".to_string())),
+            "an already-existing slug must recover to that slug, not error"
+        );
+    }
+
+    #[test]
+    fn derive_materialization_slug_is_stable_and_kebab() {
+        let id = ProposalId::parse_str("s-01aaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        let slug = derive_materialization_slug(&id);
+        assert_eq!(slug, "spinoff-01aaaaaaaaaaaaaaaaaaaaaaaa");
+        // Deterministic: same id → same slug (the idempotency contract).
+        assert_eq!(slug, derive_materialization_slug(&id));
+        // Valid kebab-case so issuectl / require_safe_slug accept it.
+        assert!(crate::spinoff::require_safe_slug(&slug, "slug").is_ok());
     }
 }

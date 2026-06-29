@@ -1,6 +1,7 @@
 //! Integration tests for the `spinoff` subcommand family — `list`,
 //! `approve`, `reject`.
 
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -123,6 +124,62 @@ fn write_stub_issuectl(slug: &str) -> TempDir {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     dir
+}
+
+/// Write a faithful mini-`issuectl` that is idempotent on `--slug`, mirroring
+/// real `issuectl new`: it records every invocation (one line per call in
+/// `count_path`) and refuses to create a second ticket for a slug already in
+/// `tickets_path`, exiting non-zero with an `already exists` message exactly as
+/// the real binary does. The absolute paths are baked into the script body
+/// because `spinoff approve` scrubs the child's environment — the stub cannot
+/// read them from an env var. Returns the dir to prepend to `PATH`.
+///
+/// Uses only `/bin/sh` builtins (`echo`, `read`, `while`, `[`) — `approve`
+/// scrubs the child's `PATH` to just the stub dir, so external tools like
+/// `grep`/`printf` are not on PATH.
+fn write_idempotent_issuectl(count_path: &Path, tickets_path: &Path) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("issuectl");
+    let count = count_path.display();
+    let tickets = tickets_path.display();
+    let body = format!(
+        "#!/bin/sh\n\
+         echo called >> \"{count}\"\n\
+         slug=\"\"\n\
+         while [ $# -gt 0 ]; do\n\
+         \tif [ \"$1\" = \"--slug\" ]; then slug=\"$2\"; fi\n\
+         \tshift\n\
+         done\n\
+         found=0\n\
+         if [ -f \"{tickets}\" ]; then\n\
+         \twhile IFS= read -r line; do\n\
+         \t\tif [ \"$line\" = \"$slug\" ]; then found=1; fi\n\
+         \tdone < \"{tickets}\"\n\
+         fi\n\
+         if [ \"$found\" = \"1\" ]; then\n\
+         \techo '{{\"error\":{{\"code\":\"command-failed\",\"message\":\"slug already exists\"}}}}' 1>&2\n\
+         \texit 1\n\
+         fi\n\
+         echo \"$slug\" >> \"{tickets}\"\n\
+         echo \"{{\\\"slug\\\":\\\"$slug\\\"}}\"\n\
+         exit 0\n",
+    );
+    std::fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir
+}
+
+/// Count non-empty lines in a file that may not exist yet (absent ⇒ 0).
+fn nonempty_lines(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .count()
 }
 
 // ----------------------------- list -----------------------------
@@ -957,4 +1014,146 @@ fn concurrent_approve_vs_reject_does_not_lie_about_outcome() {
         code == "proposal_already_approved" || code == "proposal_already_rejected",
         "loser must report a status-conflict error, got: {code}"
     );
+}
+
+// --------------------- lock-first materialization --------------------------
+
+/// Two concurrent auto-materializing approves (same proposal, same
+/// `--idempotency-key`) must call `issuectl new` exactly once and append
+/// exactly one `spinoff.approved` (materialization) event. This is the
+/// lock-first invariant: the flock is held across the `issuectl` subprocess, so
+/// the loser observes the `Approved` status and never shells out — no orphan
+/// ticket.
+#[cfg(unix)]
+#[test]
+fn concurrent_approve_same_key_materializes_exactly_once() {
+    use std::thread;
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "race-mat");
+
+    let scratch = TempDir::new().unwrap();
+    let count = scratch.path().join("count");
+    let tickets = scratch.path().join("tickets");
+    let stub = write_idempotent_issuectl(&count, &tickets);
+    let stub_dir = stub.path().to_path_buf();
+
+    let spawn = |home_path: std::path::PathBuf, run_id: String, stub: std::path::PathBuf| {
+        thread::spawn(move || {
+            Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+                .env("ORCHESTRATECTL_HOME", &home_path)
+                .env("PATH", &stub)
+                .args([
+                    "--output",
+                    "json",
+                    "spinoff",
+                    "approve",
+                    &run_id,
+                    "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--idempotency-key",
+                    "same-key",
+                ])
+                .output()
+                .expect("spawn")
+        })
+    };
+    let t1 = spawn(home.path().to_path_buf(), run_id.clone(), stub_dir.clone());
+    let t2 = spawn(home.path().to_path_buf(), run_id.clone(), stub_dir.clone());
+    let o1 = t1.join().unwrap();
+    let o2 = t2.join().unwrap();
+
+    // Both succeed: one applies, the other idempotently replays (no
+    // `--issue-slug`, so the loser does not trip the mismatch guard).
+    assert!(
+        o1.status.success() && o2.status.success(),
+        "both approvals should succeed; o1 stderr={}, o2 stderr={}",
+        String::from_utf8_lossy(&o1.stderr),
+        String::from_utf8_lossy(&o2.stderr),
+    );
+
+    assert_eq!(
+        nonempty_lines(&count),
+        1,
+        "issuectl must be invoked exactly once; invocations:\n{}",
+        std::fs::read_to_string(&count).unwrap_or_default()
+    );
+    assert_eq!(
+        nonempty_lines(&tickets),
+        1,
+        "exactly one ticket must be created; tickets:\n{}",
+        std::fs::read_to_string(&tickets).unwrap_or_default()
+    );
+
+    let events =
+        std::fs::read_to_string(home.path().join("runs").join(&run_id).join("events.jsonl"))
+            .unwrap();
+    let approved = events
+        .lines()
+        .filter(|l| l.contains("\"kind\":\"spinoff.approved\""))
+        .count();
+    assert_eq!(
+        approved, 1,
+        "exactly one spinoff.approved event; log:\n{events}"
+    );
+}
+
+/// Retry-safety: a prior approve created the external ticket (deterministic
+/// slug) but crashed before appending `spinoff.approved`. Re-running approve
+/// must NOT create a second ticket — `issuectl new --slug <det>` collides on
+/// the known slug, and approve recovers by re-attaching it.
+#[cfg(unix)]
+#[test]
+fn retry_after_crash_reattaches_ticket_without_duplicating() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    propose(&home, &run_id, "s-01aaaaaaaaaaaaaaaaaaaaaaaa", "retry-mat");
+
+    let scratch = TempDir::new().unwrap();
+    let count = scratch.path().join("count");
+    let tickets = scratch.path().join("tickets");
+    // Simulate the crashed prior attempt: the ticket already exists under the
+    // deterministic slug, but no `spinoff.approved` event was appended (the
+    // proposal is still pending).
+    let det_slug = "spinoff-01aaaaaaaaaaaaaaaaaaaaaaaa";
+    std::fs::write(&tickets, format!("{det_slug}\n")).unwrap();
+    let stub = write_idempotent_issuectl(&count, &tickets);
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+    cmd.env("ORCHESTRATECTL_HOME", home.path());
+    cmd.env("PATH", stub.path());
+    cmd.args([
+        "--output",
+        "json",
+        "spinoff",
+        "approve",
+        &run_id,
+        "s-01aaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+    let v = run_ok(&mut cmd);
+
+    // Recovered: the deterministic slug is re-attached, no error, no warning.
+    assert_eq!(v["data"]["issue_slug"], det_slug);
+    assert!(v["data"]["seq"].as_u64().is_some());
+
+    // The second `issuectl new` was refused — still exactly one ticket.
+    assert_eq!(
+        nonempty_lines(&tickets),
+        1,
+        "retry must not create a second ticket; tickets:\n{}",
+        std::fs::read_to_string(&tickets).unwrap_or_default()
+    );
+
+    let proj: Value = serde_json::from_slice(
+        &std::fs::read(
+            home.path()
+                .join("runs")
+                .join(&run_id)
+                .join("spinoffs")
+                .join("s-01aaaaaaaaaaaaaaaaaaaaaaaa.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(proj["status"], "approved");
+    assert_eq!(proj["accepted_as_issue_slug"], det_slug);
 }
