@@ -309,7 +309,7 @@ pub struct AppendResult {
 /// those bytes are uncommitted by definition; see [`recover_last_seq`].)
 ///
 /// When `idempotency_key` is `Some` and a prior event with the same `kind` +
-/// key already exists ([`find_prior_with_key`]), nothing is appended or
+/// key already exists ([`find_prior_with_key`](crate::events)), nothing is appended or
 /// applied: the result carries the prior event's `seq`, `idempotent_replay:
 /// true`, and `prior: Some(..)` so the caller can detect a key reused with a
 /// conflicting payload. With `idempotency_key: None` no scan runs.
@@ -682,8 +682,9 @@ where
 ///
 /// # Torn-line policy
 ///
-/// Built on the shared [`for_each_event_probe`] (hence [`PhysicalLineReader`]),
-/// so it matches [`find_prior_with_key`] and [`recover_last_seq`] exactly: a
+/// Built on the shared [`for_each_event_probe`](crate::events) (hence
+/// [`PhysicalLineReader`](crate::events)), so it matches
+/// [`find_prior_with_key`](crate::events) and [`recover_last_seq`] exactly: a
 /// torn final line lacking a trailing `\n` is an in-flight partial write,
 /// dropped *without* parsing even if its bytes happen to be valid JSON. Any
 /// newline-terminated line that fails to parse is interior corruption and
@@ -829,7 +830,7 @@ fn backup_path_for(events_path: &Path, ts: &str) -> PathBuf {
     events_path.with_file_name(name)
 }
 
-/// A prior event located by [`find_prior_with_key`]. Carries enough to let
+/// A prior event located by [`find_prior_with_key`](crate::events). Carries enough to let
 /// an idempotent-retry caller both return the recorded `seq` and verify the
 /// retry payload matches what was originally written.
 #[derive(Debug, Clone, PartialEq, Serialize)]

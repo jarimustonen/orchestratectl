@@ -250,7 +250,7 @@ id_newtype! {
     /// two canonical bodies a generator emits — a 26-char lowercase Crockford
     /// base32 ULID (`d-<ulid>`) or a 10-char RFC 4648 base32 lowercase string
     /// (`d-<sha-prefix>`, the deterministic-id form). See
-    /// [`is_canonical_disc_or_proposal_body`].
+    /// [`is_canonical_disc_or_proposal_body`](crate::schema).
     DiscussionId
 }
 
@@ -260,7 +260,7 @@ impl DiscussionId {
         "d- followed by a 26-char lowercase Crockford ULID or a 10-char RFC 4648 base32 lowercase id (a-z2-7)";
 
     /// Parse and validate a `discussion_id`. Requires the `d-` prefix followed
-    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`].
+    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`](crate::schema).
     pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
         let body = s.strip_prefix("d-").ok_or(IdValidationError::WrongPrefix {
             kind: "discussion",
@@ -283,7 +283,7 @@ id_newtype! {
     /// of the two canonical bodies a generator emits — a 26-char lowercase
     /// Crockford base32 ULID (`s-<ulid>`) or a 10-char RFC 4648 base32 lowercase
     /// string (`s-<sha-prefix>`, the deterministic-id form). See
-    /// [`is_canonical_disc_or_proposal_body`].
+    /// [`is_canonical_disc_or_proposal_body`](crate::schema).
     ProposalId
 }
 
@@ -293,7 +293,7 @@ impl ProposalId {
         "s- followed by a 26-char lowercase Crockford ULID or a 10-char RFC 4648 base32 lowercase id (a-z2-7)";
 
     /// Parse and validate a `proposal_id`. Requires the `s-` prefix followed
-    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`].
+    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`](crate::schema).
     pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
         let body = s.strip_prefix("s-").ok_or(IdValidationError::WrongPrefix {
             kind: "spinoff",
@@ -695,7 +695,7 @@ pub struct SpinoffProposal {
 /// ids parse), but the envelope ids can no longer be the unvalidated party.
 ///
 /// [`read_all_events`]: crate::events::read_all_events
-/// [`find_prior_with_key`]: crate::events::find_prior_with_key
+/// [`find_prior_with_key`]: crate::events
 /// [`Error::CorruptEventLog`]: crate::Error::CorruptEventLog
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {

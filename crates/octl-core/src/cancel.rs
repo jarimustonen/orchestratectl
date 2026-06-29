@@ -45,12 +45,12 @@
 //!   logical-cancel event (duplicating it for auditors, metrics, and rebuild).
 //!   The prior cancel events (scoped by `(kind, key)` for this run) are captured
 //!   in the same replay pass, so instead of re-appending, the loop **re-folds
-//!   the already-logged event** via [`apply_event`] — converging a projection
+//!   the already-logged event** via [`apply_event`](crate::reducer) — converging a projection
 //!   the crash left non-terminal *without* a duplicate log line (a re-fold is a
 //!   clean no-op when the projection already agrees). The whole transaction is
 //!   then both non-duplicating and projection-convergent.
 //!
-//! The cancel ledger is built by a *streaming* pass: [`for_each_event_probe`]
+//! The cancel ledger is built by a *streaming* pass: [`for_each_event_probe`](crate::events)
 //! walks `events.jsonl` line by line, parsing only the small envelope + status
 //! fields each line needs and materializing a full [`Event`] payload solely for
 //! the handful of lines in this run's `run-cancel:<run_id>:` key namespace (the

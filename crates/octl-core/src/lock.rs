@@ -25,7 +25,7 @@ impl RunLock {
     /// guards the lock file's own final component; a symlinked *run root* is
     /// caught downstream when the held critical section opens `events.jsonl` /
     /// the projections (both re-guard the root before writing). See
-    /// [`crate::paths::reject_symlink`] for the check-then-open TOCTOU caveat.
+    /// [`reject_symlink`](crate::paths) for the check-then-open TOCTOU caveat.
     pub fn acquire(lock_path: &Path) -> Result<Self> {
         // Test-only spy: count this acquisition so a test can assert a
         // multi-write transaction (e.g. `cancel_run`) takes the lock exactly

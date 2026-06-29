@@ -184,7 +184,7 @@ fn manifest_source_repo(paths: &RunPaths) -> Option<String> {
 /// Close the node's tmux window, recovering from the manual-rebase orphan case
 /// (issue `worktree-merge-orphans-tmux-window`).
 ///
-/// The primary target is the fully-qualified [`TmuxIdentity`] (stable `@NNNN`
+/// The primary target is the fully-qualified [`TmuxIdentity`](octl_core::schema::TmuxIdentity) (stable `@NNNN`
 /// window id on the recorded socket); a node registered before create.sh emitted
 /// the qualified fields falls back to the legacy bare window *name*. A node with
 /// neither has no window to close.

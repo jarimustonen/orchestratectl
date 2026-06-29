@@ -8,7 +8,7 @@
 //! - Atomic write helpers ([`atomic`]) and per-run advisory `flock`
 //!   ([`RunLock`]).
 //! - The canonical mutation entry point
-//!   ([`append_and_apply_event`][events::append_and_apply_event]): append one
+//!   ([`append_and_apply_event`]): append one
 //!   event and fold it into the projections under the run's `flock`.
 //!
 //! Higher-level supervisor and CLI logic live in their own crates / issues.

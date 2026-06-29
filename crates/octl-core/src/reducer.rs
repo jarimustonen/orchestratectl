@@ -26,8 +26,9 @@
 //!
 //! The reducers here deliberately do **not** touch the manifest's denormalized
 //! counters (`node_count`, `open_discussions`, `pending_spinoffs`). Those are
-//! recomputed from the projection directories by [`crate::projections::
-//! derive_counters`], invoked from [`crate::events::advance_applied_seq`] at the
+//! recomputed from the projection directories by
+//! [`derive_counters`](crate::projections), invoked from
+//! [`advance_applied_seq`](crate::events) at the
 //! watermark advance. An earlier design incremented/decremented them inside
 //! these reducers, but a crash between a projection write and the follow-on
 //! `manifest.json` write could permanently desync them: the replay re-folded

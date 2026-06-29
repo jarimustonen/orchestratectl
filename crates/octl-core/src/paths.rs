@@ -10,7 +10,7 @@ use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
 /// Apply `O_NOFOLLOW` to `opts` on Unix, so opening an existing symlink at the
 /// path's *final* component fails atomically (`ELOOP`) instead of following it.
 ///
-/// This closes the **file-level** half of the [`reject_symlink`] check-then-open
+/// This closes the **file-level** half of the [`reject_symlink`](crate::paths) check-then-open
 /// TOCTOU window: even if an attacker swaps the leaf for a symlink in the gap
 /// between the `symlink_metadata` check and this open, the kernel refuses to
 /// traverse it at open time. The complementary **directory-level** half — a
@@ -106,7 +106,7 @@ impl RunPaths {
     /// run root that is a symlink ([`Error::SymlinkRunDir`]) so a replaced run
     /// directory cannot redirect writes outside the run tree. An absent root is
     /// fine — a fresh run is created later; only an existing *symlink* is
-    /// refused. See [`reject_symlink`] for the best-effort/TOCTOU caveat.
+    /// refused. See [`reject_symlink`](crate::paths) for the best-effort/TOCTOU caveat.
     pub fn new(root: impl Into<PathBuf>, run_id: impl Into<String>) -> Result<Self> {
         let run_id = run_id.into();
         let rid = RunId::parse_str(&run_id).map_err(|e| Error::InvalidRunId {
