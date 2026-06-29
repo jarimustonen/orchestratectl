@@ -16,6 +16,7 @@
 //! `json`, `jsonl` — and optionally redirects the machine envelope to a
 //! file (`--output PATH.jsonl` / `--output PATH.json`).
 
+use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -252,9 +253,88 @@ pub fn emit_text_warnings(warnings: &[String]) {
     }
 }
 
+/// Escape ASCII control characters in a free-form, user-controllable string
+/// so it can be printed on a single physical line of `--format text` output
+/// without spoofing rows/columns or breaking field alignment.
+///
+/// `\n`, `\t`, `\r` render as their familiar two-char escapes; every other
+/// ASCII control char (NUL, vertical-tab, form-feed, the rest of C0, and DEL
+/// `0x7F`) renders as `\xNN`. Non-control characters — including all
+/// multi-byte UTF-8 — pass through untouched.
+///
+/// Returns `Cow::Borrowed` (no allocation) on the steady-state path where the
+/// input is already clean. Apply this only to user-controllable text fields
+/// (`topic`, `context`, `note`, `choice`, `severity`, `title`, …) — never to
+/// operator-facing identifiers the user is meant to see verbatim (run-ids,
+/// file paths, branch/tmux names already escaped upstream).
+pub fn escape_one_line(s: &str) -> Cow<'_, str> {
+    // Fast path: an ASCII control byte is always `< 0x20` or `== 0x7F`. UTF-8
+    // continuation/lead bytes are all `>= 0x80`, so a raw byte scan never
+    // misclassifies a multi-byte char — and lets the clean case return without
+    // touching the heap.
+    if !s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                // C0 controls and DEL are all single-byte (`<= 0x7F`), so the
+                // value fits in two uppercase hex digits. Push them directly
+                // rather than via `format!` to avoid an interim allocation.
+                let b = c as u8;
+                out.push('\\');
+                out.push('x');
+                out.push(hex_upper(b >> 4));
+                out.push(hex_upper(b & 0x0f));
+            }
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// Map a 4-bit nibble (`0..=15`) to its uppercase ASCII hex digit.
+fn hex_upper(nibble: u8) -> char {
+    char::from_digit(u32::from(nibble), 16)
+        .expect("nibble is < 16")
+        .to_ascii_uppercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_one_line_maps_each_control_char() {
+        assert_eq!(escape_one_line("a\nb"), "a\\nb");
+        assert_eq!(escape_one_line("a\tb"), "a\\tb");
+        assert_eq!(escape_one_line("a\rb"), "a\\rb");
+        // Vertical tab, form-feed, NUL, and a generic C0 control render as \xNN.
+        assert_eq!(escape_one_line("a\u{0b}b"), "a\\x0Bb");
+        assert_eq!(escape_one_line("a\u{0c}b"), "a\\x0Cb");
+        assert_eq!(escape_one_line("a\0b"), "a\\x00b");
+        assert_eq!(escape_one_line("a\u{01}b"), "a\\x01b");
+        // DEL (0x7F) is a control char too.
+        assert_eq!(escape_one_line("a\u{7f}b"), "a\\x7Fb");
+    }
+
+    #[test]
+    fn escape_one_line_clean_input_borrows() {
+        // Steady-state path: clean input (including multi-byte UTF-8) must not
+        // allocate — it borrows the original.
+        for clean in ["", "plain text", "emoji 🎬 and åäö"] {
+            assert!(
+                matches!(escape_one_line(clean), Cow::Borrowed(_)),
+                "clean input must borrow: {clean:?}"
+            );
+        }
+        // A string that needs escaping must own.
+        assert!(matches!(escape_one_line("x\ny"), Cow::Owned(_)));
+    }
 
     #[test]
     fn parses_format_tokens() {

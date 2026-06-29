@@ -133,7 +133,11 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
             for r in &runs {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
-                    r.run_id, r.kind, r.status, r.node_count, r.title
+                    r.run_id,
+                    r.kind,
+                    r.status,
+                    r.node_count,
+                    output::escape_one_line(&r.title)
                 );
             }
             output::emit_text_warnings(warnings);

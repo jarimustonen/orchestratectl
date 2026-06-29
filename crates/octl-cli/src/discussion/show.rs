@@ -49,20 +49,26 @@ fn emit(d: &Discussion, spec: &OutputSpec, warnings: &[String]) -> Result<(), Cl
             println!("run-id:        {}", d.run_id);
             println!("node-id:       {}", d.node_id);
             println!("status:        {}", status_kebab(d.status));
-            println!("severity:      {}", d.severity);
-            println!("topic:         {}", d.topic);
+            println!("severity:      {}", output::escape_one_line(&d.severity));
+            println!("topic:         {}", output::escape_one_line(&d.topic));
             if let Some(c) = &d.context {
-                println!("context:       {c}");
+                println!("context:       {}", output::escape_one_line(c));
             }
             if !d.options.is_empty() {
-                println!("options:       {}", d.options.join(", "));
+                let opts = d
+                    .options
+                    .iter()
+                    .map(|o| output::escape_one_line(o))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("options:       {opts}");
             }
             println!("opened_at:     {}", d.opened_at);
             if let Some(r) = &d.resolution {
-                println!("resolution:    {r}");
+                println!("resolution:    {}", output::escape_one_line(r));
             }
             if let Some(n) = &d.note {
-                println!("note:          {n}");
+                println!("note:          {}", output::escape_one_line(n));
             }
             if let Some(t) = d.resolved_at {
                 println!("resolved_at:   {t}");

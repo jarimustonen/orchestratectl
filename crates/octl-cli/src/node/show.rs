@@ -55,7 +55,7 @@ pub fn run(
                 println!("parent-node:   {p}");
             }
             if let Some(t) = &node.task {
-                println!("task:          {t}");
+                println!("task:          {}", output::escape_one_line(t));
             }
             println!("children:      {}", node.children.len());
             println!("updated_at:    {}", node.updated_at);

@@ -441,9 +441,9 @@ fn emit(
         println!("run-id:        {}", payload.run_id);
         println!("discussion-id: {}", payload.discussion_id);
         println!("node-id:       {}", payload.node_id);
-        println!("choice:        {}", payload.choice);
+        println!("choice:        {}", output::escape_one_line(payload.choice));
         if let Some(n) = payload.note {
-            println!("note:          {n}");
+            println!("note:          {}", output::escape_one_line(n));
         }
         let outcome_label = match payload.outcome {
             Outcome::Appended => "appended",

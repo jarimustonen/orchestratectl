@@ -56,7 +56,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         }
         OutputFormat::Text => {
             println!("run-id:        {}", payload.manifest.run_id);
-            println!("title:         {}", payload.manifest.title);
+            println!(
+                "title:         {}",
+                output::escape_one_line(&payload.manifest.title)
+            );
             println!("status:        {}", status_kebab(payload.manifest.status));
             println!("kind:          {}", kind_kebab(payload.manifest.kind));
             println!(

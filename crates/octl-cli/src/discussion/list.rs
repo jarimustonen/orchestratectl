@@ -135,7 +135,11 @@ fn emit(
             for d in &discussions {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
-                    d.discussion_id, d.node_id, d.status, d.severity, d.topic
+                    d.discussion_id,
+                    d.node_id,
+                    d.status,
+                    output::escape_one_line(&d.severity),
+                    output::escape_one_line(&d.topic)
                 );
             }
             output::emit_text_warnings(warnings);

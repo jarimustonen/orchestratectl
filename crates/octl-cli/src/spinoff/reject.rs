@@ -245,7 +245,7 @@ fn emit_rejected(
             println!("run-id:      {}", payload.run_id);
             println!("proposal-id: {}", payload.proposal_id);
             if let Some(r) = &payload.reason {
-                println!("reason:      {r}");
+                println!("reason:      {}", output::escape_one_line(r));
             }
             match payload.seq {
                 Some(s) => println!("seq:         {s}"),

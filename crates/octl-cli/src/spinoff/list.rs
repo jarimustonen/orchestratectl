@@ -145,7 +145,11 @@ fn emit(payload: ListPayload, spec: &OutputSpec, warnings: &[String]) -> Result<
             for p in &payload.proposals {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
-                    p.proposal_id, p.status, p.node_id, p.proposed_kind, p.proposed_title
+                    p.proposal_id,
+                    p.status,
+                    p.node_id,
+                    p.proposed_kind,
+                    output::escape_one_line(&p.proposed_title)
                 );
             }
             output::emit_text_warnings(warnings);

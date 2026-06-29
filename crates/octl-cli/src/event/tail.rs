@@ -349,7 +349,9 @@ fn text_data_detail(data: &Value) -> String {
     };
     for key in ["status", "title", "reason", "message"] {
         if let Some(v) = obj.get(key).and_then(Value::as_str) {
-            return format!("{key}={v}");
+            // These values are free-form and user-controllable; escape control
+            // chars so a `\n`/`\t` can't spoof extra lines in the text stream.
+            return format!("{key}={}", crate::output::escape_one_line(v));
         }
     }
     String::new()

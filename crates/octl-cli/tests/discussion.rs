@@ -152,6 +152,38 @@ fn list_filters_by_status() {
     assert_eq!(arr[0]["status"], "resolved");
 }
 
+/// A topic carrying a literal newline must not spoof a second physical row
+/// in `--format text` list output: the control char is escaped to `\n` so the
+/// whole discussion stays on one line.
+#[test]
+fn list_text_escapes_newline_in_topic() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    seed_discussion(&home, &run_id, "d-abcdefghij", "line one\nline two\tcol");
+
+    let out = bin(&home)
+        .args(["--output", "text", "discussion", "list", &run_id])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "exit={:?}", out.status);
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+
+    // Exactly one non-empty physical line — the newline did not split the row.
+    let rows: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(rows.len(), 1, "topic newline spawned extra rows: {rows:?}");
+    // The raw control chars are gone; their escapes are present.
+    assert!(
+        rows[0].contains("line one\\nline two\\tcol"),
+        "topic not escaped: {:?}",
+        rows[0]
+    );
+    assert!(
+        !rows[0].contains('\t') || rows[0].matches('\t').count() == 4,
+        "an embedded tab leaked into the row: {:?}",
+        rows[0]
+    );
+}
+
 #[test]
 fn list_unknown_run_is_run_not_found() {
     let home = TempDir::new().unwrap();
