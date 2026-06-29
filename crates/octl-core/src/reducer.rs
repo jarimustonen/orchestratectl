@@ -8,7 +8,7 @@
 //! `*.created` reducers short-circuit when their projection file already
 //! exists; status/resolution reducers are no-ops once the terminal state
 //! has been reached. Replaying the same event stream against existing
-//! projections must not double-count manifest counters.
+//! projections is therefore a clean no-op-or-apply.
 //!
 //! This idempotence is load-bearing for the `applied_seq` watermark
 //! (append-then-apply atomicity; see [`crate::schema::Manifest::applied_seq`]
@@ -20,8 +20,23 @@
 //! whose projection did not) with the same no-op-or-apply outcome, so the
 //! writer needs no per-event "already applied?" probe. The watermark advances
 //! only after an event's projections are fsynced, so it can lag the projections
-//! but never lead them; a re-fold of an already-applied event therefore cannot
-//! double-count.
+//! but never lead them.
+//!
+//! ## Manifest counters are derived, not folded
+//!
+//! The reducers here deliberately do **not** touch the manifest's denormalized
+//! counters (`node_count`, `open_discussions`, `pending_spinoffs`). Those are
+//! recomputed from the projection directories by [`crate::projections::
+//! derive_counters`], invoked from [`crate::events::advance_applied_seq`] at the
+//! watermark advance. An earlier design incremented/decremented them inside
+//! these reducers, but a crash between a projection write and the follow-on
+//! `manifest.json` write could permanently desync them: the replay re-folded
+//! the event, hit the `*.created`/terminal idempotency guard above, and skipped
+//! the counter mutation that never actually landed. Deriving the counts makes
+//! drift impossible — there is no delta to lose. See issue
+//! `manifest-counter-desync`. A count-affecting reducer still emits its manifest
+//! op to refresh `updated_at`; the counter fields it carries are overwritten by
+//! the derive step.
 
 use std::path::{Path, PathBuf};
 
@@ -536,7 +551,10 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.node_count = m.node_count.saturating_add(1);
+        // `node_count` is derived from the projection directories in
+        // `advance_applied_seq`, never incremented here — see the module note
+        // and issue `manifest-counter-desync`. This op only refreshes the run's
+        // last-activity timestamp.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }
@@ -702,7 +720,8 @@ fn reduce_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<Vec<Projecti
     };
     let mut ops = vec![ProjectionOp::Discussion(disc)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.open_discussions = m.open_discussions.saturating_add(1);
+        // `open_discussions` is derived in `advance_applied_seq`, not bumped
+        // here — see the module note. Only the timestamp is refreshed.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }
@@ -731,7 +750,11 @@ fn reduce_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
     disc.resolved_at = Some(ev.ts);
     let mut ops = vec![ProjectionOp::Discussion(disc)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.open_discussions = m.open_discussions.saturating_sub(1);
+        // `open_discussions` is derived in `advance_applied_seq`, not
+        // decremented here — see the module note. The old `saturating_sub`
+        // could strand a too-high count if this resolve's manifest write was
+        // lost to a crash and the replay then short-circuited on the
+        // already-`Resolved` discussion. Only the timestamp is refreshed.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }
@@ -776,7 +799,8 @@ fn reduce_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<Vec<Projectio
     };
     let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.pending_spinoffs = m.pending_spinoffs.saturating_add(1);
+        // `pending_spinoffs` is derived in `advance_applied_seq`, not bumped
+        // here — see the module note. Only the timestamp is refreshed.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }
@@ -803,7 +827,11 @@ fn reduce_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<Vec<Projectio
     s.resolved_at = Some(ev.ts);
     let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.pending_spinoffs = m.pending_spinoffs.saturating_sub(1);
+        // `pending_spinoffs` is derived in `advance_applied_seq`, not
+        // decremented here — see the module note. The old `saturating_sub`
+        // could strand a too-high count if this resolution's manifest write was
+        // lost to a crash and the replay then short-circuited on the
+        // already-settled proposal. Only the timestamp is refreshed.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }
@@ -830,7 +858,11 @@ fn reduce_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<Vec<Projectio
     s.resolved_at = Some(ev.ts);
     let mut ops = vec![ProjectionOp::Spinoff(s)];
     if let Some(mut m) = read_manifest_opt(paths)? {
-        m.pending_spinoffs = m.pending_spinoffs.saturating_sub(1);
+        // `pending_spinoffs` is derived in `advance_applied_seq`, not
+        // decremented here — see the module note. The old `saturating_sub`
+        // could strand a too-high count if this resolution's manifest write was
+        // lost to a crash and the replay then short-circuited on the
+        // already-settled proposal. Only the timestamp is refreshed.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
     }

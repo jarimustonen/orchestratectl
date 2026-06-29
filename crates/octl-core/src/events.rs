@@ -11,7 +11,7 @@ use crate::atomic::{open_events_append, write_atomic};
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
-use crate::projections::{read_manifest_opt, write_manifest};
+use crate::projections::{derive_counters, read_manifest_opt, write_manifest};
 use crate::reducer::{commit_ops, reduce_event_to_ops};
 use crate::schema::{Event, NodeId};
 
@@ -437,8 +437,11 @@ pub fn append_and_apply_unlocked(
 /// next lock acquisition heals it here. The reducer is idempotent — every
 /// `*.created` reducer short-circuits when its projection already exists, and
 /// every status/report reducer is a no-op once the target is terminal — so
-/// re-folding an event whose projection *did* land does not double-count the
-/// manifest's denormalized counters.
+/// re-folding an event whose projection *did* land changes nothing. The
+/// manifest's denormalized counters can't desync across this replay either:
+/// they are not folded incrementally but re-derived from projection state by
+/// [`advance_applied_seq`] after each event, so a re-fold simply recomputes the
+/// same totals.
 ///
 /// No manifest yet (pre-`run.created`) means there is no watermark to anchor
 /// and nothing durable to catch up, so this returns immediately until the
@@ -516,11 +519,27 @@ fn replay_unapplied(paths: &RunPaths, events_path: &Path) -> Result<()> {
 /// A no-op when no manifest exists yet, or when the watermark already covers
 /// `seq` — so re-folding an already-applied event (during replay) doesn't churn
 /// the manifest. The reducer for the event may itself have just rewritten the
-/// manifest (e.g. a counter bump); reading it back here preserves those fields
-/// while moving only the watermark forward. Caller holds the [`RunLock`].
+/// manifest (e.g. a status transition); reading it back here preserves those
+/// fields while moving only the watermark forward. Caller holds the [`RunLock`].
+///
+/// This is also the single point that persists the manifest's denormalized
+/// counters (`node_count`, `open_discussions`, `pending_spinoffs`). They are
+/// **derived**, not incremented: [`derive_counters`] recomputes them from the
+/// projection directories — which, because the caller commits an event's
+/// projection ops *before* calling this, already reflect event `seq`. Pinning
+/// the counters to the watermark advance is what makes them undriftable: even
+/// when a crash-replay re-folds an event whose reducer short-circuits to zero
+/// ops (its projection already landed before the crash), this still runs and
+/// re-derives the true counts, healing any counter the old incremental path
+/// would have stranded. See [`derive_counters`] and issue
+/// `manifest-counter-desync`.
 fn advance_applied_seq(paths: &RunPaths, seq: u64) -> Result<()> {
     if let Some(mut m) = read_manifest_opt(paths)? {
         if m.applied_seq < seq {
+            let counters = derive_counters(paths)?;
+            m.node_count = counters.node_count;
+            m.open_discussions = counters.open_discussions;
+            m.pending_spinoffs = counters.pending_spinoffs;
             m.applied_seq = seq;
             write_manifest(paths, &m)?;
         }
@@ -1287,6 +1306,175 @@ mod tests {
             crate::read_node(&paths, &n0001).unwrap().status,
             Status::Done,
             "replaying its history did not resurrect the terminal node"
+        );
+    }
+
+    #[test]
+    fn node_count_desync_heals_on_replay() {
+        // Faithful reproduction of issue `manifest-counter-desync`: a crash left
+        // the node projection on disk but lost the follow-on manifest write (the
+        // counter bump + watermark advance). Before the fix, the replay
+        // short-circuited on the already-existing node and the stale counter
+        // stuck forever; now the counter is re-derived at the watermark advance.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // node n-0001 on disk, node_count == 1, applied_seq == 2
+
+        // Rewind the manifest to the exact mid-crash state: the node file
+        // exists, but the manifest still shows the pre-node counter and a
+        // watermark that sits before the `node.created` at seq 2.
+        let mut m = crate::read_manifest(&paths).unwrap();
+        assert_eq!(m.node_count, 1, "precondition: bootstrap counted the node");
+        m.node_count = 0;
+        m.applied_seq = 1;
+        write_manifest(&paths, &m).unwrap();
+
+        // The next append acquires the lock, replays seq 2 (node already exists,
+        // so the reducer plans zero ops), and re-derives the counter when it
+        // advances the watermark past seq 2.
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+
+        let healed = crate::read_manifest(&paths).unwrap();
+        assert_eq!(
+            healed.node_count, 1,
+            "node_count converged to the true projection count"
+        );
+        assert!(healed.applied_seq >= 2, "watermark caught up past the node");
+    }
+
+    #[test]
+    fn open_discussions_desync_heals_on_replay() {
+        // The decrement variant of the same hazard: a `discussion.resolved`
+        // whose projection landed (the discussion is `Resolved` on disk) but
+        // whose manifest decrement was lost. The old `saturating_sub` was
+        // unreachable on replay (the reducer short-circuits the already-resolved
+        // discussion), so the count stayed too high; deriving heals it.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // applied_seq == 2
+        append_and_apply_event(
+            &paths,
+            "discussion.opened",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "d-fxtrdscssn", "node_id": "n-0001", "topic": "x" }),
+        )
+        .unwrap(); // seq 3 → open_discussions == 1
+        append_and_apply_event(
+            &paths,
+            "discussion.resolved",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "d-fxtrdscssn", "resolution": "drop" }),
+        )
+        .unwrap(); // seq 4 → discussion Resolved, open_discussions == 0
+        let mut m = crate::read_manifest(&paths).unwrap();
+        assert_eq!(m.open_discussions, 0, "precondition: resolve decremented");
+
+        // Simulate the resolve's manifest write being lost: the discussion is
+        // Resolved on disk, but the manifest still counts it as open and the
+        // watermark sits before the resolve at seq 4.
+        m.open_discussions = 1;
+        m.applied_seq = 3;
+        write_manifest(&paths, &m).unwrap();
+
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().open_discussions,
+            0,
+            "open_discussions converged after the resolved discussion was re-folded"
+        );
+    }
+
+    #[test]
+    fn full_replay_does_not_double_count_any_counter() {
+        // Idempotence across a full from-scratch replay: re-folding every event
+        // must re-derive the same totals, never accumulate. Covers all three
+        // counters at once (node, discussion, spinoff).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid("n-0002")),
+            None,
+            json!({ "kind": "spinoff" }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "discussion.opened",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "d-fxtrdscssn", "node_id": "n-0001", "topic": "x" }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "spinoff.proposed",
+            Some(&nid("n-0001")),
+            None,
+            json!({
+                "proposal_id": "s-fxtrspnoff",
+                "proposed_title": "t",
+                "proposed_kind": "spinoff",
+                "node_id": "n-0001",
+            }),
+        )
+        .unwrap();
+        let before = crate::read_manifest(&paths).unwrap();
+        assert_eq!(
+            (
+                before.node_count,
+                before.open_discussions,
+                before.pending_spinoffs
+            ),
+            (2, 1, 1),
+            "precondition: two nodes, one open discussion, one pending spinoff"
+        );
+
+        // Reset the watermark to force a full idempotent replay of the whole log
+        // on the next append (the legacy-migration path), and deliberately
+        // corrupt every counter so a heal is observable.
+        let mut m = before;
+        m.applied_seq = 0;
+        m.node_count = 99;
+        m.open_discussions = 99;
+        m.pending_spinoffs = 99;
+        write_manifest(&paths, &m).unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+
+        let after = crate::read_manifest(&paths).unwrap();
+        assert_eq!(
+            (
+                after.node_count,
+                after.open_discussions,
+                after.pending_spinoffs
+            ),
+            (2, 1, 1),
+            "counters re-derived to the true totals — no double-count across full replay"
         );
     }
 

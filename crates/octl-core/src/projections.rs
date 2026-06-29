@@ -6,8 +6,8 @@ use crate::atomic::write_json_atomic;
 use crate::error::{Error, Result};
 use crate::paths::{reject_symlink, RunPaths};
 use crate::schema::{
-    Discussion, DiscussionId, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal,
-    SUPPORTED_STATE_SCHEMAS,
+    Discussion, DiscussionId, DiscussionStatus, Manifest, Node, NodeId, ProposalId, RunId,
+    SpinoffProposal, SpinoffStatus, SUPPORTED_STATE_SCHEMAS,
 };
 
 /// Resolve a projection file path while rejecting a symlinked run root, the
@@ -307,6 +307,146 @@ pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()>
     write_json_atomic(&p, s)
 }
 
+/// The manifest's denormalized counters, recomputed from projection state.
+///
+/// Returned by [`derive_counters`] as a single snapshot of the `nodes/`,
+/// `discussions/`, and `spinoffs/` directories.
+pub(crate) struct DerivedCounters {
+    /// Number of node projection files.
+    pub node_count: u32,
+    /// Number of discussions whose status is [`DiscussionStatus::Open`].
+    pub open_discussions: u32,
+    /// Number of spin-off proposals whose status is [`SpinoffStatus::Proposed`].
+    pub pending_spinoffs: u32,
+}
+
+/// Recompute the manifest's denormalized counters directly from the projection
+/// directories, so they are a pure function of projection state rather than an
+/// incrementally-maintained delta.
+///
+/// This is the heart of the counter-desync fix (issue
+/// `manifest-counter-desync`): [`crate::events::advance_applied_seq`] calls this
+/// whenever it advances the `applied_seq` watermark, so the counters persisted
+/// alongside the watermark always equal a fresh count of the projection state
+/// as it stands *after* an event's projection writes are committed. The old
+/// incremental path could strand a stale counter forever — if a projection
+/// write landed but the follow-on `manifest.json` write did not, the crash-
+/// replay re-folded the event, hit the reducer's "already exists / already
+/// terminal" idempotency guard, and skipped the counter mutation that never
+/// happened. Deriving the counts removes the delta entirely: drift is
+/// impossible because nothing is ever incremented.
+///
+/// Counting is best-effort under corruption: a directory that does not exist
+/// counts as empty, and a projection file that fails to read or parse is
+/// skipped rather than bricking every future append (`doctor` surfaces such
+/// anomalies). Only regular `*.json` files whose stem is a well-formed
+/// projection id are counted, so an in-flight atomic write (a hidden
+/// `.<name>.tmp.<pid>.<n>` tempfile) is never miscounted.
+pub(crate) fn derive_counters(paths: &RunPaths) -> Result<DerivedCounters> {
+    Ok(DerivedCounters {
+        node_count: count_node_files(paths)?,
+        open_discussions: count_open_discussions(paths)?,
+        pending_spinoffs: count_pending_spinoffs(paths)?,
+    })
+}
+
+/// Open `dir` for a counting walk: a missing directory yields `None` (count 0);
+/// a real `read_dir` failure propagates. Pairs with [`projection_id_stem`].
+fn open_projection_dir(dir: &Path) -> Result<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(dir) {
+        Ok(e) => Ok(Some(e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::io(dir, e)),
+    }
+}
+
+/// The id-stem of a projection slot: `Some(stem)` for a regular `*.json` file,
+/// `None` for directories, non-`json` entries, and the hidden tempfiles atomic
+/// writes leave mid-rename. The caller decides whether `stem` is a valid id.
+fn projection_id_stem(ent: &std::fs::DirEntry) -> Option<String> {
+    if !ent.file_type().is_ok_and(|t| t.is_file()) {
+        return None;
+    }
+    let path = ent.path();
+    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        return None;
+    }
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+}
+
+/// Count node projection files: every regular `nodes/<node-id>.json` whose stem
+/// is a well-formed [`NodeId`]. A node file's mere existence means the node was
+/// created, so this needs no content read.
+fn count_node_files(paths: &RunPaths) -> Result<u32> {
+    let dir = paths.nodes_dir();
+    let Some(entries) = open_projection_dir(&dir)? else {
+        return Ok(0);
+    };
+    let mut n: u32 = 0;
+    for ent in entries {
+        let ent = ent.map_err(|e| Error::io(&dir, e))?;
+        if let Some(stem) = projection_id_stem(&ent) {
+            if NodeId::parse_str(&stem).is_ok() {
+                n = n.saturating_add(1);
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Count discussions whose status is [`DiscussionStatus::Open`]. Status lives in
+/// the file body, so each candidate is read; an unreadable/corrupt file is
+/// skipped (best-effort — see [`derive_counters`]).
+fn count_open_discussions(paths: &RunPaths) -> Result<u32> {
+    let dir = paths.discussions_dir();
+    let Some(entries) = open_projection_dir(&dir)? else {
+        return Ok(0);
+    };
+    let mut n: u32 = 0;
+    for ent in entries {
+        let ent = ent.map_err(|e| Error::io(&dir, e))?;
+        let Some(stem) = projection_id_stem(&ent) else {
+            continue;
+        };
+        let Ok(id) = DiscussionId::parse_str(&stem) else {
+            continue;
+        };
+        if let Ok(Some(d)) = read_discussion_opt(paths, &id) {
+            if matches!(d.status, DiscussionStatus::Open) {
+                n = n.saturating_add(1);
+            }
+        }
+    }
+    Ok(n)
+}
+
+/// Count spin-off proposals whose status is [`SpinoffStatus::Proposed`]. See
+/// [`count_open_discussions`] for the read/skip contract.
+fn count_pending_spinoffs(paths: &RunPaths) -> Result<u32> {
+    let dir = paths.spinoffs_dir();
+    let Some(entries) = open_projection_dir(&dir)? else {
+        return Ok(0);
+    };
+    let mut n: u32 = 0;
+    for ent in entries {
+        let ent = ent.map_err(|e| Error::io(&dir, e))?;
+        let Some(stem) = projection_id_stem(&ent) else {
+            continue;
+        };
+        let Ok(id) = ProposalId::parse_str(&stem) else {
+            continue;
+        };
+        if let Ok(Some(s)) = read_spinoff_opt(paths, &id) {
+            if matches!(s.status, SpinoffStatus::Proposed) {
+                n = n.saturating_add(1);
+            }
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +559,88 @@ mod tests {
     // spinoffs (the prefix is supplied per type).
     const ULID_A: &str = "01arz3ndektsv4rrffq69g5fav";
     const ULID_B: &str = "01arz3ndektsv4rrffq69g5faw";
+
+    // --- derived counters --------------------------------------------------
+
+    #[test]
+    fn derive_counters_counts_projection_state_and_ignores_junk() {
+        let (_tmp, paths) = setup();
+        // Two nodes.
+        write_raw(
+            &paths.node(&NodeId::parse_str("n-0001").unwrap()),
+            &node_json("n-0001", RUN),
+        );
+        write_raw(
+            &paths.node(&NodeId::parse_str("n-0002").unwrap()),
+            &node_json("n-0002", RUN),
+        );
+        // Two discussions: only the open one counts toward `open_discussions`.
+        let d_open = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        let d_resolved = DiscussionId::parse_str(&format!("d-{ULID_B}")).unwrap();
+        write_raw(
+            &paths.discussion(&d_open),
+            &discussion_json(d_open.as_str(), RUN),
+        );
+        let mut dr = discussion_json(d_resolved.as_str(), RUN);
+        dr["status"] = json!("resolved");
+        write_raw(&paths.discussion(&d_resolved), &dr);
+        // Two spinoffs: only the proposed one is pending.
+        let s_pending = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
+        let s_done = ProposalId::parse_str(&format!("s-{ULID_B}")).unwrap();
+        write_raw(
+            &paths.spinoff(&s_pending),
+            &spinoff_json(s_pending.as_str(), RUN),
+        );
+        let mut sd = spinoff_json(s_done.as_str(), RUN);
+        sd["status"] = json!("approved");
+        write_raw(&paths.spinoff(&s_done), &sd);
+
+        // Junk that must be ignored: a non-`json` file, a `json` file whose stem
+        // is not a valid id, and a hidden tempfile mimicking an in-flight atomic
+        // write.
+        std::fs::write(paths.nodes_dir().join("README.txt"), b"x").unwrap();
+        std::fs::write(paths.nodes_dir().join("not-an-id.json"), b"{}").unwrap();
+        std::fs::write(paths.nodes_dir().join(".n-0003.json.tmp.123.0"), b"{}").unwrap();
+
+        let c = derive_counters(&paths).unwrap();
+        assert_eq!(c.node_count, 2);
+        assert_eq!(c.open_discussions, 1);
+        assert_eq!(c.pending_spinoffs, 1);
+    }
+
+    #[test]
+    fn derive_counters_skips_unreadable_files_rather_than_erroring() {
+        // Best-effort under corruption: a garbage file at a valid id path must
+        // not brick the count (which would brick every future append).
+        let (_tmp, paths) = setup();
+        write_raw(
+            &paths.node(&NodeId::parse_str("n-0001").unwrap()),
+            &node_json("n-0001", RUN),
+        );
+        let d = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
+        std::fs::write(paths.discussion(&d), b"{ not valid json").unwrap();
+
+        let c = derive_counters(&paths).unwrap();
+        assert_eq!(c.node_count, 1);
+        assert_eq!(
+            c.open_discussions, 0,
+            "the unreadable discussion is skipped, not counted, and does not error"
+        );
+    }
+
+    #[test]
+    fn derive_counters_missing_dirs_are_zero() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(&dir, RUN).unwrap();
+        // No nodes/ discussions/ spinoffs/ subdirectories exist.
+        let c = derive_counters(&paths).unwrap();
+        assert_eq!(
+            (c.node_count, c.open_discussions, c.pending_spinoffs),
+            (0, 0, 0)
+        );
+    }
 
     // --- read side: body id must equal the requested filename key ---------
 
