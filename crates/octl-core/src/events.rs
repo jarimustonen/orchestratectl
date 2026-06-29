@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::atomic::{open_events_append, write_atomic};
 use crate::error::{Error, Result};
-use crate::lock::RunLock;
+use crate::lock::{LockedRun, RunLock};
 use crate::paths::RunPaths;
 use crate::projections::{derive_counters, read_manifest_opt, write_manifest};
 use crate::reducer::{commit_ops, reduce_event_to_ops};
@@ -207,9 +207,10 @@ fn truncate_torn_tail(events_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Append one event with a caller-supplied `seq`. The caller **must** hold
-/// the run's [`RunLock`] for the duration of this call and is responsible
-/// for ensuring `seq` is monotonic. Misuse can corrupt the event log.
+/// Append one event with a caller-supplied `seq`. The `_witness: &LockedRun`
+/// is compile-time proof the caller holds the run's exclusive [`RunLock`] for
+/// the duration of this call; the caller is still responsible for ensuring
+/// `seq` is monotonic. Misuse can corrupt the event log.
 ///
 /// Test-only (`#[cfg(test)]`): a raw, no-reducer, caller-managed-`seq`
 /// primitive used by the crate's fixtures and the flock stress test to craft
@@ -218,6 +219,7 @@ fn truncate_torn_tail(events_path: &Path) -> Result<()> {
 /// [`crate::reducer`], so neither needs this.
 #[cfg(test)]
 pub(crate) fn append_event_with_seq(
+    _witness: &LockedRun<'_>,
     paths: &RunPaths,
     seq: u64,
     kind: &str,
@@ -327,7 +329,7 @@ pub fn append_and_apply_event(
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<AppendResult> {
-    RunLock::with_lock(&paths.lock(), || {
+    RunLock::with_lock(paths, |lock| {
         // Catch the projections up to the event log before either the
         // idempotency lookup or a fresh append. This is the recovery half of
         // append+apply atomicity: any unapplied tail left by a prior crash is
@@ -349,7 +351,7 @@ pub fn append_and_apply_event(
                 });
             }
         }
-        let seq = append_and_apply_unlocked(paths, kind, node_id, idempotency_key, data)?;
+        let seq = append_and_apply_unlocked(lock, paths, kind, node_id, idempotency_key, data)?;
         Ok(AppendResult {
             seq,
             idempotent_replay: false,
@@ -358,15 +360,34 @@ pub fn append_and_apply_event(
     })
 }
 
-/// Append one event and fold it into projections, assuming the caller
-/// already holds the run's [`RunLock`]. The **sanctioned lock-held
-/// composition path**: use it to fold extra logic (an idempotency-key
+/// Append one event and fold it into projections. The `_witness: &LockedRun`
+/// is compile-time proof the caller already holds the run's exclusive
+/// [`RunLock`] — obtained from [`RunLock::with_lock`] or [`RunLock::witness`],
+/// so this entry point cannot be reached without the lock. The **sanctioned
+/// lock-held composition path**: use it to fold extra logic (an idempotency-key
 /// lookup, a status precondition) or several writes (the supervisor's
 /// derived discussion/spinoff batch) into one locked critical section.
 /// Calling [`append_and_apply_event`] from within a held lock would
 /// deadlock because `flock` blocks when a second open of the lock file from
 /// the same process tries to acquire `LOCK_EX`.
+///
+/// # The witness is mandatory
+///
+/// Without a `&LockedRun` proof the lock is held, this does not compile — there
+/// is no way to skip the parameter, and [`LockedRun`] cannot be constructed
+/// outside this crate (its field is private), so the only source is a held
+/// [`RunLock`]:
+///
+/// ```compile_fail
+/// use octl_core::{append_and_apply_unlocked, RunPaths};
+/// # fn demo(paths: &RunPaths) {
+/// // No witness passed — the first argument must be a `&LockedRun`, which a
+/// // caller can only obtain by actually holding the run's exclusive lock.
+/// let _ = append_and_apply_unlocked(paths, "run.status", None, None, serde_json::json!({}));
+/// # }
+/// ```
 pub fn append_and_apply_unlocked(
+    _witness: &LockedRun<'_>,
     paths: &RunPaths,
     kind: &str,
     node_id: Option<&NodeId>,
@@ -790,16 +811,18 @@ pub struct Quarantine {
 /// from a fixed copy of the backup), then restart the supervisor. The healed
 /// log is the source of truth; projections rebuild from it.
 pub fn quarantine_corrupt_lines(paths: &RunPaths, backup_ts: &str) -> Result<Option<Quarantine>> {
-    RunLock::with_lock(&paths.lock(), || {
-        quarantine_corrupt_lines_unlocked(paths, backup_ts)
+    RunLock::with_lock(paths, |lock| {
+        quarantine_corrupt_lines_unlocked(lock, paths, backup_ts)
     })
 }
 
-/// As [`quarantine_corrupt_lines`] but assumes the caller already holds the
-/// run's [`RunLock`] — the sanctioned lock-held composition path, mirroring
-/// [`append_and_apply_unlocked`]. Re-entering [`quarantine_corrupt_lines`]
-/// under a held lock would deadlock on the second `flock` open.
+/// As [`quarantine_corrupt_lines`] but takes a `&LockedRun` witness proving the
+/// caller already holds the run's exclusive [`RunLock`] — the sanctioned
+/// lock-held composition path, mirroring [`append_and_apply_unlocked`].
+/// Re-entering [`quarantine_corrupt_lines`] under a held lock would deadlock on
+/// the second `flock` open.
 pub fn quarantine_corrupt_lines_unlocked(
+    _witness: &LockedRun<'_>,
     paths: &RunPaths,
     backup_ts: &str,
 ) -> Result<Option<Quarantine>> {
@@ -1251,15 +1274,18 @@ mod tests {
 
         // Append a tail event (seq 3) WITHOUT running the reducer — exactly the
         // on-disk state a crash between the row fsync and the projection write
-        // would leave behind.
-        append_event_with_seq(
-            &paths,
-            3,
-            "node.status",
-            Some(&n0001),
-            None,
-            json!({ "status": "running" }),
-        )
+        // would leave behind. The raw append still needs the witness (lock held).
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                3,
+                "node.status",
+                Some(&n0001),
+                None,
+                json!({ "status": "running" }),
+            )
+        })
         .unwrap();
         assert_eq!(
             crate::read_node(&paths, &n0001).unwrap().status,
@@ -1361,35 +1387,38 @@ mod tests {
         bootstrap_live_node(&paths); // applied_seq == 2, node n-0001 live
 
         // seq 3 — a traversal-laden id; seq 4 — an empty id. Both fail their
-        // strict `parse_str`, so `reduce_event_to_ops` rejects them.
-        append_event_with_seq(
-            &paths,
-            3,
-            "discussion.opened",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "../escape", "node_id": "n-0001", "topic": "evil" }),
-        )
-        .unwrap();
-        append_event_with_seq(
-            &paths,
-            4,
-            "discussion.opened",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "", "node_id": "n-0001", "topic": "evil" }),
-        )
-        .unwrap();
-        // seq 5 — a well-formed id that must be applied despite the poison
-        // lines preceding it.
-        append_event_with_seq(
-            &paths,
-            5,
-            "discussion.opened",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "d-abcdefghij", "node_id": "n-0001", "topic": "ok" }),
-        )
+        // strict `parse_str`, so `reduce_event_to_ops` rejects them. seq 5 —
+        // a well-formed id that must be applied despite the poison lines
+        // preceding it. All three raw appends share one held lock.
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                3,
+                "discussion.opened",
+                Some(&nid("n-0001")),
+                None,
+                json!({ "discussion_id": "../escape", "node_id": "n-0001", "topic": "evil" }),
+            )?;
+            append_event_with_seq(
+                lock,
+                &paths,
+                4,
+                "discussion.opened",
+                Some(&nid("n-0001")),
+                None,
+                json!({ "discussion_id": "", "node_id": "n-0001", "topic": "evil" }),
+            )?;
+            append_event_with_seq(
+                lock,
+                &paths,
+                5,
+                "discussion.opened",
+                Some(&nid("n-0001")),
+                None,
+                json!({ "discussion_id": "d-abcdefghij", "node_id": "n-0001", "topic": "ok" }),
+            )
+        })
         .unwrap();
 
         // The poison lines must NOT abort the replay (the regression this fixes:

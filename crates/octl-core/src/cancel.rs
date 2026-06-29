@@ -75,7 +75,7 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::events::{append_and_apply_unlocked, excerpt, for_each_event_probe};
-use crate::lock::RunLock;
+use crate::lock::{LockedRun, RunLock};
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest, read_node_opt};
 use crate::reducer::apply_event;
@@ -120,16 +120,20 @@ pub struct CancelOutcome {
 /// - I/O / corrupt-log errors from reading the manifest, listing nodes, or
 ///   appending events.
 pub fn cancel_run(paths: &RunPaths, note: Option<&str>) -> Result<CancelOutcome> {
-    RunLock::with_lock(&paths.lock(), || cancel_run_unlocked(paths, note))
+    RunLock::with_lock(paths, |lock| cancel_run_unlocked(lock, paths, note))
 }
 
-/// The locked body of [`cancel_run`]. The **caller must already hold** the
-/// run's [`RunLock`]; this is the sanctioned lock-held composition path so the
-/// manifest read, the per-node read-then-append loop, and the final
-/// `run.status` append all share one critical section (it calls
-/// [`append_and_apply_unlocked`], never [`crate::append_and_apply_event`],
-/// which would deadlock by re-locking).
-pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<CancelOutcome> {
+/// The locked body of [`cancel_run`]. The `lock: &LockedRun` witness proves the
+/// caller already holds the run's exclusive [`RunLock`]; this is the sanctioned
+/// lock-held composition path so the manifest read, the per-node
+/// read-then-append loop, and the final `run.status` append all share one
+/// critical section (it calls [`append_and_apply_unlocked`], never
+/// [`crate::append_and_apply_event`], which would deadlock by re-locking).
+pub fn cancel_run_unlocked(
+    lock: &LockedRun<'_>,
+    paths: &RunPaths,
+    note: Option<&str>,
+) -> Result<CancelOutcome> {
     let started = std::time::Instant::now();
     let manifest = read_manifest(paths)?;
 
@@ -213,7 +217,7 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
             "spinoff_proposals": [],
             "wrap_up_recommendations": []
         });
-        append_and_apply_unlocked(paths, "node.report", Some(&nid), Some(&key), data)?;
+        append_and_apply_unlocked(lock, paths, "node.report", Some(&nid), Some(&key), data)?;
         nodes_cancelled.push(nid);
     }
 
@@ -234,6 +238,7 @@ pub fn cancel_run_unlocked(paths: &RunPaths, note: Option<&str>) -> Result<Cance
                 status_data.insert("note".into(), n.into());
             }
             append_and_apply_unlocked(
+                lock,
                 paths,
                 "run.status",
                 None,
@@ -873,14 +878,17 @@ mod tests {
         // fsynced-but-not-applied window.
         let node = nid("n-0001");
         let key = node_cancel_key(&paths.run_id, &node);
-        append_event_with_seq(
-            &paths,
-            3,
-            "node.report",
-            Some(&node),
-            Some(&key),
-            json!({ "success": false, "cancelled": true, "reason": "x" }),
-        )
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                3,
+                "node.report",
+                Some(&node),
+                Some(&key),
+                json!({ "success": false, "cancelled": true, "reason": "x" }),
+            )
+        })
         .unwrap();
         assert_eq!(node_status(&paths, "n-0001"), Status::Pending);
         assert_eq!(report_count(&paths, "n-0001"), 1);
@@ -925,14 +933,17 @@ mod tests {
         bootstrap(&paths, 0); // run.created only (seq 1)
 
         let key = run_status_cancel_key(&paths.run_id);
-        append_event_with_seq(
-            &paths,
-            2,
-            "run.status",
-            None,
-            Some(&key),
-            json!({ "status": "cancelled" }),
-        )
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                2,
+                "run.status",
+                None,
+                Some(&key),
+                json!({ "status": "cancelled" }),
+            )
+        })
         .unwrap();
         // Manifest never folded the cancel, so it is not terminal here.
         assert_ne!(
@@ -975,14 +986,17 @@ mod tests {
         // records it Done, but the projection stays the stale crash-window
         // Pending.
         let n1 = nid("n-0001");
-        append_event_with_seq(
-            &paths,
-            4,
-            "node.status",
-            Some(&n1),
-            None,
-            json!({ "status": "done" }),
-        )
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                4,
+                "node.status",
+                Some(&n1),
+                None,
+                json!({ "status": "done" }),
+            )
+        })
         .unwrap();
         assert_eq!(
             node_status(&paths, "n-0001"),
@@ -1028,14 +1042,17 @@ mod tests {
         let paths = fresh_run(&tmp);
         bootstrap(&paths, 1); // run.created(1) + node.created n-0001(2)
         let n1 = nid("n-0001");
-        append_event_with_seq(
-            &paths,
-            3,
-            "node.report",
-            Some(&n1),
-            None,
-            json!({ "success": true }),
-        )
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                3,
+                "node.report",
+                Some(&n1),
+                None,
+                json!({ "success": true }),
+            )
+        })
         .unwrap();
         assert_eq!(
             node_status(&paths, "n-0001"),

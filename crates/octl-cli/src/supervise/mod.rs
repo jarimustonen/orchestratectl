@@ -1345,7 +1345,11 @@ fn watchdog_tick(
                 "spinoff_proposals": [],
                 "wrap_up_recommendations": [],
             });
-            if let Err(e) = append_and_apply_unlocked(paths, "node.report", Some(&nid), None, data)
+            // The `guard` above proves the exclusive lock is held; mint the
+            // witness to thread into the unlocked append.
+            let lock = guard.witness();
+            if let Err(e) =
+                append_and_apply_unlocked(&lock, paths, "node.report", Some(&nid), None, data)
             {
                 warn!(
                     target: "orchestratectl::supervise",

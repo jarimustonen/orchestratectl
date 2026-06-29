@@ -134,7 +134,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let data = Value::Object(data);
 
     let reason_for_lock = reason.clone();
-    let outcome = RunLock::with_lock(&paths.lock(), || {
+    let outcome = RunLock::with_lock(&paths, |lock| {
         if read_manifest_opt(&paths)?.is_none() {
             return Ok(Outcome::RunNotFound);
         }
@@ -155,6 +155,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
         let _ = &reason_for_lock; // captured for reason-mismatch reporting if needed
         let seq = append_and_apply_unlocked(
+            lock,
             &paths,
             "spinoff.rejected",
             None,

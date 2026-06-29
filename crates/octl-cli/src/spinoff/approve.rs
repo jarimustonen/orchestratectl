@@ -191,7 +191,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // computed up front so the lock closure borrows a ready value.
     let materialization_slug = derive_materialization_slug(&proposal_id);
 
-    let outcome = RunLock::with_lock(&paths.lock(), || {
+    let outcome = RunLock::with_lock(&paths, |lock| {
         // Re-validate run + proposal under the lock — the unlocked reads
         // above are advisory. A concurrent run-delete or
         // projection-corruption between unlocked check and lock is rare
@@ -256,6 +256,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let data = Value::Object(data);
 
         let seq = append_and_apply_unlocked(
+            lock,
             &paths,
             "spinoff.approved",
             None,

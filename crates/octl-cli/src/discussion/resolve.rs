@@ -160,7 +160,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         },
     }
 
-    let result = RunLock::with_lock(&paths.lock(), || {
+    let result = RunLock::with_lock(&paths, |lock| {
         // Idempotency-key scan must run BEFORE the domain status check so
         // that mismatched payloads return `idempotency_conflict`, not
         // `discussion_already_resolved`. A keyed replay then short-circuits
@@ -238,6 +238,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
         let node_id = disc.node_id.clone();
         let seq = octl_core::append_and_apply_unlocked(
+            lock,
             &paths,
             "discussion.resolved",
             Some(&node_id),

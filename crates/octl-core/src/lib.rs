@@ -43,7 +43,7 @@ pub use events::{
     Quarantine,
 };
 pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
-pub use lock::RunLock;
+pub use lock::{Exclusive, LockedRun, RunLock, Shared};
 pub use paths::{nofollow, run_dir, validate_run_id, RunPaths};
 pub use projections::{
     read_discussion, read_discussion_opt, read_manifest, read_manifest_opt, read_node,

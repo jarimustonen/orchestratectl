@@ -177,6 +177,9 @@ pub fn process_node_report(
     // return `CliError` directly instead of going through `core::Error`.
     let guard = RunLock::acquire(&parent_paths.lock())
         .map_err(|e| CliError::system("io_error", e.to_string()))?;
+    // Mint the witness proving the exclusive lock is held, to thread into the
+    // unlocked append entry points below.
+    let lock = guard.witness();
     {
         // Discussions first, then spinoffs — stable order makes the
         // deterministic-ID formula's `item_index` axis unambiguous.
@@ -230,6 +233,7 @@ pub fn process_node_report(
                     data.insert("context".into(), ctx.clone());
                 }
                 append_and_apply_unlocked(
+                    &lock,
                     parent_paths,
                     "discussion.opened",
                     Some(&parent_nid),
@@ -270,6 +274,7 @@ pub fn process_node_report(
                     data.insert("rationale".into(), r.clone());
                 }
                 append_and_apply_unlocked(
+                    &lock,
                     parent_paths,
                     "spinoff.proposed",
                     Some(&parent_nid),

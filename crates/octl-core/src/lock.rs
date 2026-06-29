@@ -1,13 +1,60 @@
 //! Per-run advisory `flock` primitive (design.md §4).
+//!
+//! The lock is also the source of a **compile-time witness**, [`LockedRun`],
+//! that the run's exclusive lock is held. The unlocked event-append entry points
+//! ([`crate::append_and_apply_unlocked`] and friends) take a `&LockedRun`
+//! parameter, so the type system — not a "the caller must hold the lock" doc
+//! comment — proves a writer holds the `flock` before it appends. Only the
+//! **exclusive** guard mints a witness ([`RunLock::witness`]); a shared
+//! (`LOCK_SH`) reader has no write capability and cannot produce one, because
+//! [`RunLock`] is a typestate generic ([`Exclusive`] vs [`Shared`]) and
+//! `witness` exists only on `RunLock<Exclusive>`.
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
+use std::marker::PhantomData;
 use std::path::Path;
 
 use fs4::FileExt;
 
 use crate::error::{Error, Result};
-use crate::paths::reject_symlink;
+use crate::paths::{reject_symlink, RunPaths};
+
+/// Typestate marker: the **exclusive** (`LOCK_EX`) lock. A `RunLock<Exclusive>`
+/// grants write access — it alone can mint a [`LockedRun`] witness via
+/// [`RunLock::witness`]. Uninhabited: it exists only as a type tag.
+pub enum Exclusive {}
+
+/// Typestate marker: the **shared** (`LOCK_SH`) lock. A `RunLock<Shared>` is
+/// read-only and cannot produce a [`LockedRun`] witness, so it can never be
+/// used to reach a write-side entry point. Uninhabited: only a type tag.
+pub enum Shared {}
+
+/// Compile-time proof that the holder is inside a critical section guarded by
+/// the run's **exclusive** `flock`.
+///
+/// The unlocked append primitives ([`append_and_apply_unlocked`],
+/// [`append_event_with_seq`], [`quarantine_corrupt_lines_unlocked`]) take a
+/// `&LockedRun` so they cannot be called without proof the lock is held —
+/// replacing the old "caller must already hold the `RunLock`" contract that was
+/// enforced only by a doc comment. Obtain one from
+/// [`RunLock::with_lock`] (which threads it into the closure) or
+/// [`RunLock::witness`] (for a manually-held [`RunLock::acquire`] guard).
+///
+/// The witness is a zero-sized borrow of the guard: its lifetime `'a` ties it to
+/// the [`RunLock`] it was minted from, so it cannot outlive the lock. It is
+/// deliberately **non-`Send` and non-`Sync`** (the `PhantomData<*const …>`) — a
+/// proof that *this thread* holds the `flock` must not cross a task or thread
+/// boundary, where the lock would no longer apply.
+///
+/// [`append_and_apply_unlocked`]: crate::append_and_apply_unlocked
+/// [`append_event_with_seq`]: crate::events
+/// [`quarantine_corrupt_lines_unlocked`]: crate::quarantine_corrupt_lines_unlocked
+pub struct LockedRun<'a> {
+    // `*const` makes the witness `!Send + !Sync`; the `&'a ()` ties it to the
+    // borrowed guard's lifetime. Zero-sized — it carries no data, only proof.
+    _lock: PhantomData<*const &'a ()>,
+}
 
 /// RAII guard holding the run's `flock`.
 ///
@@ -17,11 +64,16 @@ use crate::paths::reject_symlink;
 /// leave the reader with a half-updated projection set. A shared guard may hold
 /// no lock at all when the run has no `.lock` file yet — see
 /// [`RunLock::acquire_shared`].
-pub struct RunLock {
+///
+/// The `Mode` typestate ([`Exclusive`] / [`Shared`]) records which kind of lock
+/// is held: only `RunLock<Exclusive>` exposes [`RunLock::witness`], so a shared
+/// reader can never forge the write capability a [`LockedRun`] represents.
+pub struct RunLock<Mode = Exclusive> {
     file: Option<File>,
+    _mode: PhantomData<Mode>,
 }
 
-impl RunLock {
+impl RunLock<Exclusive> {
     /// Acquire the exclusive lock on `<run-dir>/.lock`, creating the file if
     /// needed. Blocks until the lock is available.
     ///
@@ -56,17 +108,39 @@ impl RunLock {
         // on newer toolchains). fs4 renamed `fs2`'s `lock_exclusive` to `lock`
         // to mirror std.
         <File as FileExt>::lock(&file).map_err(|e| Error::io(lock_path, e))?;
-        Ok(Self { file: Some(file) })
+        Ok(Self {
+            file: Some(file),
+            _mode: PhantomData,
+        })
     }
 
-    /// Convenience: run `f` with the lock held, releasing afterwards.
-    pub fn with_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let guard = Self::acquire(lock_path)?;
-        let r = f();
+    /// Mint a [`LockedRun`] witness proving this exclusive guard holds the
+    /// run's `flock`. The witness borrows `self`, so the borrow checker forbids
+    /// it from outliving the guard (and thus the lock). Use this for the
+    /// manually-held [`RunLock::acquire`] pattern — when the locked body needs
+    /// control flow ([`with_lock`](RunLock::with_lock)'s closure cannot express)
+    /// — then pass `&witness` to the unlocked append entry points.
+    // `&self` is load-bearing despite the body not reading it: it borrows the
+    // guard so the returned `LockedRun<'_>` is lifetime-tied to the held lock
+    // and cannot outlive it. That is the whole point — not an accidental unused
+    // receiver, so this method must stay a method, never an associated fn.
+    #[allow(clippy::unused_self)]
+    pub fn witness(&self) -> LockedRun<'_> {
+        LockedRun { _lock: PhantomData }
+    }
+
+    /// Convenience: run `f` with the exclusive lock held, passing it a
+    /// [`LockedRun`] witness it can thread into the unlocked append entry
+    /// points, releasing the lock afterwards.
+    pub fn with_lock<R>(paths: &RunPaths, f: impl FnOnce(&LockedRun) -> Result<R>) -> Result<R> {
+        let guard = Self::acquire(&paths.lock())?;
+        let r = f(&guard.witness());
         drop(guard);
         r
     }
+}
 
+impl RunLock<Shared> {
     /// Acquire a **shared** (`LOCK_SH`) lock on an existing `<run-dir>/.lock`,
     /// blocking until no writer holds the exclusive lock. The mirror of
     /// [`RunLock::acquire`] for the read side: many readers may hold the shared
@@ -100,7 +174,10 @@ impl RunLock {
             Ok(f) => f,
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 // No `.lock` (or no run dir): nothing to serialize against.
-                return Ok(Self { file: None });
+                return Ok(Self {
+                    file: None,
+                    _mode: PhantomData,
+                });
             }
             Err(e) => return Err(Error::io(lock_path, e)),
         };
@@ -108,11 +185,18 @@ impl RunLock {
         // `std::fs::File::lock_shared` (stable 1.89) that would shadow it on
         // newer toolchains — same reasoning as the exclusive `lock` above.
         <File as FileExt>::lock_shared(&file).map_err(|e| Error::io(lock_path, e))?;
-        Ok(Self { file: Some(file) })
+        Ok(Self {
+            file: Some(file),
+            _mode: PhantomData,
+        })
     }
 
     /// Convenience: run `f` with the shared lock held, releasing afterwards.
-    /// Mirrors [`RunLock::with_lock`] so a read path can swap one for the other.
+    /// The read-side counterpart to [`RunLock::with_lock`] — but the closure
+    /// gets **no** [`LockedRun`] witness: a shared reader has no write
+    /// capability, so it can never reach a write-side entry point. (It also
+    /// takes the lock path directly rather than a [`RunPaths`], since a reader
+    /// may run before the run dir is fully materialized.)
     pub fn with_shared_lock<T>(lock_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
         let guard = Self::acquire_shared(lock_path)?;
         let r = f();
@@ -121,7 +205,7 @@ impl RunLock {
     }
 }
 
-impl Drop for RunLock {
+impl<Mode> Drop for RunLock<Mode> {
     fn drop(&mut self) {
         if let Some(f) = self.file.take() {
             // Best-effort unlock — kernel releases on file close anyway.
@@ -154,6 +238,36 @@ mod tests {
         // First acquire creates the file; a second acquire after drop succeeds.
         drop(RunLock::acquire(&lock).unwrap());
         assert!(RunLock::acquire(&lock).is_ok());
+    }
+
+    /// Build a valid `RunPaths` rooted at a fresh temp dir for the witness tests.
+    fn fresh_paths(tmp: &TempDir) -> RunPaths {
+        let run_id = "01jxsnap000000000000000000";
+        let dir = tmp.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        RunPaths::new(dir, run_id).unwrap()
+    }
+
+    /// `with_lock` runs the closure under the exclusive lock, hands it a
+    /// [`LockedRun`] witness, and returns the closure's value.
+    #[test]
+    fn with_lock_passes_a_witness_and_returns_the_closure_value() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_paths(&tmp);
+        let got = RunLock::with_lock(&paths, |_witness: &LockedRun| Ok(7u8)).unwrap();
+        assert_eq!(got, 7);
+    }
+
+    /// A manually-held exclusive guard ([`RunLock::acquire`]) can mint a witness
+    /// — the escape hatch for lock-held bodies that `with_lock`'s closure shape
+    /// cannot express.
+    #[test]
+    fn manually_acquired_exclusive_guard_mints_a_witness() {
+        let tmp = TempDir::new().unwrap();
+        let lock = tmp.path().join(".lock");
+        let guard = RunLock::acquire(&lock).unwrap();
+        // The witness borrows the guard, so it cannot outlive the held lock.
+        let _witness: LockedRun<'_> = guard.witness();
     }
 
     /// A shared lock on a run with no `.lock` file is a no-op guard, not an

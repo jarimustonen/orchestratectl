@@ -44,7 +44,7 @@ fn flock_stress_50_threads_1000_iters() {
     let paths = Arc::new(RunPaths::new(dir, run_id).unwrap());
 
     // Touch the lock and events file once so each thread sees the same root.
-    RunLock::with_lock(&paths.lock(), || Ok(())).unwrap();
+    RunLock::with_lock(&paths, |_lock| Ok(())).unwrap();
 
     let latencies = Arc::new(std::sync::Mutex::new(Vec::<u128>::with_capacity(TOTAL)));
 
@@ -57,12 +57,13 @@ fn flock_stress_50_threads_1000_iters() {
                 let mut local = Vec::<u128>::with_capacity(ITERS_PER_THREAD);
                 for i in 0..ITERS_PER_THREAD {
                     let t0 = Instant::now();
-                    RunLock::with_lock(&paths.lock(), || {
+                    RunLock::with_lock(&paths, |lock| {
                         let acq_ns = t0.elapsed().as_nanos();
                         local.push(acq_ns);
                         let last = recover_last_seq(&paths.events())?;
                         let seq = last + 1;
                         append_event_with_seq(
+                            lock,
                             &paths,
                             seq,
                             "stress.tick",
