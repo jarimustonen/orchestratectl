@@ -2,8 +2,9 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # merge.sh $TMUX_PANE cleanup should use worktree-path recovery (parity with supervisor)

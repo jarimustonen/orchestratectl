@@ -133,12 +133,6 @@ echo ""
 
 echo "Running workmux merge --rebase --into $TARGET_BRANCH..."
 
-# Capture current tmux window ID before merge (workmux will try to kill it but
-# can't because we're still running inside it)
-if [[ -n "${TMUX:-}" ]]; then
-    TMUX_WINDOW_ID=$(tmux display-message -t "$TMUX_PANE" -p '#{window_id}')
-fi
-
 # Get worktree path before merge for cleanup
 WORKTREE_PATH=$(pwd)
 
@@ -152,84 +146,11 @@ echo "  Branch: $BRANCH"
 echo "  Target: $TARGET_BRANCH"
 echo "  Commits merged: $COMMIT_COUNT"
 
-# Clean up worktree, branch, and tmux window in background.
-# --keep skips all cleanup, so we must do it ourselves.
-# `setsid` detaches the cleanup into its own session/pgroup so it survives the
-# SIGHUP cascade when its own pane gets killed; `& disown` further keeps it
-# alive across merge.sh's exit. </dev/null + stdio redirect frees the pane's
-# pty so tmux can reap the window without waiting on our FDs.
-if [[ -n "${TMUX_WINDOW_ID:-}" ]]; then
-    # Pick the strongest available detacher: setsid > nohup > bare background.
-    # macOS ships setsid as `setsid` on some versions; fall back gracefully.
-    if command -v setsid >/dev/null 2>&1; then
-        DETACH=(setsid)
-    elif command -v nohup >/dev/null 2>&1; then
-        DETACH=(nohup)
-    else
-        DETACH=()
-    fi
-    "${DETACH[@]}" bash -c '
-        # Belt-and-braces SIGHUP/SIGTERM ignore — nohup only ignores HUP and
-        # does not create a new session/pgroup on macOS, so if tmux ever
-        # signals our pane'"'"'s pgroup with TERM during the kill cascade we
-        # still survive.
-        trap "" HUP TERM
-        # Drop any inherited merge lock IMMEDIATELY, before any FS operation
-        # that could block (e.g. a slow NFS or contended directory). The lock
-        # must not gate the next queued merge on our cleanup.
-        exec 9>&- 2>/dev/null || true
-        # Step out of the worktree before removing it; otherwise our cwd is
-        # invalid for the rest of cleanup, which makes spawning binaries
-        # (notably tmux) flake on macOS/Linux.
-        cd "$1" 2>/dev/null || cd /
-        set +e
-        TARGET_PATH="$1"; WORKTREE_PATH="$2"; BRANCH="$3"; TMUX_WINDOW_ID="$4"
-        LOG="/tmp/worktree-merge-cleanup-${BRANCH//\//_}-$(date +%s)-$$.log"
-        log() { printf "[%s] %s\n" "$(date "+%Y-%m-%dT%H:%M:%S%z")" "$*" >>"$LOG" 2>/dev/null || true; }
-        log "subshell start: branch=$BRANCH window=$TMUX_WINDOW_ID worktree=$WORKTREE_PATH pid=$$ sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d " ")"
-        sleep 3
-        log "sleep done"
-        # --force: a lingering shell (e.g. the Claude Code bash session that
-        # ran us) may still have its cwd inside the worktree, which makes a
-        # plain `git worktree remove` fail and leak the worktree + its tmux
-        # window. --force removes the worktree regardless.
-        git -C "$TARGET_PATH" worktree remove --force "$WORKTREE_PATH" >>"$LOG" 2>&1
-        log "git worktree remove exit=$?"
-        git -C "$TARGET_PATH" branch -d "$BRANCH" >>"$LOG" 2>&1
-        log "git branch -d exit=$?"
-        # Always attempt the kill — kill-window on an already-dead target is
-        # harmless (errors to stderr, swallowed). Do NOT precheck with
-        # list-windows + grep: a transient empty/stale list makes the precheck
-        # silently skip the kill and leak the window.
-        for attempt in 1 2 3 4 5; do
-            tmux kill-window -t "$TMUX_WINDOW_ID" >>"$LOG" 2>&1
-            rc=$?
-            log "kill-window attempt=$attempt exit=$rc"
-            sleep 0.3
-            wins=$(tmux list-windows -a -F "#{window_id}" 2>>"$LOG")
-            list_rc=$?
-            if [[ $list_rc -ne 0 ]]; then
-                log "list-windows failed (exit=$list_rc), cannot verify — retrying"
-                sleep 0.5
-                continue
-            fi
-            if ! printf "%s\n" "$wins" | grep -qx "$TMUX_WINDOW_ID"; then
-                log "window confirmed gone after attempt=$attempt"
-                break
-            fi
-            log "window still present after attempt=$attempt, retrying"
-            sleep 0.5
-        done
-        # Final state for diagnosability — if the window survived all retries,
-        # this log line is the smoking gun for the next recurrence.
-        wins=$(tmux list-windows -a -F "#{window_id}" 2>>"$LOG")
-        if [[ $? -ne 0 ]]; then
-            log "FINAL: list-windows failed, window state unknown for $TMUX_WINDOW_ID"
-        elif printf "%s\n" "$wins" | grep -qx "$TMUX_WINDOW_ID"; then
-            log "FAILED: window $TMUX_WINDOW_ID still present after all retries"
-        fi
-        log "cleanup done"
-    ' bash "$TARGET_PATH" "$WORKTREE_PATH" "$BRANCH" "$TMUX_WINDOW_ID" </dev/null >/dev/null 2>&1 &
-    disown
-    echo "  Cleanup will happen in 3 seconds..."
-fi
+# Tmux window teardown is now the supervisor's responsibility — it can find
+# the window rename-proof via worktree-path (session-scoped, exact match),
+# while merge.sh only saw $TMUX_PANE and would target the WRONG window when
+# a retry came from a different pane after a manual rebase resolution
+# (issue: merge-sh-tmux-pane-recovery). The supervisor's cleanup also
+# handles `git worktree remove --force` and `git branch -D`, so merge.sh
+# no longer races it on those either — the merge call here advances the
+# run to terminal, and the supervisor's next tick tears down everything.
