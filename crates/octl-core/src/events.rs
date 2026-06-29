@@ -193,6 +193,16 @@ fn truncate_torn_tail(events_path: &Path) -> Result<()> {
     };
     f.set_len(keep).map_err(|e| Error::io(events_path, e))?;
     f.sync_all().map_err(|e| Error::io(events_path, e))?;
+    // Surface the recovery so an operator inspecting the run knows a
+    // crash-torn tail was discarded (and how many bytes), rather than the
+    // truncation happening invisibly under the lock.
+    tracing::warn!(
+        target: "octl_core::events",
+        path = %events_path.display(),
+        discarded_bytes = len - keep,
+        kept_bytes = keep,
+        "truncated crash-torn final line off events.jsonl before append"
+    );
     Ok(())
 }
 
@@ -1947,6 +1957,105 @@ mod tests {
         assert_eq!(r.seq, 1);
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn truncate_torn_tail_cuts_partial_line_at_last_newline() {
+        // The headline case (issue torn-write-truncate-tail): a complete
+        // record followed by a torn (newline-less) partial write. Recovery
+        // must cut the file back to the byte immediately after the last
+        // complete record's trailing `\n` — the partial bytes are gone.
+        let tmp = TempDir::new().unwrap();
+        let complete = r#"{"ts":"2026-06-12T00:00:00Z","seq":5,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(complete.as_bytes());
+        bytes.push(b'\n');
+        let keep = bytes.len() as u64; // offset just past seq-5's newline
+        bytes.extend_from_slice(br#"{"seq":6,"par"#); // torn mid-line, no newline
+        let paths = paths_with_events(&tmp, &bytes);
+
+        truncate_torn_tail(&paths.events()).unwrap();
+
+        let raw = std::fs::read(paths.events()).unwrap();
+        assert_eq!(
+            raw.len() as u64,
+            keep,
+            "file must end at the offset after seq-5's newline"
+        );
+        assert!(raw.ends_with(b"\n"), "file is newline-terminated after cut");
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 5);
+    }
+
+    #[test]
+    fn truncate_torn_tail_clean_file_is_noop() {
+        // A file already ending in `\n` is the clean, common case: recovery
+        // must leave every byte untouched (no rewrite, no length change).
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+
+        truncate_torn_tail(&paths.events()).unwrap();
+
+        assert_eq!(
+            std::fs::read(paths.events()).unwrap(),
+            log.as_bytes(),
+            "a clean, newline-terminated log must be left byte-for-byte intact"
+        );
+    }
+
+    #[test]
+    fn truncate_torn_tail_zero_length_file_is_noop() {
+        // An empty log has no tail to cut: recovery is a no-op and the file
+        // stays empty.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, b"");
+        truncate_torn_tail(&paths.events()).unwrap();
+        assert_eq!(std::fs::read(paths.events()).unwrap(), b"");
+    }
+
+    #[test]
+    fn truncate_torn_tail_missing_file_is_noop() {
+        // No `events.jsonl` at all (a run that never appended): recovery must
+        // not create the file or error.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
+        truncate_torn_tail(&paths.events()).unwrap();
+        assert!(!paths.events().exists());
+    }
+
+    #[test]
+    fn truncate_torn_tail_single_complete_row_is_noop() {
+        // Exactly one complete `\n`-terminated record and nothing else: the
+        // last byte is already a newline, so there is no tail to cut.
+        let tmp = TempDir::new().unwrap();
+        let log = concat!(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":1,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+            "\n",
+        );
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        truncate_torn_tail(&paths.events()).unwrap();
+        assert_eq!(std::fs::read(paths.events()).unwrap(), log.as_bytes());
+    }
+
+    #[test]
+    fn truncate_torn_tail_single_partial_row_truncates_to_zero() {
+        // The whole file is one torn (newline-less) partial write with no
+        // complete record ahead of it: there is nothing to keep, so recovery
+        // truncates the file to zero length.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, br#"{"seq":1,"kind":"marker"#);
+        truncate_torn_tail(&paths.events()).unwrap();
+        assert_eq!(
+            std::fs::read(paths.events()).unwrap(),
+            b"",
+            "a file holding only a partial row must be cut to empty"
+        );
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 0);
     }
 
     #[test]
