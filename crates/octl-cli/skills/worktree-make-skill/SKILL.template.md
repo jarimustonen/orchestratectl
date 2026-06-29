@@ -129,7 +129,7 @@ source branch, and submits the terminal `node report` itself (stamped
 `via: "explicit-merge"`). There is no longer a separate
 `/worktree-merge`-then-`node report` two-step. Until that report lands
 the per-run supervisor keeps polling, `orchestratectl run show` reads
-`lifecycle: pending`, and the tmux window never closes — so the merge
+`status: pending`, and the tmux window never closes — so the merge
 call IS what releases the run.
 
 Because a make-skill run authors a substantial skill and runs a

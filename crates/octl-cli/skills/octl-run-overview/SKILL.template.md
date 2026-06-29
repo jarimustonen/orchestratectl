@@ -62,8 +62,8 @@ by `created_at` (RFC3339).
       {
         "id": "01HZ...",
         "kind": "worktree-code | spinoff | fan-out | orchestrate",
-        "lifecycle": "pending | running | paused | completed | failed | cancelled",
-        "status": "<kind-specific short label>",
+        "lifecycle": "autonomous | interactive",
+        "status": "pending | running | done | failed | cancelled",
         "created_at": "2026-06-12T10:30:00Z",
         "updated_at": "2026-06-12T10:45:12Z"
       }
@@ -75,48 +75,59 @@ by `created_at` (RFC3339).
 Fields that drive decisions:
 
 - `kind` — picks the right follow-up command (a `fan-out` resumes
-  differently from a `worktree-code`)
-- `lifecycle` — the only field that tells you whether the run is
-  finished. **Never assume `completed` from `status` alone**; only
-  `lifecycle` is authoritative.
-- `status` — a short human label (e.g. `"3/10 units done"` for fan-out).
-  Useful in summaries; do not branch on its text.
+  differently from a `worktree-code`).
+- `lifecycle` — the run's **category**, derived from `kind`. Always one
+  of `autonomous` (fire-and-forget — spinoff, research, bugfix, …) or
+  `interactive` (`code`, `orchestrate`). It is NOT a progress state and
+  never transitions to a terminal value.
+- `status` — the **terminal-progress field**. Values are `pending`,
+  `running`, `done`, `failed`, `cancelled`. **Terminal states are
+  `done | failed | cancelled`** — once any of those is set the run is
+  settled (the reducer freezes further status changes). Branch on this
+  to detect completion.
 
 ## `run show` payload
 
-`data.run` extends the summary with detail: structured per-unit
-progress, the originating prompt, the merge target, and event log
-pointers. Shape depends on `kind`; always check `kind` before reading
-kind-specific fields.
+`data.manifest` extends the summary with detail; `data.counts` carries
+denormalised counters; some kinds add kind-specific fields.
 
 ```json
 {
   "data": {
-    "run": {
-      "id": "01HZ...",
+    "manifest": {
+      "schema_version": 1,
+      "run_id": "01HZ...",
       "kind": "fan-out",
-      "lifecycle": "running",
-      "status": "3/10 units done",
+      "lifecycle": "autonomous",
+      "title": "...",
+      "status": "running",
       "created_at": "...",
       "updated_at": "...",
-      "units": [
-        { "id": "u-001", "lifecycle": "completed", "branch": "fan-out/u-001" }
-      ]
-    }
+      "node_count": 10,
+      "open_discussions": 0,
+      "pending_spinoffs": 0
+    },
+    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 }
   }
 }
 ```
 
 ## Decision rules
 
-1. **Triaging "is this still going?"** — read `lifecycle`. Anything other
-   than `running` or `pending` is not actively progressing.
-2. **Deciding whether to spawn more work** — list runs first. If a
+1. **Triaging "is this still going?"** — read `data.manifest.status`.
+   Terminal values (`done | failed | cancelled`) mean the run is settled
+   and the supervisor has either already torn it down or is about to.
+   Anything else (`pending | running`) is still live.
+2. **Polling "wait until merged"** — loop on
+   `orchestratectl run show <id> --output json | jq -r '.data.manifest.status'`
+   and break on `done|failed|cancelled`. Do NOT poll `lifecycle` — it is
+   the category, not a progress field, and never transitions.
+3. **Deciding whether to spawn more work** — list runs first. If a
    `fan-out` is already `running` on the same scope, do not start a
    second; resume or wait.
-3. **Surfacing problems to the user** — when `lifecycle == "failed"`, the
+4. **Surfacing problems to the user** — when `status == "failed"`, the
    event log has the cause; quote it instead of guessing.
-4. **Schema drift** — if `schema_version` does not match what this skill
+5. **Schema drift** — if `schema_version` does not match what this skill
    describes, stop and tell the user the skill is out of date with the
    installed binary.
 

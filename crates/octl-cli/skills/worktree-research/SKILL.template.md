@@ -132,7 +132,7 @@ merge-and-report step: it rebases + merges the worktree branch into its
 source branch, then submits the terminal `node report` itself (stamped
 `via: "explicit-merge"`). The run stays alive until that report lands —
 until then the per-run supervisor keeps polling, `orchestratectl run
-show` reads `lifecycle: pending`, and the tmux window never closes. So
+show` reads `status: pending`, and the tmux window never closes. So
 the brief MUST instruct the agent to run the single closing call below
 before its session ends. A research worktree's summary and wrap-up
 matter, so it passes a `--report-file` carrying the full §7.3 payload

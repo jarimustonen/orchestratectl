@@ -125,8 +125,8 @@ Per-unit notes:
 
 The driver tails its own event log and the manifest:
 
-- Up to `<C>` units in `lifecycle: running` at any moment.
-- On a child completing (`lifecycle: completed`, `child.report`
+- Up to `<C>` units in `status: running` at any moment.
+- On a child completing (`status: done`, `child.report`
   arrives), mark the unit `done` in the manifest and spawn the next
   pending unit.
 - On a child failing, retry the unit up to N times with the same
@@ -271,8 +271,10 @@ Likely codes:
 - `orchestratectl run show <driver-run-id>` — aggregate counts
   (pending / running / done / failed) and the next units to fan out.
 - `orchestratectl event tail <driver-run-id> --follow` —
-  authoritative stream; `child.spawned`, `child.lifecycle`, and
-  `child.report` events arrive here per unit.
+  authoritative stream; `child.spawned` and `child.report` events
+  arrive here per unit. For per-child progress read
+  `data.manifest.status` (terminal: `done | failed | cancelled`) via
+  `orchestratectl run show <child-id>`.
 - `orchestratectl node list <driver-run-id>` — per-unit table.
 - `orchestratectl node show <child-node-id>` — terminal report for one
   unit (the child's closing `orchestratectl run merge` is what *writes*

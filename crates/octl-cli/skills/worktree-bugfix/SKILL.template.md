@@ -251,7 +251,7 @@ behavior:
 
 - If the agent cannot reproduce, it should NOT close the issue and
   should not merge a speculative fix; it stops with the run in
-  `lifecycle: completed` but `node report.success: false` plus a
+  `status: done` but `node report.success: false` plus a
   `discussion_items[]` entry describing the gap (see "Terminal report
   (mandatory)" for the payload shape). That blocked outcome is a plain
   `node report` — no merge happened. Once a human resolves it, the fix

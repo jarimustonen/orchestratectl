@@ -66,8 +66,8 @@ json` for pretty-printed JSON.)
     "run": {
       "id": "01HZ...",
       "kind": "spinoff",
-      "lifecycle": "pending",
-      "status": "queued",
+      "lifecycle": "autonomous",
+      "status": "pending",
       "source_branch": "main",
       "target_branch": "main"
     }
@@ -75,10 +75,12 @@ json` for pretty-printed JSON.)
 }
 ```
 
-The run starts in `lifecycle: pending` and transitions to `running`
-once the worker picks it up. Use `orchestratectl run show <id>` to
-follow progress (see the `octl-run-overview` skill for the response
-shape).
+`lifecycle` is the run's category (`autonomous` for spinoffs) and never
+changes. `status` is the progress field: starts at `pending`, transitions
+to `running` once the worker picks it up, and reaches a terminal value
+(`done | failed | cancelled`) when the run settles. Branch on `status`
+to detect completion. Use `orchestratectl run show <id>` to follow
+progress (see the `octl-run-overview` skill for the response shape).
 
 ## When to use a spinoff vs. other variants
 

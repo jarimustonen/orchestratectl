@@ -148,8 +148,9 @@ Field-shape notes (match these exactly — parsers key on them):
 
 Return the structured payload (run id, node id, branch, parent
 pointers) to the calling `/orchestrate` driver. The driver polls the
-child's lifecycle and `node report` via `orchestratectl run show <id>`
-and `orchestratectl event tail <parent-run-id> --follow`.
+child's `status` (terminal: `done | failed | cancelled`) and `node
+report` via `orchestratectl run show <id>` and
+`orchestratectl event tail <parent-run-id> --follow`.
 
 ### 4. Report to the driver
 
@@ -167,7 +168,7 @@ Closing the child is a **single** call: `orchestratectl run merge`
 rebases + merges the worktree branch into its source branch and submits
 the terminal `node report` in the same step. The child run stays alive
 until that call lands — until then the child's supervisor keeps polling,
-the child's `lifecycle` reads `pending` forever, the `child.report` event
+the child's `status` reads `pending` forever, the `child.report` event
 the parent waits on never arrives, and the tmux window never closes.
 
 So the child's brief MUST instruct it to run this **as its final action,
@@ -282,15 +283,17 @@ supervisor mirrors lifecycle transitions onto the parent's log so a
 driver only needs to tail the parent:
 
 - `orchestratectl event tail <parent-run-id> --follow` —
-  authoritative stream for the driver; `child.spawned`,
-  `child.lifecycle`, and `child.report` events arrive here.
-- `orchestratectl run show <child-run-id>` — child-only detail.
+  authoritative stream for the driver; `child.spawned` and
+  `child.report` events arrive here.
+- `orchestratectl run show <child-run-id>` — child-only detail. Read
+  `data.manifest.status` to learn child progress (terminal values:
+  `done | failed | cancelled`).
 - `orchestratectl node show <child-node-id>` — the structured terminal
   report the child submits at the end (the `run merge` verb writes it as
   the closing step; see "Terminal report (mandatory)"). This is what the
   orchestrator synthesizes across siblings.
 
-`lifecycle: completed` on the child means the child merged into the
+`status: done` on the child means the child merged into the
 integration branch and submitted its report. The driver should not
 treat `success: false` inside the report as a CLI error — it is a
 truthful structured outcome the orchestrator must surface to the user.

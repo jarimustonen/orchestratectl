@@ -170,7 +170,7 @@ its source branch, then submits the terminal `node report` itself
 (stamped `via: "explicit-merge"`). There is no separate
 `/worktree-merge` step and no separate `node report` call — the merge
 *is* the closing call. Until it runs the run stays alive: the per-run
-supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
+supervisor keeps polling, `orchestratectl run show` reads `status:
 pending`, and the tmux window never closes — the user sees a worktree
 that looks stuck when the work is actually done.
 
@@ -309,7 +309,7 @@ If `--dry-run` is set, the CLI validates inputs and emits a
 
 The spinoff runs asynchronously. To check status:
 
-- `orchestratectl run show <run-id>` — current lifecycle, node states,
+- `orchestratectl run show <run-id>` — current status, node states,
   recent events.
 - `orchestratectl event tail <run-id> --follow` — streaming
   event log (use for "wait until merged" loops).
@@ -319,10 +319,21 @@ The spinoff runs asynchronously. To check status:
   report `orchestratectl run merge` submits as it merges the branch (see
   "Terminal report (mandatory)").
 
-`lifecycle` is the only field that tells you the run is finished:
-`completed` (worker merged), `failed` (worker errored), `cancelled`
-(`run cancel` was called). The `status` field is a short human label —
-do not branch on its text.
+**Completion polling.** Branch on `data.manifest.status`. The terminal
+values are **`done | failed | cancelled`**; anything else (`pending` /
+`running`) means the run is still live. Once a terminal value is set
+the reducer freezes the field — the supervisor will tear the worktree
+down within ~1s. Do NOT branch on `lifecycle` — it is the run's
+*category* (`autonomous` for a spinoff) and never transitions.
+
+```bash
+# Block until the run settles.
+while true; do
+  s=$(orchestratectl run show "$run_id" --output json | jq -r '.data.manifest.status')
+  case "$s" in done|failed|cancelled) break;; esac
+  sleep 30
+done
+```
 
 ## Install or upgrade `orchestratectl`
 

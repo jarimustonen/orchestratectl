@@ -212,15 +212,18 @@ While there are features not yet `done` or `failed`:
 
    Events to act on:
    - `child.spawned` — confirm the new child appears in the manifest.
-   - `child.lifecycle running|completed|failed` — update the DAG.
+   - `run.status` (on the parent log) — driver-side roll-up; not
+     authoritative for child status. To learn a child's progress,
+     `orchestratectl run show <child-id>` and read `data.manifest.status`
+     (terminal values: `done | failed | cancelled`).
    - `child.report` — the worker's structured terminal report.
      Read it, decide next action (next ready features, retry, skip).
    - `discuss.critical` (from a worker) — this IS a pakkopysäytys for
      the campaign; jump to §"Handling pakkopysäytys".
 
-4. On a child `completed` with `node report.success: true`: mark its
-   feature `done`, append its report to `report.yaml`, loop back to
-   step 1.
+4. On a child reaching `status: done` with `node report.success: true`:
+   mark its feature `done`, append its report to `report.yaml`, loop
+   back to step 1.
 
 5. On a child `completed` with `node report.success: false`: the
    orchestrator decides per the boldness contract. Options:
@@ -442,9 +445,10 @@ Likely codes (driver-level — child-level codes belong to
   start. Inspect `<dir>/supervisor.stderr.log` and consider `run
   reattach`.
 
-Child errors come back as `child.lifecycle failed` events on the
-parent log — the orchestrator handles them per §4 step 5–6, not as
-top-level errors.
+Child errors surface as a child reaching `status: failed` (visible via
+`orchestratectl run show <child-id>`) and as `child.report` events on
+the parent log with `success: false` — the orchestrator handles them
+per §4 step 5–6, not as top-level errors.
 
 ## Following progress
 
