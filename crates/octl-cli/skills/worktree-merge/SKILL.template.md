@@ -83,7 +83,7 @@ names are what the supervisor consumes — an unknown key passes validation
 but its contents are silently dropped:
 
 ```bash
-cat > /tmp/node-report.json <<'JSON'
+cat > /tmp/node-report-${run_id}.json <<'JSON'
 {
   "success": true,
   "summary": "<one-line outcome>",
@@ -110,7 +110,7 @@ JSON
 ```bash
 orchestratectl run merge "$run_id" \
   [--source <branch>] \
-  [--report-file /tmp/node-report.json]
+  [--report-file /tmp/node-report-${run_id}.json]
 ```
 
 Flag rules:
@@ -240,9 +240,9 @@ run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
 orchestratectl run merge "$run_id"
 
 # Autonomous: a research worktree merges and delivers a structured report.
-orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 
 # Orchestrated child: merges into its integration branch (recorded as the
 # run's source_branch — no --source needed) and reports to the parent.
-orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 ```

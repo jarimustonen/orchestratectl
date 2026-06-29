@@ -170,7 +170,7 @@ action, before its session ends**.
    validation, but its contents are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<one-line outcome>",
@@ -203,7 +203,7 @@ action, before its session ends**.
    **Success (fix done, ready to land)** — one call merges and reports:
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    `run merge` validates the `--report-file` payload *before* it
@@ -224,7 +224,7 @@ action, before its session ends**.
    false` and leave the branch for the human:
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report-${run_id}.json
    ```
 
    On success the node is recorded terminal — `orchestratectl node show

@@ -2,8 +2,9 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Concurrent spinoffs race on shared /tmp/node-report.json

@@ -154,7 +154,7 @@ matter, so it passes a `--report-file` carrying the full §7.3 payload
    validation, but its contents are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<one-line outcome>",
@@ -184,7 +184,7 @@ matter, so it passes a `--report-file` carrying the full §7.3 payload
 3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    This rebases + merges the worktree branch into its source branch and

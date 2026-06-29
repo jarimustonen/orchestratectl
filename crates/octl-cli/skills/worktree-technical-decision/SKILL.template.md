@@ -159,7 +159,7 @@ take exactly one of them before its session ends:
    validation, but its contents are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<one-line outcome>",
@@ -192,7 +192,7 @@ take exactly one of them before its session ends:
    reports; the `--report-file` payload is validated *before* the merge:
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    `run merge` rebases + merges the branch into the run's recorded
@@ -210,7 +210,7 @@ take exactly one of them before its session ends:
    directly, with `success: false` and a populated `discussion_items[]`:
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report.json
+   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report-${run_id}.json
    ```
 
    This records the node terminal without merging — `orchestratectl

@@ -216,7 +216,7 @@ child to run **as its final action, before its session ends**:
    are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<unit-id>: <one-line outcome>",
@@ -226,7 +226,7 @@ child to run **as its final action, before its session ends**:
    }
    JSON
 
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    - `success` — **required** boolean. `true` when the unit's output

@@ -155,7 +155,7 @@ pass it to the merge, **as its final action before the session ends**:
    validation, but its contents are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<one-line outcome>",
@@ -185,7 +185,7 @@ pass it to the merge, **as its final action before the session ends**:
 3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    The `--report-file` payload is validated **before** the merge, then

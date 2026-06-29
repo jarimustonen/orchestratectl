@@ -192,7 +192,7 @@ committed and ready to land, before its session ends**:
    validation, but its contents are silently dropped.
 
    ```bash
-   cat > /tmp/node-report.json <<'JSON'
+   cat > /tmp/node-report-${run_id}.json <<'JSON'
    {
      "success": true,
      "summary": "<one-line outcome>",
@@ -221,7 +221,7 @@ committed and ready to land, before its session ends**:
    merge runs, and the rich §7.3 fields are carried in the same call:
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report.json
+   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    `run merge` defaults to node `n-0001` (a single-worker kind always
@@ -249,7 +249,7 @@ committed and ready to land, before its session ends**:
    `error.code: "merge_failed"` it does **not** submit a report and the
    node stays live — resolve the conflict (or run `/complex-rebase` for
    deeply-diverged branches) and re-run `orchestratectl run merge
-   "$run_id" --report-file /tmp/node-report.json`.
+   "$run_id" --report-file /tmp/node-report-${run_id}.json`.
 
 This step is **not optional**. A finished worktree with no `run merge`
 call leaves the run dangling, unmerged, with no structured outcome for
