@@ -2,8 +2,9 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Doc-link cleanup: octl-core has ~15 broken intra-doc links (CI doc job fails)
