@@ -2,8 +2,12 @@
 created: 2026-06-29
 updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: normal
+commits:
+- hash: 9bdadff693a362bd4ed0fc99b44e09ccd60d7a7b
+  summary: tear down empty headless tmux session after last managed window (Option 1, supervisor teardown)
+closed: 2026-06-29
 ---
 
 # Empty tmux 'headless' session left behind after last managed window removed
