@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -24,5 +25,6 @@ expression: value
     "updated_at": "[TS]",
     "last_report": null,
     "last_processed_report_seq_by_child": {}
-  }
+  },
+  "warnings": []
 }

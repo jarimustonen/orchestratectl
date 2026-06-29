@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -59,5 +60,6 @@ expression: value
         "description": "Plan and execute a set of heterogeneous, dependency-ordered features with meaningful parallelism. Spawns one top-level driver run via `orchestratectl run create --kind orchestrate` and then one autonomous child per ready feature via `--kind orchestrated --parent-run-id <id> --parent-node-id <id>`. Runs autonomously by default — bold first, ask later — logging every judgment call to the parent run's event log and writing a hierarchical `report.yaml` + `report.md` to `~/.orchestratectl/runs/<id>/` for the user to read at the end. Pauses (audible alert) ONLY when a decision would massively constrain remaining children, when something genuinely cannot be done, or when the orchestrator is outside its own competence. Use when the user asks to \"drive this whole thing\", \"deliver feature X end-to-end\", or \"ship this campaign\". NOT for software/container orchestration (Docker/Kubernetes), N identical units (`/fan-out`), one interactive task (`/worktree-code`), one autonomous task (`/worktree-spinoff`), or a fully serial chain (`/worktree-code` in sequence)."
       }
     ]
-  }
+  },
+  "warnings": []
 }

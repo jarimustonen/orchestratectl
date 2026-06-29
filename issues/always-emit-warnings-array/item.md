@@ -1,9 +1,10 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-29
 type: feature
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Always emit warnings: [] in success envelope (no elision)

@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
+assertion_line: 66
 expression: value
 ---
 {
@@ -1279,5 +1280,6 @@ expression: value
         "subcommands": []
       }
     ]
-  }
+  },
+  "warnings": []
 }

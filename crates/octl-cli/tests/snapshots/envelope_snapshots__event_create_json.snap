@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -13,5 +14,6 @@ expression: value
       "nodes/n-1000.json",
       "manifest.json"
     ]
-  }
+  },
+  "warnings": []
 }

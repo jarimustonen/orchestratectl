@@ -58,10 +58,8 @@ fn version_json_pins_envelope_and_payload_shape() {
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
 
-    // Envelope: schema_version + data. `warnings` is currently elided
-    // when empty (TODO: tracked spin-off issue to make it always
-    // emitted). Pin the *current* behavior so an unintended addition
-    // there surfaces immediately.
+    // Envelope: schema_version + data + warnings (always emitted as []
+    // per AGENTS-AI-FIRST-CLI §10 — issue: always-emit-warnings-array).
     let env_keys: BTreeSet<&str> = v
         .as_object()
         .expect("envelope is object")
@@ -70,9 +68,10 @@ fn version_json_pins_envelope_and_payload_shape() {
         .collect();
     assert_eq!(
         env_keys,
-        BTreeSet::from(["schema_version", "data"]),
+        BTreeSet::from(["schema_version", "data", "warnings"]),
         "unexpected envelope keys: {env_keys:?}"
     );
+    assert_eq!(v["warnings"], serde_json::json!([]));
 
     assert_eq!(v["schema_version"], 1);
 

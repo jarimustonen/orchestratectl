@@ -120,7 +120,10 @@ struct SuccessEnvelope<'a, T: Serialize> {
     /// additive). See [`dropped_log_warning`].
     #[serde(skip_serializing_if = "Option::is_none")]
     dropped_log_events: Option<u64>,
-    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    /// Always emitted (even when empty), per AGENTS-AI-FIRST-CLI §10: a
+    /// missing-vs-empty branch is a consumer tax — agents would have to
+    /// read `warnings` as `Vec<String> | undefined`. `warnings: []` is
+    /// the steady state.
     warnings: &'a [String],
 }
 
@@ -356,8 +359,9 @@ mod tests {
         );
     }
 
-    /// Zero drops must add neither the structured field nor a warning — both
-    /// are purely additive (omitted in the steady state).
+    /// Zero drops must omit the structured `dropped_log_events` field, but
+    /// `warnings` is always emitted as `[]` per AGENTS-AI-FIRST-CLI §10 so
+    /// agents don't pay a missing-vs-empty branch tax.
     #[test]
     fn no_dropped_warning_when_count_is_zero() {
         let dir = tempfile::tempdir().unwrap();
@@ -370,10 +374,10 @@ mod tests {
         emit_envelope_with_dropped(&body, &spec, &[], 0).unwrap();
 
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        // Both `warnings` and `dropped_log_events` are skipped when empty/zero.
-        assert!(
-            v.get("warnings").is_none(),
-            "empty warnings must be omitted, not rendered: {v}"
+        assert_eq!(
+            v.get("warnings"),
+            Some(&serde_json::json!([])),
+            "warnings must always be rendered (empty array when no warnings): {v}"
         );
         assert!(
             v.get("dropped_log_events").is_none(),

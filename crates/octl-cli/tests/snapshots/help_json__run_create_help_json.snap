@@ -521,5 +521,6 @@ expression: value
     ],
     "positionals": [],
     "subcommands": []
-  }
+  },
+  "warnings": []
 }

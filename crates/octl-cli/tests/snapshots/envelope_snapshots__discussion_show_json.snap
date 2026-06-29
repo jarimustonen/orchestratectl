@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -18,5 +19,6 @@ expression: value
     "resolution": null,
     "note": null,
     "resolved_at": null
-  }
+  },
+  "warnings": []
 }

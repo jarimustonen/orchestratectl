@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -11,5 +12,6 @@ expression: value
     "kind": "code",
     "lifecycle": "interactive",
     "dry_run": true
-  }
+  },
+  "warnings": []
 }

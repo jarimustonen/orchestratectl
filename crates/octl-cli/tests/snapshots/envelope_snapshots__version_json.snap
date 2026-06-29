@@ -83,5 +83,6 @@ expression: value
     "supported_state_schemas": [
       1
     ]
-  }
+  },
+  "warnings": []
 }
