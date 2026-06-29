@@ -57,9 +57,9 @@ pub fn recover_last_seq(events_path: &Path) -> Result<u64> {
 
     // `end` is the byte index of the trailing `\n` of the last complete
     // record. Walk backward over complete lines, skipping any that are empty
-    // — consecutive newlines (e.g. from external editing) are tolerated by
-    // the forward reader, so seq recovery must tolerate them too — and recover
-    // the seq from the last non-empty record.
+    // or whitespace-only — consecutive newlines or blank/whitespace lines (e.g.
+    // from external editing) shouldn't fool recovery into reading the wrong
+    // last record — and recover the seq from the last line bearing real bytes.
     loop {
         let line_start = match find_prev_newline(&mut f, end, events_path)? {
             Some(p) => p + 1,
@@ -71,15 +71,16 @@ pub fn recover_last_seq(events_path: &Path) -> Result<u64> {
         let mut line = vec![0u8; line_len as usize];
         f.read_exact(&mut line)
             .map_err(|e| Error::io(events_path, e))?;
-        // Strip trailing CR if present (defensive).
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        if !line.is_empty() {
+        // Any non-whitespace byte means a real record — parse it. Lines that
+        // are empty or hold only ASCII whitespace (a stray `\r`, `\t`, or
+        // spaces left by external editing) carry no record, so skip them and
+        // keep scanning back; serde tolerates whitespace surrounding a real
+        // envelope, so a genuine record with trailing spaces still parses.
+        if line.iter().any(|b| !b.is_ascii_whitespace()) {
             return parse_seq(&line, events_path);
         }
-        // Empty line: no record here. Step to the newline before it and keep
-        // scanning; reaching the start means the log holds no event.
+        // Whitespace-only line: no record here. Step to the newline before it
+        // and keep scanning; reaching the start means the log holds no event.
         if line_start == 0 {
             return Ok(0);
         }
@@ -1884,6 +1885,46 @@ mod tests {
         assert_eq!(recover_last_seq(&paths.events()).unwrap(), 7);
         let events = read_all_events(&paths.events()).unwrap();
         assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![7]);
+    }
+
+    #[test]
+    fn recover_last_seq_skips_trailing_whitespace_only_lines() {
+        // External editing can leave trailing lines holding only spaces, tabs,
+        // or stray CRs. Recovery must walk back over every whitespace-only line
+        // to the last real record, not stop at (and fail to parse) the blanks.
+        let tmp = TempDir::new().unwrap();
+        let mut log = String::new();
+        log.push_str(
+            r#"{"ts":"2026-06-12T00:00:00Z","seq":5,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+        );
+        log.push_str("\n  \n\t\n \r\n");
+        let paths = paths_with_events(&tmp, log.as_bytes());
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 5);
+    }
+
+    #[test]
+    fn recover_last_seq_all_whitespace_file_is_zero() {
+        // A log holding only blank/whitespace lines carries no event — recovery
+        // returns the zero-event sentinel rather than erroring on the blanks.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(&tmp, b"\n  \n\t\n \r\n");
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 0);
+    }
+
+    #[test]
+    fn recover_last_seq_single_newline_terminated_record_is_regression_guard() {
+        // The common, healthy case: one record with a single trailing newline
+        // must still recover its seq unchanged after the blank-line tolerance.
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_with_events(
+            &tmp,
+            concat!(
+                r#"{"ts":"2026-06-12T00:00:00Z","seq":5,"kind":"marker","run_id":"01jxsnap000000000000000000","data":{}}"#,
+                "\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(recover_last_seq(&paths.events()).unwrap(), 5);
     }
 
     #[test]
