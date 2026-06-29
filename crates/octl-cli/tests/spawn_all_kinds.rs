@@ -239,6 +239,67 @@ fn foreground_omits_parent_session_flag() {
 }
 
 #[test]
+fn source_branch_forwards_base_flag_to_create_sh() {
+    // The create.rs path must hand `--source-branch <branch>` to create.sh as
+    // `--base <branch>` so the worktree forks from the named branch (e.g. an
+    // orchestrate integration branch) rather than workmux's default base.
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "sb",
+        "--task",
+        "do work",
+        "--source-branch",
+        "orchestrate/integration",
+    ]));
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    let forwarded: Vec<&str> = recorded.lines().collect();
+    let pos = forwarded
+        .iter()
+        .position(|a| *a == "--base")
+        .unwrap_or_else(|| panic!("--base not forwarded; argv={forwarded:?}"));
+    assert_eq!(
+        forwarded.get(pos + 1).copied(),
+        Some("orchestrate/integration"),
+        "--base value should be the source branch; argv={forwarded:?}"
+    );
+}
+
+#[test]
+fn no_source_branch_omits_base_flag() {
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    run_ok(bin(&home, &script).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "nosb", "--task",
+        "do work",
+    ]));
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    assert!(
+        !recorded.lines().any(|a| a == "--base"),
+        "run without --source-branch must not forward --base; argv={recorded:?}"
+    );
+}
+
+#[test]
 fn task_writes_prompt_file_in_run_dir() {
     // `home` reaps the supervisor `run create` spawns when it drops, before
     // the run dir is removed.

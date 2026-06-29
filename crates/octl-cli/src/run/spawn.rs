@@ -109,6 +109,12 @@ pub struct SpawnRequest<'a> {
     /// (`--headless` / `--tmux-session`); `None` keeps the default
     /// foreground placement in the caller's own session.
     pub parent_session: Option<&'a str>,
+    /// Base ref to fork the worktree's branch from, forwarded to create.sh
+    /// as `--base <ref>` (and on to `workmux add --base`). `Some` for any
+    /// run carrying `--source-branch` — critically for `--kind orchestrated`
+    /// children whose integration branch is NOT `main`. `None` keeps
+    /// workmux's default (the current branch / configured `base_branch`).
+    pub source_branch: Option<&'a str>,
 }
 
 /// Locate the create.sh binary. Tests override via `OCTL_CREATE_SH`
@@ -164,6 +170,9 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     }
     if let Some(session) = req.parent_session {
         cmd.arg("--parent-session").arg(session);
+    }
+    if let Some(base) = req.source_branch {
+        cmd.arg("--base").arg(base);
     }
     cmd.arg(req.branch).arg(req.prompt_file);
 
@@ -347,6 +356,7 @@ EOF
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: None,
+            source_branch: None,
         })
         .unwrap();
         assert_eq!(out.branch, "wt/x");
@@ -378,6 +388,7 @@ exit 2
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: None,
+            source_branch: None,
         })
         .unwrap_err();
         assert_eq!(err.code, "create_sh_error_branch-exists");
@@ -408,6 +419,7 @@ exit 1
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: None,
+            source_branch: None,
         })
         .unwrap_err();
         assert!(matches!(err.kind, ExitKind::User));
@@ -455,6 +467,7 @@ exit 1
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: None,
+            source_branch: None,
         });
         std::env::remove_var("OCTL_CREATE_SH");
         out
@@ -542,6 +555,7 @@ EOF
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: Some("headless"),
+            source_branch: None,
         })
         .unwrap();
         assert_eq!(with.tmux_session.as_deref(), Some("headless"));
@@ -554,6 +568,67 @@ EOF
             no_hooks: false,
             keep_tmux_on_error: false,
             parent_session: None,
+            source_branch: None,
+        })
+        .unwrap();
+        assert_eq!(without.tmux_session.as_deref(), Some("none"));
+        std::env::remove_var("OCTL_CREATE_SH");
+    }
+
+    #[test]
+    fn forwards_base_flag_from_source_branch() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        // Fixture echoes back whichever `--base <ref>` it was given (default
+        // `none` if absent) as the emitted `tmux_session`, so the test can
+        // assert the base ref actually reached the script's argv.
+        let script = fixture_script(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+base="none"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base) base="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat <<EOF
+{{"schema_version":1,"type":"orchestrated","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🎼 wt/x","agent_pid_hint":{me},"tmux_session":"$base","tmux_window_id":"@9"}}
+EOF
+"#
+            ),
+        );
+        std::env::set_var("OCTL_CREATE_SH", &script);
+        let prompt = dir.path().join("p.md");
+        std::fs::write(&prompt, "x").unwrap();
+
+        let with = run_create_sh(&SpawnRequest {
+            kind: "orchestrated",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            parent_session: None,
+            source_branch: Some("orchestrate/integration"),
+        })
+        .unwrap();
+        assert_eq!(
+            with.tmux_session.as_deref(),
+            Some("orchestrate/integration")
+        );
+
+        let without = run_create_sh(&SpawnRequest {
+            kind: "orchestrated",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            parent_session: None,
+            source_branch: None,
         })
         .unwrap();
         assert_eq!(without.tmux_session.as_deref(), Some("none"));

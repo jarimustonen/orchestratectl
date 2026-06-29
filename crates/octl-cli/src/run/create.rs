@@ -415,6 +415,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         no_hooks: args.no_hooks,
         keep_tmux_on_error: false,
         parent_session: parent_session.as_deref(),
+        // Fork the worktree's branch from the named source branch (e.g. an
+        // orchestrate integration branch) rather than workmux's default base.
+        // `None` for runs without --source-branch keeps the prior behaviour.
+        source_branch: args.source_branch.as_deref(),
     };
     let outcome = spawn::run_create_sh(&spawn_req)?;
     // V2: re-verify the discovered PID is still alive. If it died
