@@ -49,6 +49,30 @@ event log + lock-gated reducer.
 
 - Append + projection are persisted under one flock; lock is held until
   every projection file is fsynced.
+- **append + apply atomicity via `applied_seq` watermark** (`361839f`):
+  the writer advances a per-manifest `applied_seq` only after every
+  projection an event touches is fsynced; on next lock acquisition
+  unapplied tail events (`seq > applied_seq`) are replayed before any
+  new append, and an idempotency-key replay catches the projection up
+  before returning. Legacy manifests self-migrate.
+- **`events.jsonl` torn-write recovery** (`395ba03`): the recovery
+  path truncates a partial trailing line at the byte boundary after
+  the last fully-parseable event and warns about the discarded bytes.
+- **`recover_last_seq` whitespace-tolerant** (`cc4ff46`): skips
+  trailing whitespace-only lines instead of choking.
+- **`run create --headless` no longer crashes create.sh** (`5ce764d`):
+  Rust-side regression tests pin the `--parent-session` forwarding
+  contract; the homebase-side fix landed alongside.
+- **Orchestrated child worktrees fork from `--source-branch`**
+  (`145905f`): not from `main`, so `/orchestrate` DAG dependencies hold.
+- **Failed `create.sh` no longer leaves a phantom child** (`438aa29`):
+  `child.spawned` is emitted only after create.sh returns success.
+- **Supervisor cleanup `git worktree remove --force`** (`11a5850`):
+  disposable untracked scratch in a worktree no longer orphans the
+  worktree+branch.
+- **`worktree-merge` recovers a renamed window** (`bfd7bfb`): the
+  supervisor's cleanup falls back to a worktree-path lookup when the
+  tmux window has been renamed or detached.
 - Supervisor watchdog no longer false-fires during fresh agent spawns.
 - Terminal cleanup completes the run AND removes the worktree, tmux
   window, and branch in one supervisor pass on `node.report`.
@@ -57,17 +81,15 @@ event log + lock-gated reducer.
 
 ### Known gaps (gating v0.1.0 publish)
 
-The polish-bug campaign tracked in `TODO.md` is in flight. Open at
-release-cut time:
+The pre-publication campaign tracked in `TODO.md` is in flight. The
+B-phase data-integrity + orchestrate-polish bugs are landed (see Fixed
+above). Open at this snapshot:
 
-- `/orchestrate` smoke surfaced 4 polish bugs (headless parent session,
-  orchestrated source branch, phantom child on failed spawn,
-  supervisor cleanup `--force`).
-- 4 data-integrity bugs in the reducer / event-log durability path
-  (`applied_seq` watermark, torn-write truncation, `recover_last_seq`
-  empty-line loop, manifest counter desync).
-- A handful of read-side / API / output cleanups tracked under Phase C
-  of `TODO.md`.
+- B1.4 (`manifest-counter-desync`) in flight as a spinoff.
+- Phase C read-side / API / safety improvements (~15 issues).
+- 3 spinoff-surfaced follow-ons: `concurrent-spinoff-report-path-race`,
+  `headless-cancel-leaves-tmux-window`, `merge-sh-tmux-pane-recovery`.
+- `doc-links-octl-core-broken` (CI doc job currently failing).
 
 Zero open issues is a release gate. See `TODO.md` for the active
 sequence.
