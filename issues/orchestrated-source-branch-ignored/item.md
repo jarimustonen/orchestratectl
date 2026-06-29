@@ -1,9 +1,10 @@
 ---
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: high
+closed: 2026-06-29
 ---
 
 # Orchestrated child worktree cut from main, not from --source-branch (breaks DAG dependencies)
