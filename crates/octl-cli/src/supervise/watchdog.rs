@@ -12,9 +12,8 @@
 //! probes; tracked in `validation.md`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use octl_core::schema::TmuxIdentity;
 use sysinfo::{Pid, System};
@@ -197,7 +196,6 @@ fn probe_socket(bin: &str, socket: Option<&str>, timeout: Duration) -> SocketWin
         cmd.args(["-S", s]);
     }
     cmd.args(["list-windows", "-a", "-F", "#{window_id}|#{window_name}"]);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     match run_timed(cmd, timeout) {
         ProbeOutcome::Ok(stdout) => {
             let mut ids = HashSet::new();
@@ -248,73 +246,27 @@ enum ProbeOutcome {
     TimedOut,
 }
 
-/// Spawn `cmd` and wait at most `timeout`. The std library has no built-in
-/// process timeout, so this polls [`std::process::Child::try_wait`] against a deadline and
-/// SIGKILLs the child's process *group* on overrun. The group kill (the child
-/// is placed in its own group via `process_group(0)`) reaps any tmux subprocess
-/// it forked, which closes the stdout pipe and lets the reader thread finish.
-/// stdout is drained on that helper thread so a large `list-windows` cannot
-/// dead-lock on a full pipe buffer.
-fn run_timed(mut cmd: Command, timeout: Duration) -> ProbeOutcome {
-    use std::os::unix::process::CommandExt;
-    use std::sync::mpsc;
+/// Generous cap on a single tmux `list-windows` capture. The output is tiny in
+/// practice (one line per window); this is a memory backstop, not a real limit.
+const TMUX_OUTPUT_CAP: usize = 1 << 20; // 1 MiB
 
-    // Own process group so a timeout can reap the whole tree, not just the
-    // direct child (which may be a shell that forked the real tmux).
-    cmd.process_group(0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(_) => return ProbeOutcome::SpawnErr,
-    };
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel();
-    let mut reader = child.stdout.take().map(|mut out| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf);
-            let _ = tx.send(buf);
-        })
-    });
-
-    let deadline = Instant::now() + timeout;
-    let outcome = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                break if status.success() {
-                    ProbeOutcome::Ok(rx.recv().unwrap_or_default())
-                } else {
-                    ProbeOutcome::NonZero
-                };
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    if let Some(pgid) = pid_file::to_pid_t(pid) {
-                        // SAFETY: SIGKILL to `-pgid` signals our own freshly
-                        // spawned process group (pgid == child pid via
-                        // process_group(0)); `pgid` is range-checked by
-                        // `to_pid_t`, so the negation can never be `-1`
-                        // (broadcast). Killing the group releases the stdout
-                        // pipe so the reader thread below unblocks.
-                        unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                    }
-                    let _ = child.wait();
-                    break ProbeOutcome::TimedOut;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break ProbeOutcome::SpawnErr;
+/// Spawn `cmd` and wait at most `timeout`, mapping the shared bounded-subprocess
+/// outcome ([`crate::proc::run_with_timeout`]) into a tmux-probe verdict. The
+/// timeout + process-group-kill + drained-capture machinery lives in
+/// [`crate::proc`] so the watchdog and spin-off materialization share one
+/// implementation; here we only care about exit success and captured stdout.
+fn run_timed(cmd: Command, timeout: Duration) -> ProbeOutcome {
+    match crate::proc::run_with_timeout(cmd, timeout, TMUX_OUTPUT_CAP) {
+        crate::proc::TimedOutcome::Exited { status, stdout, .. } => {
+            if status.success() {
+                ProbeOutcome::Ok(stdout.bytes)
+            } else {
+                ProbeOutcome::NonZero
             }
         }
-    };
-    // Join the reader so its pipe fd is released before returning. After a kill
-    // the whole group is dead and the pipe is closed, so this does not block.
-    if let Some(r) = reader.take() {
-        let _ = r.join();
+        crate::proc::TimedOutcome::TimedOut => ProbeOutcome::TimedOut,
+        crate::proc::TimedOutcome::SpawnErr(_) => ProbeOutcome::SpawnErr,
     }
-    outcome
 }
 
 /// Warn — rate-limited to ~once per [`TIMEOUT_WARN_EVERY`] timeout events

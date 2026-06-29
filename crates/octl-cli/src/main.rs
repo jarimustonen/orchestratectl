@@ -8,6 +8,7 @@ mod home;
 mod idempotency;
 mod node;
 mod output;
+mod proc;
 mod run;
 mod skill;
 mod spinoff;
