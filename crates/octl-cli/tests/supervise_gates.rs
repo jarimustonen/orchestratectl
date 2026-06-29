@@ -423,6 +423,59 @@ fn interactive_kind_with_explicit_merge_cleans_up() {
     );
 }
 
+/// worktree-merge-orphans-tmux-window: when the recorded tmux window cannot be
+/// located during cleanup (the orphan case — a manually-resolved rebase renamed
+/// the window so the spawn-time id/name no longer matches and no pane is parked
+/// in the worktree), the supervisor must record a non-fatal
+/// `cleanup.window_missing` audit event and STILL roll the run up to `done`. The
+/// run must not fail just because a window was already gone.
+#[test]
+fn missing_window_records_event_without_failing_run() {
+    let home = TestHome::new();
+    let dir = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "orphan-window");
+    forge_terminal_worker_node(
+        &home,
+        &run_id,
+        "spinoff",
+        r#"{"success": true, "summary": "ok"}"#,
+    );
+
+    // Fake tmux where `kill-window` reports the target missing (exit 1) and
+    // `list-windows` shows no pane in the worktree → no path recovery.
+    let tmux = fake_recorder(
+        dir.path(),
+        "fake-tmux.sh",
+        "tmux.log",
+        "case \"$*\" in *kill-window*) exit 1;; *list-windows*) exit 0;; esac",
+    );
+
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", &tmux)
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
+
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        latest_run_status(&events).as_deref(),
+        Some("done"),
+        "an orphaned window must not fail the run"
+    );
+    assert_eq!(
+        count_kind(&events, "cleanup.window_missing"),
+        1,
+        "the orphaned window must be recorded once: {:?}",
+        read_events(&events)
+            .into_iter()
+            .map(|v| v["kind"].clone())
+            .collect::<Vec<_>>()
+    );
+    // The kill was still attempted against the recorded id before falling back.
+    assert!(log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"));
+}
+
 /// V2: `agent_pid` discovery and PID-based liveness probe.
 ///
 /// Real tmux-pane PID re-discovery requires a live tmux server, which
