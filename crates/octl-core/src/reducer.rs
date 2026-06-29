@@ -330,6 +330,8 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "spinoff.approved" => reduce_spinoff_approved(paths, ev),
         "spinoff.rejected" => reduce_spinoff_rejected(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
+        "supervisor.attached" => reduce_supervisor_attached(paths, ev),
+        "supervisor.cursor_advanced" => reduce_supervisor_cursor_advanced(paths, ev),
         "supervisor.exited" => Ok(vec![]),
         // Append-only audit records from `/orchestrate` (decision log +
         // pakkopysäytys). They mutate no projection — the event log is their
@@ -914,6 +916,97 @@ fn reduce_child_spawned(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
     Ok(vec![ProjectionOp::Node(n)])
 }
 
+/// `supervisor.attached` records the supervisor PID watching the envelope
+/// node onto `Node.supervisor_pid`. Event-sourced replacement for the
+/// supervisor's former direct `write_node` (issue
+/// `supervisor-state-not-event-sourced`), so a from-scratch projection
+/// rebuild reproduces the field.
+///
+/// Latest-wins: a later attach (a supervisor restart binds a fresh PID)
+/// overrides the recorded value. Re-applying an event that carries the
+/// already-recorded PID is a pure no-op, so replay never churns the
+/// projection file's `updated_at`.
+fn reduce_supervisor_attached(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let raw = ev
+        .data
+        .get("pid")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=supervisor.attached missing/invalid `pid`",
+                ev.seq
+            ),
+        })?;
+    let pid = i32::try_from(raw).map_err(|_| Error::CorruptEventLog {
+        path: events_path.clone(),
+        reason: format!(
+            "event seq={} kind=supervisor.attached `pid` out of i32 range: {raw}",
+            ev.seq
+        ),
+    })?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    if n.supervisor_pid == Some(pid) {
+        return Ok(vec![]);
+    }
+    n.supervisor_pid = Some(pid);
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// `supervisor.cursor_advanced` mirrors the supervisor's per-child report
+/// cursor onto the envelope (parent) node's `last_processed_report_seq_by_child`
+/// map. Event-sourced replacement for the supervisor's former direct
+/// `write_node` of that map (issue `supervisor-state-not-event-sourced`).
+///
+/// The cursor is monotonic: a `report_seq` at or below the recorded
+/// high-water mark for this child is a no-op, so replaying the same event —
+/// or an older out-of-order one — never moves the cursor backward or churns
+/// the projection. This is the §7.3 idempotency guarantee at the reducer
+/// boundary.
+fn reduce_supervisor_cursor_advanced(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let child_run_id = want_str(&events_path, ev, &ev.data, "child_run_id")?;
+    // Validate the child id even though it only becomes a map key — a forged
+    // event must not smuggle a path-shaped or malformed run id into the
+    // projection.
+    RunId::parse_str(child_run_id).map_err(|e| corrupt_id(&events_path, ev, &e))?;
+    let report_seq = ev
+        .data
+        .get("report_seq")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=supervisor.cursor_advanced missing/invalid `report_seq`",
+                ev.seq
+            ),
+        })?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    if let Some(prev) = n
+        .last_processed_report_seq_by_child
+        .get(child_run_id)
+        .and_then(Value::as_u64)
+    {
+        if report_seq <= prev {
+            return Ok(vec![]);
+        }
+    }
+    n.last_processed_report_seq_by_child
+        .insert(child_run_id.to_string(), Value::from(report_seq));
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1170,212 @@ mod tests {
             .unwrap();
         assert!(n2.tmux_identity.is_none());
         assert_eq!(n2.tmux_window.as_deref(), Some("🚀 wt/y"));
+    }
+
+    /// Bootstrap a run with a single `n-0001` node via the event-sourced path,
+    /// returning its paths. Shared by the supervisor-state replay tests below.
+    fn seed_run_with_node(tmp: &TempDir, run_id: &str) -> RunPaths {
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data = serde_json::json!({
+            "kind": "spinoff", "lifecycle": "autonomous", "title": "t"
+        });
+        apply_event(&paths, &created).expect("run.created applies");
+
+        let mut node = event(run_id);
+        node.seq = 2;
+        node.kind = "node.created".into();
+        node.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        node.data = serde_json::json!({ "kind": "spinoff" });
+        apply_event(&paths, &node).expect("node.created applies");
+        paths
+    }
+
+    fn read_n0001(paths: &RunPaths) -> Node {
+        read_node_opt(paths, &NodeId::parse_str("n-0001").unwrap())
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Replaying `supervisor.attached` from scratch reproduces
+    /// `Node.supervisor_pid` — the field is now event-sourced, not a
+    /// projection-only write (issue `supervisor-state-not-event-sourced`).
+    #[test]
+    fn supervisor_attached_sets_supervisor_pid() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        assert_eq!(read_n0001(&paths).supervisor_pid, None);
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "supervisor.attached".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({ "pid": 47820 });
+        apply_event(&paths, &ev).expect("supervisor.attached applies");
+        assert_eq!(read_n0001(&paths).supervisor_pid, Some(47820));
+    }
+
+    /// A second attach with a different pid overrides (latest-wins); a replay
+    /// of the *same* pid is a pure no-op that does not churn `updated_at`.
+    #[test]
+    fn supervisor_attached_latest_wins_and_idempotent_on_replay() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+
+        let mut ev = event(run_id);
+        ev.kind = "supervisor.attached".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+
+        ev.seq = 3;
+        ev.data = serde_json::json!({ "pid": 100 });
+        apply_event(&paths, &ev).expect("first attach applies");
+        assert_eq!(read_n0001(&paths).supervisor_pid, Some(100));
+
+        // A restart binds a fresh pid: latest-wins.
+        ev.seq = 4;
+        ev.data = serde_json::json!({ "pid": 200 });
+        apply_event(&paths, &ev).expect("second attach applies");
+        let after_second = read_n0001(&paths);
+        assert_eq!(after_second.supervisor_pid, Some(200));
+
+        // Replaying the latest event again is a no-op: the planned ops are
+        // empty and the projection bytes (including `updated_at`) are unchanged.
+        let ops = reduce_event_to_ops(&paths, &ev).expect("replay reduces cleanly");
+        assert!(ops.is_empty(), "re-applying same pid must plan no ops");
+        apply_event(&paths, &ev).expect("replay applies as no-op");
+        assert_eq!(read_n0001(&paths).updated_at, after_second.updated_at);
+    }
+
+    /// Replaying `supervisor.cursor_advanced` from scratch reproduces
+    /// `Node.last_processed_report_seq_by_child`.
+    #[test]
+    fn supervisor_cursor_advanced_sets_report_cursor() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let child = "02jxsnap000000000000000000";
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "supervisor.cursor_advanced".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({ "child_run_id": child, "report_seq": 7 });
+        apply_event(&paths, &ev).expect("cursor_advanced applies");
+
+        let n = read_n0001(&paths);
+        assert_eq!(
+            n.last_processed_report_seq_by_child.get(child),
+            Some(&Value::from(7u64))
+        );
+    }
+
+    /// The cursor is monotonic and idempotent: re-applying the same
+    /// `(child_run_id, report_seq)` is a no-op, an older seq never moves the
+    /// cursor backward, and a higher seq advances it. A second distinct child
+    /// gets its own independent entry.
+    #[test]
+    fn supervisor_cursor_advanced_is_monotonic_and_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let child_a = "02jxsnap000000000000000000";
+        let child_b = "03jxsnap000000000000000000";
+
+        let mut ev = event(run_id);
+        ev.kind = "supervisor.cursor_advanced".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+
+        ev.seq = 3;
+        ev.data = serde_json::json!({ "child_run_id": child_a, "report_seq": 5 });
+        apply_event(&paths, &ev).expect("seq 5 applies");
+
+        // Replay the exact same event — no-op, plans zero ops.
+        let ops = reduce_event_to_ops(&paths, &ev).expect("replay reduces cleanly");
+        assert!(ops.is_empty(), "re-applying same cursor must plan no ops");
+
+        // An older seq must not move the cursor backward.
+        ev.seq = 4;
+        ev.data = serde_json::json!({ "child_run_id": child_a, "report_seq": 3 });
+        let ops = reduce_event_to_ops(&paths, &ev).expect("older seq reduces cleanly");
+        assert!(ops.is_empty(), "older seq must plan no ops");
+        apply_event(&paths, &ev).expect("older seq applies as no-op");
+        assert_eq!(
+            read_n0001(&paths)
+                .last_processed_report_seq_by_child
+                .get(child_a),
+            Some(&Value::from(5u64))
+        );
+
+        // A higher seq advances; an independent child gets its own entry.
+        ev.seq = 5;
+        ev.data = serde_json::json!({ "child_run_id": child_a, "report_seq": 9 });
+        apply_event(&paths, &ev).expect("higher seq applies");
+        ev.seq = 6;
+        ev.data = serde_json::json!({ "child_run_id": child_b, "report_seq": 1 });
+        apply_event(&paths, &ev).expect("second child applies");
+
+        let n = read_n0001(&paths);
+        assert_eq!(
+            n.last_processed_report_seq_by_child.get(child_a),
+            Some(&Value::from(9u64))
+        );
+        assert_eq!(
+            n.last_processed_report_seq_by_child.get(child_b),
+            Some(&Value::from(1u64))
+        );
+    }
+
+    /// Both new kinds reject a malformed payload at the reducer boundary so a
+    /// forged event can never write a corrupt projection.
+    #[test]
+    fn supervisor_state_events_reject_malformed_payloads() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let nid = Some(NodeId::parse_str("n-0001").unwrap());
+
+        // Missing pid.
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "supervisor.attached".into();
+        ev.node_id = nid.clone();
+        ev.data = serde_json::json!({});
+        assert!(matches!(
+            reduce_event_to_ops(&paths, &ev),
+            Err(Error::CorruptEventLog { .. })
+        ));
+
+        // Missing envelope node_id.
+        ev.node_id = None;
+        ev.data = serde_json::json!({ "pid": 1 });
+        assert!(matches!(
+            reduce_event_to_ops(&paths, &ev),
+            Err(Error::CorruptEventLog { .. })
+        ));
+
+        // cursor_advanced: malformed child_run_id.
+        let mut ev2 = event(run_id);
+        ev2.seq = 4;
+        ev2.kind = "supervisor.cursor_advanced".into();
+        ev2.node_id = nid.clone();
+        ev2.data = serde_json::json!({ "child_run_id": "../etc", "report_seq": 1 });
+        assert!(matches!(
+            reduce_event_to_ops(&paths, &ev2),
+            Err(Error::CorruptEventLog { .. })
+        ));
+
+        // cursor_advanced: missing report_seq.
+        ev2.data = serde_json::json!({ "child_run_id": "02jxsnap000000000000000000" });
+        assert!(matches!(
+            reduce_event_to_ops(&paths, &ev2),
+            Err(Error::CorruptEventLog { .. })
+        ));
     }
 }

@@ -878,29 +878,31 @@ fn spawn_child_supervisor(
     let pid = crate::run::supervisor_spawn::read_live_recorded_pid(&child_paths).unwrap_or(0);
 
     if pid != 0 {
-        // Best-effort: record supervisor_pid on the child's root node. This
-        // read-modify-write races the child supervisor's own boot writes, so
-        // it must be done under the child run's flock (F11) — without it the
-        // last writer silently clobbers the other's fields.
-        match RunLock::acquire(&child_paths.lock()) {
-            Ok(_guard) => {
-                // The child run's root node is always `n-0001` (a static, valid id).
-                let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
-                if let Ok(Some(mut n)) = read_node_opt(&child_paths, &root_node) {
-                    n.supervisor_pid = Some(pid as i32);
-                    let _ = octl_core::write_node(&child_paths, &n);
-                }
-            }
-            Err(e) => {
-                // Non-fatal: the `child.supervisor_attached` event below records
-                // the attach, so this projection write is a convenience.
-                warn!(
-                    target: "orchestratectl::supervise",
-                    child = %child_run_id,
-                    error = %e,
-                    "could not lock child run to record supervisor_pid"
-                );
-            }
+        // Record `supervisor_pid` on the child's root node by appending a
+        // `supervisor.attached` event to the CHILD run's log, which the reducer
+        // folds onto `Node.supervisor_pid` — replacing the former direct
+        // `write_node` so a from-scratch projection rebuild reproduces the field
+        // (issue `supervisor-state-not-event-sourced`). `append_and_apply_event`
+        // takes the child run's flock itself (F11), so this read-modify-write no
+        // longer races the child supervisor's own boot writes. The child run's
+        // root node is always `n-0001` (a static, valid id).
+        let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
+        if let Err(e) = append_and_apply_event(
+            &child_paths,
+            "supervisor.attached",
+            Some(&root_node),
+            None,
+            json!({ "pid": pid }),
+        ) {
+            // Non-fatal: the `child.supervisor_attached` event below records the
+            // attach on the parent log, so the child projection update is a
+            // convenience the next reattach can re-derive.
+            warn!(
+                target: "orchestratectl::supervise",
+                child = %child_run_id,
+                error = %e,
+                "could not record supervisor.attached on child run"
+            );
         }
         // Record the attach on the parent log, but only with a real pid —
         // never emit `supervisor_pid: 0`, which would be a false "attached".

@@ -1505,6 +1505,27 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
             .is_some(),
         "cursor not advanced: {parent_node:?}"
     );
+
+    // The cursor is now event-sourced: a `supervisor.cursor_advanced` event
+    // must back the projection update so a from-scratch rebuild reproduces it
+    // (issue `supervisor-state-not-event-sourced`).
+    let parent_events =
+        std::fs::read_to_string(run_dir(&home, &parent).join("events.jsonl")).unwrap();
+    let cursor_evs: Vec<Value> = parent_events
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["kind"] == "supervisor.cursor_advanced")
+        .collect();
+    assert_eq!(
+        cursor_evs.len(),
+        1,
+        "exactly one cursor_advanced event must back the projection: {parent_events}"
+    );
+    assert_eq!(
+        cursor_evs[0]["data"]["child_run_id"],
+        serde_json::json!(child)
+    );
+    assert_eq!(cursor_evs[0]["node_id"], serde_json::json!("n-0001"));
 }
 
 /// Orphan defense: a long-lived supervisor whose run dir vanishes out

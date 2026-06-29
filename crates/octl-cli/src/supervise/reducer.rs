@@ -15,8 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use octl_core::{
-    append_and_apply_unlocked, read_node_opt, write_node, DiscussionId, NodeId, ProposalId, RunId,
-    RunLock, RunPaths, Status, STATE_SCHEMA_VERSION,
+    append_and_apply_unlocked, DiscussionId, NodeId, ProposalId, RunId, RunLock, RunPaths, Status,
 };
 
 use crate::error::CliError;
@@ -288,20 +287,23 @@ pub fn process_node_report(
             }
         }
 
-        // Mark the parent-side projection of the *child's* root node by
-        // syncing the parent node's `last_processed_report_seq_by_child`
-        // map onto its on-disk projection. The state file is the cursor
-        // of record; the node-projection mirror is a debugging aid.
+        // Advance the parent-side projection of the *child's* report cursor by
+        // appending a `supervisor.cursor_advanced` event the reducer folds onto
+        // the parent node's `last_processed_report_seq_by_child` map — rather
+        // than writing the node projection directly. The event is the backing
+        // record, so a from-scratch projection rebuild reproduces the cursor;
+        // the reducer's monotonic guard makes a replayed event idempotent. The
+        // SupervisorState file remains the in-memory cursor of record;
         // `parent_nid` was validated at function entry.
-        if let Some(mut n) = read_node_opt(parent_paths, &parent_nid)
-            .map_err(|e| CliError::system("io_error", e.to_string()))?
-        {
-            n.last_processed_report_seq_by_child
-                .insert(child_run_id.to_string(), json!(report_seq));
-            n.schema_version = STATE_SCHEMA_VERSION;
-            write_node(parent_paths, &n)
-                .map_err(|e| CliError::system("io_error", e.to_string()))?;
-        }
+        append_and_apply_unlocked(
+            &lock,
+            parent_paths,
+            "supervisor.cursor_advanced",
+            Some(&parent_nid),
+            None,
+            json!({ "child_run_id": child_run_id, "report_seq": report_seq }),
+        )
+        .map_err(|e| CliError::system("io_error", e.to_string()))?;
     }
     drop(guard);
 

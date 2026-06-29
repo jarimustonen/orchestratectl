@@ -74,6 +74,8 @@ const ALLOWED_KINDS: &[&str] = &[
     "spinoff.approved",
     "spinoff.rejected",
     "child.spawned",
+    "supervisor.attached",
+    "supervisor.cursor_advanced",
     "supervisor.exited",
     "supervisor.reattach-requested",
     "orchestrator.decision",
@@ -103,7 +105,12 @@ const MAX_FROM_FILE_BYTES: u64 = 1024 * 1024;
 fn requires_node_id(kind: &str) -> bool {
     matches!(
         kind,
-        "node.created" | "node.status" | "node.report" | "child.spawned"
+        "node.created"
+            | "node.status"
+            | "node.report"
+            | "child.spawned"
+            | "supervisor.attached"
+            | "supervisor.cursor_advanced"
     )
 }
 
@@ -155,13 +162,13 @@ fn projected_paths(kind: &str, node_id: Option<&str>, data: &Value) -> Vec<Strin
             }
             out.push("manifest.json".into());
         }
-        "child.spawned" => {
+        "child.spawned" | "supervisor.attached" | "supervisor.cursor_advanced" => {
             if let Some(n) = node_id {
                 out.push(format!("nodes/{n}.json"));
             }
         }
-        // supervisor.* are recorded facts only; no projection files
-        // change today.
+        // supervisor.exited / supervisor.reattach-requested are recorded facts
+        // only; no projection files change today.
         _ => {}
     }
     out
@@ -219,6 +226,14 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
                 CliError::user("invalid_data_id", "data.child_node_id must be a string")
             })?;
             parse_node_id(s)?;
+        }
+    }
+    if kind == "supervisor.cursor_advanced" {
+        if let Some(v) = data.get("child_run_id") {
+            let s = v.as_str().ok_or_else(|| {
+                CliError::user("invalid_data_id", "data.child_run_id must be a string")
+            })?;
+            parse_run_id(s)?;
         }
     }
     Ok(())

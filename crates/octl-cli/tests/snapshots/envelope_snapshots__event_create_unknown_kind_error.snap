@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
-{"schema_version":1,"error":{"code":"unknown_event_kind","message":"unknown event kind: bogus.kind","invalid_value":"bogus.kind","expected":["run.created","run.status","node.created","node.status","node.report","discussion.opened","discussion.resolved","spinoff.proposed","spinoff.approved","spinoff.rejected","child.spawned","supervisor.exited","supervisor.reattach-requested","orchestrator.decision","discuss.critical"]}}
+{"schema_version":1,"error":{"code":"unknown_event_kind","message":"unknown event kind: bogus.kind","invalid_value":"bogus.kind","expected":["run.created","run.status","node.created","node.status","node.report","discussion.opened","discussion.resolved","spinoff.proposed","spinoff.approved","spinoff.rejected","child.spawned","supervisor.attached","supervisor.cursor_advanced","supervisor.exited","supervisor.reattach-requested","orchestrator.decision","discuss.critical"]}}

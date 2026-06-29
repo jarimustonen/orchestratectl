@@ -158,6 +158,8 @@ One JSON object per line. Common envelope:
 - `discussion.opened`, `discussion.resolved`
 - `spinoff.proposed`, `spinoff.approved`, `spinoff.rejected`
 - `supervisor.started`, `supervisor.exited` — tracks per-run supervisor lifecycle for debuggability
+- `supervisor.attached {pid}` — written by the parent supervisor to the **child run's** event log when it binds a supervisor to that child; the reducer folds `pid` onto the child root node's `supervisor_pid` (latest-wins, idempotent on replay). This is what makes `supervisor_pid` event-sourced rather than a projection-only write (issue `supervisor-state-not-event-sourced`). Distinct from `child.supervisor_attached`, the parent-log audit record of the same attach.
+- `supervisor.cursor_advanced {child_run_id, report_seq}` — written by the parent supervisor to its **own** event log after consuming a child's `node.report`; the reducer folds it onto the spawning node's `last_processed_report_seq_by_child` (monotonic high-water mark, idempotent on replay). Backs the report cursor mirror so a from-scratch projection rebuild reproduces it (§7.3).
 - `orchestrator.decision`, `discuss.critical` — append-only audit records from `/orchestrate` (its decision log and pakkopysäytys). They carry no projection (the reducer folds them to a no-op); the event log is their canonical home. Not `node.report`, so the supervisor's terminal roll-up ignores them.
 
 The `data` payload is event-specific. Consumers ignore unknown `kind` values for forward compatibility.
@@ -384,7 +386,7 @@ The CLI invocation `orchestratectl run create --parent-run-id <P> --parent-node-
 3. **CLI** acquires the **parent run's** `flock`, appends `child.spawned {child_run_id, child_kind, child_title, idempotency_key, ...}` to parent's `events.jsonl`, updates the spawning node's `children` field via the reducer, fsyncs, releases parent lock.
 4. **CLI** acquires the **child run's** `flock` (creates the directory + lock file first), writes `run.created` + `node.created` to child's `events.jsonl`, writes `manifest.json` and `nodes/n-0001.json`, fsyncs, releases lock.
 5. **CLI** prints `{schema_version, run_id, dir, supervisor_pid: null}` and exits 0 **without spawning a supervisor**.
-6. The **parent supervisor**, in its own tail-follow loop, sees the `child.spawned` event. It checks its in-memory "supervisors I've spawned" set for the `child_run_id`; if absent, it `fork+exec`s `orchestratectl supervise <child_run_id>`, records the resulting `supervisor_pid` in the child's `nodes/n-0001.json` via a small follow-up write, and adds to its tracking set.
+6. The **parent supervisor**, in its own tail-follow loop, sees the `child.spawned` event. It checks its in-memory "supervisors I've spawned" set for the `child_run_id`; if absent, it `fork+exec`s `orchestratectl supervise <child_run_id>`, appends `supervisor.attached {pid}` to the child's event log (the reducer folds `supervisor_pid` onto `nodes/n-0001.json` — event-sourced, not a raw projection write), and adds to its tracking set.
 7. The new **child supervisor** boots from disk: reads its manifest + node, registers `supervisor.pid`, runs `create.sh --type <kind>` to materialize the worktree + tmux window + agent, parses `create.sh`'s structured stdout (§8) to record `agent_pid` + `tmux_window` + `worktree_path` + `branch`, writes `supervisor.started` event, and enters its main loop (tail its own events + poll its agent's liveness).
 
 **Top-level runs** (no `--parent-*` flags) skip step 3 and 6 — the CLI itself spawns the supervisor directly because there's no parent to delegate that to.
@@ -427,7 +429,7 @@ The agent (typically Claude Code via its skill prompt) writes this via `orchestr
    - Mark child's root node `status: done` (or `failed` if `success:false`).
    - For each `spinoff_proposal[i]`, compute `proposal_id = "s-" + base32(sha256(child_run_id ":" child_node_id ":" report_seq ":" i)[:10])` and write `spinoff.proposed` to **parent run's** event log. If the `proposal_id` already exists in `spinoffs/<id>.json`, the write is skipped — this is how restart-recovery achieves dedup (§1.4).
    - For each `discussion_item[i]`, same pattern with `discussion_id`.
-4. Parent supervisor updates its own `nodes/<spawning-node>.json` with `last_processed_report_seq_by_child[child_run_id] = report_seq`, fsyncs, releases lock.
+4. Parent supervisor appends `supervisor.cursor_advanced {child_run_id, report_seq}` to its own event log; the reducer folds it onto `nodes/<spawning-node>.json`'s `last_processed_report_seq_by_child[child_run_id]` (monotonic, idempotent on replay), all under the one held lock, then releases. The cursor is thus event-sourced — a from-scratch projection rebuild reproduces it — with the in-memory `SupervisorState` remaining the live cursor of record.
 
 If the supervisor crashes between writing some consumption events and recording `last_processed_report_seq_by_child`, the restart sees the same `report_seq`, computes the same deterministic IDs, and **idempotently skips** the writes for items that already exist. Replay is safe; no duplicate spinoff/discussion records appear.
 

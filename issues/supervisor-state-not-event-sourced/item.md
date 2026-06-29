@@ -1,10 +1,11 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
 related: ['@core-append-and-apply-api', '@append-and-apply-transactional-validation']
+closed: 2026-06-29
 ---
 
 # Supervisor projection-only state is not event-sourced (lost on rebuild)
