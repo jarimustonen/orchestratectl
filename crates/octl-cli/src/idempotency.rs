@@ -87,3 +87,43 @@ pub fn store(
         .map_err(|e| CliError::system("io_error", format!("write {}: {}", p.display(), e)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden test pinning the `(repo, branch, key) → hash` derivation.
+    ///
+    /// `key_hash` is the integrity boundary for `--idempotency-key`: a
+    /// silent change to the FNV constants, the length-prefix shape, or
+    /// the empty-component handling would invalidate every persisted
+    /// key on disk and either double-execute a retried call or silently
+    /// dedup against the wrong run. Any future drift from these literals
+    /// is a wire-incompatible change and needs a migration plan, not a
+    /// test update (issue: idempotency-hash-golden-test).
+    #[test]
+    fn key_hash_is_stable() {
+        assert_eq!(
+            key_hash(Some("repo"), Some("main"), "key-1"),
+            "374d54a7713c5c1529a2efe850ddaf06"
+        );
+        assert_eq!(
+            key_hash(None, None, "key-1"),
+            "63e136949fd4014a7e5f1d5d18d98cc5"
+        );
+        assert_eq!(
+            key_hash(Some("repo"), Some("main"), ""),
+            "3b1adbcd4680d8f508f812409f6e4e60"
+        );
+        assert_eq!(
+            key_hash(Some("räpo"), Some("main"), "key-1"),
+            "f3b96680018fdf90bf5f9357e0ff987d"
+        );
+        // Length-prefix anti-canonical-FNV-ambiguity guard: differing
+        // splits of the same byte sequence must hash differently.
+        assert_ne!(
+            key_hash(Some("a"), Some("bc"), "key"),
+            key_hash(Some("ab"), Some("c"), "key")
+        );
+    }
+}
