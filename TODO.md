@@ -6,25 +6,28 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-29 afternoon)
+## Status snapshot (2026-06-29 late afternoon)
 
 - ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — done.
 - ✅ **Follow-up campaign** (21 review-spinoff issues + 9 packs) — all merged.
-- ✅ **Skill-bundling campaign** — closed as `done` this session (commit `f96b36b`). 13 skills bundled, `doctor` 63/0, end-to-end loops proven.
-- ✅ **Phase E (partial)** — README rewritten, CHANGELOG seeded for v0.1.0, ISSUE_TEMPLATEs + CONTRIBUTING + SECURITY landed (commits `fc9e81e`, `9a85dc1`). E4 (Cargo.toml metadata) deferred until B fixes merge to avoid conflict.
-- 🟡 **Phase B (in flight)** — first batch of 3 spinoffs running in parallel (without `--headless` because B2.1 blocks it):
-  - `01kw8ttnx3` — `fix-headless-parent` (B2.1, unlocks `--headless` for rest)
-  - `01kw8ttvth` — `fix-atomicity-watermark` (B1.1)
-  - `01kw8tv19t` — `fix-wmt-orphan-window` (B3)
-  - Once **B2.1 merges**, the remaining 5 spinoffs (B1.2, B1.3, B1.4, B2.2, B2.3, B2.4) can spawn `--headless` in parallel. Prompt files already prepared in `/tmp/spinoff-prompts/`.
-- 🟡 **Pre-publication campaign (this TODO's active scope)** — close every open issue, then ship to GitHub. Target: **zero open issues** before `v0.1.0` tag.
+- ✅ **Skill-bundling campaign** — closed `done` (`f96b36b`).
+- ✅ **Phase A** — skill-bundling epic closed.
+- ✅ **Phase B (9/9)** — all data-integrity + orchestrate-polish bugs landed (`361839f`, `395ba03`, `cc4ff46`, `b7d0f2c`, `5ce764d`, `145905f`, `438aa29`, `11a5850`, `bfd7bfb`).
+- ✅ **Phase C1 (5/5)** — sequential safety improvements landed (`0c725ac`, `cce643c`, `f96024e`, `8fb1361`, `0fc1884`).
+- ✅ **Phase C2 (4 inline + 4 in flight)** — landed: `always-emit-warnings-array`, `envelope-schema-constant-relocation` (obsolete), `hoist-text-warning-formatting`, `passably-shaggy-parent`. In flight: `cli-text-output-escape`, `core-idempotency-api`, `supervisor-state-not-event-sourced`, `headless-cancel-leaves-tmux-window`.
+- ✅ **Phase C3 (2/3)** — `macos-ci-matrix`, `idempotency-hash-golden-test` landed. `spinoff-e2e-harness` remaining.
+- ✅ **Phase E (most)** — README, CHANGELOG, ISSUE_TEMPLATEs, CONTRIBUTING, SECURITY, Cargo.toml metadata, macOS CI matrix all landed.
+- ✅ **Critical session-found bugs** — `find-window-by-path-cross-session-kill` (high; could kill user's master pane on merge), `merge-sh-tmux-pane-recovery` (deferred to supervisor), `doc-links-octl-core-broken` (CI doc job now green), `concurrent-spinoff-report-path-race` (SKILL templates now use `/tmp/node-report-${run_id}.json`).
+- 🟡 **Phase C2 batch 2** — `cli-json-dto-layer`, `projected-paths-into-reducer`, `spinoff-e2e-harness` to spawn after current batch lands.
+- 🟡 **Phase D** — 2 issues await user decision (see below).
+- 🟡 **Pre-publication campaign** — open issue count went 29 → ~10. Target zero before `v0.1.0` tag.
 
 ### What works for real-world use today
 
-- `/worktree-spinoff`, `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill` — autonomous spawn → work → merge → self-cleanup.
-- `/worktree-code` + `/worktree-merge` — interactive review, then explicit merge cleans up.
+- `/worktree-spinoff`, `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill` — autonomous spawn → work → merge → self-cleanup. Master-pane-kill risk fixed in `1968616`.
+- `/worktree-code` + `/worktree-merge` — interactive review, then explicit merge cleans up. Supervisor is now the canonical teardown actor (`119a13e`).
 - `/fan-out` — N identical units with manifest + resume + auto-cleanup per child.
-- `/orchestrate` — toy-tested DAG runtime; usable for small campaigns; **do NOT rely on for large real-world campaigns until the 4 polish bugs below are fixed**.
+- `/orchestrate` — DAG runtime; all 4 smoke-found polish bugs landed; safe to use for real campaigns now.
 
 ---
 
