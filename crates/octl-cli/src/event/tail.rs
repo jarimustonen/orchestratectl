@@ -80,9 +80,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // under `--json`, but a stream has no single payload. Streaming-side
     // delivery (embed in terminal envelope) is tracked as a follow-up;
     // for now stderr keeps them visible without polluting the JSONL stream.
-    for w in args.warnings {
-        eprintln!("warning: {w}");
-    }
+    // Centralized formatter so the `warning: ` prefix is one source of truth
+    // (issue: hoist-text-warning-formatting).
+    crate::output::emit_text_warnings(args.warnings);
 
     // Install signal handler before any I/O so a SIGINT during the
     // initial drain is honoured. Best-effort: re-install on repeated

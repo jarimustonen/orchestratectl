@@ -313,9 +313,7 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
         expected: None,
     };
     err.emit();
-    for w in logging_warnings {
-        eprintln!("warning: {w}");
-    }
+    crate::output::emit_text_warnings(logging_warnings);
     ExitCode::from(ExitKind::User as u8)
 }
 

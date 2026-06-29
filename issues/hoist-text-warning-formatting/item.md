@@ -1,9 +1,10 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-29
 type: chore
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Hoist text-mode warning emission into central dispatcher
