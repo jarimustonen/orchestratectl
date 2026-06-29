@@ -6,94 +6,193 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-28)
+## Status snapshot (2026-06-29)
 
-- ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — `done`. Binary spawns runs end-to-end through all 8 worktree kinds, supervisor watchdog, dedup, signal handling, etc.
+- ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — done.
 - ✅ **Follow-up campaign** (21 review-spinoff issues + 9 packs) — all merged.
-- ✅ **Skill-bundling campaign** [`skill-bundling-campaign`](issues/skill-bundling-campaign/item.md) — **all 10 phases shipped**. The 8 `worktree-*` skills, `/fan-out`, and `/orchestrate` are bundled into the binary, the CLI exposes `Kind::Orchestrate` (driver run with no worktree, supervisor = orchestrator-in-main-conversation), and `orchestratectl skill install --force` was run against `~/.claude/skills/` — `doctor` reports `skill.sync.* ok` for all 12 skills (3 CLI-overview skills + 9 workflow skills). Homebase `~/.claude/skills/worktree-*` is now the binary-bundled version. Next session that invokes `/orchestrate` or any `/worktree-*` goes through `orchestratectl run create --kind <X>` end-to-end.
-- ⏸ **Held items** (not in current scope):
-  - [`help-json-depth-control`](issues/help-json-depth-control/item.md) — schema bump for `--help --json` top-level depth, needs Jari's product decision before authoring.
-  - [`runwriter-batched-append-api`](issues/runwriter-batched-append-api/item.md) — V4 latency (639ms p99 vs 10ms budget). Per B1 decision: accepted as-is post-MVP unless `/orchestrate`/`/fan-out` actually scale to where it matters.
+- ✅ **Skill-bundling campaign** — **all 10 phases shipped + bonus 11th (`worktree-merge`)** bundled mid-campaign when an interactive-worktree gap surfaced live. Binary at commit `ada6167` ships **13 skills** (`doctor` reports 63 ok / 0 fail); `~/.claude/skills/` deployed; first end-to-end `/worktree-spinoff` (autonomous) and `/worktree-code` + `/worktree-merge` (interactive) loops both proven to spawn → work → merge → self-cleanup with zero manual intervention. `/orchestrate` smoke-tested with a 3-feature DAG; works end-to-end, 4 polish bugs surfaced and filed.
+- 🟡 **Pre-publication campaign (this TODO's active scope)** — close every open issue, then ship to GitHub. Target: **zero open issues** before `v0.1.0` tag.
+
+### What works for real-world use today
+
+- `/worktree-spinoff`, `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill` — autonomous spawn → work → merge → self-cleanup.
+- `/worktree-code` + `/worktree-merge` — interactive review, then explicit merge cleans up.
+- `/fan-out` — N identical units with manifest + resume + auto-cleanup per child.
+- `/orchestrate` — toy-tested DAG runtime; usable for small campaigns; **do NOT rely on for large real-world campaigns until the 4 polish bugs below are fixed**.
 
 ---
 
-## Active campaign: replace homebase skills with binary-bundled SKILL.md
+## Active goal: zero open issues, GitHub-publishable
 
-**Why.** Per `AGENTS-AI-FIRST-CLI.md` §17, the binary is the source of truth and the skill follows it. Today the actual `~/.claude/skills/worktree-*` / `/orchestrate` / `/fan-out` skills still live as standalone files in homebase that call `~/.claude/skills/worktree/scripts/create.sh` directly. They DO work (the create.sh patch we landed gives them structured stdout + the 30 s timeout + slash-handling), but none of them go through `orchestratectl run create`, so nothing about a real run lands in `~/.orchestratectl/runs/`. The supervisor, watchdog, deterministic dedup, exactly-once report consumption — all of it — sits unused.
-
-**Approach.** Author the replacement SKILL.md files as **bundled skills inside the binary** (`crates/octl-cli/skills/<name>/SKILL.md`). Each skill calls `orchestratectl run create --kind <X>` (and friends) instead of bare `create.sh`. Deploy via `orchestratectl skill install --all --force` over `~/.claude/skills/`. §17's `cli_version` frontmatter + drift-detection then make version sync a one-call audit.
-
-**Sequence.** One skill at a time. Phase 1 sets the contract (frontmatter shape, error-envelope expectations, Issue Management section, Workflow section). Every subsequent phase reads phase 1's output as the canonical template and notes deviations explicitly. If phases 2/3 surface a contract bug in phase 1, fix it there (regress-commit) before continuing — keep the family internally consistent.
-
-**Each phase delivers:**
-- SKILL.md (with `build.rs`-substituted `cli_version:` frontmatter) under `crates/octl-cli/skills/<name>/`
-- Skill registry update so `orchestratectl skill list` + `skill print` + `skill install` see it
-- Build / test / clippy / fmt clean
-- Smoke: `skill print <name>`, `skill install <name> --dest /tmp/test/SKILL.md`, then for phase 1+ a real spawn through the new skill into a throwaway worktree, verify `orchestratectl run show <id>` sees it
-- `/llm-review` over the SKILL.md text (it's prose, not code — review focuses on agent-actionability + contract fidelity)
-- Merge
+Currently **29 open issues** (snapshot 2026-06-29). The plan below brings that to zero, then publishes. Sequenced so correctness-affecting bugs land before polish, and held items get a decision before the publication tag.
 
 ---
 
-## Phases
+## Phase A — Close the skill-bundling-campaign epic
 
-| # | Issue | What | Why this order |
-|---|---|---|---|
-| 1 | [`skill-bundle-worktree-spinoff`](issues/skill-bundle-worktree-spinoff/item.md) | Author `crates/octl-cli/skills/worktree-spinoff/SKILL.md`. Calls `orchestratectl run create --kind spinoff`. | Simplest + most-used → sets the contract for all others. |
-| 2 | [`skill-bundle-worktree-code`](issues/skill-bundle-worktree-code/item.md) | `worktree-code` (interactive variant). | Demonstrates `lifecycle: interactive` path (waits for human, different merge flow). |
-| 3 | [`skill-bundle-worktree-orchestrated`](issues/skill-bundle-worktree-orchestrated/item.md) | `worktree-orchestrated` with `--parent-run-id` + `--parent-node-id`. | Establishes child-spawn pattern — Phase 5 needs this for `/orchestrate`. |
-| 4a | [`skill-bundle-worktree-research`](issues/skill-bundle-worktree-research/item.md) | Autonomous research worktree. | Mechanical after Phase 1+2 contract. |
-| 4b | [`skill-bundle-worktree-make-skill`](issues/skill-bundle-worktree-make-skill/item.md) | Autonomous skill-authoring worktree. | Mechanical. Note: this skill is what would author future bundled skills — meta. |
-| 4c | [`skill-bundle-worktree-bugfix`](issues/skill-bundle-worktree-bugfix/item.md) | Autonomous bugfix worktree. | Mechanical. |
-| 4d | [`skill-bundle-worktree-technical-decision`](issues/skill-bundle-worktree-technical-decision/item.md) | Autonomous ADR worktree. | Mechanical. |
-| 5 | [`skill-bundle-orchestrate`](issues/skill-bundle-orchestrate/item.md) | `/orchestrate` DAG runtime SKILL.md. | Substantial. Spawns lapsiagentit per `--kind orchestrated`, reads `event tail --follow` for reports, synthesizes worker output, handles failure modes. **Needs a design conversation with Jari before authoring** — the DAG runtime in prose is a real design problem. |
-| 6 | [`skill-bundle-fan-out`](issues/skill-bundle-fan-out/item.md) | `/fan-out` SKILL.md. | Analogous to `/orchestrate` but simpler — N identical units in parallel, `--kind fan-out` per child. |
-| 7 | [`skill-rollout-and-sunset`](issues/skill-rollout-and-sunset/item.md) | `skill install --all --force` over `~/.claude/skills/`; smoke per kind; add `orchestratectl run adopt` (or `import-existing-tmux`) for pre-existing `wm-*`/`🎬 🚀`-prefixed windows; sunset homebase `~/.claude/skills/worktree-*` (or keep one release as fallback). | Ships the campaign. |
+The epic itself ([`skill-bundling-campaign`](issues/skill-bundling-campaign/item.md), `status: open`) still has the original "open" marker even though every child phase has merged and the bonus `bundle-worktree-merge` capstone has shipped. Update its body with the final state (10 + 1 bundled SKILLs, deployment notes, references to the 4 polish bugs as the natural follow-on) and close it.
 
-**Estimate (rough):**
-- Phase 1: 1–2 h authoring + Jari review (~30 min) — quality determines the next 9 phases
-- Phases 2–3: ~1 h each + ~10 min review
-- Phase 4 (a–d): ~30 min each, mechanical — could batch 2+2 in parallel once contract is solid
-- Phase 5 (`/orchestrate`): 2–3 h, with a design conversation up front
-- Phase 6 (`/fan-out`): 1–2 h
-- Phase 7: ~1 h rollout + smoke
+- `issuectl close skill-bundling-campaign --status done`
 
-**Total**: ~10–14 h across multiple sessions.
+Single commit, ~10 min.
 
 ---
 
-## Skills NOT in this campaign
+## Phase B — Fix bugs (correctness gate for publication)
 
-These already exist in homebase and don't need a binary-bundled replacement (for now):
+Order: data-integrity → UX-affecting → polish. Some can run in parallel as `/worktree-spinoff`s (no overlap in files); some must serialize because they touch the same paths.
 
-- `/worktree-merge` — thin wrapper around `workmux merge`; no orchestratectl interaction needed.
-- `/worktree` — router (delegates to `/worktree-spinoff` etc.); needs no behavior change.
+### B1. Data-integrity bugs (must fix before publish)
 
-If a future iteration decides the router should also be bundled, file a new issue.
+These can corrupt run state on disk. Block publication.
+
+| # | Issue | Why blocking |
+|---|---|---|
+| 1 | [`apply-event-atomicity-watermark`](issues/apply-event-atomicity-watermark/item.md) | Append-then-apply is not atomic across reducer failure → state can desync from event log |
+| 2 | [`torn-write-truncate-tail`](issues/torn-write-truncate-tail/item.md) | `events.jsonl` torn-write recovery doesn't truncate cleanly → corrupted line on next read |
+| 3 | [`recover-last-seq-empty-lines`](issues/recover-last-seq-empty-lines/item.md) | `recover_last_seq` doesn't loop over multiple trailing empty lines |
+| 4 | [`manifest-counter-desync`](issues/manifest-counter-desync/item.md) | Reducer manifest counters can permanently desync after partial failure |
+
+### B2. /orchestrate polish bugs (surfaced by yesterday's smoke)
+
+`/orchestrate` works for toy cases but these four need fixing before it's safe at scale. All are `high` (or effectively so).
+
+| # | Issue | Pri |
+|---|---|---|
+| 5 | [`headless-parent-session-rejected`](issues/headless-parent-session-rejected/item.md) | high |
+| 6 | [`orchestrated-source-branch-ignored`](issues/orchestrated-source-branch-ignored/item.md) | high |
+| 7 | [`failed-spawn-leaves-phantom-child`](issues/failed-spawn-leaves-phantom-child/item.md) | (effectively high) |
+| 8 | [`supervisor-worktree-remove-no-force`](issues/supervisor-worktree-remove-no-force/item.md) | (effectively high) |
+
+### B3. Other open bugs
+
+| # | Issue | Notes |
+|---|---|---|
+| 9 | [`worktree-merge-orphans-tmux-window`](issues/worktree-merge-orphans-tmux-window/item.md) | `worktree-merge`: tmux window orphaned when a rebase fails partway |
+
+**Recommended approach.** Spawn B1 sequentially (touch reducer / event-log internals, conflict risk). B2 spawn in parallel (mostly disjoint files). B3 can ride with B2 (worktree-merge cleanup is independent).
 
 ---
 
-## How to start a phase
+## Phase C — Land improvements
 
-1. Pick the lowest-numbered open phase issue.
-2. Spawn an **interactive** worktree-code (not spinoff) — Jari reviews each skill before it sets the precedent for the next.
-3. The interactive worktree prompt should:
-   - Read this TODO.md
-   - Read the previous phase's merged SKILL.md (`crates/octl-cli/skills/<previous>/SKILL.md`) for the contract template
-   - Read the homebase original (`~/.claude/skills/<name>/SKILL.md`) for the working semantics it needs to preserve
-   - Read `orchestratectl --help --output json` for the available commands
-   - Author `crates/octl-cli/skills/<name>/SKILL.md.template` with `{{CLI_VERSION}}` placeholder
-   - Register in the skill list
-   - Build + smoke + `/llm-review` + commit + `/worktree-merge` (the user does the merge to keep the contract reviewed)
-4. After merging: bump the phase issue `status: done` via `issuectl close <slug>`.
-5. If the phase surfaced a contract bug in Phase 1's SKILL.md, fix that first as a regress-commit and update Phase 1's issue body with a note.
+Order: correctness/safety improvements first, then ergonomics, then nice-to-haves.
+
+### C1. Safety / correctness improvements
+
+| # | Issue |
+|---|---|
+| 1 | [`read-side-shared-lock`](issues/read-side-shared-lock/item.md) — read paths need shared flock |
+| 2 | [`reducer-path-traversal-defense`](issues/reducer-path-traversal-defense/item.md) — path-traversal defense for IDs |
+| 3 | [`locked-run-witness-type`](issues/locked-run-witness-type/item.md) — type-system enforcement for lock-held writes |
+| 4 | [`spinoff-issuectl-subprocess-bounds`](issues/spinoff-issuectl-subprocess-bounds/item.md) — bound issuectl subprocess |
+| 5 | [`spinoff-issuectl-materialization-arch`](issues/spinoff-issuectl-materialization-arch/item.md) — redesign spin-off issuectl materialization |
+
+### C2. Output / API cleanups
+
+| # | Issue |
+|---|---|
+| 6 | [`always-emit-warnings-array`](issues/always-emit-warnings-array/item.md) — feature |
+| 7 | [`cli-json-dto-layer`](issues/cli-json-dto-layer/item.md) — DTO layer for `--json` payloads |
+| 8 | [`cli-text-output-escape`](issues/cli-text-output-escape/item.md) — escape control chars in text output |
+| 9 | [`core-idempotency-api`](issues/core-idempotency-api/item.md) — centralize `--idempotency-key` |
+| 10 | [`envelope-schema-constant-relocation`](issues/envelope-schema-constant-relocation/item.md) — relocate envelope SCHEMA_VERSION |
+| 11 | [`hoist-text-warning-formatting`](issues/hoist-text-warning-formatting/item.md) — central text-mode warning emission |
+| 12 | [`passably-shaggy-parent`](issues/passably-shaggy-parent/item.md) — surface dropped-log count on error envelopes |
+| 13 | [`projected-paths-into-reducer`](issues/projected-paths-into-reducer/item.md) — move projection enumeration into reducer |
+| 14 | [`supervisor-state-not-event-sourced`](issues/supervisor-state-not-event-sourced/item.md) — make supervisor state event-sourced |
+
+### C3. Tests / CI
+
+| # | Issue |
+|---|---|
+| 15 | [`spinoff-e2e-harness`](issues/spinoff-e2e-harness/item.md) — end-to-end test harness (already started, bounced by PTY; retry with `--headless` once B2 lands) |
+| 16 | [`idempotency-hash-golden-test`](issues/idempotency-hash-golden-test/item.md) — golden test for idempotency-key hash |
+| 17 | [`macos-ci-matrix`](issues/macos-ci-matrix/item.md) — macOS CI matrix |
+
+**Recommended approach.** C1 sequentially (locking + safety code is conflict-prone). C2 in batches of 3–4 in parallel. C3 last (validates the rest).
+
+---
+
+## Phase D — Held items: Jari decisions needed
+
+These two have been sitting in "needs product decision" for a while. Before publication, each gets a clear yes/no — implement, defer-with-issue-closed-as-deferred, or close-as-wontfix.
+
+| # | Issue | Decision needed |
+|---|---|---|
+| D1 | [`help-json-depth-control`](issues/help-json-depth-control/item.md) | Schema bump for `--help --json` top-level depth — is it needed pre-publication, or close as wontfix? |
+| D2 | [`runwriter-batched-append-api`](issues/runwriter-batched-append-api/item.md) | V4 latency 639ms p99 vs 10ms budget — accepted post-MVP per B1 decision; still accepted, or fix before publication? |
+
+Bring these up early in the post-resume session so they're not late blockers.
+
+---
+
+## Phase E — Pre-publication polish
+
+Mechanical but required for a presentable GitHub release.
+
+| # | Task | Notes |
+|---|---|---|
+| E1 | `README.md` at repo root | Project pitch, install (homebrew / cargo / shell), `orchestratectl skill print orchestratectl-overview` as the agent's onboarding, examples. The SKILLs already encode the operating manual — README links to them. |
+| E2 | `LICENSE` | Pick (MIT? Apache-2? dual?). If MIT, drop the standard file. |
+| E3 | `CHANGELOG.md` | `v0.1.0` entry covering everything that landed; reference closed issues. |
+| E4 | `Cargo.toml` metadata | `description`, `homepage`, `repository`, `keywords`, `categories`, `license`. Required for crates.io publication. |
+| E5 | GitHub Actions CI | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, plus the SKILL example CI gate (already exists) and `macos-ci-matrix` (issue C3 #17) once landed. |
+| E6 | Release pipeline | `cargo-release` or `release-plz` — automates version bump, changelog, tag, crates.io publish, GitHub release. |
+| E7 | Homebrew tap | `jarimustonen/orchestratectl` per the SKILL.md install instructions. Currently a placeholder — make it real. |
+| E8 | Shell installer | `curl -LsSf .../orchestratectl-installer.sh | sh` per SKILL.md. Currently a placeholder — wire up via `cargo-dist` or similar. |
+| E9 | Repo hygiene | `.github/ISSUE_TEMPLATE/`, `CONTRIBUTING.md` (optional v0.1.0; required if accepting external PRs), `SECURITY.md` (optional). |
+| E10 | Doc build | Verify `cargo doc` is clean; consider docs.rs metadata in `Cargo.toml`. |
+
+---
+
+## Phase F — Publish
+
+Order is meaningful — don't reverse:
+
+1. Confirm zero open issues (`issuectl ls --status open` returns empty).
+2. Final `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all clean.
+3. Bump version to `0.1.0` in workspace `Cargo.toml`.
+4. Update `CHANGELOG.md` with the `v0.1.0` entry.
+5. Tag `v0.1.0` and push.
+6. GitHub Actions cuts a release, uploads binaries (via cargo-dist or equivalent).
+7. Publish to crates.io (`cargo publish` from each workspace member, in dependency order — `octl-core` first, then `octl-cli`).
+8. Update Homebrew tap with the v0.1.0 formula.
+9. Smoke: `brew install jarimustonen/orchestratectl/orchestratectl` on a clean machine works; `cargo install orchestratectl` works; shell installer works.
+10. Announce / hand over to early users.
+
+---
+
+## How to start a phase (for the next agent)
+
+1. **First**: read `git log --oneline -30` and `issuectl ls --status open` to confirm current state matches this TODO.
+2. Pick the lowest-numbered unfinished item in the current phase.
+3. **Default workflow for code fixes**: spawn `/worktree-spinoff <issue-slug>` (autonomous). The SKILL now handles spawn → work → merge → `orchestratectl run merge` → self-cleanup end-to-end.
+4. **For substantial / cross-cutting changes**: spawn `/worktree-code <issue-slug>` (interactive) so a human reviews before merge.
+5. **For parallelizable batches** (e.g. several disjoint improvements): spawn 3–5 spinoffs in succession, set a `Monitor` watching `orchestratectl event tail` for `node.report|run.status|supervisor.exited` events, and continue with the next batch when they land.
+6. **For multi-feature campaigns** (e.g. release pipeline = E5 + E6 + E7 + E8 together): `/orchestrate` is now battle-tested at toy scale but needs the B2 fixes before scaling — until then, use a sequence of `/worktree-spinoff`s with the orchestrator agent reading the report after each.
+7. After each merge: confirm via `git log --oneline -5` that it landed, `issuectl --json show <slug>` reports `status: closed`, and `pgrep -lf "orchestratectl.*supervise"` doesn't include any of your spawns (= auto-cleanup worked).
+8. If a fix surfaces a NEW bug, file it as a new issue and add it to this TODO under the appropriate phase.
+
+---
+
+## Estimate (rough)
+
+- Phase A: 10 min (one commit closing the epic).
+- Phase B: ~6–10 h total. B1 ~1h each (4 items, sequential). B2 ~30 min each (4 items, parallel-able). B3 ~30 min.
+- Phase C: ~10–15 h total. C1 ~1h each (5 items, mostly sequential). C2 ~30 min each (9 items, parallel-able in batches). C3 ~1h each (3 items).
+- Phase D: ~30 min total (Jari decision + execution per item).
+- Phase E: ~5–8 h total (E1–E4 ~1h each, E5–E8 ~1h each, E9–E10 ~30 min each).
+- Phase F: ~2 h end-to-end.
+
+**Grand total: ~25–35 h across multiple sessions.** Spreadable across days; nothing is path-blocked except B → E (don't publish before bugs fixed), D → F (decisions before tag).
 
 ---
 
 ## When the campaign finishes
 
-- All 10 phases closed.
-- `orchestratectl version --output jsonl | jq .data.skills` lists 10+ bundled skills, all `cli_version` aligned with the running binary.
-- `~/.claude/skills/worktree-*` etc. either replaced (via `skill install --force`) or removed (sunset).
-- Smoke run: spawn one of each of the 8 kinds through the new skill chain, verify each produces a manifest in `~/.orchestratectl/runs/<id>/` and gets a supervisor PID.
-- This TODO.md gets archived (move to `issues/skill-bundling-campaign/handoff.md` or delete).
+- `issuectl ls --status open` returns empty.
+- `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all green.
+- `v0.1.0` tag pushed, GitHub release live, crates.io package published, Homebrew tap updated.
+- README, CHANGELOG, LICENSE, CI all in place.
+- This TODO.md gets archived (move to `issues/<v0.1.0-release-campaign>/handoff.md` and replace with a fresh skeleton for v0.2.0 planning).
