@@ -458,11 +458,26 @@ pub fn append_and_apply_unlocked(
 /// line would, among other things, make it impossible to even *record* the
 /// supervisor's `event_log_skipped_line` diagnostic about that very line.
 /// Healing such a line is the supervisor's quarantine job, not the writer's.
-/// Sanctioned events were all validated through [`reduce_event_to_ops`] before
-/// they were appended, so re-reducing them on replay is a clean idempotent
-/// no-op; a `reduce_event_to_ops` error here therefore signals genuine domain
-/// corruption (an externally-injected, parse-valid event) and is surfaced
-/// loudly rather than swallowed.
+///
+/// A *parse-valid* event whose payload is semantically corrupt is skipped the
+/// same way (with a `warn`), rather than hard-erroring. The dangerous subclass
+/// is an event carrying an embedded id (`discussion_id`, `proposal_id`,
+/// `child_run_id`, `child_node_id`) that fails its strict `parse_str` and would
+/// otherwise be joined onto a path — the reducer's independent second line of
+/// defense against a corrupt log, a restored backup, or a future writer that
+/// bypasses the CLI validators (issue `reducer-path-traversal-defense`). Such
+/// an event is a *valid `Event` envelope* (only its `data` is bad), so the
+/// supervisor's [`quarantine_corrupt_lines`] — which only excises lines that
+/// fail the strict envelope parse — can never heal it; hard-erroring here would
+/// brick every future append on that line with no automated recovery path.
+/// Skipping it converges the projection to the largest safe subset and never
+/// joins a tainted id onto a path (the typed-id constructors already make
+/// traversal structurally impossible — a `"../escape"` id never parses into a
+/// [`DiscussionId`], so it can never reach `discussions/<id>.json`). The append
+/// *gate* stays fail-closed: [`reduce_event_to_ops`] rejects such an event
+/// before it is ever written, so a sanctioned log never reaches this branch and
+/// re-reducing real events on replay is a clean idempotent no-op. A genuine I/O
+/// fault (from the commit or watermark write) still propagates.
 ///
 /// Because a sanctioned log is appended in `seq` order under the lock, file
 /// order equals `seq` order for real events; the only out-of-order bytes are
@@ -505,7 +520,29 @@ fn replay_unapplied(paths: &RunPaths, events_path: &Path) -> Result<()> {
         if ev.seq <= applied {
             continue;
         }
-        let ops = reduce_event_to_ops(paths, &ev)?;
+        // Plan the projection writes. A parse-valid but domain-corrupt event —
+        // most dangerously one whose embedded id fails its strict `parse_str`
+        // and would otherwise be joined onto a path — surfaces here as
+        // `CorruptEventLog`. Quarantine cannot excise it (it is a valid
+        // envelope), so we skip it with a warn rather than aborting the whole
+        // catch-up replay; the watermark is not advanced for a skipped event.
+        // See this function's "Corrupt-line tolerance" doc. I/O faults from the
+        // commit/watermark write below still propagate.
+        let ops = match reduce_event_to_ops(paths, &ev) {
+            Ok(ops) => ops,
+            Err(Error::CorruptEventLog { reason, .. }) => {
+                tracing::warn!(
+                    target: "octl_core::events",
+                    path = %events_path.display(),
+                    seq = ev.seq,
+                    kind = %ev.kind,
+                    reason = %reason,
+                    "skipping corrupt event during replay (unsafe id or malformed payload); projection not advanced for it"
+                );
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         commit_ops(paths, ops)?;
         advance_applied_seq(paths, ev.seq)?;
     }
@@ -1308,6 +1345,91 @@ mod tests {
             Status::Done,
             "replaying its history did not resurrect the terminal node"
         );
+    }
+
+    #[test]
+    fn replay_skips_events_with_unsafe_ids_and_never_escapes_run_dir() {
+        // Issue `reducer-path-traversal-defense`: the reducer must independently
+        // defend against ids read from `events.jsonl` that bypass the CLI
+        // validators — a corrupt log, a restored backup, or a future writer.
+        // We craft a log straight onto disk (skipping the append gate) holding
+        // two poison `discussion.opened` lines and one good one, then drive a
+        // catch-up replay and assert: nothing escapes the run dir, the poison
+        // events are skipped (not fatal), and the good event still applies.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // applied_seq == 2, node n-0001 live
+
+        // seq 3 — a traversal-laden id; seq 4 — an empty id. Both fail their
+        // strict `parse_str`, so `reduce_event_to_ops` rejects them.
+        append_event_with_seq(
+            &paths,
+            3,
+            "discussion.opened",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "../escape", "node_id": "n-0001", "topic": "evil" }),
+        )
+        .unwrap();
+        append_event_with_seq(
+            &paths,
+            4,
+            "discussion.opened",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "", "node_id": "n-0001", "topic": "evil" }),
+        )
+        .unwrap();
+        // seq 5 — a well-formed id that must be applied despite the poison
+        // lines preceding it.
+        append_event_with_seq(
+            &paths,
+            5,
+            "discussion.opened",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "discussion_id": "d-abcdefghij", "node_id": "n-0001", "topic": "ok" }),
+        )
+        .unwrap();
+
+        // The poison lines must NOT abort the replay (the regression this fixes:
+        // a `..`-laden id is a valid envelope quarantine can't excise, so a hard
+        // error here would brick every future append on the run).
+        replay_unapplied(&paths, &paths.events()).expect("poison lines skipped, not fatal");
+
+        // The good discussion landed.
+        let good = crate::projections::read_discussion_opt(
+            &paths,
+            &crate::schema::DiscussionId::parse_str("d-abcdefghij").unwrap(),
+        )
+        .unwrap();
+        assert!(good.is_some(), "the valid discussion was applied");
+
+        // Nothing escaped: `discussions/../escape.json` would have resolved to
+        // `<run>/escape.json` — it must not exist — and the discussions dir
+        // holds exactly the one good file (the two poison ids wrote nothing).
+        assert!(
+            !paths.root.join("escape.json").exists(),
+            "traversal must not have written outside discussions/"
+        );
+        let entries: Vec<_> = std::fs::read_dir(paths.discussions_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["d-abcdefghij.json".to_string()],
+            "only the good discussion file exists; poison ids joined no path"
+        );
+
+        // The watermark jumped past the skipped seqs to the applied good event,
+        // and the derived counter reflects the single real discussion.
+        let m = crate::read_manifest(&paths).unwrap();
+        assert_eq!(
+            m.applied_seq, 5,
+            "watermark advanced past the skipped poison"
+        );
+        assert_eq!(m.open_discussions, 1, "only the good discussion is counted");
     }
 
     #[test]
