@@ -53,9 +53,15 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   test:
-    name: test
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    strategy:
+      # Don't cancel the macOS run when ubuntu fails (and vice-versa) —
+      # platform-specific regressions are exactly what this matrix is for.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -71,6 +77,10 @@ jobs:
       # --release matches the project's quality bar (the release profile is the
       # shipped one). Overflow/debug-assert coverage is exercised by the msrv
       # job below, which builds in the default dev profile.
+      #
+      # macOS picks up platform-sensitive paths (supervisor pid liveness,
+      # tmux/unix-fd, kqueue-driven watchers) that Linux CI misses
+      # (issue: macos-ci-matrix).
       - run: cargo test --locked --release --workspace
 
   msrv:
