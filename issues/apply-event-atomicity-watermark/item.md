@@ -1,9 +1,10 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Append-then-apply is not atomic across reducer failures (need applied_seq)

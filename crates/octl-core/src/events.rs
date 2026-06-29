@@ -11,6 +11,7 @@ use crate::atomic::{open_events_append, write_atomic};
 use crate::error::{Error, Result};
 use crate::lock::RunLock;
 use crate::paths::RunPaths;
+use crate::projections::{read_manifest_opt, write_manifest};
 use crate::reducer::{commit_ops, reduce_event_to_ops};
 use crate::schema::{Event, NodeId};
 
@@ -316,6 +317,16 @@ pub fn append_and_apply_event(
     data: Value,
 ) -> Result<AppendResult> {
     RunLock::with_lock(&paths.lock(), || {
+        // Catch the projections up to the event log before either the
+        // idempotency lookup or a fresh append. This is the recovery half of
+        // append+apply atomicity: any unapplied tail left by a prior crash is
+        // folded here, under the same lock, so an idempotent replay returns
+        // only once the prior event's projection is durably committed
+        // (`applied_seq >= prior.seq`) — never a stale "found, but not applied"
+        // result. A clean run with no tail makes this a cheap no-op.
+        let events_path = paths.checked_events()?;
+        truncate_torn_tail(&events_path)?;
+        replay_unapplied(paths, &events_path)?;
         // Idempotency lookup + append share this one lock window so a
         // concurrent retry can't see "no prior event" and double-append.
         if let Some(key) = idempotency_key {
@@ -360,6 +371,12 @@ pub fn append_and_apply_unlocked(
     // appending, so the new record is never concatenated onto a partial one
     // and `seq` is recovered from a clean, `\n`-terminated file.
     truncate_torn_tail(&events_path)?;
+    // Replay any unapplied tail (`seq > applied_seq`) before appending, so this
+    // append never stacks onto a projection that is behind the log. When called
+    // from `append_and_apply_event` the tail was already drained a moment ago,
+    // so this is a no-op; direct lock-held callers (supervisor batch, cancel,
+    // discussion/spinoff resolution) get the same recovery for free.
+    replay_unapplied(paths, &events_path)?;
     let last = recover_last_seq(&events_path)?;
     let seq = last + 1;
     let ev = Event {
@@ -388,7 +405,116 @@ pub fn append_and_apply_unlocked(
         .map_err(|e| Error::io(events_path.clone(), e))?;
     f.sync_all().map_err(|e| Error::io(events_path, e))?;
     commit_ops(paths, ops)?;
+    // Advance the watermark only after every projection this event touched is
+    // durably committed. A crash before this point leaves `applied_seq < seq`,
+    // and the next lock acquisition replays the event (idempotently — the
+    // reducer's existence/terminal guards make a re-fold a no-op) before
+    // advancing. So the watermark can only ever lag the projections, never lead
+    // them — the projection a reader sees is always at least as new as
+    // `applied_seq` claims.
+    advance_applied_seq(paths, seq)?;
     Ok(seq)
+}
+
+/// Replay every unapplied tail event — those with `seq > manifest.applied_seq`
+/// — into the projections, advancing the watermark after each, so the
+/// projection cache is caught up to `events.jsonl` before any new append.
+///
+/// This is the recovery half of the append+apply atomicity guarantee. A writer
+/// that crashed after fsyncing an event row but before fsyncing its projection
+/// (or before advancing `applied_seq`) leaves `applied_seq < last_seq`; the
+/// next lock acquisition heals it here. The reducer is idempotent — every
+/// `*.created` reducer short-circuits when its projection already exists, and
+/// every status/report reducer is a no-op once the target is terminal — so
+/// re-folding an event whose projection *did* land does not double-count the
+/// manifest's denormalized counters.
+///
+/// No manifest yet (pre-`run.created`) means there is no watermark to anchor
+/// and nothing durable to catch up, so this returns immediately until the
+/// manifest exists. A legacy manifest reads as `applied_seq = 0` (serde
+/// default), so the first call re-folds the entire log; that is intentional
+/// and safe — see [`crate::schema::Manifest::applied_seq`].
+///
+/// # Corrupt-line tolerance
+///
+/// A line that does not parse as an [`Event`] is skipped, not hard-errored —
+/// the same definition of "corrupt" the quarantine path uses, and the same
+/// tolerance the pre-watermark append path had (it only ever parsed the *last*
+/// line via [`recover_last_seq`]). Bricking every append on an interior poison
+/// line would, among other things, make it impossible to even *record* the
+/// supervisor's `event_log_skipped_line` diagnostic about that very line.
+/// Healing such a line is the supervisor's quarantine job, not the writer's.
+/// Sanctioned events were all validated through [`reduce_event_to_ops`] before
+/// they were appended, so re-reducing them on replay is a clean idempotent
+/// no-op; a `reduce_event_to_ops` error here therefore signals genuine domain
+/// corruption (an externally-injected, parse-valid event) and is surfaced
+/// loudly rather than swallowed.
+///
+/// Because a sanctioned log is appended in `seq` order under the lock, file
+/// order equals `seq` order for real events; the only out-of-order bytes are
+/// skipped junk, so advancing the watermark to each applied event's `seq` never
+/// jumps over an unfolded real event.
+///
+/// Caller must hold the run's [`RunLock`] and must have already truncated any
+/// torn tail, so the final line is either complete or absent.
+fn replay_unapplied(paths: &RunPaths, events_path: &Path) -> Result<()> {
+    let applied = match read_manifest_opt(paths)? {
+        Some(m) => m.applied_seq,
+        None => return Ok(()),
+    };
+    // Cheap fast path for the overwhelmingly common clean case: the watermark
+    // already covers the log, so there is nothing to replay and no full scan.
+    if applied >= recover_last_seq(events_path)? {
+        return Ok(());
+    }
+    let f = match std::fs::File::open(events_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(Error::io(events_path, e)),
+    };
+    let mut reader = PhysicalLineReader::new(BufReader::new(f));
+    while let Some(line) = reader.next_line().map_err(|e| Error::io(events_path, e))? {
+        // A torn final line is an uncommitted partial write — stop, exactly as
+        // every other reader does.
+        if !line.complete {
+            break;
+        }
+        if line.content.is_empty() {
+            continue;
+        }
+        // Skip a parse-failing line (external junk by the quarantine
+        // definition); apply every event past the watermark in order.
+        let ev: Event = match serde_json::from_slice(line.content) {
+            Ok(ev) => ev,
+            Err(_) => continue,
+        };
+        if ev.seq <= applied {
+            continue;
+        }
+        let ops = reduce_event_to_ops(paths, &ev)?;
+        commit_ops(paths, ops)?;
+        advance_applied_seq(paths, ev.seq)?;
+    }
+    Ok(())
+}
+
+/// Advance `manifest.applied_seq` to `seq` and fsync the manifest (atomic
+/// temp-file + rename), recording that every projection touched by event `seq`
+/// is durably committed.
+///
+/// A no-op when no manifest exists yet, or when the watermark already covers
+/// `seq` — so re-folding an already-applied event (during replay) doesn't churn
+/// the manifest. The reducer for the event may itself have just rewritten the
+/// manifest (e.g. a counter bump); reading it back here preserves those fields
+/// while moving only the watermark forward. Caller holds the [`RunLock`].
+fn advance_applied_seq(paths: &RunPaths, seq: u64) -> Result<()> {
+    if let Some(mut m) = read_manifest_opt(paths)? {
+        if m.applied_seq < seq {
+            m.applied_seq = seq;
+            write_manifest(paths, &m)?;
+        }
+    }
+    Ok(())
 }
 
 /// One physical line surfaced by [`PhysicalLineReader`]: its content with
@@ -1026,6 +1152,186 @@ mod tests {
             crate::read_node(&paths, &n0001).unwrap().status,
             crate::schema::Status::Done,
             "terminal status is frozen"
+        );
+    }
+
+    #[test]
+    fn bootstrap_advances_the_watermark_past_every_appended_event() {
+        // Baseline for the replay tests: the normal append path keeps the
+        // watermark pinned to the last appended seq, so `applied_seq == last`
+        // whenever the log is clean.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // seq 1 run.created, seq 2 node.created
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().applied_seq,
+            2,
+            "watermark tracks the last appended event"
+        );
+    }
+
+    #[test]
+    fn append_replays_unapplied_tail_before_appending() {
+        use crate::schema::Status;
+        // Failure scenario 1: a reducer crash after the event-row fsync but
+        // before the projection/watermark write leaves the log ahead of the
+        // projections. The next lock acquisition must replay that tail.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // applied_seq == 2, node n-0001 Pending
+        let n0001 = nid("n-0001");
+
+        // Append a tail event (seq 3) WITHOUT running the reducer — exactly the
+        // on-disk state a crash between the row fsync and the projection write
+        // would leave behind.
+        append_event_with_seq(
+            &paths,
+            3,
+            "node.status",
+            Some(&n0001),
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::read_node(&paths, &n0001).unwrap().status,
+            Status::Pending,
+            "the tail event's projection has not landed yet"
+        );
+        assert_eq!(crate::read_manifest(&paths).unwrap().applied_seq, 2);
+
+        // Any new append acquires the lock and replays seq 3 first, so the new
+        // event takes seq 4 and the stale projection is healed.
+        let r = append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+        assert_eq!(r.seq, 4, "the new event follows the replayed tail");
+        assert_eq!(
+            crate::read_node(&paths, &n0001).unwrap().status,
+            Status::Running,
+            "the previously-unapplied tail event is now folded"
+        );
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().applied_seq,
+            4,
+            "the watermark now covers the whole log"
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_applied_seq_migrates_on_next_write() {
+        use crate::schema::Status;
+        // A `manifest.json` written before `applied_seq` existed must read back
+        // as 0 (serde default) and self-migrate on the next write via an
+        // idempotent full replay — without double-counting counters or
+        // resurrecting a terminal node (failure scenario 2's no-double-count
+        // guarantee, exercised over the whole log).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let n0001 = nid("n-0001");
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&n0001),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap(); // seq 3 → node Done, applied_seq == 3, node_count == 1
+
+        // Rewrite the manifest WITHOUT an `applied_seq` field, mimicking a
+        // pre-watermark binary's output.
+        let mut mv: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(paths.manifest()).unwrap()).unwrap();
+        assert!(mv.as_object_mut().unwrap().remove("applied_seq").is_some());
+        std::fs::write(paths.manifest(), serde_json::to_vec_pretty(&mv).unwrap()).unwrap();
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().applied_seq,
+            0,
+            "a legacy manifest reads as applied_seq 0"
+        );
+
+        // The next write triggers a full idempotent replay of seq 1..=3 (all
+        // no-ops) and advances the watermark to last_seq.
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "running" }),
+        )
+        .unwrap(); // seq 4
+        let m = crate::read_manifest(&paths).unwrap();
+        assert_eq!(m.applied_seq, 4, "watermark caught up to the log");
+        assert_eq!(
+            m.node_count, 1,
+            "full replay did not double-count node_count"
+        );
+        assert_eq!(
+            crate::read_node(&paths, &n0001).unwrap().status,
+            Status::Done,
+            "replaying its history did not resurrect the terminal node"
+        );
+    }
+
+    #[test]
+    fn idempotent_replay_catches_up_projection_before_returning() {
+        use crate::projections::write_manifest;
+        use crate::schema::Status;
+        use crate::write_node;
+        // Requirement 3: an idempotency-key replay must ensure the projection is
+        // caught up (`applied_seq >= prior.seq`) before returning the prior
+        // envelope — never a "found, but not yet applied" result.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let n0001 = nid("n-0001");
+
+        // A keyed event lands and folds normally...
+        let first = append_and_apply_event(
+            &paths,
+            "node.status",
+            Some(&n0001),
+            Some("k1"),
+            json!({ "status": "running" }),
+        )
+        .unwrap(); // seq 3
+        assert!(!first.idempotent_replay);
+
+        // ...then simulate a crash that lost the fold: rewind the watermark
+        // below seq 3 and revert the node to its pre-event Pending state.
+        let mut m = crate::read_manifest(&paths).unwrap();
+        m.applied_seq = 2;
+        write_manifest(&paths, &m).unwrap();
+        let mut n = crate::read_node(&paths, &n0001).unwrap();
+        n.status = Status::Pending;
+        write_node(&paths, &n).unwrap();
+
+        // The idempotent retry returns the prior seq AND catches the projection
+        // up first.
+        let replay = append_and_apply_event(
+            &paths,
+            "node.status",
+            Some(&n0001),
+            Some("k1"),
+            json!({ "status": "running" }),
+        )
+        .unwrap();
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.seq, first.seq);
+        assert!(
+            crate::read_manifest(&paths).unwrap().applied_seq >= first.seq,
+            "watermark caught up before the replay returned"
+        );
+        assert_eq!(
+            crate::read_node(&paths, &n0001).unwrap().status,
+            Status::Running,
+            "the prior event's projection is durable before returning"
         );
     }
 

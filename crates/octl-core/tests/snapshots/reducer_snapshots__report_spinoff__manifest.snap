@@ -3,6 +3,7 @@ source: crates/octl-core/tests/reducer_snapshots.rs
 expression: manifest_v
 ---
 {
+  "applied_seq": 7,
   "created_at": "<ts>",
   "kind": "spinoff",
   "lifecycle": "autonomous",

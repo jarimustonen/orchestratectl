@@ -472,6 +472,24 @@ pub enum SpinoffStatus {
 pub struct Manifest {
     /// State-schema version this file was written with.
     pub schema_version: u32,
+    /// Watermark: the highest event `seq` whose projection fold is durably
+    /// committed. Events in `events.jsonl` with `seq > applied_seq` are
+    /// *unapplied tail* events — replayed into the projections on the next
+    /// lock acquisition before any new append (see
+    /// [`crate::events::append_and_apply_event`]). This is what makes
+    /// append-then-apply atomic across a reducer crash: the event log can run
+    /// ahead of the projections, but the gap is always healed before the next
+    /// writer observes stale state.
+    ///
+    /// `#[serde(default)]` so a legacy `manifest.json` written before this
+    /// field existed deserializes with `applied_seq = 0`. Such a manifest
+    /// self-migrates on its next write: the catch-up replay re-folds the whole
+    /// log — every event a no-op, because legacy state was already projected
+    /// synchronously under the old append-then-apply path — and advances the
+    /// watermark to `last_seq`. No separate migration pass or schema bump is
+    /// required (the field is purely additive to a derived-cache file).
+    #[serde(default)]
+    pub applied_seq: u64,
     /// Unique run identifier (ULID). Validated on read.
     pub run_id: RunId,
     /// Kind of work this run performs.

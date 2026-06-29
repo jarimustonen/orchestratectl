@@ -3,6 +3,7 @@ source: crates/octl-core/tests/reducer_snapshots.rs
 expression: mv
 ---
 {
+  "applied_seq": 4,
   "created_at": "<ts>",
   "kind": "code",
   "lifecycle": "interactive",

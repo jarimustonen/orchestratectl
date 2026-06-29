@@ -26,7 +26,7 @@ Each Decision/Why/Trade-offs block below expands one of these rows.
 
 **Trade-offs accepted:**
 - Writes are amplified: append event + atomically rewrite each touched projection file. At ~100 concurrent agents and ~10 events/sec each, this is ~1000 small writes/sec — well within laptop FS capacity but not free.
-- Cross-file consistency is not guaranteed across a crash: an event may land before its projection rewrite. The event log remains canonical, so a future `rebuild-projections` tool can heal projections. MVP does not ship that tool; in MVP the discipline is "projections are best-effort caches, event log is truth, crash recovery is treated as a known gap until v2."
+- Cross-file consistency across a crash is healed by an **`applied_seq` watermark** in `manifest.json` rather than left as a gap. The watermark is the highest event `seq` whose projection fold is durably committed; the writer advances it (fsync) only *after* every projection an event touches is fsynced, so the event log may run ahead of the projections but never the reverse. On the next lock acquisition (any writer or supervisor restart), unapplied tail events (`seq > applied_seq`) are replayed through the reducer before any new append, and an idempotency-key replay catches the projection up before returning the prior event. The reducer's existence/terminal guards make re-folding an already-applied event a no-op, so replay never double-counts. The event log remains canonical (a full `rebuild-projections` from scratch is still a possible future tool); the watermark makes the everyday append+apply pair effectively atomic. A `manifest.json` written before the field existed reads as `applied_seq = 0` (additive serde default) and self-migrates on its next write via a one-time idempotent full replay — no schema bump.
 - Ad-hoc cross-run queries ("show every open discussion across runs") are a directory walk + JSON parse — fine at MVP scale, would degrade at 10× scale.
 - Advisory `flock` is cooperative: a non-conforming script that writes the file directly without locking can still corrupt state. Mitigation: skill-shim documentation explicitly bans direct file writes; `orchestratectl event create` is the only sanctioned path.
 - `seq` counter must be re-read from the last line of `events.jsonl` for every short-lived `event create`; for long-running supervisors the counter is cached in memory. Watched performance risk for very long logs (see `validation.md`).
@@ -74,6 +74,7 @@ Root: `~/.orchestratectl/` (overridable via `$ORCHESTRATECTL_HOME`).
 ```json
 {
   "schema_version": 1,
+  "applied_seq": 7,
   "run_id": "01jx...",
   "kind": "spinoff",
   "lifecycle": "autonomous",
@@ -92,6 +93,7 @@ Root: `~/.orchestratectl/` (overridable via `$ORCHESTRATECTL_HOME`).
 }
 ```
 
+- `applied_seq`: the append+apply atomicity watermark — the highest `events.jsonl` `seq` whose projection fold is durably committed (see the "Trade-offs accepted" note above). Advanced (fsync) only after every projection an event touches is fsynced; events with `seq > applied_seq` are replayed before the next append. Additive: a manifest written before this field existed reads as `0` and self-heals on its next write.
 - `kind`: enum, all 8 kinds active in MVP — `code | spinoff | orchestrated | research | technical-decision | make-skill | fan-out | bugfix`.
 - `lifecycle`: enum `autonomous | interactive`.
   - `autonomous` runs (spinoff, research, orchestrated, fan-out, bugfix, technical-decision, make-skill) terminate themselves on completion and supervisor watchdog treats unexpected exit as `failed`.

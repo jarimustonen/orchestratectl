@@ -9,6 +9,19 @@
 //! exists; status/resolution reducers are no-ops once the terminal state
 //! has been reached. Replaying the same event stream against existing
 //! projections must not double-count manifest counters.
+//!
+//! This idempotence is load-bearing for the `applied_seq` watermark
+//! (append-then-apply atomicity; see [`crate::schema::Manifest::applied_seq`]
+//! and [`crate::events::append_and_apply_event`]). Of the two options the spec
+//! offered — make the reducer idempotent, OR have the writer skip events
+//! already reflected in the projection — we chose **idempotent reducer**: the
+//! existence/terminal guards already present here mean the catch-up replay can
+//! re-fold *any* tail event (one whose projection landed before a crash, or one
+//! whose projection did not) with the same no-op-or-apply outcome, so the
+//! writer needs no per-event "already applied?" probe. The watermark advances
+//! only after an event's projections are fsynced, so it can lag the projections
+//! but never lead them; a re-fold of an already-applied event therefore cannot
+//! double-count.
 
 use std::path::{Path, PathBuf};
 
@@ -390,6 +403,9 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     let title = want_str(&events_path, ev, d, "title")?.to_string();
     let m = Manifest {
         schema_version: STATE_SCHEMA_VERSION,
+        // Created at the watermark floor; the append path advances it to this
+        // event's `seq` (after the manifest is fsynced) in `advance_applied_seq`.
+        applied_seq: 0,
         // `run_id == paths.run_id` was verified at `reduce_event_to_ops` entry.
         run_id: paths.run_id.clone(),
         kind,

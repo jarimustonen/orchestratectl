@@ -7,6 +7,7 @@ expression: value
   "data": {
     "manifest": {
       "schema_version": 1,
+      "applied_seq": 1,
       "run_id": "[RUN_ID]",
       "kind": "spinoff",
       "lifecycle": "autonomous",
