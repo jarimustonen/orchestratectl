@@ -1,9 +1,10 @@
 ---
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 type: feature
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # End-to-end test harness for autonomous-spinoff full lifecycle
