@@ -158,6 +158,86 @@ fn create_sh_exit_2_propagates_as_system_error() {
     );
 }
 
+/// A fixture create.sh that records its own argv to `argv_path` (one arg per
+/// line) before emitting the canned success envelope. Lets a test assert which
+/// flags `run create` forwarded to create.sh.
+fn write_argv_recording_create_sh(
+    dir: &TempDir,
+    argv_path: &std::path::Path,
+    stdout: &str,
+) -> PathBuf {
+    let path = dir.path().join("argv-create.sh");
+    let body = format!(
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'EOF'\n{stdout}\nEOF\nexit 0\n",
+        argv_path.display()
+    );
+    std::fs::write(&path, body).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    path
+}
+
+#[test]
+fn headless_forwards_parent_session_to_create_sh() {
+    // `home` reaps the spawned supervisor on drop, before the run dir vanishes.
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "hl",
+        "--task",
+        "do work",
+        "--headless",
+    ]));
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    let forwarded: Vec<&str> = recorded.lines().collect();
+    // `--headless` with no explicit name resolves to the default `headless`
+    // session, forwarded as the `--parent-session <name>` pair.
+    let pos = forwarded
+        .iter()
+        .position(|a| *a == "--parent-session")
+        .unwrap_or_else(|| panic!("--parent-session not forwarded; argv={forwarded:?}"));
+    assert_eq!(
+        forwarded.get(pos + 1).copied(),
+        Some("headless"),
+        "--parent-session value should be the default headless session; argv={forwarded:?}"
+    );
+}
+
+#[test]
+fn foreground_omits_parent_session_flag() {
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    run_ok(bin(&home, &script).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "fg", "--task",
+        "do work",
+    ]));
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    assert!(
+        !recorded.lines().any(|a| a == "--parent-session"),
+        "foreground spawn must not forward --parent-session; argv={recorded:?}"
+    );
+}
+
 #[test]
 fn task_writes_prompt_file_in_run_dir() {
     // `home` reaps the supervisor `run create` spawns when it drops, before
