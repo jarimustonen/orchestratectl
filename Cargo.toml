@@ -35,6 +35,7 @@ ctrlc = { version = "3.4", features = ["termination"] }
 sha2 = "0.10"
 libc = "0.2"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+serial_test = { version = "3", default-features = false, features = ["file_locks"] }
 
 [profile.release]
 lto = "thin"

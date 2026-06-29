@@ -10,6 +10,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Initial CHANGELOG.
 
+### Fixed
+
+- `supervise_gates` + `e2e_spinoff` test binaries serialize on a process-
+  wide file lock (`/tmp/octl-test-supervise.lock` via `serial_test`'s
+  `#[file_serial]`). Under `cargo test --workspace` the binaries used to
+  race on filesystem bandwidth; the long-lived supervisor tests
+  (`self_terminate_when_whole_run_dir_removed`, `_when_run_dir_vanishes`)
+  could miss their self-terminate deadline. Closes
+  `flaky-self-terminate-test`.
+
+### Deferred to v0.2
+
+- `runwriter-batched-append-api` — a long-lived `RunWriter` guard with
+  cached `next_seq` + batched fsync to cut the V4 append p99 (639ms) to
+  the 10ms budget. The architectural fix overlaps with the just-landed
+  `applied_seq` watermark, `LockedRun` witness, and `AppendOutcome`
+  idempotency API; lands cleaner once those primitives have shaken out.
+  Current workloads (one append per agent action) do not hit the
+  back-pressure path.
+
 ## [0.1.0] — pre-release
 
 First publishable cut. The CLI is real, the bundled skill family covers
@@ -79,20 +99,12 @@ event log + lock-gated reducer.
 - `orchestrator.decision` and `discuss.critical` event kinds are accepted
   by the validator.
 
-### Known gaps (gating v0.1.0 publish)
+### Known gaps (carried to v0.2)
 
-The pre-publication campaign tracked in `TODO.md` is in flight. The
-B-phase data-integrity + orchestrate-polish bugs are landed (see Fixed
-above). Open at this snapshot:
-
-- B1.4 (`manifest-counter-desync`) in flight as a spinoff.
-- Phase C read-side / API / safety improvements (~15 issues).
-- 3 spinoff-surfaced follow-ons: `concurrent-spinoff-report-path-race`,
-  `headless-cancel-leaves-tmux-window`, `merge-sh-tmux-pane-recovery`.
-- `doc-links-octl-core-broken` (CI doc job currently failing).
-
-Zero open issues is a release gate. See `TODO.md` for the active
-sequence.
+- `runwriter-batched-append-api` — see `[Unreleased] → Deferred to v0.2`.
+  Append p99 of 639ms is well within budget for the one-per-action write
+  cadence today; tight back-pressure loops (a supervisor batching many
+  events) will surface this and motivate the redesign.
 
 [Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jarimustonen/orchestratectl/releases/tag/v0.1.0

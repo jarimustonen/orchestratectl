@@ -1,10 +1,11 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-29
 type: improvement
-status: open
+status: wontfix
 priority: normal
 epic: orchestratectl-mvp
+closed: 2026-06-29
 ---
 
 # RunWriter: cached next_seq + batched fsync

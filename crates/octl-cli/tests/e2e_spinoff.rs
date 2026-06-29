@@ -32,6 +32,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use serial_test::file_serial;
 use tempfile::TempDir;
 
 mod common;
@@ -161,6 +162,7 @@ fn run_ok(cmd: &mut Command) -> Value {
 /// sequence, terminal manifest, and projection counts — then prove no
 /// supervisor or agent process leaked.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn spinoff_round_trip_reaches_done_and_tears_down() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();

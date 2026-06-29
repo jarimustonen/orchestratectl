@@ -11,6 +11,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
+use serial_test::file_serial;
 use tempfile::TempDir;
 
 mod common;
@@ -225,6 +226,7 @@ fn latest_run_status(events: &Path) -> Option<String> {
 /// needed — and (2) have its tmux window closed, worktree removed, and branch
 /// deleted on the same terminal transition.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn terminal_report_rolls_run_to_done_and_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -270,6 +272,7 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
 /// `run.status: failed`, and cleanup still fires (a failed autonomous run is
 /// just as much in need of teardown as a successful one).
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn failed_report_rolls_run_to_failed_and_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -298,6 +301,7 @@ fn failed_report_rolls_run_to_failed_and_cleans_up() {
 /// (the existing path). The supervisor must still perform the autonomous
 /// teardown when it next ticks over the now-terminal run.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn terminal_via_cancel_still_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -345,6 +349,7 @@ fn terminal_via_cancel_still_cleans_up() {
 /// other run, but must NOT have their tmux window / worktree torn down — the
 /// human owns that window.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn interactive_kind_completes_but_skips_cleanup() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -387,6 +392,7 @@ fn interactive_kind_completes_but_skips_cleanup() {
 /// user ran the merge, so the review window has served its purpose. This
 /// closes the last manual-cleanup gap in the interactive worktree lifecycle.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn interactive_kind_with_explicit_merge_cleans_up() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -430,6 +436,7 @@ fn interactive_kind_with_explicit_merge_cleans_up() {
 /// `cleanup.window_missing` audit event and STILL roll the run up to `done`. The
 /// run must not fail just because a window was already gone.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn missing_window_records_event_without_failing_run() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
@@ -485,6 +492,7 @@ fn missing_window_records_event_without_failing_run() {
 /// terminal — synthesizing a `node.report {failed: true,
 /// reason: "agent-died"}` event for the supervisor's reducer to fold.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn v2_agent_pid_discovery_via_liveness_probe() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v2-pid");
@@ -572,6 +580,7 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
 /// the watchdog's own PID, and (3) the watchdog's verdict on a dead
 /// PID is `Dead`. Cross-platform via the `sysinfo` crate path.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn v3_kill_and_start_time_identity() {
     // Stability: two reads of our own start_time differ by ≤ 1s.
     // (Already covered by a unit test on watchdog.rs; here we
@@ -665,6 +674,7 @@ fn forge_pid_node(home: &TempDir, run_id: &str, agent_pid: i64) -> std::path::Pa
 /// must suppress the synthesis. The test runs far inside the 5s window, so no
 /// `sleep` is needed.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn fresh_spawn_dead_pid_suppressed_within_grace() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "fresh-dead-grace");
@@ -691,6 +701,7 @@ fn fresh_spawn_dead_pid_suppressed_within_grace() {
 /// positive, it only suppresses one. Covers criterion 4's "fresh spawn with
 /// alive agent does not trigger watchdog".
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn fresh_spawn_alive_pid_no_synthesis() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "fresh-alive");
@@ -713,6 +724,7 @@ fn fresh_spawn_alive_pid_no_synthesis() {
 /// older than the grace. Covers criterion 4's "fresh spawn with dead agent does
 /// trigger watchdog (after grace)" and criterion 2.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn dead_pid_synthesizes_after_grace() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "dead-after-grace");
@@ -763,6 +775,7 @@ fn wedge_corrupt_middle_line(events: &Path) {
 /// single `supervisor.event_log_quarantined` event is emitted. After the heal
 /// the log replays strictly (no poison bytes left for a future reader).
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn corrupt_tail_line_is_quarantined_and_log_heals() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
@@ -817,6 +830,7 @@ fn corrupt_tail_line_is_quarantined_and_log_heals() {
 /// `supervisor.event_log_skipped_line` and skipped in memory, the bytes left
 /// on disk, never re-erroring on the same offset every tick.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn corrupt_tail_line_is_skipped_once_without_looping() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "corrupt-tail");
@@ -872,6 +886,7 @@ fn corrupt_tail_line_is_skipped_once_without_looping() {
 /// would panic on it; the lenient `count_kind_lenient` (used by `wait_for_kind`)
 /// skips it and still counts the intact records before it.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn lenient_poll_skips_torn_trailing_line() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "torn-tail");
@@ -903,6 +918,7 @@ fn lenient_poll_skips_torn_trailing_line() {
 /// the binary) so we can use the `FAULT_INJECT_AFTER_NTH` thread-local
 /// to crash mid-batch, then restart and verify exactly-once outcome.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn v7_deterministic_id_dedup_under_crash() {
     // We re-derive the same logic in-test by driving the CLI through
     // two distinct calls. Setup: a parent run with one spawning node,
@@ -1048,6 +1064,7 @@ fn v7_deterministic_id_dedup_under_crash() {
 /// guard for the supervisor-process review FIX (F3) — `ctrlc` could not
 /// surface which signal fired, so the old code exited 0 with no signal field.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn signal_exit_codes_and_payload() {
     use std::io::Read;
     for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
@@ -1135,6 +1152,7 @@ fn signal_exit_codes_and_payload() {
 /// buffered "supervisor started" event is provably still in flight at signal
 /// time — only the explicit `flush_logs()` drain gets it to disk before exit.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn sigterm_flushes_buffered_supervisor_logs() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "sigterm-flush");
@@ -1194,6 +1212,7 @@ fn sigterm_flushes_buffered_supervisor_logs() {
 /// the duplicate-terminal-report race — the watchdog re-reads `last_report`
 /// (now under the run lock) before committing a synthetic report.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn watchdog_defers_when_report_already_present() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "wd-defer");
@@ -1257,6 +1276,7 @@ fn watchdog_defers_when_report_already_present() {
 /// — the exact signal a closing terminal sends. Without `setsid` the
 /// supervisor would share the spawner's group and die.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn spawned_supervisor_survives_sighup_to_spawner_group() {
     use std::os::unix::process::CommandExt;
     use std::process::Command;
@@ -1380,6 +1400,7 @@ fn sig_num(sig: &str) -> libc::c_int {
 /// Reattach again: the previous supervisor is dead, so the new one
 /// boots cleanly. Demonstrates the stale-PID detection path.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn v8_reattach_end_to_end() {
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "v8");
@@ -1421,6 +1442,7 @@ fn v8_reattach_end_to_end() {
 /// and must (a) not emit any spinoffs/discussions from it, (b) advance
 /// `last_processed_report_seq_by_child` so a replay is a no-op.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn v9_cancel_synthesizes_report_no_spinoffs() {
     let home = TestHome::new();
     let parent = create_run(&home, "orchestrated", "v9-parent");
@@ -1539,6 +1561,7 @@ fn v9_cancel_synthesizes_report_no_spinoffs() {
 /// is removed — the TempDir-teardown case — there is no log to write to,
 /// and the event is correctly skipped; only the clean exit is observable.)
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn self_terminate_when_run_dir_vanishes() {
     use std::time::Instant;
 
@@ -1610,6 +1633,7 @@ fn self_terminate_when_run_dir_vanishes() {
 /// `append_and_apply_event` write through `create_dir_all`, so a sloppy
 /// implementation leaves a ghost dir behind after an operator's `rm -rf`.
 #[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn self_terminate_when_whole_run_dir_removed() {
     use std::time::Instant;
 

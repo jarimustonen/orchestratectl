@@ -6,9 +6,11 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-29 evening — handoff)
+## Status snapshot (2026-06-29 late evening)
 
-The 2026-06-29 pre-publication session is **essentially done**. 49 commits landed on `main` between `f96b36b` (start) and `94fe8cd` (current HEAD); the open-issue count went **29 → 1**.
+**Zero open issues.** `runwriter-batched-append-api` closed as `wontfix` with a v0.2 carry-over note in CHANGELOG. `flaky-self-terminate-test` fixed by serializing supervisor-spawning tests on a process-wide file lock (`serial_test::file_serial`).
+
+Remaining work to v0.1.0: Phase E6/E7/E8 (release pipeline via `cargo-dist`) + Phase F (publish).
 
 ### Closed this session
 
@@ -41,26 +43,6 @@ The 2026-06-29 pre-publication session is **essentially done**. 49 commits lande
 ---
 
 ## What's left
-
-### Phase D2 — `runwriter-batched-append-api` (1 issue, Jari decision)
-
-The only remaining open issue. Agent's recommendation, agreed with Jari this session: **close as `status: deferred-v0.2`**.
-
-Background: V4 append latency is 639ms p99 vs a 10ms budget. Current workloads (one append per agent action) do not hit the back-pressure path; the slow case is a single supervisor writing many events in a tight loop, which existing flows do not produce. The architectural fix (long-lived `RunWriter` guard with cached `next_seq` + batched fsync) overlaps with the just-landed `applied_seq` watermark, the `LockedRun` witness, and the `AppendOutcome` idempotency API — implementing it now would force a second design pass, so it lands cleaner once those primitives have shaken out.
-
-Action for next agent:
-
-```bash
-v=$(issuectl --json show runwriter-batched-append-api 2>&1 | jq -r '.version')
-issuectl --json close runwriter-batched-append-api --status deferred --expected-version "$v"
-# Then update CHANGELOG.md "Known gaps" to mention it as a v0.2 carry-over.
-```
-
-If Jari changes his mind and wants it in v0.1.0 anyway, the prompt brief at `/tmp/spinoff-prompts/` was never written — design it from `issues/runwriter-batched-append-api/item.md`.
-
-After this, `issuectl ls --status open` returns empty → zero open issues, publishable.
-
----
 
 ### Phase E — Remaining pre-publication polish
 
