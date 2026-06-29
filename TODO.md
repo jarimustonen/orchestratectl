@@ -6,208 +6,146 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-29 late afternoon)
+## Status snapshot (2026-06-29 evening — handoff)
 
-- ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — done.
-- ✅ **Follow-up campaign** (21 review-spinoff issues + 9 packs) — all merged.
-- ✅ **Skill-bundling campaign** — closed `done` (`f96b36b`).
-- ✅ **Phase A** — skill-bundling epic closed.
-- ✅ **Phase B (9/9)** — all data-integrity + orchestrate-polish bugs landed (`361839f`, `395ba03`, `cc4ff46`, `b7d0f2c`, `5ce764d`, `145905f`, `438aa29`, `11a5850`, `bfd7bfb`).
-- ✅ **Phase C1 (5/5)** — sequential safety improvements landed (`0c725ac`, `cce643c`, `f96024e`, `8fb1361`, `0fc1884`).
-- ✅ **Phase C2 (4 inline + 4 in flight)** — landed: `always-emit-warnings-array`, `envelope-schema-constant-relocation` (obsolete), `hoist-text-warning-formatting`, `passably-shaggy-parent`. In flight: `cli-text-output-escape`, `core-idempotency-api`, `supervisor-state-not-event-sourced`, `headless-cancel-leaves-tmux-window`.
-- ✅ **Phase C3 (2/3)** — `macos-ci-matrix`, `idempotency-hash-golden-test` landed. `spinoff-e2e-harness` remaining.
-- ✅ **Phase E (most)** — README, CHANGELOG, ISSUE_TEMPLATEs, CONTRIBUTING, SECURITY, Cargo.toml metadata, macOS CI matrix all landed.
-- ✅ **Critical session-found bugs** — `find-window-by-path-cross-session-kill` (high; could kill user's master pane on merge), `merge-sh-tmux-pane-recovery` (deferred to supervisor), `doc-links-octl-core-broken` (CI doc job now green), `concurrent-spinoff-report-path-race` (SKILL templates now use `/tmp/node-report-${run_id}.json`).
-- 🟡 **Phase C2 batch 2** — `cli-json-dto-layer`, `projected-paths-into-reducer`, `spinoff-e2e-harness` to spawn after current batch lands.
-- 🟡 **Phase D** — 2 issues await user decision (see below).
-- 🟡 **Pre-publication campaign** — open issue count went 29 → ~10. Target zero before `v0.1.0` tag.
+The 2026-06-29 pre-publication session is **essentially done**. 49 commits landed on `main` between `f96b36b` (start) and `94fe8cd` (current HEAD); the open-issue count went **29 → 1**.
+
+### Closed this session
+
+- **Phase A** — `skill-bundling-campaign` epic closed.
+- **Phase B (9/9)** — all data-integrity + `/orchestrate` polish bugs:
+  `apply-event-atomicity-watermark`, `torn-write-truncate-tail`, `recover-last-seq-empty-lines`, `manifest-counter-desync`, `headless-parent-session-rejected`, `orchestrated-source-branch-ignored`, `failed-spawn-leaves-phantom-child`, `supervisor-worktree-remove-no-force`, `worktree-merge-orphans-tmux-window`.
+- **Phase C1 (5/5)** — safety improvements:
+  `read-side-shared-lock`, `reducer-path-traversal-defense`, `locked-run-witness-type`, `spinoff-issuectl-subprocess-bounds`, `spinoff-issuectl-materialization-arch`.
+- **Phase C2 (9/9)** — output / API cleanups:
+  `always-emit-warnings-array`, `envelope-schema-constant-relocation` (obsolete), `hoist-text-warning-formatting`, `passably-shaggy-parent`, `cli-text-output-escape`, `core-idempotency-api`, `supervisor-state-not-event-sourced`, `cli-json-dto-layer`, `projected-paths-into-reducer`.
+- **Phase C3 (3/3)** — `macos-ci-matrix`, `idempotency-hash-golden-test`, `spinoff-e2e-harness`.
+- **Phase D1** — `help-json-depth-control` shipped. Schema bumped to v3; default depth=1 cuts top-level `--help --json` from ~4300 lines to 153. `--depth N` and `--depth tree` drill-down.
+- **Phase E (most)** — `README.md`, `CHANGELOG.md`, `.github/ISSUE_TEMPLATE/`, `CONTRIBUTING.md`, `SECURITY.md`, `Cargo.toml` workspace metadata, macOS CI matrix. CI doc job now green (`doc-links-octl-core-broken` closed).
+- **Session-found bugs (high priority)** —
+  `find-window-by-path-cross-session-kill` (would have killed user's master pane on merge — session-scoped + exact-cwd match now),
+  `skill-progress-polling-wrong-field` (SKILLs steered agents at the wrong field for completion polling — branch on `manifest.status` now),
+  `merge-sh-tmux-pane-recovery` (deferred to supervisor),
+  `concurrent-spinoff-report-path-race` (SKILL templates now use `/tmp/node-report-${run_id}.json`),
+  `headless-cancel-leaves-tmux-window`.
 
 ### What works for real-world use today
 
-- `/worktree-spinoff`, `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill` — autonomous spawn → work → merge → self-cleanup. Master-pane-kill risk fixed in `1968616`.
-- `/worktree-code` + `/worktree-merge` — interactive review, then explicit merge cleans up. Supervisor is now the canonical teardown actor (`119a13e`).
-- `/fan-out` — N identical units with manifest + resume + auto-cleanup per child.
-- `/orchestrate` — DAG runtime; all 4 smoke-found polish bugs landed; safe to use for real campaigns now.
+- `/worktree-spinoff`, `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill` — autonomous spawn → work → merge → self-cleanup. Master-pane-kill risk fixed.
+- `/worktree-code` + `/worktree-merge` — interactive review, then explicit merge cleans up. Supervisor is the canonical teardown actor.
+- `/fan-out` — N identical units with manifest + resume + auto-cleanup.
+- `/orchestrate` — DAG runtime; all 4 smoke-found polish bugs landed.
+
+`orchestratectl doctor` is currently `126 ok / 0 fail / 0 warn`.
 
 ---
 
-## Active goal: zero open issues, GitHub-publishable
+## What's left
 
-Currently **29 open issues** (snapshot 2026-06-29). The plan below brings that to zero, then publishes. Sequenced so correctness-affecting bugs land before polish, and held items get a decision before the publication tag.
+### Phase D2 — `runwriter-batched-append-api` (1 issue, Jari decision)
 
----
+The only remaining open issue. Agent's recommendation, agreed with Jari this session: **close as `status: deferred-v0.2`**.
 
-## Phase A — Close the skill-bundling-campaign epic
+Background: V4 append latency is 639ms p99 vs a 10ms budget. Current workloads (one append per agent action) do not hit the back-pressure path; the slow case is a single supervisor writing many events in a tight loop, which existing flows do not produce. The architectural fix (long-lived `RunWriter` guard with cached `next_seq` + batched fsync) overlaps with the just-landed `applied_seq` watermark, the `LockedRun` witness, and the `AppendOutcome` idempotency API — implementing it now would force a second design pass, so it lands cleaner once those primitives have shaken out.
 
-The epic itself ([`skill-bundling-campaign`](issues/skill-bundling-campaign/item.md), `status: open`) still has the original "open" marker even though every child phase has merged and the bonus `bundle-worktree-merge` capstone has shipped. Update its body with the final state (10 + 1 bundled SKILLs, deployment notes, references to the 4 polish bugs as the natural follow-on) and close it.
+Action for next agent:
 
-- `issuectl close skill-bundling-campaign --status done`
+```bash
+v=$(issuectl --json show runwriter-batched-append-api 2>&1 | jq -r '.version')
+issuectl --json close runwriter-batched-append-api --status deferred --expected-version "$v"
+# Then update CHANGELOG.md "Known gaps" to mention it as a v0.2 carry-over.
+```
 
-Single commit, ~10 min.
+If Jari changes his mind and wants it in v0.1.0 anyway, the prompt brief at `/tmp/spinoff-prompts/` was never written — design it from `issues/runwriter-batched-append-api/item.md`.
 
----
-
-## Phase B — Fix bugs (correctness gate for publication)
-
-Order: data-integrity → UX-affecting → polish. Some can run in parallel as `/worktree-spinoff`s (no overlap in files); some must serialize because they touch the same paths.
-
-### B1. Data-integrity bugs (must fix before publish)
-
-These can corrupt run state on disk. Block publication.
-
-| # | Issue | Why blocking |
-|---|---|---|
-| 1 | [`apply-event-atomicity-watermark`](issues/apply-event-atomicity-watermark/item.md) | Append-then-apply is not atomic across reducer failure → state can desync from event log |
-| 2 | [`torn-write-truncate-tail`](issues/torn-write-truncate-tail/item.md) | `events.jsonl` torn-write recovery doesn't truncate cleanly → corrupted line on next read |
-| 3 | [`recover-last-seq-empty-lines`](issues/recover-last-seq-empty-lines/item.md) | `recover_last_seq` doesn't loop over multiple trailing empty lines |
-| 4 | [`manifest-counter-desync`](issues/manifest-counter-desync/item.md) | Reducer manifest counters can permanently desync after partial failure |
-
-### B2. /orchestrate polish bugs (surfaced by yesterday's smoke)
-
-`/orchestrate` works for toy cases but these four need fixing before it's safe at scale. All are `high` (or effectively so).
-
-| # | Issue | Pri |
-|---|---|---|
-| 5 | [`headless-parent-session-rejected`](issues/headless-parent-session-rejected/item.md) | high |
-| 6 | [`orchestrated-source-branch-ignored`](issues/orchestrated-source-branch-ignored/item.md) | high |
-| 7 | [`failed-spawn-leaves-phantom-child`](issues/failed-spawn-leaves-phantom-child/item.md) | (effectively high) |
-| 8 | [`supervisor-worktree-remove-no-force`](issues/supervisor-worktree-remove-no-force/item.md) | (effectively high) |
-
-### B3. Other open bugs
-
-| # | Issue | Notes |
-|---|---|---|
-| 9 | [`worktree-merge-orphans-tmux-window`](issues/worktree-merge-orphans-tmux-window/item.md) | `worktree-merge`: tmux window orphaned when a rebase fails partway |
-
-**Recommended approach.** Spawn B1 sequentially (touch reducer / event-log internals, conflict risk). B2 spawn in parallel (mostly disjoint files). B3 can ride with B2 (worktree-merge cleanup is independent).
+After this, `issuectl ls --status open` returns empty → zero open issues, publishable.
 
 ---
 
-## Phase C — Land improvements
+### Phase E — Remaining pre-publication polish
 
-Order: correctness/safety improvements first, then ergonomics, then nice-to-haves.
+These are not blocked by anything; they can land in any order before the `v0.1.0` tag.
 
-### C1. Safety / correctness improvements
+| # | Task | Status | Notes |
+|---|---|---|---|
+| E5 | GitHub Actions CI | ✅ partial | `cargo test --workspace` matrix (ubuntu+macos), `clippy`, `fmt`, `cargo-deny`, `cargo doc` all gated. Re-verify after publish-config changes. |
+| E6 | Release pipeline | ⬜ todo | Pick `cargo-dist` (recommended — bundles E7+E8 automation) or `release-plz`. Generates `.github/workflows/release.yml`. Needs `publish = true` on both crates (currently `false`). |
+| E7 | Homebrew tap | ⬜ todo | `cargo-dist` writes the formula to a configured tap repo (`jarimustonen/homebrew-tap`?) on every release. Otherwise hand-craft per the `worktree-spinoff` SKILL.md install snippet. |
+| E8 | Shell installer | ⬜ todo | `cargo-dist` also generates `orchestratectl-installer.sh`. The SKILL placeholder is currently `curl -LsSf https://...`-shaped; point it at the GitHub release URL once cargo-dist publishes one. |
+| E10 | Doc build / docs.rs metadata | ✅ effectively | `cargo doc --workspace --no-deps` runs clean under `RUSTDOCFLAGS=-D warnings` (CI gate). Optional: add `[package.metadata.docs.rs]` for fine-grained control. |
 
-| # | Issue |
-|---|---|
-| 1 | [`read-side-shared-lock`](issues/read-side-shared-lock/item.md) — read paths need shared flock |
-| 2 | [`reducer-path-traversal-defense`](issues/reducer-path-traversal-defense/item.md) — path-traversal defense for IDs |
-| 3 | [`locked-run-witness-type`](issues/locked-run-witness-type/item.md) — type-system enforcement for lock-held writes |
-| 4 | [`spinoff-issuectl-subprocess-bounds`](issues/spinoff-issuectl-subprocess-bounds/item.md) — bound issuectl subprocess |
-| 5 | [`spinoff-issuectl-materialization-arch`](issues/spinoff-issuectl-materialization-arch/item.md) — redesign spin-off issuectl materialization |
-
-### C2. Output / API cleanups
-
-| # | Issue |
-|---|---|
-| 6 | [`always-emit-warnings-array`](issues/always-emit-warnings-array/item.md) — feature |
-| 7 | [`cli-json-dto-layer`](issues/cli-json-dto-layer/item.md) — DTO layer for `--json` payloads |
-| 8 | [`cli-text-output-escape`](issues/cli-text-output-escape/item.md) — escape control chars in text output |
-| 9 | [`core-idempotency-api`](issues/core-idempotency-api/item.md) — centralize `--idempotency-key` |
-| 10 | [`envelope-schema-constant-relocation`](issues/envelope-schema-constant-relocation/item.md) — relocate envelope SCHEMA_VERSION |
-| 11 | [`hoist-text-warning-formatting`](issues/hoist-text-warning-formatting/item.md) — central text-mode warning emission |
-| 12 | [`passably-shaggy-parent`](issues/passably-shaggy-parent/item.md) — surface dropped-log count on error envelopes |
-| 13 | [`projected-paths-into-reducer`](issues/projected-paths-into-reducer/item.md) — move projection enumeration into reducer |
-| 14 | [`supervisor-state-not-event-sourced`](issues/supervisor-state-not-event-sourced/item.md) — make supervisor state event-sourced |
-
-### C3. Tests / CI
-
-| # | Issue |
-|---|---|
-| 15 | [`spinoff-e2e-harness`](issues/spinoff-e2e-harness/item.md) — end-to-end test harness (already started, bounced by PTY; retry with `--headless` once B2 lands) |
-| 16 | [`idempotency-hash-golden-test`](issues/idempotency-hash-golden-test/item.md) — golden test for idempotency-key hash |
-| 17 | [`macos-ci-matrix`](issues/macos-ci-matrix/item.md) — macOS CI matrix |
-
-**Recommended approach.** C1 sequentially (locking + safety code is conflict-prone). C2 in batches of 3–4 in parallel. C3 last (validates the rest).
+**Recommended order for E6–E8:** install `cargo-dist`, run `cargo dist init` interactively, commit the generated workflow + `dist-workspace.toml`, set both crates to `publish = true`, push a `v0.0.2-alpha` test tag to verify the release pipeline produces binaries + a tap formula. Then proceed to Phase F with confidence.
 
 ---
 
-## Phase D — Held items: Jari decisions needed
+## Phase F — Publish (the actual release)
 
-These two have been sitting in "needs product decision" for a while. Before publication, each gets a clear yes/no — implement, defer-with-issue-closed-as-deferred, or close-as-wontfix.
+**Don't reverse the order.** Each step depends on the previous.
 
-| # | Issue | Decision needed |
-|---|---|---|
-| D1 | [`help-json-depth-control`](issues/help-json-depth-control/item.md) | Schema bump for `--help --json` top-level depth — is it needed pre-publication, or close as wontfix? |
-| D2 | [`runwriter-batched-append-api`](issues/runwriter-batched-append-api/item.md) | V4 latency 639ms p99 vs 10ms budget — accepted post-MVP per B1 decision; still accepted, or fix before publication? |
-
-### Agent's recommendation (2026-06-29)
-
-**D1 — IMPLEMENT before v0.1.0.** A 2100-line firehose on the very first `orchestratectl --help --json` an agent runs is bad first-impression UX, and the SKILL family teaches agents to use `--output json` for discovery. Proposed shape: default depth 1 (each node lists immediate subcommands as `{name, about, aliases}`), opt-in `--tree` for full recursion. Schema bumps to `2`; old shape stays available via `--depth full`. ~half-day of work. Spawn as `/worktree-spinoff` once B is clear.
-
-**D2 — DEFER to v0.2.0, document in CHANGELOG known-gaps.** The 639ms p99 is felt only when a single supervisor appends many events in a tight loop — current workloads (one append per agent action) are below that frequency. Architectural change (long-lived RunWriter guard) is substantial and overlaps with the data-integrity work in B1.1–B1.4; doing it now risks merge conflicts and forces a second design pass once the watermark settles. Close the issue with `status: deferred-v0.2` and move on.
-
-Bring these up early in the post-resume session — D2 just needs your nod to close, D1 needs ~3 hours of focused work.
-
----
-
-## Phase E — Pre-publication polish
-
-Mechanical but required for a presentable GitHub release.
-
-| # | Task | Notes |
-|---|---|---|
-| E1 | `README.md` at repo root | Project pitch, install (homebrew / cargo / shell), `orchestratectl skill print orchestratectl-overview` as the agent's onboarding, examples. The SKILLs already encode the operating manual — README links to them. |
-| E2 | `LICENSE` | Pick (MIT? Apache-2? dual?). If MIT, drop the standard file. |
-| E3 | `CHANGELOG.md` | `v0.1.0` entry covering everything that landed; reference closed issues. |
-| E4 | `Cargo.toml` metadata | `description`, `homepage`, `repository`, `keywords`, `categories`, `license`. Required for crates.io publication. |
-| E5 | GitHub Actions CI | `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, plus the SKILL example CI gate (already exists) and `macos-ci-matrix` (issue C3 #17) once landed. |
-| E6 | Release pipeline | `cargo-release` or `release-plz` — automates version bump, changelog, tag, crates.io publish, GitHub release. |
-| E7 | Homebrew tap | `jarimustonen/orchestratectl` per the SKILL.md install instructions. Currently a placeholder — make it real. |
-| E8 | Shell installer | `curl -LsSf .../orchestratectl-installer.sh | sh` per SKILL.md. Currently a placeholder — wire up via `cargo-dist` or similar. |
-| E9 | Repo hygiene | `.github/ISSUE_TEMPLATE/`, `CONTRIBUTING.md` (optional v0.1.0; required if accepting external PRs), `SECURITY.md` (optional). |
-| E10 | Doc build | Verify `cargo doc` is clean; consider docs.rs metadata in `Cargo.toml`. |
+1. `issuectl ls --status open` must return empty (currently 1 — see Phase D2).
+2. `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` — all clean.
+3. Bump workspace version `0.0.1 → 0.1.0` in `Cargo.toml`.
+4. Update `CHANGELOG.md` — replace the `[Unreleased]` heading with `[0.1.0] — 2026-MM-DD` and add a fresh `[Unreleased]` above it.
+5. Flip `publish = false` → `publish = true` on `crates/octl-core/Cargo.toml` and `crates/octl-cli/Cargo.toml`.
+6. Commit + tag: `git commit -m "release: v0.1.0"` then `git tag -s v0.1.0 -m "v0.1.0"` (signed tag — Jari's GPG).
+7. `git push && git push --tags`. GitHub Actions cuts the release.
+8. Publish to crates.io in dependency order: `cargo publish -p octl-core` first, wait ~30s for index update, then `cargo publish -p octl-cli`.
+9. If using `cargo-dist`, the tap formula auto-updates. If hand-crafted: bump `jarimustonen/homebrew-tap` to point at the new release artifacts.
+10. **Smoke** on a clean shell:
+    - `cargo install orchestratectl` — installs from crates.io.
+    - `brew install jarimustonen/orchestratectl/orchestratectl` — installs from tap.
+    - `curl -LsSf <installer-url> | sh` — shell installer.
+    - `orchestratectl version` should report `0.1.0`, `orchestratectl skill install --force` deploys, `orchestratectl doctor` is clean.
+11. Announce / hand to early users. Archive this TODO.md (move to `issues/v0.1.0-release-campaign/handoff.md` and seed a new TODO for v0.2.0).
 
 ---
 
-## Phase F — Publish
+## How to start where the previous agent left off
 
-Order is meaningful — don't reverse:
+You are very likely starting from a **clean main** (~50 commits ahead of origin, all merged through `orchestratectl run merge` from this session's spinoffs).
 
-1. Confirm zero open issues (`issuectl ls --status open` returns empty).
-2. Final `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all clean.
-3. Bump version to `0.1.0` in workspace `Cargo.toml`.
-4. Update `CHANGELOG.md` with the `v0.1.0` entry.
-5. Tag `v0.1.0` and push.
-6. GitHub Actions cuts a release, uploads binaries (via cargo-dist or equivalent).
-7. Publish to crates.io (`cargo publish` from each workspace member, in dependency order — `octl-core` first, then `octl-cli`).
-8. Update Homebrew tap with the v0.1.0 formula.
-9. Smoke: `brew install jarimustonen/orchestratectl/orchestratectl` on a clean machine works; `cargo install orchestratectl` works; shell installer works.
-10. Announce / hand over to early users.
+1. **Sanity-check first:**
+   ```bash
+   git log --oneline -5            # confirm HEAD matches what's described here
+   issuectl ls --status open       # should show 1 issue (D2 runwriter-batched-append-api), or 0 if Jari closed it
+   orchestratectl doctor           # should report ok=126 fail=0 warn=0
+   cargo test --workspace          # should be green (one occasionally-flaky test: self_terminate_when_whole_run_dir_removed — passes in isolation)
+   ```
 
----
+2. **Decision item:** confirm Phase D2 closure with Jari if it's still open. The `issuectl close ... --status deferred` call is the only blocker between current state and zero-open-issues.
 
-## How to start a phase (for the next agent)
+3. **Mainline work:** Phase E6/E7/E8 (release pipeline). Start with `cargo dist init`; that one tool covers all three. It WILL want both crates to flip to `publish = true` — defer that flip until you've verified everything else, since it's the smallest reversible change.
 
-1. **First**: read `git log --oneline -30` and `issuectl ls --status open` to confirm current state matches this TODO.
-2. Pick the lowest-numbered unfinished item in the current phase.
-3. **Default workflow for code fixes**: spawn `/worktree-spinoff <issue-slug>` (autonomous). The SKILL now handles spawn → work → merge → `orchestratectl run merge` → self-cleanup end-to-end.
-4. **For substantial / cross-cutting changes**: spawn `/worktree-code <issue-slug>` (interactive) so a human reviews before merge.
-5. **For parallelizable batches** (e.g. several disjoint improvements): spawn 3–5 spinoffs in succession, set a `Monitor` watching `orchestratectl event tail` for `node.report|run.status|supervisor.exited` events, and continue with the next batch when they land.
-6. **For multi-feature campaigns** (e.g. release pipeline = E5 + E6 + E7 + E8 together): `/orchestrate` is now battle-tested at toy scale but needs the B2 fixes before scaling — until then, use a sequence of `/worktree-spinoff`s with the orchestrator agent reading the report after each.
-7. After each merge: confirm via `git log --oneline -5` that it landed, `issuectl --json show <slug>` reports `status: closed`, and `pgrep -lf "orchestratectl.*supervise"` doesn't include any of your spawns (= auto-cleanup worked).
-8. If a fix surfaces a NEW bug, file it as a new issue and add it to this TODO under the appropriate phase.
+4. **When you spawn worktrees:** all 13 bundled SKILLs are deployed (`~/.claude/skills/`). The corrected progress-polling guidance (`branch on data.manifest.status`, not `lifecycle`) is in place — use it directly. Reports go to `/tmp/node-report-${run_id}.json` to avoid the concurrent-write race.
 
----
+5. **If a fix surfaces a new bug:** file it via `issuectl new --title "..." --type bug --priority high --slug <descriptive-2-3-word-kebab>`. Don't add to this TODO; track it through issuectl.
 
-## Estimate (rough)
-
-- Phase A: 10 min (one commit closing the epic).
-- Phase B: ~6–10 h total. B1 ~1h each (4 items, sequential). B2 ~30 min each (4 items, parallel-able). B3 ~30 min.
-- Phase C: ~10–15 h total. C1 ~1h each (5 items, mostly sequential). C2 ~30 min each (9 items, parallel-able in batches). C3 ~1h each (3 items).
-- Phase D: ~30 min total (Jari decision + execution per item).
-- Phase E: ~5–8 h total (E1–E4 ~1h each, E5–E8 ~1h each, E9–E10 ~30 min each).
-- Phase F: ~2 h end-to-end.
-
-**Grand total: ~25–35 h across multiple sessions.** Spreadable across days; nothing is path-blocked except B → E (don't publish before bugs fixed), D → F (decisions before tag).
+6. **After each merge:**
+   ```bash
+   git log --oneline -5             # confirm landed
+   issuectl --json show <slug>      # status: fixed/closed
+   pgrep -lf 'orchestratectl.*supervise'   # should show no supervisors from this session
+   ```
 
 ---
 
-## When the campaign finishes
+## Rough remaining estimate
 
-- `issuectl ls --status open` returns empty.
-- `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all green.
-- `v0.1.0` tag pushed, GitHub release live, crates.io package published, Homebrew tap updated.
-- README, CHANGELOG, LICENSE, CI all in place.
-- This TODO.md gets archived (move to `issues/<v0.1.0-release-campaign>/handoff.md` and replace with a fresh skeleton for v0.2.0 planning).
+- D2 closure: 2 min (one issuectl call + CHANGELOG line).
+- E6 + E7 + E8 via `cargo-dist`: 1–2 h (init, verify on a throwaway tag, iterate).
+- Phase F end-to-end: 1–2 h (assuming clean smoke).
+
+**Total to v0.1.0 published: ~3–4 h of focused work.** Nothing path-blocked, nothing waiting on review.
+
+---
+
+## Notable invariants the codebase now relies on
+
+These were established this session and are easy to violate accidentally — knowing them prevents regressions.
+
+- **`applied_seq` watermark** (`crates/octl-core/src/events.rs`). The reducer advances `manifest.applied_seq` only after every projection an event touches is fsynced; on the next lock acquisition, events with `seq > applied_seq` are replayed. Any new event-appending path MUST go through the `LockedRun` witness and `append_and_apply_*` API — never call `write_*` projection helpers directly.
+- **`LockedRun` witness** (`crates/octl-core/src/lock.rs`). Compile-time proof that the caller holds the run flock before calling `append_event_with_seq` / `append_and_apply_unlocked`. Don't add `#[allow(...)]` to bypass; thread the witness through.
+- **Read paths under `LOCK_SH`** (shared flock). Every multi-file read (manifest + nodes + discussions + spinoffs) wraps in `RunLock::with_shared_lock`. Don't add new readers that skip it.
+- **SKILL.template.md progress-polling.** Agents branch on `data.manifest.status` (terminal: `done | failed | cancelled`), NEVER `lifecycle` (a category — `autonomous | interactive`). The `lifecycle: pending|completed|...` strings are wrong and will never match.
+- **Concurrent spinoff reports.** Bundled SKILLs use `/tmp/node-report-${run_id}.json`, not the shared `/tmp/node-report.json`. Drift would re-introduce the clobber race.
+- **Supervisor is the canonical tmux/worktree teardown actor.** `merge.sh` no longer touches tmux; `find_window_by_path` is session-scoped + exact-cwd-match so it never kills an unrelated pane.
