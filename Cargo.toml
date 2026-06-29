@@ -41,6 +41,11 @@ serial_test = { version = "3", default-features = false, features = ["file_locks
 lto = "thin"
 codegen-units = 1
 
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 # Workspace-wide lint policy. Each crate opts in with `lints.workspace = true`.
 # octl-core layers `missing_docs` on top via a crate-root `#![warn(missing_docs)]`
 # in its lib.rs — Cargo rejects mixing `lints.workspace = true` with a per-crate

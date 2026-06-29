@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 description = "Core library for orchestratectl (schema, file I/O, locking, supervisor protocol)."
 publish = false
 
