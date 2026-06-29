@@ -850,6 +850,122 @@ fn dry_run_does_not_touch_filesystem() {
         .exists());
 }
 
+/// Snapshot every projection file under a run dir to a run-root-relative
+/// `path → inode` map. An atomic projection write is temp-file + rename, so a
+/// rewrite always lands a fresh inode — letting the caller detect a write even
+/// when the bytes are unchanged (e.g. a manifest timestamp refresh).
+#[cfg(unix)]
+fn projection_inodes(run_dir: &Path) -> std::collections::BTreeMap<String, u64> {
+    use std::os::unix::fs::MetadataExt;
+    let mut consider = vec![run_dir.join("manifest.json")];
+    for sub in ["nodes", "discussions", "spinoffs"] {
+        if let Ok(rd) = std::fs::read_dir(run_dir.join(sub)) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                    consider.push(p);
+                }
+            }
+        }
+    }
+    let mut map = std::collections::BTreeMap::new();
+    for p in consider {
+        if let Ok(md) = std::fs::symlink_metadata(&p) {
+            if md.file_type().is_file() {
+                let rel = p
+                    .strip_prefix(run_dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                map.insert(rel, md.ino());
+            }
+        }
+    }
+    map
+}
+
+/// The `event create --dry-run` `projections` list must equal the files a real
+/// apply of the same event actually fsyncs — the end-to-end parity the
+/// `projected-paths-into-reducer` fix guarantees (the CLI now reads the
+/// reducer's own plan rather than a hand-maintained mirror).
+#[cfg(unix)]
+#[test]
+fn dry_run_projections_match_real_apply_writes() {
+    let home = TempDir::new().unwrap();
+    let run_id = create_run(&home);
+    let run_dir = home.path().join("runs").join(&run_id);
+
+    // Seed a node so the discussion event below references real state.
+    let nc = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        nc.to_str().unwrap(),
+    ]));
+
+    let disc = write_json(
+        &home,
+        "disc.json",
+        json!({ "discussion_id": "d-parityaaaa", "node_id": "n-0001", "topic": "t" }),
+    );
+
+    // 1. Dry-run reports the projections the reducer plans.
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "discussion.opened",
+        "--from-file",
+        disc.to_str().unwrap(),
+        "--dry-run",
+    ]));
+    let mut planned: Vec<String> = v["data"]["projections"]
+        .as_array()
+        .expect("projections")
+        .iter()
+        .map(|p| p.as_str().unwrap().to_string())
+        .collect();
+    planned.sort();
+    assert!(!planned.is_empty(), "discussion.opened must plan writes");
+
+    // 2. Real apply — diff projection inodes to learn what was actually written.
+    let before = projection_inodes(&run_dir);
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "discussion.opened",
+        "--from-file",
+        disc.to_str().unwrap(),
+    ]));
+    let after = projection_inodes(&run_dir);
+    let mut touched: Vec<String> = after
+        .iter()
+        .filter(|(rel, ino)| before.get(*rel) != Some(*ino))
+        .map(|(rel, _)| rel.clone())
+        .collect();
+    touched.sort();
+
+    assert_eq!(
+        planned, touched,
+        "dry-run projections must equal the files a real apply fsyncs"
+    );
+}
+
 #[test]
 fn idempotency_key_returns_existing_seq() {
     let home = TempDir::new().unwrap();

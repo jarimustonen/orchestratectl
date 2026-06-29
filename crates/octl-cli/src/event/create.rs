@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::{ensure_root, AppendOutcome, RunLock};
+use octl_core::{ensure_root, AppendOutcome, Event, NodeId, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -49,9 +49,9 @@ struct CreatedPayload<'a> {
     idempotent_replay: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dry_run: Option<bool>,
-    /// Best-effort guess of projection files this event will / would
-    /// touch. Hand-maintained mirror of the reducer — moving this into
-    /// `octl-core::reducer` is tracked as `projected-paths-into-reducer`.
+    /// Projection files this event will / would touch, as the reducer reports
+    /// them via [`octl_core::plan_projections`] — the single source of truth,
+    /// not a CLI-side mirror. Run-root-relative for display.
     projections: Vec<String>,
 }
 
@@ -132,49 +132,46 @@ fn allows_node_id(kind: &str) -> bool {
         )
 }
 
-/// Best-guess of the projection files this event will touch. Used by
-/// `--dry-run` and by the success envelope to give callers a visible
-/// trace of the reducer side-effects.
-fn projected_paths(kind: &str, node_id: Option<&str>, data: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    // Event kinds are enumerated explicitly; some distinct kinds map to the same
-    // projection-file set, which clippy would flag as duplicate arms.
-    #[allow(clippy::match_same_arms)]
-    match kind {
-        "run.created" | "run.status" => out.push("manifest.json".into()),
-        "node.created" => {
-            if let Some(n) = node_id {
-                out.push(format!("nodes/{n}.json"));
-            }
-            out.push("manifest.json".into());
-        }
-        "node.status" | "node.report" => {
-            if let Some(n) = node_id {
-                out.push(format!("nodes/{n}.json"));
-            }
-        }
-        "discussion.opened" | "discussion.resolved" => {
-            if let Some(id) = data.get("discussion_id").and_then(Value::as_str) {
-                out.push(format!("discussions/{id}.json"));
-            }
-            out.push("manifest.json".into());
-        }
-        "spinoff.proposed" | "spinoff.approved" | "spinoff.rejected" => {
-            if let Some(id) = data.get("proposal_id").and_then(Value::as_str) {
-                out.push(format!("spinoffs/{id}.json"));
-            }
-            out.push("manifest.json".into());
-        }
-        "child.spawned" | "supervisor.attached" | "supervisor.cursor_advanced" => {
-            if let Some(n) = node_id {
-                out.push(format!("nodes/{n}.json"));
-            }
-        }
-        // supervisor.exited / supervisor.reattach-requested are recorded facts
-        // only; no projection files change today.
-        _ => {}
-    }
-    out
+/// The projection files this event will touch, asked of the reducer itself via
+/// [`octl_core::plan_projections`] rather than re-enumerated here. Used by
+/// `--dry-run` and the success envelope to give callers a visible trace of the
+/// reducer side-effects that can never drift from what the reducer actually
+/// writes (issue `projected-paths-into-reducer`).
+///
+/// Paths are returned run-root-relative (e.g. `nodes/n-0001.json`,
+/// `manifest.json`) for display. The plan is read against current projection
+/// state, so a state-dependent no-op (a settled node, an already-created
+/// projection) correctly yields an empty list. A reducer-level rejection of a
+/// malformed payload surfaces here as the same error the real apply would
+/// raise.
+fn projected_paths(
+    paths: &RunPaths,
+    kind: &str,
+    node_id: Option<&NodeId>,
+    data: &Value,
+) -> Result<Vec<String>, CliError> {
+    // `seq`/`ts`/`idempotency_key` do not affect which projection files an event
+    // touches, so a synthetic envelope is sufficient to ask the reducer for the
+    // plan; the real seq/ts are stamped by the append path when (and if) we write.
+    let ev = Event {
+        ts: chrono::Utc::now(),
+        seq: 0,
+        kind: kind.to_string(),
+        run_id: paths.run_id.clone(),
+        node_id: node_id.cloned(),
+        idempotency_key: None,
+        data: data.clone(),
+    };
+    let abs = octl_core::plan_projections(paths, &ev).map_err(from_core)?;
+    Ok(abs
+        .iter()
+        .map(|p| {
+            p.strip_prefix(&paths.root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect())
 }
 
 /// Validate every data-derived ID at the CLI boundary so the reducer
@@ -370,7 +367,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         );
     }
 
-    let projections = projected_paths(kind, node_id.as_deref(), &data);
+    // `node_id` was validated above; re-parse the canonical string into the
+    // typed envelope id the reducer plan and the append APIs both take.
+    let envelope_node = node_id.as_deref().map(parse_node_id).transpose()?;
+
+    let projections = projected_paths(&paths, kind, envelope_node.as_ref(), &data)?;
 
     if args.dry_run {
         let payload = CreatedPayload {
@@ -386,10 +387,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     ensure_root(&root).map_err(from_core)?;
-
-    // `node_id` was validated above; re-parse the canonical string into the
-    // typed envelope id the append APIs take.
-    let envelope_node = node_id.as_deref().map(parse_node_id).transpose()?;
 
     // Keyed creates route through the centralized idempotency primitive, which
     // folds the log scan, conflict detection, and append into one held lock so a

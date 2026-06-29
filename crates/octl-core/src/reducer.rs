@@ -361,9 +361,54 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
     }
 }
 
+/// The projection file [`commit_ops`] writes for `op`, keyed exactly as the
+/// `write_*` helpers key it internally. Shared by [`plan_projections`] (which
+/// reports the path) and conceptually by [`commit_ops`] (which writes it), so
+/// the enumerated path list can never name a different file than the one the
+/// reducer actually fsyncs.
+fn op_path(paths: &RunPaths, op: &ProjectionOp) -> PathBuf {
+    match op {
+        ProjectionOp::Manifest(_) => paths.manifest(),
+        ProjectionOp::Node(n) => paths.node(&n.node_id),
+        ProjectionOp::Discussion(d) => paths.discussion(&d.discussion_id),
+        ProjectionOp::Spinoff(s) => paths.spinoff(&s.proposal_id),
+    }
+}
+
+/// Enumerate the projection files the reducer would write for `event`, in the
+/// order [`commit_ops`] would write them, *without* performing any write.
+///
+/// This is the single source of truth that ends the CLI/reducer divergence the
+/// `projected-paths-into-reducer` issue describes: rather than a hand-maintained
+/// list in `octl-cli` that drifts whenever a new projection is added, both the
+/// reducer and a caller's preflight (`event create --dry-run`) read the *same*
+/// [`reduce_event_to_ops`] plan. This function maps that plan to file paths;
+/// [`apply_event`] commits it. A new projection added to a reducer arm is
+/// therefore reflected here automatically.
+///
+/// Because it runs the real reducer plan against current projection state, the
+/// result is exact, not a guess: a state-dependent no-op (a settled node, an
+/// already-created projection, a terminal-guarded transition) yields an empty
+/// list — precisely the files [`apply_event`] would touch, which is none. A
+/// malformed-payload event surfaces the same [`Error::CorruptEventLog`] the
+/// real apply would, so a dry-run preflight cannot report success for an event
+/// the write path would reject.
+///
+/// Caller should hold the run's [`crate::lock::RunLock`] for a snapshot
+/// consistent with a concurrent reducer; a lock-free read is best-effort.
+pub fn plan_projections(paths: &RunPaths, event: &Event) -> Result<Vec<PathBuf>> {
+    let ops = reduce_event_to_ops(paths, event)?;
+    Ok(ops.iter().map(|op| op_path(paths, op)).collect())
+}
+
 /// Apply one event to projections: plan via [`reduce_event_to_ops`], then
 /// [`commit_ops`]. No-op for unknown `kind`. Caller must hold the run's
 /// [`crate::lock::RunLock`].
+///
+/// Shares the one [`reduce_event_to_ops`] plan with [`plan_projections`]: the
+/// paths that function reports are exactly the files this one fsyncs, because
+/// both consume the same `ProjectionOp` vector (this commits it; that maps it to
+/// paths via [`op_path`]).
 ///
 /// `pub(crate)`: applying an event in isolation (without the matching
 /// `events.jsonl` append) is an internal building block used by `cancel` (to
@@ -1377,5 +1422,281 @@ mod tests {
             reduce_event_to_ops(&paths, &ev2),
             Err(Error::CorruptEventLog { .. })
         ));
+    }
+
+    /// Snapshot every projection file under `paths` to a `path → inode` map.
+    ///
+    /// An atomic projection write is temp-file + rename, so a rewritten file
+    /// always lands a *fresh inode* — even when its bytes are byte-for-byte
+    /// identical (e.g. a manifest op that refreshes `updated_at` to the same
+    /// timestamp). Comparing inodes therefore detects every write the reducer
+    /// makes, with no false negatives a content diff would suffer. `events.jsonl`
+    /// and `.lock` are excluded: `apply_event` never touches them.
+    #[cfg(unix)]
+    fn projection_inodes(paths: &RunPaths) -> std::collections::BTreeMap<PathBuf, u64> {
+        use std::os::unix::fs::MetadataExt;
+        let mut consider = vec![paths.manifest()];
+        for dir in [
+            paths.nodes_dir(),
+            paths.discussions_dir(),
+            paths.spinoffs_dir(),
+        ] {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for ent in rd.flatten() {
+                    let p = ent.path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("json") {
+                        consider.push(p);
+                    }
+                }
+            }
+        }
+        let mut map = std::collections::BTreeMap::new();
+        for p in consider {
+            if let Ok(md) = std::fs::symlink_metadata(&p) {
+                if md.file_type().is_file() {
+                    map.insert(p, md.ino());
+                }
+            }
+        }
+        map
+    }
+
+    /// The exhaustive parity guarantee `projected-paths-into-reducer` requires:
+    /// for an event applied against a given state, the paths
+    /// [`plan_projections`] reports MUST equal the files [`apply_event`]
+    /// actually writes. Plan first (against pre-apply state), apply, then diff
+    /// the projection inodes — a file is "written" iff it is newly present or
+    /// its inode changed. `expect_writes` guards the test itself: when set, the
+    /// touched set must be non-empty, so a kind that silently stopped writing
+    /// can't pass by matching an empty plan against an empty diff.
+    #[cfg(unix)]
+    fn assert_plan_matches_apply(paths: &RunPaths, ev: &Event, expect_writes: bool) {
+        use std::collections::BTreeSet;
+        let before = projection_inodes(paths);
+        let planned: BTreeSet<PathBuf> = plan_projections(paths, ev)
+            .unwrap_or_else(|e| panic!("plan_projections({}) errored: {e:?}", ev.kind))
+            .into_iter()
+            .collect();
+        apply_event(paths, ev)
+            .unwrap_or_else(|e| panic!("apply_event({}) errored: {e:?}", ev.kind));
+        let after = projection_inodes(paths);
+        let touched: BTreeSet<PathBuf> = after
+            .iter()
+            .filter(|(p, ino)| before.get(*p) != Some(*ino))
+            .map(|(p, _)| p.clone())
+            .collect();
+        assert_eq!(
+            planned, touched,
+            "kind={}: plan_projections must name exactly the files apply_event writes",
+            ev.kind
+        );
+        if expect_writes {
+            assert!(
+                !touched.is_empty(),
+                "kind={}: expected this event to write at least one projection",
+                ev.kind
+            );
+        }
+    }
+
+    /// Drive every event kind through a dependency-ordered lifecycle on real
+    /// runs, asserting plan/apply parity at each step. Covers the writing kinds
+    /// (run/node/discussion/spinoff/supervisor/child) in states where they
+    /// project, plus the no-op kinds (audit records, `supervisor.exited`,
+    /// terminal-guarded transitions) where both the plan and the apply touch
+    /// nothing.
+    #[cfg(unix)]
+    #[test]
+    fn plan_projections_matches_apply_for_every_kind() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        let nid = || Some(NodeId::parse_str("n-0001").unwrap());
+        let disc_id = "d-pqrstuvwxy";
+        let prop_id = "s-spinaaaaaa";
+        let child = "02jxsnap000000000000000000";
+
+        // Helper to build a fresh envelope at a monotonic seq.
+        let mut next_seq = 0u64;
+        let mut at = |kind: &str, node_id, data| {
+            next_seq += 1;
+            Event {
+                ts: Utc::now(),
+                seq: next_seq,
+                kind: kind.into(),
+                run_id: rid.clone(),
+                node_id,
+                idempotency_key: None,
+                data,
+            }
+        };
+
+        // run.created → manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "run.created",
+                None,
+                serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
+            ),
+            true,
+        );
+        // run.status (pending → running) → manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "run.status",
+                None,
+                serde_json::json!({ "status": "running" }),
+            ),
+            true,
+        );
+        // node.created → nodes/n-0001.json + manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "node.created",
+                nid(),
+                serde_json::json!({ "kind": "spinoff" }),
+            ),
+            true,
+        );
+        // node.status (pending → running) → nodes/n-0001.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "node.status",
+                nid(),
+                serde_json::json!({ "status": "running" }),
+            ),
+            true,
+        );
+        // discussion.opened → discussions/<id>.json + manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "discussion.opened",
+                None,
+                serde_json::json!({ "discussion_id": disc_id, "node_id": "n-0001", "topic": "t" }),
+            ),
+            true,
+        );
+        // discussion.resolved → discussions/<id>.json + manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "discussion.resolved",
+                None,
+                serde_json::json!({ "discussion_id": disc_id, "resolution": "keep" }),
+            ),
+            true,
+        );
+        // spinoff.proposed → spinoffs/<id>.json + manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "spinoff.proposed",
+                None,
+                serde_json::json!({
+                    "proposal_id": prop_id, "node_id": "n-0001",
+                    "proposed_title": "p", "proposed_kind": "spinoff"
+                }),
+            ),
+            true,
+        );
+        // spinoff.approved → spinoffs/<id>.json + manifest.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "spinoff.approved",
+                None,
+                serde_json::json!({ "proposal_id": prop_id, "issue_slug": "x" }),
+            ),
+            true,
+        );
+        // supervisor.attached → nodes/n-0001.json (still non-terminal)
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "supervisor.attached",
+                nid(),
+                serde_json::json!({ "pid": 4242 }),
+            ),
+            true,
+        );
+        // supervisor.cursor_advanced → nodes/n-0001.json
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "supervisor.cursor_advanced",
+                nid(),
+                serde_json::json!({ "child_run_id": child, "report_seq": 3 }),
+            ),
+            true,
+        );
+        // child.spawned → nodes/n-0001.json (parent node)
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "child.spawned",
+                nid(),
+                serde_json::json!({ "child_run_id": child, "child_node_id": "n-0001" }),
+            ),
+            true,
+        );
+        // node.report success → nodes/n-0001.json (now terminal)
+        assert_plan_matches_apply(
+            &paths,
+            &at("node.report", nid(), serde_json::json!({ "success": true })),
+            true,
+        );
+        // Terminal-guarded no-ops: a settled node swallows further transitions,
+        // so both the plan and the apply touch nothing.
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "node.status",
+                nid(),
+                serde_json::json!({ "status": "failed" }),
+            ),
+            false,
+        );
+        // No-op audit / lifecycle kinds: zero projections by design.
+        for kind in [
+            "supervisor.exited",
+            "orchestrator.decision",
+            "discuss.critical",
+            "cleanup.window_missing",
+        ] {
+            assert_plan_matches_apply(&paths, &at(kind, None, serde_json::json!({})), false);
+        }
+
+        // spinoff.rejected needs its own un-settled proposal — exercise it on a
+        // second proposal id so the approve above doesn't shadow it.
+        let prop2 = "s-spinbbbbbb";
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "spinoff.proposed",
+                None,
+                serde_json::json!({
+                    "proposal_id": prop2, "node_id": "n-0001",
+                    "proposed_title": "p2", "proposed_kind": "spinoff"
+                }),
+            ),
+            true,
+        );
+        assert_plan_matches_apply(
+            &paths,
+            &at(
+                "spinoff.rejected",
+                None,
+                serde_json::json!({ "proposal_id": prop2, "reason": "no" }),
+            ),
+            true,
+        );
     }
 }
