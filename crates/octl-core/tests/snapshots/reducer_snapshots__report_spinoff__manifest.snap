@@ -1,5 +1,6 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
+assertion_line: 78
 expression: manifest_v
 ---
 {
@@ -7,6 +8,7 @@ expression: manifest_v
   "created_at": "<ts>",
   "kind": "spinoff",
   "lifecycle": "autonomous",
+  "managed_tmux_session": null,
   "node_count": 1,
   "open_discussions": 0,
   "parent_node_id": null,

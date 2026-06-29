@@ -319,6 +319,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if let Some(v) = args.source_branch.as_deref() {
         data.insert("source_branch".into(), Value::String(v.into()));
     }
+    // Record the headless session orchestratectl is about to create via
+    // create.sh's `--parent-session` so the supervisor can tear it down once
+    // its last managed window is gone. `None` for a foreground spawn — that
+    // window lives in the user's own session, which is never a teardown target
+    // (issue `headless-tmux-session-not-torn-down`).
+    if let Some(v) = parent_session.as_deref() {
+        data.insert("managed_tmux_session".into(), Value::String(v.into()));
+    }
     if let Some(v) = args.task.as_deref() {
         data.insert("task".into(), Value::String(v.into()));
     }

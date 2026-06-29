@@ -609,6 +609,13 @@ pub fn dispatch(
                         || cleanup::any_node_merged_explicitly(&paths);
                     if warranted {
                         cleanup::cleanup_terminal_nodes(&paths);
+                        // After the node windows are closed, tear down the
+                        // managed `--headless` session if this run owned one and
+                        // it now holds only its synthetic bootstrap shell window
+                        // (issue `headless-tmux-session-not-torn-down`). A no-op
+                        // for foreground runs and for a session a sibling run is
+                        // still working in.
+                        cleanup::cleanup_managed_session(&paths);
                     }
                     // Mark done even when cleanup was not warranted so we don't
                     // re-read the manifest every tick until the loop exits.

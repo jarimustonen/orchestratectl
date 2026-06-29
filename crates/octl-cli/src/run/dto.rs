@@ -122,6 +122,7 @@ mod tests {
             source_repo: None,
             source_branch: None,
             worktree_root: None,
+            managed_tmux_session: None,
             node_count: 0,
             open_discussions: 0,
             pending_spinoffs: 0,

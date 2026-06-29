@@ -510,6 +510,16 @@ pub struct Manifest {
     pub source_branch: Option<String>,
     /// Root directory under which this run's worktrees live, if any.
     pub worktree_root: Option<String>,
+    /// tmux session orchestratectl created to host this run's headless windows
+    /// (`--headless` / `--tmux-session <name>`), if any. `None` for a foreground
+    /// run whose window lives in the user's own session — that session is never
+    /// a teardown target. When set, the supervisor kills this session once its
+    /// last orchestratectl-owned window is torn down and only the synthetic
+    /// bootstrap shell window remains, so an empty headless session is not left
+    /// behind (issue `headless-tmux-session-not-torn-down`). `#[serde(default)]`
+    /// keeps a manifest written before this field existed readable.
+    #[serde(default)]
+    pub managed_tmux_session: Option<String>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
     /// Count of currently open discussions (denormalized counter).

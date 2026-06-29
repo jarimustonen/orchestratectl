@@ -354,9 +354,18 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         //   - `cleanup.branch_remove_failed`: `git branch -D` refused (e.g.
         //     unexpected unmerged commits); the run completes anyway (issue
         //     `supervisor-worktree-remove-no-force`).
-        "cleanup.window_missing" | "cleanup.worktree_missing" | "cleanup.branch_remove_failed" => {
-            Ok(vec![])
-        }
+        //   - `cleanup.session_killed`: the run's managed `--headless` tmux
+        //     session was torn down once its last managed window was gone, so an
+        //     empty session is not left behind (issue
+        //     `headless-tmux-session-not-torn-down`).
+        //   - `cleanup.session_retained`: the same teardown was skipped because a
+        //     human had attached to the session — never yanked out from under
+        //     them.
+        "cleanup.window_missing"
+        | "cleanup.worktree_missing"
+        | "cleanup.branch_remove_failed"
+        | "cleanup.session_killed"
+        | "cleanup.session_retained" => Ok(vec![]),
         _ => Ok(vec![]),
     }
 }
@@ -501,6 +510,10 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .map(str::to_string),
         worktree_root: d
             .get("worktree_root")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        managed_tmux_session: d
+            .get("managed_tmux_session")
             .and_then(Value::as_str)
             .map(str::to_string),
         node_count: 0,

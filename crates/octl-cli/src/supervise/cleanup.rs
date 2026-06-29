@@ -138,6 +138,214 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) {
     }
 }
 
+/// Kill the managed `--headless` / `--tmux-session` session orchestratectl
+/// created for this run, once its last managed window has been torn down — so an
+/// otherwise-empty session is not left lingering with only its synthetic
+/// bootstrap shell window (issue `headless-tmux-session-not-torn-down`).
+///
+/// tmux opens a default shell window (`zsh`/`bash`) when a session is first
+/// created (`tmux new-session -d`), and the agent windows are added alongside
+/// it. Closing every agent window therefore does NOT remove the session — the
+/// bootstrap window keeps it alive. This is the localized teardown that drops it.
+///
+/// Three safety gates, ALL required before the session is killed:
+///
+/// 1. **Managed-session only.** The name comes from
+///    [`Manifest::managed_tmux_session`](octl_core::Manifest), recorded at spawn
+///    time *only* when the run used `--parent-session` (headless). A foreground
+///    run records `None`, so the user's own session is never a candidate — we
+///    never kill a session orchestratectl did not create.
+/// 2. **Not attached.** If a human attached to inspect it (`tmux attach -t
+///    <name>`), the session is left alone — killing it would yank their
+///    terminal. A `cleanup.session_retained` audit event records the skip.
+/// 3. **No managed windows remain.** Every surviving window must be a synthetic
+///    default shell ([`is_synthetic_default_window`]). A sibling run still
+///    working in the same session keeps a non-default agent window alive, so the
+///    *last* run to finish is the one that finds only the bootstrap shell and
+///    kills the session — the multi-run teardown the original report described.
+///
+/// Best-effort throughout: a vanished session, an unavailable tmux, or a kill
+/// refusal is logged and stepped past — session teardown never fails the run.
+pub fn cleanup_managed_session(paths: &RunPaths) {
+    cleanup_managed_session_with(paths, &tmux_bin());
+}
+
+/// [`cleanup_managed_session`] with the tmux binary injected, so tests can drive
+/// the teardown against a stub without racing on the `TMUX_BIN` env var.
+fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
+    let Some(session) = managed_session(paths) else {
+        // Foreground run (no managed session) — never a teardown candidate.
+        return;
+    };
+    let socket = managed_session_socket(paths, &session);
+    let Some((attached, names)) = list_session_windows(tmux, socket.as_deref(), &session) else {
+        // The session is already gone (its last window was the agent's, with no
+        // surviving bootstrap shell) or tmux is unavailable — nothing to do.
+        return;
+    };
+    if attached {
+        // A human is attached: leave the session for them, record the skip.
+        record_session_retained(paths, &session);
+        return;
+    }
+    if names.is_empty() || !names.iter().all(|n| is_synthetic_default_window(n)) {
+        // A non-default window survives — another run's agent is still working
+        // in this shared session, or the window set is unexpected. Either way
+        // the session is still in use; the last run to finish will kill it.
+        return;
+    }
+    if tmux_kill_session(tmux, socket.as_deref(), &session) {
+        record_session_killed(paths, &session);
+    }
+}
+
+/// The run's managed headless session name, set at spawn time only for a
+/// `--headless` / `--tmux-session` run. `None` for a foreground run (whose
+/// window lives in the user's own session) or a missing manifest.
+fn managed_session(paths: &RunPaths) -> Option<String> {
+    read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|m| m.managed_tmux_session)
+}
+
+/// The tmux server socket the managed session lives on, read from the first
+/// node whose [`TmuxIdentity`](octl_core::schema::TmuxIdentity) names that
+/// session. `None` falls back to tmux's default socket — which is where
+/// create.sh's `tmux new-session -d` bootstraps a headless session anyway.
+fn managed_session_socket(paths: &RunPaths, session: &str) -> Option<String> {
+    for n in list_nodes(paths) {
+        if let Some(id) = n.tmux_identity {
+            if id.session == session {
+                if let Some(sock) = id.socket {
+                    if !sock.is_empty() {
+                        return Some(sock);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A window tmux opened as the synthetic bootstrap shell for a freshly-created
+/// session — never an orchestratectl agent window (those carry the worktree /
+/// branch name, usually with an emoji prefix). Matching this small set of login
+/// shells is the heuristic the teardown keys off (issue
+/// `headless-tmux-session-not-torn-down`). Conservative by design: an unknown
+/// name is treated as a real window, so the session is *retained* rather than
+/// risk killing one that is still in use.
+fn is_synthetic_default_window(name: &str) -> bool {
+    matches!(
+        name.trim(),
+        "zsh" | "bash" | "sh" | "fish" | "-zsh" | "-bash" | "-sh"
+    )
+}
+
+/// List a session's windows as `(any_attached, window_names)` via a single
+/// `tmux list-windows -t <session> -F '#{session_attached}\t#{window_name}'`.
+/// `None` when the session is gone (non-zero exit) or tmux could not run, so the
+/// caller treats an already-torn-down session as a clean no-op. `any_attached`
+/// is true when ANY line reports a non-zero `#{session_attached}` (a human is in
+/// the session).
+fn list_session_windows(
+    tmux: &str,
+    socket: Option<&str>,
+    session: &str,
+) -> Option<(bool, Vec<String>)> {
+    let mut cmd = Command::new(tmux);
+    if let Some(s) = socket {
+        cmd.args(["-S", s]);
+    }
+    cmd.args([
+        "list-windows",
+        "-t",
+        session,
+        "-F",
+        "#{session_attached}\t#{window_name}",
+    ]);
+    cmd.stderr(Stdio::null());
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut attached = false;
+    let mut names = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((att, name)) = line.split_once('\t') else {
+            continue;
+        };
+        if att.trim() != "0" {
+            attached = true;
+        }
+        let name = name.trim_end();
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+    }
+    Some((attached, names))
+}
+
+/// Issue `tmux [-S <socket>] kill-session -t <session>` leniently; returns
+/// `true` when tmux reported success. A non-zero exit (the session vanished in a
+/// race) returns `false` so no audit event is recorded for a no-op.
+fn tmux_kill_session(tmux: &str, socket: Option<&str>, session: &str) -> bool {
+    let mut cmd = Command::new(tmux);
+    if let Some(s) = socket {
+        cmd.args(["-S", s]);
+    }
+    cmd.args(["kill-session", "-t", session]);
+    run_lenient(cmd, &format!("tmux kill-session -t {session}"))
+}
+
+/// Append a non-fatal `cleanup.session_killed` audit event when the managed
+/// headless session was torn down. Idempotent by run id so a supervisor restart
+/// re-running cleanup appends at most once. Recording the kill must never break
+/// cleanup, so an append failure is itself swallowed.
+fn record_session_killed(paths: &RunPaths, session: &str) {
+    info!(
+        target: "orchestratectl::supervise",
+        session,
+        "killed empty managed headless tmux session after last managed window torn down"
+    );
+    eprintln!("supervisor cleanup: tmux kill-session -t {session}: ok (empty managed session)");
+    let data = json!({ "session": session });
+    let key = format!("cleanup.session_killed:{}", paths.run_id.as_str());
+    if let Err(e) = append_and_apply_event(paths, "cleanup.session_killed", None, Some(&key), data)
+    {
+        warn!(
+            target: "orchestratectl::supervise",
+            session,
+            error = %e,
+            "failed to append cleanup.session_killed (continuing)"
+        );
+    }
+}
+
+/// Append a non-fatal `cleanup.session_retained` audit event when the managed
+/// headless session was left alive because a human had attached to it. Idempotent
+/// by run id; an append failure is swallowed.
+fn record_session_retained(paths: &RunPaths, session: &str) {
+    info!(
+        target: "orchestratectl::supervise",
+        session,
+        "managed headless tmux session is attached; leaving it for the human"
+    );
+    eprintln!("supervisor cleanup: tmux session {session} attached; not killing (recorded cleanup.session_retained)");
+    let data = json!({ "session": session });
+    let key = format!("cleanup.session_retained:{}", paths.run_id.as_str());
+    if let Err(e) =
+        append_and_apply_event(paths, "cleanup.session_retained", None, Some(&key), data)
+    {
+        warn!(
+            target: "orchestratectl::supervise",
+            session,
+            error = %e,
+            "failed to append cleanup.session_retained (continuing)"
+        );
+    }
+}
+
 /// Tear down one node's tmux window + worktree + branch. Order matters: derive
 /// the main worktree *before* removing the linked worktree (a `git -C
 /// <removed-path>` would then fail), and kill the tmux window first so the
@@ -937,6 +1145,207 @@ mod tests {
                 .is_empty(),
             "the git stderr must be captured for the operator"
         );
+    }
+
+    /// Like [`bootstrap`] but records a managed `--headless` session on the
+    /// manifest (the spawn-time marker `cleanup_managed_session` gates on).
+    fn bootstrap_headless(paths: &RunPaths, session: &str) {
+        append_and_apply_event(
+            paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "managed_tmux_session": session,
+            }),
+        )
+        .unwrap();
+    }
+
+    /// The teardown path: a managed session whose only surviving window is the
+    /// synthetic bootstrap `zsh` shell is killed, and a `cleanup.session_killed`
+    /// audit event is recorded.
+    #[test]
+    fn managed_session_killed_when_only_default_window_remains() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        // list-windows reports a single unattached default shell window.
+        let tmux = fake_tmux(
+            tmp.path(),
+            r#"case "$*" in
+                 *list-windows*) printf '0\tzsh\n';;
+               esac"#,
+        );
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        let log = tmux_log(tmp.path());
+        assert!(
+            log.contains("kill-session -t headless"),
+            "empty managed session must be killed: {log:?}"
+        );
+        let evs = events_of_kind(&paths, "cleanup.session_killed");
+        assert_eq!(evs.len(), 1, "exactly one session_killed event expected");
+        assert_eq!(evs[0]["data"]["session"], "headless");
+    }
+
+    /// Safety gate #3: a still-live sibling agent window (non-default name) keeps
+    /// the shared session in use, so it is NOT killed and no event is recorded.
+    #[test]
+    fn managed_session_retained_when_agent_window_remains() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        let tmux = fake_tmux(
+            tmp.path(),
+            r#"case "$*" in
+                 *list-windows*) printf '0\tzsh\n0\t🎬 wt/sibling\n';;
+               esac"#,
+        );
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        let log = tmux_log(tmp.path());
+        assert!(
+            !log.contains("kill-session"),
+            "a live sibling agent window must keep the session alive: {log:?}"
+        );
+        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
+    }
+
+    /// Safety gate #2: a human attached to the session means it is left alone —
+    /// killing it would yank their terminal. The skip is recorded as
+    /// `cleanup.session_retained`.
+    #[test]
+    fn managed_session_retained_when_attached() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        // session_attached = 1 even though the only window is a default shell.
+        let tmux = fake_tmux(
+            tmp.path(),
+            r#"case "$*" in
+                 *list-windows*) printf '1\tzsh\n';;
+               esac"#,
+        );
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        let log = tmux_log(tmp.path());
+        assert!(
+            !log.contains("kill-session"),
+            "an attached session must not be killed: {log:?}"
+        );
+        let evs = events_of_kind(&paths, "cleanup.session_retained");
+        assert_eq!(evs.len(), 1, "the skip must be recorded once");
+        assert_eq!(evs[0]["data"]["session"], "headless");
+    }
+
+    /// Safety gate #1: a foreground run records no managed session, so the
+    /// teardown is a complete no-op — tmux is never even consulted (the user's
+    /// own session is never a candidate).
+    #[test]
+    fn foreground_run_never_touches_tmux() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // no managed_tmux_session on the manifest
+        let tmux = fake_tmux(tmp.path(), "");
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        // The fake tmux logs every invocation; a foreground run must produce none.
+        assert!(
+            std::fs::read_to_string(tmp.path().join("tmux.log")).is_err(),
+            "tmux must not be invoked for a foreground run"
+        );
+        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
+        assert!(events_of_kind(&paths, "cleanup.session_retained").is_empty());
+    }
+
+    /// An already-gone session (its last window WAS the agent's, no bootstrap
+    /// shell survived) makes `list-windows` exit non-zero — a clean no-op, no
+    /// kill, no event.
+    #[test]
+    fn already_gone_session_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        let tmux = fake_tmux(tmp.path(), r#"case "$*" in *list-windows*) exit 1;; esac"#);
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        let log = tmux_log(tmp.path());
+        assert!(!log.contains("kill-session"), "log={log:?}");
+        assert!(events_of_kind(&paths, "cleanup.session_killed").is_empty());
+        assert!(events_of_kind(&paths, "cleanup.session_retained").is_empty());
+    }
+
+    /// The `session_killed` audit event is idempotent across supervisor restarts:
+    /// a second teardown pass reuses the run-scoped key and appends no duplicate.
+    #[test]
+    fn session_killed_event_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        let tmux = fake_tmux(
+            tmp.path(),
+            r#"case "$*" in *list-windows*) printf '0\tzsh\n';; esac"#,
+        );
+
+        cleanup_managed_session_with(&paths, &tmux);
+        cleanup_managed_session_with(&paths, &tmux);
+
+        assert_eq!(events_of_kind(&paths, "cleanup.session_killed").len(), 1);
+    }
+
+    /// The socket recorded on a node's tmux identity is threaded into the
+    /// teardown commands, so a headless session on a non-default tmux server is
+    /// still found and killed.
+    #[test]
+    fn managed_session_socket_threaded_into_tmux() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_headless(&paths, "headless");
+        forge_node(
+            &paths,
+            "n-0001",
+            json!({
+                "tmux_session": "headless",
+                "tmux_window_id": "@5",
+                "tmux_socket": "/tmp/sock-7",
+                "worktree_path": "/fake/wt",
+            }),
+        );
+        let tmux = fake_tmux(
+            tmp.path(),
+            r#"case "$*" in *list-windows*) printf '0\tzsh\n';; esac"#,
+        );
+
+        cleanup_managed_session_with(&paths, &tmux);
+
+        let log = tmux_log(tmp.path());
+        assert!(
+            log.contains("-S /tmp/sock-7 list-windows"),
+            "socket must be threaded into list-windows: {log:?}"
+        );
+        assert!(
+            log.contains("-S /tmp/sock-7 kill-session -t headless"),
+            "socket must be threaded into kill-session: {log:?}"
+        );
+    }
+
+    #[test]
+    fn synthetic_default_window_classification() {
+        for n in ["zsh", "bash", "sh", "fish", "-zsh", " bash "] {
+            assert!(is_synthetic_default_window(n), "{n:?} should be default");
+        }
+        for n in ["🎬 wt/foo", "vim", "claude", "wt/abc"] {
+            assert!(!is_synthetic_default_window(n), "{n:?} is a real window");
+        }
     }
 
     #[test]
