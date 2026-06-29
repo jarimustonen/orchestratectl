@@ -1,9 +1,10 @@
 ---
 created: 2026-06-12
-updated: 2026-06-12
+updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Bound spin-off issuectl subprocess (timeout, output cap, env policy, kind mapping)
