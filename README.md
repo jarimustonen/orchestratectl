@@ -1,34 +1,125 @@
 # orchestratectl 🎬
 
-Rust CLI + TUI for orchestrating AI-agent workflows on a developer's
-machine. Bundles the orchestration semantics behind the `/worktree-*`,
-`/orchestrate`, `/fan-out`, and `/llm-*` Claude Code skills into one
-canonical command surface, with a terminal UI for navigating run status,
-resolving discussion points, and managing spin-off issues.
+[![CI](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml/badge.svg)](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Status:** Private, early. MVP in progress.
+**Rust CLI for orchestrating AI-agent workflows on a developer's machine.**
+Spawns one or many Claude Code agents into isolated git worktrees, tracks
+their progress via a file-based event log, and merges their work back —
+all behind one canonical command surface.
 
-## What it does
+> **Status:** v0.1.0 pre-release. Real-world ready for `/worktree-spinoff`,
+> `/worktree-code` + `/worktree-merge`, and `/fan-out`. `/orchestrate` is
+> battle-tested at toy scale; a handful of polish bugs gate scaled use.
 
-- **Spawn** worktree agents (`code`, `spinoff`, `orchestrated`, `research`,
-  `technical-decision`) under one consistent flag surface
-- **Orchestrate** heterogeneous, dependency-ordered campaigns of agents
-  (DAG runner) and **fan out** identical units across many parallel workers
-- **Persist run state** to `~/.orchestratectl/runs/<run-id>/` so multiple
-  UIs can read the same source of truth
-- **TUI** for browsing runs, drill-down into worktrees, reviewing
-  `/worktree-status` output, resolving discussion points, approving or
-  rejecting spin-off proposals
-- **Workmux integration** to track which tmux window owns which worktree
+## What you get
 
-## Why
+- **One autonomous agent in a worktree** — `/worktree-spinoff <task>` spawns
+  an agent that works in its own git worktree and merges itself back when
+  done. Zero manual cleanup.
+- **One interactive agent in a worktree** — `/worktree-code <task>` for
+  human-reviewed work; you merge with `/worktree-merge` when ready.
+- **N identical units in parallel** — `/fan-out` spawns N≥5 disjoint
+  workers with a shared manifest, automatic concurrency cap, and per-child
+  cleanup.
+- **A dependency-ordered campaign** — `/orchestrate` drives a DAG of
+  heterogeneous features through one shared integration branch.
+- **Run state on disk** — every spawn writes an event log + projections
+  under `~/.orchestratectl/runs/<run-id>/`, so any UI (CLI now, TUI later)
+  can read the same source of truth.
 
-The current skill family is large and the orchestration logic lives in
-prose inside `SKILL.md` files. `orchestratectl` extracts that logic into
-tested code, exposes it via an AI-first CLI, and gives the human a
-keyboard-driven TUI to navigate the resulting state instead of `tmux
-list-windows | grep wm-`.
+The orchestration semantics ship as bundled Claude Code skills — install
+once with `orchestratectl skill install` and the `/worktree-*`,
+`/orchestrate`, `/fan-out` commands appear in any Claude Code session.
+
+## Quick start
+
+```bash
+# Install from source (crates.io / homebrew coming with v0.1.0):
+cargo install --path crates/octl-cli
+
+# Deploy the bundled Claude Code skills:
+orchestratectl skill install --force
+
+# Verify:
+orchestratectl doctor          # 63 ok / 0 fail expected
+orchestratectl skill list      # lists 13 bundled skills
+
+# From inside any Claude Code session in a git repo:
+#   /worktree-spinoff fix the typo in src/main.rs
+# orchestratectl handles spawn → work → merge → cleanup.
+```
+
+After install, the agent's first reading should be the bundled overview:
+
+```bash
+orchestratectl skill print orchestratectl-overview
+```
+
+That's the run / supervisor / node vocabulary every other skill assumes.
+
+## How it works
+
+Every spawn is a **run** (`~/.orchestratectl/runs/<ulid>/`). A run owns:
+
+- `events.jsonl` — append-only event log, the canonical source of truth.
+- `manifest.json`, `nodes/`, `discussions/`, `spinoffs/` — projections
+  reduced from the event log under a single per-run flock.
+- a **supervisor** process that owns the worktree's tmux window and
+  cleans it up on terminal events.
+
+Agents read and append events via the CLI; they never touch the projection
+files directly. State is recoverable from `events.jsonl` alone, so a
+crashed supervisor or a partial write never leaves a run unrunnable.
+
+For the AI-first CLI conventions every command follows (strict input
+validation, `--json` output, JSONL logs, no interactive prompts), see
+[AGENTS-AI-FIRST-CLI.md](AGENTS-AI-FIRST-CLI.md).
+
+## Bundled skills
+
+| Skill | Purpose |
+|---|---|
+| `orchestratectl-overview` | First-read for the run/supervisor/node vocabulary |
+| `octl-run-overview` | Inspect run state (`run list`, `run show`) |
+| `octl-spawn-spinoff` | Low-level spawn primitive |
+| `worktree-code` | Interactive worktree (human-reviewed merge) |
+| `worktree-spinoff` | Autonomous worktree (fire-and-forget) |
+| `worktree-merge` | Merge an interactive worktree back |
+| `worktree-research` | Autonomous multi-source research → markdown report |
+| `worktree-bugfix` | Autonomous investigate → fix → review → merge |
+| `worktree-technical-decision` | Autonomous ADR-producing decision worktree |
+| `worktree-make-skill` | Autonomous skill authoring with LLM review |
+| `worktree-orchestrated` | Child of an `/orchestrate` DAG |
+| `fan-out` | N identical units in parallel |
+| `orchestrate` | Dependency-ordered DAG runner |
+
+After installing skills, list them with `orchestratectl skill list` or
+print one with `orchestratectl skill print <name>`.
+
+## Development
+
+```bash
+cargo test --workspace
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+Repo layout:
+
+- `crates/octl-core/` — schema, file I/O, locking, supervisor protocol.
+- `crates/octl-cli/` — the `orchestratectl` binary and its bundled skills.
+- `issues/<slug>/item.md` — every issue + epic (managed by
+  [`issuectl`](https://github.com/jarimustonen/issuectl)).
+- `AGENTS-AI-FIRST-CLI.md` — CLI design canon (shared with `homebase`).
+
+## Roadmap
+
+- v0.1.0 (in flight): zero open issues, publish to crates.io + homebrew tap.
+- v0.2.0: TUI for navigating run state, resolving discussion points, and
+  managing spin-off proposals.
+- v0.3.0+: macOS-native UI consuming the same on-disk run state.
 
 ## License
 
-MIT (forthcoming).
+MIT — see [LICENSE](LICENSE).
