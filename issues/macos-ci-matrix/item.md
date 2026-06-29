@@ -1,10 +1,11 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
 related: ['@ci-and-lints']
+closed: 2026-06-29
 ---
 
 # macOS CI matrix for platform-sensitive paths
