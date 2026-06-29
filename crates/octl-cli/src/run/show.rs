@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, Manifest};
+use octl_core::{read_manifest_opt, Manifest, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -24,19 +24,30 @@ struct Counts {
 pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, run_id)?;
-    let manifest = match read_manifest_opt(&paths).map_err(from_core)? {
-        Some(m) => m,
+    // Hold the run's shared lock for the whole manifest + projection-dir scan so
+    // a concurrent reducer cannot leave us with a manifest counter that
+    // disagrees with the projection files we count (design.md §4). The lock is
+    // released before any output is formatted.
+    let scanned = RunLock::with_shared_lock(&paths.lock(), || {
+        let Some(manifest) = read_manifest_opt(&paths)? else {
+            return Ok(None);
+        };
+        let counts = Counts {
+            nodes: count_jsons(&paths.nodes_dir()),
+            discussions: count_jsons(&paths.discussions_dir()),
+            spinoffs: count_jsons(&paths.spinoffs_dir()),
+        };
+        Ok(Some((manifest, counts)))
+    })
+    .map_err(from_core)?;
+    let (manifest, counts) = match scanned {
+        Some(v) => v,
         None => {
             return Err(
                 CliError::user("run_not_found", format!("no run with id {run_id}"))
                     .with_invalid_value(run_id),
             );
         }
-    };
-    let counts = Counts {
-        nodes: count_jsons(&paths.nodes_dir()),
-        discussions: count_jsons(&paths.discussions_dir()),
-        spinoffs: count_jsons(&paths.spinoffs_dir()),
     };
     let payload = ShowPayload { manifest, counts };
     match spec.format {

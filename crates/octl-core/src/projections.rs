@@ -1,4 +1,14 @@
 //! Read-side helpers for projection files.
+//!
+//! Each `read_*` here reads exactly one file and is coherent on its own (atomic
+//! rename — see [`crate::atomic`]). A caller that reads **several** files as one
+//! logical view (e.g. `manifest.json` together with the `nodes/`,
+//! `discussions/`, or `spinoffs/` projection set, whose denormalized counters
+//! the reducer updates in the same locked mutation) must wrap the whole scan in
+//! [`crate::RunLock::with_shared_lock`] (`LOCK_SH`). That excludes the reducer's
+//! exclusive lock for the scan's duration, so the reader observes one committed
+//! snapshot rather than a half-applied update (design.md §4). The lock is
+//! released before the result is serialized.
 
 use std::path::{Path, PathBuf};
 

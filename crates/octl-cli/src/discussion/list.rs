@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use octl_core::{read_discussion_opt, DiscussionStatus};
+use octl_core::{read_discussion_opt, DiscussionStatus, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -52,61 +52,61 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         StatusArg::Resolved => DiscussionStatus::Resolved,
     });
 
+    // Hold the run's shared lock across the whole `discussions/` scan so a
+    // concurrent reducer cannot add or rewrite a discussion mid-listing
+    // (design.md §4). The lock is released before any output is formatted.
     let dir = paths.discussions_dir();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return emit(Vec::new(), args.spec, args.warnings);
-        }
-        Err(e) => {
-            return Err(CliError::system(
-                "io_error",
-                format!("read_dir {}: {}", dir.display(), e),
-            ));
-        }
-    };
+    let mut out: Vec<DiscussionSummary> = RunLock::with_shared_lock(&paths.lock(), || {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(octl_core::Error::io(&dir, e)),
+        };
 
-    let mut out: Vec<DiscussionSummary> = Vec::new();
-    for ent in entries {
-        let ent = ent.map_err(|e| CliError::system("io_error", e.to_string()))?;
-        // Skip directories, symlinks, FIFOs, sockets — `read_discussion_opt`
-        // would surface them as opaque deserialization errors. Only
-        // regular files are valid projection slots.
-        if !ent.file_type().is_ok_and(|t| t.is_file()) {
-            continue;
-        }
-        let path = ent.path();
-        let id = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        // A stem that is not a well-formed discussion id can't be one of our
-        // projection files; skip it rather than erroring the whole listing.
-        let Ok(id) = parse_discussion_id(&id) else {
-            continue;
-        };
-        let d = match read_discussion_opt(&paths, &id).map_err(from_core)? {
-            Some(d) => d,
-            None => continue,
-        };
-        if let Some(filter) = want {
-            if d.status != filter {
+        let mut out: Vec<DiscussionSummary> = Vec::new();
+        for ent in entries {
+            let ent = ent.map_err(|e| octl_core::Error::io(&dir, e))?;
+            // Skip directories, symlinks, FIFOs, sockets — `read_discussion_opt`
+            // would surface them as opaque deserialization errors. Only
+            // regular files are valid projection slots.
+            if !ent.file_type().is_ok_and(|t| t.is_file()) {
                 continue;
             }
+            let path = ent.path();
+            let id = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            // A stem that is not a well-formed discussion id can't be one of our
+            // projection files; skip it rather than erroring the whole listing.
+            let Ok(id) = parse_discussion_id(&id) else {
+                continue;
+            };
+            let d = match read_discussion_opt(&paths, &id)? {
+                Some(d) => d,
+                None => continue,
+            };
+            if let Some(filter) = want {
+                if d.status != filter {
+                    continue;
+                }
+            }
+            out.push(DiscussionSummary {
+                discussion_id: d.discussion_id.to_string(),
+                node_id: d.node_id.to_string(),
+                status: status_kebab(d.status).to_string(),
+                severity: d.severity,
+                topic: d.topic,
+                opened_at: d.opened_at,
+                resolved_at: d.resolved_at,
+            });
         }
-        out.push(DiscussionSummary {
-            discussion_id: d.discussion_id.to_string(),
-            node_id: d.node_id.to_string(),
-            status: status_kebab(d.status).to_string(),
-            severity: d.severity,
-            topic: d.topic,
-            opened_at: d.opened_at,
-            resolved_at: d.resolved_at,
-        });
-    }
+        Ok(out)
+    })
+    .map_err(from_core)?;
 
     // Newest first, with `discussion_id` as a stable secondary key so
     // two discussions opened in the same millisecond stay ordered

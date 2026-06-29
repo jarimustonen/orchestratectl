@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, read_spinoff_opt};
+use octl_core::{read_manifest_opt, read_spinoff_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -48,66 +48,72 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, run_id)?;
 
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
+    // Hold the run's shared lock across the manifest-existence check and the
+    // whole `spinoffs/` scan so a concurrent reducer cannot add or rewrite a
+    // proposal mid-listing (design.md §4). `None` means the run is missing
+    // (manifest absent); the lock is released before any output.
+    let dir = paths.spinoffs_dir();
+    let collected = RunLock::with_shared_lock(&paths.lock(), || {
+        if read_manifest_opt(&paths)?.is_none() {
+            return Ok(None);
+        }
+        let mut out: Vec<Summary> = Vec::new();
+        let read = match std::fs::read_dir(&dir) {
+            Ok(e) => Some(e),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(octl_core::Error::io(&dir, e)),
+        };
+        if let Some(entries) = read {
+            let mut ids: Vec<String> = entries
+                .filter_map(Result::ok)
+                .filter_map(|e| {
+                    let p = e.path();
+                    if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                        return None;
+                    }
+                    p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+                })
+                .collect();
+            ids.sort();
+            for id in ids {
+                // A stem that is not a well-formed proposal id can't be one of our
+                // projection files; skip it rather than erroring the whole listing.
+                let Ok(id) = parse_proposal_id(&id) else {
+                    continue;
+                };
+                let s = match read_spinoff_opt(&paths, &id)? {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let status = status_kebab(s.status);
+                if let Some(filter) = status_filter {
+                    if status != filter {
+                        continue;
+                    }
+                }
+                out.push(Summary {
+                    proposal_id: s.proposal_id.to_string(),
+                    node_id: s.node_id.to_string(),
+                    status,
+                    proposed_title: s.proposed_title,
+                    proposed_kind: kind_kebab(s.proposed_kind),
+                    proposed_at: s.proposed_at,
+                    accepted_as_issue_slug: s.accepted_as_issue_slug,
+                    rejected_reason: s.rejected_reason,
+                    resolved_at: s.resolved_at,
+                });
+            }
+        }
+        Ok(Some(out))
+    })
+    .map_err(from_core)?;
+
+    let Some(mut out) = collected else {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
                 .with_invalid_value(run_id.as_str()),
         );
-    }
-
-    let mut out: Vec<Summary> = Vec::new();
-    let dir = paths.spinoffs_dir();
-    let read = match std::fs::read_dir(&dir) {
-        Ok(e) => Some(e),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(CliError::system(
-                "io_error",
-                format!("read_dir {}: {}", dir.display(), e),
-            ));
-        }
     };
-    if let Some(entries) = read {
-        let mut ids: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                    return None;
-                }
-                p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
-            })
-            .collect();
-        ids.sort();
-        for id in ids {
-            // A stem that is not a well-formed proposal id can't be one of our
-            // projection files; skip it rather than erroring the whole listing.
-            let Ok(id) = parse_proposal_id(&id) else {
-                continue;
-            };
-            let s = match read_spinoff_opt(&paths, &id).map_err(from_core)? {
-                Some(s) => s,
-                None => continue,
-            };
-            let status = status_kebab(s.status);
-            if let Some(filter) = status_filter {
-                if status != filter {
-                    continue;
-                }
-            }
-            out.push(Summary {
-                proposal_id: s.proposal_id.to_string(),
-                node_id: s.node_id.to_string(),
-                status,
-                proposed_title: s.proposed_title,
-                proposed_kind: kind_kebab(s.proposed_kind),
-                proposed_at: s.proposed_at,
-                accepted_as_issue_slug: s.accepted_as_issue_slug,
-                rejected_reason: s.rejected_reason,
-                resolved_at: s.resolved_at,
-            });
-        }
-    }
     // Reverse-chronological with proposal_id as the tie-breaker so
     // same-millisecond proposals come out deterministically — matters
     // for AI consumers diffing list output.

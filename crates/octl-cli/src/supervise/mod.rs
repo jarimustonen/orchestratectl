@@ -928,34 +928,41 @@ fn spawn_child_supervisor(
 /// that lists a given child wins (a child is registered under exactly
 /// one node).
 fn discover_children(paths: &RunPaths) -> std::collections::BTreeMap<String, String> {
-    let mut out = std::collections::BTreeMap::new();
-    let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) else {
-        return out;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
-            continue;
+    // Scan every node under the run's shared lock so a concurrent reducer
+    // mutating the `nodes/` set cannot hand us a half-updated child map
+    // (design.md §4). A lock-acquire failure degrades to an empty map, the same
+    // way an unreadable `nodes/` already does.
+    RunLock::with_shared_lock(&paths.lock(), || {
+        let mut out = std::collections::BTreeMap::new();
+        let Ok(entries) = std::fs::read_dir(paths.nodes_dir()) else {
+            return Ok(out);
         };
-        // A stem that is not a well-formed node id can't be one of our
-        // projection files; skip it.
-        let Ok(nid) = NodeId::parse_str(&node_id) else {
-            continue;
-        };
-        if let Ok(Some(n)) = read_node_opt(paths, &nid) {
-            for c in &n.children {
-                // `c.run_id` is a validated `RunId` — the projection would have
-                // failed to deserialize otherwise — so it is already safe to
-                // use as a path component when reseeding child tails.
-                out.entry(c.run_id.to_string())
-                    .or_insert_with(|| node_id.clone());
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+                continue;
+            };
+            // A stem that is not a well-formed node id can't be one of our
+            // projection files; skip it.
+            let Ok(nid) = NodeId::parse_str(&node_id) else {
+                continue;
+            };
+            if let Ok(Some(n)) = read_node_opt(paths, &nid) {
+                for c in &n.children {
+                    // `c.run_id` is a validated `RunId` — the projection would have
+                    // failed to deserialize otherwise — so it is already safe to
+                    // use as a path component when reseeding child tails.
+                    out.entry(c.run_id.to_string())
+                        .or_insert_with(|| node_id.clone());
+                }
             }
         }
-    }
-    out
+        Ok(out)
+    })
+    .unwrap_or_default()
 }
 
 /// If `tail`'s last [`poll`](tail::EventTail::poll) parked at a corrupt line,
@@ -1194,16 +1201,6 @@ fn watchdog_tick(
     // If a node is non-terminal and its agent has died (per dual-poll
     // protocol) AND it has not already produced a `node.report`,
     // synthesize one with `failed: true, reason: "agent-died"`.
-    let entries = match std::fs::read_dir(paths.nodes_dir()) {
-        Ok(v) => v,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            return Err(CliError::system(
-                "io_error",
-                format!("read_dir {}: {}", paths.nodes_dir().display(), e),
-            ));
-        }
-    };
     // Nodes that presented the `TmuxGone` half-state on THIS tick. Any
     // node not in this set (alive, dead, terminal, missing agent_pid,
     // unreadable) gets its streak dropped at end-of-tick, so the streak
@@ -1216,50 +1213,67 @@ fn watchdog_tick(
     // of one subprocess per node — at ~100 agents that is 1 fork/tick, not 100.
     let mut candidates: Vec<(String, NodeId, Node, watchdog::AgentProbe)> = Vec::new();
     let mut sockets: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
-            continue;
+    // This first pass is the supervisor's highest-frequency multi-file read, so
+    // it is the one most likely to observe torn state. Hold the run's shared
+    // lock for the whole `nodes/` scan so a concurrent reducer cannot mutate the
+    // projection set under us (design.md §4); release it before the (slow) tmux
+    // probing and the exclusive-locked report synthesis below. `probe_socket`
+    // here only computes paths — the actual `tmux list-windows` runs after the
+    // lock is dropped.
+    RunLock::with_shared_lock(&paths.lock(), || {
+        let entries = match std::fs::read_dir(paths.nodes_dir()) {
+            Ok(v) => v,
+            // No `nodes/` yet: nothing to scan, leave `candidates` empty.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(octl_core::Error::io(paths.nodes_dir(), e)),
         };
-        let Ok(nid) = NodeId::parse_str(&node_id) else {
-            continue;
-        };
-        let Ok(Some(n)) = read_node_opt(paths, &nid) else {
-            continue;
-        };
-        if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
-            continue;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(node_id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+                continue;
+            };
+            let Ok(nid) = NodeId::parse_str(&node_id) else {
+                continue;
+            };
+            let Ok(Some(n)) = read_node_opt(paths, &nid) else {
+                continue;
+            };
+            if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
+                continue;
+            }
+            // Spawn-grace gate (see `WATCHDOG_SPAWN_GRACE`): a node younger than
+            // the grace window is skipped entirely — not probed, not streak-
+            // tracked — so a fresh-spawn PID-discovery race can never synthesize a
+            // terminal report that auto-cleanup would then act on. The PID was
+            // verified alive at `node.created`, so the agent gets these seconds to
+            // become visible before the watchdog is allowed to judge it dead.
+            if within_spawn_grace(n.started_at, now, grace) {
+                continue;
+            }
+            let Some(pid) = n.agent_pid else { continue };
+            let probe = watchdog::AgentProbe {
+                pid: pid as u32,
+                start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
+                tmux_window: n.tmux_window.clone(),
+                tmux_identity: n.tmux_identity.clone(),
+                // Skip the tmux probe only when there is neither a qualified
+                // identity nor a legacy window name to probe with — don't fail
+                // liveness on that absence alone. When present, the qualified
+                // identity is preferred; the window name is the legacy fallback.
+                skip_tmux_check: n.tmux_identity.is_none() && n.tmux_window.is_none(),
+            };
+            let (probes_tmux, socket) = probe.probe_socket();
+            if probes_tmux {
+                sockets.insert(socket);
+            }
+            candidates.push((node_id, nid, n, probe));
         }
-        // Spawn-grace gate (see `WATCHDOG_SPAWN_GRACE`): a node younger than
-        // the grace window is skipped entirely — not probed, not streak-
-        // tracked — so a fresh-spawn PID-discovery race can never synthesize a
-        // terminal report that auto-cleanup would then act on. The PID was
-        // verified alive at `node.created`, so the agent gets these seconds to
-        // become visible before the watchdog is allowed to judge it dead.
-        if within_spawn_grace(n.started_at, now, grace) {
-            continue;
-        }
-        let Some(pid) = n.agent_pid else { continue };
-        let probe = watchdog::AgentProbe {
-            pid: pid as u32,
-            start_time: n.agent_pid_start_time.map(|t| t.timestamp().max(0) as u64),
-            tmux_window: n.tmux_window.clone(),
-            tmux_identity: n.tmux_identity.clone(),
-            // Skip the tmux probe only when there is neither a qualified
-            // identity nor a legacy window name to probe with — don't fail
-            // liveness on that absence alone. When present, the qualified
-            // identity is preferred; the window name is the legacy fallback.
-            skip_tmux_check: n.tmux_identity.is_none() && n.tmux_window.is_none(),
-        };
-        let (probes_tmux, socket) = probe.probe_socket();
-        if probes_tmux {
-            sockets.insert(socket);
-        }
-        candidates.push((node_id, nid, n, probe));
-    }
+        Ok(())
+    })
+    .map_err(from_core)?;
 
     // One timed `tmux list-windows -a` per distinct socket for the whole tick.
     // A wedged server is bounded by an internal timeout and yields an

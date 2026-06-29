@@ -38,6 +38,12 @@
 //! `manifest-counter-desync`. A count-affecting reducer still emits its manifest
 //! op to refresh `updated_at`; the counter fields it carries are overwritten by
 //! the derive step.
+//!
+//! Because a count-affecting event rewrites a projection file *and* the
+//! manifest counter under the same exclusive `flock`, a reader that scans both
+//! together must hold the shared `flock` (`LOCK_SH`) for the whole scan or it
+//! could see the projection change without the matching counter (or vice
+//! versa). See [`crate::projections`] and design.md §4.
 
 use std::path::{Path, PathBuf};
 

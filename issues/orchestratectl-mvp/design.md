@@ -20,7 +20,7 @@ Each Decision/Why/Trade-offs block below expands one of these rows.
 
 **Decision:** Per-run JSON projections + append-only `events.jsonl` source-of-truth, serialized by a per-run advisory `flock`.
 
-**Why:** The event log is replayable in principle without any extra tooling — `cat events.jsonl | jq` and a human-readable replay are the same operation. JSON projections give CLI reads fast non-parsing scans. Concurrent writers are serialized by the kernel `flock`; readers do not lock and tolerate "may not see the last in-flight write yet" semantics.
+**Why:** The event log is replayable in principle without any extra tooling — `cat events.jsonl | jq` and a human-readable replay are the same operation. JSON projections give CLI reads fast non-parsing scans. Concurrent writers are serialized by the kernel `flock` (`LOCK_EX`); a reader doing a multi-file scan takes the same `flock` shared (`LOCK_SH`) for the scan's duration so it never observes a reducer's projection update half-applied (see §4), and tolerates "may not see the last in-flight write yet" semantics.
 
 **Sanctioned write path for non-Rust callers (skill-shim):** **only `orchestratectl event create`** is sanctioned. Direct `echo ... >> events.jsonl` (with or without `flock(1)`) is **explicitly banned** because macOS does not ship `flock(1)` natively and a portable shell-side locking discipline cannot be enforced. The binary handles `flock`, `seq` assignment, projection updates, and fsync in one atomic step.
 
@@ -319,9 +319,9 @@ The `orchestratectl tui` subcommand from the first-pass draft is removed from MV
 
 ## 4. Concurrency and safety
 
-- Per-run advisory `flock` on `<run-dir>/.lock` for any writer.
-- Reads do not lock; they tolerate a torn `manifest.json` (atomic rename means a reader either sees the old or new file, never a partial).
-- `events.jsonl` is append-only; the `seq` counter is read from the last line under the lock, then incremented.
+- Per-run advisory `flock` on `<run-dir>/.lock`: writers take it **exclusively** (`LOCK_EX`); readers take it **shared** (`LOCK_SH`) for the duration of any multi-file scan.
+- A single-file read is always coherent on its own (atomic rename means a reader sees either the old or the new file, never a partial). The shared lock exists for the **multi-file** case: a reader that scans `manifest.json` plus `nodes/*.json` / `discussions/*.json` / `spinoffs/*.json` together must not interleave with a reducer that updates a projection file and the manifest's denormalized counter as one logical mutation. Holding `LOCK_SH` for the whole scan makes the reader observe a single committed snapshot, never half of one. The lock is released before the result is serialized/formatted (no formatter I/O under lock). Readers never *create* the lock file or run directory — a run with no `.lock` yet has had no writer, so its read proceeds lock-free. Many readers hold `LOCK_SH` concurrently; an in-flight writer's `LOCK_EX` briefly excludes them, which is exactly the torn-read window being closed. (Implemented by `RunLock::with_shared_lock` / `acquire_shared`; on Windows the shared lock degrades to exclusive — no read-concurrency win, no correctness loss.)
+- `events.jsonl` is append-only; the `seq` counter is read from the last line under the exclusive lock, then incremented.
 - Within a per-spawning-agent supervisor (see §7), the in-process write path holds the same `flock` for its mutations; short-lived CLI calls (skill-shim, manual `event create`) acquire and release the same `flock` per call. Both paths are correct because the lock is on disk, not in a process.
 
 ## 5. Crate layout

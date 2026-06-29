@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, RunPaths};
+use octl_core::{read_manifest_opt, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -79,7 +79,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let Ok(paths) = RunPaths::new(ent.path(), run_id) else {
             continue;
         };
-        let m = match read_manifest_opt(&paths).map_err(from_core)? {
+        // Each run carries its own `.lock`; take that run's shared lock for its
+        // manifest read so the summary never reflects a manifest a reducer is
+        // mid-rewrite on (design.md §4). A run with no `.lock` yet reads
+        // lock-free (see `RunLock::acquire_shared`).
+        let m = match RunLock::with_shared_lock(&paths.lock(), || read_manifest_opt(&paths))
+            .map_err(from_core)?
+        {
             Some(m) => m,
             None => continue, // half-initialized run dir; skip silently
         };

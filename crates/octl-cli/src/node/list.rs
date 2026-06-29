@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, read_node_opt};
+use octl_core::{read_manifest_opt, read_node_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -44,81 +44,83 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, &run_id)?;
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
+    let filter = args.status.as_deref().map(str::trim);
+
+    // Hold the run's shared lock across the manifest-existence check and the
+    // whole `nodes/` scan so a concurrent reducer cannot add, remove, or rewrite
+    // node projections mid-listing (design.md §4). `None` means the run is
+    // missing (manifest absent); the lock is released before any output.
+    let nodes_dir = paths.nodes_dir();
+    let collected = RunLock::with_shared_lock(&paths.lock(), || {
+        if read_manifest_opt(&paths)?.is_none() {
+            return Ok(None);
+        }
+        let mut out: Vec<NodeSummary> = Vec::new();
+        let entries = match std::fs::read_dir(&nodes_dir) {
+            Ok(e) => Some(e),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(octl_core::Error::io(&nodes_dir, e)),
+        };
+        if let Some(read) = entries {
+            let mut ids: Vec<String> = Vec::new();
+            for ent in read {
+                // Propagate per-entry read errors. Silently swallowing
+                // them (with `.filter_map(Result::ok)`) would hide
+                // permission errors, broken NFS mounts, etc. and produce
+                // a partial list that callers can't distinguish from a
+                // truly empty run.
+                let ent = ent.map_err(|e| octl_core::Error::io(&nodes_dir, e))?;
+                let p = ent.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    ids.push(stem.to_string());
+                }
+            }
+            ids.sort();
+            for node_id in ids {
+                // A directory entry whose stem is not a well-formed node id can't
+                // be one of our projection files; skip it rather than erroring the
+                // whole listing.
+                let Ok(node_id) = parse_node_id(&node_id) else {
+                    continue;
+                };
+                let n = match read_node_opt(&paths, &node_id)? {
+                    Some(n) => n,
+                    None => continue,
+                };
+                // Use the canonical kebab-case helpers from `run/mod.rs`
+                // rather than round-tripping the enum through
+                // `serde_json::to_value`. Adding a new variant is then a
+                // pattern-match compile error, not a silent `""`.
+                let kind = kind_kebab(n.kind);
+                let status = status_kebab(n.status);
+                if let Some(f) = filter {
+                    if status != f {
+                        continue;
+                    }
+                }
+                out.push(NodeSummary {
+                    node_id: n.node_id.to_string(),
+                    kind: kind.to_string(),
+                    status: status.to_string(),
+                    parent_node_id: n.parent_node_id.map(|p| p.to_string()),
+                    updated_at: n.updated_at,
+                    children: n.children.len() as u32,
+                });
+            }
+        }
+        Ok(Some(out))
+    })
+    .map_err(from_core)?;
+
+    let Some(out) = collected else {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
                 .with_invalid_value(&run_id),
         );
-    }
-
-    let nodes_dir = paths.nodes_dir();
-    let mut out: Vec<NodeSummary> = Vec::new();
-    let entries = match std::fs::read_dir(&nodes_dir) {
-        Ok(e) => Some(e),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(CliError::system(
-                "io_error",
-                format!("read_dir {}: {}", nodes_dir.display(), e),
-            ));
-        }
     };
-    let filter = args.status.as_deref().map(str::trim);
-    if let Some(read) = entries {
-        let mut ids: Vec<String> = Vec::new();
-        for ent in read {
-            // Propagate per-entry read errors. Silently swallowing
-            // them (with `.filter_map(Result::ok)`) would hide
-            // permission errors, broken NFS mounts, etc. and produce
-            // a partial list that callers can't distinguish from a
-            // truly empty run.
-            let ent = ent.map_err(|e| {
-                CliError::system(
-                    "io_error",
-                    format!("read_dir entry {}: {}", nodes_dir.display(), e),
-                )
-            })?;
-            let p = ent.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                ids.push(stem.to_string());
-            }
-        }
-        ids.sort();
-        for node_id in ids {
-            // A directory entry whose stem is not a well-formed node id can't
-            // be one of our projection files; skip it rather than erroring the
-            // whole listing.
-            let Ok(node_id) = parse_node_id(&node_id) else {
-                continue;
-            };
-            let n = match read_node_opt(&paths, &node_id).map_err(from_core)? {
-                Some(n) => n,
-                None => continue,
-            };
-            // Use the canonical kebab-case helpers from `run/mod.rs`
-            // rather than round-tripping the enum through
-            // `serde_json::to_value`. Adding a new variant is then a
-            // pattern-match compile error, not a silent `""`.
-            let kind = kind_kebab(n.kind);
-            let status = status_kebab(n.status);
-            if let Some(f) = filter {
-                if status != f {
-                    continue;
-                }
-            }
-            out.push(NodeSummary {
-                node_id: n.node_id.to_string(),
-                kind: kind.to_string(),
-                status: status.to_string(),
-                parent_node_id: n.parent_node_id.map(|p| p.to_string()),
-                updated_at: n.updated_at,
-                children: n.children.len() as u32,
-            });
-        }
-    }
 
     let payload = ListPayload {
         run_id: run_id.clone(),
