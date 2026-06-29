@@ -151,13 +151,34 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
         return;
     };
     // The main worktree is the canonical place to run `worktree remove` /
-    // `branch -D` from; resolve it while the linked worktree still exists.
-    let main_repo = main_worktree_of(worktree_path, git);
+    // `branch -D` from; resolve it while the linked worktree still exists,
+    // falling back to the run's recorded source repo so branch cleanup still
+    // has a valid `-C` target even when the worktree dir is already gone.
+    let main_repo = main_worktree_of(worktree_path, git).or_else(|| manifest_source_repo(paths));
     let repo = main_repo.as_deref().unwrap_or(worktree_path);
-    remove_worktree(repo, worktree_path, git);
-    if let Some(branch) = n.branch.as_deref() {
-        delete_branch(repo, branch, git);
+
+    // `--force` so disposable untracked/modified scratch left in the worktree
+    // does not refuse removal and orphan the worktree+branch (issue
+    // `supervisor-worktree-remove-no-force`). By teardown the tracked work is
+    // already merged, so anything still in the tree is throwaway. If removal
+    // still fails AND the dir is simply gone (user removed it manually), record
+    // a non-fatal `cleanup.worktree_missing` and continue.
+    if !remove_worktree(repo, worktree_path, git) && !std::path::Path::new(worktree_path).exists() {
+        record_worktree_missing(paths, n, worktree_path);
     }
+    if let Some(branch) = n.branch.as_deref() {
+        delete_branch(paths, n, repo, branch, git);
+    }
+}
+
+/// The run's recorded source repository (`manifest.source_repo`), if any. Used
+/// as the `-C` fallback for `branch -D` when the linked worktree dir is gone and
+/// [`main_worktree_of`] can no longer resolve the main worktree from it.
+fn manifest_source_repo(paths: &RunPaths) -> Option<String> {
+    read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|m| m.source_repo)
 }
 
 /// Close the node's tmux window, recovering from the manual-rebase orphan case
@@ -325,6 +346,89 @@ fn record_window_missing(paths: &RunPaths, n: &Node, target: &str) {
     }
 }
 
+/// Append a non-fatal `cleanup.worktree_missing` audit event when a node's
+/// worktree dir is already gone at teardown (e.g. the operator removed it by
+/// hand). `git worktree remove --force` then has nothing to remove, so cleanup
+/// records the miss and continues — it must never fail the run. Idempotent by
+/// `(run, node)` so a supervisor restart re-running cleanup appends at most once.
+fn record_worktree_missing(paths: &RunPaths, n: &Node, worktree_path: &str) {
+    warn!(
+        target: "orchestratectl::supervise",
+        node = %n.node_id,
+        worktree_path,
+        "worktree dir already gone during cleanup; recording cleanup.worktree_missing (run not failed)"
+    );
+    eprintln!(
+        "supervisor cleanup: worktree {worktree_path} already gone (continuing; recorded cleanup.worktree_missing)"
+    );
+    let data = json!({
+        "node_id": n.node_id.as_str(),
+        "worktree_path": worktree_path,
+        "branch": n.branch,
+    });
+    let key = format!(
+        "cleanup.worktree_missing:{}:{}",
+        paths.run_id.as_str(),
+        n.node_id.as_str()
+    );
+    if let Err(e) = append_and_apply_event(
+        paths,
+        "cleanup.worktree_missing",
+        Some(&n.node_id),
+        Some(&key),
+        data,
+    ) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %n.node_id,
+            error = %e,
+            "failed to append cleanup.worktree_missing (continuing)"
+        );
+    }
+}
+
+/// Append a non-fatal `cleanup.branch_remove_failed` audit event when
+/// `git branch -D` refuses (e.g. the branch unexpectedly has unmerged commits).
+/// Branch-cleanup failures must never block run completion, so the supervisor
+/// records the git stderr for the operator and continues. Idempotent by
+/// `(run, node)`.
+fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail: &str) {
+    warn!(
+        target: "orchestratectl::supervise",
+        node = %n.node_id,
+        branch,
+        detail,
+        "git branch -D failed during cleanup; recording cleanup.branch_remove_failed (run not failed)"
+    );
+    eprintln!(
+        "supervisor cleanup: branch {branch} delete failed (continuing; recorded cleanup.branch_remove_failed): {detail}"
+    );
+    let data = json!({
+        "node_id": n.node_id.as_str(),
+        "branch": branch,
+        "error": detail,
+    });
+    let key = format!(
+        "cleanup.branch_remove_failed:{}:{}",
+        paths.run_id.as_str(),
+        n.node_id.as_str()
+    );
+    if let Err(e) = append_and_apply_event(
+        paths,
+        "cleanup.branch_remove_failed",
+        Some(&n.node_id),
+        Some(&key),
+        data,
+    ) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %n.node_id,
+            error = %e,
+            "failed to append cleanup.branch_remove_failed (continuing)"
+        );
+    }
+}
+
 /// Resolve the main worktree path for a linked worktree by reading the FIRST
 /// `worktree <path>` line of `git -C <worktree_path> worktree list --porcelain`
 /// (git always lists the main worktree first). `None` if git is unavailable, the
@@ -346,24 +450,32 @@ fn main_worktree_of(worktree_path: &str, git: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// `git -C <repo> worktree remove <worktree_path>` — lenient. A dirty/locked
-/// tree makes git refuse; we log and proceed rather than force, leaving the
-/// merge skill's `--force` cleanup (or an operator) to finish it.
-fn remove_worktree(repo: &str, worktree_path: &str, git: &str) {
+/// `git -C <repo> worktree remove --force <worktree_path>` — lenient. `--force`
+/// because by teardown the tracked work is already merged, so any untracked /
+/// modified scratch left behind is disposable; without it git refuses to remove
+/// a dirty tree and the cascade orphans the worktree AND branch (issue
+/// `supervisor-worktree-remove-no-force`). Returns `true` on success so the
+/// caller can distinguish an already-gone worktree from a genuine refusal.
+fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
     let mut cmd = Command::new(git);
     cmd.arg("-C")
         .arg(repo)
-        .args(["worktree", "remove", worktree_path]);
-    run_lenient(cmd, &format!("git worktree remove {worktree_path}"));
+        .args(["worktree", "remove", "--force", worktree_path]);
+    run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
 }
 
 /// `git -C <repo> branch -D <branch>` — force-delete, lenient. `-D` (not `-d`)
 /// because a merged-and-removed worktree's branch is still worth dropping even
-/// if git can't confirm the merge from the main worktree's vantage point.
-fn delete_branch(repo: &str, branch: &str, git: &str) {
+/// if git can't confirm the merge from the main worktree's vantage point. If git
+/// refuses anyway (e.g. unexpected unmerged commits), record a non-fatal
+/// `cleanup.branch_remove_failed` audit event and continue — branch-cleanup
+/// failures must never block run completion.
+fn delete_branch(paths: &RunPaths, n: &Node, repo: &str, branch: &str, git: &str) {
     let mut cmd = Command::new(git);
     cmd.arg("-C").arg(repo).args(["branch", "-D", branch]);
-    run_lenient(cmd, &format!("git branch -D {branch}"));
+    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch -D {branch}")) {
+        record_branch_remove_failed(paths, n, branch, &detail);
+    }
 }
 
 /// Run a cleanup command, logging its outcome to both `tracing` and stderr
@@ -372,17 +484,24 @@ fn delete_branch(repo: &str, branch: &str, git: &str) {
 /// spawn error is logged at `warn`, swallowed, and reported as `false` — cleanup
 /// is best-effort by contract, but the boolean lets a caller (the tmux-window
 /// teardown) fall back rather than leak.
-fn run_lenient(mut cmd: Command, label: &str) -> bool {
+fn run_lenient(cmd: Command, label: &str) -> bool {
+    run_lenient_detail(cmd, label).is_none()
+}
+
+/// Like [`run_lenient`] but returns the captured failure detail on a non-zero
+/// exit or spawn error (`None` on success), so a caller can record it in an
+/// audit event (e.g. `cleanup.branch_remove_failed`). Logging is identical.
+fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     match cmd.output() {
         Ok(out) if out.status.success() => {
             info!(target: "orchestratectl::supervise", step = label, "cleanup step ok");
             eprintln!("supervisor cleanup: {label}: ok");
-            true
+            None
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            let detail = stderr.trim();
+            let detail = stderr.trim().to_string();
             warn!(
                 target: "orchestratectl::supervise",
                 step = label,
@@ -391,7 +510,7 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
                 "cleanup step non-zero (treated as already-done/refused; continuing)"
             );
             eprintln!("supervisor cleanup: {label}: non-zero exit (continuing): {detail}");
-            false
+            Some(detail)
         }
         Err(e) => {
             warn!(
@@ -401,7 +520,7 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
                 "cleanup step could not spawn (continuing)"
             );
             eprintln!("supervisor cleanup: {label}: spawn failed (continuing): {e}");
-            false
+            Some(format!("spawn failed: {e}"))
         }
     }
 }
@@ -507,13 +626,73 @@ mod tests {
         std::fs::read_to_string(dir.join("tmux.log")).unwrap_or_default()
     }
 
-    fn window_missing_events(paths: &RunPaths) -> Vec<serde_json::Value> {
+    /// All events of a given `kind` recorded in the run's event log.
+    fn events_of_kind(paths: &RunPaths, kind: &str) -> Vec<serde_json::Value> {
         std::fs::read_to_string(paths.events())
             .unwrap_or_default()
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .filter(|v| v["kind"] == "cleanup.window_missing")
+            .filter(|v| v["kind"] == kind)
             .collect()
+    }
+
+    fn window_missing_events(paths: &RunPaths) -> Vec<serde_json::Value> {
+        events_of_kind(paths, "cleanup.window_missing")
+    }
+
+    /// Run `git <args>` in `cwd`, asserting success. Used by the real-git
+    /// cleanup tests below (no `GIT_BIN` stub — `git_bin()` defaults to `git`,
+    /// so cleanup drives a real repo end-to-end).
+    fn git(cwd: &std::path::Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed in {cwd:?}");
+    }
+
+    /// Init a real repo with one commit on `main` and a linked worktree on a new
+    /// branch `wt/foo`, returning `(repo, worktree)`. The cleanup path resolves
+    /// the main worktree from the linked one, so this is enough for a full
+    /// `worktree remove` / `branch -D` round-trip against real git.
+    fn init_repo_with_worktree(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "init"]);
+        let wt = tmp.path().join("wt");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt/foo",
+                wt.to_str().unwrap(),
+            ],
+        );
+        (repo, wt)
+    }
+
+    /// True when branch `branch` still exists in `repo`.
+    fn branch_exists(repo: &std::path::Path, branch: &str) -> bool {
+        Command::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "--verify", "--quiet", branch])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
     }
 
     /// The happy path: `kill-window` succeeds against the recorded id, so no
@@ -636,6 +815,102 @@ mod tests {
         close_tmux_window(&paths, &n, &tmux);
 
         assert_eq!(window_missing_events(&paths).len(), 1);
+    }
+
+    /// The root-cause regression (`supervisor-worktree-remove-no-force`): an
+    /// untracked scratch file left in the worktree must NOT block teardown. With
+    /// `--force` the worktree dir AND its branch are both removed; without it git
+    /// refused and the cascade orphaned both. Drives real git end-to-end.
+    #[test]
+    fn worktree_with_untracked_file_is_force_removed_with_branch() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // The exact orphan trigger from the issue: a stray untracked file.
+        std::fs::write(wt.join(".report.json"), "scratch").unwrap();
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        // No tmux fields → close_tmux_window is a no-op; `/usr/bin/true` is never
+        // actually consulted but satisfies the signature.
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(!wt.exists(), "worktree dir must be force-removed");
+        assert!(
+            !branch_exists(&repo, "wt/foo"),
+            "branch must be deleted once the worktree is gone"
+        );
+        assert!(
+            events_of_kind(&paths, "cleanup.worktree_missing").is_empty(),
+            "a present (if dirty) worktree is not 'missing'"
+        );
+        assert!(
+            events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty(),
+            "branch removal must succeed"
+        );
+    }
+
+    /// Required behaviour #2: a worktree dir that is already gone (operator
+    /// removed it by hand) records a non-fatal `cleanup.worktree_missing` and
+    /// does NOT fail the run. No manifest `source_repo` is set, so the `-C`
+    /// fallback lands on the (missing) worktree path and git refuses — exactly
+    /// the path that proves the existence check, not a stub, decides "missing".
+    #[test]
+    fn missing_worktree_records_event_and_continues() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let gone = tmp.path().join("gone-wt");
+        // Branch left unset → keep this test focused on the worktree_missing arm.
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": gone.to_str().unwrap() }),
+        );
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        let evs = events_of_kind(&paths, "cleanup.worktree_missing");
+        assert_eq!(evs.len(), 1, "exactly one worktree_missing event expected");
+        assert_eq!(evs[0]["data"]["worktree_path"], gone.to_str().unwrap());
+    }
+
+    /// Required behaviour #3: when `git branch -D` itself refuses (here: the
+    /// branch does not exist), the worktree is still removed and the failure is
+    /// recorded as a non-fatal `cleanup.branch_remove_failed` — run completion is
+    /// never blocked on branch cleanup.
+    #[test]
+    fn branch_remove_failure_records_event_and_continues() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (_repo, wt) = init_repo_with_worktree(&tmp);
+
+        // Name a branch that does not exist so `git branch -D` refuses, while the
+        // worktree removal still succeeds.
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/never-existed" }),
+        );
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(!wt.exists(), "worktree must still be removed");
+        let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
+        assert_eq!(evs.len(), 1, "branch failure must be recorded once");
+        assert_eq!(evs[0]["data"]["branch"], "wt/never-existed");
+        assert!(
+            !evs[0]["data"]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "the git stderr must be captured for the operator"
+        );
     }
 
     #[test]

@@ -1,9 +1,10 @@
 ---
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-06-29
 type: bug
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Supervisor cleanup git worktree remove lacks --force; stray untracked file orphans worktree+branch

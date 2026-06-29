@@ -257,7 +257,7 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
     );
     let git = log_contents(dir.path(), "git.log");
     assert!(
-        git.contains("worktree remove /fake/wt"),
+        git.contains("worktree remove --force /fake/wt"),
         "worktree not removed: {git:?}"
     );
     assert!(
@@ -291,7 +291,7 @@ fn failed_report_rolls_run_to_failed_and_cleans_up() {
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(latest_run_status(&events).as_deref(), Some("failed"));
     assert!(log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"));
-    assert!(log_contents(dir.path(), "git.log").contains("worktree remove /fake/wt"));
+    assert!(log_contents(dir.path(), "git.log").contains("worktree remove --force /fake/wt"));
 }
 
 /// Terminal-via-cancel: a `run cancel` already drove the run to `cancelled`
@@ -338,7 +338,7 @@ fn terminal_via_cancel_still_cleans_up() {
         log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"),
         "cancel path must still close the tmux window"
     );
-    assert!(log_contents(dir.path(), "git.log").contains("worktree remove /fake/wt"));
+    assert!(log_contents(dir.path(), "git.log").contains("worktree remove --force /fake/wt"));
 }
 
 /// Interactive kinds (`code`) must roll up to a terminal run status like any
@@ -414,7 +414,7 @@ fn interactive_kind_with_explicit_merge_cleans_up() {
     );
     let git = log_contents(dir.path(), "git.log");
     assert!(
-        git.contains("worktree remove /fake/wt"),
+        git.contains("worktree remove --force /fake/wt"),
         "explicit-merge must remove the worktree: {git:?}"
     );
     assert!(

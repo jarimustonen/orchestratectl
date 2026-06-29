@@ -317,14 +317,22 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         // is documented at the match site. They are NOT `node.report`, so the
         // supervisor never mistakes them for a terminal signal.
         "orchestrator.decision" | "discuss.critical" => Ok(vec![]),
-        // Best-effort teardown audit record from the supervisor's cleanup path:
-        // the node's tmux window could not be located to close it (typically a
-        // manually-resolved rebase renamed the window — issue
-        // `worktree-merge-orphans-tmux-window`). Mutates no projection; the
-        // event log is its only home, so it folds to a clean no-op. Listed
-        // explicitly so the append path's transactional gate runs the same
-        // no-op plan and the intent is documented here.
-        "cleanup.window_missing" => Ok(vec![]),
+        // Best-effort teardown audit records from the supervisor's cleanup
+        // path. Each mutates no projection — the event log is their only home —
+        // so they fold to a clean no-op. Listed explicitly so the append path's
+        // transactional gate runs the same no-op plan and the intent is
+        // documented here.
+        //   - `cleanup.window_missing`: the node's tmux window could not be
+        //     located to close it (typically a manually-resolved rebase renamed
+        //     the window — issue `worktree-merge-orphans-tmux-window`).
+        //   - `cleanup.worktree_missing`: the worktree dir was already gone at
+        //     teardown (e.g. removed manually), so nothing to `worktree remove`.
+        //   - `cleanup.branch_remove_failed`: `git branch -D` refused (e.g.
+        //     unexpected unmerged commits); the run completes anyway (issue
+        //     `supervisor-worktree-remove-no-force`).
+        "cleanup.window_missing" | "cleanup.worktree_missing" | "cleanup.branch_remove_failed" => {
+            Ok(vec![])
+        }
         _ => Ok(vec![]),
     }
 }
