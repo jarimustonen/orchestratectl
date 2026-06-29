@@ -16,10 +16,7 @@
 //! - same `--idempotency-key`, different payload → `idempotency_conflict`.
 //! - already-resolved, no key, different `--choice` → `discussion_already_resolved`.
 
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use octl_core::{ensure_root, read_discussion_opt, Discussion, DiscussionStatus, RunLock};
@@ -166,7 +163,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `discussion_already_resolved`. A keyed replay then short-circuits
         // even if a concurrent writer raced ahead with the same key.
         if let Some(key) = args.idempotency_key.as_deref() {
-            if let Some(prior) = find_prior_event(&paths.events(), "discussion.resolved", key)? {
+            if let Some(prior) =
+                octl_core::find_prior_with_key(lock, &paths, "discussion.resolved", key)?
+            {
                 let prior_discussion_id = prior
                     .data
                     .get("discussion_id")
@@ -364,66 +363,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             emit(&payload, args.spec, args.warnings)
         }
     }
-}
-
-/// Cached fields extracted from a prior `discussion.resolved` event so
-/// the caller can decide replay vs. conflict.
-struct PriorEvent {
-    seq: u64,
-    data: Value,
-}
-
-/// Stream-scan `events.jsonl` for an event with matching `kind` and
-/// `idempotency_key`. Deserialises only the lookup fields up front to
-/// avoid parsing the (potentially large) `data` payload on every line.
-///
-/// Caller must hold the run's `flock`. This is structurally the same
-/// scan that `event create` performs; centralising both into
-/// `octl_core::events` is tracked as a spin-off (see
-/// `assessment-discussion-cli.md` F14).
-fn find_prior_event(
-    events_path: &Path,
-    kind: &str,
-    key: &str,
-) -> octl_core::Result<Option<PriorEvent>> {
-    let f = match std::fs::File::open(events_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(octl_core::Error::io(events_path, e)),
-    };
-    let reader = BufReader::new(f);
-    for line in reader.lines() {
-        let line = line.map_err(|e| octl_core::Error::io(events_path, e))?;
-        if line.is_empty() {
-            continue;
-        }
-        let probe: ProbeFields = match serde_json::from_str(&line) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        if probe.kind != kind || probe.idempotency_key.as_deref() != Some(key) {
-            continue;
-        }
-        let full: FullEventForReplay =
-            serde_json::from_str(&line).map_err(|e| octl_core::Error::json(events_path, e))?;
-        return Ok(Some(PriorEvent {
-            seq: full.seq,
-            data: full.data,
-        }));
-    }
-    Ok(None)
-}
-
-#[derive(Deserialize)]
-struct ProbeFields {
-    kind: String,
-    idempotency_key: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct FullEventForReplay {
-    seq: u64,
-    data: Value,
 }
 
 fn emit(

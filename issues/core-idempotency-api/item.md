@@ -1,9 +1,10 @@
 ---
 created: 2026-06-12
-updated: 2026-06-27
+updated: 2026-06-29
 type: improvement
-status: open
+status: fixed
 priority: normal
+closed: 2026-06-29
 ---
 
 # Centralize --idempotency-key handling in octl-core::AppendOutcome

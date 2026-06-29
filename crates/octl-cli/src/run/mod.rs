@@ -409,6 +409,11 @@ pub fn from_core(err: octl_core::Error) -> CliError {
             let path = path.display().to_string();
             CliError::user("corrupt_run", err.to_string()).with_invalid_value(path)
         }
+        // An empty idempotency key is a caller/client error, not a system fault —
+        // the CLI boundary normally rejects it first, so this is the core backstop.
+        octl_core::Error::EmptyIdempotencyKey => {
+            CliError::user("invalid_value", err.to_string()).with_invalid_value("")
+        }
         other => CliError::system("io_error", other.to_string()),
     }
 }

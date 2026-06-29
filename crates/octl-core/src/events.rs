@@ -343,7 +343,7 @@ pub fn append_and_apply_event(
         // Idempotency lookup + append share this one lock window so a
         // concurrent retry can't see "no prior event" and double-append.
         if let Some(key) = idempotency_key {
-            if let Some(prior) = find_prior_with_key(paths, kind, key)? {
+            if let Some(prior) = find_prior_with_key(lock, paths, kind, key)? {
                 return Ok(AppendResult {
                     seq: prior.seq,
                     idempotent_replay: true,
@@ -446,6 +446,147 @@ pub fn append_and_apply_unlocked(
     // `applied_seq` claims.
     advance_applied_seq(paths, seq)?;
     Ok(seq)
+}
+
+/// The three observable outcomes of an [`append_and_apply_idempotent`] call —
+/// the shared `--idempotency-key` contract that `event create`, `discussion
+/// resolve`, and future keyed verbs (`spinoff approve|reject`, `run create`,
+/// `node report`) all answer to, lifted out of each CLI's private log scan.
+///
+/// The discriminator is whether a prior event with the same `kind` + key
+/// already exists, and — if so — whether the call's `(node_id, data)` identity
+/// matches that prior event:
+///
+/// - [`AppendOutcome::Appended`] — no prior event carried this key: a fresh
+///   event was appended and folded into the projections. `seq` is its sequence.
+/// - [`AppendOutcome::IdempotentReplay`] — a prior event carried this key **and**
+///   the same `node_id` + `data`: a true retry. Nothing was appended; the
+///   `prior` event (its `seq` / `node_id` / `data`) is returned so the caller
+///   can surface the original sequence.
+/// - [`AppendOutcome::Conflict`] — a prior event carried this key but with a
+///   **different** `node_id` or `data`: the key was reused for a different
+///   request (a client bug, Stripe-style). Nothing was appended; `prior` is
+///   returned so the caller can build a precise conflict error (e.g. diff the
+///   payload vs. the node id).
+#[derive(Debug)]
+pub enum AppendOutcome {
+    /// A fresh event was appended and applied; `seq` is its sequence number.
+    Appended {
+        /// The appended event's `seq`.
+        seq: u64,
+    },
+    /// The key matched a prior event with identical `node_id` + `data`. No new
+    /// event was written; `prior.seq` is the original sequence to surface.
+    IdempotentReplay {
+        /// The pre-existing matching event (its `seq`, `node_id`, and `data`).
+        prior: PriorEvent,
+    },
+    /// The key matched a prior event whose `node_id` or `data` differs from this
+    /// request. No new event was written; the caller should reject the reuse.
+    Conflict {
+        /// The pre-existing event recorded under the same key, for the caller's
+        /// conflict diagnostics (`prior.seq` is the original sequence).
+        prior: PriorEvent,
+    },
+}
+
+/// Append one keyed event idempotently: scan for a prior event with the same
+/// `kind` + `key`, and either replay it, reject a conflicting reuse, or append
+/// fresh — the centralized `--idempotency-key` primitive (issue
+/// `core-idempotency-api`).
+///
+/// This is the **sanctioned lock-held composition path** for keyed appends: the
+/// `_witness: &LockedRun` proves the caller already holds the run's exclusive
+/// [`RunLock`] (from [`RunLock::with_lock`] or [`RunLock::witness`]), so the
+/// scan and the append share one lock window and a concurrent retry can never
+/// see "no prior event" and double-append. Calling it composes with the
+/// applied-seq watermark and the path-traversal defense exactly as
+/// [`append_and_apply_unlocked`] does — it catches the projections up to the log
+/// (`truncate_torn_tail` + `replay_unapplied`) before scanning, guards the run
+/// root + event log via [`RunPaths::checked_events`], and routes the fresh
+/// append through `append_and_apply_unlocked`.
+///
+/// `build` lazily produces the event's `data` payload given the sequence the
+/// fresh event *would* receive. It is a **pure** constructor: it is invoked once
+/// to materialize the candidate payload (to compare against a prior event, or to
+/// write a fresh one) and must not encode caller-side domain preconditions — a
+/// verb whose append is gated on projection state (e.g. `discussion resolve`'s
+/// already-resolved / no-op decision) keeps that logic in its own locked body
+/// and uses [`find_prior_with_key`] directly. The `u64` lets a payload embed its
+/// own `seq`; a payload that does so is not replay-stable and should not be used
+/// with idempotency.
+///
+/// The key must be non-empty: an empty key is rejected with
+/// [`Error::EmptyIdempotencyKey`] before any scan, since `""` would collapse
+/// every keyless append into one dedup slot.
+///
+/// # Examples
+///
+/// ```no_run
+/// use octl_core::{append_and_apply_idempotent, AppendOutcome, RunLock, RunPaths};
+/// use serde_json::json;
+///
+/// # fn demo(paths: &RunPaths) -> octl_core::Result<()> {
+/// let outcome = RunLock::with_lock(paths, |lock| {
+///     append_and_apply_idempotent(
+///         paths,
+///         lock,
+///         "node.status",
+///         None,            // no target node
+///         "retry-key-42",  // the caller's idempotency key (non-empty)
+///         |_seq| Ok(json!({ "status": "running" })),
+///     )
+/// })?;
+/// match outcome {
+///     AppendOutcome::Appended { seq } => println!("appended at seq {seq}"),
+///     AppendOutcome::IdempotentReplay { prior } => println!("replayed seq {}", prior.seq),
+///     AppendOutcome::Conflict { prior } => println!("key reused; prior seq {}", prior.seq),
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub fn append_and_apply_idempotent<F>(
+    paths: &RunPaths,
+    witness: &LockedRun<'_>,
+    kind: &str,
+    node_id: Option<&NodeId>,
+    key: &str,
+    build: F,
+) -> Result<AppendOutcome>
+where
+    F: FnOnce(u64) -> Result<Value>,
+{
+    if key.is_empty() {
+        return Err(Error::EmptyIdempotencyKey);
+    }
+    // Catch the projections up to the log before scanning, mirroring
+    // `append_and_apply_unlocked`'s recovery half: an idempotent replay must
+    // only report once the prior event's projection is durably committed, never
+    // a stale "found, but not applied" result. A clean run makes this a no-op.
+    let events_path = paths.checked_events()?;
+    truncate_torn_tail(&events_path)?;
+    replay_unapplied(paths, &events_path)?;
+
+    // The sequence a fresh append *would* take. Computed once, after catch-up,
+    // so `build`'s payload sees the same seq `append_and_apply_unlocked` will
+    // assign under this still-held lock.
+    let next_seq = recover_last_seq(&events_path)? + 1;
+    let data = build(next_seq)?;
+
+    if let Some(prior) = find_prior_with_key(witness, paths, kind, key)? {
+        // A prior event carries this key. It is a true replay only when the
+        // full request identity — the envelope `node_id` *and* the `data`
+        // payload — matches; any divergence is a key reused for a different
+        // request and must surface as a conflict, never a silent no-op.
+        let same_node = prior.node_id.as_deref() == node_id.map(NodeId::as_str);
+        if same_node && prior.data == data {
+            return Ok(AppendOutcome::IdempotentReplay { prior });
+        }
+        return Ok(AppendOutcome::Conflict { prior });
+    }
+
+    let seq = append_and_apply_unlocked(witness, paths, kind, node_id, Some(key), data)?;
+    Ok(AppendOutcome::Appended { seq })
 }
 
 /// Replay every unapplied tail event — those with `seq > manifest.applied_seq`
@@ -961,11 +1102,18 @@ const CORRUPT_LINE_EXCERPT_BYTES: usize = 100;
 /// surfacing as an I/O error; a *newline-terminated* line containing
 /// invalid UTF-8 is reported as `CorruptEventLog`, not I/O.
 ///
-/// Caller must hold the run's [`RunLock`]; the scan is read-only over an
-/// append-only file. `pub(crate)`: this lock-sensitive primitive is no longer
-/// a public API — [`append_and_apply_event`] folds the scan and the append
-/// into one lock window so callers can't run the scan-then-append race.
-pub(crate) fn find_prior_with_key(
+/// The `_witness: &LockedRun` is compile-time proof the caller holds the run's
+/// exclusive [`RunLock`] — the scan is read-only, but it is only meaningful
+/// fused with an append under one lock window (otherwise a concurrent retry can
+/// see "no prior event" and double-append). The witness gates the public surface
+/// so a caller cannot run the scan-then-append race: it must already hold the
+/// lock to scan, and the same held lock covers the append it threads into
+/// [`append_and_apply_unlocked`]. [`append_and_apply_idempotent`] fuses the two
+/// for the common case; a caller that must interleave domain logic between the
+/// scan and the append (e.g. `discussion resolve`'s already-resolved / no-op
+/// precedence) calls this primitive directly under its own held lock.
+pub fn find_prior_with_key(
+    _witness: &LockedRun<'_>,
     paths: &RunPaths,
     kind: &str,
     idempotency_key: &str,
@@ -1158,6 +1306,188 @@ mod tests {
         // The reducer ran under the same lock: the manifest projection exists.
         let m = crate::read_manifest(&paths).unwrap();
         assert_eq!(m.run_id.as_str(), paths.run_id.as_str());
+    }
+
+    #[test]
+    fn append_and_apply_idempotent_appended_path_returns_fresh_seq() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths); // seq 1 run.created, seq 2 node.created
+
+        let before = read_all_events(&paths.events()).unwrap().len();
+        let data = json!({ "status": "running" });
+        let outcome = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(
+                &paths,
+                lock,
+                "node.status",
+                Some(&nid("n-0001")),
+                "k1",
+                |_seq| Ok(data.clone()),
+            )
+        })
+        .unwrap();
+        match outcome {
+            AppendOutcome::Appended { seq } => {
+                assert_eq!(seq, 3, "fresh append takes the next seq");
+            }
+            other => panic!("expected Appended, got {other:?}"),
+        }
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before + 1,
+            "a fresh key appends exactly one event"
+        );
+    }
+
+    #[test]
+    fn append_and_apply_idempotent_replay_returns_prior_without_appending() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let node = nid("n-0001");
+        let data = json!({ "status": "running" });
+
+        let first = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(&paths, lock, "node.status", Some(&node), "k1", |_seq| {
+                Ok(data.clone())
+            })
+        })
+        .unwrap();
+        let first_seq = match first {
+            AppendOutcome::Appended { seq } => seq,
+            other => panic!("expected Appended, got {other:?}"),
+        };
+        let after_first = read_all_events(&paths.events()).unwrap().len();
+
+        // Same kind + key + node + data → a true replay: nothing appended, the
+        // prior event (its seq + data) is returned.
+        let replay = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(&paths, lock, "node.status", Some(&node), "k1", |_seq| {
+                Ok(data.clone())
+            })
+        })
+        .unwrap();
+        match replay {
+            AppendOutcome::IdempotentReplay { prior } => {
+                assert_eq!(prior.seq, first_seq);
+                assert_eq!(prior.node_id.as_deref(), Some("n-0001"));
+                assert_eq!(prior.data, data);
+            }
+            other => panic!("expected IdempotentReplay, got {other:?}"),
+        }
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            after_first,
+            "a replay must not append a new event"
+        );
+    }
+
+    #[test]
+    fn append_and_apply_idempotent_conflict_on_different_data() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let node = nid("n-0001");
+
+        let first = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(&paths, lock, "node.status", Some(&node), "k1", |_seq| {
+                Ok(json!({ "status": "running" }))
+            })
+        })
+        .unwrap();
+        let first_seq = match first {
+            AppendOutcome::Appended { seq } => seq,
+            other => panic!("expected Appended, got {other:?}"),
+        };
+        let after_first = read_all_events(&paths.events()).unwrap().len();
+
+        // Same key, DIFFERENT payload → conflict, carrying the prior event's seq;
+        // nothing new is appended.
+        let conflict = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(&paths, lock, "node.status", Some(&node), "k1", |_seq| {
+                Ok(json!({ "status": "done" }))
+            })
+        })
+        .unwrap();
+        match conflict {
+            AppendOutcome::Conflict { prior } => {
+                assert_eq!(prior.seq, first_seq);
+                assert_eq!(prior.data, json!({ "status": "running" }));
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            after_first,
+            "a conflict must not append a new event"
+        );
+    }
+
+    #[test]
+    fn append_and_apply_idempotent_conflict_on_different_node_id() {
+        // Same key + same data but a different envelope node is still a reused
+        // key for a different request → conflict, not a silent replay.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        // A second live node so the conflicting append targets a real node.
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid("n-0002")),
+            None,
+            json!({ "kind": "spinoff" }),
+        )
+        .unwrap();
+        let data = json!({ "status": "running" });
+
+        RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(
+                &paths,
+                lock,
+                "node.status",
+                Some(&nid("n-0001")),
+                "k1",
+                |_seq| Ok(data.clone()),
+            )
+        })
+        .unwrap();
+
+        let conflict = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(
+                &paths,
+                lock,
+                "node.status",
+                Some(&nid("n-0002")),
+                "k1",
+                |_seq| Ok(data.clone()),
+            )
+        })
+        .unwrap();
+        assert!(
+            matches!(conflict, AppendOutcome::Conflict { prior } if prior.node_id.as_deref() == Some("n-0001")),
+            "a node-id mismatch under the same key is a conflict"
+        );
+    }
+
+    #[test]
+    fn append_and_apply_idempotent_rejects_empty_key() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap_live_node(&paths);
+        let err = RunLock::with_lock(&paths, |lock| {
+            append_and_apply_idempotent(
+                &paths,
+                lock,
+                "node.status",
+                Some(&nid("n-0001")),
+                "",
+                |_seq| Ok(json!({ "status": "running" })),
+            )
+        })
+        .unwrap_err();
+        assert!(matches!(err, Error::EmptyIdempotencyKey), "got {err:?}");
     }
 
     #[test]
@@ -1697,6 +2027,13 @@ mod tests {
         paths
     }
 
+    /// Run [`find_prior_with_key`] under a freshly-acquired exclusive lock —
+    /// the witness it now requires. The scan is read-only, so taking the lock
+    /// just to mint the witness is exactly what a real caller does.
+    fn scan(paths: &RunPaths, kind: &str, key: &str) -> Result<Option<PriorEvent>> {
+        RunLock::with_lock(paths, |w| find_prior_with_key(w, paths, kind, key))
+    }
+
     #[test]
     fn find_prior_with_key_missing_log_is_none() {
         let tmp = TempDir::new().unwrap();
@@ -1704,7 +2041,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let paths = RunPaths::new(dir, "01jxsnap000000000000000000").unwrap();
         // No events.jsonl written at all.
-        let got = find_prior_with_key(&paths, "node.report", "k1").unwrap();
+        let got = scan(&paths, "node.report", "k1").unwrap();
         assert!(got.is_none());
     }
 
@@ -1718,9 +2055,7 @@ mod tests {
             "\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        let got = find_prior_with_key(&paths, "node.report", "k1")
-            .unwrap()
-            .expect("match");
+        let got = scan(&paths, "node.report", "k1").unwrap().expect("match");
         assert_eq!(got.seq, 2);
         assert_eq!(got.node_id.as_deref(), Some("n-1"));
         assert_eq!(got.data, serde_json::json!({"ok": true}));
@@ -1734,9 +2069,7 @@ mod tests {
             "\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        assert!(find_prior_with_key(&paths, "node.report", "k1")
-            .unwrap()
-            .is_none());
+        assert!(scan(&paths, "node.report", "k1").unwrap().is_none());
     }
 
     #[test]
@@ -1753,7 +2086,7 @@ mod tests {
         log.push_str(r#"{"seq":2,"kind":"node.rep"#); // torn mid-write, no newline
         let paths = paths_with_events(&tmp, log.as_bytes());
 
-        let got = find_prior_with_key(&paths, "node.report", "k1")
+        let got = scan(&paths, "node.report", "k1")
             .unwrap()
             .expect("match before the torn tail");
         assert_eq!(got.seq, 1);
@@ -1762,9 +2095,7 @@ mod tests {
         // not an error.
         let tmp2 = TempDir::new().unwrap();
         let paths2 = paths_with_events(&tmp2, br#"{"seq":1,"kind":"node.rep"#);
-        assert!(find_prior_with_key(&paths2, "node.report", "k1")
-            .unwrap()
-            .is_none());
+        assert!(scan(&paths2, "node.report", "k1").unwrap().is_none());
     }
 
     #[test]
@@ -1781,9 +2112,7 @@ mod tests {
         let paths = paths_with_events(&tmp, line);
         assert_eq!(recover_last_seq(&paths.events()).unwrap(), 0);
         assert!(
-            find_prior_with_key(&paths, "node.report", "k1")
-                .unwrap()
-                .is_none(),
+            scan(&paths, "node.report", "k1").unwrap().is_none(),
             "torn tail must be ignored even when it parses as valid JSON"
         );
     }
@@ -1803,7 +2132,7 @@ mod tests {
             "\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        let got = find_prior_with_key(&paths, "node.report", "k1")
+        let got = scan(&paths, "node.report", "k1")
             .unwrap()
             .expect("match after a seq-less non-matching line");
         assert_eq!(got.seq, 2);
@@ -1822,7 +2151,7 @@ mod tests {
             "\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        let err = find_prior_with_key(&paths, "node.report", "k1").unwrap_err();
+        let err = scan(&paths, "node.report", "k1").unwrap_err();
         assert!(
             matches!(err, Error::CorruptEventLog { .. }),
             "expected CorruptEventLog, got {err:?}"
@@ -1837,7 +2166,7 @@ mod tests {
             "\r\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        let got = find_prior_with_key(&paths, "node.report", "k1")
+        let got = scan(&paths, "node.report", "k1")
             .unwrap()
             .expect("CRLF-terminated match");
         assert_eq!(got.seq, 1);
@@ -1856,7 +2185,7 @@ mod tests {
         log.push(b'\n');
         log.extend_from_slice(&[0xF0, 0x9F]); // start of a 4-byte char, truncated
         let paths = paths_with_events(&tmp, &log);
-        let got = find_prior_with_key(&paths, "node.report", "k1")
+        let got = scan(&paths, "node.report", "k1")
             .unwrap()
             .expect("match before the partial-UTF8 tail");
         assert_eq!(got.seq, 1);
@@ -2546,7 +2875,7 @@ mod tests {
             "\n",
         );
         let paths = paths_with_events(&tmp, log.as_bytes());
-        let err = find_prior_with_key(&paths, "node.report", "k1").unwrap_err();
+        let err = scan(&paths, "node.report", "k1").unwrap_err();
         match err {
             Error::CorruptEventLog { reason, .. } => {
                 assert!(reason.contains("line 2"), "reason was: {reason}");

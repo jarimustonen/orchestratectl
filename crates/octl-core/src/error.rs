@@ -172,6 +172,16 @@ pub enum Error {
         /// [`SUPPORTED_STATE_SCHEMAS`]: crate::schema::SUPPORTED_STATE_SCHEMAS
         supported: Vec<u32>,
     },
+
+    /// An idempotency key was empty.
+    ///
+    /// A `""` key would collapse every "no real key" append into a single
+    /// dedup slot, so [`append_and_apply_idempotent`](crate::append_and_apply_idempotent)
+    /// rejects it in core rather than trusting each CLI boundary to pre-validate.
+    /// The CLI verbs already reject it up front; this is the defense-in-depth
+    /// backstop for any future caller.
+    #[error("idempotency key must not be empty")]
+    EmptyIdempotencyKey,
 }
 
 /// Convenience alias for results returned by `octl-core`.

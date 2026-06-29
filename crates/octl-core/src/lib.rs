@@ -38,9 +38,9 @@ pub use cancel::{cancel_run, cancel_run_unlocked, CancelOutcome};
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
-    append_and_apply_event, append_and_apply_unlocked, quarantine_corrupt_lines,
-    quarantine_corrupt_lines_unlocked, read_all_events, recover_last_seq, AppendResult, PriorEvent,
-    Quarantine,
+    append_and_apply_event, append_and_apply_idempotent, append_and_apply_unlocked,
+    find_prior_with_key, quarantine_corrupt_lines, quarantine_corrupt_lines_unlocked,
+    read_all_events, recover_last_seq, AppendOutcome, AppendResult, PriorEvent, Quarantine,
 };
 pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};

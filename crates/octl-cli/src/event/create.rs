@@ -3,18 +3,21 @@
 //! Validates `--kind` against the closed MVP event-kind set (design.md
 //! §1.4), enforces `--node-id` for kinds that reference a specific node,
 //! reads the `data` payload from `--from-file`, then appends + applies the
-//! event via the canonical `octl_core::append_and_apply_event`.
+//! event under the run's `flock`.
 //!
-//! `--idempotency-key` dedup is folded into that one call: it scans the
-//! existing event log and appends under a single `flock` window so concurrent
-//! retries can't race past each other.
+//! `--idempotency-key` dedup goes through the centralized
+//! `octl_core::append_and_apply_idempotent`: it scans the existing event log,
+//! classifies the call as a fresh append / idempotent replay / conflicting
+//! reuse, and (on a fresh key) appends — all in a single `flock` window so
+//! concurrent retries can't race past each other. A keyless create is a plain
+//! `append_and_apply_unlocked`.
 
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::ensure_root;
+use octl_core::{ensure_root, AppendOutcome, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -384,58 +387,72 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     ensure_root(&root).map_err(from_core)?;
 
-    // The canonical mutation entry folds the idempotency-key lookup and the
-    // append into one lock window, so a concurrent retry can't see "no prior
-    // event" and double-append. `node_id` was validated above; re-parse the
-    // canonical string into the typed envelope id the append API now takes.
+    // `node_id` was validated above; re-parse the canonical string into the
+    // typed envelope id the append APIs take.
     let envelope_node = node_id.as_deref().map(parse_node_id).transpose()?;
-    let result = octl_core::append_and_apply_event(
-        &paths,
-        kind,
-        envelope_node.as_ref(),
-        idempotency_key.as_deref(),
-        data.clone(),
-    )
-    .map_err(from_core)?;
 
-    if result.idempotent_replay {
-        // Stripe-style: the same idempotency key with a different payload is a
-        // client error, not a silent replay. The CLI would otherwise return
-        // the original seq + the new request's projections, lying about what
-        // was recorded. The prior event is immutable, so checking it after the
-        // lock released is safe.
-        let prior = result
-            .prior
-            .as_ref()
-            .expect("an idempotent replay always carries the prior event");
-        if prior.node_id.as_deref() != node_id.as_deref() {
-            return Err(CliError::user(
-                "idempotency_conflict",
-                format!(
-                    "idempotency-key was previously used for a different --node-id \
-                     (prior: {:?}, current: {:?})",
-                    prior.node_id, node_id
-                ),
-            ));
+    // Keyed creates route through the centralized idempotency primitive, which
+    // folds the log scan, conflict detection, and append into one held lock so a
+    // concurrent retry can't see "no prior event" and double-append. A keyless
+    // create is a plain append under the same lock discipline.
+    let (seq, idempotent_replay) = if let Some(key) = idempotency_key.as_deref() {
+        let outcome = RunLock::with_lock(&paths, |lock| {
+            octl_core::append_and_apply_idempotent(
+                &paths,
+                lock,
+                kind,
+                envelope_node.as_ref(),
+                key,
+                |_seq| Ok(data.clone()),
+            )
+        })
+        .map_err(from_core)?;
+        match outcome {
+            AppendOutcome::Appended { seq } => (seq, false),
+            // Core reports a replay only when both the envelope node and the
+            // payload match the prior event, so the request is a true retry.
+            AppendOutcome::IdempotentReplay { prior } => (prior.seq, true),
+            // Stripe-style: the same key with a different request is a client
+            // error, not a silent replay. Distinguish a node-id mismatch from
+            // a payload mismatch (node id first, as before) for a precise msg.
+            AppendOutcome::Conflict { prior } => {
+                if prior.node_id.as_deref() != node_id.as_deref() {
+                    return Err(CliError::user(
+                        "idempotency_conflict",
+                        format!(
+                            "idempotency-key was previously used for a different --node-id \
+                             (prior: {:?}, current: {:?})",
+                            prior.node_id, node_id
+                        ),
+                    ));
+                }
+                return Err(CliError::user(
+                    "idempotency_conflict",
+                    "idempotency-key was previously used with a different --from-file payload",
+                ));
+            }
         }
-        if prior.data != data {
-            return Err(CliError::user(
-                "idempotency_conflict",
-                "idempotency-key was previously used with a different --from-file payload",
-            ));
-        }
-    }
+    } else {
+        let seq = RunLock::with_lock(&paths, |lock| {
+            octl_core::append_and_apply_unlocked(
+                lock,
+                &paths,
+                kind,
+                envelope_node.as_ref(),
+                None,
+                data.clone(),
+            )
+        })
+        .map_err(from_core)?;
+        (seq, false)
+    };
 
     let payload = CreatedPayload {
         run_id: &run_id,
         kind,
         node_id: node_id.as_deref(),
-        seq: Some(result.seq),
-        idempotent_replay: if result.idempotent_replay {
-            Some(true)
-        } else {
-            None
-        },
+        seq: Some(seq),
+        idempotent_replay: if idempotent_replay { Some(true) } else { None },
         dry_run: None,
         projections,
     };
