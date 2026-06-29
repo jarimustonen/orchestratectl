@@ -9,6 +9,10 @@ rust-version = "1.85"
 license = "MIT"
 authors = ["Jari Mustonen"]
 repository = "https://github.com/jarimustonen/orchestratectl"
+homepage = "https://github.com/jarimustonen/orchestratectl"
+description = "Rust CLI for orchestrating AI-agent workflows on a developer's machine."
+keywords = ["cli", "ai", "agent", "tmux", "git-worktree"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
