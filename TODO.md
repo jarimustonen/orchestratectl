@@ -6,11 +6,17 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-29)
+## Status snapshot (2026-06-29 afternoon)
 
 - ✅ **MVP epic** [`orchestratectl-mvp`](issues/orchestratectl-mvp/item.md) — done.
 - ✅ **Follow-up campaign** (21 review-spinoff issues + 9 packs) — all merged.
-- ✅ **Skill-bundling campaign** — **all 10 phases shipped + bonus 11th (`worktree-merge`)** bundled mid-campaign when an interactive-worktree gap surfaced live. Binary at commit `ada6167` ships **13 skills** (`doctor` reports 63 ok / 0 fail); `~/.claude/skills/` deployed; first end-to-end `/worktree-spinoff` (autonomous) and `/worktree-code` + `/worktree-merge` (interactive) loops both proven to spawn → work → merge → self-cleanup with zero manual intervention. `/orchestrate` smoke-tested with a 3-feature DAG; works end-to-end, 4 polish bugs surfaced and filed.
+- ✅ **Skill-bundling campaign** — closed as `done` this session (commit `f96b36b`). 13 skills bundled, `doctor` 63/0, end-to-end loops proven.
+- ✅ **Phase E (partial)** — README rewritten, CHANGELOG seeded for v0.1.0, ISSUE_TEMPLATEs + CONTRIBUTING + SECURITY landed (commits `fc9e81e`, `9a85dc1`). E4 (Cargo.toml metadata) deferred until B fixes merge to avoid conflict.
+- 🟡 **Phase B (in flight)** — first batch of 3 spinoffs running in parallel (without `--headless` because B2.1 blocks it):
+  - `01kw8ttnx3` — `fix-headless-parent` (B2.1, unlocks `--headless` for rest)
+  - `01kw8ttvth` — `fix-atomicity-watermark` (B1.1)
+  - `01kw8tv19t` — `fix-wmt-orphan-window` (B3)
+  - Once **B2.1 merges**, the remaining 5 spinoffs (B1.2, B1.3, B1.4, B2.2, B2.3, B2.4) can spawn `--headless` in parallel. Prompt files already prepared in `/tmp/spinoff-prompts/`.
 - 🟡 **Pre-publication campaign (this TODO's active scope)** — close every open issue, then ship to GitHub. Target: **zero open issues** before `v0.1.0` tag.
 
 ### What works for real-world use today
@@ -123,7 +129,13 @@ These two have been sitting in "needs product decision" for a while. Before publ
 | D1 | [`help-json-depth-control`](issues/help-json-depth-control/item.md) | Schema bump for `--help --json` top-level depth — is it needed pre-publication, or close as wontfix? |
 | D2 | [`runwriter-batched-append-api`](issues/runwriter-batched-append-api/item.md) | V4 latency 639ms p99 vs 10ms budget — accepted post-MVP per B1 decision; still accepted, or fix before publication? |
 
-Bring these up early in the post-resume session so they're not late blockers.
+### Agent's recommendation (2026-06-29)
+
+**D1 — IMPLEMENT before v0.1.0.** A 2100-line firehose on the very first `orchestratectl --help --json` an agent runs is bad first-impression UX, and the SKILL family teaches agents to use `--output json` for discovery. Proposed shape: default depth 1 (each node lists immediate subcommands as `{name, about, aliases}`), opt-in `--tree` for full recursion. Schema bumps to `2`; old shape stays available via `--depth full`. ~half-day of work. Spawn as `/worktree-spinoff` once B is clear.
+
+**D2 — DEFER to v0.2.0, document in CHANGELOG known-gaps.** The 639ms p99 is felt only when a single supervisor appends many events in a tight loop — current workloads (one append per agent action) are below that frequency. Architectural change (long-lived RunWriter guard) is substantial and overlaps with the data-integrity work in B1.1–B1.4; doing it now risks merge conflicts and forces a second design pass once the watermark settles. Close the issue with `status: deferred-v0.2` and move on.
+
+Bring these up early in the post-resume session — D2 just needs your nod to close, D1 needs ~3 hours of focused work.
 
 ---
 
