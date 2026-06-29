@@ -39,7 +39,16 @@ use crate::output::{OutputFormat, OutputSpec};
 ///   every node. (`requires` / `required_unless_present` were added after the
 ///   initial v2 cut; they are strictly additive — default `[]` — so they ride
 ///   v2 rather than forcing a bump, per the convention above.)
-pub const SCHEMA_VERSION_HELP: u32 = 2;
+/// - v3: depth-bounded rendering. The default response no longer recurses the
+///   whole command tree — only the requested node is rendered fully, and its
+///   immediate children appear as lightweight [`SubcommandSummary`]s. Pass
+///   `--depth N` (N≥1) to expand N more levels fully or `--depth tree` to
+///   restore the v2 unbounded shape. A subcommand inside `subcommands` is
+///   therefore either a full [`CommandNode`] (when the depth budget allowed
+///   recursion) or a [`SubcommandSummary`] (when it would otherwise be the
+///   first truncated level); agents distinguish the two by checking for the
+///   `flags` field, which only the full variant carries.
+pub const SCHEMA_VERSION_HELP: u32 = 3;
 
 /// The `data` body of a `--help --output json|jsonl` response.
 #[derive(Debug, Serialize)]
@@ -81,8 +90,101 @@ pub struct CommandNode {
     pub flags: Vec<FlagInfo>,
     /// Positional arguments, sorted by position.
     pub positionals: Vec<PositionalInfo>,
-    /// Child subcommands, sorted by name.
-    pub subcommands: Vec<CommandNode>,
+    /// Child subcommands, sorted by name. Each entry is either a full
+    /// [`CommandNode`] (when the depth budget allowed recursion past this
+    /// level) or a [`SubcommandSummary`] (when it is the first truncated
+    /// level). The two are distinguishable by the presence of the `flags`
+    /// field — only the full variant carries it.
+    pub subcommands: Vec<SubcommandEntry>,
+}
+
+/// One entry under [`CommandNode::subcommands`]: either a full child node
+/// (when the depth budget recursed past it) or a lightweight summary (when
+/// it is at the depth cutoff).
+///
+/// Serialized untagged so the JSON shape is the natural union of
+/// [`CommandNode`]'s and [`SubcommandSummary`]'s fields — agents read it as a
+/// plain object and branch on field presence (`flags` exists only on Full).
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum SubcommandEntry {
+    /// Full node — the depth budget had room to recurse past this level.
+    Full(CommandNode),
+    /// Summary — this child is at the truncation boundary. Drill in with
+    /// `<command> --help --output json` (or pass `--depth N+1` /
+    /// `--depth tree` to expand more here).
+    Summary(SubcommandSummary),
+}
+
+/// Lightweight description emitted in place of a full [`CommandNode`] when
+/// the depth budget would have truncated past it. Carries only the fields a
+/// caller needs to *decide* whether to drill into this command for full
+/// detail.
+#[derive(Debug, Serialize)]
+pub struct SubcommandSummary {
+    /// Full invocation path (same shape as [`CommandNode::command`]).
+    pub command: String,
+    /// One-line description (`about`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    /// Visible aliases for this command.
+    pub aliases: Vec<String>,
+    /// Hidden from human help (still listed so agents can find it).
+    pub hidden: bool,
+    /// Marked deprecated (per the `[deprecated]` help-text convention).
+    pub deprecated: bool,
+    /// Optional deprecation note from a `[deprecated: <note>]` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecation_note: Option<String>,
+    /// `true` when this command itself has subcommands — drilling further
+    /// (via `--depth N+1` or invoking `<command> --help --json`) would
+    /// expose them.
+    pub has_subcommands: bool,
+}
+
+/// Depth budget for [`build_help`].
+///
+/// `Bounded(N)` expands `N` levels fully past the requested node (children
+/// at level `N+1` become [`SubcommandSummary`]s); `Tree` recurses without
+/// bound (the v2 shape).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpDepth {
+    /// Expand this many full levels past the requested node.
+    Bounded(usize),
+    /// No bound — every descendant is a full [`CommandNode`].
+    Tree,
+}
+
+impl Default for HelpDepth {
+    /// The v3 default: render the requested node fully and its immediate
+    /// children as summaries. Drill in with `<command> --help --json` or
+    /// `--depth 2`/`--depth tree` for more.
+    fn default() -> Self {
+        Self::Bounded(1)
+    }
+}
+
+/// Parse the user-facing `--depth` value: a positive integer (`1`, `2`, …)
+/// or the sentinel `tree` / `full`. Returns a human-readable error string
+/// suitable for clap's `value_parser`.
+///
+/// # Errors
+///
+/// Returns an error string when the input is neither a positive integer nor
+/// the literal `tree`/`full`.
+pub fn parse_help_depth(s: &str) -> Result<HelpDepth, String> {
+    match s {
+        "tree" | "full" => Ok(HelpDepth::Tree),
+        _ => match s.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(HelpDepth::Bounded(n)),
+            Ok(_) => Err(format!(
+                "--depth expects a positive integer (>=1) or 'tree'/'full'; got '{s}'"
+            )),
+            Err(_) => Err(format!(
+                "--depth expects a positive integer or 'tree'/'full'; got '{s}'"
+            )),
+        },
+    }
 }
 
 /// A named flag.
@@ -248,13 +350,34 @@ pub enum HelpRequest {
     /// rendering (§14: bare `--help` is unchanged).
     None,
     /// Structured help requested for the resolved subcommand path
-    /// (canonical subcommand names, root excluded).
-    Render { spec: OutputSpec, path: Vec<String> },
+    /// (canonical subcommand names, root excluded). `depth` is the rendering
+    /// budget — see [`HelpDepth`].
+    Render {
+        /// Output format / file routing (parsed from `--output`).
+        spec: OutputSpec,
+        /// Canonical subcommand path from root.
+        path: Vec<String>,
+        /// How deep to expand the subcommand tree before switching to
+        /// [`SubcommandSummary`] entries.
+        depth: HelpDepth,
+    },
     /// Structured help requested, but a token in subcommand position is not
     /// a known subcommand. The caller emits an error envelope (exit 1)
     /// rather than falling back to root help.
     UnknownSubcommand { token: String },
+    /// Structured help requested, but `--depth` carried an unparseable value
+    /// (not a positive integer and not `tree`/`full`). The caller emits an
+    /// `invalid_arguments` envelope rather than rendering with a silent
+    /// default — agents must learn about the bad input.
+    InvalidDepth {
+        /// The literal value as the user typed it.
+        value: String,
+    },
 }
+
+/// Synthetic id for the global `--depth` arg injected into the lenient-parse
+/// clone (see [`resolve_help_request`]).
+const DEPTH_ARG_ID: &str = "__octl_help_depth";
 
 /// Resolve a structured-help request from raw argv (excluding argv\[0\])
 /// via a clap *lenient* parse.
@@ -289,6 +412,16 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
                 .long("help")
                 .short('h')
                 .action(ArgAction::SetTrue)
+                .global(true),
+        )
+        // `--depth` is meaningful only under a JSON help request, but the
+        // lenient parse is the cheapest place to recover it. Accept the raw
+        // string here; the parser runs after the help-request check below.
+        .arg(
+            Arg::new(DEPTH_ARG_ID)
+                .long("depth")
+                .num_args(1)
+                .action(ArgAction::Set)
                 .global(true),
         );
     // `allow_external_subcommands` is a *local* setting — clap does not
@@ -348,7 +481,24 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         }
     }
 
-    HelpRequest::Render { spec, path }
+    // Resolve `--depth`. Absent / value-source-default → the v3 default
+    // (Bounded(1)). Present from the command line → parse; bad input is a
+    // structured error, never a silent fallback.
+    let depth = match matches.value_source(DEPTH_ARG_ID) {
+        Some(ValueSource::CommandLine) => {
+            let raw = matches
+                .get_one::<String>(DEPTH_ARG_ID)
+                .cloned()
+                .unwrap_or_default();
+            match parse_help_depth(&raw) {
+                Ok(d) => d,
+                Err(_) => return HelpRequest::InvalidDepth { value: raw },
+            }
+        }
+        _ => HelpDepth::default(),
+    };
+
+    HelpRequest::Render { spec, path, depth }
 }
 
 /// Set `allow_external_subcommands(true)` on `cmd` and every descendant.
@@ -386,15 +536,18 @@ pub fn navigate_path<'a>(root: &'a Command, names: &[String]) -> (&'a Command, S
 ///
 /// `command_path` is the full invocation path of `cmd` (from
 /// [`navigate_path`]); child paths are derived by appending the child name.
+/// `depth` is the user-facing budget: with the default `HelpDepth::Bounded(1)`,
+/// the requested node is rendered fully and its immediate children appear as
+/// [`SubcommandSummary`]s. `HelpDepth::Tree` reproduces the unbounded v2 shape.
 #[must_use]
-pub fn build_help(cmd: &Command, command_path: &str) -> HelpData {
+pub fn build_help(cmd: &Command, command_path: &str, depth: HelpDepth) -> HelpData {
     HelpData {
         schema_version_help: SCHEMA_VERSION_HELP,
-        command: build_node(cmd, command_path),
+        command: build_node(cmd, command_path, depth),
     }
 }
 
-fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
+fn build_node(cmd: &Command, command_path: &str, depth: HelpDepth) -> CommandNode {
     let mut flags: Vec<FlagInfo> = cmd
         .get_arguments()
         .filter(|a| !a.is_positional())
@@ -406,14 +559,30 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         cmd.get_positionals().map(build_positional).collect();
     positionals.sort_by_key(|p| p.index);
 
-    let mut subcommands: Vec<CommandNode> = cmd
+    // Subcommand recursion is gated on `depth`:
+    //   - `Tree`         → kids are Full, recursing with `Tree`.
+    //   - `Bounded(1)`   → kids are Summary (we've spent our last level on
+    //                      this node; immediate children get the cheap form).
+    //   - `Bounded(n>1)` → kids are Full, recursing with `Bounded(n - 1)`
+    //                      (one less full level remaining below them).
+    //   - `Bounded(0)`   → not reached in normal use (parse_help_depth
+    //                      requires n>=1); render as Summary to stay safe.
+    let mut subcommands: Vec<SubcommandEntry> = cmd
         .get_subcommands()
         .map(|sc| {
             let child_path = format!("{command_path} {}", sc.get_name());
-            build_node(sc, &child_path)
+            match depth {
+                HelpDepth::Tree => {
+                    SubcommandEntry::Full(build_node(sc, &child_path, HelpDepth::Tree))
+                }
+                HelpDepth::Bounded(n) if n >= 2 => {
+                    SubcommandEntry::Full(build_node(sc, &child_path, HelpDepth::Bounded(n - 1)))
+                }
+                HelpDepth::Bounded(_) => SubcommandEntry::Summary(build_summary(sc, &child_path)),
+            }
         })
         .collect();
-    subcommands.sort_by(|a, b| a.command.cmp(&b.command));
+    subcommands.sort_by(|a, b| subcommand_entry_path(a).cmp(subcommand_entry_path(b)));
 
     // A command's deprecation marker may sit on either `about` (the canonical
     // one-liner — the recommended place) or `long_about`; the prefix is
@@ -438,6 +607,32 @@ fn build_node(cmd: &Command, command_path: &str) -> CommandNode {
         flags,
         positionals,
         subcommands,
+    }
+}
+
+/// Project a [`Command`] onto a lightweight [`SubcommandSummary`]. Used at
+/// the depth cutoff so an agent can decide whether to drill in without
+/// receiving every grandchild's flags + positionals.
+fn build_summary(cmd: &Command, command_path: &str) -> SubcommandSummary {
+    let about_dep = parse_deprecation(cmd.get_about().map(ToString::to_string));
+    let long_dep = parse_deprecation(cmd.get_long_about().map(ToString::to_string));
+    SubcommandSummary {
+        command: command_path.to_string(),
+        about: about_dep.text,
+        aliases: cmd.get_visible_aliases().map(ToString::to_string).collect(),
+        hidden: cmd.is_hide_set(),
+        deprecated: about_dep.deprecated || long_dep.deprecated,
+        deprecation_note: about_dep.note.or(long_dep.note),
+        has_subcommands: cmd.get_subcommands().next().is_some(),
+    }
+}
+
+/// Sort key for [`SubcommandEntry`]: the `command` field, which is the
+/// canonical invocation path on both variants.
+fn subcommand_entry_path(entry: &SubcommandEntry) -> &str {
+    match entry {
+        SubcommandEntry::Full(n) => n.command.as_str(),
+        SubcommandEntry::Summary(s) => s.command.as_str(),
     }
 }
 
@@ -888,9 +1083,10 @@ mod tests {
             &args(&["run", "create", "--help", "--output", "json"]),
         );
         match req {
-            HelpRequest::Render { spec, path } => {
+            HelpRequest::Render { spec, path, depth } => {
                 assert_eq!(spec.format, OutputFormat::Json);
                 assert_eq!(path, vec!["run".to_string(), "create".to_string()]);
+                assert_eq!(depth, HelpDepth::default());
             }
             _ => panic!("expected Render"),
         }
@@ -903,9 +1099,10 @@ mod tests {
         let req =
             resolve_help_request(&test_root(), &args(&["--output", "jsonl", "run", "--help"]));
         match req {
-            HelpRequest::Render { spec, path } => {
+            HelpRequest::Render { spec, path, depth } => {
                 assert_eq!(spec.format, OutputFormat::Jsonl);
                 assert_eq!(path, vec!["run".to_string()]);
+                assert_eq!(depth, HelpDepth::default());
             }
             _ => panic!("expected Render"),
         }
@@ -1032,17 +1229,33 @@ mod tests {
         assert!(!flag.takes_value);
     }
 
+    /// Test helper: pluck the `Full` variant by canonical path or panic.
+    fn expect_full<'a>(subs: &'a [SubcommandEntry], path: &str) -> &'a CommandNode {
+        subs.iter()
+            .find_map(|e| match e {
+                SubcommandEntry::Full(n) if n.command == path => Some(n),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected full subcommand {path:?} in {subs:?}"))
+    }
+
+    /// Test helper: pluck the `Summary` variant by canonical path or panic.
+    fn expect_summary<'a>(subs: &'a [SubcommandEntry], path: &str) -> &'a SubcommandSummary {
+        subs.iter()
+            .find_map(|e| match e {
+                SubcommandEntry::Summary(s) if s.command == path => Some(s),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected summary subcommand {path:?} in {subs:?}"))
+    }
+
     #[test]
     fn deprecation_surfaces_on_a_synthetic_subcommand() {
         let mut cmd =
             Command::new("tool").subcommand(Command::new("old").about("[deprecated] Legacy verb."));
         cmd.build();
-        let node = build_node(&cmd, "tool");
-        let old = node
-            .subcommands
-            .iter()
-            .find(|s| s.command == "tool old")
-            .expect("subcommand");
+        let node = build_node(&cmd, "tool", HelpDepth::Tree);
+        let old = expect_full(&node.subcommands, "tool old");
         assert!(old.deprecated);
         assert_eq!(old.about.as_deref(), Some("Legacy verb."));
     }
@@ -1057,15 +1270,107 @@ mod tests {
                 .long_about("[deprecated: gone in 1.0] Legacy verb, more detail."),
         );
         cmd.build();
-        let node = build_node(&cmd, "tool");
-        let old = node
-            .subcommands
-            .iter()
-            .find(|s| s.command == "tool old")
-            .expect("subcommand");
+        let node = build_node(&cmd, "tool", HelpDepth::Tree);
+        let old = expect_full(&node.subcommands, "tool old");
         assert!(old.deprecated);
         assert_eq!(old.deprecation_note.as_deref(), Some("gone in 1.0"));
         assert_eq!(old.long_about.as_deref(), Some("Legacy verb, more detail."));
+    }
+
+    #[test]
+    fn default_depth_summarizes_immediate_children() {
+        // `--depth 1` (default): root is full, immediate children are
+        // SubcommandSummary entries — they expose name/about/aliases/etc but
+        // NOT flags/positionals/grandchildren.
+        let mut cmd = Command::new("tool").subcommand(
+            Command::new("noun")
+                .about("A noun.")
+                .subcommand(Command::new("verb").about("A verb.")),
+        );
+        cmd.build();
+        let node = build_node(&cmd, "tool", HelpDepth::Bounded(1));
+        let noun = expect_summary(&node.subcommands, "tool noun");
+        assert_eq!(noun.about.as_deref(), Some("A noun."));
+        assert!(noun.has_subcommands, "noun has a verb under it");
+    }
+
+    #[test]
+    fn depth_two_expands_one_more_level() {
+        // `--depth 2`: root + immediate children full, grandchildren as
+        // summaries.
+        let mut cmd = Command::new("tool").subcommand(
+            Command::new("noun")
+                .about("A noun.")
+                .subcommand(Command::new("verb").about("A verb.")),
+        );
+        cmd.build();
+        let node = build_node(&cmd, "tool", HelpDepth::Bounded(2));
+        let noun = expect_full(&node.subcommands, "tool noun");
+        let _ = expect_summary(&noun.subcommands, "tool noun verb");
+    }
+
+    #[test]
+    fn tree_depth_recurses_unbounded() {
+        // `--depth tree`: every descendant is a full CommandNode (the v2
+        // shape, retained for callers that need the whole surface in one
+        // payload — snapshot tests, doc generation).
+        let mut cmd = Command::new("tool").subcommand(
+            Command::new("noun")
+                .about("A noun.")
+                .subcommand(Command::new("verb").about("A verb.")),
+        );
+        cmd.build();
+        let node = build_node(&cmd, "tool", HelpDepth::Tree);
+        let noun = expect_full(&node.subcommands, "tool noun");
+        let _ = expect_full(&noun.subcommands, "tool noun verb");
+    }
+
+    #[test]
+    fn parse_help_depth_accepts_positive_int_and_tree_aliases() {
+        assert_eq!(parse_help_depth("1").unwrap(), HelpDepth::Bounded(1));
+        assert_eq!(parse_help_depth("7").unwrap(), HelpDepth::Bounded(7));
+        assert_eq!(parse_help_depth("tree").unwrap(), HelpDepth::Tree);
+        assert_eq!(parse_help_depth("full").unwrap(), HelpDepth::Tree);
+        assert!(parse_help_depth("0").is_err()); // <1 rejected
+        assert!(parse_help_depth("-1").is_err());
+        assert!(parse_help_depth("abc").is_err());
+        assert!(parse_help_depth("").is_err());
+    }
+
+    #[test]
+    fn resolve_help_request_carries_depth_from_flag() {
+        let req = resolve_help_request(
+            &test_root(),
+            &args(&["--help", "--output", "json", "--depth", "2"]),
+        );
+        match req {
+            HelpRequest::Render { depth, .. } => assert_eq!(depth, HelpDepth::Bounded(2)),
+            _ => panic!("expected Render"),
+        }
+    }
+
+    #[test]
+    fn resolve_help_request_recognises_tree() {
+        let req = resolve_help_request(
+            &test_root(),
+            &args(&["--help", "--output", "json", "--depth", "tree"]),
+        );
+        match req {
+            HelpRequest::Render { depth, .. } => assert_eq!(depth, HelpDepth::Tree),
+            _ => panic!("expected Render"),
+        }
+    }
+
+    #[test]
+    fn resolve_help_request_rejects_bad_depth_value() {
+        let req = resolve_help_request(
+            &test_root(),
+            &args(&["--help", "--output", "json", "--depth", "garbage"]),
+        );
+        match req {
+            HelpRequest::InvalidDepth { value } => assert_eq!(value, "garbage"),
+            other => panic!("expected InvalidDepth, got {other:?}"),
+        }
     }
 
     #[test]

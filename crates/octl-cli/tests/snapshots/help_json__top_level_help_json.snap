@@ -6,7 +6,7 @@ expression: value
 {
   "schema_version": 1,
   "data": {
-    "schema_version_help": 2,
+    "schema_version_help": 3,
     "command": "orchestratectl",
     "about": "Orchestrate AI-agent workflows: worktrees, fan-out, orchestrate, llm-skills.",
     "aliases": [],

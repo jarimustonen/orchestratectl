@@ -1,12 +1,13 @@
 ---
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-06-29
 type: task
 reporter: jari
-status: open
+status: fixed
 priority: normal
 epic: orchestratectl-mvp
 labels: [review-spinoff, help-json]
+closed: 2026-06-29
 ---
 
 # Bound recursion depth of top-level --help --json (avoid whole-tree firehose)

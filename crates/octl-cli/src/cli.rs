@@ -155,8 +155,8 @@ pub fn run() -> ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     match crate::help::resolve_help_request(&Cli::command(), &raw_args) {
         crate::help::HelpRequest::None => {}
-        crate::help::HelpRequest::Render { spec, path } => {
-            return emit_json_help(&path, &spec);
+        crate::help::HelpRequest::Render { spec, path, depth } => {
+            return emit_json_help(&path, depth, &spec);
         }
         crate::help::HelpRequest::UnknownSubcommand { token } => {
             // §14 tightening: an unknown subcommand under structured help is
@@ -165,6 +165,19 @@ pub fn run() -> ExitCode {
                 "unknown_subcommand",
                 format!("unknown subcommand '{token}'"),
             );
+            err.emit();
+            return ExitCode::from(ExitKind::User as u8);
+        }
+        crate::help::HelpRequest::InvalidDepth { value } => {
+            // Bad `--depth` value under a JSON help request: structured
+            // error, not a silent fall-through to the default depth, so
+            // an agent learns immediately that its input was wrong
+            // (issue: help-json-depth-control).
+            let err = CliError::user(
+                "invalid_arguments",
+                format!("--depth expects a positive integer or 'tree'/'full'; got '{value}'"),
+            )
+            .with_invalid_value(value);
             err.emit();
             return ExitCode::from(ExitKind::User as u8);
         }
@@ -251,13 +264,17 @@ pub fn run() -> ExitCode {
 ///
 /// No `warnings` parameter: help renders before `init_logging`, so there
 /// are none to surface — the payload is pure command metadata.
-fn emit_json_help(subcommand_path: &[String], spec: &OutputSpec) -> ExitCode {
+fn emit_json_help(
+    subcommand_path: &[String],
+    depth: crate::help::HelpDepth,
+    spec: &OutputSpec,
+) -> ExitCode {
     let mut root = Cli::command();
     // Propagate global args (e.g. `--output`) and the implicit `--help`
     // into every subcommand so each node's flag list is accurate.
     root.build();
     let (target, path) = crate::help::navigate_path(&root, subcommand_path);
-    let data = crate::help::build_help(target, &path);
+    let data = crate::help::build_help(target, &path, depth);
     match output::emit_envelope(&data, spec, &[]) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

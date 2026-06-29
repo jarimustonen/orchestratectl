@@ -53,7 +53,7 @@ fn help_stdout(args: &[&str]) -> String {
     let s = String::from_utf8(out).expect("stdout is utf8");
     let v: Value = serde_json::from_str(s.trim()).expect("help stdout is a JSON envelope");
     assert_eq!(v["schema_version"], 1, "envelope schema: {v}");
-    assert_eq!(v["data"]["schema_version_help"], 2, "help schema: {v}");
+    assert_eq!(v["data"]["schema_version_help"], 3, "help schema: {v}");
     assert!(v.get("error").is_none(), "help envelope carries error: {v}");
     s
 }
@@ -70,8 +70,73 @@ fn snapshot(name: &str, value: &str) {
 fn top_level_help_json_locks_the_whole_surface() {
     // The entire command tree: every noun, verb, flag, and positional.
     // This is the §14 "schema as API surface" promise made concrete.
-    let stdout = help_stdout(&["--help", "--output", "json"]);
+    // Pinned with `--depth tree` so the v3 default (Bounded(1), which
+    // summarises immediate children) does not collapse the surface lock —
+    // we still want a snapshot that fails on any flag/positional drift
+    // anywhere in the tree (issue: help-json-depth-control).
+    let stdout = help_stdout(&["--help", "--output", "json", "--depth", "tree"]);
     snapshot("top_level_help_json", &stdout);
+}
+
+#[test]
+fn top_level_help_json_default_depth_summarizes_subcommands() {
+    // Default depth = 1: root is full, immediate children are summaries
+    // (`has_subcommands`, no `flags`/`positionals`/`subcommands`). This is
+    // the agent-friendly default — a 2100-line firehose was the bug the
+    // depth control fixes.
+    let stdout = help_stdout(&["--help", "--output", "json"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let subs = v["data"]["subcommands"]
+        .as_array()
+        .expect("subcommands array");
+    assert!(!subs.is_empty(), "root should list its subcommands");
+    for s in subs {
+        assert!(
+            s.get("flags").is_none(),
+            "depth=1 child must be a summary (no `flags`): {s}"
+        );
+        assert!(
+            s.get("has_subcommands").is_some(),
+            "summary carries `has_subcommands`: {s}"
+        );
+    }
+}
+
+#[test]
+fn depth_two_expands_immediate_children_fully() {
+    // `--depth 2`: immediate children are full CommandNodes (so they expose
+    // `flags` etc.); grandchildren collapse to summaries.
+    let stdout = help_stdout(&["--help", "--output", "json", "--depth", "2"]);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("json");
+    let run = v["data"]["subcommands"]
+        .as_array()
+        .expect("subcommands array")
+        .iter()
+        .find(|s| s["command"] == "orchestratectl run")
+        .expect("run noun");
+    assert!(run.get("flags").is_some(), "depth=2 child is Full: {run}");
+    let verbs = run["subcommands"].as_array().expect("run has subcommands");
+    for v in verbs {
+        assert!(
+            v.get("flags").is_none(),
+            "depth=2 grandchild is Summary: {v}"
+        );
+    }
+}
+
+#[test]
+fn invalid_depth_value_errors_with_invalid_arguments() {
+    // §14: bad input is a structured error, not a silent default.
+    let assert = bin()
+        .args(["--help", "--output", "json", "--depth", "garbage"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    assert!(out.stdout.is_empty(), "no help on stdout when input is bad");
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+    let v: Value = serde_json::from_str(stderr.trim()).expect("error envelope");
+    assert_eq!(v["error"]["code"], "invalid_arguments", "envelope: {v}");
+    assert_eq!(v["error"]["invalid_value"], "garbage", "envelope: {v}");
 }
 
 #[test]
@@ -359,5 +424,5 @@ fn output_file_help_writes_json_file() {
         .success();
     let body = std::fs::read_to_string(&path).expect("help file written");
     let v: Value = serde_json::from_str(&body).expect("file is valid JSON");
-    assert_eq!(v["data"]["schema_version_help"], 2);
+    assert_eq!(v["data"]["schema_version_help"], 3);
 }
