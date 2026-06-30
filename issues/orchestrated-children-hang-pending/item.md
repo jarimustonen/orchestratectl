@@ -2,8 +2,12 @@
 created: 2026-06-30
 updated: 2026-06-30
 type: bug
-status: open
+status: fixed
 priority: high
+commits:
+- hash: b12e13c9da47455dde1d2f97cf155d7efc0ad13c
+  summary: 'fix(orchestrate): spawn driver supervisor so orchestrated children terminalize + tear down'
+closed: 2026-06-30
 ---
 
 # orchestrated children hang in pending after merging; no teardown
