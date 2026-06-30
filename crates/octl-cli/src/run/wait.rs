@@ -83,6 +83,10 @@ pub struct Args<'a> {
     /// `--any` was passed (return on the first terminal run). When false the
     /// default `--all` applies.
     pub any: bool,
+    /// Wait budget. The CLI now supplies a `6h` default (see `run::mod`'s
+    /// `--timeout` arg) so a stuck run can't block an orchestrator forever;
+    /// `None` (only reachable by a library caller that omits it) keeps the
+    /// original block-until-terminal behaviour.
     pub timeout: Option<Duration>,
     pub fail_on_error: bool,
     pub progress: bool,

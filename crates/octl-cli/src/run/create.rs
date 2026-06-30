@@ -416,6 +416,30 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `child.spawned` before storing the idempotency key (same ordering
         // rationale as the materialized path).
         emit_child_spawned()?;
+        // The orchestrate DRIVER has no worktree to materialize, but it STILL
+        // needs a supervisor: its `--kind orchestrated` children are
+        // parent-pointed and delegate child-supervisor creation to the parent
+        // supervisor (single-arbiter, design §7.2). Without a driver supervisor
+        // nobody adopts `child.spawned`, forks the child supervisor, consumes
+        // the child's terminal `node.report`, rolls the child up to `done`, or
+        // tears down its worktree + tmux window — every orchestrated child
+        // hangs in `pending` forever (issue orchestrated-children-hang-pending).
+        // Spawn it here, mirroring the materialized top-level path below.
+        //
+        // The test-only skip hatches still produce a pure skeleton with NO
+        // supervisor: `--skip-materialize` and `OCTL_TEST_SKIP_MATERIALIZE`
+        // both mean "no real spawn", so an in-process unit test never boots a
+        // detached supervisor it would have to reap. Production orchestrate
+        // drivers set neither, so they get the real supervisor.
+        let spawn_driver_supervisor = args.kind == Kind::Orchestrate
+            && !is_child
+            && !args.skip_materialize
+            && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_err();
+        let supervisor_pid = if spawn_driver_supervisor {
+            Some(supervisor_spawn::spawn_for_run(&paths, &run_id)?.pid)
+        } else {
+            None
+        };
         if let Some(key) = args.idempotency_key.as_deref() {
             idempotency::store(
                 args.source_repo.as_deref(),
@@ -433,7 +457,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             parent_node_id: parent_node_id.as_deref(),
             node_id: driver_node_id,
             spawn: None,
-            supervisor_pid: None,
+            supervisor_pid,
             idempotent_replay: None,
             dry_run: None,
             spec: args.spec,

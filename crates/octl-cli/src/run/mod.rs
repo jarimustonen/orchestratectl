@@ -167,8 +167,10 @@ pub enum RunAction {
         #[arg(long)]
         any: bool,
         /// Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code
-        /// `2` distinguishes timeout from a met condition.
-        #[arg(long, value_parser = wait::parse_duration)]
+        /// `2` distinguishes timeout from a met condition. Defaults to `6h`
+        /// — a sane ceiling so a wait on a stuck run can never block an
+        /// orchestrator forever; pass a larger value for a long campaign.
+        #[arg(long, value_parser = wait::parse_duration, default_value = "6h")]
         timeout: Option<Duration>,
         /// Exit `3` if the condition is met but a settled run was
         /// `failed`/`cancelled` (default: exit `0` for any terminal state).

@@ -3188,7 +3188,7 @@ expression: value
                 "long": "timeout",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code `2` distinguishes timeout from a met condition",
+                "help": "Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code `2` distinguishes timeout from a met condition. Defaults to `6h` — a sane ceiling so a wait on a stuck run can never block an orchestrator forever; pass a larger value for a long campaign",
                 "value_names": [
                   "TIMEOUT"
                 ],
@@ -3198,7 +3198,9 @@ expression: value
                 "is_global": false,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [],
+                "defaults": [
+                  "6h"
+                ],
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],

@@ -165,9 +165,17 @@ orchestratectl run create \
 > driver kind. It does NOT spawn a worktree (`lifecycle: interactive`,
 > the orchestrator agent runs in the user's main conversation), only a
 > run dir under `~/.orchestratectl/runs/<id>/` to hold the event log,
-> manifest, and final report files. The success envelope's
-> `supervisor` field reads `"orchestrator-in-main-conversation"` —
-> that is correct; you are the supervisor.
+> manifest, and final report files. It DOES spawn a detached **driver
+> supervisor** process — its `supervisor` field reads a PID. That
+> supervisor adopts each `--kind orchestrated` child you fan out (it
+> sees `child.spawned` on this run's log), forks the child's own
+> supervisor, consumes the child's terminal `node report`, and tears
+> down the child's worktree + tmux window once the child merges or is
+> cancelled. You (the orchestrator agent) own the *decisions* —
+> planning the DAG, fanning out ready features, retry/skip judgment,
+> the final report; the driver supervisor owns the *child lifecycle*
+> (adoption, report consumption, teardown). Close the driver run at the
+> end (see §7) so the supervisor winds down.
 
 Capture `data.run_id` — this is the **driver run id**. Every child
 worker references it via `--parent-run-id`. Also capture
@@ -396,6 +404,20 @@ When every feature is `done` or `failed`:
    themselves. The orchestrator does NOT auto-merge into the source
    branch — that is the user's final call via `/worktree-merge` or a
    direct `git merge`.
+
+6. Close the driver run so its supervisor winds down:
+
+   ```
+   orchestratectl run cancel <driver-run-id>
+   ```
+
+   By this point every child is already terminal, so this only pushes
+   the *driver* run terminal (the driver node has no worktree, so its
+   teardown is a no-op) and lets the detached driver supervisor exit
+   cleanly instead of polling for a campaign that is already done.
+   "Cancel" here means "campaign closed" — the per-feature outcomes
+   live in `report.yaml`, not in the driver run's status. Skip this
+   only if you intend to fan out a later wave into the same driver.
 
 ## Resume
 
