@@ -109,6 +109,14 @@ pub struct SpawnRequest<'a> {
     /// (`--headless` / `--tmux-session`); `None` keeps the default
     /// foreground placement in the caller's own session.
     pub parent_session: Option<&'a str>,
+    /// Seconds create.sh waits for the freshly launched agent to become
+    /// discoverable before failing with `agent-pid-undiscoverable`,
+    /// forwarded as `--agent-startup-timeout <seconds>`. Callers validate
+    /// the [1, 600] range (clap) before building the request; octl's
+    /// default (90) is higher than create.sh's own 30s because octl
+    /// spawns are frequently part of high-fan-out batches that self-load
+    /// the host.
+    pub agent_startup_timeout: u32,
     /// Base ref to fork the worktree's branch from, forwarded to create.sh
     /// as `--base <ref>` (and on to `workmux add --base`). `Some` for any
     /// run carrying `--source-branch` — critically for `--kind orchestrated`
@@ -171,6 +179,11 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     if let Some(session) = req.parent_session {
         cmd.arg("--parent-session").arg(session);
     }
+    // Always forward octl's agent-startup window (default 90s, higher than
+    // create.sh's 30s) so a loaded host doesn't fail the spawn with
+    // `agent-pid-undiscoverable`. Validated to [1, 600] at the CLI boundary.
+    cmd.arg("--agent-startup-timeout")
+        .arg(req.agent_startup_timeout.to_string());
     if let Some(base) = req.source_branch {
         cmd.arg("--base").arg(base);
     }
@@ -355,6 +368,7 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         })
@@ -387,6 +401,7 @@ exit 2
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         })
@@ -418,6 +433,7 @@ exit 1
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         })
@@ -466,6 +482,7 @@ exit 1
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         });
@@ -554,6 +571,7 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: Some("headless"),
             source_branch: None,
         })
@@ -567,6 +585,7 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         })
@@ -611,6 +630,7 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: Some("orchestrate/integration"),
         })
@@ -627,11 +647,73 @@ EOF
             layout: None,
             no_hooks: false,
             keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
         })
         .unwrap();
         assert_eq!(without.tmux_session.as_deref(), Some("none"));
+        std::env::remove_var("OCTL_CREATE_SH");
+    }
+
+    #[test]
+    fn forwards_agent_startup_timeout_flag() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        // Fixture echoes back whichever `--agent-startup-timeout <s>` it was
+        // given (default `none` if absent) as the emitted `tmux_session`, so the
+        // test can assert the value actually reached the script's argv.
+        let script = fixture_script(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+to="none"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent-startup-timeout) to="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$to","tmux_window_id":"@9"}}
+EOF
+"#
+            ),
+        );
+        std::env::set_var("OCTL_CREATE_SH", &script);
+        let prompt = dir.path().join("p.md");
+        std::fs::write(&prompt, "x").unwrap();
+
+        // Explicit non-default value is forwarded verbatim.
+        let with = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            agent_startup_timeout: 180,
+            parent_session: None,
+            source_branch: None,
+        })
+        .unwrap();
+        assert_eq!(with.tmux_session.as_deref(), Some("180"));
+
+        // The octl default (90) is always forwarded — never create.sh's 30s.
+        let defaulted = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
+            parent_session: None,
+            source_branch: None,
+        })
+        .unwrap();
+        assert_eq!(defaulted.tmux_session.as_deref(), Some("90"));
         std::env::remove_var("OCTL_CREATE_SH");
     }
 

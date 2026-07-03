@@ -93,6 +93,14 @@ pub enum RunAction {
         /// `--parent-session <name>`.
         #[arg(long)]
         tmux_session: Option<String>,
+        /// Seconds create.sh waits for the freshly launched agent to
+        /// become discoverable before giving up (forwarded as
+        /// `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to
+        /// 90 — higher than create.sh's own 30s default because octl
+        /// spawns are frequently part of high-fan-out batches that
+        /// self-load the host; bump it further on an already-loaded box.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=600), default_value_t = 90)]
+        agent_startup_timeout: u32,
         #[arg(long, requires = "parent_node_id")]
         parent_run_id: Option<String>,
         #[arg(long, requires = "parent_run_id")]
@@ -211,6 +219,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             no_hooks,
             headless,
             tmux_session,
+            agent_startup_timeout,
             parent_run_id,
             parent_node_id,
             idempotency_key,
@@ -228,6 +237,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             no_hooks,
             headless,
             tmux_session,
+            agent_startup_timeout,
             parent_run_id,
             parent_node_id,
             idempotency_key,

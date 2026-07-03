@@ -50,6 +50,10 @@ pub struct Args<'a> {
     /// Explicit tmux session name; implies headless and overrides the
     /// `--headless` default name.
     pub tmux_session: Option<String>,
+    /// Seconds create.sh waits for the agent to become discoverable,
+    /// forwarded as `--agent-startup-timeout`. Validated to [1, 600] by
+    /// clap; defaults to 90 (see the flag docs in `run/mod.rs`).
+    pub agent_startup_timeout: u32,
     pub parent_run_id: Option<String>,
     pub parent_node_id: Option<String>,
     pub idempotency_key: Option<String>,
@@ -483,6 +487,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         no_hooks: args.no_hooks,
         keep_tmux_on_error: false,
         parent_session: parent_session.as_deref(),
+        agent_startup_timeout: args.agent_startup_timeout,
         // Fork the worktree's branch from the named source branch (e.g. an
         // orchestrate integration branch) rather than workmux's default base.
         // `None` for runs without --source-branch keeps the prior behaviour.
