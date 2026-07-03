@@ -7,6 +7,8 @@ priority: high
 commits:
 - hash: 979b794
   summary: 'fix(run): ensure live report consumer on merge + supervisor liveness on show/list'
+- hash: 62948c8
+  summary: harden merge report-consumer gate + structured supervisor outcome (llm-review)
 closed: 2026-07-03
 ---
 
