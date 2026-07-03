@@ -65,9 +65,9 @@ Everything from the previous snapshot, PLUS:
 
 Fixed and merged (`979b794` + `62948c8`, closed `938f10f`/`60147b6`). `run merge` now auto-reattaches a fresh supervisor when the recorded one is dead — never silent (warning + `supervisor:{state}` outcome), `run show`/`run list` gained `supervisor:{pid,alive}`, serialized e2e test added, full `/llm-review` pass (report in `history/review-supervisor-dead-merge-no-teardown.md`). Two follow-ups filed as issues (`cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`).
 
-### 0.5. Consider fixing `run-create-agent-startup-timeout` before release-verification spawning
+### 0.5. Fix `run-create-agent-startup-timeout` — ✅ DONE (2026-07-03)
 
-**High priority, has a workaround.** `run create` never forwards create.sh's `--agent-startup-timeout`, so under load every spawn dies at the 30s ceiling (`agent-pid-undiscoverable`). This bit the whole session today on hauis. Fix is small: add a `--agent-startup-timeout <s>` flag to `run create`, thread it through `SpawnRequest` → `run_create_sh` (`crates/octl-cli/src/run/spawn.rs`), and probably default higher than 30s for octl (batch spawns self-load the host). CLI-surface change → insta snapshots + `skill.rs` catalog pin + `doctor`. Not a hard blocker (workaround above works) but worth doing so the alpha-pipeline verification below doesn't keep hitting spawn failures. Spawn via `/worktree-bugfix run-create-agent-startup-timeout` **using the OCTL_CREATE_SH workaround**.
+Fixed and merged (`e6df5d8`, closed `cfda215`). `run create` now takes `--agent-startup-timeout <s>` (clap-validated [1,600]), threaded through `create::Args → SpawnRequest → run_create_sh`, and **always forwards it to create.sh with octl's own default of 90s** (higher than create.sh's 30s because octl batch-spawns self-load the host). Deployed: `cargo install --path crates/octl-cli --force` + `skill install --force` done; `doctor` = 234 ok / 0 fail / 0 warn. **The OCTL_CREATE_SH workaround below is now retired** — spawns use the real 90s default. Keep the workaround note only as historical reference for pre-`e6df5d8` binaries.
 
 ### 1. Wire up the self-hosted macOS runner on `hauis`
 
