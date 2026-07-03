@@ -351,9 +351,13 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         //     the window — issue `worktree-merge-orphans-tmux-window`).
         //   - `cleanup.worktree_missing`: the worktree dir was already gone at
         //     teardown (e.g. removed manually), so nothing to `worktree remove`.
-        //   - `cleanup.branch_remove_failed`: `git branch -D` refused (e.g.
-        //     unexpected unmerged commits); the run completes anyway (issue
-        //     `supervisor-worktree-remove-no-force`).
+        //   - `cleanup.branch_remove_failed`: `git branch -{d,D}` refused (e.g.
+        //     unmerged commits, or the branch is already gone); the run completes
+        //     anyway (issue `supervisor-worktree-remove-no-force`).
+        //   - `cleanup.branch_preserved`: a BLOCKED terminal report
+        //     (`success: false`, no explicit merge) intentionally left the branch
+        //     and worktree in place for the human to pick up, instead of tearing
+        //     them down (issue `blocked-report-deletes-branch`).
         //   - `cleanup.session_killed`: the run's managed `--headless` tmux
         //     session was torn down once its last managed window was gone, so an
         //     empty session is not left behind (issue
@@ -364,6 +368,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "cleanup.window_missing"
         | "cleanup.worktree_missing"
         | "cleanup.branch_remove_failed"
+        | "cleanup.branch_preserved"
         | "cleanup.session_killed"
         | "cleanup.session_retained" => Ok(vec![]),
         _ => Ok(vec![]),

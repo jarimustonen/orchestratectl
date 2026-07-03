@@ -368,6 +368,292 @@ fn spinoff_round_trip_reaches_done_and_tears_down() {
     );
 }
 
+/// Run `git <args>` in `cwd`, asserting success — for the real-git teardown
+/// tests below (which drive the supervisor's actual `git worktree remove` /
+/// `git branch -{d,D}` against a real repo instead of the nonexistent-`GIT_BIN`
+/// no-op the merge round-trip uses).
+fn git(cwd: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn git")
+        .success();
+    assert!(ok, "git {args:?} failed in {}", cwd.display());
+}
+
+/// Init a real repo (one commit on `main`) with a linked worktree on `branch`
+/// carrying one further "agent work" commit that is NOT merged into `main`.
+/// Returns `(repo, worktree)`. The supervisor's real-git teardown resolves the
+/// main worktree from the linked one, so this is enough for a full round-trip.
+fn init_real_repo_with_committed_work(scratch: &Path, branch: &str) -> (PathBuf, PathBuf) {
+    let repo = scratch.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("README"), "x").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "init"]);
+    let wt = scratch.join("agent-wt");
+    git(
+        &repo,
+        &["worktree", "add", "-q", "-b", branch, wt.to_str().unwrap()],
+    );
+    // The agent commits real, unmerged work on its branch.
+    std::fs::write(wt.join("fix.rs"), "agent work").unwrap();
+    git(&wt, &["add", "-A"]);
+    git(&wt, &["commit", "-qm", "agent work"]);
+    (repo, wt)
+}
+
+/// Count commits on `branch` not reachable from `main` in `repo`.
+fn commits_ahead_of_main(repo: &Path, branch: &str) -> usize {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-list", "--count", &format!("main..{branch}")])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+/// True when `branch` still exists in `repo`.
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "--verify", "--quiet", branch])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// THE data-loss regression, end-to-end (`blocked-report-deletes-branch`): a
+/// single-worker autonomous run whose agent commits real work and then submits a
+/// BLOCKED terminal `node report` (`success: false`, NO `run merge`) must, after
+/// the real supervisor tears the run down, have its branch AND worktree STILL
+/// present with the agent's commits intact. Deleting them is the silent data
+/// loss this fix prevents.
+///
+/// Unlike the merge round-trip above (which stubs git to a nonexistent binary),
+/// this test uses REAL git so the supervisor's actual teardown executes — the
+/// only way to prove the branch survives the real `cleanup_node` path.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn blocked_report_preserves_branch_and_worktree_e2e() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let branch = "wt/e2e-blocked";
+    let (repo, worktree) = init_real_repo_with_committed_work(scratch.path(), branch);
+    assert_eq!(commits_ahead_of_main(&repo, branch), 1);
+
+    let agent_pid_file = scratch.path().join("agent.pid");
+    let create_sh = write_create_sh(scratch.path(), &worktree, &agent_pid_file, branch);
+    // REAL git (GIT_BIN unset → defaults to `git`) so teardown runs for real;
+    // only tmux is neutralized (a nonexistent binary → lenient no-op windows and
+    // an `Unknown` liveness probe so PID liveness keeps the agent Alive until the
+    // blocked report terminalizes the node).
+    let no_tmux = scratch.path().join("no-such-tmux");
+
+    let created = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_CREATE_SH", &create_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .args([
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "bugfix",
+                "--headless",
+                "--title",
+                "e2e-blocked",
+                "--task",
+                "investigate",
+            ]),
+    );
+    let run_id = created["data"]["run_id"].as_str().unwrap().to_string();
+
+    let agent_pid: i32 = std::fs::read_to_string(&agent_pid_file)
+        .expect("create.sh recorded the agent pid")
+        .trim()
+        .parse()
+        .expect("agent pid is an integer");
+    let _agent = AgentGuard { pid: agent_pid };
+
+    let run_root = home.path().join("runs").join(&run_id);
+    let events = run_root.join("events.jsonl");
+    let manifest = run_root.join("manifest.json");
+
+    assert!(
+        wait_for_event(&events, "supervisor.started", Duration::from_secs(15)),
+        "supervisor never started; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // Submit the BLOCKED terminal report (success:false, plain `node report` —
+    // NO `run merge`), exactly the documented "needs a human" handoff.
+    let report_file = scratch.path().join("blocked.json");
+    std::fs::write(
+        &report_file,
+        r#"{"success": false, "summary": "needs the user's sudo",
+            "discussion_items": [{"topic": "blocked", "detail": "need a human"}]}"#,
+    )
+    .unwrap();
+    run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .args([
+                "--output",
+                "json",
+                "node",
+                "report",
+                &run_id,
+                "n-0001",
+                "--from-file",
+                report_file.to_str().unwrap(),
+            ]),
+    );
+
+    // The supervisor rolls the run up (Failed — a node reported failure) and
+    // winds down, but the blocked path must NOT touch the branch/worktree.
+    assert!(
+        wait_for_manifest_status(&manifest, "failed", Duration::from_secs(30)),
+        "run never rolled up to failed; events: {:?}",
+        event_kinds(&events)
+    );
+    assert!(
+        wait_for_event(&events, "supervisor.exited", Duration::from_secs(30)),
+        "supervisor never exited; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // THE assertions: the branch survives with the agent's commit, and the
+    // worktree is preserved for the human — no silent data loss.
+    assert!(
+        branch_exists(&repo, branch),
+        "blocked terminal report must leave the branch for the human"
+    );
+    assert_eq!(
+        commits_ahead_of_main(&repo, branch),
+        1,
+        "the agent's committed work must survive on the preserved branch"
+    );
+    assert!(
+        worktree.exists(),
+        "blocked path should preserve the worktree too"
+    );
+
+    // The preservation is auditable: a `cleanup.branch_preserved` event names it.
+    let preserved = read_events(&events)
+        .into_iter()
+        .any(|v| v["kind"] == "cleanup.branch_preserved" && v["data"]["branch"] == branch);
+    assert!(
+        preserved,
+        "expected a cleanup.branch_preserved audit event; events: {:?}",
+        event_kinds(&events)
+    );
+}
+
+/// Companion no-regression: the SUCCESS/merge path (`run merge`, stamping
+/// `via: "explicit-merge"`) still force-deletes the branch and removes the
+/// worktree under real git — the confirmed merge earns the force `-D`, so even
+/// though the stub merge.sh does not actually merge the commit into `main`, the
+/// branch is torn down exactly as before this fix.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn merge_path_deletes_branch_e2e() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let branch = "wt/e2e-merge";
+    let (repo, worktree) = init_real_repo_with_committed_work(scratch.path(), branch);
+
+    let agent_pid_file = scratch.path().join("agent.pid");
+    let create_sh = write_create_sh(scratch.path(), &worktree, &agent_pid_file, branch);
+    let merge_sh = write_merge_sh(scratch.path());
+    let no_tmux = scratch.path().join("no-such-tmux");
+
+    let created = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_CREATE_SH", &create_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .args([
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--headless",
+                "--title",
+                "e2e-merge",
+                "--task",
+                "echo done",
+            ]),
+    );
+    let run_id = created["data"]["run_id"].as_str().unwrap().to_string();
+
+    let agent_pid: i32 = std::fs::read_to_string(&agent_pid_file)
+        .expect("create.sh recorded the agent pid")
+        .trim()
+        .parse()
+        .expect("agent pid is an integer");
+    let _agent = AgentGuard { pid: agent_pid };
+
+    let run_root = home.path().join("runs").join(&run_id);
+    let events = run_root.join("events.jsonl");
+    let manifest = run_root.join("manifest.json");
+
+    assert!(
+        wait_for_event(&events, "supervisor.started", Duration::from_secs(15)),
+        "supervisor never started; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // Merge to close: stamps `via: "explicit-merge"` — the confirmed-merge signal.
+    let merged = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_MERGE_SH", &merge_sh)
+            .args(["--output", "json", "run", "merge", &run_id]),
+    );
+    assert_eq!(merged["data"]["merged"], true);
+
+    assert!(
+        wait_for_manifest_status(&manifest, "done", Duration::from_secs(30)),
+        "run never rolled up to done; events: {:?}",
+        event_kinds(&events)
+    );
+    assert!(
+        wait_for_event(&events, "supervisor.exited", Duration::from_secs(30)),
+        "supervisor never exited; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // The merge path force-deletes the branch and removes the worktree — the
+    // pre-existing teardown behaviour this fix must not regress.
+    assert!(
+        !branch_exists(&repo, branch),
+        "explicit-merge path must still delete the branch"
+    );
+    assert!(
+        !worktree.exists(),
+        "explicit-merge path must still remove the worktree"
+    );
+    assert!(
+        read_events(&events)
+            .into_iter()
+            .all(|v| v["kind"] != "cleanup.branch_preserved"),
+        "the merge path must not preserve (must delete) the branch"
+    );
+}
+
 /// Regression for `supervisor-dead-merge-no-teardown`: if the per-run
 /// supervisor has died (here: SIGKILL, leaving a stale `supervisor.pid`), a
 /// subsequent `run merge` must NOT report a bare, silent `merged: true`. It

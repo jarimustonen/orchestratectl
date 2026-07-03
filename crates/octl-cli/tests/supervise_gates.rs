@@ -224,7 +224,10 @@ fn latest_run_status(events: &Path) -> Option<String> {
 /// an autonomous run whose node submits a successful terminal `node.report` must
 /// (1) be rolled up to `run.status: done` by the supervisor — no `run cancel`
 /// needed — and (2) have its tmux window closed, worktree removed, and branch
-/// deleted on the same terminal transition.
+/// deleted on the same terminal transition. The branch delete uses the safe
+/// `git branch -d` (not the force `-D`): a plain success report is not the
+/// confirmed-merge path (`via: "explicit-merge"`), so only a branch actually
+/// merged into its source is dropped (issue `blocked-report-deletes-branch`).
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn terminal_report_rolls_run_to_done_and_cleans_up() {
@@ -263,25 +266,28 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
         "worktree not removed: {git:?}"
     );
     assert!(
-        git.contains("branch -D wt/test-x"),
-        "branch not deleted: {git:?}"
+        git.contains("branch -d wt/test-x"),
+        "branch not deleted with the safe -d on the non-merge path: {git:?}"
     );
 }
 
-/// The failure path: a `node.report {success:false}` drives the run to
-/// `run.status: failed`, and cleanup still fires (a failed autonomous run is
-/// just as much in need of teardown as a successful one).
+/// The BLOCKED path (`blocked-report-deletes-branch`): a `node.report
+/// {success:false}` (no `run merge`) is the documented "needs a human" handoff.
+/// The run still rolls up to `run.status: failed` and the tmux window may close
+/// (winding the run down is fine), but the supervisor MUST NOT tear down the
+/// branch or worktree — that committed, unmerged work must survive for the human
+/// to pick up. A `cleanup.branch_preserved` audit event records the handoff.
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
-fn failed_report_rolls_run_to_failed_and_cleans_up() {
+fn blocked_report_rolls_run_to_failed_but_preserves_branch() {
     let home = TestHome::new();
     let dir = TempDir::new().unwrap();
-    let run_id = create_run(&home, "spinoff", "rollup-failed");
+    let run_id = create_run(&home, "spinoff", "rollup-blocked");
     forge_terminal_worker_node(
         &home,
         &run_id,
         "spinoff",
-        r#"{"success": false, "summary": "boom"}"#,
+        r#"{"success": false, "summary": "boom", "discussion_items": [{"topic": "blocked"}]}"#,
     );
 
     run_ok(
@@ -293,8 +299,31 @@ fn failed_report_rolls_run_to_failed_and_cleans_up() {
 
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(latest_run_status(&events).as_deref(), Some("failed"));
+    // The tmux window may still close (the run is winding down).
     assert!(log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"));
-    assert!(log_contents(dir.path(), "git.log").contains("worktree remove --force /fake/wt"));
+    // But NEITHER the worktree removal NOR the branch delete may run — the
+    // blocked path preserves both for the human.
+    let git = log_contents(dir.path(), "git.log");
+    assert!(
+        !git.contains("worktree remove"),
+        "blocked path must not remove the worktree: {git:?}"
+    );
+    assert!(
+        !git.contains("branch -d") && !git.contains("branch -D"),
+        "blocked path must not delete the branch: {git:?}"
+    );
+    // The preservation is auditable.
+    let preserved = read_events(&events).into_iter().any(|v| {
+        v["kind"] == "cleanup.branch_preserved" && v["data"]["branch"] == "wt/test-x"
+    });
+    assert!(
+        preserved,
+        "expected a cleanup.branch_preserved audit event; events: {:?}",
+        read_events(&events)
+            .into_iter()
+            .filter_map(|v| v["kind"].as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Terminal-via-cancel: a `run cancel` already drove the run to `cancelled`

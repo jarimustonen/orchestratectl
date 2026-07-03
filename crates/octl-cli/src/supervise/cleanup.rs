@@ -29,6 +29,16 @@
 //!      is the user's signal that the window may close (issue
 //!      `bundle-worktree-merge`).
 //!
+//!      **Blocked reports are the exception to teardown.** A node whose terminal
+//!      `node.report` is a BLOCKED handoff (`success: false` with no
+//!      `via: "explicit-merge"` — [`node_report_is_blocked`]) committed work that
+//!      was never merged. Deleting its branch/worktree is silent data loss (issue
+//!      `blocked-report-deletes-branch`), so the run still winds down (its tmux
+//!      window may close) but its branch AND worktree are preserved for the human
+//!      to pick up. As defense-in-depth, branch deletion on every non-merge path
+//!      uses `git branch -d` (which refuses an unmerged branch) rather than the
+//!      force `-D`, which is reserved for a confirmed `run merge`.
+//!
 //! Every external command is best-effort and lenient: a missing tmux window, an
 //! already-removed worktree, or a `git` refusal (locked / dirty tree) is logged
 //! and stepped past, never fatal — the merge skill's own detached cleanup races
@@ -111,13 +121,45 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
 /// the same teardown autonomous kinds always get (issue `bundle-worktree-merge`).
 /// Autonomous kinds don't depend on this — they clean up on any terminal report.
 pub fn any_node_merged_explicitly(paths: &RunPaths) -> bool {
-    list_nodes(paths).iter().any(|n| {
-        n.last_report
-            .as_ref()
-            .and_then(|r| r.get("via"))
-            .and_then(serde_json::Value::as_str)
-            == Some("explicit-merge")
-    })
+    list_nodes(paths).iter().any(node_merged_explicitly)
+}
+
+/// True when THIS node's terminal `node.report` was submitted by an explicit
+/// `run merge` (`last_report.via == "explicit-merge"`). This is the per-node
+/// form [`any_node_merged_explicitly`] folds over, and the gate that decides
+/// whether the node's branch may be force-deleted (`git branch -D`): only a
+/// confirmed merge earns the force delete; every other terminal outcome falls
+/// back to the safe `git branch -d`, which refuses an unmerged branch.
+fn node_merged_explicitly(n: &Node) -> bool {
+    n.last_report
+        .as_ref()
+        .and_then(|r| r.get("via"))
+        .and_then(serde_json::Value::as_str)
+        == Some("explicit-merge")
+}
+
+/// True when this node's terminal report is a **BLOCKED** report — the agent hit
+/// a wall and handed committed-but-unmerged work off to a human via a plain
+/// `node report` with `success: false` (issue `blocked-report-deletes-branch`).
+///
+/// This is the documented "needs a human" path, and its contract (worktree-bugfix
+/// / worktree-technical-decision SKILLs) is that the branch is left unmerged for
+/// the human to pick up — so the supervisor must NOT tear its branch (or
+/// worktree) down. Excluded here:
+///
+/// - `via: "explicit-merge"` — the work was merged; deletion is the correct,
+///   intended teardown ([`node_merged_explicitly`]).
+/// - `cancelled: true` — a deliberate `run cancel` teardown, not a blocked
+///   handoff. Its branch is still protected from data loss by [`delete_branch`]'s
+///   `git branch -d` safety net (unmerged commits refuse deletion), but its
+///   worktree is torn down like any other cancel.
+fn node_report_is_blocked(n: &Node) -> bool {
+    let Some(report) = n.last_report.as_ref() else {
+        return false;
+    };
+    let success_false = report.get("success").and_then(serde_json::Value::as_bool) == Some(false);
+    let cancelled = report.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true);
+    success_false && !cancelled && !node_merged_explicitly(n)
 }
 
 /// Close the tmux window, remove the worktree, and delete the branch for every
@@ -358,8 +400,23 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
         // tmux window, if any, needed closing.
         return;
     };
+
+    // BLOCKED terminal report (`success: false`, not an explicit `run merge`):
+    // the agent committed work and handed it off to a human. Its branch — and
+    // ideally its worktree — must survive so the human can `git merge` /
+    // `/worktree-merge` it later; tearing them down here is the silent data loss
+    // of issue `blocked-report-deletes-branch`. Wind the run down (the tmux
+    // window above may close) but leave the tree and branch untouched, and record
+    // the preserved branch so it is discoverable in the run log.
+    if node_report_is_blocked(n) {
+        if let Some(branch) = n.branch.as_deref() {
+            record_branch_preserved(paths, n, branch, worktree_path);
+        }
+        return;
+    }
+
     // The main worktree is the canonical place to run `worktree remove` /
-    // `branch -D` from; resolve it while the linked worktree still exists,
+    // `branch -d` from; resolve it while the linked worktree still exists,
     // falling back to the run's recorded source repo so branch cleanup still
     // has a valid `-C` target even when the worktree dir is already gone.
     let main_repo = main_worktree_of(worktree_path, git).or_else(|| manifest_source_repo(paths));
@@ -367,15 +424,16 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
 
     // `--force` so disposable untracked/modified scratch left in the worktree
     // does not refuse removal and orphan the worktree+branch (issue
-    // `supervisor-worktree-remove-no-force`). By teardown the tracked work is
-    // already merged, so anything still in the tree is throwaway. If removal
-    // still fails AND the dir is simply gone (user removed it manually), record
-    // a non-fatal `cleanup.worktree_missing` and continue.
+    // `supervisor-worktree-remove-no-force`). On the reached-here paths the
+    // tracked work is either merged (success) or intentionally discarded
+    // (cancel), so anything still in the tree is throwaway. If removal still
+    // fails AND the dir is simply gone (user removed it manually), record a
+    // non-fatal `cleanup.worktree_missing` and continue.
     if !remove_worktree(repo, worktree_path, git) && !std::path::Path::new(worktree_path).exists() {
         record_worktree_missing(paths, n, worktree_path);
     }
     if let Some(branch) = n.branch.as_deref() {
-        delete_branch(paths, n, repo, branch, git);
+        delete_branch(paths, n, repo, branch, git, node_merged_explicitly(n));
     }
 }
 
@@ -663,6 +721,50 @@ fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail:
     }
 }
 
+/// Append a non-fatal `cleanup.branch_preserved` audit event when a node's
+/// terminal report is a BLOCKED handoff (`success: false`, no explicit merge):
+/// the supervisor intentionally leaves the branch AND worktree in place for the
+/// human (issue `blocked-report-deletes-branch`). Unlike a delete failure this is
+/// the *intended* outcome, so it gets its own event kind and an explicit
+/// "left unmerged for you to merge" line on stderr so the branch is discoverable
+/// instead of silently torn down. Idempotent by `(run, node)`.
+fn record_branch_preserved(paths: &RunPaths, n: &Node, branch: &str, worktree_path: &str) {
+    info!(
+        target: "orchestratectl::supervise",
+        node = %n.node_id,
+        branch,
+        worktree_path,
+        "blocked terminal report (success:false); preserving branch + worktree for the human"
+    );
+    eprintln!(
+        "supervisor cleanup: branch {branch} left unmerged for you to merge (blocked report; worktree preserved at {worktree_path})"
+    );
+    let data = json!({
+        "node_id": n.node_id.as_str(),
+        "branch": branch,
+        "worktree_path": worktree_path,
+    });
+    let key = format!(
+        "cleanup.branch_preserved:{}:{}",
+        paths.run_id.as_str(),
+        n.node_id.as_str()
+    );
+    if let Err(e) = append_and_apply_event(
+        paths,
+        "cleanup.branch_preserved",
+        Some(&n.node_id),
+        Some(&key),
+        data,
+    ) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %n.node_id,
+            error = %e,
+            "failed to append cleanup.branch_preserved (continuing)"
+        );
+    }
+}
+
 /// Resolve the main worktree path for a linked worktree by reading the FIRST
 /// `worktree <path>` line of `git -C <worktree_path> worktree list --porcelain`
 /// (git always lists the main worktree first). `None` if git is unavailable, the
@@ -685,7 +787,9 @@ fn main_worktree_of(worktree_path: &str, git: &str) -> Option<String> {
 }
 
 /// `git -C <repo> worktree remove --force <worktree_path>` — lenient. `--force`
-/// because by teardown the tracked work is already merged, so any untracked /
+/// because on the paths that reach it the tracked work is either merged (success)
+/// or intentionally discarded (cancel) — a BLOCKED report never gets here, its
+/// worktree is preserved upstream in [`cleanup_node`] — so any untracked /
 /// modified scratch left behind is disposable; without it git refuses to remove
 /// a dirty tree and the cascade orphans the worktree AND branch (issue
 /// `supervisor-worktree-remove-no-force`). Returns `true` on success so the
@@ -698,16 +802,29 @@ fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
     run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
 }
 
-/// `git -C <repo> branch -D <branch>` — force-delete, lenient. `-D` (not `-d`)
-/// because a merged-and-removed worktree's branch is still worth dropping even
-/// if git can't confirm the merge from the main worktree's vantage point. If git
-/// refuses anyway (e.g. unexpected unmerged commits), record a non-fatal
-/// `cleanup.branch_remove_failed` audit event and continue — branch-cleanup
-/// failures must never block run completion.
-fn delete_branch(paths: &RunPaths, n: &Node, repo: &str, branch: &str, git: &str) {
+/// `git -C <repo> branch -{d|D} <branch>` — lenient. The flag is the
+/// defense-in-depth safety net against the silent data loss of issue
+/// `blocked-report-deletes-branch`:
+///
+/// - `merged == true` (this node's report carries `via: "explicit-merge"`) →
+///   `-D`, force-delete. The merge is confirmed, and the branch may already be
+///   removed from the main worktree's vantage point, so the force is safe and
+///   necessary.
+/// - `merged == false` (any non-merge teardown — a cancel, or a future outcome
+///   the primary [`node_report_is_blocked`] gate misses) → `-d`, which git
+///   *refuses* if the branch holds commits not reachable from `HEAD`. So even if
+///   outcome-gating ever lets an unmerged branch reach here, `-d` keeps its
+///   commits rather than force-dropping them.
+///
+/// Either way, if git refuses (unmerged commits, or the branch simply does not
+/// exist), record a non-fatal `cleanup.branch_remove_failed` audit event and
+/// continue — branch-cleanup failures must never block run completion, and the
+/// recorded stderr shows the operator a preserved branch to pick up.
+fn delete_branch(paths: &RunPaths, n: &Node, repo: &str, branch: &str, git: &str, merged: bool) {
+    let flag = if merged { "-D" } else { "-d" };
     let mut cmd = Command::new(git);
-    cmd.arg("-C").arg(repo).args(["branch", "-D", branch]);
-    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch -D {branch}")) {
+    cmd.arg("-C").arg(repo).args(["branch", flag, branch]);
+    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch {flag} {branch}")) {
         record_branch_remove_failed(paths, n, branch, &detail);
     }
 }
@@ -1086,6 +1203,206 @@ mod tests {
             events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty(),
             "branch removal must succeed"
         );
+    }
+
+    /// Commit `file` with `msg` on whatever branch the worktree currently has
+    /// checked out, so a test can put real (unmerged) work on a `wt/*` branch
+    /// before teardown.
+    fn commit_in_worktree(wt: &std::path::Path, file: &str, msg: &str) {
+        std::fs::write(wt.join(file), "work").unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", msg]);
+    }
+
+    /// Count commits on `branch` not reachable from `base` in `repo`
+    /// (`git rev-list --count <base>..<branch>`).
+    fn commits_ahead(repo: &std::path::Path, base: &str, branch: &str) -> usize {
+        let out = Command::new("git")
+            .current_dir(repo)
+            .args(["rev-list", "--count", &format!("{base}..{branch}")])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+    }
+
+    /// THE data-loss regression (`blocked-report-deletes-branch`): a node whose
+    /// terminal report is a BLOCKED handoff (`success: false`, no explicit merge)
+    /// has committed, unmerged work. Teardown must PRESERVE both the branch and
+    /// the worktree so the human can pick the work up — deleting them is silent
+    /// data loss. A `cleanup.branch_preserved` audit event records the handoff.
+    #[test]
+    fn blocked_report_preserves_branch_and_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // The agent committed real work on wt/foo and never merged it.
+        commit_in_worktree(&wt, "fix.rs", "agent work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        // The BLOCKED terminal report: success:false, plain node report (no
+        // `via: explicit-merge`).
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": false, "discussion_items": [{ "q": "need sudo" }] }),
+        );
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "blocked path must leave the branch for the human"
+        );
+        assert!(wt.exists(), "blocked path must preserve the worktree too");
+        assert_eq!(
+            commits_ahead(&repo, "main", "wt/foo"),
+            1,
+            "the agent's commit must survive on the branch"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1, "the preserved branch must be recorded once");
+        assert_eq!(evs[0]["data"]["branch"], "wt/foo");
+    }
+
+    /// The blocked-preserve is idempotent: a second cleanup pass (supervisor
+    /// restart) reuses the `(run, node)` key and appends no duplicate event, and
+    /// still leaves the branch + worktree intact.
+    #[test]
+    fn blocked_preserve_event_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "fix.rs", "agent work");
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": false }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(branch_exists(&repo, "wt/foo"));
+        assert!(wt.exists());
+        assert_eq!(events_of_kind(&paths, "cleanup.branch_preserved").len(), 1);
+    }
+
+    /// No regression on the SUCCESS/merge path: a node whose report carries
+    /// `via: "explicit-merge"` is force-torn-down exactly as before — worktree
+    /// removed, branch `-D`'d — even though (as after a real squash-merge) the
+    /// branch still shows commits ahead of the source. The confirmed merge earns
+    /// the force delete.
+    #[test]
+    fn explicit_merge_report_still_deletes_branch() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // Commit ahead of main and do NOT merge into main — mirrors a squash /
+        // rebase merge where `-d` would refuse but the merge really happened.
+        commit_in_worktree(&wt, "feat.rs", "merged work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "via": "explicit-merge" }),
+        );
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(!wt.exists(), "merge path must remove the worktree");
+        assert!(
+            !branch_exists(&repo, "wt/foo"),
+            "an explicit-merge node's branch is force-deleted as before"
+        );
+        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+    }
+
+    /// Defense-in-depth safety net: a NON-merge terminal report that the primary
+    /// blocked gate does not catch (here a bare `success: true` with no `via`,
+    /// standing in for any future outcome-gating miss) still must not force-drop
+    /// unmerged commits. `git branch -d` refuses, the branch survives, and the
+    /// refusal is recorded as `cleanup.branch_remove_failed` — the worktree is
+    /// still removed (only the branch is protected on this arm).
+    #[test]
+    fn unmerged_branch_not_force_deleted_without_explicit_merge() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "x.rs", "unmerged work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        // success:true but NO `via: explicit-merge` — not blocked, not merged.
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "unmerged commits must not be force-dropped without a confirmed merge"
+        );
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+        let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
+        assert_eq!(evs.len(), 1, "the refused delete must be recorded");
+        assert_eq!(evs[0]["data"]["branch"], "wt/foo");
+    }
+
+    /// `node_report_is_blocked` classifies the terminal outcomes it gates on:
+    /// only a plain `success: false` (no merge, no cancel) is a blocked handoff.
+    #[test]
+    fn blocked_classification() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let blocked = forge_node(&paths, "n-0001", json!({ "branch": "wt/a" }));
+        // No report yet → not blocked (nothing terminal).
+        assert!(!node_report_is_blocked(&blocked));
+
+        let cases = [
+            (json!({ "success": false }), true, "plain blocked handoff"),
+            (
+                json!({ "success": false, "cancelled": true }),
+                false,
+                "a run-cancel is a deliberate teardown, not a blocked handoff",
+            ),
+            (
+                json!({ "success": false, "via": "explicit-merge" }),
+                false,
+                "an explicit merge is never blocked",
+            ),
+            (json!({ "success": true }), false, "success is not blocked"),
+        ];
+        for (i, (report_data, want, why)) in cases.into_iter().enumerate() {
+            let node = format!("n-1{i:03}");
+            let _ = forge_node(&paths, &node, json!({ "branch": "wt/x" }));
+            report(&paths, &node, report_data);
+            let n = read_node_opt(&paths, &nid(&node)).unwrap().unwrap();
+            assert_eq!(node_report_is_blocked(&n), want, "{why}");
+        }
     }
 
     /// Required behaviour #2: a worktree dir that is already gone (operator

@@ -3,7 +3,7 @@ created: 2026-07-03
 updated: 2026-07-03
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: high
 labels: [supervisor, data-loss]
 ---

@@ -98,6 +98,8 @@ These five invariants govern correctness of the on-disk run state and the autono
    (`crates/octl-cli/src/supervise/cleanup.rs`)
    `merge.sh` no longer touches tmux or `git worktree remove` — the supervisor sees the terminal `node.report`, rolls the run up via `rollup_status`, and tears down. `find_window_by_path` is **session-scoped + exact-cwd-match**: it queries only the spawn-session via `tmux list-windows -t <session>` and requires `pane_current_path == worktree_path` (no sub-path prefix). Without these constraints the recovery would kill an unrelated pane that happened to `cd` into the worktree, including the user's master session.
 
+   **Teardown is gated on the terminal outcome — a BLOCKED report preserves the branch + worktree** (`node_report_is_blocked`, issue `blocked-report-deletes-branch`). A node whose terminal `node.report` is a blocked handoff (`success: false`, no `via: "explicit-merge"`, not a `cancelled` run-cancel) committed work that was never merged: `cleanup_node` closes its tmux window (winding the run down is fine) but must NOT `git worktree remove` or delete its branch — it records a `cleanup.branch_preserved` audit event instead. Deleting them is silent data loss. Defense-in-depth: every non-merge branch delete uses `git branch -d` (refuses an unmerged branch); the force `git branch -D` is reserved for a confirmed `run merge`. `run cancel` (`cancelled: true`) is still a deliberate teardown — its worktree is removed, but its branch is still protected by the `-d` safety net.
+
 ### Related conventions
 
 - **Concurrent spinoff reports** — bundled SKILLs use `/tmp/node-report-${run_id}.json`, never the shared `/tmp/node-report.json`. Drift re-introduces the clobber race.
