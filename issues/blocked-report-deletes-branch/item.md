@@ -3,9 +3,13 @@ created: 2026-07-03
 updated: 2026-07-03
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: high
 labels: [supervisor, data-loss]
+commits:
+- hash: fe44a56
+  summary: preserve branch+worktree on blocked terminal report; -d safety net; tests
+closed: 2026-07-03
 ---
 
 # Blocked terminal report (success:false) deletes the worktree branch instead of preserving it for the human
