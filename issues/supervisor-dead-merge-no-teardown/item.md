@@ -2,8 +2,12 @@
 created: 2026-07-03
 updated: 2026-07-03
 type: bug
-status: open
+status: fixed
 priority: high
+commits:
+- hash: 979b794
+  summary: 'fix(run): ensure live report consumer on merge + supervisor liveness on show/list'
+closed: 2026-07-03
 ---
 
 # run merge reports success when supervisor is dead; teardown silently never happens
