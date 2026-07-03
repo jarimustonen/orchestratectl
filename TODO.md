@@ -10,27 +10,24 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 **`supervisor-dead-merge-no-teardown` is FIXED and merged** (task 0 done — commits `979b794` fix + `62948c8` llm-review hardening, closed at `938f10f`/`60147b6`). The bugfix auto-reattaches a fresh supervisor on merge when the recorded one is dead (never silent — emits a warning + machine-readable `supervisor:{state}`), adds `supervisor:{pid,alive}` to `run show`/`run list`, and carries a serialized e2e test. A full `/llm-review` caught an extra orphan case (pid-file-absent) that was also fixed.
 
-**Three open issues now** (all non-blocking for v0.1.0 except as noted):
-- `run-create-agent-startup-timeout` (**high**) — filed this session. `run create` hard-wires create.sh's 30s agent-startup window and never forwards `--agent-startup-timeout`, so spawns fail with `agent-pid-undiscoverable` on a loaded host (hit repeatedly today at load 26–33 on hauis). **Has a working workaround** (OCTL_CREATE_SH wrapper → `--agent-startup-timeout=180`), so not a hard release blocker, but worth fixing before the release-verification spawning. See task 0.5 below.
-- `cancel-dead-supervisor-recovery` (normal) — spinoff from the bugfix: apply the same dead-supervisor reattach to `run cancel`.
-- `legacy-pid-identity-check` (normal) — documented rare residual: recycled legacy bare-integer supervisor.pid reads as alive.
+**Three data-integrity supervisor/merge bugs fixed & deployed this session:**
+- `supervisor-dead-merge-no-teardown` (task 0) — merge auto-reattaches a dead supervisor; `supervisor:{pid,alive}` on show/list. Commits `979b794`+`62948c8`.
+- `run-create-agent-startup-timeout` (task 0.5) — `run create --agent-startup-timeout` [1,600], default 90s, forwarded to create.sh. Kills spawn-under-load failures. Commit `e6df5d8`. **Workaround retired.**
+- `blocked-report-deletes-branch` (task X, HIGH silent-data-loss) — blocked terminal report (`success:false`) no longer force-deletes the branch/worktree. Two-layer gate: `node_report_is_blocked` + source-relative `git rev-list --count source..branch` net; `-D` force reserved for confirmed `run merge`. 7 unit + 2 e2e tests. Commits `fe44a56`+`498cf5d`. Invariant #5 updated.
+
+**Three open issues now** (all normal-priority, all non-blocking for v0.1.0):
+- `cancel-dead-supervisor-recovery` — apply the dead-supervisor reattach to `run cancel` (the blocked-branch source-relative net already prevents cancel-with-committed-work data loss).
+- `legacy-pid-identity-check` — recycled legacy bare-integer supervisor.pid reads as alive (rare residual).
+- `teardown-gate-trust-and-lifecycle` — from blocked-branch `/llm-review`: reserve `via`/`cancelled` markers in the node-report validator against spoofing; preserved-worktree lifecycle (status surface + GC/reclaim verb).
 
 The v0.1.0 publish is now **one hard thing away**: install the self-hosted macOS runner on `hauis` so the alpha pipeline can complete (Jari's Free-tier GitHub account has no usable macOS-runner budget — public repo did NOT unblock this).
 
-### Spawn-under-load workaround (IMPORTANT for any spawn this session)
+### Spawn-under-load: now fixed (historical note)
 
-Until `run-create-agent-startup-timeout` is fixed, spawning worktrees on a loaded hauis fails at the 30s agent-startup ceiling. Workaround, fully reversible (no repo change):
-
-```bash
-cat > /tmp/create-with-timeout.sh <<'SH'
-#!/usr/bin/env bash
-exec "$HOME/.claude/skills/worktree/scripts/create.sh" --agent-startup-timeout=180 "$@"
-SH
-chmod +x /tmp/create-with-timeout.sh
-export OCTL_CREATE_SH=/tmp/create-with-timeout.sh   # set for the run create invocation
-```
-
-`run create` blocks until the agent launches (can exceed 2 min under load) — run it with `run_in_background` so a shell timeout doesn't SIGTERM it mid-spawn and leave a 0-node stub. Also prefer `--headless` on a busy host.
+`run-create-agent-startup-timeout` is fixed & deployed (default 90s window), so spawns no longer die at the old 30s ceiling under load. Two operational notes still apply:
+- `run create` blocks until the agent launches (can exceed 2 min on a very loaded host) — spawn it with `run_in_background` so a shell timeout doesn't SIGTERM it mid-spawn and leave a 0-node stub. If it does, `orchestratectl run cancel <id>` the stub.
+- Prefer `--headless` on a busy host (also the macOS-PTY guidance for batches).
+- Pre-`e6df5d8` binaries only: the `OCTL_CREATE_SH` wrapper (`exec …/create.sh --agent-startup-timeout=180 "$@"`) was the reversible workaround. No longer needed.
 
 ### Landed this session
 
