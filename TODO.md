@@ -6,11 +6,31 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-06-30 evening → handoff)
+## Status snapshot (2026-07-03 → continued)
 
-**One open issue** — `supervisor-dead-merge-no-teardown` (high priority, filed at handoff time from a homebase worktree bug report; needs fixing before v0.1.0). All four v0.1.0 blockers landed during this handoff-session have been fixed and merged; the release-pipeline scaffold is live; the crate is renamed and the repo is public. Total commits landed on `main` this session: 14 (from `94fe8cd` at start → `3aad7e7` at HEAD).
+**`supervisor-dead-merge-no-teardown` is FIXED and merged** (task 0 done — commits `979b794` fix + `62948c8` llm-review hardening, closed at `938f10f`/`60147b6`). The bugfix auto-reattaches a fresh supervisor on merge when the recorded one is dead (never silent — emits a warning + machine-readable `supervisor:{state}`), adds `supervisor:{pid,alive}` to `run show`/`run list`, and carries a serialized e2e test. A full `/llm-review` caught an extra orphan case (pid-file-absent) that was also fixed.
 
-The v0.1.0 publish is **two things away**: (1) fix `supervisor-dead-merge-no-teardown`, and (2) install the self-hosted macOS runner on `hauis` so the alpha pipeline can complete (Jari's Free-tier GitHub account has no usable macOS-runner budget — public repo did NOT unblock this).
+**Three open issues now** (all non-blocking for v0.1.0 except as noted):
+- `run-create-agent-startup-timeout` (**high**) — filed this session. `run create` hard-wires create.sh's 30s agent-startup window and never forwards `--agent-startup-timeout`, so spawns fail with `agent-pid-undiscoverable` on a loaded host (hit repeatedly today at load 26–33 on hauis). **Has a working workaround** (OCTL_CREATE_SH wrapper → `--agent-startup-timeout=180`), so not a hard release blocker, but worth fixing before the release-verification spawning. See task 0.5 below.
+- `cancel-dead-supervisor-recovery` (normal) — spinoff from the bugfix: apply the same dead-supervisor reattach to `run cancel`.
+- `legacy-pid-identity-check` (normal) — documented rare residual: recycled legacy bare-integer supervisor.pid reads as alive.
+
+The v0.1.0 publish is now **one hard thing away**: install the self-hosted macOS runner on `hauis` so the alpha pipeline can complete (Jari's Free-tier GitHub account has no usable macOS-runner budget — public repo did NOT unblock this).
+
+### Spawn-under-load workaround (IMPORTANT for any spawn this session)
+
+Until `run-create-agent-startup-timeout` is fixed, spawning worktrees on a loaded hauis fails at the 30s agent-startup ceiling. Workaround, fully reversible (no repo change):
+
+```bash
+cat > /tmp/create-with-timeout.sh <<'SH'
+#!/usr/bin/env bash
+exec "$HOME/.claude/skills/worktree/scripts/create.sh" --agent-startup-timeout=180 "$@"
+SH
+chmod +x /tmp/create-with-timeout.sh
+export OCTL_CREATE_SH=/tmp/create-with-timeout.sh   # set for the run create invocation
+```
+
+`run create` blocks until the agent launches (can exceed 2 min under load) — run it with `run_in_background` so a shell timeout doesn't SIGTERM it mid-spawn and leave a 0-node stub. Also prefer `--headless` on a busy host.
 
 ### Landed this session
 
@@ -41,18 +61,13 @@ Everything from the previous snapshot, PLUS:
 
 ## What's left before v0.1.0
 
-### 0. Fix `supervisor-dead-merge-no-teardown` (do this FIRST)
+### 0. Fix `supervisor-dead-merge-no-teardown` — ✅ DONE (2026-07-03)
 
-**Filed 2026-07-03 during handoff** from a homebase worktree session. `orchestratectl run merge` returns `{"merged": true}` even when the recorded supervisor PID is dead — the report is never consumed, the worktree + tmux window + branch are silently left behind, and `manifest.status` stays `pending`. The caller thinks cleanup happened; it didn't.
+Fixed and merged (`979b794` + `62948c8`, closed `938f10f`/`60147b6`). `run merge` now auto-reattaches a fresh supervisor when the recorded one is dead — never silent (warning + `supervisor:{state}` outcome), `run show`/`run list` gained `supervisor:{pid,alive}`, serialized e2e test added, full `/llm-review` pass (report in `history/review-supervisor-dead-merge-no-teardown.md`). Two follow-ups filed as issues (`cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`).
 
-Full report + acceptance criteria in `issues/supervisor-dead-merge-no-teardown/item.md`. Two-defect breakdown:
+### 0.5. Consider fixing `run-create-agent-startup-timeout` before release-verification spawning
 
-1. **`run merge` reports success without ensuring a live consumer.** Fix: check the recorded supervisor PID before returning; if dead, either auto-reattach OR return `merged: true` + `warnings: [...]` naming the deferred teardown. Silent success is not acceptable.
-2. **No supervisor liveness surface.** Fix: `run show` / `run list` include a `supervisor: {pid, alive}` field so callers can distinguish "still working" from "orphaned".
-
-Spawn as `/worktree-bugfix supervisor-dead-merge-no-teardown` — the fix touches `crates/octl-cli/src/run/merge.rs` (envelope + liveness check), the show/list DTOs, and needs a new integration test that kills the supervisor mid-run then invokes `run merge` and asserts the warning surface. Extend `tests/e2e_spinoff.rs` or add a sibling file.
-
-The homebase reporter's workaround is `orchestratectl run reattach <id>` — the recovery command already exists, this bug is about making it discoverable when the caller needs it.
+**High priority, has a workaround.** `run create` never forwards create.sh's `--agent-startup-timeout`, so under load every spawn dies at the 30s ceiling (`agent-pid-undiscoverable`). This bit the whole session today on hauis. Fix is small: add a `--agent-startup-timeout <s>` flag to `run create`, thread it through `SpawnRequest` → `run_create_sh` (`crates/octl-cli/src/run/spawn.rs`), and probably default higher than 30s for octl (batch spawns self-load the host). CLI-surface change → insta snapshots + `skill.rs` catalog pin + `doctor`. Not a hard blocker (workaround above works) but worth doing so the alpha-pipeline verification below doesn't keep hitting spawn failures. Spawn via `/worktree-bugfix run-create-agent-startup-timeout` **using the OCTL_CREATE_SH workaround**.
 
 ### 1. Wire up the self-hosted macOS runner on `hauis`
 
