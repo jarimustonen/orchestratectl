@@ -2,8 +2,12 @@
 created: 2026-07-03
 updated: 2026-07-03
 type: bug
-status: in-progress
+status: fixed
 priority: high
+commits:
+- hash: e6df5d8
+  summary: forward --agent-startup-timeout to create.sh; default 90s
+closed: 2026-07-03
 ---
 
 # run create hard-wires create.sh 30s agent-startup timeout; unspawnable under load
