@@ -402,38 +402,98 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     };
 
     // BLOCKED terminal report (`success: false`, not an explicit `run merge`):
-    // the agent committed work and handed it off to a human. Its branch — and
-    // ideally its worktree — must survive so the human can `git merge` /
-    // `/worktree-merge` it later; tearing them down here is the silent data loss
-    // of issue `blocked-report-deletes-branch`. Wind the run down (the tmux
-    // window above may close) but leave the tree and branch untouched, and record
-    // the preserved branch so it is discoverable in the run log.
+    // the agent committed work and handed it off to a human. Its branch AND
+    // worktree must survive so the human can `git merge` / `/worktree-merge` it
+    // later; tearing them down here is the silent data loss of issue
+    // `blocked-report-deletes-branch`. Wind the run down (the tmux window above
+    // may close) but leave the tree and branch untouched, and record the
+    // preservation so it is discoverable in the run log.
     if node_report_is_blocked(n) {
-        if let Some(branch) = n.branch.as_deref() {
-            record_branch_preserved(paths, n, branch, worktree_path);
-        }
+        record_branch_preserved(
+            paths,
+            n,
+            n.branch.as_deref(),
+            worktree_path,
+            "blocked report",
+        );
         return;
     }
 
     // The main worktree is the canonical place to run `worktree remove` /
-    // `branch -d` from; resolve it while the linked worktree still exists,
-    // falling back to the run's recorded source repo so branch cleanup still
-    // has a valid `-C` target even when the worktree dir is already gone.
+    // `branch -{d,D}` / `rev-list` from; resolve it while the linked worktree
+    // still exists, falling back to the run's recorded source repo so branch
+    // cleanup still has a valid `-C` target even when the worktree dir is gone.
     let main_repo = main_worktree_of(worktree_path, git).or_else(|| manifest_source_repo(paths));
     let repo = main_repo.as_deref().unwrap_or(worktree_path);
+
+    let merged = node_merged_explicitly(n);
+
+    // Defense-in-depth against any future outcome-gating miss (issue
+    // `blocked-report-deletes-branch`): on ANY non-explicit-merge path — a plain
+    // success that skipped `run merge`, a `run cancel`, a genuine failure, or a
+    // terminal outcome not yet gated above — if the branch carries commits not
+    // reachable from the run's OWN source branch (`manifest.source_branch`),
+    // preserve BOTH the worktree and the branch rather than force anything. This
+    // protects committed work from being discarded even when the primary gate
+    // does not fire. Only a confirmed `run merge` (which legitimately squash /
+    // rebase-merges and so leaves the branch "ahead" of source), a branch with
+    // nothing unmerged, or an unknowable source proceeds to teardown. The
+    // ancestry check is against the run's source branch, NOT the main worktree's
+    // ambient `HEAD` — which may be on any branch when the supervisor ticks.
+    if !merged {
+        if let (Some(branch), Some(source)) = (n.branch.as_deref(), manifest_source_branch(paths)) {
+            if branch_has_unmerged_commits(repo, &source, branch, git) {
+                record_branch_preserved(
+                    paths,
+                    n,
+                    Some(branch),
+                    worktree_path,
+                    "unmerged commits vs source (no explicit merge)",
+                );
+                return;
+            }
+        }
+    }
 
     // `--force` so disposable untracked/modified scratch left in the worktree
     // does not refuse removal and orphan the worktree+branch (issue
     // `supervisor-worktree-remove-no-force`). On the reached-here paths the
-    // tracked work is either merged (success) or intentionally discarded
-    // (cancel), so anything still in the tree is throwaway. If removal still
+    // branch is either merged (explicit merge) or provably has no unmerged work
+    // vs its source, so anything still in the tree is throwaway. If removal still
     // fails AND the dir is simply gone (user removed it manually), record a
     // non-fatal `cleanup.worktree_missing` and continue.
     if !remove_worktree(repo, worktree_path, git) && !std::path::Path::new(worktree_path).exists() {
         record_worktree_missing(paths, n, worktree_path);
     }
     if let Some(branch) = n.branch.as_deref() {
-        delete_branch(paths, n, repo, branch, git, node_merged_explicitly(n));
+        delete_branch(paths, n, repo, branch, git, merged);
+    }
+}
+
+/// True when `branch` has at least one commit not reachable from `source` in
+/// `repo` — i.e. `git -C <repo> rev-list --count <source>..<branch>` is > 0. This
+/// is the source-relative "is there unmerged work?" check the teardown gate uses
+/// instead of `git branch -d`'s ambient-`HEAD`-relative one (issue
+/// `blocked-report-deletes-branch`).
+///
+/// Conservative on the safe side but NOT paranoid: a git error or unparseable
+/// count returns `false` (treat as "nothing unmerged", proceed to teardown) so a
+/// transient git hiccup does not leak a branch on every tick — the
+/// [`delete_branch`] `-d` fallback still refuses an unmerged branch as the final
+/// backstop. Only a *confirmed* positive count preserves here.
+fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str) -> bool {
+    let out = Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--count", &format!("{source}..{branch}")])
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<u64>()
+            .is_ok_and(|count| count > 0),
+        _ => false,
     }
 }
 
@@ -445,6 +505,19 @@ fn manifest_source_repo(paths: &RunPaths) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|m| m.source_repo)
+}
+
+/// The branch the run was started from (`manifest.source_branch`), if recorded.
+/// This is the ref the teardown gate measures "unmerged work" against
+/// ([`branch_has_unmerged_commits`]) — the run's actual base, not the main
+/// worktree's ambient `HEAD`. `None` for a run created without a recorded base,
+/// in which case the source-relative safety net cannot run and teardown falls
+/// through to `delete_branch`'s `-d` backstop.
+fn manifest_source_branch(paths: &RunPaths) -> Option<String> {
+    read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .and_then(|m| m.source_branch)
 }
 
 /// Close the node's tmux window, recovering from the manual-rebase orphan case
@@ -721,28 +794,44 @@ fn record_branch_remove_failed(paths: &RunPaths, n: &Node, branch: &str, detail:
     }
 }
 
-/// Append a non-fatal `cleanup.branch_preserved` audit event when a node's
-/// terminal report is a BLOCKED handoff (`success: false`, no explicit merge):
-/// the supervisor intentionally leaves the branch AND worktree in place for the
-/// human (issue `blocked-report-deletes-branch`). Unlike a delete failure this is
-/// the *intended* outcome, so it gets its own event kind and an explicit
-/// "left unmerged for you to merge" line on stderr so the branch is discoverable
-/// instead of silently torn down. Idempotent by `(run, node)`.
-fn record_branch_preserved(paths: &RunPaths, n: &Node, branch: &str, worktree_path: &str) {
+/// Append a non-fatal `cleanup.branch_preserved` audit event when the supervisor
+/// intentionally leaves a node's branch AND worktree in place for the human,
+/// instead of tearing them down (issue `blocked-report-deletes-branch`). Fired on
+/// two paths: a BLOCKED terminal report (`success: false`, no explicit merge),
+/// and the defense-in-depth catch where a non-merge outcome's branch still has
+/// commits not reachable from its source. `reason` records which. Unlike a delete
+/// *failure* this is the *intended* outcome, so it gets its own event kind and an
+/// explicit "left unmerged for you to merge" line on stderr so the work is
+/// discoverable instead of silently torn down.
+///
+/// `branch` is `Option` so a preserved worktree with no recorded branch (a
+/// malformed / detached-HEAD node) is still surfaced — the worktree persists on
+/// disk regardless, so the human must be told where to look. Idempotent by
+/// `(run, node)`.
+fn record_branch_preserved(
+    paths: &RunPaths,
+    n: &Node,
+    branch: Option<&str>,
+    worktree_path: &str,
+    reason: &str,
+) {
+    let branch_display = branch.unwrap_or("<none>");
     info!(
         target: "orchestratectl::supervise",
         node = %n.node_id,
-        branch,
+        branch = branch_display,
         worktree_path,
-        "blocked terminal report (success:false); preserving branch + worktree for the human"
+        reason,
+        "preserving branch + worktree for the human (not tearing down)"
     );
     eprintln!(
-        "supervisor cleanup: branch {branch} left unmerged for you to merge (blocked report; worktree preserved at {worktree_path})"
+        "supervisor cleanup: branch {branch_display} left unmerged for you to merge ({reason}; worktree preserved at {worktree_path})"
     );
     let data = json!({
         "node_id": n.node_id.as_str(),
         "branch": branch,
         "worktree_path": worktree_path,
+        "reason": reason,
     });
     let key = format!(
         "cleanup.branch_preserved:{}:{}",
@@ -787,11 +876,12 @@ fn main_worktree_of(worktree_path: &str, git: &str) -> Option<String> {
 }
 
 /// `git -C <repo> worktree remove --force <worktree_path>` — lenient. `--force`
-/// because on the paths that reach it the tracked work is either merged (success)
-/// or intentionally discarded (cancel) — a BLOCKED report never gets here, its
-/// worktree is preserved upstream in [`cleanup_node`] — so any untracked /
-/// modified scratch left behind is disposable; without it git refuses to remove
-/// a dirty tree and the cascade orphans the worktree AND branch (issue
+/// because on the paths that reach it the branch is either merged (explicit
+/// merge) or provably has no unmerged work vs its source — a BLOCKED report or a
+/// non-merge branch with source-unmerged commits never gets here, its worktree is
+/// preserved upstream in [`cleanup_node`] — so any untracked / modified scratch
+/// left behind is disposable; without it git refuses to remove a dirty tree and
+/// the cascade orphans the worktree AND branch (issue
 /// `supervisor-worktree-remove-no-force`). Returns `true` on success so the
 /// caller can distinguish an already-gone worktree from a genuine refusal.
 fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
@@ -810,21 +900,25 @@ fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
 ///   `-D`, force-delete. The merge is confirmed, and the branch may already be
 ///   removed from the main worktree's vantage point, so the force is safe and
 ///   necessary.
-/// - `merged == false` (any non-merge teardown — a cancel, or a future outcome
-///   the primary [`node_report_is_blocked`] gate misses) → `-d`, which git
-///   *refuses* if the branch holds commits not reachable from `HEAD`. So even if
-///   outcome-gating ever lets an unmerged branch reach here, `-d` keeps its
-///   commits rather than force-dropping them.
+/// - `merged == false` → `-d`, the LAST-resort backstop. On this arm
+///   [`cleanup_node`] has already preserved a branch with source-unmerged commits
+///   (its stronger, source-relative [`branch_has_unmerged_commits`] check), so a
+///   branch reaching here is expected to be clean. `-d` still refuses a branch not
+///   merged into `HEAD`/upstream, catching the residual case where the source
+///   check could not run (no `manifest.source_branch`) — it keeps such commits
+///   rather than force-dropping them. Note `-d`'s check is ambient-`HEAD`-relative
+///   and weaker than the source check, which is why it is only the fallback.
 ///
-/// Either way, if git refuses (unmerged commits, or the branch simply does not
-/// exist), record a non-fatal `cleanup.branch_remove_failed` audit event and
-/// continue — branch-cleanup failures must never block run completion, and the
-/// recorded stderr shows the operator a preserved branch to pick up.
+/// The branch name is passed after `--` so a name beginning with `-` can never be
+/// misparsed as a flag. Either way, if git refuses (unmerged commits, or the
+/// branch simply does not exist), record a non-fatal `cleanup.branch_remove_failed`
+/// audit event and continue — branch-cleanup failures must never block run
+/// completion, and the recorded stderr shows the operator a preserved branch.
 fn delete_branch(paths: &RunPaths, n: &Node, repo: &str, branch: &str, git: &str, merged: bool) {
     let flag = if merged { "-D" } else { "-d" };
     let mut cmd = Command::new(git);
-    cmd.arg("-C").arg(repo).args(["branch", flag, branch]);
-    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch {flag} {branch}")) {
+    cmd.arg("-C").arg(repo).args(["branch", flag, "--", branch]);
+    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch {flag} -- {branch}")) {
         record_branch_remove_failed(paths, n, branch, &detail);
     }
 }
@@ -1335,17 +1429,19 @@ mod tests {
         assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
     }
 
-    /// Defense-in-depth safety net: a NON-merge terminal report that the primary
-    /// blocked gate does not catch (here a bare `success: true` with no `via`,
-    /// standing in for any future outcome-gating miss) still must not force-drop
-    /// unmerged commits. `git branch -d` refuses, the branch survives, and the
-    /// refusal is recorded as `cleanup.branch_remove_failed` — the worktree is
-    /// still removed (only the branch is protected on this arm).
+    /// Defense-in-depth, `-d` FALLBACK arm (no recorded `source_branch`): a
+    /// NON-merge report the primary blocked gate misses (here a bare
+    /// `success: true` with no `via`) with no `manifest.source_branch` to run the
+    /// stronger source-relative check against. The worktree is removed, but
+    /// `git branch -d` refuses to force-drop the unmerged commits — the branch
+    /// survives and the refusal is recorded as `cleanup.branch_remove_failed`.
+    /// (When `source_branch` IS known, both are preserved — see
+    /// [`unmerged_branch_preserves_both_when_source_known`].)
     #[test]
     fn unmerged_branch_not_force_deleted_without_explicit_merge() {
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
-        bootstrap(&paths, 0);
+        bootstrap(&paths, 0); // no source_branch → source-relative check can't run
         let (repo, wt) = init_repo_with_worktree(&tmp);
         commit_in_worktree(&wt, "x.rs", "unmerged work");
         assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
@@ -1369,6 +1465,104 @@ mod tests {
         let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
         assert_eq!(evs.len(), 1, "the refused delete must be recorded");
         assert_eq!(evs[0]["data"]["branch"], "wt/foo");
+    }
+
+    /// Defense-in-depth, PRIMARY arm (`source_branch` known): the same non-merge
+    /// miss (a `success: true` with no `via`) but with `manifest.source_branch`
+    /// recorded. The source-relative check (`rev-list main..wt/foo` > 0) fires
+    /// FIRST, so BOTH the worktree and the branch are preserved — the ambient-HEAD
+    /// `git branch -d` weakness never gets a chance to matter, and the worktree is
+    /// not destroyed on a gating miss. Recorded as `cleanup.branch_preserved`.
+    #[test]
+    fn unmerged_branch_preserves_both_when_source_known() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        // Record the run's source branch on the manifest.
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "source_branch": "main",
+            }),
+        )
+        .unwrap();
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "x.rs", "unmerged work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            wt.exists(),
+            "worktree must be preserved on the source-check arm"
+        );
+        assert!(branch_exists(&repo, "wt/foo"), "branch must be preserved");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1, "preservation must be recorded once");
+        assert_eq!(evs[0]["data"]["branch"], "wt/foo");
+        assert_eq!(
+            evs[0]["data"]["reason"], "unmerged commits vs source (no explicit merge)",
+            "the reason must distinguish this from a blocked report"
+        );
+        // No worktree removal was attempted, so no worktree_missing / remove_failed.
+        assert!(events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty());
+    }
+
+    /// The source check must NOT preserve a branch with nothing unmerged: a
+    /// `success: true` non-merge report whose branch is fully merged into the
+    /// recorded `source_branch` proceeds to normal teardown (worktree removed,
+    /// branch deleted). Proves the source gate is not over-eager.
+    #[test]
+    fn merged_branch_torn_down_when_source_known() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "source_branch": "main",
+            }),
+        )
+        .unwrap();
+        // wt/foo has NO commits beyond main → nothing unmerged vs source.
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(!wt.exists(), "a source-merged branch's worktree is removed");
+        assert!(
+            !branch_exists(&repo, "wt/foo"),
+            "a source-merged branch is deleted"
+        );
+        assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
     }
 
     /// `node_report_is_blocked` classifies the terminal outcomes it gates on:

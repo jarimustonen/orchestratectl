@@ -463,6 +463,9 @@ fn blocked_report_preserves_branch_and_worktree_e2e() {
             .env("ORCHESTRATECTL_HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
+            // Drop any ambient GIT_BIN stub so the supervisor's teardown runs
+            // against REAL git — the whole point of this test.
+            .env_remove("GIT_BIN")
             .args([
                 "--output",
                 "json",
@@ -583,6 +586,9 @@ fn merge_path_deletes_branch_e2e() {
             .env("ORCHESTRATECTL_HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
+            // Drop any ambient GIT_BIN stub so the supervisor's teardown runs
+            // against REAL git — the whole point of this test.
+            .env_remove("GIT_BIN")
             .args([
                 "--output",
                 "json",

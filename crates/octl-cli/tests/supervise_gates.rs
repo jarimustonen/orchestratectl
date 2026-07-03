@@ -266,7 +266,7 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
         "worktree not removed: {git:?}"
     );
     assert!(
-        git.contains("branch -d wt/test-x"),
+        git.contains("branch -d -- wt/test-x"),
         "branch not deleted with the safe -d on the non-merge path: {git:?}"
     );
 }
@@ -313,9 +313,9 @@ fn blocked_report_rolls_run_to_failed_but_preserves_branch() {
         "blocked path must not delete the branch: {git:?}"
     );
     // The preservation is auditable.
-    let preserved = read_events(&events).into_iter().any(|v| {
-        v["kind"] == "cleanup.branch_preserved" && v["data"]["branch"] == "wt/test-x"
-    });
+    let preserved = read_events(&events)
+        .into_iter()
+        .any(|v| v["kind"] == "cleanup.branch_preserved" && v["data"]["branch"] == "wt/test-x");
     assert!(
         preserved,
         "expected a cleanup.branch_preserved audit event; events: {:?}",
@@ -453,7 +453,7 @@ fn interactive_kind_with_explicit_merge_cleans_up() {
         "explicit-merge must remove the worktree: {git:?}"
     );
     assert!(
-        git.contains("branch -D wt/test-x"),
+        git.contains("branch -D -- wt/test-x"),
         "explicit-merge must delete the branch: {git:?}"
     );
 }
