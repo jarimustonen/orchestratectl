@@ -89,12 +89,19 @@ pub fn spawn_supervisor(
             ));
         }
         // Stale PID file (dead or recycled PID): record the dead prior
-        // incarnation.
+        // incarnation. Keyed on the dead pid + its recorded start-time so a
+        // retried recovery (e.g. `run merge` re-invoked several times while the
+        // supervisor stays dead) collapses to a single `supervisor.exited`
+        // instead of storming the log with one per attempt.
+        let exited_key = match start_time {
+            Some(st) => format!("stale-on-reattach:{existing}:{st}"),
+            None => format!("stale-on-reattach:{existing}"),
+        };
         let _ = append_and_apply_event(
             paths,
             "supervisor.exited",
             None,
-            None,
+            Some(&exited_key),
             json!({"pid": existing, "reason": "stale-on-reattach"}),
         );
     }

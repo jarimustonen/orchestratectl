@@ -38,10 +38,19 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             discussions: count_jsons(&paths.discussions_dir()),
             spinoffs: count_jsons(&paths.spinoffs_dir()),
         };
-        Ok(Some((manifest, counts)))
+        // Probe supervisor liveness INSIDE the shared lock: the whole point of
+        // the field is to let a caller reason "status pending + supervisor dead
+        // => orphaned", so `manifest.status` and `supervisor` are a single
+        // decision and must be read as one consistent snapshot (design.md §4).
+        // Reading the pid file outside the lock could emit a
+        // `{status: pending, supervisor: dead}` pair that never actually existed
+        // (the supervisor may roll status up and remove its pid file between the
+        // two reads).
+        let supervisor = SupervisorView::probe(&paths);
+        Ok(Some((manifest, counts, supervisor)))
     })
     .map_err(from_core)?;
-    let (manifest, counts) = match scanned {
+    let (manifest, counts, supervisor) = match scanned {
         Some(v) => v,
         None => {
             return Err(
@@ -50,12 +59,6 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
-    // Probe supervisor liveness from the CLI-owned `supervisor.pid` file. This
-    // is a single-file read outside the projection set, so it does not need the
-    // shared lock the manifest+counts scan above held (design.md §4 covers
-    // multi-projection readers; the pid file is neither a projection nor part
-    // of a multi-file decision here).
-    let supervisor = SupervisorView::probe(&paths);
     let payload = ShowPayload {
         manifest: ManifestView::from(&manifest).with_supervisor(supervisor),
         counts,
@@ -79,13 +82,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("discussions:   {}", payload.counts.discussions);
             println!("spinoffs:      {}", payload.counts.spinoffs);
             match payload.manifest.supervisor.pid {
+                Some(pid) if payload.manifest.supervisor.alive => {
+                    println!("supervisor:    pid {pid} (alive)");
+                }
                 Some(pid) => println!(
-                    "supervisor:    pid {pid} ({})",
-                    if payload.manifest.supervisor.alive {
-                        "alive"
-                    } else {
-                        "dead — run `orchestratectl run reattach` to recover"
-                    }
+                    "supervisor:    pid {pid} (dead — run `orchestratectl run reattach {}` to recover)",
+                    payload.manifest.run_id
                 ),
                 None => println!("supervisor:    (none recorded)"),
             }

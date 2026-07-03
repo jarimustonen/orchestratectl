@@ -456,7 +456,16 @@ fn merge_reattaches_and_warns_when_supervisor_dead() {
     // The merge still lands (no data loss) ...
     assert_eq!(merged["data"]["merged"], true);
     assert_eq!(merged["data"]["branch"], branch);
-    // ... but it is NOT silent: a warning names the dead supervisor + restart.
+    // ... but it is NOT silent in the MACHINE channel: the structured
+    // `supervisor` outcome records the reattach (an agent reads `state`, not
+    // prose). `not-supervised`/`terminal`/`alive` here would mean the recovery
+    // path did not fire.
+    assert_eq!(
+        merged["data"]["supervisor"]["state"], "reattached",
+        "merge on a dead supervisor must record a reattached outcome, got: {}",
+        merged["data"]["supervisor"]
+    );
+    // ... and NOT silent in the HUMAN channel: a warning names the restart.
     let warnings = merged["warnings"]
         .as_array()
         .expect("envelope carries a warnings array");
@@ -483,5 +492,16 @@ fn merge_reattaches_and_warns_when_supervisor_dead() {
     assert!(
         kinds.iter().any(|k| k == "supervisor.reattached"),
         "expected a supervisor.reattached event after auto-reattach; got {kinds:?}"
+    );
+    // Prove the run reached `done` via the RECOVERY path (a reattached
+    // supervisor consuming the report), not some ambient consumer: the
+    // `supervisor.exited{reason:stale-on-reattach}` marker is emitted only by
+    // `spawn_supervisor` when it finds the stale pid file we left behind.
+    let recovered_via_stale_marker = read_events(&events)
+        .into_iter()
+        .any(|v| v["kind"] == "supervisor.exited" && v["data"]["reason"] == "stale-on-reattach");
+    assert!(
+        recovered_via_stale_marker,
+        "expected supervisor.exited{{reason:stale-on-reattach}} proving the reattach recovery path ran; got {kinds:?}"
     );
 }

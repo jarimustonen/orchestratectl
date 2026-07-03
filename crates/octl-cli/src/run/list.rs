@@ -73,19 +73,28 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // manifest read so the summary never reflects a manifest a reducer is
         // mid-rewrite on (design.md §4). A run with no `.lock` yet reads
         // lock-free (see `RunLock::acquire_shared`).
-        let m = match RunLock::with_shared_lock(&paths.lock(), || read_manifest_opt(&paths))
-            .map_err(from_core)?
-        {
-            Some(m) => m,
+        // Read the manifest AND probe supervisor liveness under the SAME shared
+        // lock so `status` and `supervisor` form one consistent snapshot — a
+        // caller reasons "status pending + supervisor dead => orphaned", so the
+        // pair must not straddle a reducer's status rollup + pid-file removal
+        // (see show.rs). Costs one extra pid-file read per run; negligible for
+        // realistic run counts.
+        let scanned = RunLock::with_shared_lock(&paths.lock(), || {
+            Ok(read_manifest_opt(&paths)?.map(|m| {
+                let supervisor = SupervisorView::probe(&paths);
+                (m, supervisor)
+            }))
+        })
+        .map_err(from_core)?;
+        let (m, supervisor) = match scanned {
+            Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
         // Shape the manifest into its wire DTO once, then filter on the
         // canonical kebab strings it carries — the DTO's `From` renders
         // `kind` / `status` through the `run/mod.rs` helpers rather than
         // round-tripping the enums through `serde_json::to_value`.
-        // Probe supervisor liveness from this run's CLI-owned `supervisor.pid`
-        // file (single-file read outside the projection set — see show.rs).
-        let summary = RunSummary::from(&m).with_supervisor(SupervisorView::probe(&paths));
+        let summary = RunSummary::from(&m).with_supervisor(supervisor);
         if let Some(filter) = &args.status {
             if &summary.status != filter {
                 continue;

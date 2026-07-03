@@ -33,7 +33,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use octl_core::report::validate_report_payload;
-use octl_core::{append_and_apply_event, read_manifest_opt, read_node_opt, Node};
+use octl_core::{
+    append_and_apply_event, read_all_events, read_manifest_opt, read_node_opt, Node, RunLock,
+};
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -85,8 +87,36 @@ struct MergePayload<'a> {
     /// `node.report` seq, when a terminal report was appended.
     #[serde(skip_serializing_if = "Option::is_none")]
     report_seq: Option<u64>,
+    /// Outcome of ensuring a live consumer for the terminal report — the
+    /// machine-readable companion to any `warnings` entry, so an agent reads a
+    /// `state` instead of regex-parsing prose. Present on a real merge, absent
+    /// on `--dry-run`. Additive (no `schema_version` bump).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supervisor: Option<ConsumerOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dry_run: Option<bool>,
+}
+
+/// Machine-readable result of [`ensure_report_consumer`]: what state the run's
+/// per-run supervisor was left in after the terminal report was appended. The
+/// non-silent counterpart to the merge `warnings`.
+#[derive(Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+enum ConsumerOutcome {
+    /// A live supervisor is already consuming the report on its next tick.
+    Alive,
+    /// The run was already terminal — a supervisor rolled it up and exited, so
+    /// nothing remains to consume.
+    Terminal,
+    /// The run was never supervised (e.g. a skeleton/test run) — there is no
+    /// teardown actor to restart, and spawning one would be wrong.
+    NotSupervised,
+    /// The dead supervisor was restarted; teardown is (re)running. `pid` is the
+    /// new supervisor's pid, or `null` when the spawn was not yet confirmed.
+    Reattached { pid: Option<u32> },
+    /// No live consumer could be ensured; teardown is deferred until the caller
+    /// runs `recovery_command`.
+    Deferred { recovery_command: String },
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -159,6 +189,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             source: effective_source.as_deref(),
             merged: false,
             report_seq: None,
+            supervisor: None,
             dry_run: Some(true),
         };
         return emit(&payload, args.spec, args.warnings);
@@ -200,7 +231,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // bug), reporting a bare `merged: true` would mislead the caller into
     // telling the user cleanup happened when it never will. So ensure a live
     // consumer before returning, and never return silently on the dead path.
-    let warnings = ensure_report_consumer(&paths, &run_id, args.warnings);
+    let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
 
     let payload = MergePayload {
         run_id: &run_id,
@@ -209,64 +240,127 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         source: effective_source.as_deref(),
         merged: true,
         report_seq: Some(result.seq),
+        supervisor: Some(outcome),
         dry_run: None,
     };
     emit(&payload, args.spec, &warnings)
 }
 
 /// Guarantee the terminal `node.report` just appended has a live consumer, or
-/// surface why not — never silent success.
+/// surface why not — never silent success. Returns the machine-readable
+/// [`ConsumerOutcome`] plus the caller's `base` warnings with (at most) one
+/// human-readable entry appended.
 ///
-/// Returns the caller's `base` warnings, plus one appended entry when the
-/// recorded supervisor was dead:
-///   - reattach succeeded → an informational entry noting the restart, so the
-///     caller knows teardown is (re)running rather than assuming an unbroken
-///     close;
-///   - reattach failed → the deferred-teardown entry naming the exact recovery
-///     command (`orchestratectl run reattach <id>`), per the acceptance
-///     criteria.
+/// The recovery decision reasons across THREE facts, read together under one
+/// shared lock (state-integrity invariant #3): the manifest status, the
+/// `supervisor.pid` liveness, and whether a supervisor was EVER started. The
+/// discriminator for "reattach or not" is deliberately NOT "is a dead pid file
+/// present" — an orphan can also have NO pid file (the `claim_pid_atomic` hint
+/// tells an operator to delete a stale `supervisor.pid`, after which a merge
+/// would otherwise silently strand the run). The sound rule is:
 ///
-/// When the supervisor is alive, or when no supervisor was ever recorded (a
-/// bare skeleton run that never materialized, or one already cleanly torn
-/// down — the supervisor removes its pid file on a clean exit), nothing is
-/// appended: there is either a consumer already, or nothing to reattach.
+///   reattach  ⟺  no live supervisor  ∧  run not yet terminal  ∧  ever supervised
+///
+/// where "ever supervised" = a recorded pid (stale file) OR a `supervisor.started`
+/// event in the log. A never-materialized skeleton run (e.g. a `--skip-materialize`
+/// test run) has neither, so it is left untouched — spawning a supervisor for it
+/// would be wrong.
+///
+/// KNOWN RESIDUAL: a legacy bare-integer `supervisor.pid` whose pid has been
+/// recycled by an unrelated live process reads as `alive` (§7.6 identity check
+/// cannot fire without a recorded start-time), so this returns `Alive` and skips
+/// reattach. Modern pid files (the norm) carry a start-time and are immune.
 fn ensure_report_consumer(
     paths: &octl_core::RunPaths,
     run_id: &str,
     base: &[String],
-) -> Vec<String> {
-    let live = SupervisorView::probe(paths);
-    // Alive → the running supervisor will consume the report on its next tick.
-    // No recorded pid → no supervisor to restart (see doc comment).
-    if live.alive {
-        return base.to_vec();
-    }
-    let Some(dead_pid) = live.pid else {
-        return base.to_vec();
+) -> (ConsumerOutcome, Vec<String>) {
+    // One shared-locked read of manifest.json + supervisor.pid + events.jsonl:
+    // the reattach decision is a multi-projection read, so it must not observe a
+    // half-applied set (invariant #3). The event scan is short-circuited when a
+    // pid file is already present, so the common (signal-death) path pays only
+    // the manifest read + pid probe.
+    let probed = RunLock::with_shared_lock(&paths.lock(), || {
+        let terminal = read_manifest_opt(paths)?.is_some_and(|m| m.status.is_terminal());
+        let live = SupervisorView::probe(paths);
+        let ever_supervised = live.pid.is_some()
+            || read_all_events(&paths.events())?
+                .iter()
+                .any(|e| e.kind == "supervisor.started");
+        Ok((terminal, live, ever_supervised))
+    });
+
+    let (terminal, live, ever_supervised) = match probed {
+        Ok(v) => v,
+        // A locked read failed (corrupt log / I/O). Don't guess the run's health
+        // — the merge itself already landed; surface a deferred-teardown warning
+        // so the caller can recover rather than assuming a clean close.
+        Err(e) => {
+            let mut warnings = base.to_vec();
+            warnings.push(format!(
+                "could not verify supervisor liveness after merge ({e}); if teardown \
+                 does not complete, run `orchestratectl run reattach {run_id}`"
+            ));
+            return (
+                ConsumerOutcome::Deferred {
+                    recovery_command: format!("orchestratectl run reattach {run_id}"),
+                },
+                warnings,
+            );
+        }
     };
 
+    // A live supervisor will consume the report on its next tick.
+    if live.alive {
+        return (ConsumerOutcome::Alive, base.to_vec());
+    }
+    // Already rolled up by a supervisor that has since exited: nothing to consume.
+    if terminal {
+        return (ConsumerOutcome::Terminal, base.to_vec());
+    }
+    // Never supervised (skeleton run): no teardown actor to restart.
+    if !ever_supervised {
+        return (ConsumerOutcome::NotSupervised, base.to_vec());
+    }
+
+    // Orphaned: non-terminal, was supervised, no live supervisor remains to
+    // consume the terminal report. Restore the invariant by reattaching.
+    let who = live.pid.map_or_else(
+        || "the supervisor".to_string(),
+        |p| format!("supervisor (pid {p})"),
+    );
     let mut warnings = base.to_vec();
-    match reattach::spawn_supervisor(paths, run_id, false, None) {
-        Ok(0) => warnings.push(format!(
-            "supervisor (pid {dead_pid}) was not running; restarted it to consume \
-             the terminal report and complete teardown (new pid not yet confirmed — \
-             check `orchestratectl run show {run_id}`)"
-        )),
-        Ok(new_pid) => warnings.push(format!(
-            "supervisor (pid {dead_pid}) was not running; restarted it (pid {new_pid}) \
-             to consume the terminal report and complete teardown"
-        )),
+    let outcome = match reattach::spawn_supervisor(paths, run_id, false, None) {
+        Ok(0) => {
+            warnings.push(format!(
+                "{who} was not running; restarted it to consume the terminal report \
+                 and complete teardown (new pid not yet confirmed — check \
+                 `orchestratectl run show {run_id}`)"
+            ));
+            ConsumerOutcome::Reattached { pid: None }
+        }
+        Ok(new_pid) => {
+            warnings.push(format!(
+                "{who} was not running; restarted it (pid {new_pid}) to consume the \
+                 terminal report and complete teardown"
+            ));
+            ConsumerOutcome::Reattached { pid: Some(new_pid) }
+        }
         // A live supervisor appeared between the probe and the spawn attempt:
         // there is a consumer after all, so this is not a warning condition.
-        Err(e) if e.code == "supervisor_already_running" => {}
-        Err(e) => warnings.push(format!(
-            "supervisor (pid {dead_pid}) is not running and auto-reattach failed \
-             ({}); teardown (tmux window, worktree, branch) is deferred — run \
-             `orchestratectl run reattach {run_id}` to complete it",
-            e.message
-        )),
-    }
-    warnings
+        Err(e) if e.code == "supervisor_already_running" => ConsumerOutcome::Alive,
+        Err(e) => {
+            let recovery_command = format!("orchestratectl run reattach {run_id}");
+            warnings.push(format!(
+                "{who} is not running and auto-reattach failed ({}); teardown (tmux \
+                 window, worktree, branch) is deferred — run `{recovery_command}` to \
+                 complete it",
+                e.message
+            ));
+            ConsumerOutcome::Deferred { recovery_command }
+        }
+    };
+    (outcome, warnings)
 }
 
 /// The branch a node works on. Prefers the explicit `branch` field; a
