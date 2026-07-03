@@ -9,6 +9,8 @@ labels: [supervisor, data-loss]
 commits:
 - hash: fe44a56
   summary: preserve branch+worktree on blocked terminal report; -d safety net; tests
+- hash: 498cf5d
+  summary: review hardening — source-relative unmerged-work check for teardown gate
 closed: 2026-07-03
 ---
 
