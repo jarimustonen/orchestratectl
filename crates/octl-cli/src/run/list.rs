@@ -6,7 +6,7 @@ use octl_core::{read_manifest_opt, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::dto::RunSummary;
+use crate::run::dto::{RunSummary, SupervisorView};
 use crate::run::{from_core, runs_root};
 
 pub struct Args<'a> {
@@ -83,7 +83,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // canonical kebab strings it carries — the DTO's `From` renders
         // `kind` / `status` through the `run/mod.rs` helpers rather than
         // round-tripping the enums through `serde_json::to_value`.
-        let summary = RunSummary::from(&m);
+        // Probe supervisor liveness from this run's CLI-owned `supervisor.pid`
+        // file (single-file read outside the projection set — see show.rs).
+        let summary = RunSummary::from(&m).with_supervisor(SupervisorView::probe(&paths));
         if let Some(filter) = &args.status {
             if &summary.status != filter {
                 continue;
@@ -111,12 +113,18 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                 println!("(no runs)");
             }
             for r in &runs {
+                let sup = match r.supervisor.pid {
+                    Some(pid) if r.supervisor.alive => format!("sup:alive({pid})"),
+                    Some(pid) => format!("sup:dead({pid})"),
+                    None => "sup:none".to_string(),
+                };
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     r.run_id,
                     r.kind,
                     r.status,
                     r.node_count,
+                    sup,
                     output::escape_one_line(&r.title)
                 );
             }

@@ -6,7 +6,7 @@ use octl_core::{read_manifest_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::dto::ManifestView;
+use crate::run::dto::{ManifestView, SupervisorView};
 use crate::run::{from_core, run_paths};
 
 #[derive(Serialize)]
@@ -50,8 +50,14 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
+    // Probe supervisor liveness from the CLI-owned `supervisor.pid` file. This
+    // is a single-file read outside the projection set, so it does not need the
+    // shared lock the manifest+counts scan above held (design.md §4 covers
+    // multi-projection readers; the pid file is neither a projection nor part
+    // of a multi-file decision here).
+    let supervisor = SupervisorView::probe(&paths);
     let payload = ShowPayload {
-        manifest: ManifestView::from(&manifest),
+        manifest: ManifestView::from(&manifest).with_supervisor(supervisor),
         counts,
     };
     match spec.format {
@@ -72,6 +78,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("nodes:         {}", payload.counts.nodes);
             println!("discussions:   {}", payload.counts.discussions);
             println!("spinoffs:      {}", payload.counts.spinoffs);
+            match payload.manifest.supervisor.pid {
+                Some(pid) => println!(
+                    "supervisor:    pid {pid} ({})",
+                    if payload.manifest.supervisor.alive {
+                        "alive"
+                    } else {
+                        "dead — run `orchestratectl run reattach` to recover"
+                    }
+                ),
+                None => println!("supervisor:    (none recorded)"),
+            }
             output::emit_text_warnings(warnings);
         }
     }

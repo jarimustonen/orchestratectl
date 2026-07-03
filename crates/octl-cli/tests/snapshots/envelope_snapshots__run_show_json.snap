@@ -22,7 +22,11 @@ expression: value
       "open_discussions": 0,
       "pending_spinoffs": 0,
       "parent_run_id": null,
-      "parent_node_id": null
+      "parent_node_id": null,
+      "supervisor": {
+        "pid": null,
+        "alive": false
+      }
     },
     "counts": {
       "nodes": 0,

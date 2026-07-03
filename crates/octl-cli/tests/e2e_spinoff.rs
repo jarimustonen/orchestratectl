@@ -158,6 +158,45 @@ fn run_ok(cmd: &mut Command) -> Value {
     serde_json::from_slice(&out.stdout).expect("stdout is valid JSON")
 }
 
+/// Read the supervisor pid recorded in `<run-dir>/supervisor.pid` (the first
+/// whitespace token — the file is `"<pid> <start_time>"`).
+fn read_supervisor_pid(pid_file: &Path) -> Option<i32> {
+    let s = std::fs::read_to_string(pid_file).ok()?;
+    s.split_whitespace().next()?.parse::<i32>().ok()
+}
+
+/// Poll until `kill(pid, 0)` reports the process gone (or `timeout` elapses).
+fn wait_for_process_gone(pid: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Poll `manifest.json` until its `status` equals `want` (or `timeout` elapses).
+fn wait_for_manifest_status(manifest: &Path, want: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(bytes) = std::fs::read(manifest) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                if v["status"] == want {
+                    return true;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Drive the full autonomous-spinoff round-trip and assert the canonical event
 /// sequence, terminal manifest, and projection counts — then prove no
 /// supervisor or agent process leaked.
@@ -326,5 +365,123 @@ fn spinoff_round_trip_reaches_done_and_tears_down() {
     assert!(
         !pid_file.exists(),
         "supervisor.pid should be removed on clean exit"
+    );
+}
+
+/// Regression for `supervisor-dead-merge-no-teardown`: if the per-run
+/// supervisor has died (here: SIGKILL, leaving a stale `supervisor.pid`), a
+/// subsequent `run merge` must NOT report a bare, silent `merged: true`. It
+/// auto-reattaches — restarting the supervisor to consume the terminal report
+/// and complete teardown — AND surfaces a warning so the caller is never
+/// misled into telling the user cleanup happened when it was momentarily
+/// broken. We assert BOTH: the warning is present (no silent success) and the
+/// recovery actually lands the run in a terminal `done` state.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn merge_reattaches_and_warns_when_supervisor_dead() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = scratch.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let agent_pid_file = scratch.path().join("agent.pid");
+    let branch = "wt/e2e-dead-supervisor";
+
+    let create_sh = write_create_sh(scratch.path(), &worktree, &agent_pid_file, branch);
+    let merge_sh = write_merge_sh(scratch.path());
+    let no_tmux = scratch.path().join("no-such-tmux");
+    let no_git = scratch.path().join("no-such-git");
+
+    // 1. Create the spinoff with a real detached supervisor.
+    let created = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_CREATE_SH", &create_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .env("GIT_BIN", &no_git)
+            .args([
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--headless",
+                "--title",
+                "e2e-dead",
+                "--task",
+                "echo done",
+            ]),
+    );
+    let run_id = created["data"]["run_id"].as_str().unwrap().to_string();
+
+    let agent_pid: i32 = std::fs::read_to_string(&agent_pid_file)
+        .expect("create.sh recorded the agent pid")
+        .trim()
+        .parse()
+        .expect("agent pid is an integer");
+    let _agent = AgentGuard { pid: agent_pid };
+
+    let run_root = home.path().join("runs").join(&run_id);
+    let events = run_root.join("events.jsonl");
+    let pid_file = run_root.join("supervisor.pid");
+    let manifest = run_root.join("manifest.json");
+
+    // 2. Wait for the supervisor to announce itself, then read + KILL it. SIGKILL
+    //    cannot be caught, so it leaves the stale `supervisor.pid` behind — the
+    //    exact orphaned condition the bug describes.
+    assert!(
+        wait_for_event(&events, "supervisor.started", Duration::from_secs(15)),
+        "supervisor never started; events: {:?}",
+        event_kinds(&events)
+    );
+    let dead_pid = read_supervisor_pid(&pid_file).expect("supervisor.pid recorded a pid");
+    unsafe { libc::kill(dead_pid, libc::SIGKILL) };
+    assert!(
+        wait_for_process_gone(dead_pid, Duration::from_secs(10)),
+        "killed supervisor pid {dead_pid} did not exit"
+    );
+
+    // 3. Merge with a dead supervisor. `run merge` inherits the nonexistent
+    //    tmux/git binaries so the *reattached* supervisor's teardown is a
+    //    lenient no-op, matching the original.
+    let merged = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_MERGE_SH", &merge_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .env("GIT_BIN", &no_git)
+            .args(["--output", "json", "run", "merge", &run_id]),
+    );
+
+    // The merge still lands (no data loss) ...
+    assert_eq!(merged["data"]["merged"], true);
+    assert_eq!(merged["data"]["branch"], branch);
+    // ... but it is NOT silent: a warning names the dead supervisor + restart.
+    let warnings = merged["warnings"]
+        .as_array()
+        .expect("envelope carries a warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().is_some_and(|s| s.contains("supervisor")
+                && (s.contains("restarted") || s.contains("run reattach")))),
+        "merge on a dead supervisor must warn about the restart/recovery, got: {warnings:?}"
+    );
+
+    // 4. Recovery actually happened: the auto-reattached supervisor consumed the
+    //    terminal report, rolled the run up to `done`, and tore down. (No silent
+    //    orphan left at `pending`.)
+    assert!(
+        wait_for_manifest_status(&manifest, "done", Duration::from_secs(30)),
+        "auto-reattached supervisor never rolled the run up to done; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // The stale-supervisor recovery is recorded in the event log: the dead prior
+    // incarnation is noted and a fresh supervisor is reattached.
+    let kinds = event_kinds(&events);
+    assert!(
+        kinds.iter().any(|k| k == "supervisor.reattached"),
+        "expected a supervisor.reattached event after auto-reattach; got {kinds:?}"
     );
 }

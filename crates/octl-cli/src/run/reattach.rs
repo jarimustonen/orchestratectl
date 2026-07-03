@@ -40,6 +40,46 @@ pub fn run(
                 .with_invalid_value(run_id),
         );
     }
+
+    let recorded_pid = spawn_supervisor(&paths, run_id, once, max_iter)?;
+
+    let payload = ReattachPayload {
+        run_id,
+        action: "reattached",
+        supervisor_pid: recorded_pid,
+    };
+    match spec.format {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            output::emit_envelope(&payload, spec, warnings)?;
+        }
+        OutputFormat::Text => {
+            println!("reattached run {run_id} (supervisor pid {recorded_pid})");
+            output::emit_text_warnings(warnings);
+        }
+    }
+    Ok(())
+}
+
+/// Restart the run's supervisor: refuse if one is already alive, record the
+/// dead prior incarnation + the reattach request, fork+exec a fully-detached
+/// `orchestratectl supervise <run-id>`, and return the PID the new supervisor
+/// recorded for itself (`0` if the PID file did not appear before the deadline
+/// — "spawned, pid unconfirmed"; the supervisor's own `supervisor.pid` remains
+/// the source of truth).
+///
+/// Extracted from [`run`] so `run merge` can reuse the exact same recovery when
+/// it finds the recorded supervisor dead — restoring the invariant that a live
+/// supervisor consumes the terminal report and tears the worktree down, rather
+/// than leaving it orphaned. Errors with `supervisor_already_running` if a live
+/// supervisor exists (the caller treats that as "a consumer already exists").
+///
+/// The caller must have already confirmed the run's manifest exists.
+pub fn spawn_supervisor(
+    paths: &octl_core::RunPaths,
+    run_id: &str,
+    once: bool,
+    max_iter: Option<u32>,
+) -> Result<u32, CliError> {
     let pid_path = paths.supervisor_pid();
     if let Some((existing, start_time)) = pid_file::read_pid_record(&pid_path) {
         if pid_file::pid_live_with_identity(existing, start_time) {
@@ -51,7 +91,7 @@ pub fn run(
         // Stale PID file (dead or recycled PID): record the dead prior
         // incarnation.
         let _ = append_and_apply_event(
-            &paths,
+            paths,
             "supervisor.exited",
             None,
             None,
@@ -61,7 +101,7 @@ pub fn run(
 
     // Record the request, then spawn.
     append_and_apply_event(
-        &paths,
+        paths,
         "supervisor.reattach-requested",
         None,
         None,
@@ -90,29 +130,15 @@ pub fn run(
     // now owns the run. With the double-fork we have no usable spawned PID to
     // report on timeout, so report 0 ("spawned, pid unconfirmed") rather than
     // a stale/dead value; the supervisor's own supervisor.pid is the truth.
-    let recorded_pid = supervisor_spawn::await_recorded_pid(&paths).unwrap_or(0);
+    let recorded_pid = supervisor_spawn::await_recorded_pid(paths).unwrap_or(0);
 
     let _ = append_and_apply_event(
-        &paths,
+        paths,
         "supervisor.reattached",
         None,
         None,
         json!({"pid": recorded_pid}),
     );
 
-    let payload = ReattachPayload {
-        run_id,
-        action: "reattached",
-        supervisor_pid: recorded_pid,
-    };
-    match spec.format {
-        OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&payload, spec, warnings)?;
-        }
-        OutputFormat::Text => {
-            println!("reattached run {run_id} (supervisor pid {recorded_pid})");
-            output::emit_text_warnings(warnings);
-        }
-    }
-    Ok(())
+    Ok(recorded_pid)
 }

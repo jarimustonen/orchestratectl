@@ -37,7 +37,8 @@ use octl_core::{append_and_apply_event, read_manifest_opt, read_node_opt, Node};
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_node_id, require_nonempty, run_paths};
+use crate::run::dto::SupervisorView;
+use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths};
 
 /// The bundled merge backend, embedded at compile time so the binary is
 /// self-contained (the homebase `merge.sh` is sunset). Materialized to a
@@ -191,6 +192,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )
     .map_err(from_core)?;
 
+    // The terminal report is only useful if a live supervisor consumes it: the
+    // supervisor is the canonical teardown actor (close tmux window, remove
+    // worktree, delete branch) AND the roller-up of `manifest.status` (state
+    // integrity invariant #5). If the recorded supervisor has died (e.g. a
+    // SIGTERM from a cycling tmux server — the `supervisor-dead-merge-no-teardown`
+    // bug), reporting a bare `merged: true` would mislead the caller into
+    // telling the user cleanup happened when it never will. So ensure a live
+    // consumer before returning, and never return silently on the dead path.
+    let warnings = ensure_report_consumer(&paths, &run_id, args.warnings);
+
     let payload = MergePayload {
         run_id: &run_id,
         node_id: node_id.as_str(),
@@ -200,7 +211,62 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         report_seq: Some(result.seq),
         dry_run: None,
     };
-    emit(&payload, args.spec, args.warnings)
+    emit(&payload, args.spec, &warnings)
+}
+
+/// Guarantee the terminal `node.report` just appended has a live consumer, or
+/// surface why not — never silent success.
+///
+/// Returns the caller's `base` warnings, plus one appended entry when the
+/// recorded supervisor was dead:
+///   - reattach succeeded → an informational entry noting the restart, so the
+///     caller knows teardown is (re)running rather than assuming an unbroken
+///     close;
+///   - reattach failed → the deferred-teardown entry naming the exact recovery
+///     command (`orchestratectl run reattach <id>`), per the acceptance
+///     criteria.
+///
+/// When the supervisor is alive, or when no supervisor was ever recorded (a
+/// bare skeleton run that never materialized, or one already cleanly torn
+/// down — the supervisor removes its pid file on a clean exit), nothing is
+/// appended: there is either a consumer already, or nothing to reattach.
+fn ensure_report_consumer(
+    paths: &octl_core::RunPaths,
+    run_id: &str,
+    base: &[String],
+) -> Vec<String> {
+    let live = SupervisorView::probe(paths);
+    // Alive → the running supervisor will consume the report on its next tick.
+    // No recorded pid → no supervisor to restart (see doc comment).
+    if live.alive {
+        return base.to_vec();
+    }
+    let Some(dead_pid) = live.pid else {
+        return base.to_vec();
+    };
+
+    let mut warnings = base.to_vec();
+    match reattach::spawn_supervisor(paths, run_id, false, None) {
+        Ok(0) => warnings.push(format!(
+            "supervisor (pid {dead_pid}) was not running; restarted it to consume \
+             the terminal report and complete teardown (new pid not yet confirmed — \
+             check `orchestratectl run show {run_id}`)"
+        )),
+        Ok(new_pid) => warnings.push(format!(
+            "supervisor (pid {dead_pid}) was not running; restarted it (pid {new_pid}) \
+             to consume the terminal report and complete teardown"
+        )),
+        // A live supervisor appeared between the probe and the spawn attempt:
+        // there is a consumer after all, so this is not a warning condition.
+        Err(e) if e.code == "supervisor_already_running" => {}
+        Err(e) => warnings.push(format!(
+            "supervisor (pid {dead_pid}) is not running and auto-reattach failed \
+             ({}); teardown (tmux window, worktree, branch) is deferred — run \
+             `orchestratectl run reattach {run_id}` to complete it",
+            e.message
+        )),
+    }
+    warnings
 }
 
 /// The branch a node works on. Prefers the explicit `branch` field; a
