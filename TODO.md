@@ -79,6 +79,8 @@ The 2 Linux targets stay on GitHub-hosted ubuntu. Apple Silicon fully covered; I
 
 **Public-repo runner safety (verified):** no `pull_request`-triggered workflow reaches the self-hosted runner — ci.yml's matrix is `[ubuntu-latest, macos-latest]` (GitHub-hosted), and release.yml's build job is gated off on PRs by cargo-dist's default `pr-run-mode: plan` (`publishing == false` on PRs). Only a **tag push to upstream** (which forks can't do) reaches hauis. **Do NOT set `pr-run-mode = "upload"` or add `self-hosted` to ci.yml.**
 
+**Runner `GIT_CONFIG_GLOBAL` guard (MUST keep):** on hauis, `~/.gitconfig` is a symlink into the versioned homebase dotfiles repo. `actions/checkout` runs `git config --global http.<url>.extraheader <token>` and, if a job crashes before its cleanup post-step, LEAVES a short-lived GitHub App token in `~/.gitconfig` → i.e. inside a versioned repo working tree (latent secret leak, hit once 2026-07-03). Fix in place: `~/actions-runner/.env` sets `GIT_CONFIG_GLOBAL=/Users/jari/actions-runner/.gitconfig-ci`, so all job `git --global` writes land in a runner-local file, never `~/.gitconfig`. Verified with a probe write. If the runner is ever re-installed, re-add this line to `.env` and restart the service. (Homebase-side alternative Jari may also do: `includeIf`/`[include]` so `~/.gitconfig` isn't a direct symlink to the tracked file.)
+
 ### 2. Alpha pipeline end-to-end — ✅ VERIFIED (2026-07-03, run `28693213840`, green)
 
 Retagged `v0.0.2-alpha` at HEAD (`5e7453c`) → pushed → pipeline succeeded end-to-end:
