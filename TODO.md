@@ -95,14 +95,22 @@ If any of these fail, iterate on the alpha before moving to Phase F.
 
 Same sequence as the previous handoff snapshot. **Don't reverse the order.** Each step depends on the previous.
 
-1. `issuectl ls --status open` empty (currently 0 — decide inline what to do with `BUG-REPORT-supervisor-dead-merge-no-teardown.md`).
-2. `cargo test --workspace` + clippy + fmt + doc-warnings clean.
-3. Bump workspace version `0.0.2-alpha → 0.1.0` in `Cargo.toml`; update the `octl-core` path-dep version to `=0.1.0` in `crates/octl-cli/Cargo.toml`.
-4. `CHANGELOG.md`: replace `[Unreleased]` heading with `[0.1.0] — 2026-MM-DD`, add fresh `[Unreleased]` above.
-5. Flip `publish = false → true` on **both** `crates/octl-core/Cargo.toml` and `crates/octl-cli/Cargo.toml`.
-6. Commit `release: v0.1.0`, tag `v0.1.0` **signed with Jari's GPG on `gertrud`** (hauis has no signing key — Jari has to run the tag command from gertrud) then push tag.
-7. GitHub Actions release workflow runs on the tag. Wait for Homebrew formula update.
-8. `cargo publish -p octl-core`; wait ~30s; `cargo publish -p orchestratectl`.
+**Steps 1–5 (prep) — ✅ DONE (2026-07-04), landing in the `release: v0.1.0` commit:**
+
+1. ✅ Open issues are 3 normal-priority follow-ups (`cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`, `teardown-gate-trust-and-lifecycle`) — all consciously carried to v0.2 (non-blocking; noted in CHANGELOG "Known gaps"). No `BUG-REPORT-*` file remains.
+2. ✅ `cargo fmt --check` + `clippy --workspace --all-targets -D warnings` + `RUSTDOCFLAGS=-D warnings cargo doc` + `cargo test --workspace` (0 failures across ~600 tests). Version snapshots regenerated (insta, version-string only).
+3. ✅ Workspace version `0.0.2-alpha → 0.1.0`; `octl-core` path-dep `=0.1.0` in `crates/octl-cli/Cargo.toml`.
+4. ✅ `CHANGELOG.md` dated `[0.1.0] — 2026-07-04` with this session's Added/Fixed folded in; fresh `[Unreleased]`.
+5. ✅ `publish = true` on **both** crates.
+
+**Steps 6–8 — JARI's steps (need GPG key + crates.io token; not doable from hauis):**
+
+6. On **gertrud**: `git pull` (get the `release: v0.1.0` commit at HEAD), then `git tag -s v0.1.0 -m "orchestratectl v0.1.0"` (GPG-signed — hauis has no signing key) and `git push origin v0.1.0`.
+7. GitHub Actions release workflow runs on the tag — mac build on **hauis** (self-hosted, already verified), Linux on ubuntu, and **`publish-homebrew-formula` runs this time** (not a prerelease → writes `orchestratectl.rb` to `jarimustonen/homebrew-tap`). Watch with a poll loop, not `gh run watch`.
+8. `cargo publish -p octl-core`; wait ~30s; `cargo publish -p orchestratectl` (needs your crates.io token).
+
+**Step 9 (smoke) — agent can run once 6–8 land:**
+
 9. Smoke on a clean shell:
    - `cargo install orchestratectl` — from crates.io.
    - `brew install jarimustonen/orchestratectl/orchestratectl` — from tap.
