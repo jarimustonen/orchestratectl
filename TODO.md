@@ -6,28 +6,34 @@ For longer-running planning + design docs see `issues/<slug>/{plan,design,breakd
 
 ---
 
-## Status snapshot (2026-07-03 → continued)
+## HANDOFF — v0.1.0 is prepped; only the publish itself remains (2026-07-04)
 
-**`supervisor-dead-merge-no-teardown` is FIXED and merged** (task 0 done — commits `979b794` fix + `62948c8` llm-review hardening, closed at `938f10f`/`60147b6`). The bugfix auto-reattaches a fresh supervisor on merge when the recorded one is dead (never silent — emits a warning + machine-readable `supervisor:{state}`), adds `supervisor:{pid,alive}` to `run show`/`run list`, and carries a serialized e2e test. A full `/llm-review` caught an extra orphan case (pid-file-absent) that was also fixed.
+**One-paragraph state.** v0.1.0 is fully prepared, gated green, and the release pipeline is proven end-to-end on the new self-hosted macOS runner. The ONLY thing left is the actual publish, and the two hard steps are Jari's (they need his GPG key + crates.io token — not doable from hauis). The next agent's job is to (1) get `main` pushed, (2) support Jari through the signed tag + `cargo publish`, and (3) run the post-publish smoke tests. Nothing is code-blocked.
 
-**Three data-integrity supervisor/merge bugs fixed & deployed this session:**
-- `supervisor-dead-merge-no-teardown` (task 0) — merge auto-reattaches a dead supervisor; `supervisor:{pid,alive}` on show/list. Commits `979b794`+`62948c8`.
-- `run-create-agent-startup-timeout` (task 0.5) — `run create --agent-startup-timeout` [1,600], default 90s, forwarded to create.sh. Kills spawn-under-load failures. Commit `e6df5d8`. **Workaround retired.**
-- `blocked-report-deletes-branch` (task X, HIGH silent-data-loss) — blocked terminal report (`success:false`) no longer force-deletes the branch/worktree. Two-layer gate: `node_report_is_blocked` + source-relative `git rev-list --count source..branch` net; `-D` force reserved for confirmed `run merge`. 7 unit + 2 e2e tests. Commits `fe44a56`+`498cf5d`. Invariant #5 updated.
+### Exact repo state (verify first)
 
-**Three open issues now** (all normal-priority, all non-blocking for v0.1.0):
-- `cancel-dead-supervisor-recovery` — apply the dead-supervisor reattach to `run cancel` (the blocked-branch source-relative net already prevents cancel-with-committed-work data loss).
-- `legacy-pid-identity-check` — recycled legacy bare-integer supervisor.pid reads as alive (rare residual).
-- `teardown-gate-trust-and-lifecycle` — from blocked-branch `/llm-review`: reserve `via`/`cancelled` markers in the node-report validator against spoofing; preserved-worktree lifecycle (status surface + GC/reclaim verb).
+- **HEAD = `f3d9f46`** (a doc commit). **Release commit = `fead26e` "release: v0.1.0"** (2 commits down; tree is version `0.1.0` at both).
+- **`main` is AHEAD of `origin/main` by 4 commits and NOT PUSHED.** Pushing is Jari's call (his CLAUDE.md) — ask before pushing. Pushing `main` does NOT fire a release (release.yml triggers only on a *tag* push).
+- `orchestratectl version` from `~/.cargo/bin` currently reports `0.0.2-alpha` (the installed binary predates the version bump — that's fine; the bump lands via `cargo publish`, or reinstall locally to smoke it).
+- **Alpha tag `v0.0.2-alpha` is on origin at `5e7453c`** with a green GitHub pre-release (run `28693213840`) — the pipeline verification. Do NOT delete it.
+- **Open issues: 3, all normal-priority, all carried to v0.2** (non-blocking): `cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`, `teardown-gate-trust-and-lifecycle`. Documented in CHANGELOG "Known gaps".
+- **Self-hosted runner `hauis` is online** (`gh api repos/jarimustonen/orchestratectl/actions/runners` → `status: online`). launchd service, survives reboots.
 
-The v0.1.0 publish is now **one hard thing away**: install the self-hosted macOS runner on `hauis` so the alpha pipeline can complete (Jari's Free-tier GitHub account has no usable macOS-runner budget — public repo did NOT unblock this).
+### What landed this session (all merged to local main)
 
-### Spawn-under-load: now fixed (historical note)
+1. **`supervisor-dead-merge-no-teardown`** (`979b794`+`62948c8`) — `run merge` auto-reattaches a dead supervisor; `supervisor:{pid,alive}` on show/list; `supervisor:{state}` on merge. Never silent.
+2. **`run-create-agent-startup-timeout`** (`e6df5d8`) — `run create --agent-startup-timeout` [1,600], default 90s, forwarded to create.sh. Fixed the spawn-under-load failures that plagued the session.
+3. **`blocked-report-deletes-branch`** (`fe44a56`+`498cf5d`, HIGH silent-data-loss) — a `success:false` terminal report now PRESERVES the branch+worktree. Gate: `node_report_is_blocked` + source-relative `git rev-list --count <source>..<branch>` net; `-D` force reserved for confirmed `run merge`. Invariant #5 updated.
+4. **Self-hosted macOS runner on hauis** + **alpha pipeline verified green** (see task 1 & 2 below). **x86_64-apple-darwin dropped** (hauis is Homebrew-Rust/no-rustup → can't cross-compile Intel).
+5. **v0.1.0 prep** (`fead26e`): version bump, `publish=true` both crates, CHANGELOG dated 2026-07-04, snapshots regenerated. fmt/clippy/doc/test all green.
+6. **Runner token-leak cleanup** — `actions/checkout` was leaving a short-lived GH token in `~/.gitconfig` (symlink into versioned dotfiles); fixed with `GIT_CONFIG_GLOBAL` in `~/actions-runner/.env` (see task 1's guard note). Also removed a scratchpad `source` line my smoke test left in `~/.profile`.
 
-`run-create-agent-startup-timeout` is fixed & deployed (default 90s window), so spawns no longer die at the old 30s ceiling under load. Two operational notes still apply:
-- `run create` blocks until the agent launches (can exceed 2 min on a very loaded host) — spawn it with `run_in_background` so a shell timeout doesn't SIGTERM it mid-spawn and leave a 0-node stub. If it does, `orchestratectl run cancel <id>` the stub.
-- Prefer `--headless` on a busy host (also the macOS-PTY guidance for batches).
-- Pre-`e6df5d8` binaries only: the `OCTL_CREATE_SH` wrapper (`exec …/create.sh --agent-startup-timeout=180 "$@"`) was the reversible workaround. No longer needed.
+### Session gotchas the next agent MUST know
+
+- **zsh word-splitting**: `for id in $IDS` does NOT split in zsh — use an array `IDS=(...)`/`"${IDS[@]}"`. Bit the stub-sweep this session.
+- **Spawn `run create` with `run_in_background`**: it blocks until the agent launches (can exceed 2 min); a foreground 2-min Bash timeout SIGTERMs it mid-spawn and leaves a 0-node stub (then `run cancel` it).
+- **cargo-dist installer**: always pass `--no-modify-path` for smoke tests, else it appends a PATH `source` line to `~/.profile`/shell rc.
+- **Watch GitHub runs with a poll loop, not `gh run watch`** (loses auth / rate-limits): `until s=$(gh run view <id> --json status -q .status); [ "$s" = completed ]; do sleep 120; done`.
 
 ### Landed this session
 
@@ -122,38 +128,36 @@ Same sequence as the previous handoff snapshot. **Don't reverse the order.** Eac
 
 ---
 
-## How to start where the previous agent left off (2026-06-30)
+## How to start where the previous agent left off (2026-07-04)
 
 1. **Sanity-check first:**
    ```bash
-   git log --oneline -5            # confirm HEAD is at least the TODO commit
-   issuectl ls --status open       # expect 1: supervisor-dead-merge-no-teardown
-   orchestratectl version          # expect 0.0.2-alpha
-   cargo test --workspace          # expect green
+   git log --oneline -3            # HEAD = f3d9f46; release commit fead26e "release: v0.1.0"
+   git status -sb                  # main ahead of origin by 4, NOT pushed
+   grep -m1 '^version' Cargo.toml  # expect 0.1.0
+   issuectl ls --status open       # expect 3 (all normal-priority, carried to v0.2)
+   gh api repos/jarimustonen/orchestratectl/actions/runners --jq '.runners[]|{name,status}'  # hauis: online
+   cargo test --workspace          # expect green (0 failures)
    ```
 
-2. **First actual task: task 0 above** — `/worktree-bugfix supervisor-dead-merge-no-teardown`. Do this before touching the runner setup. The `run merge` silent-success fix will likely also help you smoke-test the runner setup safely (a stale supervisor from a leftover worktree won't mislead you into thinking `run merge` cleaned up).
+2. **First action — ask Jari to push `main`** (or confirm he'll do it). The `release: v0.1.0` commit must reach origin before he can pull+sign+tag on gertrud. Pushing `main` is safe (no release fires — only a *tag* push does) but pushing is Jari's call per his CLAUDE.md, so confirm.
 
-3. **Then task 1** (self-hosted runner on hauis). Decision already made — Jari picked hauis over gertrud ("hauis on aina livenä"). You just need the registration token from Jari and to run the config steps below.
+3. **Then walk Phase F (task 3 below).** Steps 6–8 are Jari's (signed tag on gertrud + `cargo publish` — his GPG key + crates.io token; hauis has neither). Step 9 (smoke) is yours once the release + crates + tap are live. Watch the release run with a poll loop, NOT `gh run watch`.
 
-4. **`run wait` is available** — use it for every spinoff completion signal:
-   ```bash
-   orchestratectl run wait <run-id> --timeout 90m --output json
-   ```
-   Do NOT use `gh run watch` for GitHub Actions runs — it periodically loses auth and rate-limits. Use a plain poll loop:
+4. **Watching GitHub Actions runs:**
    ```bash
    until s=$(gh run view <id> --json status -q .status) && [ "$s" = "completed" ]; do sleep 120; done
    ```
+   For orchestratectl child runs use `orchestratectl run wait <run-id> --timeout 90m --output json`.
 
-5. **If a fix surfaces a new bug:** file it via `issuectl new --title "..." --type bug --priority high --slug <descriptive-2-3-word-kebab>`, then `/worktree-bugfix` or `/worktree-spinoff` it. Don't add to this TODO; track it through issuectl.
+5. **If a fix surfaces a new bug:** file it via `issuectl new --title "..." --type bug --priority high --slug <2-3-word-kebab>`, then `/worktree-bugfix` it. Track through issuectl, not this TODO.
 
-6. **When you rebuild the binary and want to smoke-test locally:**
+6. **After any CLI-surface or SKILL change, redeploy** (else `~/.cargo/bin` + on-disk skills go stale — a silent failure mode):
    ```bash
    cargo install --path crates/octl-cli --force
-   orchestratectl skill install --force
-   orchestratectl doctor
+   orchestratectl skill install --force   # NOTE: overwrites homebase-managed ~/.claude/skills/{worktree-*,fan-out,orchestrate} — by design (orchestratectl replaces that family), but it drifts homebase's copies
+   orchestratectl doctor                  # expect 0 fail / 0 warn
    ```
-   The binary in `~/.cargo/bin/` is what every SKILL, spinoff, and driver invokes — a stale binary is a very silent failure mode. This session hit it once (the `9bdadff` tmux-session fix wasn't active until we re-installed).
 
 ---
 
