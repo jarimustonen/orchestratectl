@@ -66,52 +66,28 @@ Fixed and merged (`979b794` + `62948c8`, closed `938f10f`/`60147b6`). `run merge
 
 Fixed and merged (`e6df5d8`, closed `cfda215`). `run create` now takes `--agent-startup-timeout <s>` (clap-validated [1,600]), threaded through `create::Args → SpawnRequest → run_create_sh`, and **always forwards it to create.sh with octl's own default of 90s** (higher than create.sh's 30s because octl batch-spawns self-load the host). Deployed: `cargo install --path crates/octl-cli --force` + `skill install --force` done; `doctor` = 234 ok / 0 fail / 0 warn. **The OCTL_CREATE_SH workaround below is now retired** — spawns use the real 90s default. Keep the workaround note only as historical reference for pre-`e6df5d8` binaries.
 
-### 1. Wire up the self-hosted macOS runner on `hauis`
+### 1. Self-hosted macOS runner on `hauis` — ✅ DONE (2026-07-03)
 
-The alpha-pipeline can't complete because Jari's Free-tier GitHub account has effectively no macOS-runner minutes; runs sit `queued` for 5–9+ hours. Public repo did NOT unblock this — macOS runners are metered for both public and private on Free.
+`actions/runner` v2.335.1 installed on hauis (`~/actions-runner`), configured (name `hauis`, labels `self-hosted, macOS, ARM64`), running as a launchd service (`svc.sh install/start` — survives reboots), **online**. Registered against `jarimustonen/orchestratectl`.
 
-Decision made (2026-06-30, Jari + agent): **install `actions/runner` on `hauis`** (Jari's always-on Apple Silicon, `arm64`). Hauis was picked over `gertrud` because Jari confirmed "hauis on aina livenä" — a runner has to be online when a release tag is pushed. Hauis's load average is higher than gertrud's during dev work, but the release build only runs ~10–15 min per tag.
+**Key deviation from the original plan — `x86_64-apple-darwin` DROPPED** (Jari's call, 2026-07-03): hauis has **Homebrew Rust, not rustup**, so it cannot cross-compile the Intel target (no x86_64 std). `dist-workspace.toml` now builds 3 targets (`aarch64-apple-darwin`, both Linux) with:
+```toml
+[dist.github-custom-runners]
+aarch64-apple-darwin = "self-hosted"
+```
+The 2 Linux targets stay on GitHub-hosted ubuntu. Apple Silicon fully covered; Intel-Mac users install from source. To add x86_64-darwin back later: install rustup on hauis surgically (`--no-modify-path`, point only the runner's `.path` at it), `rustup target add x86_64-apple-darwin`, re-add the target + custom-runner line, `dist generate`.
 
-Sequence for the next agent (Jari has to fetch the token himself; it's ~1h-lived):
+**Public-repo runner safety (verified):** no `pull_request`-triggered workflow reaches the self-hosted runner — ci.yml's matrix is `[ubuntu-latest, macos-latest]` (GitHub-hosted), and release.yml's build job is gated off on PRs by cargo-dist's default `pr-run-mode: plan` (`publishing == false` on PRs). Only a **tag push to upstream** (which forks can't do) reaches hauis. **Do NOT set `pr-run-mode = "upload"` or add `self-hosted` to ci.yml.**
 
-1. **Jari:** open `https://github.com/jarimustonen/orchestratectl/settings/actions/runners/new` → macOS / ARM64 → copy the registration token → paste it to the agent.
-2. **Agent (on hauis):**
-   ```bash
-   cd ~ && mkdir -p actions-runner && cd actions-runner
-   # Fetch the current macOS-arm64 tarball URL from
-   # https://github.com/actions/runner/releases/latest — do NOT hardcode
-   # a version here; check the pinned "New self-hosted runner" page as it
-   # embeds the exact download URL for arm64 macOS
-   curl -o runner.tar.gz -L <URL from the settings page>
-   tar xzf runner.tar.gz
-   ./config.sh --url https://github.com/jarimustonen/orchestratectl \
-     --token <PASTED_TOKEN> \
-     --labels "self-hosted,macOS,arm64" \
-     --name hauis \
-     --work _work \
-     --unattended
-   # Install as launchd service so it survives reboots
-   ./svc.sh install
-   ./svc.sh start
-   ./svc.sh status
-   ```
-3. **Update `dist-workspace.toml`** to tell cargo-dist to route macOS builds to the self-hosted runner. The knob is `github-custom-runners`:
-   ```toml
-   [dist.github-custom-runners]
-   aarch64-apple-darwin = "self-hosted"
-   x86_64-apple-darwin  = "self-hosted"
-   ```
-   (Both macOS triplets are covered by hauis — the arm64 native runner will cross-compile the x86_64 target via `cargo build --target=x86_64-apple-darwin`; `rustup target add x86_64-apple-darwin` is needed on hauis first.) Then `dist generate` to regenerate `.github/workflows/release.yml`.
-4. **Retag** `v0.0.2-alpha` (delete then re-create) → push → watch. Expect ~15 min per triplet on hauis, so ~30 min total for the macOS side; Linux still runs on GitHub-hosted runners (~2 min each). Use `orchestratectl run wait`-style polling (`until s=$(gh run view <id> --json status -q .status) && [ "$s" = "completed" ]; do sleep 120; done`) not `gh run watch` (which loses gh auth periodically and rate-limits).
+### 2. Alpha pipeline end-to-end — ✅ VERIFIED (2026-07-03, run `28693213840`, green)
 
-### 2. Verify the alpha pipeline end-to-end
+Retagged `v0.0.2-alpha` at HEAD (`5e7453c`) → pushed → pipeline succeeded end-to-end:
+- All 3 build-local jobs green: `aarch64-apple-darwin` **on hauis** (~15 min), both Linux on ubuntu (~2 min). Confirmed hauis went `busy` and picked up the job.
+- `announce` created the GitHub **pre-release** with: 3 platform tarballs + `.sha256` each, `orchestratectl-installer.sh`, `orchestratectl.rb`, `sha256.sum`, source archive.
+- `publish-homebrew-formula` **correctly SKIPPED** — gated `if: !announcement_is_prerelease || publish_prereleases` (release.yml:287); v0.0.2-alpha is a prerelease so the tap is left clean. **This job WILL run for the non-prerelease v0.1.0** (the only path not exercised by the alpha — HOMEBREW_TAP_TOKEN + checkout of jarimustonen/homebrew-tap are configured; trust-but-verify at 0.1.0).
+- Shell installer smoke: installed a working binary reporting `0.0.2-alpha` / commit `5e7453c`, carrying the `--agent-startup-timeout` flag (all session fixes shipped).
 
-Once the runner is live and the retag succeeds, verify:
-
-- All 4 build-local jobs succeed (`x86_64-linux`, `aarch64-linux`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
-- `announce` job creates a GitHub Release with the correct 4 archives + `orchestratectl-installer.sh` + `orchestratectl.rb` + `sha256.sum`.
-- `publish-homebrew-formula` job writes `orchestratectl.rb` to `jarimustonen/homebrew-tap` — verify by cloning that tap repo and confirming the formula points at the v0.0.2-alpha release URL.
-- Locally: `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/download/v0.0.2-alpha/orchestratectl-installer.sh | sh` should install a working binary.
+**Watch runs with a poll loop, not `gh run watch`** (loses gh auth / rate-limits): `until s=$(gh run view <id> --json status -q .status) && [ "$s" = completed ]; do sleep 120; done` — or the Monitor per-job poll pattern used this session.
 
 If any of these fail, iterate on the alpha before moving to Phase F.
 
