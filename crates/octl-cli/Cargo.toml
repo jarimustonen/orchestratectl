@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Rust CLI for orchestrating AI-agent workflows on a developer's machine."
-publish = false
+publish = true
 
 [package.metadata.dist]
 dist = true
@@ -21,7 +21,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-octl-core = { path = "../octl-core", version = "=0.0.2-alpha" }
+octl-core = { path = "../octl-core", version = "=0.1.0" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

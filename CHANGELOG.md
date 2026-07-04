@@ -6,31 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- Initial CHANGELOG.
-
-### Fixed
-
-- `supervise_gates` + `e2e_spinoff` test binaries serialize on a process-
-  wide file lock (`/tmp/octl-test-supervise.lock` via `serial_test`'s
-  `#[file_serial]`). Under `cargo test --workspace` the binaries used to
-  race on filesystem bandwidth; the long-lived supervisor tests
-  (`self_terminate_when_whole_run_dir_removed`, `_when_run_dir_vanishes`)
-  could miss their self-terminate deadline. Closes
-  `flaky-self-terminate-test`.
-
-### Deferred to v0.2
-
-- `runwriter-batched-append-api` — a long-lived `RunWriter` guard with
-  cached `next_seq` + batched fsync to cut the V4 append p99 (639ms) to
-  the 10ms budget. The architectural fix overlaps with the just-landed
-  `applied_seq` watermark, `LockedRun` witness, and `AppendOutcome`
-  idempotency API; lands cleaner once those primitives have shaken out.
-  Current workloads (one append per agent action) do not hit the
-  back-pressure path.
-
-## [0.1.0] — pre-release
+## [0.1.0] — 2026-07-04
 
 First publishable cut. The CLI is real, the bundled skill family covers
 the full agent loop, and run state survives crashes via an append-only
@@ -64,6 +40,14 @@ event log + lock-gated reducer.
 - **AI-first CLI.** Every command follows the conventions in
   `AGENTS-AI-FIRST-CLI.md` (`--json` everywhere, JSONL logs, strict
   input validation, informative error envelopes, no interactive prompts).
+- **`run create --agent-startup-timeout <seconds>`** (1–600, default 90).
+  Forwarded to `create.sh`; higher than create.sh's own 30s default
+  because octl batch-spawns self-load the host and a fresh agent can miss
+  a 30s window under load. Closes `run-create-agent-startup-timeout`.
+- **Supervisor liveness surface.** `run show` / `run list` report
+  `supervisor: {pid, alive}` (orphan detection), and `run merge` returns a
+  machine-readable `supervisor: {state}` outcome
+  (`alive | terminal | not-supervised | reattached | deferred`).
 
 ### Fixed (highlights from the MVP + follow-up campaigns)
 
@@ -98,13 +82,40 @@ event log + lock-gated reducer.
   window, and branch in one supervisor pass on `node.report`.
 - `orchestrator.decision` and `discuss.critical` event kinds are accepted
   by the validator.
+- **`run merge` no longer reports silent success when the supervisor is
+  dead** (`supervisor-dead-merge-no-teardown`): it reads status +
+  supervisor-pid liveness + the event log as one shared-locked decision
+  and auto-reattaches a fresh supervisor when the recorded one is dead and
+  the run is non-terminal, so the terminal report is consumed and teardown
+  completes. Never silent — emits a warning plus the `supervisor: {state}`
+  outcome above.
+- **Blocked terminal report preserves the branch + worktree**
+  (`blocked-report-deletes-branch`, high-severity silent data loss): a
+  `node report` with `success: false` (the needs-a-human path) no longer
+  force-deletes the worktree branch. Teardown is gated on the terminal
+  outcome (`node_report_is_blocked`) plus a source-relative
+  `git rev-list --count <source>..<branch>` safety net; `git branch -D`
+  force-delete is reserved for a confirmed `run merge`
+  (`via: "explicit-merge"`).
+- `supervise_gates` + `e2e_spinoff` test binaries serialize on a process-
+  wide file lock (`/tmp/octl-test-supervise.lock` via `serial_test`'s
+  `#[file_serial]`), removing a `cargo test --workspace` self-terminate
+  flake. Closes `flaky-self-terminate-test`.
 
 ### Known gaps (carried to v0.2)
 
-- `runwriter-batched-append-api` — see `[Unreleased] → Deferred to v0.2`.
-  Append p99 of 639ms is well within budget for the one-per-action write
-  cadence today; tight back-pressure loops (a supervisor batching many
-  events) will surface this and motivate the redesign.
+- `runwriter-batched-append-api` — a long-lived `RunWriter` guard with
+  cached `next_seq` + batched fsync to cut the V4 append p99 (639ms) to
+  the 10ms budget. Overlaps the just-landed `applied_seq` watermark /
+  `LockedRun` witness / `AppendOutcome` primitives, so it lands cleaner
+  once those have shaken out. Append p99 is well within budget for the
+  one-per-action write cadence today; tight back-pressure loops (a
+  supervisor batching many events) will surface it.
+- `cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`,
+  `teardown-gate-trust-and-lifecycle` — supervisor-lifecycle follow-ups
+  filed during the pre-1.0 hardening pass; none is a data-loss or
+  correctness blocker (the blocked-report source-relative net already
+  covers committed-work preservation on the cancel path).
 
 [Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jarimustonen/orchestratectl/releases/tag/v0.1.0

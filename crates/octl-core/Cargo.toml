@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Core library for orchestratectl (schema, file I/O, locking, supervisor protocol)."
-publish = false
+publish = true
 
 [lints]
 workspace = true
