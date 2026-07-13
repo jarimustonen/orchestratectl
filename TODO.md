@@ -172,6 +172,15 @@ Same sequence as the previous handoff snapshot. **Don't reverse the order.** Eac
 
 ---
 
+## v0.2 backlog (post-publish — do NOT block v0.1.0 on these)
+
+Newly filed 2026-07-13. Neither blocks the publish; both are carried to v0.2.
+
+- **`false-failed-after-merge`** (bug, **HIGH**) — spinoff runs reported `failed` / `agent-died` / "branch left unmerged" **after the branch had already fast-forward-merged to the target**. Observed 3-for-3 in a `deutschpad` rupeama (2026-07-09). The supervisor's liveness poll takes the `agent-died → failed → blocked-report` branch unconditionally without reconciling against git; it also prints "worktree preserved" while the worktree+branch are actually gone. Fix: on liveness-loss, reconcile before classifying — read any final node report **and** `git merge-base --is-ancestor <branch> <target>`; if merged → terminal success + normal teardown. Filed from the root `BUG-false-failed-despite-successful-merge.md` triage file (now removed). Full evidence/repro in the issue. This is the upstream cause of the consuming project's standing "run-status on epäluotettava" warning.
+- **`vendor-workmux-multiplexer`** (task, normal) — raine **declined** splitting workmux into lib crates (`workmux-extract-libs`, maintenance burden) and suggested vendoring instead. Copy the minimal tmux slice of `src/multiplexer/` (`kill_window` / `new_session(headless)` / window-lookup) into an orchestratectl-local module so the supervisor makes typed calls instead of shelling out to `create.sh` + flag-forwarding. Open questions (license/attribution, drift, minimal scope) in `issues/workmux-extract-libs/item.md` + the vendor issue. Git side stays on `create.sh` for now.
+
+---
+
 ## Notable invariants the codebase now relies on
 
 These were established over the two-day handoff campaign and are easy to violate accidentally.

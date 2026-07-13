@@ -1,0 +1,16 @@
+---
+created: 2026-07-13
+updated: 2026-07-13
+type: task
+status: open
+priority: normal
+related: ['@workmux-extract-libs']
+---
+
+# Vendor workmux's tmux multiplexer code into orchestratectl (raine declined the crate split)
+
+_Source: workmux (raine/workmux) src/multiplexer/_
+
+## Description
+
+raine declined splitting workmux into lib crates (see @workmux-extract-libs) and suggested duplicating the multiplexer code instead. Vendor the minimal tmux slice of src/multiplexer/ (kill_window / new_session(headless) / window-lookup) into an orchestratectl-local module so the supervisor makes typed calls instead of shelling out. NOT the full kitty/wezterm/zellij abstraction; git side stays on create.sh for now.
