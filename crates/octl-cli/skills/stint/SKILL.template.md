@@ -34,17 +34,24 @@ spawn.
   main's current state. Never leave main modified-but-uncommitted across a phase, and
   **never commit a worker's in-progress work for it** — each worktree commits its own
   changes. If a worker didn't land, report it; do not rescue it by committing on main.
-- **Autonomous spinoffs run headless.** Every self-merging unit you spawn
-  (`/worktree-spinoff`, `/worktree-bug-analysis`) passes `--headless`, so the round's
-  workers land in the detached `headless` tmux session instead of cluttering the
-  user's window list; attach with `tmux attach -t headless` only when curious.
-  Auto-cleanup still closes each window on terminal. Only interactive `/worktree-code`
-  — which the user actively drives and reviews — stays in the foreground session.
-- **Verify from git, never from run-status.** `orchestratectl run show` can report a
-  false `failed` / `pending` even when the worker committed **and** merged its branch —
-  a known open bug (`BUG-false-failed-despite-successful-merge.md` in the orchestratectl
-  repo, first hit during a real stint). Confirm every merge with `git log --oneline` /
-  reflog against the target branch before counting a unit toward the deploy pile.
+- **Autonomous spinoffs run headless.** Every self-merging spinoff you spawn directly
+  (`/worktree-spinoff`) passes `--headless`, so the round's workers land in the detached
+  `headless` tmux session instead of cluttering the user's window list; attach with
+  `tmux attach -t headless` only when curious. Auto-cleanup still closes each window on
+  terminal. (Bug-analysis workers are spawned by `/triage-bugs`, not by you, and already
+  run headless by default — you do not pass the flag to them.) Only interactive
+  `/worktree-code` — which the user actively drives and reviews — stays foreground.
+- **Sync with `run wait`; verify landing from git.** A spinoff runs **asynchronously** —
+  its spawn call returns immediately. Record every returned run id and block on
+  `orchestratectl run wait <run-id> …` to know the workers have *settled* before you
+  sequence the next unit or enter Phase 4. But do **not** trust run *status* as proof the
+  work landed: `orchestratectl run show` can report a false `failed` / `pending` even
+  when the worker committed **and** merged — a known open bug
+  (`BUG-false-failed-despite-successful-merge.md` in the orchestratectl repo, first hit
+  during a real stint). Confirm each landing from git —
+  `git merge-base --is-ancestor <worker-branch> <target>` (or `git log --oneline` against
+  the target) — before counting a unit toward the deploy pile. Settled ≠ landed; if
+  status and git disagree, record the landing and flag the run-state inconsistency.
 - **One deploy at a time.** Never parallel deploys.
 - **Bug decisions are the user's.** The one mandatory pause is after triage (Phase 1):
   fix-now / defer / not-a-bug is always the user's call.
@@ -83,16 +90,22 @@ only on the user's go.
 
 Invoke **`/triage-bugs --no-pull`** (you already pulled). It detects new
 `via:telegram` bugs (lifecycle `needs-triage`), analyses the unclear ones in
-read-only worktrees, and returns a product-owner briefing plus a machine-readable
-slug list.
+read-only worktrees, **presents the product-owner briefing directly to the user**,
+advances the presented bugs to `triaged`, and appends a machine-readable
+`<!-- triage-return -->` block.
 
 - If it reports no new bugs, say so and go to Phase 2.
-- Otherwise **present its briefing and STOP for the user's decisions** — fix now /
-  defer / not-a-bug per bug. This is the mandatory pause. Then, as the caller, apply
-  each disposition (advancing the lifecycle off `triaged`):
+- Otherwise **do not re-present the briefing** — `/triage-bugs` already showed it to the
+  user. Read its machine-readable return block and **STOP for the user's decisions** —
+  fix now / defer / not-a-bug per bug. This is the mandatory pause. Then, as the caller,
+  apply each disposition (advancing the lifecycle off `triaged`):
   - defer → `issuectl label <slug> --add deferred --remove triaged`
   - not a bug → `issuectl close <slug> --status wontfix`
-  - fix now → `issuectl label <slug> --remove triaged`, `issuectl update <slug> --status in-progress`, carry into Phase 2's plan.
+  - fix now → `issuectl label <slug> --remove triaged`, then carry into Phase 2's plan.
+    **Do not** set `--status in-progress` here — the spinoff owns the issue lifecycle
+    (`triaged` → `in-progress` on its first commit → `fixed` on merge). Setting it now
+    races with the worker (per `worktree-spinoff`'s "do not call `issuectl` from the
+    caller" rule).
 
 ### Phase 2 — Plan the round
 
@@ -117,7 +130,7 @@ git** before counting it toward the deploy pile:
 
 | Unit shape | Spawn | Lands |
 |---|---|---|
-| Clear fix for an already-filed bug | `/worktree-spinoff --headless #<slug>` (issue-driven) | current branch (main) |
+| Clear fix for an already-filed bug | `/worktree-spinoff --headless <slug>` (issue-driven; use the bare slug or `issuectl:<slug>`, **not** `#<slug>` — hyphenated Telegram slugs like `tg-bug-…` are not guaranteed to parse behind a `#`) | current branch (main) |
 | Well-scoped autonomous task | `/worktree-spinoff --headless <task>` | current branch (main) |
 | Design-first single feature | `/worktree-code <task>` (human-reviewed, foreground) or `/worktree-spinoff --headless <task>` (autonomous) | current branch (main) |
 
@@ -130,16 +143,20 @@ git** before counting it toward the deploy pile:
   instruction rides in the brief; there is no `--review` passthrough flag.
 - **Do not use `/worktree-bugfix <slug>`** for an already-filed bug — it treats its
   argument as a *new* free-text report and would file a duplicate. Use
-  `/worktree-spinoff --headless #<slug>`.
+  `/worktree-spinoff --headless <slug>`.
 - **A multi-feature, dependency-ordered campaign is not a Phase-3 unit.** `/orchestrate`
   lands on its own integration branch (main untouched) and runs in its own window. If
   a unit is really such a campaign, **this stint becomes a hand-off**: launch
   `/orchestrate`, tell the user, and stop before Phase 4 — do not try to deploy this
   round.
-- Launch disjoint units in parallel; sequence the hot-file ones. If a worker doesn't
-  land its merge, **report it and leave main clean** — do not commit its work
-  yourself. Salvage of a genuinely-dead worktree is a deliberate, separate manual step
-  the user oversees, not an automatic conductor action.
+- **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
+  parallel batch, block on `orchestratectl run wait <id> …` and git-verify each landing
+  before counting it. **Sequence hot-file units strictly:** launch → `run wait` → verify
+  the landing → *then* launch the next (so it branches off the first's landed result).
+  Do not enter Phase 4 until every launched run has settled and its landing is
+  git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
+  do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
+  separate manual step the user oversees, not an automatic conductor action.
 
 ### Phase 4 — Deploy (the conductor owns this — when the project permits)
 
