@@ -45,6 +45,15 @@ below assumes.
    below). Refuse to proceed on a major-version mismatch.
 3. Capture the **current branch** with `git rev-parse --abbrev-ref HEAD`
    — it becomes the spinoff's source/merge target by default.
+4. **Parse caller passthrough flags.** A driver (`/stint`, `/fan-out`,
+   `/worktree-bug-analysis`) may prefix the request with `--headless` or
+   `--tmux-session <name>` to request a detached window. Strip these from
+   the task text and forward them verbatim to `run create` in step 3.
+   Note: **there is no `--review` flag.** A caller that wants the spinoff
+   to review before merging says so in the task brief (the *quality bar*,
+   step 2.4) — a leading `--review` token, if present, is that same intent
+   expressed as a flag; fold it into the brief's quality bar, do not pass
+   it to `run create` (which would reject it).
 
 ### 1. Identify task source
 

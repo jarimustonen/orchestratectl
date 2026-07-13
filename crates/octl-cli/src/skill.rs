@@ -108,6 +108,32 @@ const SKILLS: &[EmbeddedSkill] = &[
         path_in_repo: "crates/octl-cli/skills/worktree-technical-decision/SKILL.template.md",
     },
     EmbeddedSkill {
+        name: "worktree-bug-analysis",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-bug-analysis/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-bug-analysis/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/worktree/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "worktree-status",
+        body: include_str!(concat!(
+            env!("OUT_DIR"),
+            "/skills/worktree-status/SKILL.md"
+        )),
+        path_in_repo: "crates/octl-cli/skills/worktree-status/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "stint",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/stint/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/stint/SKILL.template.md",
+    },
+    EmbeddedSkill {
         name: "fan-out",
         body: include_str!(concat!(env!("OUT_DIR"), "/skills/fan-out/SKILL.md")),
         path_in_repo: "crates/octl-cli/skills/fan-out/SKILL.template.md",

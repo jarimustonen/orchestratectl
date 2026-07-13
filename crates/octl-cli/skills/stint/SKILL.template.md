@@ -1,0 +1,230 @@
+---
+name: stint
+description: "Open and run a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. Bootstraps from the repo's TODO.md handoff + AGENTS.md operating policy, pulls and triages incoming bot-filed bug reports (via `/triage-bugs`), plans the round, spawns worktrees to do the actual coding (never codes in this session), owns the single deploy when the project permits, reports to the user in product-owner language via `/worktree-status`, and — on request — hands off via `/handoff` + `/wrap-up`. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or invokes bare `/stint`. Generic across projects — reads all project specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT for a single one-off coding task (use `/worktree`); NOT for bare triage (`/triage-bugs`), bare status (`/worktree-status`), bare deploy, or bare handoff (`/handoff`)."
+version: 1
+cli_version: "{{CLI_VERSION}}"
+schema_version: 1
+---
+
+# Stint — the work-session conductor
+
+You are the **orchestrator the user talks to**. A stint (työrupeama) is one round of
+the standing loop: *pull & triage incoming bugs → plan → spawn worktrees that do the
+coding → one deploy → report to the user → absorb feedback → (on request) hand off to
+the next agent.* You conduct; **you do not write feature code in this session.** The
+actual implementation happens in worktrees you spawn, so this conversation's context
+stays free for orchestration and for talking to the user.
+
+This skill is **generic**. Every project-specific fact — the deploy command, whether
+you may deploy without asking, the green-gate commands, hot files, the test-account
+reset preference — is read from the **repo's own `AGENTS.md` and `TODO.md`**. If a
+needed fact is missing, ask the user and suggest documenting it (see *Project
+prerequisites*). It assumes this toolchain — **`issuectl`** for issues and the
+**`/worktree-*`** family (`orchestratectl` underneath) for workers — and is a layer on
+top of them. Read `orchestratectl-overview` and `worktree-spinoff` before your first
+spawn.
+
+## Standing discipline (holds across every phase)
+
+- **Orchestrate, don't code.** Every code change — feature, bugfix, or one-line
+  trivia — goes through a worktree, never this session. If you catch yourself about
+  to edit product code, stop and spawn a worktree. (Editing `TODO.md`, `AGENTS.md`,
+  and issue files as part of orchestration is fine — that's not product code.)
+- **Keep main clean; worktrees own their commits.** Parallel worktrees branch off
+  main's current state. Never leave main modified-but-uncommitted across a phase, and
+  **never commit a worker's in-progress work for it** — each worktree commits its own
+  changes. If a worker didn't land, report it; do not rescue it by committing on main.
+- **Autonomous spinoffs run headless.** Every self-merging unit you spawn
+  (`/worktree-spinoff`, `/worktree-bug-analysis`) passes `--headless`, so the round's
+  workers land in the detached `headless` tmux session instead of cluttering the
+  user's window list; attach with `tmux attach -t headless` only when curious.
+  Auto-cleanup still closes each window on terminal. Only interactive `/worktree-code`
+  — which the user actively drives and reviews — stays in the foreground session.
+- **Verify from git, never from run-status.** `orchestratectl run show` can report a
+  false `failed` / `pending` even when the worker committed **and** merged its branch —
+  a known open bug (`BUG-false-failed-despite-successful-merge.md` in the orchestratectl
+  repo, first hit during a real stint). Confirm every merge with `git log --oneline` /
+  reflog against the target branch before counting a unit toward the deploy pile.
+- **One deploy at a time.** Never parallel deploys.
+- **Bug decisions are the user's.** The one mandatory pause is after triage (Phase 1):
+  fix-now / defer / not-a-bug is always the user's call.
+- **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
+
+## Autonomy
+
+Autonomy is **high**. After the Phase 1 bug decisions, run planning → orchestration →
+deploy → report autonomously; narrate state changes and decisions, not internal
+deliberation. Pause only for: (a) the Phase 1 bug decisions, (b) a genuine fork where
+reasonable people disagree, (c) deploy go/no-go **if** the project has not
+pre-authorised deploys (see Phase 4), (d) handoff/wrap-up, which you propose and run
+only on the user's go.
+
+## Phases
+
+### Phase 0 — Orient (bootstrap)
+
+1. **Pull.** `git pull --ff-only` in the repo — this also brings in bot-filed bug
+   commits for Phase 1. If it can't fast-forward, stop and report; do not force.
+2. **Read the operating policy** from the repo's root `AGENTS.md` and `CLAUDE.md`:
+   deploy command + deploy autonomy, deploy target, green-gate commands
+   (typecheck/build/smoke), a way to check what's live, hot-file list, migration
+   rules, test-account reset preference. Read the `TODO.md` handoff block
+   (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) for where the last session left off and
+   what prod is running.
+3. **Establish ground truth from git**, not from the handoff's claims: is `main` ==
+   what's deployed (use the project's live-version check)? Merged-but-undeployed
+   work? Half-finished worktree branches? (`git log --oneline`, compare against the
+   handoff's stated prod image/version.)
+4. **Orient the user** in one tight message: where things stand, what the pull
+   brought in, and what you propose to tackle this round (fold in the `$ARGUMENTS`
+   focus hint). Then proceed — don't wait for permission to *start*.
+
+### Phase 1 — Bug intake & triage  → delegate to `/triage-bugs`
+
+Invoke **`/triage-bugs --no-pull`** (you already pulled). It detects new
+`via:telegram` bugs (lifecycle `needs-triage`), analyses the unclear ones in
+read-only worktrees, and returns a product-owner briefing plus a machine-readable
+slug list.
+
+- If it reports no new bugs, say so and go to Phase 2.
+- Otherwise **present its briefing and STOP for the user's decisions** — fix now /
+  defer / not-a-bug per bug. This is the mandatory pause. Then, as the caller, apply
+  each disposition (advancing the lifecycle off `triaged`):
+  - defer → `issuectl label <slug> --add deferred --remove triaged`
+  - not a bug → `issuectl close <slug> --status wontfix`
+  - fix now → `issuectl label <slug> --remove triaged`, `issuectl update <slug> --status in-progress`, carry into Phase 2's plan.
+
+### Phase 2 — Plan the round
+
+Combine into a work-list: the **fix-now** bugs, any feature/backlog items the user
+named, and any `TODO.md` items the user wants pulled in. Then:
+
+- **Decompose** into independent worktree units.
+- **Resolve file collisions.** Units that touch the same hot file (per the repo's
+  AGENTS.md hot-file notes) must be **sequenced**, not run in parallel against that
+  file. Disjoint units run in parallel. **If you can't tell whether two units are
+  disjoint, sequence them** — a wrong guess causes merge conflicts.
+- **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
+  big or genuinely ambiguous feature → design-first.
+- **Announce the plan** in one short message (which units, what's parallel vs
+  sequenced). Proceed unless something is truly ambiguous.
+
+### Phase 3 — Orchestrate (spawn worktrees; never code here)
+
+Spawn the right worktree skill per unit. Each unit has an **explicit landing
+contract** — know before launch where it lands, and **verify the actual landing from
+git** before counting it toward the deploy pile:
+
+| Unit shape | Spawn | Lands |
+|---|---|---|
+| Clear fix for an already-filed bug | `/worktree-spinoff --headless #<slug>` (issue-driven) | current branch (main) |
+| Well-scoped autonomous task | `/worktree-spinoff --headless <task>` | current branch (main) |
+| Design-first single feature | `/worktree-code <task>` (human-reviewed, foreground) or `/worktree-spinoff --headless <task>` (autonomous) | current branch (main) |
+
+- **Autonomous spinoffs are headless** (see Standing discipline) — pass `--headless`
+  on every `/worktree-spinoff`. Interactive `/worktree-code` stays foreground.
+- **Requesting a review is a brief instruction, not a `--review` flag.** The
+  orchestratectl `worktree-spinoff` decides review via the spinoff's *quality bar*
+  (default: no review). When a unit touches **production code**, tell the spinoff in
+  its task to **run `/llm-review` (+ `/assess-findings`) before merging** — that
+  instruction rides in the brief; there is no `--review` passthrough flag.
+- **Do not use `/worktree-bugfix <slug>`** for an already-filed bug — it treats its
+  argument as a *new* free-text report and would file a duplicate. Use
+  `/worktree-spinoff --headless #<slug>`.
+- **A multi-feature, dependency-ordered campaign is not a Phase-3 unit.** `/orchestrate`
+  lands on its own integration branch (main untouched) and runs in its own window. If
+  a unit is really such a campaign, **this stint becomes a hand-off**: launch
+  `/orchestrate`, tell the user, and stop before Phase 4 — do not try to deploy this
+  round.
+- Launch disjoint units in parallel; sequence the hot-file ones. If a worker doesn't
+  land its merge, **report it and leave main clean** — do not commit its work
+  yourself. Salvage of a genuinely-dead worktree is a deliberate, separate manual step
+  the user oversees, not an automatic conductor action.
+
+### Phase 4 — Deploy (the conductor owns this — when the project permits)
+
+Deploy is **conditional on project policy**, read from the repo's root `AGENTS.md`:
+
+- **Precondition:** the pile is in `main` and **green** — run the project's green-gate
+  commands first (typecheck/build/smoke). If a gate fails, **halt the deploy, report
+  the failure, and spawn a fix worktree** for it; do not deploy red.
+- **Deploy autonomy:** if the project grants deploy-without-asking (typical in an
+  active test-cycle, where deploy targets a **test/staging server**, not production),
+  deploy directly. If it requires confirmation, targets production, or `AGENTS.md` is
+  **silent** on autonomy, ask once and suggest documenting a deploy-autonomy policy.
+- Run **one** deploy with the project's exact command from `AGENTS.md` (including any
+  required env export, flags, and post-deploy steps). Never parallel. Then **verify
+  live** (the project's health check / smoke) and report the outcome.
+
+If the project has no deploy step for a stint (e.g. changes land on main and a human
+promotes later), skip this phase and say so.
+
+### Phase 5 — Report to the user  → `/worktree-status`
+
+The coding happened in detached worktrees, so this conversation doesn't yet know what
+landed. **First gather the round's durable facts into the conversation:** the
+commits that landed on main (`git log --oneline`), the issues that closed and their
+analyses, and anything the workers wrote back (e.g. bug-analysis notes, worker
+reports). State those verified facts in chat. **Then** invoke **`/worktree-status`**,
+which formats what's now in context into the product-owner snapshot: Summary · Ready
+to test · Decisions needed · Discussion points · Spin-offs. Your reactions seed the
+*next* stint.
+
+### Phase 6 — Absorb the user's feedback
+
+The `/worktree-status` snapshot hands the user things to act on — items to test,
+discussion points, spin-off calls. This is where they react, and their reactions
+decide what happens next.
+
+- **Light feedback** (a handful of small asks) → fold it into a quick pass: each fix
+  as its own worktree (Phases 2–4 in miniature). Still no coding in this session —
+  every change goes through a worktree.
+- **Heavy feedback** (a lot comes back) → don't try to carry it in this session's
+  context. **Land it durably first** — update the affected **issues**,
+  **documentation**, and **`TODO.md`** so nothing is lost — *then* continue to the
+  handoff.
+
+Once the feedback is absorbed (acted on via worktrees, or captured durably), move on.
+
+### Phase 7 — Handoff / wrap-up (propose; run only on request)
+
+A stint typically fills this session's context after ~one round. When you notice that
+(or the user asks), **propose** the handoff. On the user's go, and only then:
+
+1. `/handoff` — update the `TODO.md` handoff block so a fresh agent can resume from
+   `jatketaan @TODO.md`.
+2. **Commit the `TODO.md` handoff update immediately** — `/handoff` writes but does
+   not commit, so commit it (`git add TODO.md && git commit`) *before* the next step,
+   or it gets folded into `/wrap-up`'s mixed commit or left dangling.
+3. `/wrap-up` — it will *present proposed* `AGENTS.md`/issue/preference changes and
+   ask before writing; don't assume it committed unless it reports saved changes.
+4. If the project's AGENTS.md/TODO declares a **test-account reset preference**, do it
+   or remind the user.
+
+Do not auto-run these — propose and wait.
+
+## Project prerequisites (what the repo's AGENTS.md should provide)
+
+This skill is generic, so it relies on the repo documenting its own operating facts.
+If any are missing, ask the user and offer to add them:
+
+- **Deploy command + target** — the exact one-liner, and whether it targets a
+  test/staging server or production.
+- **Deploy autonomy** — may the conductor deploy without asking, or is go/no-go
+  required?
+- **Live-version check** — how to see what's currently deployed (health endpoint,
+  image tag, etc.), so Phase 0 can compare against main.
+- **Green gate** — the typecheck/build/smoke commands that must pass before deploy.
+- **Hot files** — shared files that must be sequenced, not parallelised.
+- **Test-account reset preference** — if testing should start from a known state.
+
+## Non-goals
+
+- **Not a worktree**, and does not create one directly — it delegates to the
+  `/worktree-*` family.
+- **Does not write code** in this session — every change goes through a worktree.
+- **Not for a single one-off coding task** — that's `/worktree` (router).
+- **Not for bare** triage / status / deploy / handoff — those are `/triage-bugs`,
+  `/worktree-status`, the project deploy command, and `/handoff`.
+- **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.
+- Does not decide fix/defer/not-a-bug — the user does (Phase 1).
