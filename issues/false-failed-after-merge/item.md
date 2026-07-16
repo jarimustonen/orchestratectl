@@ -3,11 +3,15 @@ created: 2026-07-13
 updated: 2026-07-16
 type: bug
 reporter: claude-code
-status: in-progress
+status: fixed
 priority: high
 commits:
 - hash: ec20128
   summary: reconcile run status with git after self-merge
+- hash: 275d152
+  summary: harden reconcile against live-work loss (llm-review)
+related: ['@supervisor-stuck-pending-after-self-merge']
+closed: 2026-07-16
 ---
 
 # spinoff reported failed/agent-died despite branch already merged to target (false negative run status)
