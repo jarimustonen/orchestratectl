@@ -607,6 +607,11 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
             .and_then(Value::as_str)
             .map(str::to_string),
         branch: d.get("branch").and_then(Value::as_str).map(str::to_string),
+        base_sha: d
+            .get("base_sha")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         tmux_window: d
             .get("tmux_window")
             .and_then(Value::as_str)

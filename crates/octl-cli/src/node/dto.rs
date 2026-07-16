@@ -126,6 +126,7 @@ mod tests {
             task: None,
             worktree_path: Some("/tmp/seed-wt".to_string()),
             branch: Some("wt/seed".to_string()),
+            base_sha: None,
             tmux_window: Some("seed-win".to_string()),
             tmux_identity: None,
             agent_pid: Some(4242),

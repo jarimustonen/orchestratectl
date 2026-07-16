@@ -1,10 +1,12 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
+assertion_line: 83
 expression: v
 ---
 {
   "agent_pid": null,
   "agent_pid_start_time": null,
+  "base_sha": null,
   "branch": null,
   "children": [],
   "kind": "spinoff",

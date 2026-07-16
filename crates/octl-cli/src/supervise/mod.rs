@@ -1290,6 +1290,16 @@ fn watchdog_tick(
     // (`watchdog-tmux-probe-timeout`).
     let tmux_snapshot = watchdog::WatchdogTmuxSnapshot::collect(&sockets);
 
+    // Merge-reconcile inputs, read once per tick. The git-observable "branch
+    // merged into source" terminal signal only applies to autonomous kinds (the
+    // fire-and-forget self-merge flow); interactive kinds keep their human-owned
+    // review windows until an explicit `run merge`.
+    let autonomous = read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|m| m.kind.lifecycle() == Lifecycle::Autonomous);
+    let git = cleanup::git_bin();
+
     for (node_id, nid, n, probe) in candidates {
         let v = watchdog::check_liveness(&probe, &tmux_snapshot);
         // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
@@ -1306,17 +1316,35 @@ fn watchdog_tick(
                 *c >= HALF_STATE_TICKS
             }
         };
-        if commit && n.last_report.is_none() {
-            // The `n.last_report.is_none()` we just tested was read OUTSIDE the
-            // run lock, so a real `node.report` could land in the window
-            // between that read and this synthesis. Acquire the run flock and
-            // re-read the node projection under it before committing: only
-            // synthesize if the node is STILL non-terminal and STILL
-            // unreported. This closes the F15 duplicate-terminal-report race
-            // (the parent-side reducer dedups it anyway, but we avoid emitting
-            // the second event at all). `append_and_apply_unlocked` is the
-            // sanctioned lock-held path — re-entering `append_and_apply_event`
-            // here would deadlock on the flock.
+
+        // Git-reconcile fallback (issues `false-failed-after-merge` /
+        // `supervisor-stuck-pending-after-self-merge`). Before we ever classify a
+        // node FAILED on liveness loss — and even while the agent is still ALIVE
+        // but its terminal report never landed (the stuck-pending race) — ask git
+        // whether the branch has already merged into the run's source. If so, the
+        // work landed: the authoritative terminal outcome is SUCCESS, not a false
+        // `failed`/`branch_preserved` and not an endless `pending`. Checked
+        // outside the run lock (git is slow); the synthesis below re-verifies the
+        // node is still unreported under the lock. `node_branch_merged_to_source`
+        // itself is conservative — it requires the branch to have advanced past
+        // its recorded fork point, so a fresh, not-yet-committed agent (whose
+        // branch is a trivial ancestor of source) is never reconciled or torn
+        // down. Precedence: a confirmed merge wins over `agent-died`, which is the
+        // whole false-failed fix.
+        let reconciled = autonomous
+            && n.last_report.is_none()
+            && cleanup::node_branch_merged_to_source(paths, &n, &git);
+
+        if n.last_report.is_none() && (reconciled || commit) {
+            // The `last_report.is_none()` we tested (and the reconcile probe) ran
+            // OUTSIDE the run lock, so a real `node.report` could land in the
+            // window before this synthesis. Acquire the run flock and re-read the
+            // node projection under it: only synthesize if the node is STILL
+            // non-terminal and STILL unreported. This closes the F15
+            // duplicate-terminal-report race (the parent-side reducer dedups it
+            // anyway, but we avoid emitting the second event at all).
+            // `append_and_apply_unlocked` is the sanctioned lock-held path —
+            // re-entering `append_and_apply_event` here would deadlock on the flock.
             let guard = match RunLock::acquire(&paths.lock()) {
                 Ok(g) => g,
                 Err(e) => {
@@ -1343,17 +1371,43 @@ fn watchdog_tick(
                 drop(guard);
                 continue;
             }
-            // Synthesize a terminal node.report under the held run flock.
-            let data = json!({
-                "success": false,
-                "failed": true,
-                "cancelled": false,
-                "reason": v.reason(),
-                "summary": format!("Agent for node {} stopped responding: {}", node_id, v.reason()),
-                "discussion_items": [],
-                "spinoff_proposals": [],
-                "wrap_up_recommendations": [],
-            });
+            // Synthesize a terminal node.report under the held run flock. A
+            // git-confirmed merge is a terminal SUCCESS (stamped
+            // `via: VIA_MERGE_RECONCILED` so cleanup force-tears-down exactly like
+            // an explicit merge — never a false `branch_preserved`); otherwise the
+            // liveness verdict stands and the node is `agent-died` FAILED.
+            let data = if reconciled {
+                info!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id,
+                    "branch already merged into source; reconciling run to success (lost terminal report)"
+                );
+                json!({
+                    "success": true,
+                    "failed": false,
+                    "cancelled": false,
+                    "via": cleanup::VIA_MERGE_RECONCILED,
+                    "reason": "branch-merged-to-source",
+                    "summary": format!(
+                        "Node {} branch already merged into source; supervisor reconciled run to success (agent's terminal report was lost).",
+                        node_id
+                    ),
+                    "discussion_items": [],
+                    "spinoff_proposals": [],
+                    "wrap_up_recommendations": [],
+                })
+            } else {
+                json!({
+                    "success": false,
+                    "failed": true,
+                    "cancelled": false,
+                    "reason": v.reason(),
+                    "summary": format!("Agent for node {} stopped responding: {}", node_id, v.reason()),
+                    "discussion_items": [],
+                    "spinoff_proposals": [],
+                    "wrap_up_recommendations": [],
+                })
+            };
             // The `guard` above proves the exclusive lock is held; mint the
             // witness to thread into the unlocked append.
             let lock = guard.witness();
@@ -1460,5 +1514,255 @@ mod tests {
         // A zero grace disables suppression for any known-age node.
         let now = created + chrono::Duration::milliseconds(1);
         assert!(!within_spawn_grace(Some(created), now, Duration::ZERO));
+    }
+
+    // --- Watchdog git-reconcile fallback (issues `false-failed-after-merge` /
+    // `supervisor-stuck-pending-after-self-merge`) --------------------------------
+    //
+    // These drive `watchdog_tick` directly (no real `supervise` subprocess, so no
+    // `#[file_serial]` is required) against a real git repo whose spinoff branch
+    // has already self-merged into `main`, with the terminal `node.report` never
+    // emitted. They serialize on the process-global `OCTL_WATCHDOG_GRACE_SECS`
+    // they set (grace 0, so a just-created node is eligible immediately).
+
+    use std::process::{Command as PCommand, Stdio};
+    use std::sync::Mutex;
+
+    static GRACE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII env guard: restores the prior value / unsets on drop so a panicking
+    /// assertion cannot leak `OCTL_WATCHDOG_GRACE_SECS` into another test.
+    struct GraceGuard(Option<std::ffi::OsString>);
+    impl GraceGuard {
+        fn zero() -> Self {
+            let old = std::env::var_os(SPAWN_GRACE_ENV);
+            std::env::set_var(SPAWN_GRACE_ENV, "0");
+            Self(old)
+        }
+    }
+    impl Drop for GraceGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var(SPAWN_GRACE_ENV, v),
+                None => std::env::remove_var(SPAWN_GRACE_ENV),
+            }
+        }
+    }
+
+    fn tgit(cwd: &Path, args: &[&str]) {
+        let ok = PCommand::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?} failed in {cwd:?}");
+    }
+
+    fn trev(repo: &Path, r: &str) -> String {
+        let out = PCommand::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", r])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn tbranch_exists(repo: &Path, branch: &str) -> bool {
+        PCommand::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "--verify", "--quiet", branch])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// Init a repo on `main`, fork `wt/foo`, commit work in it, and fast-forward
+    /// `main` up to it — i.e. the spinoff's self-merge has landed. Returns
+    /// `(repo, worktree, base_sha)` where `base_sha` is the fork point.
+    fn init_merged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        tgit(&repo, &["init", "-q", "-b", "main"]);
+        tgit(&repo, &["config", "user.email", "t@example.com"]);
+        tgit(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "init"]);
+        let base = trev(&repo, "main");
+        let wt = tmp.path().join("wt");
+        tgit(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt/foo",
+                wt.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(wt.join("fix.rs"), "work").unwrap();
+        tgit(&wt, &["add", "-A"]);
+        tgit(&wt, &["commit", "-qm", "agent work"]);
+        tgit(&repo, &["merge", "--ff-only", "wt/foo"]); // the self-merge lands
+        (repo, wt, base)
+    }
+
+    /// A run dir + autonomous-spinoff manifest + one worker node pointing at the
+    /// merged worktree, with `agent_pid` (and no recorded `start_time`) set so
+    /// the watchdog's liveness probe reads a real verdict.
+    fn setup_merged_run(
+        tmp: &tempfile::TempDir,
+        repo: &Path,
+        wt: &Path,
+        base: &str,
+        agent_pid: i32,
+    ) -> RunPaths {
+        let run_id = "01jxwd0000000000000000000w";
+        let dir = tmp.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "source_repo": repo.to_str().unwrap(),
+                "source_branch": "main",
+            }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&NodeId::parse_str("n-0001").unwrap()),
+            None,
+            json!({
+                "kind": "spinoff",
+                "branch": "wt/foo",
+                "base_sha": base,
+                "worktree_path": wt.to_str().unwrap(),
+                "agent_pid": agent_pid,
+                // No tmux fields → the watchdog skips the tmux probe and liveness
+                // is decided purely by the PID (Alive vs Dead).
+            }),
+        )
+        .unwrap();
+        paths
+    }
+
+    fn n0001(paths: &RunPaths) -> Node {
+        read_node_opt(paths, &NodeId::parse_str("n-0001").unwrap())
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Done-criterion (b): a merged branch whose agent has DIED (liveness loss)
+    /// must reconcile to terminal SUCCESS — never the false `agent-died`/`failed`
+    /// classification — and then tear down cleanly (worktree + branch gone, no
+    /// `cleanup.branch_preserved`).
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_reconciles_merged_branch_on_agent_death() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_merged_repo(&tmp);
+        // A definitely-dead pid: spawn `true`, reap it, reuse its pid.
+        let dead = PCommand::new("true").spawn().unwrap();
+        let dead_pid = dead.id() as i32;
+        let mut dead = dead;
+        dead.wait().unwrap();
+        let paths = setup_merged_run(&tmp, &repo, &wt, &base, dead_pid);
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak).unwrap();
+
+        let n = n0001(&paths);
+        let report = n
+            .last_report
+            .expect("a terminal report must be synthesized");
+        assert_eq!(
+            report["success"], true,
+            "a merged branch reconciles to SUCCESS, not agent-died failure"
+        );
+        assert_eq!(report["via"], "merge-reconciled");
+        assert_ne!(
+            report["reason"], "agent-died",
+            "must not be a false failure"
+        );
+        assert!(n.status.is_terminal());
+
+        // The main loop's teardown chain: roll the run up and clean up.
+        if let Some(status) = cleanup::rollup_status(&paths, true) {
+            let s = if status == Status::Done {
+                "done"
+            } else {
+                "failed"
+            };
+            append_and_apply_event(&paths, "run.status", None, None, json!({ "status": s }))
+                .unwrap();
+        }
+        cleanup::cleanup_terminal_nodes(&paths);
+
+        assert_eq!(
+            read_manifest_opt(&paths).unwrap().unwrap().status,
+            Status::Done,
+            "reconciled run rolls up to Done"
+        );
+        assert!(!wt.exists(), "merged worktree is torn down");
+        assert!(!tbranch_exists(&repo, "wt/foo"), "merged branch is deleted");
+        let preserved = std::fs::read_to_string(paths.events())
+            .unwrap()
+            .lines()
+            .any(|l| l.contains("cleanup.branch_preserved"));
+        assert!(
+            !preserved,
+            "a merged branch must NEVER be reported preserved"
+        );
+    }
+
+    /// Done-criterion (a): a merged branch whose agent is still ALIVE but whose
+    /// terminal report never arrived (the stuck-pending race) is reconciled to
+    /// terminal SUCCESS via the git fallback — the run cannot strand at `pending`
+    /// forever waiting on a report that will never come.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_reconciles_merged_branch_while_agent_alive() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_merged_repo(&tmp);
+        // A genuinely live agent process; reaped at end of test.
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_merged_run(&tmp, &repo, &wt, &base, alive_pid);
+
+        // Sanity: the agent really is alive, so this is the stuck-pending path,
+        // not the death path.
+        assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak).unwrap();
+
+        let n = n0001(&paths);
+        let report = n
+            .last_report
+            .expect("alive-but-merged must still reconcile to a terminal report");
+        assert_eq!(report["success"], true);
+        assert_eq!(report["via"], "merge-reconciled");
+        assert!(n.status.is_terminal(), "run no longer strands at pending");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
     }
 }

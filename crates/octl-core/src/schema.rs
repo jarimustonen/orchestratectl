@@ -564,6 +564,21 @@ pub struct Node {
     pub worktree_path: Option<String>,
     /// Git branch the node works on, if any.
     pub branch: Option<String>,
+    /// The commit SHA the node's branch/worktree was forked from at spawn
+    /// (the branch tip the moment `create.sh` materialized the worktree). It
+    /// is the fixed reference point that lets the supervisor tell "this branch
+    /// produced work that merged into source" from "this branch never diverged
+    /// from its fork point": a branch still at `base_sha` is trivially an
+    /// ancestor of its source branch but has merged nothing, so it must NOT be
+    /// reconciled to success or torn down (that would drop a live agent's
+    /// uncommitted work). Only a branch whose tip has moved past `base_sha`
+    /// *and* is now an ancestor of the run's `source_branch` is a confirmed
+    /// merge (issues `false-failed-after-merge` /
+    /// `supervisor-stuck-pending-after-self-merge`). `#[serde(default)]` keeps a
+    /// node written before this field existed readable (`None` → the
+    /// git-reconcile fallback simply does not fire for it).
+    #[serde(default)]
+    pub base_sha: Option<String>,
     /// tmux window hosting the node's agent, if interactive. This is the
     /// human-readable window *name* — not unique across sessions and blind to
     /// non-default sockets. Kept for display and as the legacy liveness key;

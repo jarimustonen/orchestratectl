@@ -532,11 +532,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         return Err(e);
     }
 
+    // Capture the branch's fork point — the tip the worktree was just created
+    // from — as an immutable reference for the supervisor's later merge
+    // reconciliation. Right after `create.sh`'s `git worktree add`, the new
+    // branch's HEAD *is* the fork base; recording it lets the supervisor
+    // distinguish "did work that merged into source" from "never diverged"
+    // (issues `false-failed-after-merge` /
+    // `supervisor-stuck-pending-after-self-merge`). Best-effort: a git failure
+    // leaves `base_sha` null and the reconcile fallback simply does not fire.
+    let base_sha = capture_base_sha(&outcome.worktree_path);
+
     // Emit node.created with the discovered metadata. The reducer
     // creates nodes/n-0001.json with these fields wired in.
     let node_data = json!({
         "kind": kind_kebab(args.kind),
         "branch": outcome.branch,
+        "base_sha": base_sha,
         "worktree_path": outcome.worktree_path,
         "tmux_window": outcome.tmux_window,
         // Qualified tmux identity (null on a create.sh that predates the
@@ -625,6 +636,32 @@ const DEFAULT_HEADLESS_SESSION: &str = "headless";
 /// non-empty and may not contain whitespace or tmux's `:`/`.` target
 /// separators, which would otherwise be silently mis-parsed by tmux as a
 /// `session:window.pane` target. The default `headless` name trivially passes.
+/// Read the current `HEAD` commit SHA of the freshly-created worktree — the
+/// branch's fork point — for [`Node::base_sha`](octl_core::Node). Best-effort:
+/// returns `None` if git is unavailable, the path is not a worktree, or the
+/// output is not a clean SHA, in which case the supervisor's merge-reconcile
+/// fallback simply does not fire for this node. Honors the `GIT_BIN` override so
+/// tests can stub (or disable) git the same way the supervisor's teardown does.
+fn capture_base_sha(worktree_path: &str) -> Option<String> {
+    let git = std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string());
+    let out = std::process::Command::new(git)
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["rev-parse", "HEAD"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // A valid rev-parse yields a 40- (or 64-, sha256) char lowercase hex SHA.
+    // Reject anything else rather than persist a garbage base that would
+    // silently disable — or misfire — the reconcile check.
+    let ok = !sha.is_empty() && sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit());
+    ok.then_some(sha)
+}
+
 fn resolve_parent_session(
     headless: bool,
     tmux_session: Option<&str>,

@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Supervisor reconciles run status with git after a self-merge.** A spinoff
+  whose branch already merged into its `source_branch` is no longer reported
+  `failed` (issue `false-failed-after-merge`) or left stuck at `pending`
+  forever (issue `supervisor-stuck-pending-after-self-merge`) when its terminal
+  `node.report` is lost or never flushed under high fan-out. The watchdog now
+  checks `git merge-base --is-ancestor <branch> <source>` (plus an
+  advanced-past-fork-point guard using the new `Node.base_sha`) before any
+  terminal classification: a merged branch synthesizes a terminal SUCCESS
+  (`via: "merge-reconciled"`) and tears down cleanly — even while the agent is
+  still alive — instead of a false `agent-died`/`cleanup.branch_preserved`. A
+  branch still at its fork point (a fresh agent with possibly-uncommitted work)
+  is never reconciled, so live work is never destroyed.
+
 ## [0.1.0] — 2026-07-04
 
 First publishable cut. The CLI is real, the bundled skill family covers

@@ -54,6 +54,9 @@ fn skill_list_json_pins_catalog_shape() {
             "octl-spawn-spinoff",
             "orchestrate",
             "orchestratectl-overview",
+            "stint",
+            "worktree",
+            "worktree-bug-analysis",
             "worktree-bugfix",
             "worktree-code",
             "worktree-make-skill",
@@ -61,6 +64,7 @@ fn skill_list_json_pins_catalog_shape() {
             "worktree-orchestrated",
             "worktree-research",
             "worktree-spinoff",
+            "worktree-status",
             "worktree-technical-decision",
         ]
     );

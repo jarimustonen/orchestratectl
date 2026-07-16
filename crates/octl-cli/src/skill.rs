@@ -122,10 +122,7 @@ const SKILLS: &[EmbeddedSkill] = &[
     },
     EmbeddedSkill {
         name: "worktree-status",
-        body: include_str!(concat!(
-            env!("OUT_DIR"),
-            "/skills/worktree-status/SKILL.md"
-        )),
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-status/SKILL.md")),
         path_in_repo: "crates/octl-cli/skills/worktree-status/SKILL.template.md",
     },
     EmbeddedSkill {
