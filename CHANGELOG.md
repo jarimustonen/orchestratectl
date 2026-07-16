@@ -17,9 +17,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   advanced-past-fork-point guard using the new `Node.base_sha`) before any
   terminal classification: a merged branch synthesizes a terminal SUCCESS
   (`via: "merge-reconciled"`) and tears down cleanly — even while the agent is
-  still alive — instead of a false `agent-died`/`cleanup.branch_preserved`. A
-  branch still at its fork point (a fresh agent with possibly-uncommitted work)
-  is never reconciled, so live work is never destroyed.
+  still alive — instead of a false `agent-died`/`cleanup.branch_preserved`.
+  Reconciliation is deliberately conservative so it can never destroy live work:
+  it requires the branch to have advanced *forward* past its fork point
+  (`base..branch > 0`, rejecting a fresh or `reset`-rewound branch) AND the
+  worktree to be clean (an agent that merged then kept editing keeps its
+  uncommitted work), re-verifies the merge under the run lock before recording
+  it, and re-checks the source-relative unmerged gate at teardown so a branch
+  that diverged after the report is preserved, not force-deleted.
 
 ## [0.1.0] — 2026-07-04
 

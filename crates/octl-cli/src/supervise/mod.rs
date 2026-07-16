@@ -1290,14 +1290,7 @@ fn watchdog_tick(
     // (`watchdog-tmux-probe-timeout`).
     let tmux_snapshot = watchdog::WatchdogTmuxSnapshot::collect(&sockets);
 
-    // Merge-reconcile inputs, read once per tick. The git-observable "branch
-    // merged into source" terminal signal only applies to autonomous kinds (the
-    // fire-and-forget self-merge flow); interactive kinds keep their human-owned
-    // review windows until an explicit `run merge`.
-    let autonomous = read_manifest_opt(paths)
-        .ok()
-        .flatten()
-        .is_some_and(|m| m.kind.lifecycle() == Lifecycle::Autonomous);
+    // The git binary the reconcile probes shell out to (honors `GIT_BIN`).
     let git = cleanup::git_bin();
 
     for (node_id, nid, n, probe) in candidates {
@@ -1321,21 +1314,23 @@ fn watchdog_tick(
         // `supervisor-stuck-pending-after-self-merge`). Before we ever classify a
         // node FAILED on liveness loss — and even while the agent is still ALIVE
         // but its terminal report never landed (the stuck-pending race) — ask git
-        // whether the branch has already merged into the run's source. If so, the
-        // work landed: the authoritative terminal outcome is SUCCESS, not a false
-        // `failed`/`branch_preserved` and not an endless `pending`. Checked
-        // outside the run lock (git is slow); the synthesis below re-verifies the
-        // node is still unreported under the lock. `node_branch_merged_to_source`
-        // itself is conservative — it requires the branch to have advanced past
-        // its recorded fork point, so a fresh, not-yet-committed agent (whose
-        // branch is a trivial ancestor of source) is never reconciled or torn
-        // down. Precedence: a confirmed merge wins over `agent-died`, which is the
-        // whole false-failed fix.
-        let reconciled = autonomous
-            && n.last_report.is_none()
-            && cleanup::node_branch_merged_to_source(paths, &n, &git);
+        // whether the branch has already merged into the run's source (with a clean
+        // worktree). If so, the work landed: the authoritative terminal outcome is
+        // SUCCESS, not a false `failed`/`branch_preserved` and not an endless
+        // `pending`. Gated PER NODE on the node's own lifecycle — autonomous kinds
+        // self-merge fire-and-forget; interactive kinds keep human-owned windows.
+        // This first probe is OUTSIDE the run lock (git is slow); it is RE-VERIFIED
+        // under the lock before synthesis to close the probe→synthesis TOCTOU (a
+        // live agent could move its branch in between). `node_branch_merged_to_source`
+        // is conservative — it requires the branch to have advanced FORWARD past its
+        // recorded fork point AND the worktree to be clean, so a fresh/rewound agent
+        // or one with live uncommitted work is never reconciled or torn down.
+        let reconcile_eligible =
+            n.kind.lifecycle() == Lifecycle::Autonomous && n.last_report.is_none();
+        let reconcile_probe =
+            reconcile_eligible && cleanup::node_branch_merged_to_source(paths, &n, &git);
 
-        if n.last_report.is_none() && (reconciled || commit) {
+        if n.last_report.is_none() && (reconcile_probe || commit) {
             // The `last_report.is_none()` we tested (and the reconcile probe) ran
             // OUTSIDE the run lock, so a real `node.report` could land in the
             // window before this synthesis. Acquire the run flock and re-read the
@@ -1367,6 +1362,26 @@ fn watchdog_tick(
                     target: "orchestratectl::supervise",
                     node = %node_id,
                     "watchdog deferred to live report"
+                );
+                drop(guard);
+                continue;
+            }
+            // Re-verify the merge UNDER the lock against the fresh projection, so
+            // the destructive `merge-reconciled` success reflects git state as of
+            // the moment we commit it — not a stale probe from before an alive
+            // agent moved its branch. If the branch is no longer merged (or the
+            // worktree turned dirty), fall through to the liveness verdict.
+            let reconciled = reconcile_probe
+                && fresh
+                    .as_ref()
+                    .is_some_and(|f| cleanup::node_branch_merged_to_source(paths, f, &git));
+            if !reconciled && !commit {
+                // The probe said "merged" but the under-lock re-check disagrees and
+                // the agent is still alive — nothing terminal to record this tick.
+                tracing::debug!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id,
+                    "reconcile no longer holds under lock; leaving live node alone"
                 );
                 drop(guard);
                 continue;
@@ -1761,6 +1776,39 @@ mod tests {
         assert_eq!(report["success"], true);
         assert_eq!(report["via"], "merge-reconciled");
         assert!(n.status.is_terminal(), "run no longer strands at pending");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// The data-loss guard at the supervisor level (review finding #1): a LIVE
+    /// agent whose branch merged but whose worktree still holds uncommitted work
+    /// must NOT be reconciled — the watchdog synthesizes no report and leaves the
+    /// node pending, so its live work is never torn down. This is the case the
+    /// branch-ref-only check would have destroyed.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_leaves_live_agent_with_dirty_worktree_alone() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_merged_repo(&tmp);
+        // The agent merged, then kept editing — uncommitted work in the worktree.
+        std::fs::write(wt.join("still-working.rs"), "wip").unwrap();
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_merged_run(&tmp, &repo, &wt, &base, alive_pid);
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            n.last_report.is_none(),
+            "a live agent with uncommitted work must NOT be reconciled/terminalized"
+        );
+        assert!(!n.status.is_terminal(), "node stays live");
+        assert!(wt.exists(), "the worktree with live work is untouched");
 
         let _ = alive.kill();
         let _ = alive.wait();

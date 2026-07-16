@@ -5,6 +5,9 @@ type: bug
 reporter: jari
 status: in-progress
 priority: high
+commits:
+- hash: ec20128
+  summary: reconcile run status with git after self-merge
 ---
 
 # Spinoff supervisor stuck at status=pending (no teardown) despite successful self-merge — 5/9 in a headless batch

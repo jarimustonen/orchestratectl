@@ -151,15 +151,21 @@ fn report_via(n: &Node) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
 }
 
-/// True when this node's terminal report marks its branch as a CONFIRMED merge
-/// into the run's source — either an explicit `run merge`
-/// (`via: "explicit-merge"`) or a supervisor git-reconcile
-/// (`via: VIA_MERGE_RECONCILED`). Both mean the work has landed in source, so the
-/// branch is safe to force-delete (`git branch -D`) and its worktree is
-/// disposable — unlike a blocked handoff or a source-unmerged branch, whose work
-/// must be preserved.
+/// True when this node's terminal report marks its branch as a CONFIRMED,
+/// SUCCESSFUL merge into the run's source — a `success: true` report whose `via`
+/// is either an explicit `run merge` (`"explicit-merge"`) or a supervisor
+/// git-reconcile (`VIA_MERGE_RECONCILED`). Both mean the work has landed in
+/// source, so the branch is safe to force-delete (`git branch -D`) and its
+/// worktree is disposable — unlike a blocked handoff or a source-unmerged branch,
+/// whose work must be preserved. The `success: true` requirement means a report
+/// carrying a merge marker but `success: false` (a malformed or spoofed payload)
+/// never earns the force teardown on its marker alone.
 fn node_branch_merged(n: &Node) -> bool {
-    matches!(report_via(n), Some("explicit-merge" | VIA_MERGE_RECONCILED))
+    let Some(report) = n.last_report.as_ref() else {
+        return false;
+    };
+    let success = report.get("success").and_then(serde_json::Value::as_bool) == Some(true);
+    success && matches!(report_via(n), Some("explicit-merge" | VIA_MERGE_RECONCILED))
 }
 
 /// True when this node's terminal report is a **BLOCKED** report — the agent hit
@@ -451,24 +457,32 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     let repo = main_repo.as_deref().unwrap_or(worktree_path);
 
     // A CONFIRMED merge — an explicit `run merge` OR a supervisor git-reconcile
-    // (`VIA_MERGE_RECONCILED`) — earns the force teardown: the work is in source,
-    // so the worktree is disposable and the branch may be `-D`'d. A
-    // reconcile-to-success report reaches here exactly like an explicit merge.
+    // (`VIA_MERGE_RECONCILED`) — earns the force `-D` teardown: the work is in
+    // source, so the branch may be force-deleted.
     let merged = node_branch_merged(n);
 
+    // Only a *confirmed explicit* `run merge` skips the source-relative
+    // unmerged-work check below — its rebase/squash legitimately leaves the branch
+    // "ahead" of source, so the check would false-positive. A supervisor
+    // git-reconcile (`VIA_MERGE_RECONCILED`) does NOT skip it: it is
+    // defense-in-depth re-verification at teardown time, closing the window
+    // between the watchdog's merged-observation and this cleanup (a live agent
+    // could have moved the branch after the report was synthesized). A reconciled
+    // branch is, by construction, fully merged, so the check normally passes and
+    // the `-D` proceeds; if the branch has since diverged, it is preserved.
+    let skip_source_check = node_merged_explicitly(n);
+
     // Defense-in-depth against any future outcome-gating miss (issue
-    // `blocked-report-deletes-branch`): on ANY non-explicit-merge path — a plain
-    // success that skipped `run merge`, a `run cancel`, a genuine failure, or a
-    // terminal outcome not yet gated above — if the branch carries commits not
-    // reachable from the run's OWN source branch (`manifest.source_branch`),
-    // preserve BOTH the worktree and the branch rather than force anything. This
-    // protects committed work from being discarded even when the primary gate
-    // does not fire. Only a confirmed `run merge` (which legitimately squash /
-    // rebase-merges and so leaves the branch "ahead" of source), a branch with
-    // nothing unmerged, or an unknowable source proceeds to teardown. The
-    // ancestry check is against the run's source branch, NOT the main worktree's
-    // ambient `HEAD` — which may be on any branch when the supervisor ticks.
-    if !merged {
+    // `blocked-report-deletes-branch`): on ANY path other than a confirmed explicit
+    // merge — a plain success that skipped `run merge`, a `run cancel`, a genuine
+    // failure, a supervisor reconcile, or a terminal outcome not yet gated above —
+    // if the branch carries commits not reachable from the run's OWN source branch
+    // (`manifest.source_branch`), preserve BOTH the worktree and the branch rather
+    // than force anything. This protects committed work from being discarded even
+    // when the primary gate does not fire. The ancestry check is against the run's
+    // source branch, NOT the main worktree's ambient `HEAD` — which may be on any
+    // branch when the supervisor ticks.
+    if !skip_source_check {
         if let (Some(branch), Some(source)) = (n.branch.as_deref(), manifest_source_branch(paths)) {
             if branch_has_unmerged_commits(repo, &source, branch, git) {
                 record_branch_preserved(
@@ -526,11 +540,12 @@ fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str
 }
 
 /// True when this node's branch has been **merged into the run's source
-/// branch** — the git-observable terminal signal the supervisor reconciles a
-/// lost/never-flushed agent report against (issues `false-failed-after-merge` /
-/// `supervisor-stuck-pending-after-self-merge`).
+/// branch** AND its worktree holds no unsaved work — the git-observable terminal
+/// signal the supervisor reconciles a lost/never-flushed agent report against
+/// (issues `false-failed-after-merge` / `supervisor-stuck-pending-after-self-merge`).
 ///
-/// Two conditions, BOTH required — this is the crux of not destroying live work:
+/// THREE conditions, ALL required — this is the crux of never destroying live
+/// work:
 ///
 /// 1. **Merged:** the branch tip is an ancestor of `manifest.source_branch`
 ///    (`git merge-base --is-ancestor <branch> <source>`), i.e. its commits have
@@ -538,12 +553,22 @@ fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str
 ///    tip, so the branch is an ancestor once it lands). Checked FIRST because a
 ///    still-diverged in-progress branch (has WIP commits source lacks) fails it
 ///    with a single cheap git call.
-/// 2. **Advanced:** the branch tip has moved past its recorded spawn fork point
-///    ([`Node::base_sha`]). A branch still AT its fork base is a *trivial*
-///    ancestor of source (source only moves forward) yet has merged nothing — a
-///    fresh spinoff that has not committed, possibly with uncommitted work in its
-///    tree. Reconciling it to success and tearing its worktree down would be
-///    silent data loss, so the advanced check gates that out.
+/// 2. **Advanced forward past the fork point:** the branch has at least one
+///    commit not reachable from its recorded spawn base ([`Node::base_sha`]) —
+///    `git rev-list --count <base>..<branch> > 0`. This is a *topological* check,
+///    not a string compare, so it is immune to abbreviated/uppercase SHAs and,
+///    critically, rejects a branch that was **rewound** to `base_sha` or to any
+///    ancestor of it (a fresh, not-yet-committed agent, or one that `reset --hard`
+///    backwards): such a branch is a trivial ancestor of source yet merged
+///    nothing, and reconciling it would tear a live agent's worktree down.
+/// 3. **Clean worktree:** the node's worktree has no tracked, staged, or untracked
+///    changes (`git -C <worktree> status --porcelain` empty). Conditions 1–2 speak
+///    only about the *branch ref* — an agent that committed + merged and then kept
+///    editing has a merged branch but live uncommitted work in its tree. Tearing
+///    that down is exactly the silent data loss this fix exists to prevent, so a
+///    dirty worktree declines the reconcile (the agent finishes, commits+merges the
+///    rest, or eventually dies and is handled normally). A worktree that is already
+///    gone has nothing to lose and is treated as clean.
 ///
 /// Requires `manifest.source_branch`, `Node.branch`, and `Node.base_sha` all
 /// recorded, plus a repo to run git in (`manifest.source_repo`, else the node's
@@ -551,6 +576,7 @@ fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str
 /// rather than guess). Conservative on the safe side throughout: a git error
 /// reads as "not merged", so a transient hiccup can never fabricate a success.
 pub fn node_branch_merged_to_source(paths: &RunPaths, n: &Node, git: &str) -> bool {
+    let node_id = n.node_id.as_str();
     let Some(branch) = n.branch.as_deref().filter(|s| !s.is_empty()) else {
         return false;
     };
@@ -579,11 +605,75 @@ pub fn node_branch_merged_to_source(paths: &RunPaths, n: &Node, git: &str) -> bo
     if !git_is_ancestor(repo, branch, source, git) {
         return false;
     }
-    // (2) Did the branch actually advance past its fork point? A branch still at
-    // `base_sha` is a trivial ancestor that merged nothing — never reconcile it.
-    match git_rev_parse(repo, branch, git) {
-        Some(tip) => tip != base,
-        None => false,
+    // (2) Did the branch advance *forward* past its fork point? `base..branch > 0`
+    // proves the branch carries commits `base_sha` does not — rejecting both a
+    // never-committed branch (still at base) and a branch rewound to base or an
+    // ancestor of it. `None` (git error) declines.
+    match git_ahead_count(repo, base, branch, git) {
+        Some(ahead) if ahead > 0 => {}
+        _ => {
+            tracing::debug!(
+                target: "orchestratectl::supervise",
+                node = node_id, branch, "reconcile declined: branch not advanced past its fork point"
+            );
+            return false;
+        }
+    }
+    // (3) No unsaved work to lose. A merged branch does NOT imply a disposable
+    // worktree — the agent may have committed+merged and kept editing.
+    if !worktree_is_clean(n.worktree_path.as_deref(), git) {
+        tracing::debug!(
+            target: "orchestratectl::supervise",
+            node = node_id, branch, "reconcile declined: worktree has uncommitted work"
+        );
+        return false;
+    }
+    true
+}
+
+/// `git -C <repo> rev-list --count <base>..<branch>` → the number of commits
+/// reachable from `branch` but not from `base` (how far the branch advanced
+/// forward past its fork point). `None` on a git error / unparseable output, so
+/// the caller declines the reconcile rather than guess.
+fn git_ahead_count(repo: &str, base: &str, branch: &str, git: &str) -> Option<u64> {
+    let out = Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--count", &format!("{base}..{branch}")])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// True when the node's worktree holds no unsaved work — `git -C <worktree>
+/// status --porcelain` produces no output (no tracked, staged, or untracked
+/// changes). A worktree path that is `None` or no longer exists on disk has
+/// nothing to lose and is clean. A worktree that exists but whose `git status`
+/// cannot be read is conservatively treated as **dirty** (not clean), so a
+/// transient git failure never green-lights tearing a live tree down.
+fn worktree_is_clean(worktree_path: Option<&str>, git: &str) -> bool {
+    let Some(wt) = worktree_path.filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    if !std::path::Path::new(wt).exists() {
+        return true;
+    }
+    match Command::new(git)
+        .arg("-C")
+        .arg(wt)
+        .args(["status", "--porcelain"])
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(out) if out.status.success() => out.stdout.iter().all(u8::is_ascii_whitespace),
+        _ => false,
     }
 }
 
@@ -599,30 +689,6 @@ fn git_is_ancestor(repo: &str, branch: &str, source: &str, git: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
-}
-
-/// `git -C <repo> rev-parse --verify <rev>^{commit}` → the resolved commit SHA,
-/// or `None` if git is unavailable, the ref is unknown, or the output is not a
-/// clean hex SHA. Used to read a branch's current tip for the advanced-past-base
-/// check; a `None` here conservatively declines the reconcile.
-fn git_rev_parse(repo: &str, rev: &str, git: &str) -> Option<String> {
-    let out = Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{rev}^{{commit}}"),
-        ])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
 }
 
 /// The run's recorded source repository (`manifest.source_repo`), if any. Used
@@ -2295,8 +2361,11 @@ mod tests {
         );
     }
 
-    /// `node_branch_merged` treats both merge markers as a confirmed merge (force
-    /// teardown) while a plain success or a foreign `via` is not.
+    /// `node_branch_merged` treats a SUCCESSFUL merge marker as a confirmed merge
+    /// (force teardown) while a plain success, a foreign `via`, or — critically — a
+    /// merge marker on a `success: false` report is not. The last case defends
+    /// against a spoofed/malformed payload earning force deletion on its marker
+    /// alone.
     #[test]
     fn node_branch_merged_marker_classification() {
         let tmp = TempDir::new().unwrap();
@@ -2310,6 +2379,11 @@ mod tests {
             ),
             (json!({ "success": true }), false),
             (json!({ "success": true, "via": "watchdog" }), false),
+            // A merge marker on a failed report must NOT authorize force teardown.
+            (
+                json!({ "success": false, "via": VIA_MERGE_RECONCILED }),
+                false,
+            ),
         ];
         for (i, (report_data, want)) in cases.into_iter().enumerate() {
             let node = format!("n-2{i:03}");
@@ -2318,5 +2392,105 @@ mod tests {
             let n = read_node_opt(&paths, &nid(&node)).unwrap().unwrap();
             assert_eq!(node_branch_merged(&n), want);
         }
+    }
+
+    /// Data-loss guard (review finding #1): a branch that committed + merged AND
+    /// THEN kept editing (uncommitted work in the worktree) must NOT reconcile —
+    /// tearing its worktree down would drop the live edits. The merged branch ref
+    /// alone is not proof the worktree is disposable.
+    #[test]
+    fn dirty_worktree_declines_reconcile() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        commit_in_worktree(&wt, "fix.rs", "agent work");
+        ff_merge_into_main(&repo, "wt/foo"); // branch merged...
+        std::fs::write(wt.join("more.rs"), "still editing").unwrap(); // ...but live uncommitted work
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        assert!(
+            !node_branch_merged_to_source(&paths, &n, &git_bin()),
+            "a merged branch with a dirty worktree must not reconcile — live work would be lost"
+        );
+    }
+
+    /// Rewind guard (review finding #2): after committing + merging, the agent
+    /// resets its branch back to the fork base (or an ancestor of it). The branch
+    /// is a trivial ancestor of source again but carries no forward work; the
+    /// `base..branch > 0` check must reject it so a `reset --hard` cannot trick the
+    /// supervisor into tearing the worktree down.
+    #[test]
+    fn rewound_branch_declines_reconcile() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        commit_in_worktree(&wt, "fix.rs", "agent work");
+        ff_merge_into_main(&repo, "wt/foo");
+        // Agent rewinds the branch back to the fork point.
+        git(&wt, &["reset", "--hard", &base]);
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        assert!(
+            !node_branch_merged_to_source(&paths, &n, &git_bin()),
+            "a branch rewound to its fork base advanced nothing and must not reconcile"
+        );
+    }
+
+    /// TOCTOU defense-in-depth at teardown (review finding #3): even a
+    /// `merge-reconciled` success is re-checked against the source-relative
+    /// unmerged gate in `cleanup_node`. If the branch has since diverged (a live
+    /// agent committed new work after the report was synthesized), cleanup PRESERVES
+    /// it instead of force-deleting — the "merge-reconciled" marker does not skip
+    /// the safety net that an explicit `run merge` does.
+    #[test]
+    fn merge_reconciled_preserves_a_since_diverged_branch() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        commit_in_worktree(&wt, "fix.rs", "agent work");
+        ff_merge_into_main(&repo, "wt/foo");
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "via": VIA_MERGE_RECONCILED }),
+        );
+        // AFTER the report was synthesized, the (still-live) agent commits new,
+        // unmerged work — the branch is no longer fully merged into source.
+        commit_in_worktree(&wt, "late.rs", "new unmerged work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "a since-diverged reconciled branch must be preserved, not force-deleted"
+        );
+        assert!(wt.exists(), "its worktree must be preserved too");
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1, "the preservation must be recorded");
     }
 }

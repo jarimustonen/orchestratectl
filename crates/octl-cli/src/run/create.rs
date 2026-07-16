@@ -655,10 +655,11 @@ fn capture_base_sha(worktree_path: &str) -> Option<String> {
         return None;
     }
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    // A valid rev-parse yields a 40- (or 64-, sha256) char lowercase hex SHA.
-    // Reject anything else rather than persist a garbage base that would
-    // silently disable — or misfire — the reconcile check.
-    let ok = !sha.is_empty() && sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit());
+    // A full `rev-parse HEAD` yields exactly a 40-char (SHA-1) or 64-char
+    // (SHA-256) hex object id. Require that exact shape — an abbreviated or
+    // malformed value would persist a base that silently disables or misfires the
+    // reconcile check.
+    let ok = matches!(sha.len(), 40 | 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
     ok.then_some(sha)
 }
 

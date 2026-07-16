@@ -5,6 +5,9 @@ type: bug
 reporter: claude-code
 status: in-progress
 priority: high
+commits:
+- hash: ec20128
+  summary: reconcile run status with git after self-merge
 ---
 
 # spinoff reported failed/agent-died despite branch already merged to target (false negative run status)
