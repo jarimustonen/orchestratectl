@@ -53,3 +53,7 @@ Spawn a high-fan-out batch (≈9) of `--kind spinoff --headless` runs off the sa
 1. Make the terminal `node.report` append **atomic + durably flushed before the merging process exits**, and have the supervisor treat "branch merged into target" (git-observable) as a fallback terminal signal so a lost report event can't strand it forever.
 2. Give the supervisor a **teardown-on-detected-merge** path + a watchdog/timeout so it cannot poll an empty inbox indefinitely.
 3. Emit a `node.report`/merge event on the `run merge` code path unconditionally (even when invoked by the agent), and assert `last_seq_own` advances past it.
+
+## Diagnostic: `run cancel` DOES tear down
+
+`orchestratectl run cancel <id>` on each stuck run succeeded ("1 node(s) cancelled, 0 already terminal") and **properly tore down** — the 5 supervisor processes exited and all 5 tmux windows (and the now-empty `headless` session) were removed. So the teardown machinery works when a terminal event is written; the defect is localized to the **agent self-merge terminal path failing to emit/flush the `node.report`**, not to teardown itself. A fix that guarantees the self-merge emits the same terminal event `cancel` does would resolve it.
