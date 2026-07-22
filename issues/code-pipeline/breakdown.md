@@ -23,6 +23,21 @@ until T12; the pipeline ships **behind per-run config** and matures through shad
 | **T11** | Staged-rollout wiring: per-run engine selector, shadow mode (plan+verify, no auto-merge), canary by kind/repo, legacy engine retained + rollback | T5, T7, T10 | Reversible deployment (design §14). |
 | **T12** | Flip `code`/`spinoff`/`bugfix` defaults to the pipeline — only after measured stability | T11 | The "always how coding is done" end state. |
 
+## Progress (2026-07-22)
+
+Done, verified on main, issues closed (all behind the seam — nothing wired live yet):
+- ✅ **T0** CodeHarness contract + aider adapter + conformance (`918aee8`, `b7d93f6`)
+- ✅ **T0-followup** `outright-tasty-son` — harness timeout + cancellation (`c923f85`, `4f879e0`)
+- ✅ **T2** plan.json v2 serde types + validator + checked-in JSON Schema (`d78c6f4`)
+- ✅ **T3** deterministic floor module (baseline + gates + runner) (`0a89d6d`, `b27a56d`)
+
+All four ran as autonomous headless spinoffs with `/llm-review` gates; the
+self-improvement loop worked (T2 → `plan-check-run-contract`, T0 → `outright-tasty-son`).
+
+Open before **T5** wires things live:
+- `plan-check-run-contract` — `check.run` shape (recommend structured `{cmd,cwd,expect_exit}`). **Awaiting owner nod (framed as possibly their call).**
+- **T4 (control-loop inversion) + T5 (state machine)** contend on `supervise/` → sequence, don't parallelize. T4's shape is the consequential architectural fork → sync before reshaping the supervisor.
+
 ## Critical path
 
 ```
