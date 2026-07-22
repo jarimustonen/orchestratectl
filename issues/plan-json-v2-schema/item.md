@@ -2,8 +2,14 @@
 created: 2026-07-22
 updated: 2026-07-22
 type: task
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-22
+commits:
+- hash: bb84fb4
+  summary: plan.json v2 types+validator+schema
+- hash: 2c99c69
+  summary: address llm-review findings
 ---
 
 # plan.json v2 schema + validator (checks/assertions, immutable plan_rev, intent_rev, DAG validity)
