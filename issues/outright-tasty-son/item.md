@@ -2,8 +2,9 @@
 created: 2026-07-22
 updated: 2026-07-22
 type: task
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-22
 ---
 
 # CodeHarness execution-control gap: timeout enforcement + cancellation-token trait param (T0 follow-up, blocks live wiring)
@@ -74,3 +75,8 @@ governed schema-evolution process (design §13) when the pipeline matures:
 - Blocks: breakdown **T5** (staged supervisor) / **T6** (circuit-breakers) /
   **T11** (rollout wiring) — must land before auto-merge is enabled.
 
+## Comments
+
+### 2026-07-22T16:53:35Z · @agent
+
+Resolved: timeout enforcement + CancelToken added to CodeHarness. run_chunk takes &CancelToken; ChunkRequest/Check carry optional millisecond timeouts. AiderHarness kills the agent's (and each check's) process group on timeout/cancel via proc::run_with_control, drains a partial transcript, returns Timeout/Cancelled. StubHarness gained SlowUntilCancel for deterministic conformance tests. /llm-review (4 models) run; all consensus correctness/resource-safety findings fixed (notably a reader-thread deadlock on escaped descendants) with regression tests. Concurrency model confirmed: shared Arc<dyn CodeHarness>. Out-of-scope documented as T5/T6: transactional worktree reset on stop, chunk-wide deadline over the git tail.
