@@ -2,11 +2,14 @@
 created: 2026-07-22
 updated: 2026-07-22
 type: task
-status: in-progress
+status: fixed
 priority: high
 commits:
 - hash: 7d765dc
   summary: CodeHarness trait + aider adapter + conformance suite (T0)
+- hash: 24b487f
+  summary: address llm-review findings (base verify, dirty/ancestry outcome mapping, check-id conformance, Send+Sync)
+closed: 2026-07-22
 ---
 
 # CodeHarness adapter interface + ChunkRequest/ChunkResult protocol + conformance suite (aider first adapter)
