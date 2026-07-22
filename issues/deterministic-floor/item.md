@@ -2,8 +2,9 @@
 created: 2026-07-22
 updated: 2026-07-22
 type: task
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-22
 ---
 
 # Deterministic floor: baseline snapshot + supervisor-enforced gates (tests/clippy vs baseline, file-scope, test-gaming) as standalone module
