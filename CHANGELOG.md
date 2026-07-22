@@ -17,6 +17,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ChunkOutcome::Timeout`/`Cancelled` (never a hang); `StubHarness` gained a
   `SlowUntilCancel` behaviour so the conformance suite tests both deterministically
   with no network. Unblocks live wiring (T5).
+- **Deterministic correctness floor (code-pipeline T3, behind the seam).** A
+  standalone module (`crates/octl-cli/src/floor/`) of pure gate functions plus a
+  thin capture layer implementing the mechanical merge floor (design §4): a
+  serde `BaselineSnapshot` captured at the `feat/<slug>` fork (test pass-list +
+  clippy-warning-list hashes projecting down to `plan::Baseline`, optional
+  coverage), a check runner over `octl_core::plan::Check`, and five pure gates —
+  checks-pass, no-regression (no baseline-passing test now fails), no-new-clippy,
+  no-test-gaming (count/ignore/rename/assertion-density), and file-scope
+  (`files_touched[]` + slack) — returning a structured `FloorVerdict` of
+  `Violation`s. No LLM calls, no judgment, fully unit-tested from fixtures + temp
+  git repos, no network. Unused by default — not wired into any live
+  `run merge`/supervisor path; staged rollout (design §14) plugs it into the
+  supervisor merge gate at T5.
 - **`plan.json` v2 schema + validator (`octl_core::plan`).** Serde types for the
   code-pipeline stage contract (`schema_version`, immutable `plan_rev`,
   `intent_rev`, `feature`, `baseline`, `acceptance[]` checks/assertions, and the
