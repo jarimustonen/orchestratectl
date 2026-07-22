@@ -54,7 +54,18 @@ pub const HARNESS_CONTRACT_VERSION: u32 = 1;
 /// crowned by a single spike (design §10 harness-neutral principle). The
 /// supervisor consumes only [`ChunkResult`]; it never parses tool-specific prose
 /// or infers success from an exit status.
-pub trait CodeHarness {
+///
+/// `Send + Sync`: the supervisor will drive chunks concurrently and share the
+/// harness as `Arc<dyn CodeHarness>` across threads. Adapters keep per-call
+/// mutation behind interior mutability.
+///
+/// **Execution control (timeout / cancellation) is NOT yet part of this
+/// signature** — `run_chunk` is synchronous with no deadline or cancel token, so
+/// the `Timeout`/`Cancelled` outcomes are declared but unreachable by the aider
+/// adapter. Settling that (a cancel-token parameter or an async trait) is a
+/// prerequisite for live wiring, tracked in issue `outright-tasty-son` (design
+/// §9 circuit-breakers / breakdown T6).
+pub trait CodeHarness: Send + Sync {
     /// What this adapter supports, so the supervisor can branch on it.
     fn capabilities(&self) -> HarnessCapabilities;
 
@@ -82,9 +93,12 @@ pub struct HarnessCapabilities {
     /// The adapter reports token/cost usage in [`ChunkResult::usage`] (design §9
     /// cost instrumentation, §11 token discipline).
     pub reports_usage: bool,
-    /// The adapter confines its edits to the declared [`ChunkRequest::files`]
-    /// scope. Advisory only — the deterministic floor still enforces file-scope
-    /// at merge time (design §4), never trusting this flag.
+    /// The adapter *guarantees* it confines edits to the declared
+    /// [`ChunkRequest::files`] scope. Conservative: an adapter that merely passes
+    /// the scope as a hint (aider gives the files as argv but can still create or
+    /// edit other paths on instruction) reports `false` — "do not rely on me for
+    /// scope." Either way the deterministic floor enforces file-scope at merge
+    /// time (design §4); this flag never substitutes for that enforcement.
     pub honors_file_scope: bool,
     /// The adapter executes the request's [`ChunkRequest::checks`] itself and
     /// populates [`ChunkResult::check_results`] (the code-node self-check, design
@@ -97,6 +111,11 @@ pub struct HarnessCapabilities {
 /// half of the plan's criteria (design §4 `checks` vs `assertions`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
+    /// Stable identifier for this check within the chunk, so a [`CheckResult`]
+    /// can be paired back to its `Check` even when two checks share a `run`
+    /// command or a check is renamed. Matching on `run` string alone is
+    /// ambiguous; the id is the join key the conformance suite enforces.
+    pub id: String,
     /// Human-readable description of what the check verifies.
     pub desc: String,
     /// Shell command executed via `sh -c` in the worktree. Exit 0 = pass.
@@ -174,6 +193,8 @@ pub enum ChunkOutcome {
 /// The result of running one executable [`Check`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckResult {
+    /// The [`Check::id`] this result is for (the join key).
+    pub check_id: String,
     /// Echoes [`Check::desc`].
     pub desc: String,
     /// Echoes [`Check::run`] (the command that was executed).

@@ -4,6 +4,9 @@ updated: 2026-07-22
 type: task
 status: in-progress
 priority: high
+commits:
+- hash: 7d765dc
+  summary: CodeHarness trait + aider adapter + conformance suite (T0)
 ---
 
 # CodeHarness adapter interface + ChunkRequest/ChunkResult protocol + conformance suite (aider first adapter)

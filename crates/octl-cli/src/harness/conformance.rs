@@ -18,25 +18,52 @@
 //! [`aider`]: super::aider
 //! [`StubHarness`]: super::stub::StubHarness
 
-use super::{ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness, HarnessError};
+use std::collections::HashSet;
+
+use super::{
+    ChunkOutcome, ChunkRequest, ChunkResult, HarnessCapabilities, HARNESS_CONTRACT_VERSION,
+};
+
+/// A full git object id is 40 (SHA-1) or 64 (SHA-256) hex chars.
+fn is_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
 
 /// Assert a [`ChunkResult`] satisfies the structural contract every adapter must
-/// honour, independent of which tool produced it. Returns `Err(reason)` on the
-/// first violation so callers can surface it (tests `.unwrap()` it).
+/// honour, independent of which tool produced it. `caps` is the producing
+/// adapter's [`HarnessCapabilities`], needed to enforce check-completeness.
+/// Returns `Err(reason)` on the first violation (tests `.unwrap()` it).
 ///
 /// Invariants:
-/// 1. `resulting_commit.is_some()` **iff** `outcome` is [`ChunkOutcome::Committed`],
-///    and the two commit oids agree.
-/// 2. A committed oid is non-empty.
+/// 1. `schema_version` matches the linked [`HARNESS_CONTRACT_VERSION`].
+/// 2. `resulting_commit.is_some()` **iff** `outcome` is [`ChunkOutcome::Committed`],
+///    the two oids agree, and the committed oid is a well-formed git object id.
 /// 3. `changed_files` is non-empty only for a committed outcome.
-/// 4. Every `check_results` entry corresponds to a requested check (matched by
-///    its `run` command) — an adapter must not invent checks.
-/// 5. A `transcript_ref`, when present, is a non-empty path.
-pub fn assert_result_conforms(req: &ChunkRequest, res: &ChunkResult) -> Result<(), String> {
+/// 4. A [`ChunkOutcome::Failed`] carries a non-empty `reason`.
+/// 5. Every `check_results` entry has a `check_id` matching a requested check,
+///    with no duplicates. When the adapter `runs_checks` and execution reached
+///    the check phase (any outcome but `Timeout`/`Cancelled`), the reported
+///    check ids are exactly the requested set (completeness). When it does not
+///    `runs_checks`, `check_results` is empty.
+/// 6. A `transcript_ref`, when present, is a non-empty path.
+pub fn assert_result_conforms(
+    req: &ChunkRequest,
+    res: &ChunkResult,
+    caps: HarnessCapabilities,
+) -> Result<(), String> {
+    if res.schema_version != HARNESS_CONTRACT_VERSION {
+        return Err(format!(
+            "schema_version {} != linked contract version {HARNESS_CONTRACT_VERSION}",
+            res.schema_version
+        ));
+    }
+
     match &res.outcome {
         ChunkOutcome::Committed { commit } => {
-            if commit.is_empty() {
-                return Err("Committed outcome carries an empty commit oid".into());
+            if !is_oid(commit) {
+                return Err(format!(
+                    "Committed outcome carries a non-oid commit: {commit:?}"
+                ));
             }
             match &res.resulting_commit {
                 Some(rc) if rc == commit => {}
@@ -48,33 +75,60 @@ pub fn assert_result_conforms(req: &ChunkRequest, res: &ChunkResult) -> Result<(
                 None => return Err("Committed outcome but resulting_commit is None".into()),
             }
         }
-        ChunkOutcome::NoChange
-        | ChunkOutcome::Failed { .. }
-        | ChunkOutcome::Timeout
-        | ChunkOutcome::Cancelled => {
-            if res.resulting_commit.is_some() {
-                return Err(format!(
-                    "non-committed outcome {:?} must not carry resulting_commit",
-                    res.outcome
-                ));
+        ChunkOutcome::Failed { reason } => {
+            if reason.trim().is_empty() {
+                return Err("Failed outcome carries an empty reason".into());
             }
-            if !res.changed_files.is_empty() {
-                return Err(format!(
-                    "non-committed outcome {:?} must not report changed_files",
-                    res.outcome
-                ));
-            }
+        }
+        ChunkOutcome::NoChange | ChunkOutcome::Timeout | ChunkOutcome::Cancelled => {}
+    }
+
+    if !matches!(res.outcome, ChunkOutcome::Committed { .. }) {
+        if res.resulting_commit.is_some() {
+            return Err(format!(
+                "non-committed outcome {:?} must not carry resulting_commit",
+                res.outcome
+            ));
+        }
+        if !res.changed_files.is_empty() {
+            return Err(format!(
+                "non-committed outcome {:?} must not report changed_files",
+                res.outcome
+            ));
         }
     }
 
-    let requested: Vec<&str> = req.checks.iter().map(|c| c.run.as_str()).collect();
+    // Check-result integrity: ids ⊆ requested, no duplicates.
+    let requested: HashSet<&str> = req.checks.iter().map(|c| c.id.as_str()).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
     for cr in &res.check_results {
-        if !requested.contains(&cr.run.as_str()) {
+        if !requested.contains(cr.check_id.as_str()) {
             return Err(format!(
-                "check_results contains an un-requested check: {:?}",
-                cr.run
+                "check_results contains an un-requested check_id: {:?}",
+                cr.check_id
             ));
         }
+        if !seen.insert(cr.check_id.as_str()) {
+            return Err(format!(
+                "duplicate check_id in check_results: {:?}",
+                cr.check_id
+            ));
+        }
+    }
+    if caps.runs_checks {
+        // Timeout/Cancelled may stop before the check phase; every other outcome
+        // must report a result for every requested check.
+        if !matches!(res.outcome, ChunkOutcome::Timeout | ChunkOutcome::Cancelled)
+            && seen != requested
+        {
+            return Err(format!(
+                "runs_checks adapter reported {} check results for {} requested checks",
+                seen.len(),
+                requested.len()
+            ));
+        }
+    } else if !res.check_results.is_empty() {
+        return Err("adapter reports runs_checks=false but returned check_results".into());
     }
 
     if let Some(t) = &res.transcript_ref {
@@ -87,15 +141,22 @@ pub fn assert_result_conforms(req: &ChunkRequest, res: &ChunkResult) -> Result<(
 }
 
 /// Run `harness.run_chunk(req)` and, on success, assert the result conforms to
-/// the contract before returning it. The single entry point an adapter's tests
-/// use so every returned result is contract-gated automatically.
+/// the contract (using the harness's own capabilities) before returning it. The
+/// single entry point an adapter's tests use so every returned result is
+/// contract-gated automatically.
+///
+/// Test-only: it *panics* on non-conformance, which is the right behavior for a
+/// test gate but would take down a supervisor if called in production — so it is
+/// `#[cfg(test)]`. Production code that wants to validate an adapter result
+/// should call [`assert_result_conforms`] and handle the `Err`.
+#[cfg(test)]
 pub fn run_and_check(
-    harness: &dyn CodeHarness,
+    harness: &dyn super::CodeHarness,
     req: &ChunkRequest,
-) -> Result<ChunkResult, HarnessError> {
+) -> Result<ChunkResult, super::HarnessError> {
     let out = harness.run_chunk(req);
     if let Ok(res) = &out {
-        assert_result_conforms(req, res)
+        assert_result_conforms(req, res, harness.capabilities())
             .unwrap_or_else(|e| panic!("adapter produced a non-conforming ChunkResult: {e}"));
     }
     out
@@ -124,9 +185,20 @@ mod tests {
 
     fn one_check() -> Vec<Check> {
         vec![Check {
+            id: "chk1".into(),
             desc: "d".into(),
             run: "true".into(),
         }]
+    }
+
+    /// Default (fully-capable) capabilities, matching `StubHarness::new`.
+    fn full_caps() -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: true,
+            honors_file_scope: true,
+            runs_checks: true,
+        }
     }
 
     // ---- The design §10 scenario matrix, run against the stub by default. ----
@@ -257,17 +329,31 @@ mod tests {
         let req = req_with_checks(vec![]);
         let mut res = ChunkResult::committed("e".repeat(40), vec![]);
         res.resulting_commit = None; // corrupt it
-        assert!(assert_result_conforms(&req, &res).is_err());
+        assert!(assert_result_conforms(&req, &res, full_caps()).is_err());
+    }
+
+    #[test]
+    fn conformance_rejects_non_oid_commit() {
+        let req = req_with_checks(vec![]);
+        // A non-hex, wrong-length "commit" must be rejected.
+        let res = ChunkResult::committed("not-a-real-oid", vec![]);
+        assert!(assert_result_conforms(&req, &res, full_caps()).is_err());
+    }
+
+    #[test]
+    fn conformance_rejects_wrong_schema_version() {
+        let req = req_with_checks(vec![]);
+        let mut res = ChunkResult::no_change();
+        res.schema_version = HARNESS_CONTRACT_VERSION + 99;
+        assert!(assert_result_conforms(&req, &res, full_caps()).is_err());
     }
 
     #[test]
     fn conformance_rejects_unrequested_check() {
-        let req = req_with_checks(vec![Check {
-            desc: "d".into(),
-            run: "true".into(),
-        }]);
+        let req = req_with_checks(one_check());
         let mut res = ChunkResult::no_change();
         res.check_results.push(super::super::CheckResult {
+            check_id: "not-requested".into(),
             desc: "sneaky".into(),
             run: "rm -rf /".into(),
             passed: true,
@@ -275,7 +361,26 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
         });
-        assert!(assert_result_conforms(&req, &res).is_err());
+        assert!(assert_result_conforms(&req, &res, full_caps()).is_err());
+    }
+
+    #[test]
+    fn conformance_rejects_incomplete_checks_when_runs_checks() {
+        // Two checks requested, adapter claims runs_checks, but reports none.
+        let req = req_with_checks(vec![
+            Check {
+                id: "a".into(),
+                desc: "d".into(),
+                run: "true".into(),
+            },
+            Check {
+                id: "b".into(),
+                desc: "d".into(),
+                run: "true".into(),
+            },
+        ]);
+        let res = ChunkResult::no_change(); // no check_results
+        assert!(assert_result_conforms(&req, &res, full_caps()).is_err());
     }
 
     #[test]

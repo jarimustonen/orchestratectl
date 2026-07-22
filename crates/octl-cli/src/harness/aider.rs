@@ -10,9 +10,10 @@
 //! ```
 //!
 //! It **commits but does not merge** (design §3 code role). The outcome is read
-//! from the resulting *git* state — the commit at `HEAD` vs `base_commit` — never
-//! from aider's stdout prose (design §10). If no commit was produced, the result
-//! is synthesized as [`ChunkOutcome::NoChange`].
+//! from the resulting *git* state — never from aider's stdout prose (design §10):
+//! the worktree must be forked at `base_commit`; a forward HEAD advance is
+//! [`ChunkOutcome::Committed`]; a clean no-op is [`ChunkOutcome::NoChange`];
+//! uncommitted leftovers or a history rewrite are [`ChunkOutcome::Failed`].
 //!
 //! Credentials are never hardcoded: the model id and the credential env-var name
 //! are [`AiderConfig`] inputs; the key itself is read from the environment the
@@ -122,19 +123,60 @@ fn worktree_status(worktree: &Path) -> Result<String, HarnessError> {
     git(worktree, &["status", "--porcelain"])
 }
 
-/// Files changed between two commits (`git diff --name-only base..head`).
-fn changed_files(worktree: &Path, base: &str, head: &str) -> Vec<PathBuf> {
-    let Ok(out) = git(
+/// Files changed between two commits. Uses `-z` (NUL-delimited) so paths with
+/// newlines/tabs/spaces survive intact. Propagates a git failure rather than
+/// masking it as an empty diff: a `Committed` result with a silently-empty file
+/// list would corrupt provenance (design §7).
+fn changed_files(worktree: &Path, base: &str, head: &str) -> Result<Vec<PathBuf>, HarnessError> {
+    // `git()` trims, which is fine here — trailing NUL is not meaningful.
+    let out = git(
         worktree,
-        &["diff", "--name-only", &format!("{base}..{head}")],
-    ) else {
-        return Vec::new();
-    };
-    out.lines()
-        .map(str::trim)
+        &["diff", "--name-only", "-z", &format!("{base}..{head}")],
+    )?;
+    Ok(out
+        .split('\0')
         .filter(|l| !l.is_empty())
         .map(PathBuf::from)
-        .collect()
+        .collect())
+}
+
+/// Whether `ancestor` is an ancestor of `descendant` (i.e. HEAD only moved
+/// forward). `git merge-base --is-ancestor` exits 0 for yes, 1 for no; only a
+/// spawn/other failure is an error.
+fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, HarnessError> {
+    let out = Command::new(git_bin())
+        .arg("-C")
+        .arg(worktree)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .map_err(|e| HarnessError::InvalidWorktree {
+            message: format!(
+                "could not run git merge-base in {}: {e}",
+                worktree.display()
+            ),
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(HarnessError::InvalidWorktree {
+            message: format!(
+                "git merge-base --is-ancestor failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        }),
+    }
+}
+
+/// Resolve a revision to a canonical commit oid, verifying it exists and is a
+/// commit (`git rev-parse --verify <rev>^{commit}`).
+fn resolve_commit(worktree: &Path, rev: &str) -> Result<String, HarnessError> {
+    git(
+        worktree,
+        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
+    )
+    .map_err(|_| HarnessError::InvalidWorktree {
+        message: format!("base_commit {rev:?} does not resolve to a commit in the worktree"),
+    })
 }
 
 /// Per-attempt artifact directory under the system temp dir, unique by ids so
@@ -169,6 +211,7 @@ fn run_check(worktree: &Path, check: &Check) -> CheckResult {
         .output();
     match out {
         Ok(o) => CheckResult {
+            check_id: check.id.clone(),
             desc: check.desc.clone(),
             run: check.run.clone(),
             passed: o.status.success(),
@@ -177,6 +220,7 @@ fn run_check(worktree: &Path, check: &Check) -> CheckResult {
             stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
         },
         Err(e) => CheckResult {
+            check_id: check.id.clone(),
             desc: check.desc.clone(),
             run: check.run.clone(),
             passed: false,
@@ -244,12 +288,13 @@ fn parse_tokens(line: &str) -> Option<(Option<u64>, Option<u64>)> {
 /// Parse a token count token like `1.2k`, `345`, or `2.0k`.
 fn parse_token_count(s: &str) -> Option<u64> {
     let s = s.trim();
-    let (num_part, mult) =
-        if let Some(stripped) = s.strip_suffix('k').or_else(|| s.strip_suffix('K')) {
-            (stripped, 1000.0)
-        } else {
-            (s, 1.0)
-        };
+    let (num_part, mult) = if let Some(stripped) = s.strip_suffix(['k', 'K']) {
+        (stripped, 1_000.0)
+    } else if let Some(stripped) = s.strip_suffix(['m', 'M']) {
+        (stripped, 1_000_000.0)
+    } else {
+        (s, 1.0)
+    };
     let num: String = num_part
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
@@ -257,7 +302,12 @@ fn parse_token_count(s: &str) -> Option<u64> {
     if num.is_empty() {
         return None;
     }
-    num.parse::<f64>().ok().map(|v| (v * mult) as u64)
+    // Guard the f64→u64 cast: reject negatives/NaN so usage never records a
+    // saturated-garbage token count.
+    num.parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| (v * mult) as u64)
 }
 
 impl CodeHarness for AiderHarness {
@@ -293,10 +343,19 @@ impl CodeHarness for AiderHarness {
             return Err(HarnessError::DirtyWorktree { details: status });
         }
 
-        // Record the pre-run HEAD. `base_commit` is what the chunk *should* be
-        // forked from; HEAD is what it actually is. We diff against HEAD so a
-        // resulting commit is detected even if the two momentarily disagree.
+        // Verify the worktree is actually forked at `req.base_commit`. Silently
+        // diffing against whatever HEAD happens to be would launder drift and
+        // record false provenance (the plan was briefed against `base_commit` /
+        // `plan_rev`); `InvalidWorktree` documents exactly this precondition.
         let base_head = head_oid(worktree)?;
+        let want_base = resolve_commit(worktree, &req.base_commit)?;
+        if base_head != want_base {
+            return Err(HarnessError::InvalidWorktree {
+                message: format!(
+                    "worktree HEAD ({base_head}) != declared base_commit ({want_base})"
+                ),
+            });
+        }
 
         // 3. Materialize the brief + transcript artifacts.
         let dir = artifact_dir(req);
@@ -324,6 +383,9 @@ impl CodeHarness for AiderHarness {
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
+        // `--` terminates option parsing so a file named `--model` (or any
+        // leading-dash path) can't inject an aider flag.
+        cmd.arg("--");
         for file in &req.files {
             cmd.arg(file);
         }
@@ -342,12 +404,21 @@ impl CodeHarness for AiderHarness {
 
         // 5. Read the outcome from git, never from aider's prose.
         let new_head = head_oid(worktree)?;
+        let dirty_after = !worktree_status(worktree)?.is_empty();
+
         let outcome = if new_head == base_head {
-            if output.status.success() {
-                // Ran cleanly, changed nothing.
+            // No commit. If aider left uncommitted edits, this is NOT a clean
+            // NoChange — reporting NoChange would both lose those edits from the
+            // provenance and poison the next attempt's dirty-worktree guard. The
+            // adapter does not auto-reset (that would destroy evidence); the
+            // supervisor owns worktree cleanup.
+            if dirty_after {
+                ChunkOutcome::Failed {
+                    reason: "aider left uncommitted changes without producing a commit".to_string(),
+                }
+            } else if output.status.success() {
                 ChunkOutcome::NoChange
             } else {
-                // Ran, produced no commit, and signalled failure.
                 ChunkOutcome::Failed {
                     reason: format!(
                         "aider exited {} with no commit produced",
@@ -358,16 +429,29 @@ impl CodeHarness for AiderHarness {
                     ),
                 }
             }
-        } else {
+        } else if is_ancestor(worktree, &base_head, &new_head)? {
+            // HEAD advanced forward from the base — one or more new commits. The
+            // resulting commit is the branch tip; the chunk's range is
+            // base_commit..tip (which `changed_files` diffs).
             ChunkOutcome::Committed {
                 commit: new_head.clone(),
+            }
+        } else {
+            // HEAD moved but the base is no longer an ancestor: aider rewrote
+            // history (reset/amend/rebase/checkout of unrelated work). Refuse to
+            // call that a chunk commit — the range base..tip is meaningless.
+            ChunkOutcome::Failed {
+                reason: format!(
+                    "aider moved HEAD to {new_head}, which is not a descendant of \
+                     base_commit {base_head} (history was rewritten)"
+                ),
             }
         };
 
         let (resulting_commit, files) = match &outcome {
             ChunkOutcome::Committed { commit } => (
                 Some(commit.clone()),
-                changed_files(worktree, &base_head, &new_head),
+                changed_files(worktree, &base_head, &new_head)?,
             ),
             _ => (None, Vec::new()),
         };
@@ -394,7 +478,7 @@ impl CodeHarness for AiderHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::conformance::assert_result_conforms;
+    use crate::harness::conformance::run_and_check;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -444,16 +528,31 @@ mod tests {
         dir
     }
 
+    /// Current HEAD oid of a repo (real git).
+    fn head_of(worktree: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A request whose `base_commit` is the repo's real HEAD (the adapter now
+    /// verifies the two agree). Uses a bogus base only where the test returns
+    /// before the base check (credential / dirty guards).
     fn base_request(worktree: &Path) -> ChunkRequest {
         ChunkRequest {
             run_id: "run1".into(),
             chunk_id: "c1".into(),
             attempt_id: "a1".into(),
             worktree_path: worktree.to_path_buf(),
-            base_commit: "0".repeat(40),
+            base_commit: head_of(worktree),
             plan_rev: "v1".into(),
             brief: "do the thing".into(),
             checks: vec![Check {
+                id: "chk1".into(),
                 desc: "always passes".into(),
                 run: "true".into(),
             }],
@@ -508,8 +607,7 @@ mod tests {
 
         let h = AiderHarness::new(AiderConfig::new("m"));
         let req = base_request(repo.path());
-        let res = h.run_chunk(&req).unwrap();
-        assert_result_conforms(&req, &res).unwrap();
+        let res = run_and_check(&h, &req).unwrap();
 
         assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
         assert!(res.resulting_commit.is_some());
@@ -542,8 +640,7 @@ mod tests {
 
         let h = AiderHarness::new(AiderConfig::new("m"));
         let req = base_request(repo.path());
-        let res = h.run_chunk(&req).unwrap();
-        assert_result_conforms(&req, &res).unwrap();
+        let res = run_and_check(&h, &req).unwrap();
         assert_eq!(res.outcome, ChunkOutcome::NoChange);
         assert!(res.resulting_commit.is_none());
         assert!(res.changed_files.is_empty());
@@ -567,8 +664,7 @@ mod tests {
 
         let h = AiderHarness::new(AiderConfig::new("m"));
         let req = base_request(repo.path());
-        let res = h.run_chunk(&req).unwrap();
-        assert_result_conforms(&req, &res).unwrap();
+        let res = run_and_check(&h, &req).unwrap();
         assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
 
         std::env::remove_var("OCTL_AIDER_BIN");
@@ -606,15 +702,138 @@ mod tests {
         let h = AiderHarness::new(AiderConfig::new("m"));
         let mut req = base_request(repo.path());
         req.checks = vec![Check {
+            id: "chk1".into(),
             desc: "always fails".into(),
             run: "exit 1".into(),
         }];
-        let res = h.run_chunk(&req).unwrap();
-        assert_result_conforms(&req, &res).unwrap();
+        let res = run_and_check(&h, &req).unwrap();
         assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
         assert_eq!(res.check_results.len(), 1);
         assert!(!res.check_results[0].passed);
         assert_eq!(res.check_results[0].exit_code, Some(1));
+        assert_eq!(res.check_results[0].check_id, "chk1");
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn base_commit_mismatch_is_rejected() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Add a second commit so HEAD advances past the request's base_commit.
+        std::fs::write(repo.path().join("seed.txt"), "seed2\n").unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["commit", "-qam", "advance"])
+            .output()
+            .unwrap();
+        // base_request reads the (new) HEAD, so rewind the request's base to the
+        // parent — the worktree HEAD now disagrees with the declared base.
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+        let mut req = base_request(repo.path());
+        req.base_commit = head_of(repo.path()) + "~1";
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        // Resolve the parent to a real oid so it's a *mismatch*, not an unknown ref.
+        let parent = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["rev-parse", "HEAD~1"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        req.base_commit = parent;
+        let err = h.run_chunk(&req).unwrap_err();
+        assert!(matches!(err, HarnessError::InvalidWorktree { .. }));
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn uncommitted_edits_without_commit_map_to_failed() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Fake aider edits a tracked file but never commits.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\nprintf 'dirty\\n' >> seed.txt\nexit 0\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        let res = run_and_check(&h, &req).unwrap();
+        // NOT NoChange — the worktree was left dirty without a commit.
+        assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
+        assert!(res.resulting_commit.is_none());
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn history_rewrite_is_not_a_commit() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Fake aider resets HEAD backwards to an unrelated new root — HEAD moves
+        // but base_commit is no longer an ancestor.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\n\
+             git checkout -q --orphan rogue\n\
+             git rm -q -rf . >/dev/null 2>&1\n\
+             printf 'x\\n' > other.txt\n\
+             git add other.txt\n\
+             git commit -q -m rogue\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        let res = run_and_check(&h, &req).unwrap();
+        assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
+        assert!(res.resulting_commit.is_none());
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn multiple_commits_reported_as_committed_tip_with_full_diff() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Fake aider makes TWO commits forward; the range base..tip spans both.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\n\
+             printf 'a\\n' > a.txt && git add a.txt && git commit -q -m a\n\
+             printf 'b\\n' > out.txt && git add out.txt && git commit -q -m b\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        let res = run_and_check(&h, &req).unwrap();
+        assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
+        let mut files = res.changed_files.clone();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![PathBuf::from("a.txt"), PathBuf::from("out.txt")]
+        );
 
         std::env::remove_var("OCTL_AIDER_BIN");
         std::env::remove_var("DEEPSEEK_API_KEY");
@@ -627,6 +846,14 @@ mod tests {
         assert_eq!(u.output_tokens, Some(500));
         assert_eq!(u.total_tokens, Some(2500));
         assert_eq!(u.cost_usd, Some(0.01));
+    }
+
+    #[test]
+    fn parse_usage_handles_million_suffix() {
+        let u = parse_usage("Tokens: 1.5M sent, 2k received. Cost: $1.20 message.").unwrap();
+        assert_eq!(u.input_tokens, Some(1_500_000));
+        assert_eq!(u.output_tokens, Some(2_000));
+        assert_eq!(u.cost_usd, Some(1.20));
     }
 
     #[test]

@@ -83,6 +83,7 @@ impl StubHarness {
             .map(|(i, c)| {
                 let passed = !(fail_first && i == 0);
                 CheckResult {
+                    check_id: c.id.clone(),
                     desc: c.desc.clone(),
                     run: c.run.clone(),
                     passed,
@@ -130,7 +131,10 @@ impl CodeHarness for StubHarness {
                 outcome: ChunkOutcome::NoChange,
                 resulting_commit: None,
                 changed_files: Vec::new(),
-                check_results: Vec::new(),
+                // A completed run still reports its self-check state (like aider,
+                // which runs checks even on NoChange) — required so the
+                // completeness invariant holds when `runs_checks` is true.
+                check_results: self.synth_checks(&req.checks, false),
                 transcript_ref,
                 usage,
             },
