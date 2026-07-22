@@ -1,360 +1,357 @@
-# Code Pipeline — design
+# Code Pipeline — design (v2, post-panel)
 
 Spec-driven, model-tiered coding as the **default coding path** in
 orchestratectl. Expensive thinking is done once (spec) and amortized across
-cheap implementation (code); a heavy model verifies; findings loop back until
-the product matches the *original intent*.
+cheap implementation (code); a heavy model verifies **on top of a deterministic
+floor**; findings loop back until the product matches the *original intent*.
 
-Status: DESIGN (iterating). Implementation follows once locked.
-
----
-
-## 0. Design principles (project-wide, surfaced while shaping this)
-
-These govern this pipeline and are meant to generalize to the rest of
-orchestratectl.
-
-1. **Trust model judgment over brittle rules.** Where a decision needs an
-   estimate ("is this chunk too big?", "does this warrant another review
-   round?"), instruct the agent to use common sense — *not* a hardcoded
-   numeric threshold. We ask the model to be sensible and rely on its
-   intuition. Do NOT write rules like ">2 files or a separate interface → split";
-   write "split into appropriately-sized pieces by your own judgment of what a
-   sensible software task is."
-2. **Concentrate decisions in the expensive model.** Every point where a
-   judgment is made belongs to a capable model (Opus). Cheap models only do
-   mechanical work that contains no decisions.
-3. **Single human-interaction locus.** All conversation with the human flows
-   through *one* front-end agent (the one running `/stint` etc.). No other agent
-   ever talks to the human directly — it escalates *up* the chain, and the
-   front-end decides what actually reaches the person. There is no "dumb" human
-   gate (e.g. a human typing a merge command when everything is already resolved).
-4. **Self-improving tooling.** When an agent hits a limitation in a contract it
-   depends on (the `plan.json` schema, a CLI surface, a report shape), it files a
-   feedback issue into the **orchestratectl repo** describing the gap, rather than
-   working around it silently. The software improves itself on the fly through the
-   work it runs.
+Status: DESIGN v2 — folds in the 2026-07-22 multi-model panel non-negotiables
+(`history/2026-07-22-panel-code-pipeline.md`). Implementation-ready pending the
+three owner decisions in §15 (defaults applied, flagged for override).
 
 ---
 
-## 1. The invariant: intent, not spec
+## 0. Design principles (revised)
 
-The anchor is the **original intent** of the feature — what the user actually
-wants to exist. The **spec is only a draft** of that intent: it gains
-corrections and refinements along the way, most surfaced during verification.
-When code reveals the spec is wrong, we update the spec — but the thing held
-constant is the intent. Convergence is "product matches intent," never "spec was
-implemented verbatim" and never "verify came back clean."
-
-**Verify is almost never "ok"** — an Opus verify always produces material, so the
-verify→triage→fix loop is the *normal* cycle, not an exception. But the loop is
-kept short by judgment, not by a counter:
-
-- After each fix, the **orchestrator heuristically decides** whether the change
-  warrants another verify round, by estimating the scope of what changed
-  (common-sense assessment — no fixed iteration number). A tiny, contained fix may
-  need no re-verify; a broad change does.
-- **Two fix rounds is already a lot.** If the product isn't converging by then,
-  that is a signal to escalate (§7), not to keep grinding.
-
-Convergence = *no remaining must-fix findings* (the rest triaged to
-spin-offs / drops), as judged by the orchestrator — not an empty verify.
+1. **Trust model judgment — on the quality axis only (RE-SCOPED).** Judgment
+   governs *quality and sizing*: chunk size, must-fix vs nice-to-have, whether a
+   re-verify is warranted. It does **not** govern the *correctness-gate axis* or
+   the *resource-safety axis* — those are deterministic and mechanical (§4, §9).
+   No brittle numeric rules for sizing; hard mechanical rules for "did tests pass"
+   and "did we blow the budget." Different axes. *(Amends the v1 principle per the
+   panel; see §15 decision D1.)*
+2. **Concentrate decisions in the expensive model.** Every judgment belongs to an
+   Opus context. Cheap models do only mechanical, decision-free work.
+3. **Single human-interaction locus.** All human conversation flows through one
+   front-end agent; sub-agents escalate *up*, never address the human. No dumb
+   human-gated merge. (A *passive, non-blocking* post-merge rollup is allowed —
+   §12, decision D2.)
+4. **Self-improving — but governed — tooling.** An agent that hits a contract
+   limitation files a **structured schema-gap** into the orchestratectl repo. That
+   is a *deduplicated, evidence-backed proposal for human review*, NOT
+   "agent asks → field added." Runtime agents never act on undeclared fields (§13).
+5. **Harness-neutral by contract.** The code executor is chosen behind a versioned
+   adapter interface with a conformance suite; no runtime is crowned by a single
+   spike (§10).
+6. **Reversible rollout.** The pipeline becomes the default *end state* through
+   staged, per-run-configurable deployment with a retained legacy engine — never a
+   big-bang flip (§14).
 
 ---
 
-## 2. Model tiers (first cut)
+## 1. The invariant: intent (a first-class, orchestrator-owned artifact)
 
-| Role | Model (v1) | Makes decisions? | Why |
+The anchor is the **original intent** — what must exist. The spec is only a draft
+of it. Convergence = "product matches intent," never "spec implemented verbatim"
+nor "verify came back clean."
+
+**Intent is a separately versioned, orchestrator-owned artifact** (`intent.md` +
+an `intent_rev`), NOT a field the spec node can rewrite. The plan *references* the
+intent revision it was built against. A spec update (living draft) produces a new
+plan revision but **cannot silently redefine intent** — weakening intent or
+dropping acceptance criteria requires a logged, auditable orchestrator rationale
+(guards the "goalpost-mover" failure the panel flagged).
+
+**Verify is almost never "ok"**, so the verify→triage→fix loop is the *normal*
+cycle. It is kept short by judgment (orchestrator estimates change scope; ~2
+rounds is already a lot → escalate, don't grind) — but bounded hard by the
+resource circuit-breakers of §9, never by judgment alone.
+
+---
+
+## 2. Architecture: inverted control loop
+
+The panel's load-bearing correction. The non-LLM **supervisor owns the event
+loop**; the Opus **orchestrator is a stateless pure function**, invoked per
+decision point and returning **discrete typed action primitives** — never natural
+language, never a long-running LLM driver (which would exhaust context and
+hallucinate state transitions).
+
+```
+Supervisor (event-sourced state machine, owns the loop)
+  │  at each decision point, calls the orchestrator as a pure function:
+  │      Triage(verify_report, plan_rev, intent_rev)  ->  Action[]
+  ▼
+Orchestrator [Opus, stateless]  returns e.g.:
+      RE_CODE_CHUNK(id, findings)          TRIGGER_RE_SPEC(reason, chunk_ids)
+      ACCEPT_CHUNK(id)                     PROMOTE_TIER(id, tier)
+      OPEN_DISCUSSION(topic, severity)     PROPOSE_SPINOFF(...)
+      DECLARE_CONVERGED()                  ESCALATE(reason)
+```
+
+The supervisor validates and executes each primitive, appends events, and only
+re-invokes the orchestrator when the next decision is due. Decisions are recorded
+as **structured envelopes** (actor, input artifact IDs, reason summary, model +
+prompt version), not prose — so a run is causally replayable.
+
+---
+
+## 3. Roles & model tiers
+
+| Role | Model (v1) | Decisions? | Responsibility |
 |---|---|---|---|
-| **feature-orchestrator** | **Opus** | **yes — all of them** | holds the intent, triages findings, resolves/escalates, decides "matches intent" |
-| **spec** | **Opus** | yes (architecture) | codebase understanding + design + chunking; done once, amortized |
-| **code** | **deepseek-flash** | **no** | cheap/fast bulk implementation from a self-contained brief; other models tested later |
-| **verify** | **Opus** | yes (what's must-fix) | catches what a cheap coder misses; produces the findings that drive the loop |
+| **front-end** | Opus (user's convo) | routes to human | the sole human locus; spawns one feature-orchestrator per feature |
+| **feature-orchestrator** | Opus, **stateless fn** | yes — all | triage → typed actions; holds nothing long-lived (state is in the log) |
+| **spec** | Opus | yes (arch) | writes `plan.vN.json` (chunk DAG + turnkey briefs + checks/assertions); chunked by judgment, no numeric rules |
+| **code** | deepseek (cheap) | **no** | reads a brief, edits, runs self-check, commits its chunk branch; never merges, never reports (supervisor synthesizes the result) |
+| **verify** | Opus | yes (must-fix) | runs *above the deterministic floor*; emits findings as node.report assets |
+| **supervisor** | — (code) | none | owns the loop; enforces the floor; merges chunks; circuit-breakers; teardown |
 
-- The code tier is a **pluggable binding**, not hardcoded. v1 = deepseek-flash;
-  the tier→agent-command resolution is config so we can A/B other models without
-  touching the pipeline.
-- **The code node makes no decisions and does not self-merge.** It writes code
-  from its brief, runs a local self-check (build/lint), and commits its chunk
-  branch. The **supervisor** merges the chunk into the integration branch
-  mechanically; the code node never runs `run merge` and never triages anything.
-  This keeps every decision in an Opus context (principle 2) and shrinks what the
-  cheap model must be capable of.
-- **Adaptive promotion:** a chunk that fails verify twice is re-run at a higher
-  tier (deepseek-flash → mid → Opus). Self-healing without a human.
-
-### Infra prerequisite (foundational — build first)
-
-`run create` carries no model info today. The hook exists: `create.sh --agent
-<agent-cmd>` → `workmux add -a`. So per-node model selection is a thin addition:
-
-```
-run create --model <tier|agent-cmd>  →  create.sh --agent "<launcher for that model>"
-```
-
-deepseek-flash is **not** a Claude model, so the agent-command is not `claude
---model X` — it is whatever launcher speaks to that model. Because the code node
-is now *pure implementation* (write + commit, no self-merge, no report), the bar
-for the cheap launcher is low: **can it read a brief, edit files, and commit in a
-worktree?** — no need to honor the full node.report / run-merge contract.
-
-**Feasibility spike — PROVEN (on-machine).** The open question "can a cheap
-non-Claude model even do the code-node job (read brief → edit files → commit)?"
-is answered *yes*. Probe: `aider` (installed) driving `deepseek/deepseek-chat`
-took a self-contained brief, edited the target correctly, left untouched code
-alone, and **auto-committed** — for **$0.0004**. This validates the cost premise
-and the "commit-but-don't-merge" code-node contract. **aider was a feasibility
-probe, not the production choice.**
-
-### Harness decision (the real fork the probe exposed)
-
-deepseek is only a model; something has to *drive* it in a worktree. Options:
-
-- **(A) TARGET — one agent, routed model.** The code-node is the **same Claude
-  Code agent** as every other node, just pointed at a cheap model backend via a
-  router/proxy (`ANTHROPIC_BASE_URL` → LiteLLM / claude-code-router translating
-  Anthropic ↔ deepseek). Keeps one agent runtime, one node.report contract, one
-  skill mechanism — "always how coding is done" stays literally the same tool.
-  Cost: a router must be stood up (not installed yet — discovery found only aider
-  + llm), and a follow-up spike must confirm deepseek drives the Claude Code loop
-  (tool-calls etc.) reliably through the proxy.
-- **candidate — pi.dev.** Evaluate at the harness-selection point (what it offers
-  as a coding harness/model backend); noted so we look at it deliberately, not now.
-- **(B) FALLBACK — aider (or similar) for the code stage only.** Proven today,
-  zero extra infra; code-node speaks no node.report (supervisor synthesizes it, as
-  designed). Downside: a second tool with its own prompt/repo-map logic.
-- **(C) bespoke minimal agent** — full control, most work; later option.
-
-**Decision:** pursue **(A)** as the target; evaluate **pi.dev** at the harness
-point; keep **(B)** as the proven fallback if deepseek can't drive the Claude Code
-loop. **Next spike:** stand up a router and confirm Claude Code → deepseek runs an
-agent loop end-to-end.
-
-Regardless of harness: the deepseek key lives in `~/.config/consult-llm/config.yaml`
-and the tier→backend config must surface it (`DEEPSEEK_API_KEY` / router config) to
-the code-node env; "deepseek-flash" ≈ `deepseek-chat` (fast, non-reasoning), exact
-alias TBC, reasoner available for adaptive promotion.
+Code tier is a **pluggable adapter binding** (§10). Adaptive promotion: a chunk
+that fails verify **or on which verify disagrees with itself** is re-run at a
+higher tier.
 
 ---
 
-## 3. Contexts and who spawns whom
+## 4. The deterministic floor (NEW — the panel's #1 demand)
 
-```
-USER  ──talks only to──►  FRONT-END AGENT  (the human's conversation; /stint etc.)
-                             │  decides WHICH features to build; never sees code
-                             │  the SOLE point of human interaction (principle 3)
-                             │
-                             │  spawns one FEATURE-ORCHESTRATOR per feature
-                             ▼
-                        FEATURE-ORCHESTRATOR  [Opus]  (one feature, holds the INTENT)
-                             │  the decision brain: kicks off the pipeline, triages
-                             │  verify findings, routes FIX/DISCUSS/SPIN_OFF, updates
-                             │  the spec, decides "matches intent"; escalates UP to the
-                             │  front-end when a human call is genuinely needed.
-                             │  stays LEAN — reads compact reports + findings, never diffs
-                             │
-                             │  drives the mechanical sequence via ↓
-                             ▼
-                        SUPERVISOR STATE MACHINE  (no LLM; muscle)
-                             │  spawns stages per plan.json; MERGES chunk branches;
-                             │  does teardown
-                             ├─ spec-node   [Opus]            → plan.json + spec.md
-                             ├─ code-node×N [deepseek-flash]  → commit chunk branch (no merge)
-                             └─ verify-node [Opus]            → findings (node.report assets)
-```
+LLM verify is **advisory on top of a mechanical floor**, never the gate itself.
+The **supervisor** (not verify) enforces, against a **baseline snapshot captured
+at `feat/<slug>` fork** (test pass-list hash, clippy-warning-list, optional
+coverage):
 
-The **inner sequence** (spec→code→verify, merges, teardown) is the supervisor
-state machine — zero coordination tokens. The **outer adaptive loop** (findings →
-action, spec updates, intent check, escalation) is the Opus feature-orchestrator.
-Muscle vs. brain.
+- **No feature merges to `source_branch`, and no chunk merges to `feat/<slug>`, unless:**
+  1. the relevant checks pass (fast per-chunk; full suite at feature tip);
+  2. **no test that passed at the baseline is now failing**;
+  3. **no new clippy warnings** vs. baseline;
+  4. **no test-suite gaming**: test count didn't drop, none newly `#[ignore]`/skipped/renamed-to-no-op, assertion density in touched files didn't regress.
+- **File-scope is a merge-time constraint** (not just a hint): the supervisor
+  rejects a chunk merge whose `git diff --name-only` exceeds `files_touched[]`
+  beyond a configured slack. Out-of-scope edits force escalate/re-spec. (Execution
+  stays unconstrained; the guard is at the boundary — injection-resistant.)
 
-### Front-end vs orchestrator
-
-- **Default:** `/stint` (front-end) **spawns** a separate feature-orchestrator per
-  feature. Keeps /stint's context clean (only per-feature "done"), and pins each
-  orchestrator to one intent + one integration branch.
-- **Alternative:** `/stint` *is* the orchestrator (simpler, one-off single-feature
-  use). Not the default — it dilutes the intent-anchor and re-pollutes context.
-
-### One orchestrator = one feature
-
-A feature-orchestrator is scoped to **one** feature (one intent, one integration
-branch, one findings-loop). Multi-feature concurrency = the front-end spawns
-**several** single-feature orchestrators in parallel (existing parent→child
-fan-out). A multiplexing orchestrator would blur intents; rejected.
+`plan.json` therefore splits criteria into **executable `checks`** (a test path +
+name, a shell command) and **LLM-judged `assertions`**. Every chunk has ≥1 check;
+`acceptance[]` has ≥1 executable end-to-end check. **Test-authoring is mandatory**
+— either a dedicated stage or an explicit, supervisor-verified part of every code
+chunk's brief ("behavior chunk committed without new/modified tests" = merge
+blocker). This gives the autonomous loop a ground-truth oracle instead of two LLMs
+reading English at each other.
 
 ---
 
-## 4. Call diagram (refined sequence)
+## 5. Contexts and who spawns whom
 
 ```
- user ──"build feature X (intent)"──► FRONT-END (/stint)   ◄── only human touchpoint
-                                          │
-                                          │ run create (feature-orchestrator, Opus)
-                                          │   ↳ forks INTEGRATION BRANCH  feat/<slug>  off source (main)
-                                          ▼
-                                    FEATURE-ORCHESTRATOR [Opus]  (holds intent)
-                                          │
-             ┌────────────────────────────┤  (drives supervisor state machine)
-             │                             │
-   VAIHE 1   │  spawn spec-node [Opus] ────────────────► reads codebase on feat/<slug>
-             │                             │              writes plan.json (chunk DAG, per-chunk
-             │                             │              self-contained briefs, tier hints,
-             │                             │              verify criteria) + spec.md.
-             │                             │              Chunks sized by MODEL JUDGMENT — no rules.
-             │                             ◄── node.report "spec ready, N chunks"
-             │                             │
-             │   ▓ optional: if arch is significant/uncertain, orchestrator escalates
-             │     UP to front-end → human weighs in → else auto-proceed ▓
-             │                             │
-   VAIHE 2   │  supervisor spawns code-nodes per plan.json DAG [deepseek-flash]
-             │     ├─ chunk-1 (indep) ─┐ parallel  → self-check + commit chunk branch
-             │     ├─ chunk-2 (indep) ─┘           → SUPERVISOR merges → feat/<slug>
-             │     └─ chunk-3 (dep on 1) ─ sequential, rebased on updated feat/<slug>
-             │        (code node makes no decisions, never self-merges)
-             │                             │
-   VAIHE 3   │  spawn verify-node [Opus] on feat/<slug> tip
-             │     runs tests+clippy, checks product-vs-INTENT (not just vs spec)
-             │     emits findings as node.report assets:
-             │        fix_items[]  discussion_items[]  spinoff_proposals[]  (+ drops)
-             │                             ◄── findings
-             │                             │
-   ┌─────────┤  ORCHESTRATOR [Opus] TRIAGES findings  (/assess-findings-style)  ◄── THE LOOP
-   │ FIX / FIX_WITH_CARE ─► re-spawn the offending code chunk with findings in its brief
-   │                        (≤~2 rounds; promote tier on repeat fail)
-   │ SPEC-FLAW           ─► re-spawn spec-node to UPDATE plan.json/spec.md against INTENT,
-   │                        then re-code affected chunks  (spec = living draft)
-   │ DISCUSS             ─► orchestrator resolves autonomously if it can; else escalates
-   │                        UP to front-end → human (judgment-level only)
-   │ SPIN_OFF            ─► record proposal (non-blocking; deferred backlog, not this feature)
-   │ DROP                ─► recorded, no action
-   │  ↳ orchestrator decides by change-scope whether a re-verify is even needed
-   └─► loop until NO must-fix findings remain AND product matches intent
-             │        (>2 non-converging rounds ⇒ escalate UP, don't grind)
-             │                             │
-   VAIHE 4   │  merge feat/<slug> → source (AUTOMATIC — no human gate) ; integration branch dies
-             ▼
-      node.report (rollup: what shipped, deferred spin-offs, any open discussions)
-                                          │
-                                          ▼
-                              FRONT-END sees "X done + tiivistelmä"
+USER ──only human touchpoint──► FRONT-END [Opus]  (the human's conversation)
+                                   │ spawns one feature-orchestrator per feature
+                                   ▼
+                          FEATURE-ORCHESTRATOR [Opus, stateless fn]
+                                   │ returns typed actions to ↓
+                                   ▼
+                          SUPERVISOR (owns loop; enforces §4 floor; §9 breakers)
+                             ├─ spec   [Opus]        → plan.vN.json + intent ref
+                             ├─ code×N [deepseek]    → commit chunk branch (no merge)
+                             └─ verify [Opus]        → findings (above the floor)
+```
+
+One orchestrator = one feature (one intent, one integration branch). Multi-feature
+concurrency = the front-end spawns several single-feature orchestrators in
+parallel. No multiplexing orchestrator.
+
+---
+
+## 6. Call diagram (v2)
+
+```
+ user ──"feature X + intent"──► FRONT-END [Opus]         ◄── only human touchpoint
+                                   │ create feature-orchestrator run
+                                   │   ↳ fork feat/<slug> off source; SNAPSHOT BASELINE (§4)
+                                   │   ↳ write intent.md (orchestrator-owned, versioned)
+                                   ▼
+                            SUPERVISOR owns the loop ───────────────────────────────┐
+   VAIHE 1  spawn spec [Opus] → plan.v1.json (DAG, turnkey briefs, checks+assertions)│
+            (targeted context, NOT whole-repo — §11; chunked by judgment)           │
+            ⟶ orchestrator Triage: proceed | (opt) escalate arch question UP         │
+   VAIHE 2  spawn code-nodes per DAG [deepseek]: edit → self-check → commit chunk    │
+            SUPERVISOR merges each chunk → feat/<slug> ONLY IF §4 floor holds        │
+            (merge conflict → deterministic protocol: re-spawn "rebase&fix" or       │
+             escalate; sequential chunks stack on the moved tip)                     │
+   VAIHE 3  spawn verify [Opus] on feat/<slug>: floor already green; verify adds     │
+            judgment. Findings = fix_items / discussion / spinoff / drop (+dismissed) │
+   ┌────────  orchestrator Triage(report) → Action[]  (loop)                         │
+   │ RE_CODE_CHUNK   → re-brief the chunk; FIX-class MUST be re-verified before close │
+   │ TRIGGER_RE_SPEC → new plan.v(N+1); DAG-diff decides which chunks revert PENDING  │
+   │ OPEN_DISCUSSION → bubbles UP to front-end → human only if it needs a person      │
+   │ PROPOSE_SPINOFF → deferred backlog (non-blocking)                                │
+   │ PROMOTE_TIER    → on repeat-fail OR verify self-disagreement                     │
+   └─ DECLARE_CONVERGED  (no must-fix left AND product matches intent)                │
+            │  ▓ circuit-breakers (§9) can force ESCALATE at any point ▓              │
+   VAIHE 4  supervisor merges feat/<slug> → source (AUTOMATIC, floor re-checked);     │
+            passive post-merge rollup surfaced to front-end (§12); branch dies        │
+                                   └───────────────────────────────────────────────┘
 ```
 
 ---
 
-## 5. Integration-branch lifecycle
+## 7. Integration branch + plan revisions (lifecycle)
 
-| Phase | Branch event |
+| Phase | Event |
 |---|---|
-| Feature-orchestrator run created | fork `feat/<slug>` off `source_branch` (recorded in manifest) |
-| Spec | spec-node reads on `feat/<slug>`; commits `plan.json` + `spec.md` there |
-| Code | each chunk forks `wt/<id>-chunk-k` off current `feat/<slug>`; code node commits; **supervisor merges** back; sequential chunks rebase on the moved tip |
-| Verify | runs on `feat/<slug>` tip (read + test) |
-| Fix loop | re-code commits land on `feat/<slug>`; spec updates re-commit `plan.json` |
-| Converged | **automatic** merge `feat/<slug>` → `source_branch` (no human gate) |
-| Teardown | supervisor removes `feat/<slug>` + chunk worktrees/branches/tmux |
+| run created | fork `feat/<slug>` off `source_branch`; **capture baseline snapshot** (§4); write `intent.md` |
+| spec | spec-node writes **immutable** `plan.v1.json` referencing `intent_rev` |
+| code | chunk forks off current `feat/<slug>`; code commits; **supervisor merges iff floor holds**; sequential chunks stack |
+| verify | runs on tip, above the green floor |
+| fix | `RE_CODE_CHUNK` re-commits on `feat/<slug>` |
+| re-spec | spec-node writes **`plan.v(N+1).json`** (never overwrites); supervisor DAG-diffs vN→v(N+1) → which chunks revert to PENDING, which stay DONE; each chunk attempt records the exact plan_rev it consumed |
+| converged | automatic merge `feat/<slug>` → `source_branch` (floor re-checked) |
+| teardown | supervisor removes branch + chunk worktrees/tmux; baseline + plan revisions retained in run dir for audit |
 
-Born at run creation, lives through the whole spec/code/verify/fix loop, dies at
-final merge — mirroring `/orchestrate`'s integration branch (the machinery reused).
+Plans are **immutable and content-addressable per revision**; provenance
+(intent_rev, plan_rev, model, harness, prompt version) is recorded on every chunk
+attempt and verify report.
 
 ---
 
-## 6. Verify → findings → action (the /assess-findings mapping)
+## 8. Verify → findings → action
 
-Verify output is triaged exactly like a review-findings list; the orchestrator IS
-the triage step and the on-disk primitives already model each disposition.
+Triaged like `/assess-findings`, but the floor is mechanical and below it.
 
-| /assess verdict | orchestrator action | orchestratectl primitive | blocks feature? |
+| verdict | typed action | primitive | blocks? |
 |---|---|---|---|
-| FIX (clean) | re-code the chunk, findings in brief | new code-node iteration | yes (must converge) |
-| FIX_WITH_CARE | re-code, tier promoted / narrower brief | code-node (higher tier) | yes |
-| SPEC-FLAW | re-spec against intent, then re-code | spec-node iteration → plan.json update | yes |
-| DISCUSS | resolve autonomously, else escalate UP to front-end | `Discussion` (open→resolved) | maybe |
-| SPIN_OFF | record for later; do not block | `SpinoffProposal` (proposed→approved/rejected) | no |
-| DROP | note, no action | wrap_up_recommendations | no |
+| FIX / FIX_WITH_CARE | re-code (findings in brief); **must re-verify before close** | `RE_CODE_CHUNK` | yes |
+| SPEC-FLAW | new plan revision against intent, then re-code affected | `TRIGGER_RE_SPEC` | yes |
+| DISCUSS | resolve, else escalate UP | `OPEN_DISCUSSION` | maybe |
+| SPIN_OFF | defer (non-blocking) | `PROPOSE_SPINOFF` | no |
+| DROP | record **with rationale** | envelope | no |
 
-Because verify is never empty, the orchestrator's job is to *sort the inevitable
-findings* into must-fix-now (loop) / defer (spin-off) / not-worth-it (drop) /
-needs-a-human (discuss) — /assess-findings run continuously inside the build loop —
-and to judge, by change scope, whether another verify round is even warranted.
-
----
-
-## 7. Human interaction (single locus, no dumb gates)
-
-**The human talks only to the front-end agent.** Everything else escalates *up*.
-
-- Sub-agents (spec, verify) and the feature-orchestrator **never address the human
-  directly.** A finding or question the orchestrator cannot resolve becomes a
-  `Discussion` that bubbles **up to the front-end**, which decides whether it truly
-  needs the person. Escalation chain: `verify → orchestrator → front-end → human`.
-- **No human-gated final merge.** By the time the feature converges, everything is
-  already resolved — asking a human to type a merge command is pointless ceremony.
-  Vaihe 4 merges automatically. The `code` kind's old "human runs /worktree-merge"
-  step is removed for the pipeline.
-- The **only** things that reach the human are genuine judgment calls the
-  front-end chooses to forward:
-  1. **Feature request + intent** (entry).
-  2. **Architecture question** — the orchestrator is unsure about a significant
-     design choice after spec; escalates up. Optional, often skipped.
-  3. **A specific mid-flight decision** a sub-task genuinely can't make — routed up
-     to the front-end, surfaced only if it needs the person.
-  4. **Intent unreachable** — non-convergence / budget exhausted; the orchestrator
-     stops and escalates up rather than grinding.
-- Spin-offs are async backlog reviewed later via `/assess-findings` / `/stint` —
-  never a build-time gate.
-
-Coding itself is **never** monitored by a human; every human touch is at the
-design/judgment level and arrives through the one front-end conversation.
+Anti-sycophancy: **dismissed findings are recorded with rationale** (triage is
+auditable since no human watches); verify may be run **adversarially** (a
+"find-bugs" pass + a "confirm-it-ships" pass — disagreement ⇒ escalate); tier is
+promoted on verify self-disagreement, not only on repeat failure. Cheap-model
+output (comments, test names, docstrings) is treated as **untrusted** — the
+mechanical floor is injection-resistant; the LLM layer must not be steered by
+artifacts in the diff.
 
 ---
 
-## 8. Scope: direct into the existing pipeline
+## 9. Resource circuit-breakers (NEW)
 
-Build this **directly into the existing coding kinds**, not a walled-off greenfield
-kind.
+Distinct from quality judgment (principle 1). Deterministic, supervisor-owned,
+per-feature ceilings that force `ESCALATE`/abort regardless of convergence state:
 
-1. Land the model-tier plumbing (task 0) + the staged supervisor (incl.
-   supervisor-side chunk merge) + spec/code/verify roles.
-2. Make the **coding** kinds (`code`, `spinoff`, `bugfix`) run through the
-   spec→code→verify pipeline as their default execution model.
-3. Non-coding kinds (research, technical-decision, make-skill, fan-out) unaffected.
+- **cost/token ceiling** — a hard cap (target: total feature cost ≤ ~2× the
+  all-Opus cost); a **cost kill-switch** on breach.
+- **wall-time**, **process-count**, **storage** ceilings.
+- **repeated-identical-failure** breaker (same chunk failing the same check N times
+  → stop, don't loop).
 
----
-
-## 9. `plan.json` — schema now, extensible + self-improving
-
-Design `plan.json` for **current** needs, but versioned and forward-compatible:
-
-- `schema_version` on the file. Readers tolerate unknown fields (forward-compat)
-  and branch on the version.
-- Draft fields: `chunk id · deps · self-contained brief · tier · verify criteria ·
-  files-touched (hint)`. Kept minimal; grown as real needs appear.
-- **Not dynamically extensible at runtime** — and that's fine. Instead, when a
-  spec/verify agent finds the schema **insufficient** for something it needs to
-  express, it **files a feedback issue into the orchestratectl repo** (via
-  `issuectl`, type improvement, describing the missing field/shape). The schema
-  then grows deliberately in a later version. This is principle 4 in action: the
-  pipeline improves its own contracts through the work it runs.
+Requires **cost instrumentation**: the orchestrator must be able to query
+real-time spend/token consumption per run. (Open: does orchestratectl meter usage
+per node today, or must it be built — §15.)
 
 ---
 
-## 10. Open questions (remaining)
+## 10. Harness = adapter interface + conformance suite (NEW)
 
-- **Feasibility** (cheap model can code): **PROVEN** (§2, $0.0004). **Harness:**
-  target = (A) Claude Code routed to deepseek; **next spike** = stand up a router
-  and confirm the agent loop runs through it; evaluate **pi.dev** at that point;
-  (B) aider is the proven fallback.
-- **`plan.json` concrete draft:** lock the v1 field list + versioning convention
-  before implementation.
-- **Supervisor-side chunk merge:** new capability (supervisor performs the
-  integration merge instead of the node). Scope the failure/rebase handling.
-- **Spec-flaw vs FIX boundary:** how verify signals "the spec itself is wrong"
-  (re-spec) vs "the code is wrong" (re-code) — a field on the finding, or the
-  orchestrator's judgment. Lean on orchestrator judgment (principle 1).
+Do **not** pick one global executable. Define a versioned, harness-neutral
+code-node contract *before* choosing A/B/C:
 
-Resolved this round: convergence is orchestrator-judged by change scope (≤~2
-rounds, no counter); chunking is model judgment (no numeric rules); orchestrator =
-Opus (all decisions), code = deepseek-flash pure-impl (no decisions/merge);
-final merge automatic (no human gate); all human interaction via the single
-front-end locus; schema extensibility via self-filed feedback issues.
+```rust
+trait CodeHarness {
+    fn capabilities(&self) -> HarnessCapabilities;
+    fn run_chunk(&self, req: ChunkRequest) -> Result<ChunkResult, HarnessError>;
+}
+// ChunkRequest: run/chunk/attempt ids, worktree, base_commit, plan_rev, brief, checks
+// ChunkResult: outcome, resulting_commit, changed_files, check_results, transcript_ref, usage
+```
+
+The supervisor consumes only `ChunkResult` — it **never parses tool-specific prose
+or infers success from exit status**. A **conformance suite** tests each adapter
+against: clean success, no-change, partial-edit-then-fail, self-check fail,
+timeout/cancel, malformed output, unexpected extra commits, dirty worktree,
+provider failure, transcript+usage capture.
+
+- **First adapter: aider** (proven, explicit, isolable). Ship on it.
+- **Router-to-Claude-Code (option A): an independently-qualified adapter**, not the
+  default-by-spike. Qualification must include upgrade-resilience, tool-call
+  compat, failure attribution, version pinning — not just "it edited once."
+- **pi.dev / bespoke:** later adapters behind the same contract.
+
+Credentials/routing config stay **out of `plan.json`**; the runtime binding
+(harness + concrete model + params) is recorded in execution events.
+
+---
+
+## 11. Cost model + token discipline
+
+Spend is Opus-dominated (orchestrator + spec + verify); the cheap coder is noise.
+Amortization holds **only if Opus token use is bounded**:
+
+- **spec and verify must be token-efficient** — NOT whole-repo reads. Use targeted
+  file selection / diff-scoping / symbol index / code maps. Verify inspects the
+  branch diff + touched files, not the world.
+- **Trivial-task handling (decision D3, default applied):** the pipeline stays the
+  default, but for a task the orchestrator judges trivial the stages **collapse
+  gracefully** — spec emits a single-chunk plan, verify is tightly scoped — rather
+  than a separate "skip the pipeline" path. "Always the pipeline" holds
+  structurally; cost is bounded by collapse, not by an escape hatch. (Owner may
+  instead want a hard escape — §15.)
+
+---
+
+## 12. Human interaction (single locus + passive visibility)
+
+The human talks only to the front-end. Escalation chain:
+`verify → orchestrator → front-end → human`. No sub-agent addresses the human; no
+human-gated merge.
+
+**Passive post-merge rollup (decision D2, default applied):** on automatic merge
+the front-end receives a **non-blocking** summary — what shipped, acceptance-check
+results, and **dismissed/deferred findings with rationale**. It is visibility, not
+a gate; it does not pause the merge. Satisfies the test-strategist's audit need
+without violating the single-locus / no-dumb-gate rule. (Owner may drop it — §15.)
+
+---
+
+## 13. `plan.json` v2 + governed schema evolution
+
+See `plan-schema.md` (updated to v2): adds `checks` vs `assertions`,
+`baseline` reference, `intent_rev`, immutable `plan_rev`, and per-chunk provenance.
+
+Schema evolution is **governed** (principle 4): a runtime gap emits a *structured
+schema-gap event* → deduplicated candidate issue (occurrence count, affected runs)
+→ human contract review → schema decision record → versioned schema + migration +
+reader/writer conformance tests. Readers **validate against a checked-in schema and
+reject unsupported major versions / undeclared required fields** — tolerant reading
+is limited to genuinely additive optional fields.
+
+---
+
+## 14. Staged rollout (NEW — not big-bang)
+
+1. Land the **harness interface + observability + provenance** (behavior-preserving).
+2. Add the pipeline **engine behind per-run config** (opt-in), legacy engine intact.
+3. Opt-in on low-risk work.
+4. **Shadow mode**: plan + verify run, but **no automatic merge** (human/legacy merges).
+5. Canary by repo / run-kind.
+6. Default **only after measured stability** (completion rate, intervention rate,
+   orphan-cleanup rate, rollback rate).
+7. Retain the legacy/direct engine + rollback for a bounded deprecation period.
+
+"Always how coding is done" is the **end state**, not the deployment mechanism.
+
+---
+
+## 15. Owner decisions (defaults applied — flag to override)
+
+- **D1 — Principle 1 re-scope (§0.1):** applied. Judgment governs quality/sizing;
+  correctness + resource are deterministic. *Confirm or override.*
+- **D2 — Passive post-merge rollup (§12):** applied (non-blocking visibility).
+  *Keep or drop.*
+- **D3 — Trivial-task handling (§11):** applied as *graceful stage collapse*
+  (pipeline always runs, collapses for tiny tasks) rather than a hard escape hatch.
+  *Confirm, or switch to a hard skip-spec escape.*
+
+Plus non-blocking unknowns to lock during build: does orchestratectl meter
+per-node token/cost today (§9); exact `checks`/`assertions` schema shape (§13);
+sequential-chunk git mechanics (stacked branches vs worktrees, §7).
+
+---
+
+## 16. Build order
+
+See `breakdown.md` for the sequenced task plan. Critical path starts at
+**task 0: the `CodeHarness` adapter interface + result protocol + conformance
+suite** (everything else consumes it), with the router qualified as one adapter —
+not as a prerequisite.

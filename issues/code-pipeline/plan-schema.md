@@ -1,36 +1,53 @@
-# `plan.json` — v1 schema draft
+# `plan.json` — v2 schema draft (post-panel)
 
-The **interface contract** between the spec-node (writes it) and the supervisor
-state machine + feature-orchestrator (read it). Designed for current needs,
-versioned and forward-compatible. See design.md §9.
+The **interface contract** the spec-node writes and the supervisor + orchestrator
+read. Immutable per revision, versioned, provenance-bearing. See design.md §4, §7,
+§13.
 
 ## Principles
 
-- `schema_version` gates the whole file. Readers **tolerate unknown fields**
-  (forward-compat) and branch on the version.
-- **Minimal now, grown deliberately.** No speculative fields. When a spec/verify
-  agent needs to express something the schema can't, it **files an improvement
-  issue into the orchestratectl repo** (`issuectl new --type improvement`) rather
-  than inventing an ad-hoc field — the schema then grows in a later version
-  (design principle 4, self-improving tooling).
-- **No counters, no thresholds.** Convergence, chunk sizing, and re-verify
-  necessity are orchestrator/spec **judgment**, never numbers baked into the file
-  (principle 1). The schema records *structure*, not *policy*.
+- **`schema_version` gates the file, with real compatibility semantics.** Readers
+  **reject unsupported major versions** and **reject undeclared required fields**;
+  tolerant reading is limited to genuinely additive *optional* fields. Not "ignore
+  everything unknown."
+- **Immutable per revision.** A fix or re-spec writes `plan.v(N+1).json`; the prior
+  revision is never overwritten. Each chunk attempt and verify report records the
+  exact `plan_rev` (and `intent_rev`) it consumed.
+- **Intent is referenced, not embedded.** `intent_rev` points at the
+  orchestrator-owned `intent.md`; the plan cannot redefine intent.
+- **Structure, not policy.** No counters/thresholds/budgets (those are orchestrator
+  judgment + supervisor circuit-breakers). The schema records *what to build and
+  how to check it*.
+- **Governed evolution.** A gap → a structured schema-gap event → deduplicated,
+  reviewed proposal → versioned schema. Never "agent asks → field added."
 
-## Shape (v1)
+## Shape (v2)
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "plan_rev": 1,
+  "intent_rev": 3,
   "feature": {
     "slug": "user-csv-export",
-    "intent": "A signed-in user can download all their own data as a CSV from the account page.",
     "source_branch": "main",
     "integration_branch": "feat/user-csv-export"
   },
+  "baseline": {
+    "ref": "feat/user-csv-export@fork",
+    "test_passlist_hash": "sha256:…",
+    "clippy_warnings_hash": "sha256:…"
+  },
   "acceptance": [
-    "Downloading from the account page yields a CSV of exactly the user's own records",
-    "An unauthenticated request is refused"
+    {
+      "kind": "check",
+      "desc": "signed-in user downloads their own data as CSV end-to-end",
+      "run": "cargo test --test e2e account_csv_export"
+    },
+    {
+      "kind": "assertion",
+      "desc": "the CSV contains exactly the user's own records and nothing else"
+    }
   ],
   "chunks": [
     {
@@ -38,63 +55,64 @@ versioned and forward-compatible. See design.md §9.
       "title": "CSV serializer for a user record",
       "deps": [],
       "tier": "code",
-      "brief": "Self-contained, turnkey implementation brief: what to build, where, the interface it must expose, invariants/constraints, and how it plugs into existing code. Rich enough that a cheap model needs no architectural reasoning.",
-      "files_touched": ["src/export/csv.rs"],
-      "verify_criteria": [
-        "round-trips a representative record",
-        "empty and unicode fields are escaped correctly",
-        "no new clippy warnings"
-      ]
+      "brief": "Turnkey, self-contained implementation brief; rich enough that a cheap model needs no architectural reasoning.",
+      "files_touched": ["src/export/csv.rs", "src/export/csv_test.rs"],
+      "checks": [
+        { "desc": "round-trips a representative record", "run": "cargo test export::csv::roundtrip" },
+        { "desc": "empty + unicode fields escaped", "run": "cargo test export::csv::escaping" }
+      ],
+      "assertions": [
+        "serializer API matches how the endpoint (c2) expects to call it"
+      ],
+      "requires_tests": true
     },
     {
       "id": "c2",
       "title": "Account-page export endpoint",
       "deps": ["c1"],
       "tier": "code",
-      "brief": "…turnkey brief for the endpoint, referencing c1's serializer interface…",
-      "files_touched": ["src/routes/account.rs"],
-      "verify_criteria": [
-        "GET /account/export returns text/csv for the session user",
-        "unauthenticated request → 401"
-      ]
+      "brief": "…endpoint brief, referencing c1's serializer interface…",
+      "files_touched": ["src/routes/account.rs", "src/routes/account_test.rs"],
+      "checks": [
+        { "desc": "GET /account/export returns text/csv for the session user", "run": "cargo test routes::account::export_ok" },
+        { "desc": "unauthenticated → 401", "run": "cargo test routes::account::export_authn" }
+      ],
+      "assertions": [],
+      "requires_tests": true
     }
   ]
 }
 ```
 
-## Field reference
+## Field reference (v2 changes in **bold**)
 
 | Field | Type | Owner | Meaning |
 |---|---|---|---|
-| `schema_version` | int | spec | schema version; readers branch on it |
-| `feature.slug` | string | spec | stable id; names the integration branch |
-| `feature.intent` | string | spec (from orchestrator) | **the invariant** — what must exist; the anchor for verify |
-| `feature.source_branch` | string | orchestrator | where the feature merges back |
-| `feature.integration_branch` | string | orchestrator | `feat/<slug>`, born at run creation |
-| `acceptance[]` | string[] | spec | whole-feature product-vs-**intent** checks (verify's top-level bar), distinct from per-chunk criteria |
-| `chunks[].id` | string | spec | chunk handle (deps reference it) |
-| `chunks[].title` | string | spec | short human label |
-| `chunks[].deps[]` | string[] | spec | chunk ids that must land first → the DAG (empty = independent, parallelizable) |
-| `chunks[].tier` | enum `code\|mid\|high` | spec | starting model tier; **adaptive promotion** moves it up on repeated verify failure |
-| `chunks[].brief` | string | spec | the self-contained implementation brief the code-node consumes |
-| `chunks[].files_touched[]` | string[] | spec | hint (scopes the code-node); not a hard constraint |
-| `chunks[].verify_criteria[]` | string[] | spec | per-chunk checks the verify-node runs |
+| `schema_version` | int (major) | spec | reader rejects unsupported majors |
+| **`plan_rev`** | int | spec | immutable revision; chunk attempts reference it |
+| **`intent_rev`** | int | orchestrator | the intent revision this plan targets (intent lives in `intent.md`) |
+| `feature.slug/source_branch/integration_branch` | string | orchestrator/spec | as v1 (intent field removed — now referenced) |
+| **`baseline`** | object | supervisor | snapshot at `feat/<slug>` fork; verify + floor diff against it |
+| **`acceptance[]`** | object[] | spec | whole-feature intent gate; each is `check` (executable) or `assertion` (LLM-judged); **≥1 must be a `check`** |
+| `chunks[].id/title/deps/tier/brief` | — | spec | as v1 (`deps` = DAG; `tier` = starting hint, orchestrator owns promotion) |
+| `chunks[].files_touched[]` | string[] | spec | **now a merge-time constraint** (supervisor rejects out-of-scope merges beyond slack), not just a hint |
+| **`chunks[].checks[]`** | object[] | spec | executable per-chunk checks (`desc` + `run`); **≥1 required** |
+| **`chunks[].assertions[]`** | string[] | spec | LLM-judged criteria (additive, above the floor) |
+| **`chunks[].requires_tests`** | bool | spec | if true, supervisor blocks a merge that added/modified no tests |
 
-## What is deliberately NOT in v1
+## Recorded separately (NOT in plan.json)
 
-- No iteration/round counters, token budgets, or size thresholds — policy lives in
-  the orchestrator's judgment, not the file.
-- No status/progress fields — run state lives in the event log + manifest, not here.
-  `plan.json` is the spec's *output*, read-mostly; the supervisor tracks execution
-  separately.
-- No finding/verdict records — those are node.report assets (discussion_items /
-  spinoff_proposals / fix_items), not plan.json.
+- **Provenance per chunk attempt / verify report:** `plan_rev`, `intent_rev`,
+  harness name+version, model+params, prompt/template version, base+result commit,
+  check results, usage/tokens — in the event log, for causal replay.
+- **Run/execution state, findings, decisions:** event log + node.report assets.
+- **Credentials / routing config:** runtime config + execution events, never here.
 
-## Open sub-questions to lock
+## Open sub-questions to lock during build
 
-- Does `tier` belong in `plan.json` (spec decides starting tier) or is it purely an
-  orchestrator/runtime concern? Leaning: spec sets a starting hint, orchestrator
-  owns promotion.
-- Do we need an explicit `re_spec` marker when verify finds a **spec flaw**, or is
-  that a node.report finding that re-triggers the spec-node (leaning: the latter —
-  keep plan.json a pure spec output).
+- Exact `check.run` contract — a shell command run by the supervisor? A structured
+  `{cmd, cwd, expect_exit}`? Determines how the floor executes.
+- DAG-diff algorithm for `plan.vN → v(N+1)`: which completed chunks revert to
+  PENDING when their deps or briefs change.
+- Whether `baseline` hashes live in `plan.json` or a sibling `baseline.json`
+  (leaning sibling — it's supervisor-owned, not spec output).
