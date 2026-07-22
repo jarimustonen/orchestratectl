@@ -96,8 +96,33 @@ deepseek-flash is **not** a Claude model, so the agent-command is not `claude
 --model X` — it is whatever launcher speaks to that model. Because the code node
 is now *pure implementation* (write + commit, no self-merge, no report), the bar
 for the cheap launcher is low: **can it read a brief, edit files, and commit in a
-worktree?** — no need to honor the full node.report / run-merge contract. That is
-the (reduced) subject of the task-0 spike.
+worktree?** — no need to honor the full node.report / run-merge contract.
+
+**Task-0 spike — RESOLVED (proven on-machine).** `aider` (installed, 0.86.2)
+driving deepseek is the launcher:
+
+```
+DEEPSEEK_API_KEY=… aider --model deepseek/deepseek-chat \
+  --yes-always --no-check-update --no-analytics --map-tokens 0 \
+  --message-file <brief.md> <files-to-touch>
+```
+
+Spike result: given a self-contained brief it edited the target file correctly,
+left untouched code alone, and **auto-committed** with a sensible message — for
+**$0.0004**. It commits but does **not** merge (exactly the code-node contract).
+Findings folded into the design:
+- **Launcher = aider + deepseek** for the code tier (v1). Runs once (`--message-file`)
+  and exits; the supervisor detects completion and synthesizes the node.report from
+  git state (did it commit? self-check green?) — the code node emits no report itself.
+- **Key injection:** the deepseek key lives in `~/.config/consult-llm/config.yaml`;
+  the tier→agent-command config must surface it as `DEEPSEEK_API_KEY` in the
+  code-node env.
+- **Model id:** "deepseek-flash" ≈ `deepseek/deepseek-chat` (the fast, non-reasoning
+  model); exact "flash" alias to be confirmed. Reasoner is available if a chunk
+  needs it (adaptive promotion could target it).
+- **Caveat:** spike was a tiny edit; aider's SEARCH/REPLACE reliability on larger
+  chunks is what the verify + adaptive-promotion loop exists to catch. aider is the
+  proven v1 choice; a bespoke minimal agent stays a later option.
 
 ---
 
@@ -305,10 +330,8 @@ Design `plan.json` for **current** needs, but versioned and forward-compatible:
 
 ## 10. Open questions (remaining)
 
-- **deepseek-flash launcher (task-0 spike, reduced scope):** what agent-command
-  makes a non-Claude model read a brief, edit files, and commit in a worktree?
-  (No longer needs the full self-merge/report contract — supervisor merges.)
-  Biggest remaining unknown; do this spike first.
+- ~~**deepseek-flash launcher (task-0 spike):**~~ **RESOLVED** — aider + deepseek,
+  see §2. Proven on-machine: brief → edit → auto-commit for $0.0004.
 - **`plan.json` concrete draft:** lock the v1 field list + versioning convention
   before implementation.
 - **Supervisor-side chunk merge:** new capability (supervisor performs the
