@@ -98,31 +98,42 @@ is now *pure implementation* (write + commit, no self-merge, no report), the bar
 for the cheap launcher is low: **can it read a brief, edit files, and commit in a
 worktree?** — no need to honor the full node.report / run-merge contract.
 
-**Task-0 spike — RESOLVED (proven on-machine).** `aider` (installed, 0.86.2)
-driving deepseek is the launcher:
+**Feasibility spike — PROVEN (on-machine).** The open question "can a cheap
+non-Claude model even do the code-node job (read brief → edit files → commit)?"
+is answered *yes*. Probe: `aider` (installed) driving `deepseek/deepseek-chat`
+took a self-contained brief, edited the target correctly, left untouched code
+alone, and **auto-committed** — for **$0.0004**. This validates the cost premise
+and the "commit-but-don't-merge" code-node contract. **aider was a feasibility
+probe, not the production choice.**
 
-```
-DEEPSEEK_API_KEY=… aider --model deepseek/deepseek-chat \
-  --yes-always --no-check-update --no-analytics --map-tokens 0 \
-  --message-file <brief.md> <files-to-touch>
-```
+### Harness decision (the real fork the probe exposed)
 
-Spike result: given a self-contained brief it edited the target file correctly,
-left untouched code alone, and **auto-committed** with a sensible message — for
-**$0.0004**. It commits but does **not** merge (exactly the code-node contract).
-Findings folded into the design:
-- **Launcher = aider + deepseek** for the code tier (v1). Runs once (`--message-file`)
-  and exits; the supervisor detects completion and synthesizes the node.report from
-  git state (did it commit? self-check green?) — the code node emits no report itself.
-- **Key injection:** the deepseek key lives in `~/.config/consult-llm/config.yaml`;
-  the tier→agent-command config must surface it as `DEEPSEEK_API_KEY` in the
-  code-node env.
-- **Model id:** "deepseek-flash" ≈ `deepseek/deepseek-chat` (the fast, non-reasoning
-  model); exact "flash" alias to be confirmed. Reasoner is available if a chunk
-  needs it (adaptive promotion could target it).
-- **Caveat:** spike was a tiny edit; aider's SEARCH/REPLACE reliability on larger
-  chunks is what the verify + adaptive-promotion loop exists to catch. aider is the
-  proven v1 choice; a bespoke minimal agent stays a later option.
+deepseek is only a model; something has to *drive* it in a worktree. Options:
+
+- **(A) TARGET — one agent, routed model.** The code-node is the **same Claude
+  Code agent** as every other node, just pointed at a cheap model backend via a
+  router/proxy (`ANTHROPIC_BASE_URL` → LiteLLM / claude-code-router translating
+  Anthropic ↔ deepseek). Keeps one agent runtime, one node.report contract, one
+  skill mechanism — "always how coding is done" stays literally the same tool.
+  Cost: a router must be stood up (not installed yet — discovery found only aider
+  + llm), and a follow-up spike must confirm deepseek drives the Claude Code loop
+  (tool-calls etc.) reliably through the proxy.
+- **candidate — pi.dev.** Evaluate at the harness-selection point (what it offers
+  as a coding harness/model backend); noted so we look at it deliberately, not now.
+- **(B) FALLBACK — aider (or similar) for the code stage only.** Proven today,
+  zero extra infra; code-node speaks no node.report (supervisor synthesizes it, as
+  designed). Downside: a second tool with its own prompt/repo-map logic.
+- **(C) bespoke minimal agent** — full control, most work; later option.
+
+**Decision:** pursue **(A)** as the target; evaluate **pi.dev** at the harness
+point; keep **(B)** as the proven fallback if deepseek can't drive the Claude Code
+loop. **Next spike:** stand up a router and confirm Claude Code → deepseek runs an
+agent loop end-to-end.
+
+Regardless of harness: the deepseek key lives in `~/.config/consult-llm/config.yaml`
+and the tier→backend config must surface it (`DEEPSEEK_API_KEY` / router config) to
+the code-node env; "deepseek-flash" ≈ `deepseek-chat` (fast, non-reasoning), exact
+alias TBC, reasoner available for adaptive promotion.
 
 ---
 
@@ -330,8 +341,10 @@ Design `plan.json` for **current** needs, but versioned and forward-compatible:
 
 ## 10. Open questions (remaining)
 
-- ~~**deepseek-flash launcher (task-0 spike):**~~ **RESOLVED** — aider + deepseek,
-  see §2. Proven on-machine: brief → edit → auto-commit for $0.0004.
+- **Feasibility** (cheap model can code): **PROVEN** (§2, $0.0004). **Harness:**
+  target = (A) Claude Code routed to deepseek; **next spike** = stand up a router
+  and confirm the agent loop runs through it; evaluate **pi.dev** at that point;
+  (B) aider is the proven fallback.
 - **`plan.json` concrete draft:** lock the v1 field list + versioning convention
   before implementation.
 - **Supervisor-side chunk merge:** new capability (supervisor performs the
