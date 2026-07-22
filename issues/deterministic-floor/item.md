@@ -46,8 +46,23 @@ event-append/reducer/lock path (state-integrity invariants).
   warnings.
 - CHANGELOG "Unreleased" entry added.
 
+## Review
+
+`/llm-review` (Gemini 3.1 Pro, GPT-5.6-sol, Opus 4.7, DeepSeek v4 Pro) run on
+the final diff. In-scope pure-layer findings fixed with tests (clippy-identity
+span-strip, comment/string stripping in the assertion counter, was-failing→
+ignored detection, length-prefixed hash, exit-code-based git existence + LC_ALL=C,
+stdout/stderr newline join, file-scope de-dup, `#[non_exhaustive]` on serialized
+enums). The consensus critical finding — the capture layer parses uncontrolled
+process text and is steerable by the agent-under-review — is an
+execution-environment decision T5 owns; filed as `floor-capture-trust-model` and
+documented as a limitation in the module. Report: `history/review-deterministic-floor.md`.
+
 ## Follow-ups (not blocking)
 
+- **`floor-capture-trust-model`** (filed): injection-resistant, provenance-bound
+  capture (structured JSON, fail-closed, target-qualified test ids, execution
+  isolation, baseline ref→OID) — prerequisite for T5 live wiring.
 - Check-run contract (`plan-check-run-contract`): the runner executes
   `plan::Check::run` as a shell string via `sh -c`; the richer
   `{cmd,cwd,expect_exit}` contract is a separate open decision. Seam left in

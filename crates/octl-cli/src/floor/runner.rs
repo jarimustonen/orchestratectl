@@ -73,8 +73,7 @@ pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot,
             what: "tests",
             message: format!("could not run `{test_cmd}`: {e}"),
         })?;
-    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    let combined = join_streams(&out.stdout, &out.stderr);
     Ok(parse_libtest_output(&combined))
 }
 
@@ -94,9 +93,20 @@ pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySna
             what: "clippy",
             message: format!("could not run `{clippy_cmd}`: {e}"),
         })?;
-    let mut combined = String::from_utf8_lossy(&out.stderr).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&out.stdout));
+    let combined = join_streams(&out.stderr, &out.stdout);
     Ok(parse_clippy_short(&combined))
+}
+
+/// Concatenate two captured byte streams for line parsing, guaranteeing a
+/// newline between them so the last line of `first` and the first line of
+/// `second` are never fused into one line (which would corrupt both).
+fn join_streams(first: &[u8], second: &[u8]) -> String {
+    let mut combined = String::from_utf8_lossy(first).into_owned();
+    if !combined.is_empty() && !combined.ends_with('\n') {
+        combined.push('\n');
+    }
+    combined.push_str(&String::from_utf8_lossy(second));
+    combined
 }
 
 /// Count `assert*!` macros in each of `files` as they exist **on disk** under
@@ -201,7 +211,8 @@ mod tests {
         // clippy writes to stderr; emit there.
         let cmd = "printf 'src/a.rs:1:1: warning: w\\n' 1>&2";
         let snap = capture_clippy_snapshot(cmd, dir.path()).unwrap();
-        assert!(snap.warnings.contains("src/a.rs:1:1: warning: w"));
+        // Identity has the `:line:col` span normalized away.
+        assert!(snap.warnings.contains("src/a.rs: warning: w"));
     }
 
     #[test]

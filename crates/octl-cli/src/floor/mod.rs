@@ -45,8 +45,28 @@
 //!
 //! Gates are pure functions of already-collected snapshots/diffs — no LLM, no
 //! I/O, deterministic in their inputs. Capture ([`runner`]/[`git`]) is the only
-//! impure part and is deliberately thin, so the correctness-critical logic is
-//! all unit-testable from fixtures.
+//! impure part and is deliberately thin, so the gate logic is all unit-testable
+//! from fixtures (including adversarial ones — comment/string assertion padding,
+//! line-shifted clippy warnings, was-failing-now-ignored tests).
+//!
+//! # Trust model (important limitation)
+//!
+//! The gates are deterministic, but their **inputs are captured by parsing
+//! uncontrolled process text** (libtest / clippy stdout+stderr) produced by a
+//! toolchain running inside a repository the agent-under-review controls. A
+//! `println!`, a `build.rs`, a `.cargo/config.toml` alias, or an `#![allow]`
+//! can therefore forge or suppress what the parser sees, and the current text
+//! parsers are lenient (an unrecognized line is skipped, not fail-closed). This
+//! module raises the bar against *casual* gaming (padding assertion counts in
+//! comments/strings no longer works; line-shifting no longer flips a clippy
+//! warning to "new") but is **not** an injection-proof oracle on its own.
+//!
+//! Closing that gap — structured `--message-format=json` capture, target-
+//! qualified test identities, exit-code fail-closed captures, execution
+//! isolation (`env_clear`, timeouts, output caps), and baseline ref→OID pinning
+//! with provenance-bound assertion counts — is design work T5 owns before live
+//! wiring; it is captured in issue `floor-capture-trust-model`. Do not describe
+//! this module as tamper-proof until that lands.
 
 pub mod gates;
 pub mod git;

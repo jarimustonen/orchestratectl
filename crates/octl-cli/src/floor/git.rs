@@ -14,15 +14,25 @@ fn git_bin() -> String {
     std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string())
 }
 
+/// A `git -C <repo>` command with a stabilized environment: `LC_ALL=C` so any
+/// message we must read is locale-independent, and `core.quotePath=false` so
+/// path output is not re-encoded. All floor git shell-outs go through here.
+fn git_at(repo: &Path) -> Command {
+    let mut cmd = Command::new(git_bin());
+    cmd.arg("-C")
+        .arg(repo)
+        .args(["-c", "core.quotePath=false"])
+        .env("LC_ALL", "C");
+    cmd
+}
+
 /// Files changed between `base` and `tip` (`git diff --name-only`). Uses `-z`
 /// (NUL-delimited) so paths with spaces/tabs/newlines survive intact — the same
 /// discipline the harness adapter uses. A git failure is propagated, never
 /// masked as an empty diff (an empty list would silently pass the file-scope
 /// gate).
 pub fn changed_files(repo: &Path, base: &str, tip: &str) -> Result<Vec<PathBuf>, FloorError> {
-    let out = Command::new(git_bin())
-        .arg("-C")
-        .arg(repo)
+    let out = git_at(repo)
         .args(["diff", "--name-only", "-z", &format!("{base}..{tip}")])
         .output()
         .map_err(|e| FloorError::Git {
@@ -48,11 +58,49 @@ pub fn changed_files(repo: &Path, base: &str, tip: &str) -> Result<Vec<PathBuf>,
 /// when the path did not exist at that ref. A path absent at baseline is not an
 /// error — it is a brand-new file with no baseline assertion count to regress
 /// from. Any other git failure (bad ref, not a repo) is surfaced.
+///
+/// Existence is decided by **exit codes**, not by matching git's English
+/// stderr (which is locale- and version-dependent): first the ref is verified
+/// as a commit (`rev-parse --verify --quiet <ref>^{commit}`) — a failure there
+/// is a real error — then the blob's presence is probed with
+/// `cat-file -e <commit>:<path>`, whose non-zero exit means "absent" and only
+/// that.
 pub fn file_at_ref(repo: &Path, r#ref: &str, path: &Path) -> Result<Option<String>, FloorError> {
-    let spec = format!("{}:{}", r#ref, path.display());
-    let out = Command::new(git_bin())
-        .arg("-C")
-        .arg(repo)
+    // 1. Resolve the ref to a commit oid. A bad ref / non-repo is a hard error.
+    let commit = {
+        let rev = format!("{ref}^{{commit}}", r#ref = r#ref);
+        let out = git_at(repo)
+            .args(["rev-parse", "--verify", "--quiet", &rev])
+            .output()
+            .map_err(|e| FloorError::Git {
+                message: format!("could not run git rev-parse in {}: {e}", repo.display()),
+            })?;
+        if !out.status.success() {
+            let ref_label = r#ref;
+            return Err(FloorError::Git {
+                message: format!("ref {ref_label:?} does not resolve to a commit"),
+            });
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    let spec = format!("{commit}:{}", path.display());
+
+    // 2. Probe existence by exit code (0 = present, non-zero = absent).
+    let exists = git_at(repo)
+        .args(["cat-file", "-e", &spec])
+        .output()
+        .map_err(|e| FloorError::Git {
+            message: format!("could not run git cat-file in {}: {e}", repo.display()),
+        })?
+        .status
+        .success();
+    if !exists {
+        return Ok(None);
+    }
+
+    // 3. Read the blob.
+    let out = git_at(repo)
         .args(["show", &spec])
         .output()
         .map_err(|e| FloorError::Git {
@@ -63,20 +111,12 @@ pub fn file_at_ref(repo: &Path, r#ref: &str, path: &Path) -> Result<Option<Strin
         // for an assertion *count*.
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
     } else {
-        // git show exits non-zero when the path doesn't exist at the ref. We
-        // treat "path not in tree" as absent rather than an error; distinguish
-        // it from a bad ref by checking the message.
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if stderr.contains("does not exist")
-            || stderr.contains("exists on disk, but not in")
-            || stderr.contains("path '")
-        {
-            Ok(None)
-        } else {
-            Err(FloorError::Git {
-                message: format!("git show {spec} failed: {}", stderr.trim()),
-            })
-        }
+        Err(FloorError::Git {
+            message: format!(
+                "git show {spec} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        })
     }
 }
 

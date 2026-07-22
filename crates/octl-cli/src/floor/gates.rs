@@ -28,8 +28,13 @@ use serde::{Deserialize, Serialize};
 use super::snapshot::{CheckRun, ClippySnapshot, RunSnapshot, TestSnapshot};
 
 /// Which floor gate a [`GateOutcome`] / [`Violation`] belongs to.
+///
+/// `#[non_exhaustive]`: this is serialized into audit logs / node.report assets
+/// that external consumers (spec-nodes, the front-end rollup) read, so adding a
+/// gate later must not be a breaking change for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GateKind {
     /// The chunk/feature checks all pass.
     ChecksPass,
@@ -60,8 +65,12 @@ impl GateKind {
 /// One specific, mechanical reason a gate failed. Serde-tagged so a supervisor
 /// can record and route the exact violation (design.md §8 findings→action),
 /// never a free-text blob.
+///
+/// `#[non_exhaustive]`: serialized for external consumers (audit logs, the
+/// post-merge rollup), so a new violation kind must not break their deserializers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Violation {
     /// A required check did not pass.
     CheckFailed {
@@ -293,7 +302,7 @@ pub fn gate_no_new_clippy(baseline: &ClippySnapshot, current: &ClippySnapshot) -
 /// Gate 4 — the test suite was not gamed (design.md §4 point 4). Four crude,
 /// mechanical signals, all reported together:
 /// - **count dropped**: fewer distinct tests than baseline;
-/// - **newly ignored**: a baseline-passing test is now `#[ignore]`d/skipped;
+/// - **newly ignored**: a test that ran at baseline (passed or failed) is now `#[ignore]`d/skipped;
 /// - **vanished**: a baseline test id is entirely absent now (delete / rename-to-no-op);
 /// - **assertion density regressed**: a touched file has fewer `assert*!` than baseline.
 #[must_use]
@@ -314,11 +323,16 @@ pub fn gate_no_test_gaming(
         });
     }
 
-    // A baseline-passing test now ignored = gaming (a real skip hides a failure
-    // or removes coverage). A brand-new test that happens to be ignored is not
-    // flagged — only ones that used to pass.
-    for test in baseline.passed.intersection(&current.ignored) {
-        violations.push(Violation::NewlyIgnoredTest { test: test.clone() });
+    // A test known at baseline (passing OR failing) that is now
+    // `#[ignore]`d/skipped = gaming: skipping a passing test drops coverage, and
+    // skipping a failing test hides an unresolved failure. A test already
+    // ignored at baseline, and a brand-new test that happens to be ignored, are
+    // both fine — only a *newly* ignored, previously-run test is flagged.
+    let baseline_run: BTreeSet<&String> = baseline.passed.union(&baseline.failed).collect();
+    for test in current.ignored.difference(&baseline.ignored) {
+        if baseline_run.contains(test) {
+            violations.push(Violation::NewlyIgnoredTest { test: test.clone() });
+        }
     }
 
     // A baseline test id entirely absent now — deleted or renamed to a no-op.
@@ -362,16 +376,21 @@ pub fn gate_no_test_gaming(
 /// reported as violations only when the gate fails (within-slack drift is noted
 /// in the summary, not raised as a violation).
 ///
-/// Paths are compared verbatim (already-canonical repo-relative paths — the
-/// plan validator's `is_safe_repo_relative` rejects `.`/`..`/`//` components at
-/// authoring time, so both sides are normal forms). This is a lexical guard;
-/// symlink resolution is out of scope (as `plan.rs` documents).
+/// `changed` is de-duplicated into a set first, so a path that appears twice in
+/// the input cannot consume the slack budget twice. Paths are compared verbatim
+/// (already-canonical repo-relative paths — the plan validator's
+/// `is_safe_repo_relative` rejects `.`/`..`/`//` components at authoring time,
+/// so both sides are normal forms). This is a lexical guard; symlink resolution
+/// and byte-exact-vs-normalized path equivalence are out of scope (as `plan.rs`
+/// documents) and hardening is tracked in `floor-capture-trust-model`.
 #[must_use]
 pub fn gate_file_scope(declared: &[PathBuf], changed: &[PathBuf], slack: usize) -> GateOutcome {
     let declared_set: BTreeSet<&PathBuf> = declared.iter().collect();
-    let out_of_scope: Vec<PathBuf> = changed
-        .iter()
-        .filter(|f| !declared_set.contains(f))
+    // De-duplicate `changed` so a repeated path is one out-of-scope file, not N.
+    let changed_set: BTreeSet<&PathBuf> = changed.iter().collect();
+    let out_of_scope: Vec<PathBuf> = changed_set
+        .into_iter()
+        .filter(|f| !declared_set.contains(*f))
         .cloned()
         .collect();
 
@@ -606,6 +625,44 @@ mod tests {
     }
 
     #[test]
+    fn detects_was_failing_now_ignored() {
+        // A failing test turned into an ignored test hides an unresolved
+        // failure — that is also "newly ignored".
+        let base = TestSnapshot {
+            failed: tset(&["flaky"]),
+            ..Default::default()
+        };
+        let cur = TestSnapshot {
+            ignored: tset(&["flaky"]),
+            ..Default::default()
+        };
+        let g = gate_no_test_gaming(&base, &cur, &BTreeMap::new(), &BTreeMap::new());
+        assert!(g.violations.contains(&Violation::NewlyIgnoredTest {
+            test: "flaky".into()
+        }));
+    }
+
+    #[test]
+    fn brand_new_ignored_test_is_not_gaming() {
+        // A test that never existed at baseline and is added as ignored is not
+        // a gaming signal (nothing was hidden).
+        let base = TestSnapshot {
+            passed: tset(&["a"]),
+            ..Default::default()
+        };
+        let cur = TestSnapshot {
+            passed: tset(&["a"]),
+            ignored: tset(&["new_wip"]),
+            ..Default::default()
+        };
+        let g = gate_no_test_gaming(&base, &cur, &BTreeMap::new(), &BTreeMap::new());
+        assert!(!g
+            .violations
+            .iter()
+            .any(|v| matches!(v, Violation::NewlyIgnoredTest { .. })));
+    }
+
+    #[test]
     fn detects_assertion_density_regression() {
         let ts = TestSnapshot {
             passed: tset(&["a"]),
@@ -662,6 +719,17 @@ mod tests {
         assert!(g.violations.contains(&Violation::OutOfScopeFile {
             file: PathBuf::from("Cargo.toml")
         }));
+    }
+
+    #[test]
+    fn file_scope_dedups_repeated_paths() {
+        // The same out-of-scope path listed twice is one violation, and does not
+        // consume the slack budget twice.
+        let declared = paths(&["src/a.rs"]);
+        let changed = paths(&["src/dup.rs", "src/dup.rs"]);
+        let g = gate_file_scope(&declared, &changed, 1);
+        assert!(g.passed, "one distinct out-of-scope file fits slack 1");
+        assert!(g.violations.is_empty());
     }
 
     #[test]

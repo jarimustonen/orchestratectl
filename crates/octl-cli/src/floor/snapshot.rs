@@ -133,14 +133,20 @@ impl BaselineSnapshot {
 /// Deterministic `sha256:<hex>` of a sorted set of strings — the canonical
 /// digest of a pass-list / warning-list. `BTreeSet` iteration is already
 /// sorted, so the digest depends only on the contents, never on insertion
-/// order. Newline-delimited with a trailing newline per entry so no
-/// concatenation ambiguity (`["a", "bc"]` cannot collide with `["ab", "c"]`).
+/// order.
+///
+/// Each element is **length-prefixed** (an 8-byte big-endian byte length
+/// before the bytes) rather than delimiter-joined. A delimiter (`\n`) is
+/// ambiguous when an element can itself contain that byte — a single
+/// `"a\nb"` would hash identically to two elements `"a"` and `"b"`. libtest
+/// ids can't contain a newline, but doc-test names and clippy messages can, and
+/// this is a public function, so it frames unambiguously regardless of content.
 #[must_use]
 pub fn hash_sorted(items: &BTreeSet<String>) -> String {
     let mut h = Sha256::new();
     for item in items {
+        h.update((item.len() as u64).to_be_bytes());
         h.update(item.as_bytes());
-        h.update(b"\n");
     }
     format!("sha256:{:x}", h.finalize())
 }
@@ -193,11 +199,15 @@ mod tests {
         let b = set(&["z", "y", "x"]);
         assert_eq!(hash_sorted(&a), hash_sorted(&b));
 
-        // Delimiter prevents concatenation collisions.
+        // Length-prefix framing prevents concatenation collisions.
         assert_ne!(
             hash_sorted(&set(&["a", "bc"])),
             hash_sorted(&set(&["ab", "c"]))
         );
+
+        // Framing is unambiguous even when an element contains a newline: a
+        // single "a\nb" must not collide with two elements "a" and "b".
+        assert_ne!(hash_sorted(&set(&["a\nb"])), hash_sorted(&set(&["a", "b"])));
 
         // A different member changes the digest.
         assert_ne!(hash_sorted(&a), hash_sorted(&set(&["x", "y"])));
