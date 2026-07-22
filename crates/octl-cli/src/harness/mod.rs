@@ -67,16 +67,40 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Trip the token. Idempotent; observable from every clone. `SeqCst` so the
-    /// flip is not reordered around the adapter's other observations.
+    /// Trip the token. Idempotent; observable from every clone. `Release`/`Acquire`
+    /// is the standard write-once-flag pairing: the store on `cancel` happens-before
+    /// the `Acquire` load in [`is_cancelled`](CancelToken::is_cancelled) that
+    /// observes it. (No stronger `SeqCst` total order is needed — the token
+    /// publishes only this one boolean, nothing else to order against.)
     pub fn cancel(&self) {
-        self.flag.store(true, Ordering::SeqCst);
+        self.flag.store(true, Ordering::Release);
     }
 
     /// Whether [`cancel`](CancelToken::cancel) has been called on this token (or
     /// any clone of it).
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::SeqCst)
+        self.flag.load(Ordering::Acquire)
+    }
+}
+
+/// Serialize `Option<Duration>` as an optional integer count of **milliseconds**,
+/// rather than serde's default `Duration` struct (`{"secs":…,"nanos":…}`). A
+/// millisecond integer is the readable, stable wire shape for a timeout in the
+/// provenance JSON — settled here before the contract is consumed by a live path.
+/// Sub-millisecond precision is irrelevant for a wall-clock ceiling.
+mod opt_duration_millis {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // `&Option<_>` is the signature serde's `with` contract requires here.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: Serializer>(v: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+        v.map(|d| d.as_millis() as u64).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        Ok(Option::<u64>::deserialize(d)?.map(Duration::from_millis))
     }
 }
 
@@ -112,6 +136,21 @@ pub const HARNESS_CONTRACT_VERSION: u32 = 1;
 /// Both stops are cooperative and clean: the adapter kills the child process
 /// group, drains its partial transcript, and returns a *completed*
 /// `Ok(ChunkResult)` — not a `HarnessError`.
+///
+/// **Scope / known limitations (resolved in later build-order tasks, not here):**
+/// - **Worktree state after a stop is undefined.** A killed agent may have left
+///   uncommitted edits, untracked files, or even a commit before it was stopped.
+///   A `Timeout`/`Cancelled` [`ChunkResult`] carries *no* commit (the contract
+///   forbids it), so the supervisor MUST reset the worktree to `base_commit`
+///   before retrying — the adapter does not roll back (it never destroys
+///   evidence). Transactional isolation (a disposable nested worktree) is T5/T6.
+/// - **Only the agent invocation and each check are bounded/cancellable.** The
+///   short git-inspection tail after a successful agent run (`git rev-parse`,
+///   `git diff`) is not routed through the deadline/cancel machinery; a wedged
+///   git could still stall the tail. A chunk-wide deadline covering the tail and
+///   the whole check phase is a design §9 circuit-breaker (breakdown T6), not
+///   part of this per-attempt contract. [`ChunkRequest::timeout`] bounds the
+///   agent phase; [`Check::timeout`] bounds each check independently.
 pub trait CodeHarness: Send + Sync {
     /// What this adapter supports, so the supervisor can branch on it.
     fn capabilities(&self) -> HarnessCapabilities;
@@ -181,7 +220,11 @@ pub struct Check {
     /// kills the check's process group and records it as a non-passing
     /// [`CheckResult`] with `exit_code: None` (design §9 resource safety). `None`
     /// = unbounded (but the harness-wide cancel still applies).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "opt_duration_millis",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub timeout: Option<Duration>,
 }
 
@@ -229,7 +272,11 @@ pub struct ChunkRequest {
     /// `None` = no ceiling (the adapter is then bounded only by cancellation).
     /// Recorded as provenance: what deadline this attempt ran under. Per-`Check`
     /// timeouts ([`Check::timeout`]) bound the self-check phase separately.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "opt_duration_millis",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub timeout: Option<Duration>,
 }
 
@@ -255,9 +302,13 @@ pub enum ChunkOutcome {
         /// Why the run failed, for triage.
         reason: String,
     },
-    /// The run exceeded its allotted wall-clock and was stopped.
+    /// The run exceeded its allotted wall-clock and was stopped. Carries no
+    /// commit even if the agent committed before the kill — the worktree state is
+    /// undefined and the supervisor must reset before retrying (see the
+    /// [`CodeHarness`] trait docs).
     Timeout,
     /// The run was cancelled (e.g. a supervisor circuit-breaker, design §9).
+    /// Same worktree-reset caveat as [`ChunkOutcome::Timeout`].
     Cancelled,
 }
 

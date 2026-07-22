@@ -145,12 +145,18 @@ impl CodeHarness for StubHarness {
         // A cooperatively-cancellable slow run: poll the token until it trips
         // (Cancelled) or the budget elapses (Timeout).
         if let StubBehavior::SlowUntilCancel { budget } = &self.behavior {
-            let deadline = Instant::now() + *budget;
+            // A zero budget means "times out immediately" — return deterministically
+            // rather than relying on `Instant::now()` monotonic drift within the loop.
+            if budget.is_zero() {
+                return Ok(stopped_result(ChunkOutcome::Timeout));
+            }
+            // `checked_add` so an absurd budget cannot overflow `Instant` and panic.
+            let deadline = Instant::now().checked_add(*budget);
             loop {
                 if cancel.is_cancelled() {
                     return Ok(stopped_result(ChunkOutcome::Cancelled));
                 }
-                if Instant::now() >= deadline {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
                     return Ok(stopped_result(ChunkOutcome::Timeout));
                 }
                 std::thread::sleep(STUB_POLL);

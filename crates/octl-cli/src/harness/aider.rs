@@ -28,7 +28,7 @@ use super::{
     CancelToken, Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness,
     HarnessCapabilities, HarnessError, Usage, HARNESS_CONTRACT_VERSION,
 };
-use crate::proc::{run_with_control, ControlledOutcome, StopReason};
+use crate::proc::{run_with_control, CappedStream, ControlledOutcome, StopReason};
 
 /// Cap on captured output (aider transcript, per-check stdout/stderr) so a noisy
 /// tool cannot exhaust memory or bloat the serialized provenance. Generous enough
@@ -227,8 +227,8 @@ fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResul
             run: check.run.clone(),
             passed: status.success(),
             exit_code: status.code(),
-            stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+            stdout: render_stream(&stdout),
+            stderr: render_stream(&stderr),
         },
         ControlledOutcome::Stopped {
             reason,
@@ -236,11 +236,19 @@ fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResul
             stderr,
         } => {
             let note = match reason {
-                StopReason::Timeout => "check exceeded its timeout and was killed",
-                StopReason::Cancelled => "check was cancelled and killed",
+                StopReason::Timeout => {
+                    "[orchestratectl: check exceeded its timeout and was killed]"
+                }
+                StopReason::Cancelled => "[orchestratectl: check was cancelled and killed]",
             };
-            let mut stderr = String::from_utf8_lossy(&stderr.bytes).into_owned();
+            // Delimit the note on its own line so it can't glue onto a partial
+            // final stderr line.
+            let mut stderr = render_stream(&stderr);
+            if !stderr.is_empty() && !stderr.ends_with('\n') {
+                stderr.push('\n');
+            }
             stderr.push_str(note);
+            stderr.push('\n');
             CheckResult {
                 check_id: check.id.clone(),
                 desc: check.desc.clone(),
@@ -248,7 +256,7 @@ fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResul
                 passed: false,
                 // Killed by a signal — no clean exit code to report.
                 exit_code: None,
-                stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+                stdout: render_stream(&stdout),
                 stderr,
             }
         }
@@ -261,6 +269,22 @@ fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResul
             stdout: String::new(),
             stderr: format!("could not spawn check: {e}"),
         },
+    }
+}
+
+/// A non-passing [`CheckResult`] for a check that was *not run* because the chunk
+/// was cancelled before we reached it. Recorded (rather than omitted) so the
+/// completeness invariant — every requested check has a result — still holds when
+/// cancellation truncates the check phase.
+fn skipped_check(check: &Check) -> CheckResult {
+    CheckResult {
+        check_id: check.id.clone(),
+        desc: check.desc.clone(),
+        run: check.run.clone(),
+        passed: false,
+        exit_code: None,
+        stdout: String::new(),
+        stderr: "[orchestratectl: check not run — chunk cancelled]\n".to_string(),
     }
 }
 
@@ -343,20 +367,56 @@ fn parse_token_count(s: &str) -> Option<u64> {
         .map(|v| (v * mult) as u64)
 }
 
+/// Render one captured stream to a string, appending an explicit marker when the
+/// output was truncated at [`OUTPUT_CAP`] — so a capped transcript is never
+/// mistaken for a complete one (or for a crash mid-output).
+fn render_stream(stream: &CappedStream) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from_utf8_lossy(&stream.bytes).into_owned();
+    if stream.truncated {
+        if !s.is_empty() && !s.ends_with('\n') {
+            s.push('\n');
+        }
+        // Infallible: writing to a String never errors.
+        let _ = writeln!(
+            s,
+            "[orchestratectl: output truncated at {OUTPUT_CAP} bytes]"
+        );
+    }
+    s
+}
+
+/// The full transcript for an aider run: stdout then stderr, each truncation-
+/// marked. (stdout/stderr are captured on separate threads, so their relative
+/// interleaving is not recoverable; they are concatenated in a stable order.)
+fn render_transcript(stdout: &CappedStream, stderr: &CappedStream) -> String {
+    let mut t = render_stream(stdout);
+    t.push_str(&render_stream(stderr));
+    t
+}
+
 /// Persist a transcript to `path`, returning a reference iff the write succeeded
-/// (a failed write is not fatal — the transcript is provenance, not a gate).
+/// (a failed write is not fatal — the transcript is provenance, not a gate — but
+/// it is logged so a missing `transcript_ref` is diagnosable).
 fn write_transcript(path: &Path, transcript: &str) -> Option<PathBuf> {
     match std::fs::write(path, transcript) {
         Ok(()) => Some(path.to_path_buf()),
-        Err(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "failed to persist harness transcript");
+            None
+        }
     }
 }
 
 /// The [`ChunkResult`] for an agent run stopped early (timeout or cancel). No
 /// commit, no changed files, no check results — the run never reached those
-/// phases — but the partial transcript (if captured) is preserved. Matches the
-/// conformance contract for the `Timeout`/`Cancelled` outcomes.
-fn stopped_result(reason: StopReason, transcript_ref: Option<PathBuf>) -> ChunkResult {
+/// phases — but the partial transcript and any salvaged `usage` are preserved.
+/// Matches the conformance contract for the `Timeout`/`Cancelled` outcomes.
+fn stopped_result(
+    reason: StopReason,
+    transcript_ref: Option<PathBuf>,
+    usage: Option<Usage>,
+) -> ChunkResult {
     let outcome = match reason {
         StopReason::Timeout => ChunkOutcome::Timeout,
         StopReason::Cancelled => ChunkOutcome::Cancelled,
@@ -368,7 +428,7 @@ fn stopped_result(reason: StopReason, transcript_ref: Option<PathBuf>) -> ChunkR
         changed_files: Vec::new(),
         check_results: Vec::new(),
         transcript_ref,
-        usage: None,
+        usage,
     }
 }
 
@@ -393,6 +453,13 @@ impl CodeHarness for AiderHarness {
         cancel: &CancelToken,
     ) -> Result<ChunkResult, HarnessError> {
         let worktree = req.worktree_path.as_path();
+
+        // 0. Honour a cancel tripped before we do any work — a pre-cancelled
+        //    request is `Cancelled`, not a credential/worktree error (matches the
+        //    stub and centralises the "don't start this chunk" semantics).
+        if cancel.is_cancelled() {
+            return Ok(stopped_result(StopReason::Cancelled, None, None));
+        }
 
         // 1. Fail fast if the credential the provider needs is absent — a clear
         //    structured error beats an opaque provider failure downstream.
@@ -434,14 +501,10 @@ impl CodeHarness for AiderHarness {
         })?;
         let transcript_file = dir.join("transcript.log");
 
-        // If the supervisor already tripped the cancel before we spawn the
-        // (expensive, unbounded) agent, abort cleanly without launching it.
-        if cancel.is_cancelled() {
-            return Ok(stopped_result(StopReason::Cancelled, None));
-        }
-
         // 4. Build + run the aider invocation (spike-proven flags), bounded by
         //    the request's optional wall-clock timeout and the cancel token.
+        //    `run_with_control` re-checks the cancel before it spawns, so a cancel
+        //    that arrived during the guards above still short-circuits here.
         let mut cmd = Command::new(aider_bin());
         cmd.current_dir(worktree)
             .arg("--model")
@@ -479,10 +542,13 @@ impl CodeHarness for AiderHarness {
                 stdout,
                 stderr,
             } => {
-                let mut partial = String::from_utf8_lossy(&stdout.bytes).into_owned();
-                partial.push_str(&String::from_utf8_lossy(&stderr.bytes));
+                // Persist the partial transcript and salvage any usage aider
+                // printed before it was killed — a cost circuit-breaker (design
+                // §9) wants tokens-spent-so-far even on a stopped run.
+                let partial = render_transcript(&stdout, &stderr);
+                let usage = parse_usage(&partial);
                 let transcript_ref = write_transcript(&transcript_file, &partial);
-                return Ok(stopped_result(reason, transcript_ref));
+                return Ok(stopped_result(reason, transcript_ref, usage));
             }
             ControlledOutcome::SpawnErr(e) => {
                 return Err(HarnessError::ProviderFailure {
@@ -491,9 +557,10 @@ impl CodeHarness for AiderHarness {
             }
         };
 
-        // Persist a transcript regardless of outcome (provenance).
-        let mut transcript = String::from_utf8_lossy(&stdout.bytes).into_owned();
-        transcript.push_str(&String::from_utf8_lossy(&stderr.bytes));
+        // Persist a transcript regardless of outcome (provenance). Truncation is
+        // marked inline so a capped transcript is never mistaken for a complete
+        // one (or a crash).
+        let transcript = render_transcript(&stdout, &stderr);
         let transcript_ref = write_transcript(&transcript_file, &transcript);
 
         // 5. Read the outcome from git, never from aider's prose.
@@ -551,11 +618,24 @@ impl CodeHarness for AiderHarness {
 
         // 6. Run the self-check(s) — regardless of outcome, so a NoChange still
         //    reports the current check state. Each check is individually bounded
-        //    by its own timeout and the cancel token (see `run_check`).
+        //    by its own timeout and the cancel token (see `run_check`). Once cancel
+        //    is tripped we stop *spawning* further checks — each remaining check is
+        //    recorded as "skipped" without launching a shell command (avoids
+        //    wasting the budget and running commands post-cancel) — but we still
+        //    emit a result for *every* requested check so the completeness
+        //    invariant holds. The outcome stays whatever git reported: a produced
+        //    commit is not demoted to `Cancelled` (the contract forbids a commit on
+        //    `Cancelled`); the supervisor sees the commit plus the skipped checks.
         let check_results: Vec<CheckResult> = req
             .checks
             .iter()
-            .map(|c| run_check(worktree, c, cancel))
+            .map(|c| {
+                if cancel.is_cancelled() {
+                    skipped_check(c)
+                } else {
+                    run_check(worktree, c, cancel)
+                }
+            })
             .collect();
 
         let usage = parse_usage(&transcript);
@@ -1080,6 +1160,82 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
             "a wedged check must be killed by its timeout, not hang the chunk"
+        );
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn cancel_during_checks_keeps_commit_and_completes_check_results() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // aider commits, then touches a sentinel so the test can trip the cancel
+        // *deterministically* only after the commit exists (no timing race). The
+        // first check blocks (`sleep 30`), so the trip lands during the check
+        // phase: the running check is killed and every later check is recorded as
+        // "skipped" without being spawned. Completeness (a result per requested
+        // check) holds, and the produced commit is NOT demoted to Cancelled.
+        let sdir = TempDir::new().unwrap();
+        let sentinel = sdir.path().join("committed");
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            &format!(
+                "#!/bin/bash\n\
+                 printf 'x\\n' > out.txt\n\
+                 git add out.txt\n\
+                 git commit -q -m e\n\
+                 touch {}\n",
+                sentinel.display()
+            ),
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let mut req = base_request(repo.path());
+        req.checks = vec![
+            Check {
+                id: "c1".into(),
+                desc: "blocks".into(),
+                run: "sleep 30".into(),
+                timeout: None,
+            },
+            Check {
+                id: "c2".into(),
+                desc: "would pass".into(),
+                run: "true".into(),
+                timeout: None,
+            },
+        ];
+        let cancel = CancelToken::new();
+        let trip = cancel.clone();
+        let sentinel_seen = sentinel.clone();
+        let handle = std::thread::spawn(move || {
+            // Wait until aider has committed, then trip — guarantees the commit
+            // exists and we are (about to be) in the check phase.
+            while !sentinel_seen.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            trip.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let res = run_and_check_with_cancel(&h, &req, &cancel).unwrap();
+        handle.join().unwrap();
+        // The commit survives — cancellation during the tail does not erase it.
+        assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
+        // Completeness: a result for BOTH requested checks.
+        assert_eq!(res.check_results.len(), 2);
+        assert_eq!(res.check_results[0].check_id, "c1");
+        assert_eq!(res.check_results[1].check_id, "c2");
+        assert!(res.check_results.iter().all(|c| !c.passed));
+        // c2 was skipped, never spawned.
+        assert!(res.check_results[1].stderr.contains("not run"));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "the blocked check must be killed by cancel, not run to completion"
         );
 
         std::env::remove_var("OCTL_AIDER_BIN");

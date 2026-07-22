@@ -134,6 +134,17 @@ pub fn run_with_control(
 ) -> ControlledOutcome {
     use std::os::unix::process::CommandExt;
 
+    // Honour a cancel that is already tripped before we spawn anything — a
+    // pre-cancelled caller must not launch the program at all (centralises the
+    // semantics so every caller need not add its own pre-check).
+    if cancel() {
+        return ControlledOutcome::Stopped {
+            reason: StopReason::Cancelled,
+            stdout: CappedStream::empty(),
+            stderr: CappedStream::empty(),
+        };
+    }
+
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -158,7 +169,10 @@ pub fn run_with_control(
         .take()
         .map(|s| std::thread::spawn(move || read_capped(s, cap)));
 
-    let deadline = timeout.map(|t| Instant::now() + t);
+    // `checked_add` so an absurd (e.g. deserialized) `timeout` cannot overflow
+    // `Instant` and panic — an un-representable deadline is treated as "no
+    // deadline", leaving cancellation as the only bound.
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -173,18 +187,21 @@ pub fn run_with_control(
                     None
                 };
                 if let Some(reason) = reason {
-                    if let Some(pgid) = pid_file::to_pid_t(pid) {
-                        // SAFETY: SIGKILL to `-pgid` signals our own freshly
-                        // spawned process group (pgid == child pid via
-                        // process_group(0)); `pgid` is range-checked by
-                        // `to_pid_t`, so the negation can never be `-1`
-                        // (broadcast). Killing the group releases the pipes so
-                        // the reader threads below unblock.
-                        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                    // The child may have raced us to exit between `try_wait`
+                    // above and here — report its real status rather than
+                    // fabricating a `Stopped`/killed result.
+                    if let Ok(Some(status)) = child.try_wait() {
+                        let (stdout, stderr) =
+                            drain_readers(pid, out_reader.take(), err_reader.take());
+                        return ControlledOutcome::Exited {
+                            status,
+                            stdout,
+                            stderr,
+                        };
                     }
+                    kill_group(pid, &mut child);
                     let _ = child.wait();
-                    let stdout = join_reader(out_reader.take());
-                    let stderr = join_reader(err_reader.take());
+                    let (stdout, stderr) = drain_readers(pid, out_reader.take(), err_reader.take());
                     return ControlledOutcome::Stopped {
                         reason,
                         stdout,
@@ -194,23 +211,108 @@ pub fn run_with_control(
                 std::thread::sleep(POLL_INTERVAL);
             }
             Err(e) => {
-                let _ = child.kill();
+                // A `wait` error is unexpected; make sure the child cannot linger
+                // (and hang a subsequent blocking wait) before returning.
+                kill_group(pid, &mut child);
                 let _ = child.wait();
-                join_reader(out_reader.take());
-                join_reader(err_reader.take());
+                let _ = drain_readers(pid, out_reader.take(), err_reader.take());
                 return ControlledOutcome::SpawnErr(e);
             }
         }
     };
 
-    // The child exited; join the readers to collect what they drained. The pipes
-    // are closed now, so neither join blocks.
-    let stdout = join_reader(out_reader.take());
-    let stderr = join_reader(err_reader.take());
+    // The child exited; collect what the readers drained. A backgrounded
+    // descendant that inherited the pipe fds can outlive the leader and keep the
+    // pipes open, so this is bounded (see `drain_readers`) — never an unbounded
+    // join.
+    let (stdout, stderr) = drain_readers(pid, out_reader.take(), err_reader.take());
     ControlledOutcome::Exited {
         status,
         stdout,
         stderr,
+    }
+}
+
+/// SIGKILL the child's process *group* (reaping any subprocess it forked into
+/// the group), falling back to a direct `child.kill()` if the pid cannot be
+/// narrowed to a signed `pid_t` (pid 0 / out of range — practically impossible
+/// for a real child, but never leave it un-killed before a blocking wait).
+fn kill_group(pid: u32, child: &mut std::process::Child) {
+    if let Some(pgid) = pid_file::to_pid_t(pid) {
+        // SAFETY: SIGKILL to `-pgid` signals our own freshly spawned process
+        // group (pgid == child pid via `process_group(0)`); `pgid` is
+        // range-checked by `to_pid_t`, so the negation can never be `-1`
+        // (broadcast). Killing the group releases the pipes so the reader
+        // threads unblock.
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    } else {
+        let _ = child.kill();
+    }
+}
+
+/// Join the stdout/stderr reader threads without ever blocking the caller
+/// indefinitely.
+///
+/// The normal case (child fully exited, pipes closed) returns immediately. But a
+/// descendant that inherited the pipe write-ends can outlive the group leader
+/// and hold them open — a plain `join()` would then hang the supervisor, which is
+/// the exact failure this module exists to prevent. So:
+///   1. give the readers a short grace to finish on their own;
+///   2. if still blocked, `SIGKILL` the process group to close any pipe a
+///      lingering group member is holding, then wait a hard deadline;
+///   3. if a reader *still* has not finished (a descendant that escaped the group
+///      via `setsid`), detach it and return an empty stream for that pipe —
+///      losing a partial capture is acceptable; hanging is not.
+fn drain_readers(
+    pid: u32,
+    out_reader: Option<JoinHandle<CappedStream>>,
+    err_reader: Option<JoinHandle<CappedStream>>,
+) -> (CappedStream, CappedStream) {
+    /// Grace before we escalate to a group kill to unblock a lingering reader.
+    const GRACE: Duration = Duration::from_millis(200);
+    /// Hard ceiling after the group kill before we detach a still-blocked reader.
+    const HARD: Duration = Duration::from_secs(2);
+
+    let reader_done = |r: Option<&JoinHandle<CappedStream>>| r.is_none_or(JoinHandle::is_finished);
+    let both_finished = || reader_done(out_reader.as_ref()) && reader_done(err_reader.as_ref());
+
+    if !poll_until(GRACE, both_finished) {
+        // A reader is still blocked: a group member is holding a pipe. Close it
+        // by killing the group, then give a hard-bounded window to unblock.
+        if let Some(pgid) = pid_file::to_pid_t(pid) {
+            // SAFETY: see `kill_group` — `-pgid` targets our own group only.
+            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        }
+        poll_until(HARD, both_finished);
+    }
+
+    (finish_or_detach(out_reader), finish_or_detach(err_reader))
+}
+
+/// Poll `done` every [`POLL_INTERVAL`] up to `budget`, returning whether it
+/// became true within the budget.
+fn poll_until(budget: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Join a reader that has (almost certainly) finished, or detach it and return an
+/// empty stream if it is still blocked on an escaped descendant's pipe.
+fn finish_or_detach(reader: Option<JoinHandle<CappedStream>>) -> CappedStream {
+    match reader {
+        Some(h) if h.is_finished() => h.join().unwrap_or_else(|_| CappedStream::empty()),
+        // Still blocked: detach (drop the handle). The process group was already
+        // SIGKILLed, so the escapee will eventually die and the thread exit; we
+        // do not wait for it.
+        Some(_) | None => CappedStream::empty(),
     }
 }
 
@@ -240,14 +342,6 @@ fn read_capped(mut r: impl Read, cap: usize) -> CappedStream {
         }
     }
     CappedStream { bytes, truncated }
-}
-
-/// Join a reader thread, defaulting to an empty stream if it was absent or the
-/// thread panicked (a panicked drain is only a lost capture, never fatal).
-fn join_reader(reader: Option<JoinHandle<CappedStream>>) -> CappedStream {
-    reader
-        .and_then(|h| h.join().ok())
-        .unwrap_or_else(CappedStream::empty)
 }
 
 #[cfg(test)]
@@ -387,6 +481,47 @@ mod tests {
             }
         ));
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn escaped_background_child_does_not_hang_on_deadline() {
+        // The shell exits immediately, so `try_wait` reports Exited — but the
+        // backgrounded `sleep` inherited the pipe fds and is still alive, holding
+        // them open. A naive `join()` on the reader threads would block forever.
+        // `drain_readers` must bound it (grace → group kill → hard deadline) and
+        // return promptly.
+        let start = Instant::now();
+        let out = run_with_control(
+            sh("sleep 30 & exit 0"),
+            Some(Duration::from_millis(100)),
+            &|| false,
+            1 << 20,
+        );
+        // The leader exited cleanly; the group kill in `drain_readers` reaps the
+        // lingering `sleep`. Either way, the call returns without hanging.
+        assert!(matches!(
+            out,
+            ControlledOutcome::Exited { .. } | ControlledOutcome::Stopped { .. }
+        ));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must not hang on a backgrounded descendant holding the pipes"
+        );
+    }
+
+    #[test]
+    fn control_precancelled_never_spawns() {
+        let start = Instant::now();
+        // Would sleep forever if spawned; a pre-tripped cancel must skip it.
+        let out = run_with_control(sh("sleep 30"), None, &|| true, 1 << 20);
+        assert!(matches!(
+            out,
+            ControlledOutcome::Stopped {
+                reason: StopReason::Cancelled,
+                ..
+            }
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
