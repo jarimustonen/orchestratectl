@@ -109,9 +109,10 @@
         },
         "title": { "type": "string", "minLength": 1 },
         "deps": {
-          "description": "Ids of chunks this one depends on. Every entry must reference an existing chunk; the graph must be acyclic.",
+          "description": "Ids of chunks this one depends on. Every entry must reference an existing chunk; entries must be unique; the graph must be acyclic (acyclicity is enforced by the Rust validator, not expressible in JSON Schema).",
           "type": "array",
           "items": { "type": "string" },
+          "uniqueItems": true,
           "default": []
         },
         "tier": {
@@ -137,9 +138,9 @@
           "items": { "$ref": "#/$defs/check" }
         },
         "assertions": {
-          "description": "LLM-judged criteria, additive above the deterministic floor.",
+          "description": "LLM-judged criteria, additive above the deterministic floor. Each must be a non-empty string (the Rust validator additionally rejects whitespace-only strings).",
           "type": "array",
-          "items": { "type": "string" },
+          "items": { "type": "string", "minLength": 1 },
           "default": []
         },
         "requires_tests": {

@@ -20,11 +20,17 @@
 //!
 //! - Readers **reject unsupported major versions** ([`SUPPORTED_PLAN_SCHEMAS`]).
 //! - Readers **reject undeclared fields** — any key not in the v2 shape is a
-//!   rejection ([`PlanValidationError::UnknownField`]), *except* names in
-//!   [`TOLERATED_OPTIONAL_FIELDS`]. That allowlist is the governed-evolution
-//!   seam: when a future minor adds a genuinely additive *optional* field it is
-//!   registered there so older readers tolerate it, and only then. Schema
-//!   growth otherwise goes gap-event → reviewed proposal → versioned schema.
+//!   rejection. On the map-like objects (plan, `feature`, `baseline`,
+//!   `chunks[]`, `chunks[].checks[]`) this is [`PlanValidationError::UnknownField`],
+//!   gated by a **per-object-shape** allowlist ([`tolerated_fields`]): a field
+//!   ratified as additive on one shape is tolerated there and nowhere else. On
+//!   `acceptance[]` items (a tagged enum) it is a `deny_unknown_fields`
+//!   deserialization error ([`PlanValidationError::Malformed`]) — the same
+//!   stance the JSON Schema takes, with no additive seam in v2. The allowlists
+//!   are empty in v2, so every unknown key is currently rejected; a future minor
+//!   registers an additive optional field against its shape (and in the JSON
+//!   Schema) so older readers tolerate it, and only then. Schema growth
+//!   otherwise goes gap-event → reviewed proposal → versioned schema.
 //!
 //! This module is **read-only + validation types**. It does not touch the
 //! reducer, the lock layer, or any event-append path (state-integrity
@@ -49,11 +55,65 @@ pub const SUPPORTED_PLAN_SCHEMAS: &[u32] = &[2];
 /// Field names tolerated when they appear as unknown keys in an otherwise-valid
 /// plan — the governed-evolution seam (design.md §13). Empty in v2: no additive
 /// optional field has been ratified yet, so every unknown key is currently a
-/// rejection. A future minor that adds a genuinely additive optional field
-/// registers its name here (and in the JSON Schema) so older readers tolerate
-/// it; anything not listed is treated as a possibly-required unknown and
+/// rejection.
+///
+/// This is the flattened union across every object shape, exposed for
+/// documentation and the `expected` hint. The *operative* allowlist is
+/// **per-object-shape** ([`tolerated_fields`]): a field ratified as additive on
+/// `chunks[]` is tolerated there and nowhere else — a field's optionality
+/// depends on its location, not just its name, so a global name-only allowlist
+/// would leak a `chunks[].retries` tolerance onto `feature`, `baseline`, and
+/// the top level. A future minor registers a new field against its specific
+/// [`ObjectShape`] (and in the JSON Schema) so older readers tolerate it there;
+/// anything not listed for that shape is a possibly-required unknown and is
 /// rejected.
 pub const TOLERATED_OPTIONAL_FIELDS: &[&str] = &[];
+
+/// The object shapes an unknown-field check runs against — each carries its own
+/// additive-optional allowlist ([`tolerated_fields`]), so the governed-evolution
+/// seam is scoped to a location rather than a bare field name. (`Acceptance`
+/// items are absent: they reject unknowns at deserialize time via
+/// `deny_unknown_fields`, matching the schema, and have no seam in v2.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObjectShape {
+    /// The top-level plan object.
+    Plan,
+    /// `feature`.
+    Feature,
+    /// `baseline`.
+    Baseline,
+    /// A `chunks[]` element.
+    Chunk,
+    /// A `chunks[].checks[]` element.
+    Check,
+}
+
+impl ObjectShape {
+    /// Dotted path fragment naming this shape in an error (the chunk/check
+    /// arms fill in the index at the call site).
+    fn label(self) -> &'static str {
+        match self {
+            ObjectShape::Plan => "<plan>",
+            ObjectShape::Feature => "feature",
+            ObjectShape::Baseline => "baseline",
+            ObjectShape::Chunk => "chunks[]",
+            ObjectShape::Check => "checks[]",
+        }
+    }
+}
+
+/// The additive-optional fields tolerated on a given object shape. Empty for
+/// every shape in v2 — the seam exists so a ratified field can be admitted at
+/// exactly one location without widening any other (design.md §13).
+const fn tolerated_fields(shape: ObjectShape) -> &'static [&'static str] {
+    match shape {
+        ObjectShape::Plan
+        | ObjectShape::Feature
+        | ObjectShape::Baseline
+        | ObjectShape::Chunk
+        | ObjectShape::Check => &[],
+    }
+}
 
 /// The checked-in JSON Schema (Draft 2020-12) describing `plan.json` v2.
 ///
@@ -136,8 +196,16 @@ pub struct Baseline {
 /// A whole-feature acceptance criterion — an executable `check` or an
 /// LLM-judged `assertion`. Internally tagged on `kind`, so an unknown `kind`
 /// fails deserialization (surfaced as [`PlanValidationError::Malformed`]).
+///
+/// `deny_unknown_fields` makes an undeclared key inside a variant (e.g. a
+/// `run` on an `assertion`, or a stray `budget` on a `check`) a hard
+/// deserialization error, matching the JSON Schema's `additionalProperties:
+/// false` on each acceptance variant. Acceptance items therefore have **no
+/// additive-optional seam** in v2 — the same stance the schema takes; a future
+/// minor that needs one would move to a captured-`extra` shape (as the
+/// [`Chunk`]/[`Check`] structs use) under governed evolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Acceptance {
     /// An executable end-to-end check (`desc` + shell/test `run`).
     Check {
@@ -328,6 +396,15 @@ pub enum PlanValidationError {
         dep: String,
     },
 
+    /// A chunk listed the same dependency more than once.
+    #[error("chunk {chunk:?} lists duplicate dependency {dep:?}")]
+    DuplicateDep {
+        /// The depending chunk.
+        chunk: String,
+        /// The repeated dependency id.
+        dep: String,
+    },
+
     /// The dependency graph contained a cycle.
     #[error("chunk dependency graph has a cycle: {}", cycle.join(" -> "))]
     DependencyCycle {
@@ -351,7 +428,7 @@ pub enum PlanValidationError {
     },
 
     /// A `files_touched` entry was not a safe repo-relative path.
-    #[error("path {path:?} in chunk {chunk:?} is not a safe repo-relative path (no absolute paths, `..`, `~`, or empty components)")]
+    #[error("path {path:?} in chunk {chunk:?} is not a safe repo-relative path (no absolute paths, `~`, `\\`, `:`, control chars, or `.`/`..`/empty components)")]
     UnsafePath {
         /// The offending chunk id.
         chunk: String,
@@ -403,12 +480,7 @@ pub fn parse_and_validate_plan(raw: &Value) -> Result<Plan, PlanValidationError>
     let version = version
         .as_u64()
         .ok_or(PlanValidationError::SchemaVersionNotInt)?;
-    if !u32::try_from(version).is_ok_and(|v| SUPPORTED_PLAN_SCHEMAS.contains(&v)) {
-        return Err(PlanValidationError::UnsupportedSchemaVersion {
-            found: version,
-            supported: SUPPORTED_PLAN_SCHEMAS.to_vec(),
-        });
-    }
+    check_supported_version(version)?;
 
     // Deserialize into the typed shape. Missing required fields, wrong types,
     // an unknown acceptance `kind`, and an unknown `tier` all fail here.
@@ -419,6 +491,21 @@ pub fn parse_and_validate_plan(raw: &Value) -> Result<Plan, PlanValidationError>
 
     validate_plan(&plan)?;
     Ok(plan)
+}
+
+/// Reject a `schema_version` value whose major is not in
+/// [`SUPPORTED_PLAN_SCHEMAS`]. Shared by the raw-`Value` gate in
+/// [`parse_and_validate_plan`] and the typed re-check in [`validate_plan`], so
+/// neither entry point can admit an unsupported major.
+fn check_supported_version(version: u64) -> Result<(), PlanValidationError> {
+    if u32::try_from(version).is_ok_and(|v| SUPPORTED_PLAN_SCHEMAS.contains(&v)) {
+        Ok(())
+    } else {
+        Err(PlanValidationError::UnsupportedSchemaVersion {
+            found: version,
+            supported: SUPPORTED_PLAN_SCHEMAS.to_vec(),
+        })
+    }
 }
 
 /// Structural validation of an already-deserialized [`Plan`].
@@ -434,10 +521,16 @@ pub fn parse_and_validate_plan(raw: &Value) -> Result<Plan, PlanValidationError>
 ///
 /// Returns the first [`PlanValidationError`] found.
 pub fn validate_plan(plan: &Plan) -> Result<(), PlanValidationError> {
+    // Re-gate the version: `validate_plan` is a public entry point, and a `Plan`
+    // built directly or deserialized without the raw gate could carry an
+    // unsupported major. Without this, a caller re-checking a typed plan (as the
+    // doc invites) could admit `schema_version: 3`.
+    check_supported_version(u64::from(plan.schema_version))?;
+
     // --- undeclared-field rejection (compatibility semantics) ---
-    reject_unknown_fields(&plan.extra, "")?;
-    reject_unknown_fields(&plan.feature.extra, "feature")?;
-    reject_unknown_fields(&plan.baseline.extra, "baseline")?;
+    reject_unknown_fields(&plan.extra, ObjectShape::Plan)?;
+    reject_unknown_fields(&plan.feature.extra, ObjectShape::Feature)?;
+    reject_unknown_fields(&plan.baseline.extra, ObjectShape::Baseline)?;
 
     // --- required non-empty strings ---
     non_empty(&plan.feature.slug, "feature.slug")?;
@@ -498,26 +591,31 @@ pub fn validate_plan(plan: &Plan) -> Result<(), PlanValidationError> {
     Ok(())
 }
 
-/// Reject any key in `extra` not on the [`TOLERATED_OPTIONAL_FIELDS`] allowlist.
-/// `path` is the dotted location of the object (empty for the top-level plan).
-fn reject_unknown_fields(
+/// Reject any key in `extra` not on `shape`'s [`tolerated_fields`] allowlist —
+/// the per-object-shape compatibility check. `path` overrides `shape.label()`
+/// when the caller can name the concrete location (e.g. `chunks[c1]`).
+fn reject_unknown_fields_at(
     extra: &Map<String, Value>,
+    shape: ObjectShape,
     path: &str,
 ) -> Result<(), PlanValidationError> {
-    if let Some((field, _)) = extra
-        .iter()
-        .find(|(k, _)| !TOLERATED_OPTIONAL_FIELDS.contains(&k.as_str()))
-    {
+    let allow = tolerated_fields(shape);
+    if let Some((field, _)) = extra.iter().find(|(k, _)| !allow.contains(&k.as_str())) {
         return Err(PlanValidationError::UnknownField {
-            path: if path.is_empty() {
-                "<plan>".to_string()
-            } else {
-                path.to_string()
-            },
+            path: path.to_string(),
             field: field.clone(),
         });
     }
     Ok(())
+}
+
+/// [`reject_unknown_fields_at`] using the shape's own label as the error path —
+/// for the fixed-location shapes (`Plan`, `feature`, `baseline`).
+fn reject_unknown_fields(
+    extra: &Map<String, Value>,
+    shape: ObjectShape,
+) -> Result<(), PlanValidationError> {
+    reject_unknown_fields_at(extra, shape, shape.label())
 }
 
 /// Reject an empty / whitespace-only required string.
@@ -555,16 +653,30 @@ fn validate_chunk_id(id: &str) -> Result<(), PlanValidationError> {
 }
 
 /// Per-chunk structural rules (unknown fields, non-empty strings, ≥1 check,
-/// declared + safe `files_touched`, resolvable `deps`).
+/// declared + safe `files_touched`, resolvable + unique `deps`, non-empty
+/// assertions).
 fn validate_chunk(chunk: &Chunk, ids: &HashSet<&str>) -> Result<(), PlanValidationError> {
-    reject_unknown_fields(&chunk.extra, &format!("chunks[{}]", chunk.id))?;
+    reject_unknown_fields_at(
+        &chunk.extra,
+        ObjectShape::Chunk,
+        &format!("chunks[{}]", chunk.id),
+    )?;
     non_empty(&chunk.title, &format!("chunks[{}].title", chunk.id))?;
     non_empty(&chunk.brief, &format!("chunks[{}].brief", chunk.id))?;
 
-    // deps must resolve to a real chunk (cycles are caught separately).
+    // deps must resolve to a real chunk (cycles are caught separately) and must
+    // not repeat — a duplicate edge is malformed and skews any indegree-based
+    // scheduler (a dependent counted twice can never unblock).
+    let mut seen_deps: HashSet<&str> = HashSet::with_capacity(chunk.deps.len());
     for dep in &chunk.deps {
         if !ids.contains(dep.as_str()) {
             return Err(PlanValidationError::UnknownDep {
+                chunk: chunk.id.clone(),
+                dep: dep.clone(),
+            });
+        }
+        if !seen_deps.insert(dep.as_str()) {
+            return Err(PlanValidationError::DuplicateDep {
                 chunk: chunk.id.clone(),
                 dep: dep.clone(),
             });
@@ -578,12 +690,22 @@ fn validate_chunk(chunk: &Chunk, ids: &HashSet<&str>) -> Result<(), PlanValidati
         });
     }
     for (i, check) in chunk.checks.iter().enumerate() {
-        reject_unknown_fields(&check.extra, &format!("chunks[{}].checks[{i}]", chunk.id))?;
+        reject_unknown_fields_at(
+            &check.extra,
+            ObjectShape::Check,
+            &format!("chunks[{}].checks[{i}]", chunk.id),
+        )?;
         non_empty(
             &check.desc,
             &format!("chunks[{}].checks[{i}].desc", chunk.id),
         )?;
         non_empty(&check.run, &format!("chunks[{}].checks[{i}].run", chunk.id))?;
+    }
+
+    // assertions are LLM-judged criteria — an empty one is nonsensical (mirrors
+    // the non-empty check applied to `acceptance[]` items).
+    for (i, assertion) in chunk.assertions.iter().enumerate() {
+        non_empty(assertion, &format!("chunks[{}].assertions[{i}]", chunk.id))?;
     }
 
     // files_touched: declared + safe repo-relative.
@@ -604,20 +726,33 @@ fn validate_chunk(chunk: &Chunk, ids: &HashSet<&str>) -> Result<(), PlanValidati
     Ok(())
 }
 
-/// True iff `p` is a safe repo-relative path: non-empty, not absolute, no `~`
-/// home-expansion, no `..` traversal component, no empty components (`a//b`),
-/// and no backslash or NUL. Mirrors the crate's id-level path-traversal stance
-/// (see `schema.rs` id newtypes) applied to multi-component paths.
+/// True iff `p` is a safe repo-relative path. This is a **lexical** guard
+/// (mirroring the crate's id-level path-traversal stance in `schema.rs`) applied
+/// to multi-component paths — it is deliberately platform-independent, because a
+/// plan may be written on one OS and consumed on another. It is NOT a
+/// filesystem-resolution guarantee: a lexically-safe path can still resolve
+/// outside the repo through a symlinked directory, so the supervisor's actual
+/// merge-scope enforcement must not rely on this alone.
+///
+/// Rejects: empty; absolute (`/…`); `~` home-expansion; backslash (`\`, a
+/// Windows separator — kills `\\server\share` too); a `:` anywhere (kills
+/// Windows drive/`C:foo` and drive-absolute `C:/…`); any control character
+/// (NUL, `\n`, `\r`, `\t` — legal in some filenames but log-poisoning and
+/// adversarial); and any component that is empty (`a//b`), whitespace-only,
+/// `.` (`a/./b` — a non-canonical form that would defeat file-scope matching),
+/// or `..` (traversal).
 fn is_safe_repo_relative(p: &str) -> bool {
     if p.is_empty()
         || p.starts_with('/')
         || p.starts_with('~')
         || p.contains('\\')
-        || p.contains('\0')
+        || p.contains(':')
+        || p.chars().any(char::is_control)
     {
         return false;
     }
-    p.split('/').all(|comp| !comp.is_empty() && comp != "..")
+    p.split('/')
+        .all(|comp| !comp.trim().is_empty() && comp != "." && comp != "..")
 }
 
 /// Detect a cycle (or a self-loop) in the chunk dependency graph via a
@@ -779,6 +914,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_plan_regates_version_on_typed_plan() {
+        // A typed `Plan` that bypassed the raw gate (built directly, or mutated
+        // after deserialization) must still be rejected by `validate_plan` —
+        // otherwise the "re-check a typed plan" path admits an unsupported major.
+        let mut plan = parse_and_validate_plan(&valid_plan()).unwrap();
+        plan.schema_version = 3;
+        assert!(matches!(
+            validate_plan(&plan).unwrap_err(),
+            PlanValidationError::UnsupportedSchemaVersion { found: 3, .. }
+        ));
+    }
+
     // --- unknown fields ---
 
     #[test]
@@ -864,6 +1012,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn acceptance_check_unknown_field_rejected() {
+        // The tagged `Acceptance` enum uses `deny_unknown_fields`, so a stray
+        // key inside a variant fails at deserialize time (Malformed), matching
+        // the JSON Schema's `additionalProperties: false`. This is the fix for
+        // the silent-drop divergence all reviewers flagged.
+        let mut v = valid_plan();
+        v["acceptance"][0]["budget"] = json!(100);
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::Malformed { .. }
+        ));
+    }
+
+    #[test]
+    fn acceptance_assertion_with_run_rejected() {
+        // `run` is not a field of the `assertion` variant — reject it rather
+        // than silently drop an executable command onto a non-executable item.
+        let mut v = valid_plan();
+        v["acceptance"] = json!([
+            {"kind": "check", "desc": "e2e", "run": "cargo test"},
+            {"kind": "assertion", "desc": "x", "run": "rm -rf /"},
+        ]);
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::Malformed { .. }
+        ));
+    }
+
     // --- chunk rules ---
 
     #[test]
@@ -916,6 +1093,26 @@ mod tests {
         assert!(matches!(
             parse_and_validate_plan(&v).unwrap_err(),
             PlanValidationError::InvalidChunkId { .. }
+        ));
+    }
+
+    #[test]
+    fn duplicate_dep_rejected() {
+        let mut v = valid_plan();
+        v["chunks"][1]["deps"] = json!(["c1", "c1"]);
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::DuplicateDep { dep, .. } if dep == "c1"
+        ));
+    }
+
+    #[test]
+    fn empty_chunk_assertion_rejected() {
+        let mut v = valid_plan();
+        v["chunks"][0]["assertions"] = json!(["ok", "   "]);
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::EmptyString { path } if path == "chunks[c1].assertions[1]"
         ));
     }
 
@@ -1017,10 +1214,27 @@ mod tests {
             "crates/x/src/mod.rs",
             "a.rs",
             "deep/nested/dir/file.txt",
+            ".github/workflows/ci.yml", // leading-dot dir is fine; only `.`/`..` components are rejected
         ] {
             assert!(is_safe_repo_relative(ok), "should accept {ok:?}");
         }
-        for bad in ["", "/x", "~/x", "..", "a/../b", "a//b", "a\\b"] {
+        for bad in [
+            "",             // empty
+            "/x",           // absolute
+            "~/x",          // home expansion
+            "..",           // traversal
+            "a/../b",       // traversal component
+            "a//b",         // empty component
+            "a\\b",         // backslash separator
+            "a/./b",        // non-canonical `.` component
+            ".",            // bare `.`
+            "C:/Windows",   // windows drive-absolute (colon)
+            "C:foo",        // windows drive-relative (colon)
+            "src/foo\nbar", // control char (log poisoning)
+            "src/foo\tbar", // control char
+            "   ",          // whitespace-only
+            "a/   /b",      // whitespace-only component
+        ] {
             assert!(!is_safe_repo_relative(bad), "should reject {bad:?}");
         }
     }
@@ -1100,9 +1314,105 @@ mod tests {
             .collect();
         assert_eq!(tiers, Tier::WIRE_NAMES);
 
+        // Nested required-field sets agree with the Rust structs.
+        let required_at = |ptr: &str| -> HashSet<String> {
+            schema
+                .pointer(ptr)
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("missing required[] at {ptr}"))
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let set = |fields: &[&str]| -> HashSet<String> {
+            fields.iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(
+            required_at("/properties/feature/required"),
+            set(&["slug", "source_branch", "integration_branch"])
+        );
+        assert_eq!(
+            required_at("/properties/baseline/required"),
+            set(&["ref", "test_passlist_hash", "clippy_warnings_hash"])
+        );
+        assert_eq!(
+            required_at("/$defs/chunk/required"),
+            set(&["id", "title", "tier", "brief", "files_touched", "checks"])
+        );
+        assert_eq!(required_at("/$defs/check/required"), set(&["desc", "run"]));
+
+        // Every object shape closes itself with `additionalProperties: false` —
+        // the schema-side mirror of the Rust reject-unknown-fields policy. If a
+        // future edit drops one, the two stop agreeing and this fails.
+        for ptr in [
+            "",
+            "/properties/feature",
+            "/properties/baseline",
+            "/$defs/chunk",
+            "/$defs/check",
+            "/$defs/acceptance_item/oneOf/0",
+            "/$defs/acceptance_item/oneOf/1",
+        ] {
+            let node = if ptr.is_empty() {
+                &schema
+            } else {
+                schema
+                    .pointer(ptr)
+                    .unwrap_or_else(|| panic!("missing {ptr}"))
+            };
+            assert_eq!(
+                node["additionalProperties"],
+                json!(false),
+                "expected additionalProperties:false at {ptr:?}"
+            );
+        }
+
+        // Acceptance `kind` discriminants agree with the Rust enum wire names.
+        let kinds: HashSet<String> = schema["$defs"]["acceptance_item"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|variant| {
+                variant["properties"]["kind"]["const"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(kinds, set(&["check", "assertion"]));
+
         // The example the doc/tests use validates against the Rust validator,
         // tying schema + types + example together.
         let example: Value = serde_json::from_str(PLAN_V2_EXAMPLE).unwrap();
         assert!(parse_and_validate_plan(&example).is_ok());
+    }
+
+    #[test]
+    fn tolerated_optional_seam_is_empty_in_v2() {
+        // The governed-evolution seam exists but admits nothing in v2: every
+        // object shape's allowlist is empty, so any unknown key is rejected.
+        for shape in [
+            ObjectShape::Plan,
+            ObjectShape::Feature,
+            ObjectShape::Baseline,
+            ObjectShape::Chunk,
+            ObjectShape::Check,
+        ] {
+            assert!(tolerated_fields(shape).is_empty());
+        }
+        assert!(TOLERATED_OPTIONAL_FIELDS.is_empty());
+    }
+
+    #[test]
+    fn unknown_field_scoped_to_its_object() {
+        // A per-shape allowlist means an unknown key is reported against the
+        // object that carries it, not conflated across shapes.
+        let mut v = valid_plan();
+        v["feature"]["team"] = json!("payments");
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::UnknownField { path, field }
+                if path == "feature" && field == "team"
+        ));
     }
 }
