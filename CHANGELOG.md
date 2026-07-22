@@ -8,6 +8,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`CodeHarness` execution control: timeout + cancellation (code-pipeline T0
+  follow-up, still behind the seam).** `run_chunk` now takes a `CancelToken` and
+  `ChunkRequest`/`Check` carry optional wall-clock `timeout`s, so a runaway or
+  hung code-node can be bounded and aborted (design §9 circuit-breakers). The
+  `AiderHarness` honours both — killing the agent's (and each check's) process
+  group on expiry/cancel, draining the partial transcript, and returning
+  `ChunkOutcome::Timeout`/`Cancelled` (never a hang); `StubHarness` gained a
+  `SlowUntilCancel` behaviour so the conformance suite tests both deterministically
+  with no network. Unblocks live wiring (T5).
 - **`plan.json` v2 schema + validator (`octl_core::plan`).** Serde types for the
   code-pipeline stage contract (`schema_version`, immutable `plan_rev`,
   `intent_rev`, `feature`, `baseline`, `acceptance[]` checks/assertions, and the

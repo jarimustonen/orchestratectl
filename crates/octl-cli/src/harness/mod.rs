@@ -39,8 +39,46 @@ pub mod conformance;
 pub mod stub;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// A cheap-to-clone, thread-safe cancellation signal the supervisor holds while a
+/// chunk runs and trips to abort it (design §9 circuit-breakers — a cost/time
+/// kill-switch cancels an in-flight chunk and gets [`ChunkOutcome::Cancelled`]
+/// back). Cloning shares one underlying flag (`Arc<AtomicBool>`), so a
+/// supervisor thread can [`cancel`](CancelToken::cancel) the same token the
+/// adapter polls from another thread.
+///
+/// The signal is one-way and level-triggered: once tripped it stays tripped.
+/// Adapters honour it cooperatively — they poll [`is_cancelled`](CancelToken::is_cancelled)
+/// at their wait points (e.g. between subprocess poll intervals) rather than
+/// being interrupted asynchronously.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken {
+    flag: Arc<AtomicBool>,
+}
+
+impl CancelToken {
+    /// A fresh, un-cancelled token.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Trip the token. Idempotent; observable from every clone. `SeqCst` so the
+    /// flip is not reordered around the adapter's other observations.
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`cancel`](CancelToken::cancel) has been called on this token (or
+    /// any clone of it).
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+}
 
 /// Version of the request/result protocol in this module. Bumped when the wire
 /// shape of [`ChunkRequest`]/[`ChunkResult`] changes incompatibly, so recorded
@@ -57,14 +95,23 @@ pub const HARNESS_CONTRACT_VERSION: u32 = 1;
 ///
 /// `Send + Sync`: the supervisor will drive chunks concurrently and share the
 /// harness as `Arc<dyn CodeHarness>` across threads. Adapters keep per-call
-/// mutation behind interior mutability.
+/// mutation behind interior mutability — the harness value carries no per-chunk
+/// state, so one `Arc<dyn CodeHarness>` is safely shared across all in-flight
+/// chunks (the per-call [`ChunkRequest`]/[`CancelToken`] carry everything a chunk
+/// needs). This resolves the concurrency-model question raised in issue
+/// `outright-tasty-son`: shared `Arc`, not per-call construction.
 ///
-/// **Execution control (timeout / cancellation) is NOT yet part of this
-/// signature** — `run_chunk` is synchronous with no deadline or cancel token, so
-/// the `Timeout`/`Cancelled` outcomes are declared but unreachable by the aider
-/// adapter. Settling that (a cancel-token parameter or an async trait) is a
-/// prerequisite for live wiring, tracked in issue `outright-tasty-son` (design
-/// §9 circuit-breakers / breakdown T6).
+/// **Execution control.** `run_chunk` bounds each attempt two ways so a runaway
+/// or hung agent cannot block the supervisor forever (design §9 circuit-breakers):
+/// - [`ChunkRequest::timeout`] — an optional wall-clock ceiling on the agent
+///   invocation. On expiry the adapter kills the agent's process group and
+///   returns [`ChunkOutcome::Timeout`] (never a hang).
+/// - `cancel: &CancelToken` — a supervisor-tripped signal. A circuit-breaker that
+///   trips it aborts the in-flight run and gets [`ChunkOutcome::Cancelled`] back.
+///
+/// Both stops are cooperative and clean: the adapter kills the child process
+/// group, drains its partial transcript, and returns a *completed*
+/// `Ok(ChunkResult)` — not a `HarnessError`.
 pub trait CodeHarness: Send + Sync {
     /// What this adapter supports, so the supervisor can branch on it.
     fn capabilities(&self) -> HarnessCapabilities;
@@ -75,7 +122,16 @@ pub trait CodeHarness: Send + Sync {
     /// that *completed* — even one that changed nothing, failed its self-checks,
     /// timed out, or was cancelled — is an `Ok(ChunkResult)` whose
     /// [`ChunkResult::outcome`] carries the verdict.
-    fn run_chunk(&self, req: &ChunkRequest) -> Result<ChunkResult, HarnessError>;
+    ///
+    /// `cancel` is polled cooperatively during the (unbounded) agent invocation:
+    /// when the supervisor trips it, the adapter kills the agent and returns
+    /// [`ChunkOutcome::Cancelled`]. A [`ChunkRequest::timeout`] that expires
+    /// yields [`ChunkOutcome::Timeout`] the same way. See the trait-level docs.
+    fn run_chunk(
+        &self,
+        req: &ChunkRequest,
+        cancel: &CancelToken,
+    ) -> Result<ChunkResult, HarnessError>;
 }
 
 /// What an adapter supports, so the supervisor can branch its pipeline (design
@@ -120,6 +176,13 @@ pub struct Check {
     pub desc: String,
     /// Shell command executed via `sh -c` in the worktree. Exit 0 = pass.
     pub run: String,
+    /// Optional wall-clock ceiling for this one check, so a wedged command (e.g.
+    /// a `cargo test` that hangs) cannot stall the chunk. On expiry the adapter
+    /// kills the check's process group and records it as a non-passing
+    /// [`CheckResult`] with `exit_code: None` (design §9 resource safety). `None`
+    /// = unbounded (but the harness-wide cancel still applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Duration>,
 }
 
 /// Everything an adapter needs to execute one chunk attempt. Harness-neutral: it
@@ -160,6 +223,14 @@ pub struct ChunkRequest {
     /// §4 already models it as `files_touched[]`.
     #[serde(default)]
     pub files: Vec<PathBuf>,
+    /// Optional wall-clock ceiling for the agent invocation (design §9 wall-time
+    /// circuit-breaker). When the agent exceeds it, the adapter kills its process
+    /// group and returns [`ChunkOutcome::Timeout`] with the partial transcript.
+    /// `None` = no ceiling (the adapter is then bounded only by cancellation).
+    /// Recorded as provenance: what deadline this attempt ran under. Per-`Check`
+    /// timeouts ([`Check::timeout`]) bound the self-check phase separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Duration>,
 }
 
 /// How a completed chunk attempt turned out. Every variant is a *completed* run

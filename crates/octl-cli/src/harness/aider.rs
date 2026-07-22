@@ -25,9 +25,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::{
-    Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities,
-    HarnessError, Usage, HARNESS_CONTRACT_VERSION,
+    CancelToken, Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness,
+    HarnessCapabilities, HarnessError, Usage, HARNESS_CONTRACT_VERSION,
 };
+use crate::proc::{run_with_control, ControlledOutcome, StopReason};
+
+/// Cap on captured output (aider transcript, per-check stdout/stderr) so a noisy
+/// tool cannot exhaust memory or bloat the serialized provenance. Generous enough
+/// that a normal transcript is retained whole; a runaway producer is truncated.
+const OUTPUT_CAP: usize = 8 * 1024 * 1024;
 
 /// How to invoke aider for a chunk. The credential itself is never stored here —
 /// only the *name* of the env var to read it from (design §10: routing config
@@ -202,24 +208,51 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Run one executable check via `sh -c` in the worktree.
-fn run_check(worktree: &Path, check: &Check) -> CheckResult {
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(&check.run)
-        .current_dir(worktree)
-        .output();
-    match out {
-        Ok(o) => CheckResult {
+/// Run one executable check via `sh -c` in the worktree, bounded by the check's
+/// own [`Check::timeout`] and the chunk-wide `cancel` token. A check that exceeds
+/// its deadline or is cancelled has its process group killed and is recorded as a
+/// non-passing result with `exit_code: None` (killed by signal) — a wedged
+/// `cargo test` can never stall the chunk (design §9).
+fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResult {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(&check.run).current_dir(worktree);
+    match run_with_control(cmd, check.timeout, &|| cancel.is_cancelled(), OUTPUT_CAP) {
+        ControlledOutcome::Exited {
+            status,
+            stdout,
+            stderr,
+        } => CheckResult {
             check_id: check.id.clone(),
             desc: check.desc.clone(),
             run: check.run.clone(),
-            passed: o.status.success(),
-            exit_code: o.status.code(),
-            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+            passed: status.success(),
+            exit_code: status.code(),
+            stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
         },
-        Err(e) => CheckResult {
+        ControlledOutcome::Stopped {
+            reason,
+            stdout,
+            stderr,
+        } => {
+            let note = match reason {
+                StopReason::Timeout => "check exceeded its timeout and was killed",
+                StopReason::Cancelled => "check was cancelled and killed",
+            };
+            let mut stderr = String::from_utf8_lossy(&stderr.bytes).into_owned();
+            stderr.push_str(note);
+            CheckResult {
+                check_id: check.id.clone(),
+                desc: check.desc.clone(),
+                run: check.run.clone(),
+                passed: false,
+                // Killed by a signal — no clean exit code to report.
+                exit_code: None,
+                stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+                stderr,
+            }
+        }
+        ControlledOutcome::SpawnErr(e) => CheckResult {
             check_id: check.id.clone(),
             desc: check.desc.clone(),
             run: check.run.clone(),
@@ -310,6 +343,35 @@ fn parse_token_count(s: &str) -> Option<u64> {
         .map(|v| (v * mult) as u64)
 }
 
+/// Persist a transcript to `path`, returning a reference iff the write succeeded
+/// (a failed write is not fatal — the transcript is provenance, not a gate).
+fn write_transcript(path: &Path, transcript: &str) -> Option<PathBuf> {
+    match std::fs::write(path, transcript) {
+        Ok(()) => Some(path.to_path_buf()),
+        Err(_) => None,
+    }
+}
+
+/// The [`ChunkResult`] for an agent run stopped early (timeout or cancel). No
+/// commit, no changed files, no check results — the run never reached those
+/// phases — but the partial transcript (if captured) is preserved. Matches the
+/// conformance contract for the `Timeout`/`Cancelled` outcomes.
+fn stopped_result(reason: StopReason, transcript_ref: Option<PathBuf>) -> ChunkResult {
+    let outcome = match reason {
+        StopReason::Timeout => ChunkOutcome::Timeout,
+        StopReason::Cancelled => ChunkOutcome::Cancelled,
+    };
+    ChunkResult {
+        schema_version: HARNESS_CONTRACT_VERSION,
+        outcome,
+        resulting_commit: None,
+        changed_files: Vec::new(),
+        check_results: Vec::new(),
+        transcript_ref,
+        usage: None,
+    }
+}
+
 impl CodeHarness for AiderHarness {
     fn capabilities(&self) -> HarnessCapabilities {
         HarnessCapabilities {
@@ -325,7 +387,11 @@ impl CodeHarness for AiderHarness {
         }
     }
 
-    fn run_chunk(&self, req: &ChunkRequest) -> Result<ChunkResult, HarnessError> {
+    fn run_chunk(
+        &self,
+        req: &ChunkRequest,
+        cancel: &CancelToken,
+    ) -> Result<ChunkResult, HarnessError> {
         let worktree = req.worktree_path.as_path();
 
         // 1. Fail fast if the credential the provider needs is absent — a clear
@@ -368,7 +434,14 @@ impl CodeHarness for AiderHarness {
         })?;
         let transcript_file = dir.join("transcript.log");
 
-        // 4. Build + run the aider invocation (spike-proven flags).
+        // If the supervisor already tripped the cancel before we spawn the
+        // (expensive, unbounded) agent, abort cleanly without launching it.
+        if cancel.is_cancelled() {
+            return Ok(stopped_result(StopReason::Cancelled, None));
+        }
+
+        // 4. Build + run the aider invocation (spike-proven flags), bounded by
+        //    the request's optional wall-clock timeout and the cancel token.
         let mut cmd = Command::new(aider_bin());
         cmd.current_dir(worktree)
             .arg("--model")
@@ -390,17 +463,38 @@ impl CodeHarness for AiderHarness {
             cmd.arg(file);
         }
 
-        let output = cmd.output().map_err(|e| HarnessError::ProviderFailure {
-            message: format!("could not run aider ({}): {e}", aider_bin()),
-        })?;
+        let run = run_with_control(cmd, req.timeout, &|| cancel.is_cancelled(), OUTPUT_CAP);
+
+        // Extract the completed run's streams, or return early on an early stop /
+        // spawn failure. A `Stopped` run persists its partial transcript and maps
+        // to `Timeout`/`Cancelled` — never a hang, never a `HarnessError`.
+        let (status, stdout, stderr) = match run {
+            ControlledOutcome::Exited {
+                status,
+                stdout,
+                stderr,
+            } => (status, stdout, stderr),
+            ControlledOutcome::Stopped {
+                reason,
+                stdout,
+                stderr,
+            } => {
+                let mut partial = String::from_utf8_lossy(&stdout.bytes).into_owned();
+                partial.push_str(&String::from_utf8_lossy(&stderr.bytes));
+                let transcript_ref = write_transcript(&transcript_file, &partial);
+                return Ok(stopped_result(reason, transcript_ref));
+            }
+            ControlledOutcome::SpawnErr(e) => {
+                return Err(HarnessError::ProviderFailure {
+                    message: format!("could not run aider ({}): {e}", aider_bin()),
+                })
+            }
+        };
 
         // Persist a transcript regardless of outcome (provenance).
-        let mut transcript = String::from_utf8_lossy(&output.stdout).into_owned();
-        transcript.push_str(&String::from_utf8_lossy(&output.stderr));
-        let transcript_ref = match std::fs::write(&transcript_file, &transcript) {
-            Ok(()) => Some(transcript_file),
-            Err(_) => None,
-        };
+        let mut transcript = String::from_utf8_lossy(&stdout.bytes).into_owned();
+        transcript.push_str(&String::from_utf8_lossy(&stderr.bytes));
+        let transcript_ref = write_transcript(&transcript_file, &transcript);
 
         // 5. Read the outcome from git, never from aider's prose.
         let new_head = head_oid(worktree)?;
@@ -416,14 +510,13 @@ impl CodeHarness for AiderHarness {
                 ChunkOutcome::Failed {
                     reason: "aider left uncommitted changes without producing a commit".to_string(),
                 }
-            } else if output.status.success() {
+            } else if status.success() {
                 ChunkOutcome::NoChange
             } else {
                 ChunkOutcome::Failed {
                     reason: format!(
                         "aider exited {} with no commit produced",
-                        output
-                            .status
+                        status
                             .code()
                             .map_or("signal".to_string(), |c| c.to_string())
                     ),
@@ -457,9 +550,13 @@ impl CodeHarness for AiderHarness {
         };
 
         // 6. Run the self-check(s) — regardless of outcome, so a NoChange still
-        //    reports the current check state.
-        let check_results: Vec<CheckResult> =
-            req.checks.iter().map(|c| run_check(worktree, c)).collect();
+        //    reports the current check state. Each check is individually bounded
+        //    by its own timeout and the cancel token (see `run_check`).
+        let check_results: Vec<CheckResult> = req
+            .checks
+            .iter()
+            .map(|c| run_check(worktree, c, cancel))
+            .collect();
 
         let usage = parse_usage(&transcript);
 
@@ -478,7 +575,7 @@ impl CodeHarness for AiderHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::conformance::run_and_check;
+    use crate::harness::conformance::{run_and_check, run_and_check_with_cancel};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -555,8 +652,10 @@ mod tests {
                 id: "chk1".into(),
                 desc: "always passes".into(),
                 run: "true".into(),
+                timeout: None,
             }],
             files: vec![PathBuf::from("out.txt")],
+            timeout: None,
         }
     }
 
@@ -566,7 +665,9 @@ mod tests {
         let repo = init_repo();
         std::env::remove_var("DEEPSEEK_API_KEY");
         let h = AiderHarness::new(AiderConfig::new("deepseek/deepseek-chat"));
-        let err = h.run_chunk(&base_request(repo.path())).unwrap_err();
+        let err = h
+            .run_chunk(&base_request(repo.path()), &CancelToken::new())
+            .unwrap_err();
         assert_eq!(
             err,
             HarnessError::MissingCredential {
@@ -582,7 +683,9 @@ mod tests {
         std::fs::write(repo.path().join("dirt.txt"), "x").unwrap();
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
         let h = AiderHarness::new(AiderConfig::new("m"));
-        let err = h.run_chunk(&base_request(repo.path())).unwrap_err();
+        let err = h
+            .run_chunk(&base_request(repo.path()), &CancelToken::new())
+            .unwrap_err();
         assert!(matches!(err, HarnessError::DirtyWorktree { .. }));
         std::env::remove_var("DEEPSEEK_API_KEY");
     }
@@ -679,7 +782,9 @@ mod tests {
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
 
         let h = AiderHarness::new(AiderConfig::new("m"));
-        let err = h.run_chunk(&base_request(repo.path())).unwrap_err();
+        let err = h
+            .run_chunk(&base_request(repo.path()), &CancelToken::new())
+            .unwrap_err();
         assert!(matches!(err, HarnessError::ProviderFailure { .. }));
 
         std::env::remove_var("OCTL_AIDER_BIN");
@@ -705,6 +810,7 @@ mod tests {
             id: "chk1".into(),
             desc: "always fails".into(),
             run: "exit 1".into(),
+            timeout: None,
         }];
         let res = run_and_check(&h, &req).unwrap();
         assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
@@ -748,7 +854,7 @@ mod tests {
         .trim()
         .to_string();
         req.base_commit = parent;
-        let err = h.run_chunk(&req).unwrap_err();
+        let err = h.run_chunk(&req, &CancelToken::new()).unwrap_err();
         assert!(matches!(err, HarnessError::InvalidWorktree { .. }));
         std::env::remove_var("DEEPSEEK_API_KEY");
     }
@@ -833,6 +939,147 @@ mod tests {
         assert_eq!(
             files,
             vec![PathBuf::from("a.txt"), PathBuf::from("out.txt")]
+        );
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    // ---- Execution control: timeout + cancellation (real subprocess). ----
+
+    #[test]
+    fn timeout_kills_hung_aider() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // A fake aider that hangs far past the deadline (and forks a grandchild,
+        // so the process-group kill is exercised).
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\nsleep 30 & sleep 30\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let mut req = base_request(repo.path());
+        req.timeout = Some(std::time::Duration::from_millis(200));
+
+        let start = std::time::Instant::now();
+        let res = run_and_check(&h, &req).unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Timeout);
+        assert!(res.resulting_commit.is_none());
+        assert!(res.changed_files.is_empty());
+        assert!(res.check_results.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "timeout must fire promptly, not wait for the hung child"
+        );
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn cancel_before_run_returns_cancelled_without_spawning() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // If aider *were* spawned it would commit; a pre-tripped cancel must
+        // short-circuit before that, so no commit is produced.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\nprintf 'x\\n' > out.txt\ngit add out.txt\ngit commit -q -m e\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        let before = head_of(repo.path());
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let res = run_and_check_with_cancel(&h, &req, &cancel).unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Cancelled);
+        assert!(res.resulting_commit.is_none());
+        // HEAD did not move — aider never ran.
+        assert_eq!(head_of(repo.path()), before);
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn cancel_in_flight_aborts_aider() {
+        let _g = env_lock();
+        let repo = init_repo();
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(sdir.path(), "fake-aider.sh", "#!/bin/bash\nsleep 30\n");
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        // No timeout — the only way out is the cancel tripped mid-run.
+        let cancel = CancelToken::new();
+        let trip = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            trip.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let res = run_and_check_with_cancel(&h, &req, &cancel).unwrap();
+        handle.join().unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Cancelled);
+        assert!(res.resulting_commit.is_none());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "cancel must abort promptly, not wait for the hung child"
+        );
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn per_check_timeout_kills_wedged_check() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // aider commits fine; the self-check then hangs and must be killed by its
+        // own per-check timeout without stalling the chunk.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\nprintf 'x\\n' > out.txt\ngit add out.txt\ngit commit -q -m e\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let mut req = base_request(repo.path());
+        req.checks = vec![Check {
+            id: "slow".into(),
+            desc: "wedged".into(),
+            run: "sleep 30".into(),
+            timeout: Some(std::time::Duration::from_millis(200)),
+        }];
+
+        let start = std::time::Instant::now();
+        let res = run_and_check(&h, &req).unwrap();
+        // The chunk still committed; only the check was killed.
+        assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
+        assert_eq!(res.check_results.len(), 1);
+        assert!(!res.check_results[0].passed);
+        // Killed by a signal — no clean exit code.
+        assert_eq!(res.check_results[0].exit_code, None);
+        assert!(res.check_results[0].stderr.contains("exceeded its timeout"));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "a wedged check must be killed by its timeout, not hang the chunk"
         );
 
         std::env::remove_var("OCTL_AIDER_BIN");

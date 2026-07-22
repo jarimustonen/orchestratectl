@@ -149,12 +149,27 @@ pub fn assert_result_conforms(
 /// test gate but would take down a supervisor if called in production — so it is
 /// `#[cfg(test)]`. Production code that wants to validate an adapter result
 /// should call [`assert_result_conforms`] and handle the `Err`.
+///
+/// Drives the adapter with a fresh, un-cancelled [`CancelToken`]. Use
+/// [`run_and_check_with_cancel`] to exercise the cancellation path.
 #[cfg(test)]
 pub fn run_and_check(
     harness: &dyn super::CodeHarness,
     req: &ChunkRequest,
 ) -> Result<ChunkResult, super::HarnessError> {
-    let out = harness.run_chunk(req);
+    run_and_check_with_cancel(harness, req, &super::CancelToken::new())
+}
+
+/// [`run_and_check`] with a caller-supplied [`CancelToken`], so a test can trip
+/// cancellation (before or during the run, from another thread) and still gate
+/// the result through the structural contract.
+#[cfg(test)]
+pub fn run_and_check_with_cancel(
+    harness: &dyn super::CodeHarness,
+    req: &ChunkRequest,
+    cancel: &super::CancelToken,
+) -> Result<ChunkResult, super::HarnessError> {
+    let out = harness.run_chunk(req, cancel);
     if let Ok(res) = &out {
         assert_result_conforms(req, res, harness.capabilities())
             .unwrap_or_else(|e| panic!("adapter produced a non-conforming ChunkResult: {e}"));
@@ -180,6 +195,7 @@ mod tests {
             brief: "b".into(),
             checks,
             files: vec![],
+            timeout: None,
         }
     }
 
@@ -188,6 +204,7 @@ mod tests {
             id: "chk1".into(),
             desc: "d".into(),
             run: "true".into(),
+            timeout: None,
         }]
     }
 
@@ -372,11 +389,13 @@ mod tests {
                 id: "a".into(),
                 desc: "d".into(),
                 run: "true".into(),
+                timeout: None,
             },
             Check {
                 id: "b".into(),
                 desc: "d".into(),
                 run: "true".into(),
+                timeout: None,
             },
         ]);
         let res = ChunkResult::no_change(); // no check_results
@@ -389,5 +408,58 @@ mod tests {
         let req = req_with_checks(one_check());
         // run_and_check panics on non-conformance; reaching here is the assert.
         run_and_check(&stub, &req).unwrap();
+    }
+
+    // ---- Cancellation + timeout, deterministically via the stub. ----
+
+    #[test]
+    fn cancel_pretripped_yields_cancelled_for_any_behavior() {
+        use super::super::CancelToken;
+        // A behavior that would otherwise commit; a pre-tripped token wins.
+        let stub = StubHarness::new(StubBehavior::Commit {
+            commit: "a".repeat(40),
+            changed_files: vec![PathBuf::from("x")],
+            fail_first_check: false,
+        });
+        let req = req_with_checks(one_check());
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let res = run_and_check_with_cancel(&stub, &req, &cancel).unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Cancelled);
+        assert!(res.resulting_commit.is_none());
+        assert!(res.check_results.is_empty());
+    }
+
+    #[test]
+    fn slow_run_cancelled_in_flight() {
+        use super::super::CancelToken;
+        use std::time::Duration;
+        // A generous budget so the run only ends via the in-flight cancel.
+        let stub = StubHarness::new(StubBehavior::SlowUntilCancel {
+            budget: Duration::from_secs(30),
+        });
+        let req = req_with_checks(one_check());
+        let cancel = CancelToken::new();
+        let trip = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            trip.cancel();
+        });
+        let res = run_and_check_with_cancel(&stub, &req, &cancel).unwrap();
+        handle.join().unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Cancelled);
+    }
+
+    #[test]
+    fn slow_run_times_out_when_not_cancelled() {
+        use super::super::CancelToken;
+        use std::time::Duration;
+        // A zero budget expires immediately; the token is never tripped.
+        let stub = StubHarness::new(StubBehavior::SlowUntilCancel {
+            budget: Duration::from_millis(0),
+        });
+        let req = req_with_checks(one_check());
+        let res = run_and_check_with_cancel(&stub, &req, &CancelToken::new()).unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::Timeout);
     }
 }

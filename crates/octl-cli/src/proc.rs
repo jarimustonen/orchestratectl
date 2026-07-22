@@ -61,23 +61,89 @@ pub enum TimedOutcome {
     SpawnErr(std::io::Error),
 }
 
+/// Why a controlled run was stopped before the child exited on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// The wall-clock deadline was exceeded.
+    Timeout,
+    /// The caller-supplied cancel predicate returned `true` (a supervisor
+    /// circuit-breaker tripped, design §9).
+    Cancelled,
+}
+
+/// Outcome of a run bounded by an optional deadline **and** a cancel predicate
+/// ([`run_with_control`]). Unlike [`TimedOutcome`], a `Stopped` run still returns
+/// whatever output was drained before the group kill, so callers can persist a
+/// partial transcript (design §10: a timed-out/cancelled chunk reports its
+/// partial transcript).
+pub enum ControlledOutcome {
+    /// The child exited on its own (zero or non-zero); both streams captured.
+    Exited {
+        status: ExitStatus,
+        stdout: CappedStream,
+        stderr: CappedStream,
+    },
+    /// The run was stopped early (deadline or cancel); the process group was
+    /// `SIGKILLed` and the partial drained output is returned.
+    Stopped {
+        reason: StopReason,
+        stdout: CappedStream,
+        stderr: CappedStream,
+    },
+    /// The child could not be spawned or an unexpected `wait` error occurred.
+    SpawnErr(std::io::Error),
+}
+
 /// Spawn `cmd` and wait at most `timeout`, capturing stdout and stderr each up
 /// to `cap` bytes. `stdin`/`stdout`/`stderr` and the process group are set here
 /// authoritatively — the caller only supplies the program, args, env, and
 /// `current_dir`.
-pub fn run_with_timeout(mut cmd: Command, timeout: Duration, cap: usize) -> TimedOutcome {
+pub fn run_with_timeout(cmd: Command, timeout: Duration, cap: usize) -> TimedOutcome {
+    // A never-cancel predicate, so the only early stop is the deadline.
+    match run_with_control(cmd, Some(timeout), &|| false, cap) {
+        ControlledOutcome::Exited {
+            status,
+            stdout,
+            stderr,
+        } => TimedOutcome::Exited {
+            status,
+            stdout,
+            stderr,
+        },
+        // With a never-true cancel predicate the only `Stopped` reason is the
+        // deadline; a `Cancelled` reason is unreachable here.
+        ControlledOutcome::Stopped { .. } => TimedOutcome::TimedOut,
+        ControlledOutcome::SpawnErr(e) => TimedOutcome::SpawnErr(e),
+    }
+}
+
+/// Spawn `cmd` and wait until it exits, the optional `timeout` deadline passes,
+/// or `cancel()` returns `true` — whichever comes first. On an early stop the
+/// child's process *group* is `SIGKILLed` (reaping any subprocess it forked) and
+/// the partial drained output is returned in [`ControlledOutcome::Stopped`].
+///
+/// `timeout` of `None` means "no wall-clock ceiling" — the run is then bounded
+/// only by `cancel()`. Cancellation is checked before the deadline each poll, so
+/// a cancel that races a deadline is reported as [`StopReason::Cancelled`]. The
+/// cancel predicate is polled every [`POLL_INTERVAL`]; latency is bounded by it.
+pub fn run_with_control(
+    mut cmd: Command,
+    timeout: Option<Duration>,
+    cancel: &dyn Fn() -> bool,
+    cap: usize,
+) -> ControlledOutcome {
     use std::os::unix::process::CommandExt;
 
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    // Own process group so a timeout can reap the whole tree, not just the
+    // Own process group so an early stop can reap the whole tree, not just the
     // direct child (which may be a shell that forked the real binary).
     cmd.process_group(0);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return TimedOutcome::SpawnErr(e),
+        Err(e) => return ControlledOutcome::SpawnErr(e),
     };
     let pid = child.id();
 
@@ -92,12 +158,21 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration, cap: usize) -> Time
         .take()
         .map(|s| std::thread::spawn(move || read_capped(s, cap)));
 
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.map(|t| Instant::now() + t);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                if Instant::now() >= deadline {
+                // Cancellation is checked before the deadline so a cancel that
+                // races the timeout is reported as `Cancelled` (more actionable).
+                let reason = if cancel() {
+                    Some(StopReason::Cancelled)
+                } else if deadline.is_some_and(|d| Instant::now() >= d) {
+                    Some(StopReason::Timeout)
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
                     if let Some(pgid) = pid_file::to_pid_t(pid) {
                         // SAFETY: SIGKILL to `-pgid` signals our own freshly
                         // spawned process group (pgid == child pid via
@@ -108,9 +183,13 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration, cap: usize) -> Time
                         unsafe { libc::kill(-pgid, libc::SIGKILL) };
                     }
                     let _ = child.wait();
-                    join_reader(out_reader.take());
-                    join_reader(err_reader.take());
-                    return TimedOutcome::TimedOut;
+                    let stdout = join_reader(out_reader.take());
+                    let stderr = join_reader(err_reader.take());
+                    return ControlledOutcome::Stopped {
+                        reason,
+                        stdout,
+                        stderr,
+                    };
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -119,7 +198,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration, cap: usize) -> Time
                 let _ = child.wait();
                 join_reader(out_reader.take());
                 join_reader(err_reader.take());
-                return TimedOutcome::SpawnErr(e);
+                return ControlledOutcome::SpawnErr(e);
             }
         }
     };
@@ -128,7 +207,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration, cap: usize) -> Time
     // are closed now, so neither join blocks.
     let stdout = join_reader(out_reader.take());
     let stderr = join_reader(err_reader.take());
-    TimedOutcome::Exited {
+    ControlledOutcome::Exited {
         status,
         stdout,
         stderr,
@@ -248,6 +327,78 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "timeout must fire promptly, not wait for the child"
         );
+    }
+
+    #[test]
+    fn control_cancel_stops_promptly_with_partial_output() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let trip = Arc::clone(&flag);
+        // Trip the cancel shortly after the run starts.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trip.store(true, Ordering::SeqCst);
+        });
+
+        let start = Instant::now();
+        // No deadline — the run is bounded only by the cancel. It emits some
+        // output first so we can assert the partial drain.
+        let out = run_with_control(
+            sh("printf partial; sleep 30"),
+            None,
+            &move || flag.load(Ordering::SeqCst),
+            1 << 20,
+        );
+        handle.join().unwrap();
+        match out {
+            ControlledOutcome::Stopped {
+                reason,
+                stdout,
+                stderr,
+            } => {
+                assert_eq!(reason, StopReason::Cancelled);
+                assert_eq!(stdout.bytes, b"partial");
+                assert!(stderr.bytes.is_empty());
+            }
+            _ => panic!("expected Stopped(Cancelled)"),
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "cancel must fire promptly, not wait for the child"
+        );
+    }
+
+    #[test]
+    fn control_deadline_stops_when_never_cancelled() {
+        let start = Instant::now();
+        let out = run_with_control(
+            sh("sleep 30"),
+            Some(Duration::from_millis(200)),
+            &|| false,
+            1 << 20,
+        );
+        assert!(matches!(
+            out,
+            ControlledOutcome::Stopped {
+                reason: StopReason::Timeout,
+                ..
+            }
+        ));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn control_exits_normally_when_neither_fires() {
+        let out = run_with_control(sh("printf ok; exit 0"), None, &|| false, 1 << 20);
+        match out {
+            ControlledOutcome::Exited { status, stdout, .. } => {
+                assert!(status.success());
+                assert_eq!(stdout.bytes, b"ok");
+            }
+            _ => panic!("expected Exited"),
+        }
     }
 
     #[test]

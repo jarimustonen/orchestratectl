@@ -10,11 +10,16 @@
 //! [`conformance`]: super::conformance
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use super::{
-    Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities,
-    HarnessError, Usage, HARNESS_CONTRACT_VERSION,
+    CancelToken, Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness,
+    HarnessCapabilities, HarnessError, Usage, HARNESS_CONTRACT_VERSION,
 };
+
+/// How often [`StubBehavior::SlowUntilCancel`] polls the cancel token while
+/// counting down its budget (mirrors the real adapter's cooperative polling).
+const STUB_POLL: Duration = Duration::from_millis(5);
 
 /// What a [`StubHarness`] should return for a `run_chunk` call.
 #[derive(Debug, Clone)]
@@ -40,6 +45,16 @@ pub enum StubBehavior {
     Timeout,
     /// A completed run cancelled by the supervisor.
     Cancelled,
+    /// A cooperatively-cancellable "slow run": it polls the cancel token until
+    /// either the token is tripped (→ [`ChunkOutcome::Cancelled`]) or `budget`
+    /// wall-clock elapses first (→ [`ChunkOutcome::Timeout`]). Lets the
+    /// conformance suite exercise *in-flight* cancellation (another thread trips
+    /// the token) and timeout expiry deterministically, with no network and no
+    /// real agent — modelling how a real adapter bounds a live run.
+    SlowUntilCancel {
+        /// Wall-clock ceiling before the simulated run "times out".
+        budget: Duration,
+    },
     /// The harness could not produce a result at all.
     Error(HarnessError),
 }
@@ -96,12 +111,52 @@ impl StubHarness {
     }
 }
 
+/// A stopped-early result (timeout/cancel): no commit, no checks — matching the
+/// contract for the `Timeout`/`Cancelled` outcomes.
+fn stopped_result(outcome: ChunkOutcome) -> ChunkResult {
+    ChunkResult {
+        schema_version: HARNESS_CONTRACT_VERSION,
+        outcome,
+        resulting_commit: None,
+        changed_files: Vec::new(),
+        check_results: Vec::new(),
+        transcript_ref: Some(PathBuf::from("stub-transcript.log")),
+        usage: None,
+    }
+}
+
 impl CodeHarness for StubHarness {
     fn capabilities(&self) -> HarnessCapabilities {
         self.capabilities
     }
 
-    fn run_chunk(&self, req: &ChunkRequest) -> Result<ChunkResult, HarnessError> {
+    fn run_chunk(
+        &self,
+        req: &ChunkRequest,
+        cancel: &CancelToken,
+    ) -> Result<ChunkResult, HarnessError> {
+        // Honour a cancel tripped before the run starts, for *any* scripted
+        // behaviour (except a hard `Error`) — proves the token is threaded and
+        // lets a test assert `Cancelled` by pre-tripping it.
+        if cancel.is_cancelled() && !matches!(self.behavior, StubBehavior::Error(_)) {
+            return Ok(stopped_result(ChunkOutcome::Cancelled));
+        }
+
+        // A cooperatively-cancellable slow run: poll the token until it trips
+        // (Cancelled) or the budget elapses (Timeout).
+        if let StubBehavior::SlowUntilCancel { budget } = &self.behavior {
+            let deadline = Instant::now() + *budget;
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(stopped_result(ChunkOutcome::Cancelled));
+                }
+                if Instant::now() >= deadline {
+                    return Ok(stopped_result(ChunkOutcome::Timeout));
+                }
+                std::thread::sleep(STUB_POLL);
+            }
+        }
+
         let transcript_ref = Some(PathBuf::from("stub-transcript.log"));
         let usage = self.capabilities.reports_usage.then_some(Usage {
             input_tokens: Some(100),
@@ -149,24 +204,12 @@ impl CodeHarness for StubHarness {
                 transcript_ref,
                 usage,
             },
-            StubBehavior::Timeout => ChunkResult {
-                schema_version: HARNESS_CONTRACT_VERSION,
-                outcome: ChunkOutcome::Timeout,
-                resulting_commit: None,
-                changed_files: Vec::new(),
-                check_results: Vec::new(),
-                transcript_ref,
-                usage: None,
-            },
-            StubBehavior::Cancelled => ChunkResult {
-                schema_version: HARNESS_CONTRACT_VERSION,
-                outcome: ChunkOutcome::Cancelled,
-                resulting_commit: None,
-                changed_files: Vec::new(),
-                check_results: Vec::new(),
-                transcript_ref,
-                usage: None,
-            },
+            StubBehavior::Timeout => stopped_result(ChunkOutcome::Timeout),
+            StubBehavior::Cancelled => stopped_result(ChunkOutcome::Cancelled),
+            // Handled above with a cooperative poll loop; never reaches the match.
+            StubBehavior::SlowUntilCancel { .. } => {
+                unreachable!("SlowUntilCancel is handled before the behavior match")
+            }
             StubBehavior::Error(e) => return Err(e.clone()),
         };
         Ok(result)

@@ -2,7 +2,7 @@
 created: 2026-07-22
 updated: 2026-07-22
 type: task
-status: open
+status: in-progress
 priority: high
 ---
 
