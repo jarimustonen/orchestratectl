@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`plan.json` v2 schema + validator (`octl_core::plan`).** Serde types for the
+  code-pipeline stage contract (`schema_version`, immutable `plan_rev`,
+  `intent_rev`, `feature`, `baseline`, `acceptance[]` checks/assertions, and the
+  `chunks[]` DAG) plus a structural validator that rejects unsupported schema
+  majors and undeclared fields, enforces unique/acyclic chunk deps, ≥1 executable
+  check per chunk and in `acceptance[]`, and safe repo-relative `files_touched`
+  paths — with domain-typed `PlanValidationError`s the CLI can map to its
+  `schema_violation` envelope. A checked-in Draft 2020-12 JSON Schema
+  (`crates/octl-core/schemas/plan.v2.schema.json`) is the machine-readable
+  artifact, kept in sync with the Rust types by a drift-guard golden test. Read-
+  only types + validation only — not yet wired into a live path (design.md §4/§7/
+  §13, `issues/code-pipeline/plan-schema.md`).
+
 ### Fixed
 
 - **Supervisor reconciles run status with git after a self-merge.** A spinoff

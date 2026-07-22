@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "plan_rev": 1,
+  "intent_rev": 3,
+  "feature": {
+    "slug": "user-csv-export",
+    "source_branch": "main",
+    "integration_branch": "feat/user-csv-export"
+  },
+  "baseline": {
+    "ref": "feat/user-csv-export@fork",
+    "test_passlist_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "clippy_warnings_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "acceptance": [
+    {
+      "kind": "check",
+      "desc": "signed-in user downloads their own data as CSV end-to-end",
+      "run": "cargo test --test e2e account_csv_export"
+    },
+    {
+      "kind": "assertion",
+      "desc": "the CSV contains exactly the user's own records and nothing else"
+    }
+  ],
+  "chunks": [
+    {
+      "id": "c1",
+      "title": "CSV serializer for a user record",
+      "deps": [],
+      "tier": "code",
+      "brief": "Turnkey, self-contained implementation brief; rich enough that a cheap model needs no architectural reasoning.",
+      "files_touched": ["src/export/csv.rs", "src/export/csv_test.rs"],
+      "checks": [
+        { "desc": "round-trips a representative record", "run": "cargo test export::csv::roundtrip" },
+        { "desc": "empty + unicode fields escaped", "run": "cargo test export::csv::escaping" }
+      ],
+      "assertions": [
+        "serializer API matches how the endpoint (c2) expects to call it"
+      ],
+      "requires_tests": true
+    },
+    {
+      "id": "c2",
+      "title": "Account-page export endpoint",
+      "deps": ["c1"],
+      "tier": "code",
+      "brief": "…endpoint brief, referencing c1's serializer interface…",
+      "files_touched": ["src/routes/account.rs", "src/routes/account_test.rs"],
+      "checks": [
+        { "desc": "GET /account/export returns text/csv for the session user", "run": "cargo test routes::account::export_ok" },
+        { "desc": "unauthenticated → 401", "run": "cargo test routes::account::export_authn" }
+      ],
+      "assertions": [],
+      "requires_tests": true
+    }
+  ]
+}

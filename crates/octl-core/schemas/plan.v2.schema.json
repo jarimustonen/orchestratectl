@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestratectl.dev/schemas/plan.v2.schema.json",
+  "title": "orchestratectl plan.json (v2)",
+  "description": "The interface contract the spec-node writes and the supervisor + orchestrator read. Immutable per revision, versioned, provenance-bearing. See issues/code-pipeline/plan-schema.md and design.md §4/§7/§13. This schema is the checked-in machine-readable artifact; the operative source of truth for readers/writers is the octl_core::plan Rust validator, and a drift-guard test keeps the two in agreement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_rev",
+    "intent_rev",
+    "feature",
+    "baseline",
+    "acceptance",
+    "chunks"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Major schema version. Readers reject unsupported majors (do NOT silently ignore).",
+      "type": "integer",
+      "const": 2
+    },
+    "plan_rev": {
+      "description": "Immutable revision of this plan. A fix or re-spec writes plan.v(N+1).json; each chunk attempt records the plan_rev it consumed.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "intent_rev": {
+      "description": "The orchestrator-owned intent.md revision this plan targets. Intent is referenced, not embedded.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "source_branch", "integration_branch"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1 },
+        "source_branch": { "type": "string", "minLength": 1 },
+        "integration_branch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "baseline": {
+      "description": "Snapshot at feat/<slug> fork; verify + the deterministic floor diff against it. Supervisor-owned.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "test_passlist_hash", "clippy_warnings_hash"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "test_passlist_hash": { "type": "string", "minLength": 1 },
+        "clippy_warnings_hash": { "type": "string", "minLength": 1 }
+      }
+    },
+    "acceptance": {
+      "description": "Whole-feature intent gate. Each item is an executable check or an LLM-judged assertion; at least one must be a check.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/acceptance_item" }
+    },
+    "chunks": {
+      "description": "The DAG of implementation chunks. deps form an acyclic dependency graph.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/chunk" }
+    }
+  },
+  "$defs": {
+    "acceptance_item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "desc", "run"],
+          "properties": {
+            "kind": { "const": "check" },
+            "desc": { "type": "string", "minLength": 1 },
+            "run": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "desc"],
+          "properties": {
+            "kind": { "const": "assertion" },
+            "desc": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["desc", "run"],
+      "properties": {
+        "desc": { "type": "string", "minLength": 1 },
+        "run": { "type": "string", "minLength": 1 }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "tier", "brief", "files_touched", "checks"],
+      "properties": {
+        "id": {
+          "description": "Unique within the plan; referenced by other chunks' deps.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "deps": {
+          "description": "Ids of chunks this one depends on. Every entry must reference an existing chunk; the graph must be acyclic.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "tier": {
+          "description": "Starting model tier hint; the orchestrator owns promotion.",
+          "type": "string",
+          "enum": ["code", "mid", "high"]
+        },
+        "brief": {
+          "description": "Turnkey, self-contained implementation brief.",
+          "type": "string",
+          "minLength": 1
+        },
+        "files_touched": {
+          "description": "Merge-time constraint (not just a hint): repo-relative paths, no traversal.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "checks": {
+          "description": "Executable per-chunk checks; at least one required.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/check" }
+        },
+        "assertions": {
+          "description": "LLM-judged criteria, additive above the deterministic floor.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "requires_tests": {
+          "description": "If true, the supervisor blocks a merge that added/modified no tests.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}
