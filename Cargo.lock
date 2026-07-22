@@ -659,6 +659,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tempfile",
+ "thiserror",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

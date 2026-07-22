@@ -20,6 +20,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   artifact, kept in sync with the Rust types by a drift-guard golden test. Read-
   only types + validation only — not yet wired into a live path (design.md §4/§7/
   §13, `issues/code-pipeline/plan-schema.md`).
+- **`CodeHarness` adapter contract (code-pipeline T0, behind the seam).** A
+  versioned, harness-neutral trait (`crates/octl-cli/src/harness/`) that lets the
+  supervisor drive a code-writing agent over one chunk and consume a structured
+  `ChunkResult` — never tool prose or exit-status guessing (design §10). Ships the
+  request/result protocol (`ChunkRequest`, `ChunkResult`, `ChunkOutcome`, `Check`,
+  `CheckResult`, `Usage`, `HarnessCapabilities`, structured `HarnessError`), an
+  `AiderHarness` first adapter (shells out non-interactively, reads the outcome
+  from git not stdout, `DEEPSEEK_API_KEY` from the env), a deterministic
+  `StubHarness`, and a reusable conformance suite. Unused by default — not wired
+  into any live `run create`/supervisor path; staged rollout (design §14) plugs it
+  in later.
 
 ### Fixed
 
