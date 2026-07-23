@@ -20,8 +20,16 @@ three owner decisions in §15 (defaults applied, flagged for override).
    No brittle numeric rules for sizing; hard mechanical rules for "did tests pass"
    and "did we blow the budget." Different axes. *(Amends the v1 principle per the
    panel; see §15 decision D1.)*
-2. **Concentrate decisions in the expensive model.** Every judgment belongs to an
-   Opus context. Cheap models do only mechanical, decision-free work.
+2. **Concentrate FINAL decisions in the expensive model — routine coordination may
+   be fast.** Every *final/consequential* judgment — declare-converged / ship,
+   trigger-re-spec, accept-a-risk or drop a non-trivial finding, escalate-to-human —
+   is made by Opus. The project-manager / coordinator tier (dispatching chunks,
+   tracking progress, sorting obvious findings) **may run on a fast, cheap model** so
+   the always-on layer is cheap. Cheap *code* models still make no decisions. Every
+   decision envelope records **which tier decided**; a fast-model *final* decision is
+   an audit-catchable bug. The deterministic floor (§4) is what makes a cheap
+   coordinator safe — the mechanical gates don't care which model coordinated.
+   *(Owner refinement, 2026-07-23.)*
 3. **Single human-interaction locus.** All human conversation flows through one
    front-end agent; sub-agents escalate *up*, never address the human. No dumb
    human-gated merge. (A *passive, non-blocking* post-merge rollup is allowed —
@@ -81,8 +89,20 @@ Orchestrator [Opus, stateless]  returns e.g.:
 
 The supervisor validates and executes each primitive, appends events, and only
 re-invokes the orchestrator when the next decision is due. Decisions are recorded
-as **structured envelopes** (actor, input artifact IDs, reason summary, model +
-prompt version), not prose — so a run is causally replayable.
+as **structured envelopes** (actor, input artifact IDs, reason summary, **decision
+tier**, model + prompt version), not prose — so a run is causally replayable.
+
+**The orchestrator function is itself tiered (owner refinement §0.2).** It runs on
+a **fast, cheap model** for routine coordination — emitting the obvious mechanical
+primitives (`RE_CODE_CHUNK` for a clear FIX, dispatch, progress). It **must route
+final/consequential primitives to the expensive model**: `DECLARE_CONVERGED`,
+`TRIGGER_RE_SPEC`, `ESCALATE`, and any DROP/`PROPOSE_SPINOFF` of a non-trivial
+finding. Concretely: the fast coordinator classifies each decision as routine vs
+consequential; consequential ones are deferred to an Opus call whose verdict is the
+one recorded. The classification boundary is the one genuinely new risk this
+refinement adds — a fast model that mislabels a consequential decision as routine —
+so the envelope's `decision_tier` field makes every such call auditable, and the
+deterministic floor (§4) still gates the merge regardless of who coordinated.
 
 ---
 
@@ -91,7 +111,8 @@ prompt version), not prose — so a run is causally replayable.
 | Role | Model (v1) | Decisions? | Responsibility |
 |---|---|---|---|
 | **front-end** | Opus (user's convo) | routes to human | the sole human locus; spawns one feature-orchestrator per feature |
-| **feature-orchestrator** | Opus, **stateless fn** | yes — all | triage → typed actions; holds nothing long-lived (state is in the log) |
+| **coordinator (PM)** | **fast/cheap, stateless fn** | routine only | dispatch + obvious-triage → typed primitives; classifies each decision routine vs consequential; state lives in the log |
+| **decider** | **Opus** | **final/consequential only** | invoked by the coordinator for ship/converge, re-spec, escalate, non-trivial drop/spinoff; its verdict is the recorded one |
 | **spec** | Opus | yes (arch) | writes `plan.vN.json` (chunk DAG + turnkey briefs + checks/assertions); chunked by judgment, no numeric rules |
 | **code** | deepseek (cheap) | **no** | reads a brief, edits, runs self-check, commits its chunk branch; never merges, never reports (supervisor synthesizes the result) |
 | **verify** | Opus | yes (must-fix) | runs *above the deterministic floor*; emits findings as node.report assets |

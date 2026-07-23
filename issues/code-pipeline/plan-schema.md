@@ -96,7 +96,7 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 | **`acceptance[]`** | object[] | spec | whole-feature intent gate; each is `check` (executable) or `assertion` (LLM-judged); **≥1 must be a `check`** |
 | `chunks[].id/title/deps/tier/brief` | — | spec | as v1 (`deps` = DAG; `tier` = starting hint, orchestrator owns promotion) |
 | `chunks[].files_touched[]` | string[] | spec | **now a merge-time constraint** (supervisor rejects out-of-scope merges beyond slack), not just a hint |
-| **`chunks[].checks[]`** | object[] | spec | executable per-chunk checks (`desc` + `run`); **≥1 required** |
+| **`chunks[].checks[]`** | object[] | spec | executable per-chunk checks; **≥1 required**. Shape: `desc` (the **general goal** — always present, human+LLM readable), `run` (a **flexible shell command**), optional `cwd`, optional `expect_exit` (default 0). Precision available, not forced (owner decision 2026-07-23). |
 | **`chunks[].assertions[]`** | string[] | spec | LLM-judged criteria (additive, above the floor) |
 | **`chunks[].requires_tests`** | bool | spec | if true, supervisor blocks a merge that added/modified no tests |
 
@@ -110,8 +110,10 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 
 ## Open sub-questions to lock during build
 
-- Exact `check.run` contract — a shell command run by the supervisor? A structured
-  `{cmd, cwd, expect_exit}`? Determines how the floor executes.
+- ~~Exact `check.run` contract~~ **RESOLVED (owner, 2026-07-23):** flexible — a check
+  carries `desc` (general goal, always) + `run` (flexible shell command) + optional
+  `cwd` / `expect_exit` (default 0). Precision available, not forced. Neither a rigid
+  struct nor bare text. Issue `plan-check-run-contract` implements this.
 - DAG-diff algorithm for `plan.vN → v(N+1)`: which completed chunks revert to
   PENDING when their deps or briefs change.
 - Whether `baseline` hashes live in `plan.json` or a sibling `baseline.json`
