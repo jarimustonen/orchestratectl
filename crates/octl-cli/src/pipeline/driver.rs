@@ -3,24 +3,45 @@
 //!
 //! [`drive`] is the inverted loop: the supervisor owns iteration, and at each
 //! decision point it calls the stateless [`Orchestrator`], **validates** the
-//! returned primitives against the tier invariant, **would-execute** them (via a
-//! stubbed [`ActionExecutor`] — real git/merge/spawn is T5), **records** each
-//! [`DecisionEnvelope`], and applies the effect to an in-memory [`PipelineState`].
-//! Terminal actions (`DeclareConverged`, `Escalate`) halt the loop.
+//! returned primitives (tier invariant + chunk preconditions), **would-execute**
+//! them (via a stubbed [`ActionExecutor`] — real git/merge/spawn is T5),
+//! **records** each decision as an atomic [`DecisionRecord`] (action + envelope +
+//! outcome), and applies the effect to an in-memory [`PipelineState`]. Terminal
+//! actions (`DeclareConverged`, `Escalate`) halt the loop.
 //!
 //! Modelling it as a pure state machine over an in-memory state (rather than
 //! bolting a new event-append path onto the live reducer) keeps it fully
 //! unit-testable and respects the state-integrity invariants: T5 wires the real
-//! event log in behind the same shape, appending through the `LockedRun` witness
-//! and the `append_and_apply` API (invariant 1) rather than writing projections
-//! directly.
+//! event log in behind the same shape, appending each [`DecisionRecord`] through
+//! the `LockedRun` witness and the `append_and_apply` API (invariant 1) rather
+//! than writing projections directly.
+//!
+//! ## Fail-closed posture
+//!
+//! Two safety rules are deterministic and do NOT trust the orchestrator:
+//! - A **tier-invariant violation** (a consequential action stamped
+//!   coordinator-tier) escalates the loop — the fast tier is misaligned, so stop.
+//! - A **circuit-breaker trip** ([`DecisionTrigger::CircuitBreakerTripped`])
+//!   escalates directly, without asking the orchestrator (design §9: breakers are
+//!   supervisor-owned; never trust an LLM to pull the brake).
+//!
+//! ## Scope (T4) vs. later tasks
+//!
+//! The scaffold validates the tier invariant and chunk-existence preconditions;
+//! it does NOT yet enforce full semantic preconditions (e.g. `DeclareConverged`
+//! only when every chunk is Accepted), durable/idempotent execution, or
+//! conflict resolution within a multi-action batch. Those are T5 (supervisor
+//! state machine) + the deterministic floor (T3) + T6 (breakers). The traits are
+//! synchronous and infallible to match the landed `CodeHarness` seam
+//! (`harness::CodeHarness`); T5 wraps real model/transport failures at the
+//! integration boundary.
 
 use std::collections::BTreeMap;
 
 use octl_core::plan::{Plan, Tier};
 use serde::{Deserialize, Serialize};
 
-use super::action::Action;
+use super::action::{Action, SpinoffScope};
 use super::envelope::{DecisionEnvelope, TierViolation};
 use super::orchestrator::{DecisionContext, DecisionTrigger, Orchestrator};
 
@@ -40,7 +61,8 @@ pub trait ActionExecutor {
 
 /// An execution failure from an [`ActionExecutor`]. In the scaffold this is only
 /// produced by a scripted [`RecordingExecutor::failing_on`]; T5 maps real git /
-/// merge / spawn failures onto it.
+/// merge / spawn failures onto it (and will likely widen `message` into a typed
+/// cause so callers can distinguish "merge conflict" from "test failed").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("action execution failed for `{action}`: {message}")]
 pub struct ExecError {
@@ -55,10 +77,12 @@ pub struct ExecError {
 /// the event log.
 #[derive(Debug, Default)]
 pub struct RecordingExecutor {
-    /// Actions this executor was asked to run, in order.
-    pub executed: Vec<Action>,
+    /// Actions this executor *attempted* to run, in order. A scripted failure is
+    /// still recorded here (the attempt happened) — the authoritative record of
+    /// what succeeded vs. failed is the [`PipelineState`] decision trail.
+    pub attempted: Vec<Action>,
     /// [`Action::name`]s to fail on (empty = never fail).
-    fail_on: Vec<&'static str>,
+    fail_on: Vec<String>,
 }
 
 impl RecordingExecutor {
@@ -69,25 +93,65 @@ impl RecordingExecutor {
 
     /// A recording executor that returns [`ExecError`] for any action whose
     /// [`Action::name`] is in `names` (for exercising the driver's failure path).
-    pub fn failing_on(names: &[&'static str]) -> Self {
+    pub fn failing_on(names: &[&str]) -> Self {
         Self {
-            executed: Vec::new(),
-            fail_on: names.to_vec(),
+            attempted: Vec::new(),
+            fail_on: names.iter().map(|s| (*s).to_string()).collect(),
         }
     }
 }
 
 impl ActionExecutor for RecordingExecutor {
     fn execute(&mut self, action: &Action) -> Result<(), ExecError> {
-        if self.fail_on.contains(&action.name()) {
+        self.attempted.push(action.clone());
+        if self.fail_on.iter().any(|n| n == action.name()) {
             return Err(ExecError {
                 action: action.name().to_string(),
                 message: "scripted failure".to_string(),
             });
         }
-        self.executed.push(action.clone());
         Ok(())
     }
+}
+
+/// What happened to one emitted decision — recorded atomically with the action
+/// and envelope in a [`DecisionRecord`], so the audit trail is self-contained
+/// (design §2 causal replayability) rather than scattered across parallel lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum DecisionOutcome {
+    /// The action passed validation, executed, and its effect was applied.
+    Applied,
+    /// A consequential action was stamped coordinator-tier — rejected and the
+    /// loop escalated (fail-closed). Carries the flagged violation.
+    RejectedTierViolation(TierViolation),
+    /// The action referenced a chunk not in the plan — rejected without a side
+    /// effect (the precondition is checked *before* execution). Non-halting.
+    RejectedPrecondition {
+        /// Why the precondition failed.
+        reason: String,
+    },
+    /// Execution failed; the loop escalated.
+    ExecutionFailed(ExecError),
+    /// The decision was emitted after the loop already reached a terminal state in
+    /// the same batch — recorded for audit completeness, never executed.
+    Superseded,
+}
+
+/// One atomic decision in the causal audit trail: the [`Action`] the orchestrator
+/// emitted, the [`DecisionEnvelope`] recording who decided it, and the
+/// [`DecisionOutcome`] of what the supervisor did with it. Keeping the three
+/// together is what makes the run replayable — a reader can re-run
+/// [`DecisionEnvelope::validate_for`] and see the effect without correlating
+/// separate lists by index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionRecord {
+    /// The emitted action.
+    pub action: Action,
+    /// The decision envelope stamped by the orchestrator.
+    pub envelope: DecisionEnvelope,
+    /// What the supervisor did with the decision.
+    pub outcome: DecisionOutcome,
 }
 
 /// Where the loop stands (design §6). Only [`Running`](LoopStatus::Running) keeps
@@ -99,17 +163,19 @@ pub enum LoopStatus {
     Running,
     /// `DeclareConverged` fired — the feature is done (design §6 VAIHE 4).
     Converged,
-    /// `Escalate` fired (or an execution failure) — control hands up (design §9).
+    /// The loop escalated: an `Escalate` action, a circuit-breaker trip, a
+    /// tier-invariant violation, or an execution failure. The
+    /// [`escalation`](PipelineState::escalation) reason names which.
     Escalated,
 }
 
 /// Per-chunk status the loop tracks in memory (design §7 lifecycle). A coarse
 /// model of the chunk lifecycle sufficient for the scaffold; T5 refines it
-/// against the real DAG scheduler.
+/// against the real DAG scheduler (with attempt ids, commits, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChunkStatus {
-    /// Not yet started (or reverted by a re-spec).
+    /// Not yet started, reverted by a re-spec, or promoted for a fresh attempt.
     Pending,
     /// A code node committed it; awaiting verify.
     AwaitingVerify,
@@ -121,7 +187,7 @@ pub enum ChunkStatus {
 }
 
 /// In-memory state of one chunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkState {
     /// Lifecycle status.
     pub status: ChunkStatus,
@@ -148,34 +214,35 @@ pub struct SpinoffRecord {
     pub kind: String,
     /// Rationale for deferring.
     pub rationale: String,
+    /// The scope that governed whether this needed decider authority — retained
+    /// so the audit shows the classification, not just the proposal.
+    pub scope: SpinoffScope,
 }
 
 /// The whole in-memory state of one feature's loop — the audit-bearing result of
-/// [`drive`]. Everything a T5 wiring would persist to the event log lives here:
-/// the chunk states, the ordered [`envelopes`](PipelineState::envelopes) audit
-/// trail, the flagged tier [`violations`](PipelineState::violations), and the
-/// deferred discussion/spin-off records.
+/// [`drive`]. The [`decisions`](PipelineState::decisions) trail is the canonical
+/// record (each entry pairs an action with its envelope and outcome); the other
+/// fields are reduced projections a T5 wiring would persist alongside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PipelineState {
     /// The run this loop belongs to.
     pub run_id: String,
     /// The plan revision in force (bumped by `TriggerReSpec`).
     pub plan_rev: u32,
-    /// The intent revision the plan targets.
+    /// The intent revision the plan targets. Write-once in the scaffold: no T4
+    /// primitive changes intent (design §1 intent is orchestrator-owned, revised
+    /// upstream of this loop); T5 surfaces intent changes as a re-spec input.
     pub intent_rev: u32,
     /// Where the loop stands.
     pub status: LoopStatus,
     /// Chunk states keyed by chunk id (ordered for deterministic inspection).
     pub chunks: BTreeMap<String, ChunkState>,
-    /// Every recorded decision envelope, in order — the causal audit trail
-    /// (design §2). A flagged violation's envelope is recorded here too.
-    pub envelopes: Vec<DecisionEnvelope>,
-    /// Tier-invariant breaches the driver caught and refused to execute.
-    pub violations: Vec<TierViolation>,
-    /// Execution failures reported by the [`ActionExecutor`].
-    pub exec_errors: Vec<ExecError>,
-    /// Actions that targeted a chunk id not in the plan (a driver-level anomaly;
-    /// empty on any well-formed run).
+    /// The canonical, ordered audit trail: every emitted decision with its
+    /// envelope and outcome (design §2).
+    pub decisions: Vec<DecisionRecord>,
+    /// Actions that referenced a chunk id not in the plan (a driver-level
+    /// anomaly; empty on any well-formed run). Mirrors the
+    /// [`DecisionOutcome::RejectedPrecondition`] entries for quick inspection.
     pub anomalies: Vec<String>,
     /// Opened discussions (bubble-up records).
     pub discussions: Vec<DiscussionRecord>,
@@ -209,14 +276,38 @@ impl PipelineState {
             intent_rev: plan.intent_rev,
             status: LoopStatus::Running,
             chunks,
-            envelopes: Vec::new(),
-            violations: Vec::new(),
-            exec_errors: Vec::new(),
+            decisions: Vec::new(),
             anomalies: Vec::new(),
             discussions: Vec::new(),
             spinoffs: Vec::new(),
             escalation: None,
         }
+    }
+
+    /// Count of decisions with a given outcome discriminant — a convenience for
+    /// inspection/tests over the canonical [`decisions`](PipelineState::decisions)
+    /// trail.
+    pub fn tier_violations(&self) -> impl Iterator<Item = &TierViolation> {
+        self.decisions.iter().filter_map(|d| match &d.outcome {
+            DecisionOutcome::RejectedTierViolation(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    /// Execution failures in decision order.
+    pub fn exec_failures(&self) -> impl Iterator<Item = &ExecError> {
+        self.decisions.iter().filter_map(|d| match &d.outcome {
+            DecisionOutcome::ExecutionFailed(e) => Some(e),
+            _ => None,
+        })
+    }
+
+    /// Actions that were applied (side effect + state effect took hold).
+    pub fn applied_actions(&self) -> impl Iterator<Item = &Action> {
+        self.decisions.iter().filter_map(|d| match &d.outcome {
+            DecisionOutcome::Applied => Some(&d.action),
+            _ => None,
+        })
     }
 
     /// Stage-outcome bookkeeping applied *before* the decision (design §6: the
@@ -228,8 +319,25 @@ impl PipelineState {
         }
     }
 
+    /// Check the chunk-existence precondition for `action` *before* it is
+    /// executed, so an action naming an unknown chunk is rejected without a side
+    /// effect (rather than executed and only then noticed). Returns the reason on
+    /// the first unknown chunk.
+    fn check_preconditions(&self, action: &Action) -> Result<(), String> {
+        for chunk_id in action.referenced_chunks() {
+            if !self.chunks.contains_key(chunk_id) {
+                return Err(format!(
+                    "action `{}` referenced unknown chunk `{chunk_id}`",
+                    action.name()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Apply the *effect* of an executed action to the in-memory state. Called
-    /// only after the action passed tier validation and was would-executed.
+    /// only after the action passed tier validation + preconditions and was
+    /// would-executed, so every chunk lookup here is guaranteed present.
     fn apply(&mut self, action: &Action) {
         match action {
             Action::ReCodeChunk { chunk_id, .. } => {
@@ -239,14 +347,17 @@ impl PipelineState {
                 self.set_chunk_status(chunk_id, ChunkStatus::Accepted);
             }
             Action::PromoteTier { chunk_id, tier } => {
+                // Promotion bumps the tier AND resets the chunk to Pending: a
+                // promote is a response to a stuck chunk (design §3), so the next
+                // attempt re-runs at the new tier rather than leaving the old
+                // failed state in place.
                 if let Some(chunk) = self.chunks.get_mut(chunk_id) {
                     chunk.tier = *tier;
-                } else {
-                    self.note_unknown_chunk(action, chunk_id);
+                    chunk.status = ChunkStatus::Pending;
                 }
             }
             Action::TriggerReSpec { chunk_ids, .. } => {
-                self.plan_rev += 1;
+                self.plan_rev = self.plan_rev.saturating_add(1);
                 for id in chunk_ids {
                     self.set_chunk_status(id, ChunkStatus::Pending);
                 }
@@ -261,40 +372,44 @@ impl PipelineState {
                 title,
                 kind,
                 rationale,
-                ..
+                scope,
             } => {
                 self.spinoffs.push(SpinoffRecord {
                     title: title.clone(),
                     kind: kind.clone(),
                     rationale: rationale.clone(),
+                    scope: *scope,
                 });
             }
             Action::DeclareConverged => {
                 self.status = LoopStatus::Converged;
             }
             Action::Escalate { reason } => {
-                self.status = LoopStatus::Escalated;
-                self.escalation = Some(reason.clone());
+                self.escalate(reason.clone());
             }
         }
     }
 
-    /// Set a chunk's status, recording an anomaly if the id is not in the plan.
+    /// Set a chunk's status. Preconditions guarantee the id exists on the applied
+    /// path; the anomaly branch defends `absorb_trigger` (a stage outcome for an
+    /// unknown chunk) which does not go through [`check_preconditions`].
     fn set_chunk_status(&mut self, chunk_id: &str, status: ChunkStatus) {
         if let Some(chunk) = self.chunks.get_mut(chunk_id) {
             chunk.status = status;
         } else {
-            self.anomalies
-                .push(format!("action referenced unknown chunk `{chunk_id}`"));
+            self.anomalies.push(format!(
+                "stage outcome referenced unknown chunk `{chunk_id}`"
+            ));
         }
     }
 
-    /// Record an anomaly for an action targeting an unknown chunk.
-    fn note_unknown_chunk(&mut self, action: &Action, chunk_id: &str) {
-        self.anomalies.push(format!(
-            "action `{}` referenced unknown chunk `{chunk_id}`",
-            action.name()
-        ));
+    /// Transition to the escalated terminal state with a reason (idempotent on the
+    /// reason — the first cause wins).
+    fn escalate(&mut self, reason: String) {
+        self.status = LoopStatus::Escalated;
+        if self.escalation.is_none() {
+            self.escalation = Some(reason);
+        }
     }
 }
 
@@ -303,20 +418,24 @@ impl PipelineState {
 /// a stateless function at each decision point.
 ///
 /// For each trigger, while the loop is still [`Running`](LoopStatus::Running):
-/// 1. absorb the stage outcome into state;
-/// 2. build a [`DecisionContext`] from the *current* revisions and invoke the
-///    orchestrator;
-/// 3. for each returned `(action, envelope)`, record the envelope, then
-///    **validate the tier invariant** — a
-///    [`TierViolation`](super::envelope::TierViolation) is flagged and the action
-///    is **not** executed (a mis-tiered consequential decision is rejected);
-/// 4. would-execute the action via `executor`; an [`ExecError`] escalates the
-///    loop;
-/// 5. apply the effect and stop early on a terminal action.
+/// 1. A [`DecisionTrigger::CircuitBreakerTripped`] escalates deterministically —
+///    the orchestrator is not consulted (design §9 fail-closed).
+/// 2. Otherwise, absorb the stage outcome, build a [`DecisionContext`] (with a
+///    read-only chunk snapshot) from the *current* revisions, and invoke the
+///    orchestrator.
+/// 3. For each returned `(action, envelope)`, record a [`DecisionRecord`]:
+///    - if the loop already reached a terminal state earlier in this batch, the
+///      decision is [`Superseded`](DecisionOutcome::Superseded) (recorded, not run);
+///    - a tier-invariant violation is [`RejectedTierViolation`](DecisionOutcome::RejectedTierViolation)
+///      and **escalates** the loop (fail-closed);
+///    - an unknown-chunk precondition failure is
+///      [`RejectedPrecondition`](DecisionOutcome::RejectedPrecondition) (non-halting);
+///    - otherwise the action is would-executed; an [`ExecError`] escalates, a
+///      success is [`Applied`](DecisionOutcome::Applied) and may itself be terminal.
 ///
-/// Once the loop reaches a terminal state, remaining triggers are ignored (the
-/// feature is done or has escalated). Returns the final [`PipelineState`], whose
-/// envelope trail + violation list + records are the run's audit result.
+/// Once the loop reaches a terminal state, remaining *triggers* are ignored.
+/// Returns the final [`PipelineState`], whose [`decisions`](PipelineState::decisions)
+/// trail is the run's audit result.
 pub fn drive<O: Orchestrator, E: ActionExecutor>(
     run_id: &str,
     plan: &Plan,
@@ -330,40 +449,76 @@ pub fn drive<O: Orchestrator, E: ActionExecutor>(
         if state.status != LoopStatus::Running {
             break;
         }
+
+        // Circuit breakers are deterministic and supervisor-owned: escalate
+        // directly, never ask the orchestrator (design §9).
+        if let DecisionTrigger::CircuitBreakerTripped { reason } = &trigger {
+            state.escalate(format!("circuit breaker: {reason}"));
+            break;
+        }
+
         state.absorb_trigger(&trigger);
         let ctx = DecisionContext {
             run_id: state.run_id.clone(),
             plan_rev: state.plan_rev,
             intent_rev: state.intent_rev,
+            chunks: state.chunks.clone(),
             trigger,
         };
 
         for (action, envelope) in orchestrator.decide(&ctx) {
-            // The envelope is always recorded — even a flagged decision is part
-            // of the causal audit trail (design §2).
-            let violation = envelope.validate_for(&action).err();
-            state.envelopes.push(envelope);
-            if let Some(v) = violation {
-                // A consequential action stamped coordinator-tier: reject it —
-                // do not execute a final decision the fast tier was not allowed
-                // to make (design §0.2). It stays flagged for audit.
-                state.violations.push(v);
+            // A terminal action earlier in this batch supersedes the rest — still
+            // recorded so the audit trail loses nothing (design §2).
+            if state.status != LoopStatus::Running {
+                state.decisions.push(DecisionRecord {
+                    action,
+                    envelope,
+                    outcome: DecisionOutcome::Superseded,
+                });
+                continue;
+            }
+
+            // Tier invariant: a consequential action stamped coordinator-tier is
+            // an authority breach — reject it and escalate (fail-closed).
+            if let Err(violation) = envelope.validate_for(&action) {
+                state.decisions.push(DecisionRecord {
+                    action,
+                    envelope,
+                    outcome: DecisionOutcome::RejectedTierViolation(violation),
+                });
+                state.escalate("tier invariant violation".to_string());
+                continue;
+            }
+
+            // Precondition: referenced chunks must exist, checked before any side
+            // effect. Non-halting — a single bad reference rejects that action.
+            if let Err(reason) = state.check_preconditions(&action) {
+                state.anomalies.push(reason.clone());
+                state.decisions.push(DecisionRecord {
+                    action,
+                    envelope,
+                    outcome: DecisionOutcome::RejectedPrecondition { reason },
+                });
                 continue;
             }
 
             match executor.execute(&action) {
-                Ok(()) => state.apply(&action),
-                Err(e) => {
-                    state.exec_errors.push(e);
-                    state.status = LoopStatus::Escalated;
-                    state.escalation = Some("execution failure".to_string());
-                    break;
+                Ok(()) => {
+                    state.apply(&action);
+                    state.decisions.push(DecisionRecord {
+                        action,
+                        envelope,
+                        outcome: DecisionOutcome::Applied,
+                    });
                 }
-            }
-
-            if state.status != LoopStatus::Running {
-                // A terminal action fired; stop applying the rest of this batch.
-                break;
+                Err(e) => {
+                    state.decisions.push(DecisionRecord {
+                        action,
+                        envelope,
+                        outcome: DecisionOutcome::ExecutionFailed(e.clone()),
+                    });
+                    state.escalate(format!("execution failure: {}", e.action));
+                }
             }
         }
     }
@@ -374,7 +529,7 @@ pub fn drive<O: Orchestrator, E: ActionExecutor>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::action::{Finding, FindingVerdict, Severity};
+    use crate::pipeline::action::{Finding, FindingVerdict, Severity, SpinoffScope};
     use crate::pipeline::envelope::DecisionTier;
     use crate::pipeline::orchestrator::{
         CoordinatorProposal, DeciderVerdict, ScriptedCoordinator, ScriptedDecider,
@@ -414,6 +569,13 @@ mod tests {
         }
     }
 
+    fn verify(report_id: &str, findings: Vec<Finding>) -> DecisionTrigger {
+        DecisionTrigger::VerifyReport {
+            report_id: report_id.into(),
+            findings,
+        }
+    }
+
     #[test]
     fn routine_fix_loop_recodes_then_accepts() {
         // VerifyReport(Fix) → RE_CODE_CHUNK (routine); then AcceptChunk (routine).
@@ -431,28 +593,22 @@ mod tests {
         let mut exec = RecordingExecutor::new();
 
         let triggers = vec![
-            DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![finding(FindingVerdict::Fix)],
-            },
-            DecisionTrigger::VerifyReport {
-                report_id: "v2".into(),
-                findings: vec![],
-            },
+            verify("v1", vec![finding(FindingVerdict::Fix)]),
+            verify("v2", vec![]),
         ];
         let state = drive("run1", &plan(), triggers, &orch, &mut exec);
 
         assert_eq!(state.status, LoopStatus::Running);
         assert_eq!(state.chunks["c1"].status, ChunkStatus::Accepted);
-        assert_eq!(exec.executed.len(), 2);
-        assert_eq!(exec.executed[0].name(), "re_code_chunk");
-        assert_eq!(exec.executed[1].name(), "accept_chunk");
-        assert_eq!(state.envelopes.len(), 2);
+        assert_eq!(exec.attempted.len(), 2);
+        assert_eq!(state.applied_actions().count(), 2);
+        assert_eq!(state.decisions[0].action.name(), "re_code_chunk");
+        assert_eq!(state.decisions[1].action.name(), "accept_chunk");
         assert!(state
-            .envelopes
+            .decisions
             .iter()
-            .all(|e| e.decision_tier == DecisionTier::Coordinator));
-        assert!(state.violations.is_empty());
+            .all(|d| d.envelope.decision_tier == DecisionTier::Coordinator));
+        assert_eq!(state.tier_violations().count(), 0);
         assert!(state.anomalies.is_empty());
     }
 
@@ -472,7 +628,44 @@ mod tests {
             &mut exec,
         );
         assert_eq!(state.chunks["c1"].status, ChunkStatus::AwaitingVerify);
-        assert!(exec.executed.is_empty());
+        assert!(exec.attempted.is_empty());
+    }
+
+    #[test]
+    fn decision_context_carries_chunk_snapshot() {
+        // The stateless orchestrator must see the current chunk states to decide.
+        // Capture the snapshot the driver passes.
+        use crate::pipeline::envelope::DecisionEnvelope;
+        use std::cell::RefCell;
+
+        struct SnoopingOrchestrator {
+            seen: RefCell<Vec<BTreeMap<String, ChunkState>>>,
+        }
+        impl Orchestrator for SnoopingOrchestrator {
+            fn decide(&self, ctx: &DecisionContext) -> Vec<(Action, DecisionEnvelope)> {
+                self.seen.borrow_mut().push(ctx.chunks.clone());
+                Vec::new()
+            }
+        }
+
+        let orch = SnoopingOrchestrator {
+            seen: RefCell::new(Vec::new()),
+        };
+        let mut exec = RecordingExecutor::new();
+        drive(
+            "run1",
+            &plan(),
+            vec![DecisionTrigger::ChunkCommitted {
+                chunk_id: "c1".into(),
+            }],
+            &orch,
+            &mut exec,
+        );
+        let seen = orch.seen.into_inner();
+        assert_eq!(seen.len(), 1);
+        // c1 was moved to AwaitingVerify by absorb_trigger before the snapshot.
+        assert_eq!(seen[0]["c1"].status, ChunkStatus::AwaitingVerify);
+        assert_eq!(seen[0]["c2"].status, ChunkStatus::Pending);
     }
 
     #[test]
@@ -485,10 +678,7 @@ mod tests {
 
         // A trailing trigger proves terminal states stop the loop.
         let triggers = vec![
-            DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![],
-            },
+            verify("v1", vec![]),
             DecisionTrigger::ChunkCommitted {
                 chunk_id: "c1".into(),
             },
@@ -496,8 +686,11 @@ mod tests {
         let state = drive("run1", &plan(), triggers, &orch, &mut exec);
 
         assert_eq!(state.status, LoopStatus::Converged);
-        assert_eq!(state.envelopes.len(), 1);
-        assert_eq!(state.envelopes[0].decision_tier, DecisionTier::Decider);
+        assert_eq!(state.decisions.len(), 1);
+        assert_eq!(
+            state.decisions[0].envelope.decision_tier,
+            DecisionTier::Decider
+        );
         // The trailing ChunkCommitted was ignored — c1 never moved.
         assert_eq!(state.chunks["c1"].status, ChunkStatus::Pending);
     }
@@ -513,6 +706,31 @@ mod tests {
         let state = drive(
             "run1",
             &plan(),
+            vec![verify("v1", vec![])],
+            &orch,
+            &mut exec,
+        );
+        assert_eq!(state.status, LoopStatus::Escalated);
+        assert_eq!(state.escalation.as_deref(), Some("cannot converge"));
+        assert_eq!(
+            state.decisions[0].envelope.decision_tier,
+            DecisionTier::Decider
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_escalates_deterministically_without_the_orchestrator() {
+        // A tripped breaker must NOT be routed to the orchestrator (design §9).
+        // Script a coordinator that would AcceptChunk if asked — it must not run.
+        let coord = ScriptedCoordinator::new(vec![vec![proposal(Action::AcceptChunk {
+            chunk_id: "c1".into(),
+        })]]);
+        let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
+        let mut exec = RecordingExecutor::new();
+
+        let state = drive(
+            "run1",
+            &plan(),
             vec![DecisionTrigger::CircuitBreakerTripped {
                 reason: "cost ceiling".into(),
             }],
@@ -520,8 +738,13 @@ mod tests {
             &mut exec,
         );
         assert_eq!(state.status, LoopStatus::Escalated);
-        assert_eq!(state.escalation.as_deref(), Some("cannot converge"));
-        assert_eq!(state.envelopes[0].decision_tier, DecisionTier::Decider);
+        assert_eq!(
+            state.escalation.as_deref(),
+            Some("circuit breaker: cost ceiling")
+        );
+        // The orchestrator was never consulted — nothing executed, no decisions.
+        assert!(exec.attempted.is_empty());
+        assert!(state.decisions.is_empty());
     }
 
     #[test]
@@ -540,10 +763,7 @@ mod tests {
             DecisionTrigger::ChunkCommitted {
                 chunk_id: "c1".into(),
             },
-            DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![finding(FindingVerdict::SpecFlaw)],
-            },
+            verify("v1", vec![finding(FindingVerdict::SpecFlaw)]),
         ];
         let state = drive("run1", &plan(), triggers, &orch, &mut exec);
 
@@ -551,14 +771,14 @@ mod tests {
         assert_eq!(state.chunks["c1"].status, ChunkStatus::Pending);
         assert_eq!(state.chunks["c2"].status, ChunkStatus::Pending);
         assert_eq!(
-            state.envelopes.last().unwrap().decision_tier,
+            state.decisions.last().unwrap().envelope.decision_tier,
             DecisionTier::Decider
         );
         assert_eq!(state.status, LoopStatus::Running);
     }
 
     #[test]
-    fn promote_tier_bumps_the_chunk_tier() {
+    fn promote_tier_bumps_tier_and_resets_to_pending() {
         let coord = ScriptedCoordinator::new(vec![vec![proposal(Action::PromoteTier {
             chunk_id: "c1".into(),
             tier: Tier::High,
@@ -566,23 +786,24 @@ mod tests {
         let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
         let mut exec = RecordingExecutor::new();
 
-        let state = drive(
-            "run1",
-            &plan(),
-            vec![DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![],
-            }],
-            &orch,
-            &mut exec,
-        );
+        // Move c1 to AwaitingVerify first, then promote — it must go back to
+        // Pending (re-run at the new tier), not stay in the failed state.
+        let triggers = vec![
+            DecisionTrigger::ChunkCommitted {
+                chunk_id: "c1".into(),
+            },
+            verify("v1", vec![]),
+        ];
+        let state = drive("run1", &plan(), triggers, &orch, &mut exec);
         assert_eq!(state.chunks["c1"].tier, Tier::High);
+        assert_eq!(state.chunks["c1"].status, ChunkStatus::Pending);
     }
 
     /// A test double that returns a fixed `(Action, DecisionEnvelope)` — used to
     /// feed the driver a *mis-tiered* decision the tiered wrapper would never
     /// produce, so the driver's rejection path is exercised directly.
     struct FixedOrchestrator(Vec<(Action, DecisionEnvelope)>);
+    use crate::pipeline::envelope::DecisionEnvelope;
     impl Orchestrator for FixedOrchestrator {
         fn decide(&self, _ctx: &DecisionContext) -> Vec<(Action, DecisionEnvelope)> {
             self.0.clone()
@@ -590,10 +811,10 @@ mod tests {
     }
 
     #[test]
-    fn mis_tiered_consequential_action_is_rejected_not_executed() {
+    fn mis_tiered_consequential_action_is_rejected_and_escalates() {
         // A consequential action (DeclareConverged) stamped coordinator-tier is
-        // the invariant violation the audit must catch. The driver flags it and
-        // does NOT execute it — so the loop never converges on it.
+        // the invariant violation the audit must catch. The driver flags it, does
+        // NOT execute it, and fails closed (escalates).
         let bad_envelope = DecisionEnvelope {
             actor: "coordinator".into(),
             input_artifacts: vec![],
@@ -608,21 +829,83 @@ mod tests {
         let state = drive(
             "run1",
             &plan(),
-            vec![DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![],
-            }],
+            vec![verify("v1", vec![])],
             &orch,
             &mut exec,
         );
 
-        assert_eq!(state.violations.len(), 1);
-        assert_eq!(state.violations[0].action, "declare_converged");
-        // Rejected: never executed, loop did NOT converge, but the envelope is
-        // still recorded for the audit trail.
-        assert!(exec.executed.is_empty());
+        assert_eq!(state.tier_violations().count(), 1);
+        assert_eq!(
+            state.tier_violations().next().unwrap().action,
+            "declare_converged"
+        );
+        // Rejected: never executed; loop failed closed (escalated), NOT converged.
+        assert!(exec.attempted.is_empty());
+        assert_eq!(state.status, LoopStatus::Escalated);
+        assert_eq!(
+            state.escalation.as_deref(),
+            Some("tier invariant violation")
+        );
+        // The envelope is still recorded for the audit trail.
+        assert_eq!(state.decisions.len(), 1);
+    }
+
+    #[test]
+    fn post_terminal_actions_in_a_batch_are_recorded_superseded() {
+        // A batch [DeclareConverged, ProposeSpinoff] must not silently drop the
+        // spinoff — it is recorded Superseded (audit completeness) but not run.
+        let coord = ScriptedCoordinator::new(vec![vec![
+            proposal(Action::DeclareConverged),
+            proposal(Action::ProposeSpinoff {
+                title: "later".into(),
+                kind: "improvement".into(),
+                rationale: "r".into(),
+                scope: SpinoffScope::Trivial,
+            }),
+        ]]);
+        let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
+        let mut exec = RecordingExecutor::new();
+
+        let state = drive(
+            "run1",
+            &plan(),
+            vec![verify("v1", vec![])],
+            &orch,
+            &mut exec,
+        );
+        assert_eq!(state.status, LoopStatus::Converged);
+        assert_eq!(state.decisions.len(), 2);
+        assert_eq!(state.decisions[0].outcome, DecisionOutcome::Applied);
+        assert_eq!(state.decisions[1].outcome, DecisionOutcome::Superseded);
+        // The superseded spinoff was NOT applied.
+        assert!(state.spinoffs.is_empty());
+    }
+
+    #[test]
+    fn unknown_chunk_is_rejected_before_execution() {
+        // An action naming a nonexistent chunk is rejected on the precondition,
+        // before any side effect — the executor is never called for it.
+        let coord = ScriptedCoordinator::new(vec![vec![proposal(Action::AcceptChunk {
+            chunk_id: "ghost".into(),
+        })]]);
+        let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
+        let mut exec = RecordingExecutor::new();
+
+        let state = drive(
+            "run1",
+            &plan(),
+            vec![verify("v1", vec![])],
+            &orch,
+            &mut exec,
+        );
+        assert!(exec.attempted.is_empty()); // never executed
+        assert_eq!(state.anomalies.len(), 1);
+        assert!(matches!(
+            state.decisions[0].outcome,
+            DecisionOutcome::RejectedPrecondition { .. }
+        ));
+        // Non-halting: the loop keeps running after a rejected precondition.
         assert_eq!(state.status, LoopStatus::Running);
-        assert_eq!(state.envelopes.len(), 1);
     }
 
     #[test]
@@ -636,16 +919,13 @@ mod tests {
         let state = drive(
             "run1",
             &plan(),
-            vec![DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![],
-            }],
+            vec![verify("v1", vec![])],
             &orch,
             &mut exec,
         );
         assert_eq!(state.status, LoopStatus::Escalated);
-        assert_eq!(state.exec_errors.len(), 1);
-        assert_eq!(state.exec_errors[0].action, "accept_chunk");
+        assert_eq!(state.exec_failures().count(), 1);
+        assert_eq!(state.exec_failures().next().unwrap().action, "accept_chunk");
         assert_eq!(state.chunks["c1"].status, ChunkStatus::Pending); // never applied
     }
 
@@ -660,7 +940,7 @@ mod tests {
                 title: "extract helper".into(),
                 kind: "refactor".into(),
                 rationale: "out of scope".into(),
-                severity: Severity::Low, // trivial → routine, stays in the batch
+                scope: SpinoffScope::Trivial, // routine → stays in the batch
             }),
         ]]);
         let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
@@ -669,13 +949,13 @@ mod tests {
         let state = drive(
             "run1",
             &plan(),
-            vec![DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![
+            vec![verify(
+                "v1",
+                vec![
                     finding(FindingVerdict::Discuss),
                     finding(FindingVerdict::SpinOff),
                 ],
-            }],
+            )],
             &orch,
             &mut exec,
         );
@@ -683,6 +963,7 @@ mod tests {
         assert_eq!(state.discussions[0].topic, "api shape");
         assert_eq!(state.spinoffs.len(), 1);
         assert_eq!(state.spinoffs[0].title, "extract helper");
+        assert_eq!(state.spinoffs[0].scope, SpinoffScope::Trivial);
         assert_eq!(state.status, LoopStatus::Running); // non-blocking
     }
 
@@ -696,10 +977,7 @@ mod tests {
         let state = drive(
             "run1",
             &plan(),
-            vec![DecisionTrigger::VerifyReport {
-                report_id: "v1".into(),
-                findings: vec![],
-            }],
+            vec![verify("v1", vec![])],
             &orch,
             &mut exec,
         );

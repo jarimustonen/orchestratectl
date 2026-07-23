@@ -48,10 +48,10 @@ pub mod driver;
 pub mod envelope;
 pub mod orchestrator;
 
-pub use action::{Action, DecisionClass, Finding, FindingVerdict, Severity};
+pub use action::{Action, DecisionClass, Finding, FindingVerdict, Severity, SpinoffScope};
 pub use driver::{
-    drive, ActionExecutor, ChunkState, ChunkStatus, DiscussionRecord, ExecError, LoopStatus,
-    PipelineState, RecordingExecutor, SpinoffRecord,
+    drive, ActionExecutor, ChunkState, ChunkStatus, DecisionOutcome, DecisionRecord,
+    DiscussionRecord, ExecError, LoopStatus, PipelineState, RecordingExecutor, SpinoffRecord,
 };
 pub use envelope::{DecisionEnvelope, DecisionTier, TierViolation};
 pub use orchestrator::{

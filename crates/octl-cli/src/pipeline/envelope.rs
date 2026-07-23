@@ -106,7 +106,7 @@ pub struct TierViolation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::action::Severity;
+    use crate::pipeline::action::SpinoffScope;
 
     fn envelope(tier: DecisionTier) -> DecisionEnvelope {
         DecisionEnvelope {
@@ -155,7 +155,7 @@ mod tests {
             title: "t".into(),
             kind: "improvement".into(),
             rationale: "r".into(),
-            severity: Severity::Low,
+            scope: SpinoffScope::Trivial,
         };
         assert!(envelope(DecisionTier::Coordinator)
             .validate_for(&trivial)
@@ -165,7 +165,7 @@ mod tests {
             title: "t".into(),
             kind: "refactor".into(),
             rationale: "r".into(),
-            severity: Severity::High,
+            scope: SpinoffScope::Substantial,
         };
         assert!(envelope(DecisionTier::Coordinator)
             .validate_for(&nontrivial)

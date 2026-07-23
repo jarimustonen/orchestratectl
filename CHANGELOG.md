@@ -29,15 +29,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   returning discrete typed `Action` primitives (`ReCodeChunk`, `TriggerReSpec`,
   `AcceptChunk`, `PromoteTier`, `OpenDiscussion`, `ProposeSpinoff`,
   `DeclareConverged`, `Escalate`) — never prose. Each primitive is classified
-  `Routine` vs `Consequential` (design §0.2), every decision is recorded in a
-  `DecisionEnvelope` (actor, input artifacts, reason, **`decision_tier`**, model,
-  prompt version), and a `TieredOrchestrator<C, D>` routes consequential
-  decisions from a fast coordinator to an expensive decider — a consequential
-  action stamped `coordinator` is an audit-catchable `TierViolation`. Ships
-  deterministic scripted coordinator/decider stubs and a pure in-memory loop
-  skeleton (`drive`) with a stubbed `ActionExecutor`, fully unit-tested (routine
-  FIX loop, decider-tier `DeclareConverged`/`Escalate`/`TriggerReSpec`, mis-tier
-  rejection) with no LLM/network. Unused by default — nothing constructs an
+  `Routine` vs `Consequential` (design §0.2; spin-off triviality carried by an
+  explicit `SpinoffScope`, not overloaded onto finding `Severity`), and a
+  `TieredOrchestrator<C, D>` routes consequential decisions from a fast
+  coordinator to an expensive decider. Every decision is recorded atomically as a
+  `DecisionRecord` (action + `DecisionEnvelope` with actor/inputs/reason/
+  **`decision_tier`**/model/prompt-version + outcome), so the trail is causally
+  replayable. The `drive` loop is fail-closed: a consequential action stamped
+  `coordinator` is a caught `TierViolation` that escalates; a circuit-breaker trip
+  escalates deterministically without consulting the orchestrator (design §9);
+  and chunk preconditions are checked before any would-execute. Ships
+  deterministic scripted coordinator/decider stubs and a stubbed `ActionExecutor`,
+  fully unit-tested (routine FIX loop, decider-tier `DeclareConverged`/`Escalate`/
+  `TriggerReSpec`, mis-tier rejection, superseded post-terminal actions, unknown-
+  chunk rejection) with no LLM/network. Reviewed via `/llm-review` (3 models);
+  real findings addressed. Unused by default — nothing constructs an
   `Orchestrator` or calls `drive` yet; T5 wires it into the real supervisor +
   event log (design §14).
 - **`CodeHarness` execution control: timeout + cancellation (code-pipeline T0

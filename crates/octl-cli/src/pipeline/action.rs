@@ -65,10 +65,10 @@ pub enum Action {
         severity: Severity,
     },
     /// Propose a deferred, non-blocking spin-off (design §8 `SPIN_OFF`). A
-    /// non-trivial spin-off is **consequential** (dropping/deferring real work is
-    /// a final judgment); a trivial one is routine — the boundary is
-    /// [`Severity::is_trivial`], mirroring design §2's "non-trivial
-    /// `DROP`/`PROPOSE_SPINOFF`".
+    /// [`Substantial`](SpinoffScope::Substantial) spin-off is **consequential**
+    /// (deferring real work is a final judgment); a
+    /// [`Trivial`](SpinoffScope::Trivial) one is routine — the boundary is the
+    /// explicit `scope`, mirroring design §2's "non-trivial `DROP`/`PROPOSE_SPINOFF`".
     ProposeSpinoff {
         /// Proposed issue title.
         title: String,
@@ -76,10 +76,11 @@ pub enum Action {
         kind: String,
         /// Why this is worth a spin-off rather than blocking the feature.
         rationale: String,
-        /// Severity of the deferred finding — drives the routine/consequential
-        /// split (a non-trivial deferral defers real work and must be decided by
-        /// the expensive tier).
-        severity: Severity,
+        /// Whether deferring this is trivial (routine) or substantial
+        /// (consequential). This is a dedicated classification of the *deferred
+        /// work*, deliberately distinct from the finding's [`Severity`] — a
+        /// low-severity finding can still be substantial to defer, and vice versa.
+        scope: SpinoffScope,
     },
     /// The feature converged: no must-fix left AND product matches intent (design
     /// §2, §6 `DECLARE_CONVERGED`). **Consequential** — this is the ship decision.
@@ -95,6 +96,10 @@ pub enum Action {
 impl Action {
     /// A stable, human-readable discriminant name for logs, envelopes, and
     /// executor routing.
+    ///
+    /// These MUST match the serde `#[serde(tag = "type", rename_all =
+    /// "snake_case")]` variant names — the `name_matches_serde_tag` test guards
+    /// the two against drift.
     pub fn name(&self) -> &'static str {
         match self {
             Action::ReCodeChunk { .. } => "re_code_chunk",
@@ -108,6 +113,25 @@ impl Action {
         }
     }
 
+    /// The chunk ids this action references and that must exist in the plan for it
+    /// to be applicable. The driver checks these as a precondition **before**
+    /// would-executing the action, so an action naming an unknown chunk is
+    /// rejected without a side effect (rather than executed and then noticed).
+    pub fn referenced_chunks(&self) -> Vec<&str> {
+        match self {
+            Action::ReCodeChunk { chunk_id, .. }
+            | Action::AcceptChunk { chunk_id }
+            | Action::PromoteTier { chunk_id, .. } => vec![chunk_id.as_str()],
+            Action::TriggerReSpec { chunk_ids, .. } => {
+                chunk_ids.iter().map(String::as_str).collect()
+            }
+            Action::OpenDiscussion { .. }
+            | Action::ProposeSpinoff { .. }
+            | Action::DeclareConverged
+            | Action::Escalate { .. } => Vec::new(),
+        }
+    }
+
     /// Whether this primitive is a routine coordination step (a fast coordinator
     /// may emit it) or a final/consequential judgment (only the expensive decider
     /// may emit it). This is the encoded classification table (design §0.2) — the
@@ -115,19 +139,24 @@ impl Action {
     /// buried in prose.
     ///
     /// Consequential (design §2): `DeclareConverged`, `TriggerReSpec`, `Escalate`,
-    /// and a non-trivial `ProposeSpinoff`. Everything else is routine.
+    /// and a [`Substantial`](SpinoffScope::Substantial) `ProposeSpinoff`.
+    /// Everything else is routine.
+    ///
+    /// Note the boundary is *syntactic* — it reads a field the coordinator itself
+    /// supplied (`scope`). Per design §2 this is deliberate: the coordinator
+    /// classifies, and the mitigation for a mislabel is the auditable
+    /// [`decision_tier`](crate::pipeline::DecisionEnvelope::decision_tier) plus the
+    /// deterministic floor gating the merge — not preventing the model from
+    /// choosing.
     pub fn decision_class(&self) -> DecisionClass {
         match self {
             Action::DeclareConverged | Action::TriggerReSpec { .. } | Action::Escalate { .. } => {
                 DecisionClass::Consequential
             }
-            Action::ProposeSpinoff { severity, .. } => {
-                if severity.is_trivial() {
-                    DecisionClass::Routine
-                } else {
-                    DecisionClass::Consequential
-                }
-            }
+            Action::ProposeSpinoff { scope, .. } => match scope {
+                SpinoffScope::Trivial => DecisionClass::Routine,
+                SpinoffScope::Substantial => DecisionClass::Consequential,
+            },
             Action::ReCodeChunk { .. }
             | Action::AcceptChunk { .. }
             | Action::PromoteTier { .. }
@@ -149,29 +178,31 @@ pub enum DecisionClass {
     Consequential,
 }
 
-/// Severity of a verify finding / discussion / spin-off. Also the trivial vs
-/// non-trivial signal that decides whether a [`Action::ProposeSpinoff`] is
-/// routine or consequential (design §2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// How much work a [`Action::ProposeSpinoff`] defers — the explicit signal that
+/// decides whether the proposal is routine or consequential (design §2
+/// "non-trivial `DROP`/`PROPOSE_SPINOFF`"). Deliberately separate from
+/// [`Severity`]: triviality is a judgment about the *deferred work*, not about the
+/// severity of the finding that motivated it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpinoffScope {
+    /// Deferring this is inconsequential — a fast-tier call is fine.
+    Trivial,
+    /// Deferring this is real work — the expensive decider must own the call.
+    Substantial,
+}
+
+/// Severity of a verify finding / discussion. A description of *impact*, distinct
+/// from the [`SpinoffScope`] classification that governs tiering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
-    /// Cosmetic / trivial — a `ProposeSpinoff` at this level stays routine.
+    /// Cosmetic / trivial.
     Low,
     /// Meaningful but not blocking.
     Medium,
     /// Serious.
     High,
-}
-
-impl Severity {
-    /// Whether this severity counts as *trivial* for the consequential-decision
-    /// boundary (design §2 "non-trivial `DROP`/`PROPOSE_SPINOFF`"). Only [`Low`] is
-    /// trivial.
-    ///
-    /// [`Low`]: Severity::Low
-    pub fn is_trivial(self) -> bool {
-        matches!(self, Severity::Low)
-    }
 }
 
 /// One verify finding the orchestrator triages into an [`Action`] (design §8).
@@ -194,6 +225,12 @@ pub struct Finding {
 /// the *classification* of a finding; the orchestrator maps it to a concrete
 /// [`Action`]. Kept distinct from [`Action`] so a report can record verdicts even
 /// for findings the orchestrator ends up dropping.
+///
+/// Note [`Drop`](FindingVerdict::Drop) has no dedicated [`Action`] variant: per
+/// design §8 a dropped finding is "recorded with rationale" as an envelope, not a
+/// primitive. Whether a *non-trivial* drop should nonetheless be a consequential,
+/// decider-tier primitive (as design §2 implies) is an open contract question —
+/// see issue `pipeline-drop-primitive-underspecified`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingVerdict {
@@ -273,26 +310,45 @@ mod tests {
     }
 
     #[test]
-    fn spinoff_class_follows_triviality() {
-        // Design §2: a *non-trivial* PROPOSE_SPINOFF is consequential; a trivial
-        // one is routine. The severity is the encoded boundary.
+    fn spinoff_class_follows_scope_not_severity() {
+        // Design §2: a *substantial* PROPOSE_SPINOFF is consequential; a trivial
+        // one is routine. The explicit `scope` — not the finding severity — is the
+        // encoded boundary.
         let trivial = Action::ProposeSpinoff {
             title: "tidy docs".into(),
             kind: "improvement".into(),
             rationale: "nice-to-have".into(),
-            severity: Severity::Low,
+            scope: SpinoffScope::Trivial,
         };
         assert_eq!(trivial.decision_class(), DecisionClass::Routine);
 
-        for sev in [Severity::Medium, Severity::High] {
-            let nontrivial = Action::ProposeSpinoff {
-                title: "extract module".into(),
-                kind: "refactor".into(),
-                rationale: "real work".into(),
-                severity: sev,
-            };
-            assert_eq!(nontrivial.decision_class(), DecisionClass::Consequential);
-        }
+        let substantial = Action::ProposeSpinoff {
+            title: "extract module".into(),
+            kind: "refactor".into(),
+            rationale: "real work".into(),
+            scope: SpinoffScope::Substantial,
+        };
+        assert_eq!(substantial.decision_class(), DecisionClass::Consequential);
+    }
+
+    #[test]
+    fn referenced_chunks_are_reported_for_chunk_actions() {
+        assert_eq!(
+            Action::AcceptChunk {
+                chunk_id: "c1".into()
+            }
+            .referenced_chunks(),
+            vec!["c1"]
+        );
+        assert_eq!(
+            Action::TriggerReSpec {
+                reason: "r".into(),
+                chunk_ids: vec!["c1".into(), "c2".into()],
+            }
+            .referenced_chunks(),
+            vec!["c1", "c2"]
+        );
+        assert!(Action::DeclareConverged.referenced_chunks().is_empty());
     }
 
     #[test]
@@ -313,9 +369,45 @@ mod tests {
     }
 
     #[test]
-    fn severity_only_low_is_trivial() {
-        assert!(Severity::Low.is_trivial());
-        assert!(!Severity::Medium.is_trivial());
-        assert!(!Severity::High.is_trivial());
+    fn name_matches_serde_tag() {
+        // `Action::name()` is hand-maintained; assert every variant's name equals
+        // the serde `type` tag so the two can never drift (a rename that misses
+        // one would desync envelopes from serialized actions).
+        let samples = [
+            Action::ReCodeChunk {
+                chunk_id: "c".into(),
+                findings: vec![],
+            },
+            Action::TriggerReSpec {
+                reason: "r".into(),
+                chunk_ids: vec![],
+            },
+            Action::AcceptChunk {
+                chunk_id: "c".into(),
+            },
+            Action::PromoteTier {
+                chunk_id: "c".into(),
+                tier: Tier::Mid,
+            },
+            Action::OpenDiscussion {
+                topic: "t".into(),
+                severity: Severity::Low,
+            },
+            Action::ProposeSpinoff {
+                title: "t".into(),
+                kind: "k".into(),
+                rationale: "r".into(),
+                scope: SpinoffScope::Trivial,
+            },
+            Action::DeclareConverged,
+            Action::Escalate { reason: "r".into() },
+        ];
+        for action in samples {
+            let tag = serde_json::to_value(&action).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(action.name(), tag, "name()/serde tag drift for {action:?}");
+        }
     }
 }

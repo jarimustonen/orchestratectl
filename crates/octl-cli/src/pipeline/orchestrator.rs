@@ -18,11 +18,12 @@
 //! stubs (no model, no network) so the whole loop is unit-testable.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
 use super::action::{Action, DecisionClass, Finding};
+use super::driver::ChunkState;
 use super::envelope::{DecisionEnvelope, DecisionTier};
 
 /// What just happened in the pipeline that requires a decision (design §6 loop
@@ -46,8 +47,11 @@ pub enum DecisionTrigger {
         /// The findings to triage into actions.
         findings: Vec<Finding>,
     },
-    /// A resource circuit-breaker tripped (design §9) — the supervisor surfaces it
-    /// as a decision point that the decider is expected to turn into `Escalate`.
+    /// A resource circuit-breaker tripped (design §9). This is **not** routed to
+    /// the orchestrator: a breaker is deterministic and supervisor-owned, so the
+    /// driver escalates the loop directly rather than trusting an LLM to "pull the
+    /// brake." The trigger exists so the loop can consume it; the driver never
+    /// asks the orchestrator what to do about it.
     CircuitBreakerTripped {
         /// Which ceiling was breached (cost, wall-time, repeated-failure, …).
         reason: String,
@@ -65,6 +69,14 @@ pub struct DecisionContext {
     pub plan_rev: u32,
     /// The intent revision the plan targets (design §1 orchestrator-owned intent).
     pub intent_rev: u32,
+    /// A read-only snapshot of every chunk's status/tier at this decision point.
+    /// The orchestrator is stateless — it holds no loop state of its own — so the
+    /// supervisor projects the facts it needs to decide (e.g. "are all chunks
+    /// accepted?" before `DeclareConverged`) into the context. It is a *snapshot*:
+    /// the orchestrator reads it, never mutates it. T5 will widen this into a
+    /// fuller trusted projection (DAG, acceptance state, attempt counts, budget);
+    /// the chunk map is the minimum a triage decision needs.
+    pub chunks: BTreeMap<String, ChunkState>,
     /// What triggered this decision point.
     pub trigger: DecisionTrigger,
 }
@@ -289,13 +301,14 @@ impl Decider for ScriptedDecider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::action::Severity;
+    use crate::pipeline::action::SpinoffScope;
 
     fn ctx() -> DecisionContext {
         DecisionContext {
             run_id: "run1".into(),
             plan_rev: 1,
             intent_rev: 1,
+            chunks: BTreeMap::new(),
             trigger: DecisionTrigger::SpecReady,
         }
     }
@@ -368,13 +381,13 @@ mod tests {
                 title: "trivial".into(),
                 kind: "improvement".into(),
                 rationale: "r".into(),
-                severity: Severity::Low,
+                scope: SpinoffScope::Trivial,
             }),
             proposal(Action::ProposeSpinoff {
                 title: "big".into(),
                 kind: "refactor".into(),
                 rationale: "r".into(),
-                severity: Severity::High,
+                scope: SpinoffScope::Substantial,
             }),
         ]]);
         let orch = TieredOrchestrator::new(coord, ScriptedDecider::confirming());
