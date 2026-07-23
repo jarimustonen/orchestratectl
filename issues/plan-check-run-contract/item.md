@@ -3,9 +3,10 @@ created: 2026-07-22
 updated: 2026-07-23
 type: improvement
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 epic: code-pipeline
+closed: 2026-07-23
 ---
 
 # plan.json check.run execution contract is under-specified
