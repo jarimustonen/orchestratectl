@@ -23,6 +23,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are updated in lockstep; a check with only `desc`+`run` is unchanged
   (exit 0 = pass).
 
+- **Inverted control loop scaffold (code-pipeline T4, behind the seam).** A new
+  module (`crates/octl-cli/src/pipeline/`) modelling the design §2 inversion: the
+  supervisor owns the loop and the orchestrator is a stateless pure function
+  returning discrete typed `Action` primitives (`ReCodeChunk`, `TriggerReSpec`,
+  `AcceptChunk`, `PromoteTier`, `OpenDiscussion`, `ProposeSpinoff`,
+  `DeclareConverged`, `Escalate`) — never prose. Each primitive is classified
+  `Routine` vs `Consequential` (design §0.2), every decision is recorded in a
+  `DecisionEnvelope` (actor, input artifacts, reason, **`decision_tier`**, model,
+  prompt version), and a `TieredOrchestrator<C, D>` routes consequential
+  decisions from a fast coordinator to an expensive decider — a consequential
+  action stamped `coordinator` is an audit-catchable `TierViolation`. Ships
+  deterministic scripted coordinator/decider stubs and a pure in-memory loop
+  skeleton (`drive`) with a stubbed `ActionExecutor`, fully unit-tested (routine
+  FIX loop, decider-tier `DeclareConverged`/`Escalate`/`TriggerReSpec`, mis-tier
+  rejection) with no LLM/network. Unused by default — nothing constructs an
+  `Orchestrator` or calls `drive` yet; T5 wires it into the real supervisor +
+  event log (design §14).
 - **`CodeHarness` execution control: timeout + cancellation (code-pipeline T0
   follow-up, still behind the seam).** `run_chunk` now takes a `CancelToken` and
   `ChunkRequest`/`Check` carry optional wall-clock `timeout`s, so a runaway or
