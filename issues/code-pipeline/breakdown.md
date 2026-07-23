@@ -25,18 +25,26 @@ until T12; the pipeline ships **behind per-run config** and matures through shad
 
 ## Progress (2026-07-22)
 
-Done, verified on main, issues closed (all behind the seam — nothing wired live yet):
+**FOUNDATION LAYER COMPLETE** — done, verified on main, issues closed, all **behind
+the seam** (nothing wired into the live default path):
 - ✅ **T0** CodeHarness contract + aider adapter + conformance (`918aee8`, `b7d93f6`)
-- ✅ **T0-followup** `outright-tasty-son` — harness timeout + cancellation (`c923f85`, `4f879e0`)
-- ✅ **T2** plan.json v2 serde types + validator + checked-in JSON Schema (`d78c6f4`)
+- ✅ **T0-followup** harness timeout + cancellation (`c923f85`, `4f879e0`)
+- ✅ **T2** plan.json v2 serde types + validator + JSON Schema (`d78c6f4`)
 - ✅ **T3** deterministic floor module (baseline + gates + runner) (`0a89d6d`, `b27a56d`)
+- ✅ **plan-check-run-contract** flexible check (`5dcc40b`); review caught + fixed a `cwd` worktree-escape
+- ✅ **T4** inverted-loop scaffold — tiered orchestrator (fast coordinator/Opus decider) + typed primitives + decision envelopes, NEW `src/pipeline/` module (`05c0cfa`, `2f432a5`)
 
-All four ran as autonomous headless spinoffs with `/llm-review` gates; the
-self-improvement loop worked (T2 → `plan-check-run-contract`, T0 → `outright-tasty-son`).
+All ran as autonomous headless spinoffs with `/llm-review` gates; self-improvement
+loop worked (T2 → check-run-contract, T0 → exec-control); review gates caught real
+bugs (cwd escape). Owner refinements folded in: tiered orchestrator (fast
+coordinator + Opus final-decisions), flexible check shape.
 
-Open before **T5** wires things live:
-- `plan-check-run-contract` — `check.run` shape (recommend structured `{cmd,cwd,expect_exit}`). **Awaiting owner nod (framed as possibly their call).**
-- **T4 (control-loop inversion) + T5 (state machine)** contend on `supervise/` → sequence, don't parallelize. T4's shape is the consequential architectural fork → sync before reshaping the supervisor.
+**THRESHOLD: next phase = INTEGRATION (behavior-changing).** Everything so far is a
+new module behind the seam. **T5** is the first task that touches the LIVE
+supervisor. Per staged rollout (§14) it must land behind a per-run flag (default
+off) / shadow. T5 also needs real dependencies: **T1** (live model binding), stage
+agents (**T8** skills), and a live code harness (**T9** router vs aider). → sync
+with owner on integration approach before T5.
 
 ## Critical path
 
