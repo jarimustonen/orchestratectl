@@ -1,9 +1,9 @@
 ---
 created: 2026-07-22
-updated: 2026-07-22
+updated: 2026-07-23
 type: improvement
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 epic: code-pipeline
 ---

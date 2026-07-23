@@ -74,7 +74,18 @@
           "properties": {
             "kind": { "const": "check" },
             "desc": { "type": "string", "minLength": 1 },
-            "run": { "type": "string", "minLength": 1 }
+            "run": { "type": "string", "minLength": 1 },
+            "cwd": {
+              "description": "Optional working directory to run `run` in; absent = worktree root. Must be a safe repo-relative path (no absolute paths, `~`, `..`, backslash, `:`, control chars, or a bare `.`) — enforced by the octl_core::plan validator, as for files_touched.",
+              "type": "string",
+              "minLength": 1
+            },
+            "expect_exit": {
+              "description": "Optional expected exit code; the check passes iff the command exits with it. Absent = 0. A shell exit status is 0..=255.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
           }
         },
         {
@@ -89,12 +100,32 @@
       ]
     },
     "check": {
+      "description": "An executable check: the general goal (desc) plus a flexible shell command (run), with optional cwd/expect_exit precision. Precision is available, not forced.",
       "type": "object",
       "additionalProperties": false,
       "required": ["desc", "run"],
       "properties": {
-        "desc": { "type": "string", "minLength": 1 },
-        "run": { "type": "string", "minLength": 1 }
+        "desc": {
+          "description": "The general goal of the check — what it verifies. Always present.",
+          "type": "string",
+          "minLength": 1
+        },
+        "run": {
+          "description": "A flexible shell command executed via `sh -c`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "description": "Optional working directory to run `run` in; absent = worktree root. Must be a safe repo-relative path (no absolute paths, `~`, `..`, backslash, `:`, control chars, or a bare `.`) — enforced by the octl_core::plan validator, as for files_touched.",
+          "type": "string",
+          "minLength": 1
+        },
+        "expect_exit": {
+          "description": "Optional expected exit code; the check passes iff the command exits with it. Absent = 0. A shell exit status is 0..=255.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
       }
     },
     "chunk": {

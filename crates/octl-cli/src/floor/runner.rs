@@ -15,39 +15,56 @@ use super::parse::{count_assert_macros, parse_clippy_short, parse_libtest_output
 use super::snapshot::{CheckRun, ClippySnapshot, TestSnapshot};
 use super::FloorError;
 
-/// Run one [`plan::Check`] in `cwd` and capture its result.
+/// Run one [`plan::Check`] rooted at `cwd` and capture its result.
 ///
-/// **Check-run contract (open decision `plan-check-run-contract`).**
-/// [`plan::Check::run`] is today a single shell string; this runner executes it
-/// via `sh -c` in `cwd`, exit 0 == pass — the same convention the harness
-/// adapter uses for self-checks. When the richer `{cmd, cwd, expect_exit}`
-/// contract is settled, only this function changes: the gates consume
-/// [`CheckRun`], not the raw command. That is the seam.
+/// **Check-run contract (`plan-check-run-contract`, owner-locked 2026-07-23).**
+/// A [`plan::Check`] carries the general goal ([`plan::Check::desc`]) plus a
+/// flexible shell command ([`plan::Check::run`]) executed via `sh -c`, with
+/// optional precision: [`plan::Check::cwd`] (a repo-relative working directory,
+/// joined onto `cwd`; absent = the worktree root) and
+/// [`plan::Check::expect_exit`] (the exit code that counts as a pass; absent =
+/// 0). The check passes iff the command runs to completion with that exit code.
+/// The gates consume [`CheckRun`], not the raw command — that is the seam.
 #[must_use]
 pub fn run_check(check: &plan::Check, cwd: &Path) -> CheckRun {
+    // `check.cwd` is a validator-vetted safe repo-relative path (or absent), so
+    // the join stays inside `cwd`; the plan validator ([`plan::validate_plan`])
+    // rejects absolute / `..` / `~` cwds before a plan reaches the floor. This
+    // is the same lexical-trust stance the floor takes for `files_touched`.
+    let run_dir = match &check.cwd {
+        Some(rel) => cwd.join(rel),
+        None => cwd.to_path_buf(),
+    };
+    let expected = check.expect_exit.unwrap_or(0);
     let output = Command::new("sh")
         .arg("-c")
         .arg(&check.run)
-        .current_dir(cwd)
+        .current_dir(&run_dir)
         .output();
     match output {
         Ok(out) => CheckRun {
             desc: check.desc.clone(),
             run: check.run.clone(),
-            passed: out.status.success(),
+            cwd: check.cwd.clone(),
+            // Pass iff the process exited (not signal-killed) with the expected
+            // code. A signalled process has `code() == None`, which never equals
+            // `Some(expected)` — so it is a fail, never a silent pass.
+            passed: out.status.code() == Some(expected),
             exit_code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         },
         // A command that could not even be spawned is a failed check with no
-        // exit code — never a silent pass.
+        // exit code — never a silent pass. Name the run dir so a bad `cwd` is
+        // diagnosable.
         Err(e) => CheckRun {
             desc: check.desc.clone(),
             run: check.run.clone(),
+            cwd: check.cwd.clone(),
             passed: false,
             exit_code: None,
             stdout: String::new(),
-            stderr: format!("failed to spawn check: {e}"),
+            stderr: format!("failed to spawn check in {}: {e}", run_dir.display()),
         },
     }
 }
@@ -151,6 +168,8 @@ mod tests {
         plan::Check {
             desc: desc.to_string(),
             run: run.to_string(),
+            cwd: None,
+            expect_exit: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -175,6 +194,76 @@ mod tests {
         let r = run_check(&check("ls", "ls"), dir.path());
         assert!(r.passed);
         assert!(r.stdout.contains("marker"));
+    }
+
+    #[test]
+    fn run_check_honors_expect_exit() {
+        let dir = TempDir::new().unwrap();
+        // A non-zero expected code: the check passes when the command exits with
+        // exactly that code, and fails on any other (including the usual 0).
+        let mut c = check("expects 3", "exit 3");
+        c.expect_exit = Some(3);
+        let r = run_check(&c, dir.path());
+        assert!(r.passed, "exit 3 with expect_exit=3 should pass");
+        assert_eq!(r.exit_code, Some(3));
+
+        let mut c0 = check("expects 3 but exits 0", "exit 0");
+        c0.expect_exit = Some(3);
+        let r0 = run_check(&c0, dir.path());
+        assert!(!r0.passed, "exit 0 with expect_exit=3 should fail");
+        assert_eq!(r0.exit_code, Some(0));
+    }
+
+    #[test]
+    fn run_check_honors_cwd() {
+        let dir = TempDir::new().unwrap();
+        // A subdirectory holding a marker file; the check's cwd is joined onto
+        // the runner's root, so the command sees the marker only when cwd points
+        // at the subdir.
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/marker"), "hi").unwrap();
+
+        let mut c = check("marker present in sub", "test -f marker");
+        c.cwd = Some("sub".to_string());
+        assert!(run_check(&c, dir.path()).passed);
+
+        // Without cwd the command runs at the root, where marker is absent.
+        assert!(!run_check(&check("marker at root", "test -f marker"), dir.path()).passed);
+    }
+
+    #[test]
+    fn run_check_cwd_and_expect_exit_together() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut c = check("runs in sub, exits 2", "exit 2");
+        c.cwd = Some("sub".to_string());
+        c.expect_exit = Some(2);
+        let r = run_check(&c, dir.path());
+        assert!(r.passed);
+        assert_eq!(r.exit_code, Some(2));
+        // The requested cwd is preserved on the audit record.
+        assert_eq!(r.cwd.as_deref(), Some("sub"));
+    }
+
+    #[test]
+    fn run_check_records_cwd_provenance() {
+        let dir = TempDir::new().unwrap();
+        // Absent cwd → None on the record; present cwd → echoed. So two checks
+        // sharing a `run` but differing in cwd stay distinguishable.
+        assert_eq!(run_check(&check("root", "true"), dir.path()).cwd, None);
+    }
+
+    #[test]
+    fn run_check_bad_cwd_names_run_dir() {
+        let dir = TempDir::new().unwrap();
+        // A cwd that does not exist cannot be entered: the check fails (never a
+        // silent pass) and the resolved run dir is named for diagnosability.
+        let mut c = check("missing dir", "true");
+        c.cwd = Some("does-not-exist".to_string());
+        let r = run_check(&c, dir.path());
+        assert!(!r.passed);
+        assert_eq!(r.exit_code, None);
+        assert!(r.stderr.contains("does-not-exist"), "stderr: {}", r.stderr);
     }
 
     #[test]

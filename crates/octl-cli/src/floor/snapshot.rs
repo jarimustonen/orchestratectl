@@ -154,15 +154,23 @@ pub fn hash_sorted(items: &BTreeSet<String>) -> String {
 /// The result of running one [`plan::Check`] — pass/fail plus captured output.
 /// Produced by [`super::runner`]; consumed by the checks-pass gate. Mirrors the
 /// harness [`crate::harness::CheckResult`] shape but keys on the check's `run`
-/// string, because [`plan::Check`] carries no id (the richer `{cmd,cwd,
-/// expect_exit}` check contract is the open decision `plan-check-run-contract`).
+/// string, because [`plan::Check`] carries no id. The check's optional
+/// `cwd`/`expect_exit` precision (locked in `plan-check-run-contract`) is
+/// applied by the runner and folded into `passed`/`exit_code` here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckRun {
     /// Echoes [`plan::Check::desc`].
     pub desc: String,
     /// Echoes [`plan::Check::run`] (the command executed).
     pub run: String,
-    /// Whether the command exited 0.
+    /// Echoes [`plan::Check::cwd`] — the working directory the command ran in
+    /// (relative to the run root), or `None` for the root. Kept so two checks
+    /// that share a `run` but differ only in `cwd` produce distinguishable audit
+    /// records. Skipped on the wire when absent, matching the plan shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Whether the command exited with the check's expected code
+    /// ([`plan::Check::expect_exit`], default 0).
     pub passed: bool,
     /// Process exit code, if the command ran to completion (`None` if it could
     /// not be spawned or was killed by a signal).

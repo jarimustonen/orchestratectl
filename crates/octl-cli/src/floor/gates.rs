@@ -429,6 +429,7 @@ mod tests {
         CheckRun {
             desc: desc.to_string(),
             run: run.to_string(),
+            cwd: None,
             passed,
             exit_code: exit,
             stdout: String::new(),

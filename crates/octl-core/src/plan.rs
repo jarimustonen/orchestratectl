@@ -207,12 +207,19 @@ pub struct Baseline {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Acceptance {
-    /// An executable end-to-end check (`desc` + shell/test `run`).
+    /// An executable end-to-end check (`desc` + shell/test `run`, with optional
+    /// `cwd` / `expect_exit` precision — same flexible shape as [`Check`]).
     Check {
-        /// Human-readable description of what the check proves.
+        /// The general goal of the check — what it verifies.
         desc: String,
-        /// The command/test invocation the supervisor executes.
+        /// A flexible shell command the supervisor executes.
         run: String,
+        /// Optional working directory (repo-relative) to run `run` in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        /// Optional expected exit code (absent = exit 0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect_exit: Option<i32>,
     },
     /// An LLM-judged criterion (no executable command).
     Assertion {
@@ -259,14 +266,25 @@ pub struct Chunk {
     pub extra: Map<String, Value>,
 }
 
-/// An executable check: a description plus the command/test invocation that
-/// proves it.
+/// An executable check: the general goal plus a flexible runnable form that
+/// proves it. The goal (`desc`) is always communicated and the command (`run`)
+/// is a free-form shell string; precision (`cwd`, `expect_exit`) is available
+/// but not forced (owner decision 2026-07-23, `plan-check-run-contract`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Check {
-    /// Human-readable description of what the check proves.
+    /// The general goal of the check — what it verifies. Always present,
+    /// human- and LLM-readable.
     pub desc: String,
-    /// The command/test invocation the supervisor executes.
+    /// A flexible shell command the supervisor executes (via `sh -c`).
     pub run: String,
+    /// Optional working directory (repo-relative) to run `run` in; when absent
+    /// the check runs at the worktree root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Optional expected exit code — the check passes iff the command exits with
+    /// this code. Absent means the default: exit 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_exit: Option<i32>,
     /// Unrecognized keys, captured for the compatibility check.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -435,6 +453,33 @@ pub enum PlanValidationError {
         /// The offending path.
         path: String,
     },
+
+    /// A check's optional `cwd` was not a safe repo-relative directory. Held to
+    /// the same lexical guard as `files_touched` ([`is_safe_repo_relative`]) —
+    /// `cwd` controls *where a shell command executes*, so an absolute path
+    /// (`/etc`) or a `..`/`~` traversal would let a check escape the worktree the
+    /// floor gates. Absence already means "the worktree root", so a bare `.` is
+    /// rejected too — there is one spelling for root, not two.
+    #[error("cwd {path:?} at {location} is not a safe repo-relative directory (no absolute paths, `~`, `\\`, `:`, control chars, or `.`/`..`/empty components; omit `cwd` for the worktree root)")]
+    UnsafeCwd {
+        /// Dotted path to the offending `cwd` (e.g. `chunks[c1].checks[0].cwd`).
+        location: String,
+        /// The offending path.
+        path: String,
+    },
+
+    /// A check's optional `expect_exit` was outside the range a `sh -c` process
+    /// can actually report. A shell exit status is `0..=255`; a value outside it
+    /// (negative, or `> 255`) could never match `code()` and would make the check
+    /// permanently un-passable, so it is rejected at validation rather than
+    /// silently failing every run.
+    #[error("expect_exit {value} at {location} is out of range (a shell exit status is 0..=255)")]
+    ExpectExitOutOfRange {
+        /// Dotted path to the offending `expect_exit`.
+        location: String,
+        /// The offending value.
+        value: i64,
+    },
 }
 
 impl PlanValidationError {
@@ -555,9 +600,19 @@ pub fn validate_plan(plan: &Plan) -> Result<(), PlanValidationError> {
     }
     for (i, item) in plan.acceptance.iter().enumerate() {
         match item {
-            Acceptance::Check { desc, run } => {
+            Acceptance::Check {
+                desc,
+                run,
+                cwd,
+                expect_exit,
+            } => {
                 non_empty(desc, &format!("acceptance[{i}].desc"))?;
                 non_empty(run, &format!("acceptance[{i}].run"))?;
+                validate_check_precision(
+                    cwd.as_deref(),
+                    *expect_exit,
+                    &format!("acceptance[{i}]"),
+                )?;
             }
             Acceptance::Assertion { desc } => {
                 non_empty(desc, &format!("acceptance[{i}].desc"))?;
@@ -624,6 +679,47 @@ fn non_empty(s: &str, path: &str) -> Result<(), PlanValidationError> {
         return Err(PlanValidationError::EmptyString {
             path: path.to_string(),
         });
+    }
+    Ok(())
+}
+
+/// The highest exit status a `sh -c` process can report; a shell truncates the
+/// wait status to `0..=255` (a signalled child surfaces as `128 + signal`), so
+/// an `expect_exit` outside this range can never match and is rejected.
+const MAX_SHELL_EXIT: i32 = 255;
+
+/// Validate a check's optional precision fields (`cwd`, `expect_exit`) — shared
+/// by the per-chunk `checks[]` and `acceptance[]` check paths so the two never
+/// diverge. `location` is the dotted path to the check (e.g.
+/// `chunks[c1].checks[0]` or `acceptance[0]`); the field name is appended here.
+///
+/// - `cwd`, when present, must be a non-empty *safe repo-relative* directory —
+///   the same lexical guard `files_touched` gets ([`is_safe_repo_relative`]),
+///   because `cwd` chooses where a shell command runs and an unchecked `/etc` or
+///   `../..` would escape the worktree the floor gates. Absence already means the
+///   worktree root, so a bare `.` is rejected (one spelling for root).
+/// - `expect_exit`, when present, must be a real shell exit status (`0..=255`).
+fn validate_check_precision(
+    cwd: Option<&str>,
+    expect_exit: Option<i32>,
+    location: &str,
+) -> Result<(), PlanValidationError> {
+    if let Some(cwd) = cwd {
+        non_empty(cwd, &format!("{location}.cwd"))?;
+        if !is_safe_repo_relative(cwd) {
+            return Err(PlanValidationError::UnsafeCwd {
+                location: format!("{location}.cwd"),
+                path: cwd.to_string(),
+            });
+        }
+    }
+    if let Some(code) = expect_exit {
+        if !(0..=MAX_SHELL_EXIT).contains(&code) {
+            return Err(PlanValidationError::ExpectExitOutOfRange {
+                location: format!("{location}.expect_exit"),
+                value: i64::from(code),
+            });
+        }
     }
     Ok(())
 }
@@ -700,6 +796,11 @@ fn validate_chunk(chunk: &Chunk, ids: &HashSet<&str>) -> Result<(), PlanValidati
             &format!("chunks[{}].checks[{i}].desc", chunk.id),
         )?;
         non_empty(&check.run, &format!("chunks[{}].checks[{i}].run", chunk.id))?;
+        validate_check_precision(
+            check.cwd.as_deref(),
+            check.expect_exit,
+            &format!("chunks[{}].checks[{i}]", chunk.id),
+        )?;
     }
 
     // assertions are LLM-judged criteria — an empty one is nonsensical (mirrors
@@ -1116,6 +1217,174 @@ mod tests {
         ));
     }
 
+    // --- flexible check shape (desc + run + optional cwd/expect_exit) ---
+
+    #[test]
+    fn check_with_cwd_and_expect_exit_validates_and_round_trips() {
+        let mut v = valid_plan();
+        v["chunks"][0]["checks"] = json!([
+            {"desc": "runs in a subdir with a non-zero expected code",
+             "run": "make check", "cwd": "crates/x", "expect_exit": 2},
+        ]);
+        v["acceptance"] = json!([
+            {"kind": "check", "desc": "e2e", "run": "cargo test", "cwd": "tests", "expect_exit": 0},
+        ]);
+        let plan = parse_and_validate_plan(&v).expect("optional check fields must validate");
+
+        // The optional fields land on the typed shape, not in `extra`.
+        let check = &plan.chunks[0].checks[0];
+        assert_eq!(check.cwd.as_deref(), Some("crates/x"));
+        assert_eq!(check.expect_exit, Some(2));
+        assert!(check.extra.is_empty());
+        assert!(matches!(
+            &plan.acceptance[0],
+            Acceptance::Check { cwd, expect_exit, .. }
+                if cwd.as_deref() == Some("tests") && *expect_exit == Some(0)
+        ));
+
+        // Round-trips through serde back to an equal, still-valid plan.
+        let reser = serde_json::to_value(&plan).unwrap();
+        assert_eq!(parse_and_validate_plan(&reser).unwrap(), plan);
+    }
+
+    #[test]
+    fn check_without_optional_fields_defaults() {
+        // Back-compat: a check with only desc+run parses, leaving the optional
+        // precision absent (expect_exit defaults to 0 at execution time). The
+        // absent fields skip serialization entirely.
+        let plan = parse_and_validate_plan(&valid_plan()).unwrap();
+        let check = &plan.chunks[0].checks[0];
+        assert_eq!(check.cwd, None);
+        assert_eq!(check.expect_exit, None);
+
+        let reser = serde_json::to_value(&plan.chunks[0].checks[0]).unwrap();
+        let obj = reser.as_object().unwrap();
+        assert!(!obj.contains_key("cwd"));
+        assert!(!obj.contains_key("expect_exit"));
+    }
+
+    #[test]
+    fn empty_check_cwd_rejected() {
+        let mut v = valid_plan();
+        v["chunks"][0]["checks"][0]["cwd"] = json!("  ");
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::EmptyString { path } if path == "chunks[c1].checks[0].cwd"
+        ));
+    }
+
+    #[test]
+    fn empty_acceptance_check_cwd_rejected() {
+        let mut v = valid_plan();
+        v["acceptance"][0]["cwd"] = json!("");
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::EmptyString { path } if path == "acceptance[0].cwd"
+        ));
+    }
+
+    #[test]
+    fn non_integer_expect_exit_rejected() {
+        let mut v = valid_plan();
+        v["chunks"][0]["checks"][0]["expect_exit"] = json!("nope");
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::Malformed { .. }
+        ));
+    }
+
+    #[test]
+    fn unsafe_check_cwd_rejected() {
+        // `cwd` controls where a shell command runs, so it gets the same
+        // repo-relative safety guard as `files_touched` — an absolute path or a
+        // `..`/`~` traversal would let a check escape the worktree the floor
+        // gates. A bare `.` is rejected too: absence already means the root.
+        for bad in [
+            "/etc",
+            "../../outside",
+            "a/../../etc",
+            "~/secret",
+            ".",
+            "a\\b",
+        ] {
+            let mut v = valid_plan();
+            v["chunks"][0]["checks"][0]["cwd"] = json!(bad);
+            assert!(
+                matches!(
+                    parse_and_validate_plan(&v).unwrap_err(),
+                    PlanValidationError::UnsafeCwd { location, .. }
+                        if location == "chunks[c1].checks[0].cwd"
+                ),
+                "expected UnsafeCwd for chunk cwd {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_acceptance_check_cwd_rejected() {
+        for bad in ["/etc", "../escape", "~/x", "."] {
+            let mut v = valid_plan();
+            v["acceptance"][0]["cwd"] = json!(bad);
+            assert!(
+                matches!(
+                    parse_and_validate_plan(&v).unwrap_err(),
+                    PlanValidationError::UnsafeCwd { location, .. }
+                        if location == "acceptance[0].cwd"
+                ),
+                "expected UnsafeCwd for acceptance cwd {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_expect_exit_rejected() {
+        // A shell exit status is 0..=255; anything outside can never match
+        // `code()` and would make the check permanently un-passable.
+        for (loc, patch) in [
+            (
+                "chunks[c1].checks[0].expect_exit",
+                (&["chunks", "0", "checks", "0"][..], -1),
+            ),
+            (
+                "chunks[c1].checks[0].expect_exit",
+                (&["chunks", "0", "checks", "0"][..], 256),
+            ),
+            ("acceptance[0].expect_exit", (&["acceptance", "0"][..], 300)),
+        ] {
+            let mut v = valid_plan();
+            let (path, code) = patch;
+            let mut node = &mut v;
+            for key in path {
+                node = match key.parse::<usize>() {
+                    Ok(idx) => &mut node[idx],
+                    Err(_) => &mut node[key],
+                };
+            }
+            node["expect_exit"] = json!(code);
+            assert!(
+                matches!(
+                    parse_and_validate_plan(&v).unwrap_err(),
+                    PlanValidationError::ExpectExitOutOfRange { location, value }
+                        if location == loc && value == i64::from(code)
+                ),
+                "expected ExpectExitOutOfRange for {loc} = {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_expect_exit_accepted() {
+        // 0 and 255 are the inclusive bounds — both valid.
+        for code in [0, 255] {
+            let mut v = valid_plan();
+            v["chunks"][0]["checks"][0]["expect_exit"] = json!(code);
+            assert!(
+                parse_and_validate_plan(&v).is_ok(),
+                "expect_exit {code} should be accepted"
+            );
+        }
+    }
+
     // --- DAG acyclicity ---
 
     #[test]
@@ -1340,6 +1609,61 @@ mod tests {
             set(&["id", "title", "tier", "brief", "files_touched", "checks"])
         );
         assert_eq!(required_at("/$defs/check/required"), set(&["desc", "run"]));
+
+        // Acceptance variants keep their exact required-sets — the `check` arm
+        // requires `kind`+`desc`+`run` (never the optional precision), the
+        // `assertion` arm `kind`+`desc`. A future edit that promoted `cwd`/
+        // `expect_exit` to required would diverge from the Rust `Option<_>`.
+        assert_eq!(
+            required_at("/$defs/acceptance_item/oneOf/0/required"),
+            set(&["kind", "desc", "run"])
+        );
+        assert_eq!(
+            required_at("/$defs/acceptance_item/oneOf/1/required"),
+            set(&["kind", "desc"])
+        );
+
+        // The flexible-check optional fields (`plan-check-run-contract`) are
+        // present as optional (not required) properties on both the per-chunk
+        // check def and the acceptance `check` variant — mirroring the Rust
+        // `Option<_>` fields on `Check` / `Acceptance::Check`. The schema-side
+        // constraints must also match the Rust validator: `cwd` non-empty
+        // (`minLength: 1`) and `expect_exit` bounded to the shell range
+        // `0..=255`. If a future edit drops or loosens either, schema and types
+        // stop agreeing and this fails.
+        for ptr in [
+            "/$defs/check/properties",
+            "/$defs/acceptance_item/oneOf/0/properties",
+        ] {
+            let props = schema
+                .pointer(ptr)
+                .unwrap_or_else(|| panic!("missing {ptr}"));
+            assert_eq!(
+                props["cwd"]["type"],
+                json!("string"),
+                "expected optional string `cwd` at {ptr}"
+            );
+            assert_eq!(
+                props["cwd"]["minLength"],
+                json!(1),
+                "expected `cwd` minLength:1 at {ptr}"
+            );
+            assert_eq!(
+                props["expect_exit"]["type"],
+                json!("integer"),
+                "expected optional integer `expect_exit` at {ptr}"
+            );
+            assert_eq!(
+                props["expect_exit"]["minimum"],
+                json!(0),
+                "expected `expect_exit` minimum:0 at {ptr}"
+            );
+            assert_eq!(
+                props["expect_exit"]["maximum"],
+                json!(i64::from(MAX_SHELL_EXIT)),
+                "expected `expect_exit` maximum:255 at {ptr}"
+            );
+        }
 
         // Every object shape closes itself with `additionalProperties: false` —
         // the schema-side mirror of the Rust reject-unknown-fields policy. If a

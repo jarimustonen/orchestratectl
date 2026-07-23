@@ -160,6 +160,7 @@ mod tests {
         CheckRun {
             desc: "feature check".into(),
             run: "cargo test".into(),
+            cwd: None,
             passed,
             exit_code: Some(i32::from(!passed)),
             stdout: String::new(),

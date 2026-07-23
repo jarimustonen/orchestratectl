@@ -96,7 +96,7 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 | **`acceptance[]`** | object[] | spec | whole-feature intent gate; each is `check` (executable) or `assertion` (LLM-judged); **≥1 must be a `check`** |
 | `chunks[].id/title/deps/tier/brief` | — | spec | as v1 (`deps` = DAG; `tier` = starting hint, orchestrator owns promotion) |
 | `chunks[].files_touched[]` | string[] | spec | **now a merge-time constraint** (supervisor rejects out-of-scope merges beyond slack), not just a hint |
-| **`chunks[].checks[]`** | object[] | spec | executable per-chunk checks; **≥1 required**. Shape: `desc` (the **general goal** — always present, human+LLM readable), `run` (a **flexible shell command**), optional `cwd`, optional `expect_exit` (default 0). Precision available, not forced (owner decision 2026-07-23). |
+| **`chunks[].checks[]`** | object[] | spec | executable per-chunk checks; **≥1 required**. Shape: `desc` (the **general goal** — always present, human+LLM readable), `run` (a **flexible shell command**), optional `cwd` (a **safe repo-relative** dir — same guard as `files_touched`; omit for the worktree root, a bare `.` is rejected), optional `expect_exit` (an exit code `0..=255`; default 0). Precision available, not forced (owner decision 2026-07-23). |
 | **`chunks[].assertions[]`** | string[] | spec | LLM-judged criteria (additive, above the floor) |
 | **`chunks[].requires_tests`** | bool | spec | if true, supervisor blocks a merge that added/modified no tests |
 
@@ -113,7 +113,9 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 - ~~Exact `check.run` contract~~ **RESOLVED (owner, 2026-07-23):** flexible — a check
   carries `desc` (general goal, always) + `run` (flexible shell command) + optional
   `cwd` / `expect_exit` (default 0). Precision available, not forced. Neither a rigid
-  struct nor bare text. Issue `plan-check-run-contract` implements this.
+  struct nor bare text. Issue `plan-check-run-contract` implements this. `cwd` is held
+  to the `files_touched` repo-relative safety guard (the floor gates possibly-adversarial
+  code-node output), and `expect_exit` is bounded to the shell range `0..=255`.
 - DAG-diff algorithm for `plan.vN → v(N+1)`: which completed chunks revert to
   PENDING when their deps or briefs change.
 - Whether `baseline` hashes live in `plan.json` or a sibling `baseline.json`

@@ -8,6 +8,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Flexible `plan.json` check contract (code-pipeline `plan-check-run-contract`,
+  owner-locked 2026-07-23).** A check now carries the general goal (`desc`) plus a
+  flexible shell command (`run`) with optional precision — `cwd` (repo-relative
+  working directory) and `expect_exit` (expected exit code, default 0) — on both
+  per-chunk `checks[]` and `acceptance[]` check items. Neither a rigid struct nor
+  bare text: the goal is always communicated, the command stays expressive, and
+  precision is available but not forced. `cwd` is held to the same repo-relative
+  safety guard as `files_touched` (the floor gates possibly-adversarial code-node
+  output, so an absolute / `..` / `~` cwd is rejected), and `expect_exit` is
+  bounded to the shell exit range `0..=255`. The `plan::Check` type, structural
+  validator, checked-in JSON Schema, and the deterministic-floor runner (which
+  honours `cwd`/`expect_exit` and records `cwd` on the `CheckRun` audit result)
+  are updated in lockstep; a check with only `desc`+`run` is unchanged
+  (exit 0 = pass).
+
 - **`CodeHarness` execution control: timeout + cancellation (code-pipeline T0
   follow-up, still behind the seam).** `run_chunk` now takes a `CancelToken` and
   `ChunkRequest`/`Check` carry optional wall-clock `timeout`s, so a runaway or
