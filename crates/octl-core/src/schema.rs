@@ -520,6 +520,18 @@ pub struct Manifest {
     /// keeps a manifest written before this field existed readable.
     #[serde(default)]
     pub managed_tmux_session: Option<String>,
+    /// Completion-notification command registered at `run create --notify`,
+    /// if any. When the run reaches a terminal state (`done | failed |
+    /// cancelled`) the supervisor runs this command exactly once (at-most-once,
+    /// gated on a durable `run.notified` marker event) with `OCTL_RUN_ID` /
+    /// `OCTL_STATUS` / `OCTL_SUMMARY` (and `OCTL_RUN_KIND` / `OCTL_RUN_TITLE`)
+    /// in its environment, BEFORE teardown removes the worktree/window. This is
+    /// how a spawning session learns of completion without polling (issue
+    /// `no-completion-notification-to-parent`). `None` for a run created without
+    /// `--notify`; `#[serde(default)]` keeps a manifest written before this
+    /// field existed readable.
+    #[serde(default)]
+    pub notify_cmd: Option<String>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
     /// Count of currently open discussions (denormalized counter).

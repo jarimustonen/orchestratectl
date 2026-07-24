@@ -56,6 +56,10 @@ pub struct Args<'a> {
     pub agent_startup_timeout: u32,
     pub parent_run_id: Option<String>,
     pub parent_node_id: Option<String>,
+    /// Completion-notification command (`--notify`). Persisted into the
+    /// `run.created` event as `notify_cmd` so the supervisor can run it once
+    /// on the terminal transition. `None` for a run created without `--notify`.
+    pub notify: Option<String>,
     pub idempotency_key: Option<String>,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
@@ -150,6 +154,14 @@ struct SpawnResult {
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let title = require_nonempty(&args.title, "title")?;
+
+    // Validate the optional completion hook up front (fail fast, before we
+    // touch disk): an all-whitespace `--notify` is a caller mistake. `None`
+    // (flag omitted) is the common case and leaves the run hook-less.
+    let notify_cmd = match args.notify.as_deref() {
+        Some(raw) => Some(require_nonempty(raw, "notify")?),
+        None => None,
+    };
 
     // Resolve the optional headless target session up-front so a malformed
     // `--tmux-session` fails before we touch disk or the parent log — same
@@ -330,6 +342,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // (issue `headless-tmux-session-not-torn-down`).
     if let Some(v) = parent_session.as_deref() {
         data.insert("managed_tmux_session".into(), Value::String(v.into()));
+    }
+    // Persist the terminal-completion hook so the supervisor can run it once
+    // when this run settles (issue `no-completion-notification-to-parent`).
+    // Trimmed and empty-rejected up front — an all-whitespace `--notify` is a
+    // caller mistake, not a silent no-op hook.
+    if let Some(cmd) = notify_cmd.as_deref() {
+        data.insert("notify_cmd".into(), Value::String(cmd.into()));
     }
     if let Some(v) = args.task.as_deref() {
         data.insert("task".into(), Value::String(v.into()));

@@ -10,6 +10,7 @@ expression: manifest_v
   "lifecycle": "autonomous",
   "managed_tmux_session": null,
   "node_count": 1,
+  "notify_cmd": null,
   "open_discussions": 0,
   "parent_node_id": null,
   "parent_run_id": null,

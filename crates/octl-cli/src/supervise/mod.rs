@@ -23,6 +23,7 @@
 //! directory forever and keep forking children.
 
 pub mod cleanup;
+pub mod notify;
 pub mod pid_file;
 pub mod reducer;
 pub mod state;
@@ -605,6 +606,21 @@ pub fn dispatch(
         if !cleaned {
             if let Ok(Some(m)) = read_manifest_opt(&paths) {
                 if m.status.is_terminal() {
+                    // Fire the completion-notification hook (if any) FIRST —
+                    // before teardown removes the worktree/window — so a
+                    // spawning session is told the run settled even for a run
+                    // whose cleanup is not warranted (a plain interactive run
+                    // that ended without an explicit merge). At-most-once,
+                    // gated on a durable `run.notified` marker
+                    // (`no-completion-notification-to-parent`).
+                    notify::maybe_fire(
+                        &paths,
+                        &run_id,
+                        m.notify_cmd.as_deref(),
+                        m.status,
+                        crate::run::kind_kebab(m.kind),
+                        &m.title,
+                    );
                     let warranted = m.kind.lifecycle() == Lifecycle::Autonomous
                         || cleanup::any_node_merged_explicitly(&paths);
                     if warranted {

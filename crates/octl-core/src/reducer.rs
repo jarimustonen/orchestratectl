@@ -341,6 +341,13 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         // is documented at the match site. They are NOT `node.report`, so the
         // supervisor never mistakes them for a terminal signal.
         "orchestrator.decision" | "discuss.critical" => Ok(vec![]),
+        // At-most-once marker the supervisor appends the first time a run is
+        // observed terminal, gating the `run create --notify` completion hook so
+        // a restart never re-fires it (issue `no-completion-notification-to-parent`).
+        // Mutates no projection — the event log is its only home — so it folds to
+        // a clean no-op. Listed explicitly so the append path's transactional gate
+        // runs the same no-op plan and the intent is documented here.
+        "run.notified" => Ok(vec![]),
         // Best-effort teardown audit records from the supervisor's cleanup
         // path. Each mutates no projection — the event log is their only home —
         // so they fold to a clean no-op. Listed explicitly so the append path's
@@ -519,6 +526,10 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .map(str::to_string),
         managed_tmux_session: d
             .get("managed_tmux_session")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        notify_cmd: d
+            .get("notify_cmd")
             .and_then(Value::as_str)
             .map(str::to_string),
         node_count: 0,

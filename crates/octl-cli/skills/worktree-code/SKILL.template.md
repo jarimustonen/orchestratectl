@@ -105,6 +105,7 @@ orchestratectl run create \
   --task "<self-contained brief>" \
   [--source-branch <branch>] \
   [--layout <name>] [--no-hooks] \
+  [--notify <cmd>] \
   [--idempotency-key <key>]
 ```
 
@@ -123,6 +124,16 @@ Flag rules:
 - `--idempotency-key <key>` makes the call safe to retry on transient
   errors (network blip, disk full). Use the same key on retry and the
   CLI returns the original run without spawning twice.
+- `--notify <cmd>` registers a completion hook the supervisor runs
+  **exactly once** when the run reaches a terminal state — for an
+  interactive `code` run that is the moment the user finishes review and
+  runs `/worktree-merge` (or `run cancel`), not when the agent stops
+  typing. The command runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`,
+  `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its
+  environment. Pass it only if you have a real sink (a file/FIFO the
+  harness watches, or a desktop toast); otherwise do not promise a
+  notification. See "Following progress" for how completion reaches this
+  session.
 - `--parent-run-id` / `--parent-node-id` are NOT valid here — interactive
   worktrees are top-level only. If the caller is a driver wanting a
   child unit, it must use a different `--kind`.
@@ -258,9 +269,32 @@ While the supervisor watches:
   the agent raised during review. The user approves/rejects with
   `spinoff approve` / `spinoff reject`.
 
-`lifecycle` is the only field that tells you the run is finished:
-`completed` (user merged), `failed` (agent errored), `cancelled` (`run
-cancel` was called).
+**Branch on `manifest.status`, never `lifecycle`.** `status` is what
+transitions to a terminal state: `done` (user merged), `failed` (agent
+errored), or `cancelled` (`run cancel` was called). `lifecycle` is a
+fixed *category* (`interactive` here) that never changes — polling it for
+"completed" hangs forever (it never matches). `run show <run-id>` and
+`run wait <run-id>` both report `status`; use those.
+
+### Reporting completion back to this session
+
+An interactive run finishes only when the **user** runs `/worktree-merge`
+(or cancels), so completion is naturally human-driven — but this session
+still is not re-invoked automatically when it happens. If you want to be
+told (e.g. to close out an issue, or continue dependent work):
+
+- **`--notify <cmd>` (push)** — registered at spawn (step 3); the
+  supervisor runs it once on the merge/cancel terminal transition with
+  the completion context in the environment. Point it at a sink the
+  harness observes.
+- **Background `run wait "$run_id"`** — if your harness re-invokes the
+  agent when a background task exits, launch this at spawn time and it
+  wakes you with the terminal summary once the user merges.
+
+Wire neither and completion reaches you only when the user tells you —
+so do not promise otherwise. Either way the run dir, terminal
+`manifest.status`, and node report persist after teardown, so a late
+`run show <run-id>` still answers.
 
 ## Install or upgrade `orchestratectl`
 

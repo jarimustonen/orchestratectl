@@ -105,6 +105,7 @@ orchestratectl run create \
   --task "<self-contained brief>" \
   [--source-branch <branch>] \
   [--headless | --tmux-session <name>] \
+  [--notify <cmd>] \
   [--parent-run-id <id> --parent-node-id <id>] \
   [--idempotency-key <key>]
 ```
@@ -128,6 +129,19 @@ Flag rules:
 - `--idempotency-key` makes the call safe to retry on transient errors
   (network blip, disk full). Use the same key on retry and the CLI
   returns the original run without spawning twice.
+- `--notify <cmd>` registers a completion hook the supervisor runs
+  **exactly once** when the run reaches a terminal state
+  (`done | failed | cancelled`), before teardown — the push signal that
+  tells this session the spinoff finished without you polling. The
+  command runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`,
+  `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its
+  environment. Pass it **only if you have a real sink** the harness
+  watches — e.g. appending a line to a file (`--notify 'printf
+  "%s %s\n" "$OCTL_RUN_ID" "$OCTL_STATUS" >> ~/.octl-completions'`) or a
+  desktop toast (`--notify 'terminal-notifier -message "$OCTL_SUMMARY"'`
+  / `notify-send`). Without such a sink, do **not** promise the user a
+  notification; use the `run wait` approach under "Following progress"
+  instead. See "Reporting completion back to this session" below.
 - Output defaults to `--output jsonl` — one compact envelope per line.
 
 ### 4. Success envelope
@@ -166,6 +180,12 @@ Tell the user:
   merge` — no `/worktree-merge` handoff from them.
 - How to follow progress: `orchestratectl run show <run-id>` (or
   `--output jsonl` for one-line summaries).
+- **How completion reaches them.** The spinoff runs out-of-band; nothing
+  re-invokes this session by itself. Do **not** claim you will "let them
+  know when it's done" unless you have actually wired one of the two
+  mechanisms in "Reporting completion back to this session" below.
+  Otherwise state plainly that they should check `run show <run-id>`, or
+  ask you to wait on it.
 
 When invoked from a driver, return the structured payload (run id, node
 id, branch, tmux window) to the calling skill instead of a human
@@ -346,6 +366,34 @@ so you rarely need a follow-up `run show`. Pass several run-ids to block
 until **all** settle (add `--any` to return on the first). This
 supersedes the old `while … run show … case` snippet, which broke under
 zsh word-splitting and routinely polled the wrong field.
+
+## Reporting completion back to this session
+
+A spinoff is fire-and-forget: `run create` returns immediately and the
+supervisor tears the run down out-of-band, so **nothing re-invokes this
+conversation when it finishes** unless you arrange it. If you told the
+user "I'll tell you when it's done", wire one of these at spawn time —
+otherwise you cannot deliver it:
+
+1. **`--notify <cmd>` (push).** Registered at `run create` (see step 3),
+   the supervisor runs the command once on the terminal transition with
+   `OCTL_RUN_ID` / `OCTL_STATUS` / `OCTL_SUMMARY` (and `OCTL_RUN_KIND` /
+   `OCTL_RUN_TITLE`) in its environment. Point it at a sink your harness
+   observes — a file/FIFO append the harness tails, or a desktop
+   notification. Best for true fire-and-forget: no watcher process has to
+   stay alive.
+2. **Background `run wait` (pull, harness re-invoke).** If your harness
+   re-invokes the agent when a launched background task exits, run
+   `orchestratectl run wait "$run_id"` as that background task at spawn
+   time. The harness wakes you with its terminal summary. Only works if
+   you background it **at spawn** — a fire-and-forget spinoff you never
+   waited on has no watcher.
+
+If you wire neither, be honest with the user: the run proceeds on its
+own and they (or a later explicit `run wait` / `run show <run-id>`) must
+check it — the run dir, its terminal `manifest.status`, and the node's
+terminal report all persist after teardown, so a late `run show` still
+answers.
 
 ## Install or upgrade `orchestratectl`
 

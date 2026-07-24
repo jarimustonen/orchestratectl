@@ -105,6 +105,17 @@ pub enum RunAction {
         parent_run_id: Option<String>,
         #[arg(long, requires = "parent_run_id")]
         parent_node_id: Option<String>,
+        /// Shell command the supervisor runs exactly once when this run
+        /// reaches a terminal state (`done | failed | cancelled`), BEFORE
+        /// teardown. Runs via `sh -c <cmd>` with `OCTL_RUN_ID`,
+        /// `OCTL_STATUS`, `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and
+        /// `OCTL_RUN_TITLE` in the environment — so a spawning session can
+        /// learn of completion without polling (e.g. append a line to a file
+        /// the harness watches, or post a desktop notification). At-most-once:
+        /// gated on a durable `run.notified` marker so a supervisor restart
+        /// never re-fires it.
+        #[arg(long)]
+        notify: Option<String>,
         #[arg(long)]
         idempotency_key: Option<String>,
         #[arg(long)]
@@ -222,6 +233,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             agent_startup_timeout,
             parent_run_id,
             parent_node_id,
+            notify,
             idempotency_key,
             dry_run,
             skip_materialize,
@@ -240,6 +252,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             agent_startup_timeout,
             parent_run_id,
             parent_node_id,
+            notify,
             idempotency_key,
             dry_run,
             spec,
