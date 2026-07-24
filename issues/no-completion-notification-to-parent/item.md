@@ -13,6 +13,8 @@ commits:
   summary: review fixes — notify retry, reaping, env hardening
 - hash: fe60e88
   summary: skill docs — supervisor env note
+- hash: 6a91973
+  summary: switch to at-least-once delivery (owner decision)
 closed: 2026-07-24
 ---
 
