@@ -2,8 +2,9 @@
 created: 2026-07-24
 updated: 2026-07-24
 type: task
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-24
 ---
 
 # Harness bake-off: claude + claude-deepseek + pi CodeHarness adapters + bakeoff runner (run one brief through all 4 agent loops and compare)
