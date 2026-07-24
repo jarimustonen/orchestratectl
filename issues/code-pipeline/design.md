@@ -283,11 +283,23 @@ against: clean success, no-change, partial-edit-then-fail, self-check fail,
 timeout/cancel, malformed output, unexpected extra commits, dirty worktree,
 provider failure, transcript+usage capture.
 
-- **First adapter: aider** (proven, explicit, isolable). Ship on it.
-- **Router-to-Claude-Code (option A): an independently-qualified adapter**, not the
-  default-by-spike. Qualification must include upgrade-resilience, tool-call
-  compat, failure attribution, version pinning — not just "it edited once."
-- **pi.dev / bespoke:** later adapters behind the same contract.
+- **Primary (option A — ALREADY BUILT): `claude-deepseek`.** The code-node is the
+  **same Claude Code agent** pointed at a deepseek backend via
+  `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` — the existing wrapper
+  `~/bin/claude-deepseek` (homebase dotfiles). It natively speaks node.report +
+  skills (it IS Claude Code), so no second runtime and no router to build. Flags:
+  `--model flash|pro` (flash = `deepseek-v4-flash[1m]`; tier map opus→pro,
+  sonnet/haiku→flash), `--gertrud` for a local ds4-server (no API cost, Tailscale).
+  This is the first live binding for the code-node.
+- **pi.dev — candidate (customizable, multi-provider).** `earendil-works/pi`, a
+  terminal coding-agent harness with a unified multi-provider model API and
+  TypeScript extensions. Stronger customization / provider flexibility; a good
+  future adapter if we outgrow claude-deepseek. Evaluate deliberately when that need
+  appears, not now.
+- **aider — dropped** from the plan (was a feasibility probe only; claude-deepseek
+  supersedes it as the same-runtime option A).
+- The `CodeHarness` seam (T0) still holds: `claude-deepseek` and pi.dev are both
+  adapters behind it, so the harness stays swappable.
 
 Credentials/routing config stay **out of `plan.json`**; the runtime binding
 (harness + concrete model + params) is recorded in execution events.
@@ -339,18 +351,25 @@ is limited to genuinely additive optional fields.
 
 ---
 
-## 14. Staged rollout (NEW — not big-bang)
+## 14. Rollout — bold to live (owner decision 2026-07-24)
 
-1. Land the **harness interface + observability + provenance** (behavior-preserving).
-2. Add the pipeline **engine behind per-run config** (opt-in), legacy engine intact.
-3. Opt-in on low-risk work.
-4. **Shadow mode**: plan + verify run, but **no automatic merge** (human/legacy merges).
-5. Canary by repo / run-kind.
-6. Default **only after measured stability** (completion rate, intervention rate,
-   orphan-cleanup rate, rollback rate).
-7. Retain the legacy/direct engine + rollback for a bounded deprecation period.
+The owner chose to go **boldly live**, not through a long shadow/canary ceremony.
+This is safe *because the deterministic floor (§4) mechanically gates every merge* —
+the floor + `/llm-review` are the guardrails that let us skip staged caution. We
+still keep two cheap insurances:
 
-"Always how coding is done" is the **end state**, not the deployment mechanism.
+1. Land the **harness seam + observability + provenance** (done/ongoing — T0/T10).
+2. Wire the pipeline engine as the **real coding path**, usable for real work soon —
+   behind a **per-run flag** (so it's controllable and a bad run can't take the
+   default path hostage) with the **legacy engine retained for rollback**. No long
+   shadow period, no canary gating.
+
+**Honest residual risk:** bold-live removes the staging safety nets the panel
+recommended; the floor and review are therefore the *only* nets and must not fail.
+The floor is non-negotiable and blocks any merge that regresses tests/clippy vs
+baseline or escapes file-scope — so a bad autonomous decision cannot silently ship.
+
+"Always how coding is done" is reached directly, with the floor as the hard gate.
 
 ---
 
