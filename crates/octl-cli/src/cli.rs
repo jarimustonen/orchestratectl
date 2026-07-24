@@ -89,6 +89,43 @@ enum Command {
     /// Read-only self-diagnostic: validate schema, skill-sync, deps,
     /// config, and data integrity. `--fix` applies the safe subset.
     Doctor(crate::doctor::DoctorArgs),
+    /// Code-harness tooling. `bakeoff` runs one brief through every
+    /// available agent-loop adapter and compares them (behind the
+    /// seam — not part of `run create`).
+    Harness {
+        #[command(subcommand)]
+        action: HarnessAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HarnessAction {
+    /// Run ONE coding brief through every available `CodeHarness`
+    /// adapter (aider, claude, claude-deepseek, pi) in isolated
+    /// throwaway git repos and print a comparison. Invokes the REAL
+    /// agents; unavailable adapters are reported, not errored.
+    Bakeoff(BakeoffArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct BakeoffArgs {
+    /// Path to the brief file. Plain text is the brief verbatim; a JSON
+    /// `{"brief":..,"checks":[..],"files":[..]}` also carries self-checks
+    /// and a declared file scope.
+    #[arg(long, value_name = "FILE")]
+    brief: PathBuf,
+    /// Seed/scope files copied into each throwaway repo (repeatable).
+    /// Existing files are committed as the shared starting state; names
+    /// that don't exist are declared scope (targets to create).
+    #[arg(long, value_name = "PATH")]
+    files: Vec<PathBuf>,
+    /// Restrict to these adapters (comma-separated or repeated). Omit for
+    /// all. Known: aider, claude, claude-deepseek, pi.
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    only: Vec<String>,
+    /// Per-adapter wall-clock ceiling in seconds (default 600).
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -245,6 +282,20 @@ pub fn run() -> ExitCode {
         // `fail` *without* an error envelope (the report on stdout is the
         // answer), which does not map onto the shared `Result` path below.
         Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
+        Command::Harness { action } => match action {
+            HarnessAction::Bakeoff(args) => {
+                let cfg = crate::harness::bakeoff::BakeoffConfig {
+                    brief: args.brief,
+                    files: args.files,
+                    only: args.only,
+                    timeout: std::time::Duration::from_secs(
+                        args.timeout
+                            .unwrap_or(crate::harness::bakeoff::DEFAULT_TIMEOUT_SECS),
+                    ),
+                };
+                crate::harness::bakeoff::run(&cfg, output, &logging_warnings)
+            }
+        },
     };
 
     match result {

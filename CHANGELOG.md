@@ -8,6 +8,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Harness bake-off: three new `CodeHarness` adapters + a `harness bakeoff`
+  comparison runner (`harness-bakeoff`).** Behind the seam (not wired into
+  `run create`/supervisor), the code-pipeline harness (design §10) now has four
+  git-inspecting adapters — `aider`, `claude` (Claude Code `-p` headless),
+  `claude-deepseek` (Claude Code via the deepseek wrapper), and `pi`
+  (earendil-works/pi) — sharing one launch+git-outcome skeleton
+  (`harness::support`) so they map an agent's *git* result (commit, changed files,
+  self-checks) to a `ChunkResult`, never parsing tool prose. The new
+  `orchestratectl harness bakeoff --brief <file> [--files <f>…] [--only <names>]
+  [--timeout <secs>]` command runs one brief through every *available* adapter in
+  isolated throwaway git repos and prints a one-row-per-harness comparison
+  (outcome / files-changed / +lines-/-lines / wall-time / cost / checks-pass) as a
+  text table or, under `--output json`, a `{brief_file, selected, adapters[]}`
+  envelope. It invokes the real agents (bold-to-live); adapters whose binary or
+  credential is absent are reported as `unavailable`, not errored. Live agent
+  tests are gated behind `OCTL_HARNESS_LIVE=1`; the deterministic conformance
+  suite drives each adapter through fixture scripts with no network.
+
 - **`run create --notify <cmd>` completion hook (`no-completion-notification-to-parent`).**
   A run created with `--notify <cmd>` now runs that command when the run reaches a
   terminal state (`done | failed | cancelled`), fired by the supervisor on the

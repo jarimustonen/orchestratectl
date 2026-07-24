@@ -5,17 +5,26 @@
 //!
 //! The core is [`assert_result_conforms`] — the adapter-agnostic structural
 //! invariants every [`ChunkResult`] must satisfy — and [`run_and_check`], which
-//! runs an adapter and gates its result through those invariants. Any adapter
-//! (the [`stub`], [`aider`], a future router) is "run through the suite" by
-//! driving its scenarios and asserting via these helpers.
+//! runs an adapter and gates its result through those invariants. Every
+//! git-inspecting adapter ([`aider`], [`claude`], [`pi`]) is "run through the
+//! suite" by driving its scenarios via [`run_and_check`] in its own module's
+//! tests — each against a **fixture script** (`OCTL_*_BIN` override) so the
+//! contract cases (clean success, no-change, self-check fail, timeout/cancel,
+//! provider spawn failure, transcript+usage capture) run deterministically with
+//! no network. The [`StubHarness`] scenario matrix below is the tool-independent
+//! core of that same contract.
 //!
 //! The scenario matrix runs against the [`StubHarness`] by default (no network,
-//! no git) so CI tests the *contract* deterministically. The live aider path is
-//! an opt-in smoke test in [`aider`]'s own tests, gated on binaries/credentials
-//! being present.
+//! no git) so CI tests the *contract* deterministically. Tests that drive a
+//! **real** agent (not a fixture script) are gated behind the `OCTL_HARNESS_LIVE`
+//! env var — see [`live_enabled`] and the live smoke tests below — so CI never
+//! reaches for a binary/credential/network; the `harness bakeoff` command is the
+//! primary live exercise and is run explicitly.
 //!
 //! [`stub`]: super::stub
 //! [`aider`]: super::aider
+//! [`claude`]: super::claude
+//! [`pi`]: super::pi
 //! [`StubHarness`]: super::stub::StubHarness
 
 use std::collections::HashSet;
@@ -183,6 +192,7 @@ mod tests {
     use super::super::{Check, ChunkOutcome, ChunkRequest, HarnessCapabilities, HarnessError};
     use super::*;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn req_with_checks(checks: Vec<Check>) -> ChunkRequest {
         ChunkRequest {
@@ -461,5 +471,117 @@ mod tests {
         let req = req_with_checks(one_check());
         let res = run_and_check_with_cancel(&stub, &req, &CancelToken::new()).unwrap();
         assert_eq!(res.outcome, ChunkOutcome::Timeout);
+    }
+
+    // ---- Live agent smoke tests (opt-in). ----
+    //
+    // These drive the REAL agents (network + credentials + a real binary), so
+    // they are skipped unless `OCTL_HARNESS_LIVE=1`. Each also self-skips if its
+    // binary is not installed, so enabling the gate on a partial toolbox never
+    // fails spuriously. They assert only the *contract* (a conforming
+    // `ChunkResult`, gated by `run_and_check`) — never a specific model output,
+    // which is non-deterministic.
+
+    /// Whether the live-agent gate (`OCTL_HARNESS_LIVE=1`) is enabled.
+    fn live_enabled() -> bool {
+        std::env::var("OCTL_HARNESS_LIVE").as_deref() == Ok("1")
+    }
+
+    /// Whether a bare binary name resolves on `PATH` (skip a live test whose tool
+    /// is not installed).
+    fn on_path(bin: &str) -> bool {
+        std::env::var("PATH")
+            .is_ok_and(|path| std::env::split_paths(&path).any(|d| d.join(bin).is_file()))
+    }
+
+    /// A real one-commit git repo in a temp dir, returned with its HEAD oid so a
+    /// live `ChunkRequest` forks from genuine state.
+    fn live_repo() -> (tempfile::TempDir, String) {
+        use std::process::Command;
+        let dir = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "live@t"]);
+        git(&["config", "user.name", "live"]);
+        std::fs::write(dir.path().join("seed.txt"), "seed\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "seed"]);
+        let head = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        (dir, head)
+    }
+
+    /// A trivial "create a file and commit it" live request against `repo`.
+    fn live_request(repo: &std::path::Path, head: &str) -> ChunkRequest {
+        ChunkRequest {
+            run_id: "live".into(),
+            chunk_id: "c1".into(),
+            attempt_id: "a1".into(),
+            worktree_path: repo.to_path_buf(),
+            base_commit: head.into(),
+            plan_rev: "v1".into(),
+            brief: "Create a file named GREETING.txt whose only content is the word \
+                    `hello`. Then commit it."
+                .into(),
+            checks: vec![Check {
+                id: "exists".into(),
+                desc: "GREETING.txt exists".into(),
+                run: "test -f GREETING.txt".into(),
+                timeout: Some(Duration::from_secs(10)),
+            }],
+            files: vec![PathBuf::from("GREETING.txt")],
+            timeout: Some(Duration::from_secs(600)),
+        }
+    }
+
+    #[test]
+    fn live_claude_deepseek_conforms() {
+        if !live_enabled() || !on_path("claude-deepseek") {
+            return;
+        }
+        use super::super::claude::ClaudeHarness;
+        let (repo, head) = live_repo();
+        let h = ClaudeHarness::deepseek("flash");
+        // `run_and_check` gates the result through the structural contract.
+        let res = run_and_check(&h, &live_request(repo.path(), &head)).unwrap();
+        // A live run may commit or (rarely) no-change; either is contract-valid.
+        assert!(matches!(
+            res.outcome,
+            ChunkOutcome::Committed { .. } | ChunkOutcome::NoChange
+        ));
+    }
+
+    #[test]
+    fn live_pi_conforms() {
+        if !live_enabled() || !on_path("pi") || std::env::var("DEEPSEEK_API_KEY").is_err() {
+            return;
+        }
+        use super::super::pi::{PiConfig, PiHarness};
+        let (repo, head) = live_repo();
+        let h = PiHarness::new(PiConfig::deepseek("deepseek-v4-flash"));
+        let res = run_and_check(&h, &live_request(repo.path(), &head)).unwrap();
+        assert!(matches!(
+            res.outcome,
+            ChunkOutcome::Committed { .. } | ChunkOutcome::NoChange
+        ));
     }
 }

@@ -20,20 +20,19 @@
 //! caller set (default `DEEPSEEK_API_KEY`). Binaries honour the same override
 //! convention the rest of the crate uses: `GIT_BIN` for git, `OCTL_AIDER_BIN` for
 //! aider — so tests can stub either without a network call.
+//!
+//! The whole git-inspecting skeleton (preconditions → bounded run →
+//! git-outcome mapping → self-checks → transcript capture) lives in
+//! [`super::support`]; this adapter only supplies the aider-specific launch via
+//! [`support::AgentLaunch`].
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
+use super::support::{self, AgentLaunch};
 use super::{
-    CancelToken, Check, CheckResult, ChunkOutcome, ChunkRequest, ChunkResult, CodeHarness,
-    HarnessCapabilities, HarnessError, Usage, HARNESS_CONTRACT_VERSION,
+    CancelToken, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities, HarnessError, Usage,
 };
-use crate::proc::{run_with_control, CappedStream, ControlledOutcome, StopReason};
-
-/// Cap on captured output (aider transcript, per-check stdout/stderr) so a noisy
-/// tool cannot exhaust memory or bloat the serialized provenance. Generous enough
-/// that a normal transcript is retained whole; a runaway producer is truncated.
-const OUTPUT_CAP: usize = 8 * 1024 * 1024;
 
 /// How to invoke aider for a chunk. The credential itself is never stored here —
 /// only the *name* of the env var to read it from (design §10: routing config
@@ -76,216 +75,10 @@ impl AiderHarness {
     }
 }
 
-/// `git` binary, honouring the crate-wide `GIT_BIN` override (mirrors
-/// `supervise::cleanup::git_bin`).
-fn git_bin() -> String {
-    std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string())
-}
-
 /// `aider` binary, honouring `OCTL_AIDER_BIN` so tests can point at a fixture
 /// script that simulates an edit+commit without a network call.
 fn aider_bin() -> String {
     std::env::var("OCTL_AIDER_BIN").unwrap_or_else(|_| "aider".to_string())
-}
-
-/// Run a git subcommand in `worktree`, returning trimmed stdout on success.
-fn git(worktree: &Path, args: &[&str]) -> Result<String, HarnessError> {
-    let out = Command::new(git_bin())
-        .arg("-C")
-        .arg(worktree)
-        .args(args)
-        .output()
-        .map_err(|e| HarnessError::InvalidWorktree {
-            message: format!("could not run git in {}: {e}", worktree.display()),
-        })?;
-    if !out.status.success() {
-        return Err(HarnessError::InvalidWorktree {
-            message: format!(
-                "git {} failed in {}: {}",
-                args.join(" "),
-                worktree.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// The current `HEAD` oid, validated to a full hex object id.
-fn head_oid(worktree: &Path) -> Result<String, HarnessError> {
-    let sha = git(worktree, &["rev-parse", "HEAD"])?;
-    let ok = matches!(sha.len(), 40 | 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
-    if ok {
-        Ok(sha)
-    } else {
-        Err(HarnessError::InvalidWorktree {
-            message: format!("`git rev-parse HEAD` returned a non-oid value: {sha:?}"),
-        })
-    }
-}
-
-/// Whether the worktree has uncommitted changes (tracked or untracked).
-fn worktree_status(worktree: &Path) -> Result<String, HarnessError> {
-    git(worktree, &["status", "--porcelain"])
-}
-
-/// Files changed between two commits. Uses `-z` (NUL-delimited) so paths with
-/// newlines/tabs/spaces survive intact. Propagates a git failure rather than
-/// masking it as an empty diff: a `Committed` result with a silently-empty file
-/// list would corrupt provenance (design §7).
-fn changed_files(worktree: &Path, base: &str, head: &str) -> Result<Vec<PathBuf>, HarnessError> {
-    // `git()` trims, which is fine here — trailing NUL is not meaningful.
-    let out = git(
-        worktree,
-        &["diff", "--name-only", "-z", &format!("{base}..{head}")],
-    )?;
-    Ok(out
-        .split('\0')
-        .filter(|l| !l.is_empty())
-        .map(PathBuf::from)
-        .collect())
-}
-
-/// Whether `ancestor` is an ancestor of `descendant` (i.e. HEAD only moved
-/// forward). `git merge-base --is-ancestor` exits 0 for yes, 1 for no; only a
-/// spawn/other failure is an error.
-fn is_ancestor(worktree: &Path, ancestor: &str, descendant: &str) -> Result<bool, HarnessError> {
-    let out = Command::new(git_bin())
-        .arg("-C")
-        .arg(worktree)
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .output()
-        .map_err(|e| HarnessError::InvalidWorktree {
-            message: format!(
-                "could not run git merge-base in {}: {e}",
-                worktree.display()
-            ),
-        })?;
-    match out.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Err(HarnessError::InvalidWorktree {
-            message: format!(
-                "git merge-base --is-ancestor failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        }),
-    }
-}
-
-/// Resolve a revision to a canonical commit oid, verifying it exists and is a
-/// commit (`git rev-parse --verify <rev>^{commit}`).
-fn resolve_commit(worktree: &Path, rev: &str) -> Result<String, HarnessError> {
-    git(
-        worktree,
-        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
-    )
-    .map_err(|_| HarnessError::InvalidWorktree {
-        message: format!("base_commit {rev:?} does not resolve to a commit in the worktree"),
-    })
-}
-
-/// Per-attempt artifact directory under the system temp dir, unique by ids so
-/// concurrent attempts never collide. Holds the brief file and the transcript.
-fn artifact_dir(req: &ChunkRequest) -> PathBuf {
-    std::env::temp_dir()
-        .join("octl-harness")
-        .join(sanitize(&req.run_id))
-        .join(sanitize(&req.chunk_id))
-        .join(sanitize(&req.attempt_id))
-}
-
-/// Reduce an id to a filesystem-safe token (ids are ulids/slugs, but defend).
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-/// Run one executable check via `sh -c` in the worktree, bounded by the check's
-/// own [`Check::timeout`] and the chunk-wide `cancel` token. A check that exceeds
-/// its deadline or is cancelled has its process group killed and is recorded as a
-/// non-passing result with `exit_code: None` (killed by signal) — a wedged
-/// `cargo test` can never stall the chunk (design §9).
-fn run_check(worktree: &Path, check: &Check, cancel: &CancelToken) -> CheckResult {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(&check.run).current_dir(worktree);
-    match run_with_control(cmd, check.timeout, &|| cancel.is_cancelled(), OUTPUT_CAP) {
-        ControlledOutcome::Exited {
-            status,
-            stdout,
-            stderr,
-        } => CheckResult {
-            check_id: check.id.clone(),
-            desc: check.desc.clone(),
-            run: check.run.clone(),
-            passed: status.success(),
-            exit_code: status.code(),
-            stdout: render_stream(&stdout),
-            stderr: render_stream(&stderr),
-        },
-        ControlledOutcome::Stopped {
-            reason,
-            stdout,
-            stderr,
-        } => {
-            let note = match reason {
-                StopReason::Timeout => {
-                    "[orchestratectl: check exceeded its timeout and was killed]"
-                }
-                StopReason::Cancelled => "[orchestratectl: check was cancelled and killed]",
-            };
-            // Delimit the note on its own line so it can't glue onto a partial
-            // final stderr line.
-            let mut stderr = render_stream(&stderr);
-            if !stderr.is_empty() && !stderr.ends_with('\n') {
-                stderr.push('\n');
-            }
-            stderr.push_str(note);
-            stderr.push('\n');
-            CheckResult {
-                check_id: check.id.clone(),
-                desc: check.desc.clone(),
-                run: check.run.clone(),
-                passed: false,
-                // Killed by a signal — no clean exit code to report.
-                exit_code: None,
-                stdout: render_stream(&stdout),
-                stderr,
-            }
-        }
-        ControlledOutcome::SpawnErr(e) => CheckResult {
-            check_id: check.id.clone(),
-            desc: check.desc.clone(),
-            run: check.run.clone(),
-            passed: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: format!("could not spawn check: {e}"),
-        },
-    }
-}
-
-/// A non-passing [`CheckResult`] for a check that was *not run* because the chunk
-/// was cancelled before we reached it. Recorded (rather than omitted) so the
-/// completeness invariant — every requested check has a result — still holds when
-/// cancellation truncates the check phase.
-fn skipped_check(check: &Check) -> CheckResult {
-    CheckResult {
-        check_id: check.id.clone(),
-        desc: check.desc.clone(),
-        run: check.run.clone(),
-        passed: false,
-        exit_code: None,
-        stdout: String::new(),
-        stderr: "[orchestratectl: check not run — chunk cancelled]\n".to_string(),
-    }
 }
 
 /// Best-effort parse of aider's usage summary from its transcript. aider prints
@@ -367,72 +160,7 @@ fn parse_token_count(s: &str) -> Option<u64> {
         .map(|v| (v * mult) as u64)
 }
 
-/// Render one captured stream to a string, appending an explicit marker when the
-/// output was truncated at [`OUTPUT_CAP`] — so a capped transcript is never
-/// mistaken for a complete one (or for a crash mid-output).
-fn render_stream(stream: &CappedStream) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::from_utf8_lossy(&stream.bytes).into_owned();
-    if stream.truncated {
-        if !s.is_empty() && !s.ends_with('\n') {
-            s.push('\n');
-        }
-        // Infallible: writing to a String never errors.
-        let _ = writeln!(
-            s,
-            "[orchestratectl: output truncated at {OUTPUT_CAP} bytes]"
-        );
-    }
-    s
-}
-
-/// The full transcript for an aider run: stdout then stderr, each truncation-
-/// marked. (stdout/stderr are captured on separate threads, so their relative
-/// interleaving is not recoverable; they are concatenated in a stable order.)
-fn render_transcript(stdout: &CappedStream, stderr: &CappedStream) -> String {
-    let mut t = render_stream(stdout);
-    t.push_str(&render_stream(stderr));
-    t
-}
-
-/// Persist a transcript to `path`, returning a reference iff the write succeeded
-/// (a failed write is not fatal — the transcript is provenance, not a gate — but
-/// it is logged so a missing `transcript_ref` is diagnosable).
-fn write_transcript(path: &Path, transcript: &str) -> Option<PathBuf> {
-    match std::fs::write(path, transcript) {
-        Ok(()) => Some(path.to_path_buf()),
-        Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "failed to persist harness transcript");
-            None
-        }
-    }
-}
-
-/// The [`ChunkResult`] for an agent run stopped early (timeout or cancel). No
-/// commit, no changed files, no check results — the run never reached those
-/// phases — but the partial transcript and any salvaged `usage` are preserved.
-/// Matches the conformance contract for the `Timeout`/`Cancelled` outcomes.
-fn stopped_result(
-    reason: StopReason,
-    transcript_ref: Option<PathBuf>,
-    usage: Option<Usage>,
-) -> ChunkResult {
-    let outcome = match reason {
-        StopReason::Timeout => ChunkOutcome::Timeout,
-        StopReason::Cancelled => ChunkOutcome::Cancelled,
-    };
-    ChunkResult {
-        schema_version: HARNESS_CONTRACT_VERSION,
-        outcome,
-        resulting_commit: None,
-        changed_files: Vec::new(),
-        check_results: Vec::new(),
-        transcript_ref,
-        usage,
-    }
-}
-
-impl CodeHarness for AiderHarness {
+impl AgentLaunch for AiderHarness {
     fn capabilities(&self) -> HarnessCapabilities {
         HarnessCapabilities {
             // aider edits whatever files it is given, tests included.
@@ -447,64 +175,32 @@ impl CodeHarness for AiderHarness {
         }
     }
 
-    fn run_chunk(
-        &self,
-        req: &ChunkRequest,
-        cancel: &CancelToken,
-    ) -> Result<ChunkResult, HarnessError> {
-        let worktree = req.worktree_path.as_path();
-
-        // 0. Honour a cancel tripped before we do any work — a pre-cancelled
-        //    request is `Cancelled`, not a credential/worktree error (matches the
-        //    stub and centralises the "don't start this chunk" semantics).
-        if cancel.is_cancelled() {
-            return Ok(stopped_result(StopReason::Cancelled, None, None));
-        }
-
-        // 1. Fail fast if the credential the provider needs is absent — a clear
-        //    structured error beats an opaque provider failure downstream.
+    fn check_credentials(&self) -> Result<(), HarnessError> {
+        // aider itself reads the key from the process environment; this adapter
+        // only *checks* it is present so a missing key fails fast with a
+        // structured error instead of an opaque provider failure downstream.
         if std::env::var(&self.config.api_key_env).is_err() {
             return Err(HarnessError::MissingCredential {
                 var: self.config.api_key_env.clone(),
             });
         }
+        Ok(())
+    }
 
-        // 2. Refuse a dirty worktree: prior uncommitted edits would commingle
-        //    with the chunk and defeat the base..HEAD diff.
-        let status = worktree_status(worktree)?;
-        if !status.is_empty() {
-            return Err(HarnessError::DirtyWorktree { details: status });
-        }
+    fn build_prompt(&self, req: &ChunkRequest) -> String {
+        // aider takes the brief verbatim via `--message-file`; it auto-commits
+        // its edits, so no extra implement/commit framing is added here.
+        req.brief.clone()
+    }
 
-        // Verify the worktree is actually forked at `req.base_commit`. Silently
-        // diffing against whatever HEAD happens to be would launder drift and
-        // record false provenance (the plan was briefed against `base_commit` /
-        // `plan_rev`); `InvalidWorktree` documents exactly this precondition.
-        let base_head = head_oid(worktree)?;
-        let want_base = resolve_commit(worktree, &req.base_commit)?;
-        if base_head != want_base {
-            return Err(HarnessError::InvalidWorktree {
-                message: format!(
-                    "worktree HEAD ({base_head}) != declared base_commit ({want_base})"
-                ),
-            });
-        }
-
-        // 3. Materialize the brief + transcript artifacts.
-        let dir = artifact_dir(req);
-        std::fs::create_dir_all(&dir).map_err(|e| HarnessError::Internal {
-            message: format!("could not create artifact dir {}: {e}", dir.display()),
-        })?;
-        let brief_file = dir.join("brief.md");
-        std::fs::write(&brief_file, &req.brief).map_err(|e| HarnessError::Internal {
-            message: format!("could not write brief {}: {e}", brief_file.display()),
-        })?;
-        let transcript_file = dir.join("transcript.log");
-
-        // 4. Build + run the aider invocation (spike-proven flags), bounded by
-        //    the request's optional wall-clock timeout and the cancel token.
-        //    `run_with_control` re-checks the cancel before it spawns, so a cancel
-        //    that arrived during the guards above still short-circuits here.
+    fn build_command(
+        &self,
+        worktree: &Path,
+        brief_file: &Path,
+        _prompt: &str,
+        req: &ChunkRequest,
+    ) -> Command {
+        // Spike-proven flags (issues/code-pipeline task-0 spike).
         let mut cmd = Command::new(aider_bin());
         cmd.current_dir(worktree)
             .arg("--model")
@@ -515,7 +211,7 @@ impl CodeHarness for AiderHarness {
             .arg("--map-tokens")
             .arg("0")
             .arg("--message-file")
-            .arg(&brief_file);
+            .arg(brief_file);
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -525,130 +221,33 @@ impl CodeHarness for AiderHarness {
         for file in &req.files {
             cmd.arg(file);
         }
+        cmd
+    }
 
-        let run = run_with_control(cmd, req.timeout, &|| cancel.is_cancelled(), OUTPUT_CAP);
+    fn parse_usage(&self, transcript: &str) -> Option<Usage> {
+        parse_usage(transcript)
+    }
 
-        // Extract the completed run's streams, or return early on an early stop /
-        // spawn failure. A `Stopped` run persists its partial transcript and maps
-        // to `Timeout`/`Cancelled` — never a hang, never a `HarnessError`.
-        let (status, stdout, stderr) = match run {
-            ControlledOutcome::Exited {
-                status,
-                stdout,
-                stderr,
-            } => (status, stdout, stderr),
-            ControlledOutcome::Stopped {
-                reason,
-                stdout,
-                stderr,
-            } => {
-                // Persist the partial transcript and salvage any usage aider
-                // printed before it was killed — a cost circuit-breaker (design
-                // §9) wants tokens-spent-so-far even on a stopped run.
-                let partial = render_transcript(&stdout, &stderr);
-                let usage = parse_usage(&partial);
-                let transcript_ref = write_transcript(&transcript_file, &partial);
-                return Ok(stopped_result(reason, transcript_ref, usage));
-            }
-            ControlledOutcome::SpawnErr(e) => {
-                return Err(HarnessError::ProviderFailure {
-                    message: format!("could not run aider ({}): {e}", aider_bin()),
-                })
-            }
-        };
+    fn tool_label(&self) -> &'static str {
+        "aider"
+    }
 
-        // Persist a transcript regardless of outcome (provenance). Truncation is
-        // marked inline so a capped transcript is never mistaken for a complete
-        // one (or a crash).
-        let transcript = render_transcript(&stdout, &stderr);
-        let transcript_ref = write_transcript(&transcript_file, &transcript);
+    fn bin_display(&self) -> String {
+        aider_bin()
+    }
+}
 
-        // 5. Read the outcome from git, never from aider's prose.
-        let new_head = head_oid(worktree)?;
-        let dirty_after = !worktree_status(worktree)?.is_empty();
+impl CodeHarness for AiderHarness {
+    fn capabilities(&self) -> HarnessCapabilities {
+        <Self as AgentLaunch>::capabilities(self)
+    }
 
-        let outcome = if new_head == base_head {
-            // No commit. If aider left uncommitted edits, this is NOT a clean
-            // NoChange — reporting NoChange would both lose those edits from the
-            // provenance and poison the next attempt's dirty-worktree guard. The
-            // adapter does not auto-reset (that would destroy evidence); the
-            // supervisor owns worktree cleanup.
-            if dirty_after {
-                ChunkOutcome::Failed {
-                    reason: "aider left uncommitted changes without producing a commit".to_string(),
-                }
-            } else if status.success() {
-                ChunkOutcome::NoChange
-            } else {
-                ChunkOutcome::Failed {
-                    reason: format!(
-                        "aider exited {} with no commit produced",
-                        status
-                            .code()
-                            .map_or("signal".to_string(), |c| c.to_string())
-                    ),
-                }
-            }
-        } else if is_ancestor(worktree, &base_head, &new_head)? {
-            // HEAD advanced forward from the base — one or more new commits. The
-            // resulting commit is the branch tip; the chunk's range is
-            // base_commit..tip (which `changed_files` diffs).
-            ChunkOutcome::Committed {
-                commit: new_head.clone(),
-            }
-        } else {
-            // HEAD moved but the base is no longer an ancestor: aider rewrote
-            // history (reset/amend/rebase/checkout of unrelated work). Refuse to
-            // call that a chunk commit — the range base..tip is meaningless.
-            ChunkOutcome::Failed {
-                reason: format!(
-                    "aider moved HEAD to {new_head}, which is not a descendant of \
-                     base_commit {base_head} (history was rewritten)"
-                ),
-            }
-        };
-
-        let (resulting_commit, files) = match &outcome {
-            ChunkOutcome::Committed { commit } => (
-                Some(commit.clone()),
-                changed_files(worktree, &base_head, &new_head)?,
-            ),
-            _ => (None, Vec::new()),
-        };
-
-        // 6. Run the self-check(s) — regardless of outcome, so a NoChange still
-        //    reports the current check state. Each check is individually bounded
-        //    by its own timeout and the cancel token (see `run_check`). Once cancel
-        //    is tripped we stop *spawning* further checks — each remaining check is
-        //    recorded as "skipped" without launching a shell command (avoids
-        //    wasting the budget and running commands post-cancel) — but we still
-        //    emit a result for *every* requested check so the completeness
-        //    invariant holds. The outcome stays whatever git reported: a produced
-        //    commit is not demoted to `Cancelled` (the contract forbids a commit on
-        //    `Cancelled`); the supervisor sees the commit plus the skipped checks.
-        let check_results: Vec<CheckResult> = req
-            .checks
-            .iter()
-            .map(|c| {
-                if cancel.is_cancelled() {
-                    skipped_check(c)
-                } else {
-                    run_check(worktree, c, cancel)
-                }
-            })
-            .collect();
-
-        let usage = parse_usage(&transcript);
-
-        Ok(ChunkResult {
-            schema_version: HARNESS_CONTRACT_VERSION,
-            outcome,
-            resulting_commit,
-            changed_files: files,
-            check_results,
-            transcript_ref,
-            usage,
-        })
+    fn run_chunk(
+        &self,
+        req: &ChunkRequest,
+        cancel: &CancelToken,
+    ) -> Result<ChunkResult, HarnessError> {
+        support::run_chunk(self, req, cancel)
     }
 }
 
@@ -656,20 +255,18 @@ impl CodeHarness for AiderHarness {
 mod tests {
     use super::*;
     use crate::harness::conformance::{run_and_check, run_and_check_with_cancel};
+    use crate::harness::{Check, ChunkOutcome};
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     // aider tests mutate process env (OCTL_AIDER_BIN, DEEPSEEK_API_KEY,
     // GIT_BIN); serialize them so parallel runners don't cross-contaminate.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Acquire the env lock, tolerating a prior test's panic (poison) so one
     /// failure does not cascade into spurious `PoisonError` failures.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::harness::support::test_env::lock()
     }
 
     /// Write a fixture script into `dir` (kept OUT of the git worktree so it does

@@ -35,8 +35,12 @@
 //! "runtime binding recorded in execution events").
 
 pub mod aider;
+pub mod bakeoff;
+pub mod claude;
 pub mod conformance;
+pub mod pi;
 pub mod stub;
+pub(crate) mod support;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

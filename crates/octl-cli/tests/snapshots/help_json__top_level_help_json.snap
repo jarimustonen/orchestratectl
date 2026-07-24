@@ -1213,6 +1213,272 @@ expression: value
         ]
       },
       {
+        "command": "orchestratectl harness",
+        "about": "Code-harness tooling. `bakeoff` runs one brief through every available agent-loop adapter and compares them (behind the seam — not part of `run create`)",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "flags": [
+          {
+            "name": "help",
+            "long": "help",
+            "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "output",
+            "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          }
+        ],
+        "positionals": [],
+        "subcommands": [
+          {
+            "command": "orchestratectl harness bakeoff",
+            "about": "Run ONE coding brief through every available `CodeHarness` adapter (aider, claude, claude-deepseek, pi) in isolated throwaway git repos and print a comparison. Invokes the REAL agents; unavailable adapters are reported, not errored",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "brief",
+                "long": "brief",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Path to the brief file. Plain text is the brief verbatim; a JSON `{\"brief\":..,\"checks\":[..],\"files\":[..]}` also carries self-checks and a declared file scope",
+                "value_names": [
+                  "FILE"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": true,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "files",
+                "long": "files",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Seed/scope files copied into each throwaway repo (repeatable). Existing files are committed as the shared starting state; names that don't exist are declared scope (targets to create)",
+                "value_names": [
+                  "PATH"
+                ],
+                "takes_value": true,
+                "multiple": true,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": true,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "only",
+                "long": "only",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Restrict to these adapters (comma-separated or repeated). Omit for all. Known: aider, claude, claude-deepseek, pi",
+                "value_names": [
+                  "NAMES"
+                ],
+                "takes_value": true,
+                "multiple": true,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": true,
+                  "multi_value": false,
+                  "value_delimiter": ",",
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "timeout",
+                "long": "timeout",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Per-adapter wall-clock ceiling in seconds (default 600)",
+                "value_names": [
+                  "SECONDS"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "command": "orchestratectl node",
         "about": "List nodes, show a node, or submit a structured terminal report",
         "aliases": [],

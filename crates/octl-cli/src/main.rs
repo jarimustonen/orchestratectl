@@ -11,10 +11,13 @@ mod event;
 // re-exports (`pub use`) have no in-crate consumer until T5 either.
 #[allow(dead_code, unused_imports)]
 mod floor;
-// Behind-the-seam code-pipeline harness contract (design.md §10). Landed as
-// unused-by-default scaffolding + tests; nothing in the live `run create` /
-// supervisor path constructs a `CodeHarness` yet — staged rollout (design §14)
-// wires it in later. `#[allow(dead_code)]` covers the whole subtree until then.
+// Behind-the-seam code-pipeline harness contract (design.md §10). Nothing in the
+// live `run create` / supervisor path constructs a `CodeHarness` yet — staged
+// rollout (design §14) wires it in later. The one live surface is the standalone
+// `harness bakeoff` subcommand (`harness::bakeoff`), which drives the real agent
+// adapters to compare agent loops; it is explicitly run, never part of the
+// supervisor path. `#[allow(dead_code)]` still covers the parts of the subtree
+// (protocol variants, helpers) not reached until the supervisor wiring lands.
 #[allow(dead_code)]
 mod harness;
 mod help;

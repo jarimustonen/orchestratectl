@@ -27,6 +27,11 @@ all behind one canonical command surface.
 - **Run state on disk** — every spawn writes an event log + projections
   under `~/.orchestratectl/runs/<run-id>/`, so any UI (CLI now, TUI later)
   can read the same source of truth.
+- **Agent-loop bake-off** (behind the seam) — `orchestratectl harness bakeoff
+  --brief <file>` runs one coding brief through every available agent loop
+  (`aider`, `claude`, `claude-deepseek`, `pi`) in isolated throwaway git repos
+  and prints a side-by-side comparison (outcome / diff size / time / cost /
+  checks). Not yet part of `run create`; see the code-pipeline harness (design §10).
 
 The orchestration semantics ship as bundled Claude Code skills — install
 once with `orchestratectl skill install` and the `/worktree-*`,
