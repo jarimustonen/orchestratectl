@@ -3,7 +3,7 @@ created: 2026-07-24
 updated: 2026-07-24
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 labels: [supervisor]
 commits:
@@ -13,6 +13,7 @@ commits:
   summary: review fixes — notify retry, reaping, env hardening
 - hash: fe60e88
   summary: skill docs — supervisor env note
+closed: 2026-07-24
 ---
 
 # Spawning session gets no completion notification when an async run finishes/merges
