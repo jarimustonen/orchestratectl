@@ -6,6 +6,9 @@ reporter: jari
 status: in-progress
 priority: normal
 labels: [supervisor]
+commits:
+- hash: b56368d
+  summary: run create --notify completion hook + skill docs
 ---
 
 # Spawning session gets no completion notification when an async run finishes/merges
