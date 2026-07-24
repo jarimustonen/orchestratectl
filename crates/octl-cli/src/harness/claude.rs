@@ -451,6 +451,95 @@ mod tests {
         std::env::remove_var("OCTL_CLAUDE_BIN");
     }
 
+    /// A fixture that dumps its argv (NUL-delimited, so multi-line prompt args
+    /// survive) to `$OCTL_TEST_ARGV_OUT`, then exits without editing — the outcome
+    /// is irrelevant to an argv assertion.
+    const ARGV_DUMP: &str =
+        "#!/bin/bash\nprintf '%s\\0' \"$@\" > \"$OCTL_TEST_ARGV_OUT\"\nexit 0\n";
+
+    fn captured_argv(argv_out: &Path) -> Vec<String> {
+        let raw = std::fs::read(argv_out).unwrap();
+        raw.split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn claude_argv_has_single_skip_permissions_and_terminated_prompt() {
+        let _g = env_lock();
+        let repo = init_repo();
+        let sdir = TempDir::new().unwrap();
+        let argv_out = sdir.path().join("argv");
+        let bin = write_script(sdir.path(), "fake-claude.sh", ARGV_DUMP);
+        std::env::set_var("OCTL_CLAUDE_BIN", &bin);
+        std::env::set_var("OCTL_TEST_ARGV_OUT", &argv_out);
+
+        let h = ClaudeHarness::claude(Some("sonnet".into()));
+        let mut req = base_request(repo.path());
+        // A brief that begins with a dash: `--` must keep it a prompt, not a flag.
+        req.brief = "--do-the-thing please".into();
+        let _ = run_and_check(&h, &req).unwrap();
+
+        let args = captured_argv(&argv_out);
+        assert_eq!(
+            args.iter()
+                .filter(|a| *a == "--dangerously-skip-permissions")
+                .count(),
+            1,
+            "plain claude passes exactly one skip-permissions flag: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "-p"));
+        assert_eq!(args.iter().filter(|a| *a == "--output-format").count(), 1);
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "sonnet"));
+        // The prompt is the final arg, preceded by `--`, and its leading dash
+        // survived (the commit-framing keeps the brief at the very start).
+        assert_eq!(args.iter().filter(|a| *a == "--").count(), 1);
+        assert!(
+            args.last().unwrap().starts_with("--do-the-thing"),
+            "prompt survived intact after `--`: {:?}",
+            args.last()
+        );
+
+        std::env::remove_var("OCTL_CLAUDE_BIN");
+        std::env::remove_var("OCTL_TEST_ARGV_OUT");
+    }
+
+    #[test]
+    fn deepseek_argv_omits_skip_permissions_flag() {
+        let _g = env_lock();
+        let repo = init_repo();
+        let sdir = TempDir::new().unwrap();
+        let argv_out = sdir.path().join("argv");
+        let bin = write_script(sdir.path(), "fake-ds.sh", ARGV_DUMP);
+        std::env::set_var("OCTL_CLAUDE_DEEPSEEK_BIN", &bin);
+        std::env::set_var("OCTL_TEST_ARGV_OUT", &argv_out);
+
+        let h = ClaudeHarness::deepseek("flash");
+        let _ = run_and_check(&h, &base_request(repo.path())).unwrap();
+
+        let args = captured_argv(&argv_out);
+        // The wrapper adds `--dangerously-skip-permissions` itself; the adapter
+        // must NOT, or the flag would appear twice.
+        assert_eq!(
+            args.iter()
+                .filter(|a| *a == "--dangerously-skip-permissions")
+                .count(),
+            0,
+            "deepseek variant must not add skip-permissions (the wrapper does): {args:?}"
+        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "flash"));
+        assert!(args.iter().any(|a| a == "-p"));
+        assert_eq!(args.iter().filter(|a| *a == "--").count(), 1);
+
+        std::env::remove_var("OCTL_CLAUDE_DEEPSEEK_BIN");
+        std::env::remove_var("OCTL_TEST_ARGV_OUT");
+    }
+
     #[test]
     fn parse_claude_usage_from_json_line() {
         let t = "some log line\n{\"type\":\"result\",\"total_cost_usd\":0.5,\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n";
@@ -466,6 +555,19 @@ mod tests {
         assert!(parse_claude_usage("no json here\njust prose\n").is_none());
         // A JSON object with neither usage nor cost yields None.
         assert!(parse_claude_usage("{\"type\":\"result\"}").is_none());
+    }
+
+    #[test]
+    fn parse_claude_usage_prefers_terminal_result_over_early_partial() {
+        // A streaming transcript: an early partial usage event, then the terminal
+        // `type:result` aggregate. The final total must win, not the first partial.
+        let t = "{\"type\":\"assistant\",\"usage\":{\"input_tokens\":10}}\n\
+                 {\"type\":\"result\",\"total_cost_usd\":0.02,\"usage\":{\"input_tokens\":1200,\"output_tokens\":300}}\n";
+        let u = parse_claude_usage(t).unwrap();
+        assert_eq!(u.input_tokens, Some(1200));
+        assert_eq!(u.output_tokens, Some(300));
+        assert_eq!(u.total_tokens, Some(1500));
+        assert_eq!(u.cost_usd, Some(0.02));
     }
 
     #[test]

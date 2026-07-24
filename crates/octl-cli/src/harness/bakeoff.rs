@@ -258,8 +258,27 @@ fn resolve_brief(cfg: &BakeoffConfig) -> Result<ResolvedBrief, CliError> {
         )
     })?;
 
+    // A file that *looks* structured (starts with `{`, or has a `.json`
+    // extension) must parse as the JSON schema — a typo'd field is a hard error,
+    // NOT a silent fall-back to feeding the raw JSON text to the agent (which
+    // would drop the declared checks + scope without a word).
+    let looks_json = contents.trim_start().starts_with('{')
+        || cfg
+            .brief
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"));
     let parsed: BriefFile = match serde_json::from_str::<BriefFile>(&contents) {
         Ok(b) => b,
+        Err(e) if looks_json => {
+            return Err(CliError::user(
+                "invalid_brief",
+                format!(
+                    "brief file {} looks like JSON but does not match the \
+                     {{\"brief\":…, \"checks\":[…], \"files\":[…]}} schema: {e}",
+                    cfg.brief.display()
+                ),
+            ));
+        }
         // Not a structured JSON brief → the whole file is the brief text.
         Err(_) => BriefFile {
             brief: contents,
@@ -306,7 +325,9 @@ fn run_one(adapter: &AdapterSpec, brief: &ResolvedBrief, timeout: Duration) -> A
         return unavailable_row(adapter.name, format!("binary '{}' not found", adapter.bin));
     }
     if let Some(var) = adapter.credential_env {
-        if std::env::var(var).is_err() {
+        // Non-empty check (a bare presence check would pass `VAR=""` and then the
+        // adapter's own fast-fail would still reject it — inconsistent).
+        if !super::support::credential_present(var) {
             return unavailable_row(
                 adapter.name,
                 format!("credential env var `{var}` is not set"),
@@ -460,24 +481,48 @@ fn seed_repo(brief: &ResolvedBrief) -> Result<tempfile::TempDir, String> {
 
     let mut seeded_any = false;
     for rel in &brief.scope {
-        // Reject absolute / parent-escaping paths so a brief can't write outside
-        // the throwaway repo.
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| c == std::path::Component::ParentDir)
-        {
+        // Reject any path with a root/prefix/parent component so a brief can't
+        // write outside the throwaway repo. `RootDir`/`Prefix` (not just
+        // `is_absolute()`) also catch Windows root-anchored (`\x`, `C:x`) forms
+        // that `Path::join` would treat as a replacement.
+        use std::path::Component;
+        if rel.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
             return Err(format!("scope path {} escapes the repo", rel.display()));
         }
-        if rel.exists() {
-            let dest = root.join(rel);
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            std::fs::copy(rel, &dest)
-                .map_err(|e| format!("copy {} -> {}: {e}", rel.display(), dest.display()))?;
-            seeded_any = true;
+        // Inspect the source WITHOUT following a final symlink: a scope entry that
+        // is a symlink to (or a real path pointing at) a file outside the repo
+        // would otherwise be dereferenced by `fs::copy` and its content seeded
+        // into the repo — and then shipped to a remote provider. Only a real
+        // regular file is copied; a directory (which `fs::copy` can't handle) or a
+        // symlink is a clear error, not an EISDIR/leak.
+        let Ok(meta) = std::fs::symlink_metadata(rel) else {
+            // Not present on disk → a target the brief will create; scope-only.
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "scope path {} is a symlink; refusing to seed it",
+                rel.display()
+            ));
         }
+        if !meta.is_file() {
+            return Err(format!(
+                "scope path {} is not a regular file (a directory?); seed only files",
+                rel.display()
+            ));
+        }
+        let dest = root.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(rel, &dest)
+            .map_err(|e| format!("copy {} -> {}: {e}", rel.display(), dest.display()))?;
+        seeded_any = true;
     }
 
     if seeded_any {

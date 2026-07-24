@@ -94,7 +94,7 @@ impl AgentLaunch for PiHarness {
     }
 
     fn check_credentials(&self) -> Result<(), HarnessError> {
-        if std::env::var(&self.config.api_key_env).is_err() {
+        if !support::credential_present(&self.config.api_key_env) {
             return Err(HarnessError::MissingCredential {
                 var: self.config.api_key_env.clone(),
             });

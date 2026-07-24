@@ -111,6 +111,15 @@ pub(super) fn commit_framed_prompt(req: &ChunkRequest) -> String {
     p
 }
 
+/// Whether a credential env var is present **and non-empty**. `std::env::var`
+/// (and hence a bare `.is_ok()`) treats `VAR=""` as present, which would sail
+/// past a fast-fail check and hand an empty key to the provider — exactly the
+/// opaque failure the check exists to pre-empt. Uses `var_os` so a non-UTF-8
+/// value still counts as present (the child, not us, consumes it).
+pub(super) fn credential_present(var: &str) -> bool {
+    std::env::var_os(var).is_some_and(|v| !v.is_empty())
+}
+
 /// `git` binary, honouring the crate-wide `GIT_BIN` override (mirrors
 /// `supervise::cleanup::git_bin`).
 pub(super) fn git_bin() -> String {
@@ -120,14 +129,20 @@ pub(super) fn git_bin() -> String {
 /// Best-effort [`Usage`] extraction from a JSON-emitting agent's transcript,
 /// shared by the Claude family and pi (both run their agent with a
 /// machine-readable `--output-format json` / `--mode json`). The transcript is
-/// stdout-then-stderr concatenated, so we can't assume the whole blob is one
-/// JSON value: scan each `{`-leading line (then the whole trimmed transcript as a
-/// fallback) and lift the first object that carries usage from either a nested
+/// stdout-then-stderr concatenated, so we can't assume the whole blob is one JSON
+/// value: scan each `{`-leading line for a parseable object (then the whole
+/// trimmed transcript as a fallback) and lift usage from either a nested
 /// `usage.{input,output}_tokens` block or flat top-level token/cost keys. Handles
 /// the common field spellings across agents (`total_cost_usd`/`cost_usd`/`cost`).
-/// Never fails — usage is provenance, not a gate (design §10).
+///
+/// Selection matters for **streaming** agents (pi's `--mode json` emits an event
+/// stream where early events carry partial/cumulative usage and the final total
+/// lands last): prefer the terminal `type == "result"` summary object (both
+/// Claude Code and pi tag it that way), and otherwise take the *last*
+/// usage-bearing object — never the first, which would undercount. Never fails —
+/// usage is provenance, not a gate (design §10).
 pub(super) fn parse_json_usage(transcript: &str) -> Option<Usage> {
-    transcript
+    let objects: Vec<serde_json::Value> = transcript
         .lines()
         .filter_map(|l| {
             let t = l.trim();
@@ -135,11 +150,25 @@ pub(super) fn parse_json_usage(transcript: &str) -> Option<Usage> {
                 .then(|| serde_json::from_str::<serde_json::Value>(t).ok())
                 .flatten()
         })
-        // `Option` is `IntoIterator`, so this appends the whole-transcript
-        // fallback parse (Some(value) → one item, None → zero) without a nested
-        // `Option<Value>` to flatten.
-        .chain(serde_json::from_str::<serde_json::Value>(transcript.trim()).ok())
-        .find_map(|v| usage_from_value(&v))
+        .collect();
+
+    let pick = |objs: &[serde_json::Value]| {
+        // The terminal result summary wins; else the last object with any usage.
+        objs.iter()
+            .rev()
+            .find(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("result"))
+            .and_then(usage_from_value)
+            .or_else(|| objs.iter().rev().find_map(usage_from_value))
+    };
+
+    pick(&objects).or_else(|| {
+        // Whole-transcript fallback: a single JSON blob with no surrounding prose
+        // (e.g. one-line output captured with no trailing newline).
+        serde_json::from_str::<serde_json::Value>(transcript.trim())
+            .ok()
+            .as_ref()
+            .and_then(usage_from_value)
+    })
 }
 
 /// Lift a [`Usage`] out of one parsed agent result object, or `None` when it
@@ -166,13 +195,15 @@ fn usage_from_value(v: &serde_json::Value) -> Option<Usage> {
     if input.is_none() && output.is_none() && cost.is_none() {
         return None;
     }
+    // An explicit combined total wins; else sum the two, guarding against a
+    // hostile/absurd JSON value overflowing (panics in debug, wraps in release).
+    let total = get_u64(u, &["total_tokens", "tokens"])
+        .or_else(|| input.and_then(|i| output.and_then(|o| i.checked_add(o))));
+
     Some(Usage {
         input_tokens: input,
         output_tokens: output,
-        total_tokens: match (input, output) {
-            (Some(i), Some(o)) => Some(i + o),
-            _ => None,
-        },
+        total_tokens: total,
         cost_usd: cost,
     })
 }
@@ -397,9 +428,15 @@ pub(super) fn render_stream(stream: &CappedStream) -> String {
 
 /// The full transcript for an agent run: stdout then stderr, each truncation-
 /// marked. (stdout/stderr are captured on separate threads, so their relative
-/// interleaving is not recoverable; they are concatenated in a stable order.)
+/// interleaving is not recoverable; they are concatenated in a stable order.) A
+/// newline is forced between the two streams when stdout does not already end in
+/// one, so a final stdout JSON line (the usage summary) is never glued onto the
+/// first stderr line — which would make [`parse_json_usage`]'s line scan miss it.
 fn render_transcript(stdout: &CappedStream, stderr: &CappedStream) -> String {
     let mut t = render_stream(stdout);
+    if !t.is_empty() && !t.ends_with('\n') {
+        t.push('\n');
+    }
     t.push_str(&render_stream(stderr));
     t
 }
@@ -648,5 +685,84 @@ pub(super) mod test_env {
 
     pub(in crate::harness) fn lock() -> MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cap(bytes: &[u8]) -> CappedStream {
+        CappedStream {
+            bytes: bytes.to_vec(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn credential_present_treats_empty_as_absent() {
+        let _g = test_env::lock();
+        std::env::set_var("OCTL_TEST_CRED", "sk-real");
+        assert!(credential_present("OCTL_TEST_CRED"));
+        std::env::set_var("OCTL_TEST_CRED", "");
+        assert!(
+            !credential_present("OCTL_TEST_CRED"),
+            "empty must be absent"
+        );
+        std::env::remove_var("OCTL_TEST_CRED");
+        assert!(!credential_present("OCTL_TEST_CRED"));
+    }
+
+    #[test]
+    fn parse_json_usage_takes_last_when_no_result_tag() {
+        // No `type:result` marker: the LAST usage-bearing object wins (streaming
+        // cumulative totals land last), never the first partial.
+        let t = "{\"usage\":{\"input_tokens\":5}}\n\
+                 {\"usage\":{\"input_tokens\":900,\"output_tokens\":100}}\n";
+        let u = parse_json_usage(t).unwrap();
+        assert_eq!(u.input_tokens, Some(900));
+        assert_eq!(u.output_tokens, Some(100));
+        assert_eq!(u.total_tokens, Some(1000));
+    }
+
+    #[test]
+    fn parse_json_usage_total_does_not_overflow() {
+        // A hostile/absurd token count must not panic (debug) or wrap (release).
+        let t = "{\"usage\":{\"input_tokens\":18446744073709551615,\"output_tokens\":1}}";
+        let u = parse_json_usage(t).unwrap();
+        assert_eq!(u.input_tokens, Some(u64::MAX));
+        assert_eq!(u.output_tokens, Some(1));
+        assert_eq!(
+            u.total_tokens, None,
+            "overflowing sum is dropped, not wrapped"
+        );
+    }
+
+    #[test]
+    fn parse_json_usage_reads_explicit_total_and_nested_cost_keys() {
+        let t = "{\"usage\":{\"input\":80,\"output\":40,\"total_tokens\":120},\"cost_usd\":0.002}";
+        // Flat `input`/`output` are not recognised token keys, but an explicit
+        // total and a top-level cost are — so usage is still surfaced.
+        let u = parse_json_usage(t).unwrap();
+        assert_eq!(u.total_tokens, Some(120));
+        assert_eq!(u.cost_usd, Some(0.002));
+    }
+
+    #[test]
+    fn render_transcript_separates_streams_so_final_json_line_parses() {
+        // stdout ends in a JSON usage line with NO trailing newline; stderr has a
+        // warning. Without the forced separator they would glue into one broken
+        // line and the usage scan would miss it.
+        let stdout = cap(
+            b"working...\n{\"type\":\"result\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}",
+        );
+        let stderr = cap(b"a stderr warning\n");
+        let t = render_transcript(&stdout, &stderr);
+        assert!(
+            t.contains("}\n"),
+            "a newline must separate the JSON line from stderr: {t:?}"
+        );
+        let u = parse_json_usage(&t).expect("usage still parses after separation");
+        assert_eq!(u.total_tokens, Some(10));
     }
 }
