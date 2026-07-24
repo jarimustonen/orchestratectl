@@ -522,8 +522,9 @@ pub struct Manifest {
     pub managed_tmux_session: Option<String>,
     /// Completion-notification command registered at `run create --notify`,
     /// if any. When the run reaches a terminal state (`done | failed |
-    /// cancelled`) the supervisor runs this command exactly once (at-most-once,
-    /// gated on a durable `run.notified` marker event) with `OCTL_RUN_ID` /
+    /// cancelled`) the supervisor runs this command (at-least-once, deduped on a
+    /// durable `run.notified` marker event — the healthy path fires once, a
+    /// crash between firing and recording may re-fire) with `OCTL_RUN_ID` /
     /// `OCTL_STATUS` / `OCTL_SUMMARY` (and `OCTL_RUN_KIND` / `OCTL_RUN_TITLE`)
     /// in its environment, BEFORE teardown removes the worktree/window. This is
     /// how a spawning session learns of completion without polling (issue

@@ -64,12 +64,14 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 /// so a transient `stat` hiccup cannot kill a live supervisor.
 const SELF_TERMINATE_TICKS: u32 = 3;
 
-/// Max attempts to record the `run.notified` marker for the `--notify`
-/// completion hook before the supervisor gives up and winds down anyway. The
-/// marker append only fails on transient I/O / lock contention, so a small
-/// bound is plenty; without it a persistent failure (disk full) would spin the
-/// loop-exit gate forever. A drop after this many tries is logged and allowed
-/// (at-most-once already permits a missed notification).
+/// Max attempts to fire the `--notify` completion hook before the supervisor
+/// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
+/// failure only when it cannot enter its lock critical section or the marker
+/// scan errors (transient I/O / lock contention), so a small bound is plenty;
+/// without it a persistent failure (disk full) would spin the loop-exit gate
+/// forever. Exhausting the bound is a last-resort miss — logged, and rare —
+/// which is acceptable even under the at-least-once policy since the loop must
+/// still be able to terminate.
 const NOTIFY_MAX_ATTEMPTS: u32 = 5;
 
 /// Minimum age a node must reach before the watchdog will synthesize a
@@ -628,8 +630,8 @@ pub fn dispatch(
                     // before teardown removes the worktree/window — so a
                     // spawning session is told the run settled even for a run
                     // whose cleanup is not warranted (a plain interactive run
-                    // that ended without an explicit merge). At-most-once,
-                    // gated on a durable `run.notified` marker
+                    // that ended without an explicit merge). At-least-once,
+                    // deduped on a durable `run.notified` marker
                     // (`no-completion-notification-to-parent`). Retried across
                     // ticks on a transient failure (tracked via `notified`,
                     // separate from `cleaned`), bounded by `notify_attempts`.
@@ -651,7 +653,9 @@ pub fn dispatch(
                                 "giving up on completion notify hook after repeated marker-append failures"
                             );
                             // Stop retrying so the run can wind down; the miss
-                            // is logged. At-most-once already permits a drop.
+                            // is logged. A last-resort drop after a persistent
+                            // lock/I-O failure is acceptable — the loop must be
+                            // able to terminate.
                             notified = true;
                         }
                     }

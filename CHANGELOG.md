@@ -9,23 +9,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`run create --notify <cmd>` completion hook (`no-completion-notification-to-parent`).**
-  A run created with `--notify <cmd>` now runs that command **exactly once** when
-  the run reaches a terminal state (`done | failed | cancelled`), fired by the
-  supervisor on the terminal transition **before** teardown removes the
-  worktree/window. The command runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`,
-  `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its environment — the
-  push signal a spawning session needs to learn of completion without polling
-  (append a line to a file the harness watches, post a desktop toast, ping a
-  FIFO). At-most-once is durable: firing is gated on a `run.notified` marker event
-  (idempotency key `supervisor-notify:<run-id>`) appended and fsynced before the
-  spawn, so a supervisor restart replays it as a no-op and never re-fires. The
-  command is spawned detached so a slow/hung hook cannot wedge the supervisor
-  tick. New manifest field `notify_cmd` (`#[serde(default)]`, absent when the flag
-  is omitted). The bundled `worktree-spinoff` and `worktree-code` skills document
-  `--notify` and backgrounded `run wait` as the two ways completion reaches the
-  spawning session, and no longer imply an undeliverable notification;
-  `worktree-code`'s progress section is also corrected to branch on
-  `manifest.status` (not `lifecycle`).
+  A run created with `--notify <cmd>` now runs that command when the run reaches a
+  terminal state (`done | failed | cancelled`), fired by the supervisor on the
+  terminal transition **before** teardown removes the worktree/window. The command
+  runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`, `OCTL_SUMMARY`,
+  `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its environment — the push signal a
+  spawning session needs to learn of completion without polling (append a line to a
+  file the harness watches, post a desktop toast, ping a FIFO). Delivery is
+  **at-least-once**: firing is deduped on a durable `run.notified` marker (idempotency
+  key `supervisor-notify:<run-id>`) recorded *after* the spawn under one exclusive
+  lock, so the healthy path fires exactly once, but a supervisor crash in the window
+  between firing and recording re-fires on restart — a duplicate is preferred over a
+  missed completion signal, so hooks should tolerate running more than once. The
+  command is spawned detached and reaped on a thread so a slow/hung hook cannot wedge
+  the supervisor tick. New manifest field `notify_cmd` (`#[serde(default)]`, absent
+  when the flag is omitted). The bundled `worktree-spinoff` and `worktree-code` skills
+  document `--notify` and backgrounded `run wait` as the two ways completion reaches
+  the spawning session, and no longer imply an undeliverable notification;
+  `worktree-code`'s progress section is also corrected to branch on `manifest.status`
+  (not `lifecycle`).
 
 - **Flexible `plan.json` check contract (code-pipeline `plan-check-run-contract`,
   owner-locked 2026-07-23).** A check now carries the general goal (`desc`) plus a

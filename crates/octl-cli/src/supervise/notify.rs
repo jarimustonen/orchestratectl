@@ -8,15 +8,19 @@
 //! a line-append to a file its harness watches, a `terminal-notifier` /
 //! `notify-send` desktop toast, or a FIFO write.
 //!
-//! ## At-most-once
+//! ## At-least-once
 //!
-//! Firing is gated on a durable `run.notified` marker event carrying the
-//! deterministic idempotency key `supervisor-notify:<run-id>`. The marker is
-//! appended (and fsynced) BEFORE the command is spawned, so a supervisor
-//! crash/restart replays it as an idempotent no-op and never re-fires. The
-//! trade-off is deliberate: at-most-once (a crash in the narrow window between
-//! the marker append and the spawn drops the notification) is safer than
-//! at-least-once (which could spam a parent's inbox on every restart tick).
+//! Firing is deduped on a durable `run.notified` marker event carrying the
+//! deterministic idempotency key `supervisor-notify:<run-id>`. Under one
+//! exclusive-lock critical section the supervisor scans for the marker; if it
+//! is absent it spawns the command FIRST and records the marker only AFTER.
+//! So a crash in the window between the spawn and the marker append leaves no
+//! marker, and the next supervisor (restart / reattach) re-fires — a duplicate
+//! notification. This is the owner's deliberate call (2026-07-24): a missed
+//! completion signal defeats the whole feature, so "tell twice" beats "miss
+//! it". In the common no-crash case the marker is recorded, so a later tick or
+//! a fresh supervisor dedups to exactly one fire; duplicates arise only from an
+//! actual crash between spawn and marker.
 //!
 //! ## Non-blocking
 //!
@@ -30,7 +34,10 @@
 use serde_json::{json, Value};
 use tracing::{info, warn};
 
-use octl_core::{read_node_opt, NodeId, RunLock, RunPaths, Status};
+use octl_core::{
+    append_and_apply_unlocked, find_prior_with_key, read_node_opt, NodeId, RunLock, RunPaths,
+    Status,
+};
 
 use crate::run::from_core;
 
@@ -41,9 +48,10 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 
 /// Cap on the `OCTL_SUMMARY` env value (bytes-ish, counted in chars). A
 /// `node.report` summary is arbitrary agent-authored text; an unbounded value
-/// risks `E2BIG` at `spawn` time, which — because the durable marker is already
-/// recorded — would permanently drop the notification. Bounded well under the
-/// platform `ARG_MAX`/env ceiling with headroom for the rest of the environment.
+/// risks `E2BIG` at `spawn` time, which would drop that fire's notification
+/// (the marker is still recorded afterwards, so it is not retried). Bounded
+/// well under the platform `ARG_MAX`/env ceiling with headroom for the rest of
+/// the environment.
 const SUMMARY_MAX_CHARS: usize = 4096;
 /// Cap on the `OCTL_RUN_TITLE` env value; a title is short by construction, but
 /// bound it defensively for the same reason.
@@ -60,12 +68,11 @@ const TITLE_MAX_CHARS: usize = 512;
 /// # Return
 ///
 /// `true` when there is nothing left to do for this run — no hook was
-/// registered, the hook was already fired (by this process on an earlier tick
-/// or by a pre-restart supervisor), or the hook was spawned just now. `false`
-/// only when recording the durable marker failed transiently (lock contention,
-/// I/O): the caller should keep the run's `notified` flag unset so a later tick
-/// retries, honestly delivering on the "retry" contract that the old
-/// unconditional-`cleaned` gate silently broke.
+/// registered, the hook was already fired-and-recorded (by this process on an
+/// earlier tick or by a prior supervisor), or the hook was spawned just now.
+/// `false` only when the exclusive-lock critical section could not be entered
+/// (lock contention) or the marker scan failed transiently (I/O): the caller
+/// keeps the run's `notified` flag unset so a later tick retries.
 #[must_use]
 pub fn maybe_fire(
     paths: &RunPaths,
@@ -78,47 +85,80 @@ pub fn maybe_fire(
     let Some(cmd) = notify_cmd else {
         return true;
     };
-    // Defensive: the marker is a permanent gate, so never fire (and never
-    // record it) for a non-terminal status. The sole caller guards on
-    // `status.is_terminal()`, but a future caller that forgets to must not be
-    // able to poison the gate on a still-running run.
+    // Defensive: never fire (and never record the marker) for a non-terminal
+    // status. The sole caller guards on `status.is_terminal()`, but a future
+    // caller that forgets to must not be able to fire on a still-running run.
     if !status.is_terminal() {
         return true;
     }
 
+    // Read the summary under its own (shared) lock BEFORE we take the exclusive
+    // lock below — flock is not reentrant within a process, so nesting would
+    // deadlock.
     let summary = env_safe(&read_summary(paths).unwrap_or_default(), SUMMARY_MAX_CHARS);
     let title = env_safe(title, TITLE_MAX_CHARS);
     let status_str = status_kebab(status);
-
-    // Durable at-most-once gate: record the marker (fsynced) BEFORE spawning.
-    // A prior tick / a pre-restart supervisor that already recorded it makes
-    // this an idempotent replay, and we do NOT re-fire.
     let key = format!("supervisor-notify:{run_id}");
-    let appended = match octl_core::append_and_apply_event(
+
+    // One exclusive-lock critical section: scan for the marker, and only if it
+    // is absent spawn the hook and THEN record the marker. Spawn-before-record
+    // is what makes this at-least-once — a crash after the spawn but before the
+    // append leaves no marker, so a later supervisor re-fires (a duplicate,
+    // which the owner prefers over a missed notification). The scan + append
+    // share the one lock so two supervisors can't both spawn (the exclusive
+    // lock serialises them; the loser sees the marker and skips).
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                run_id = %run_id,
+                error = %e,
+                "could not lock run to fire notify hook; will retry on a later tick"
+            );
+            return false;
+        }
+    };
+    let lock = guard.witness();
+    match find_prior_with_key(&lock, paths, "run.notified", &key) {
+        Ok(Some(_)) => {
+            // A prior process already spawned-and-recorded. Dedup: skip.
+            drop(guard);
+            return true;
+        }
+        Ok(None) => { /* no marker yet — fire below */ }
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                run_id = %run_id,
+                error = %e,
+                "could not scan for run.notified marker; will retry on a later tick"
+            );
+            drop(guard);
+            return false;
+        }
+    }
+
+    // Fire FIRST, record SECOND (at-least-once ordering).
+    spawn_hook(cmd, run_id, status_str, &summary, kind, &title);
+    if let Err(e) = append_and_apply_unlocked(
+        &lock,
         paths,
         "run.notified",
         None,
         Some(&key),
         json!({ "status": status_str }),
     ) {
-        Ok(res) => !res.idempotent_replay,
-        Err(e) => {
-            warn!(
-                target: "orchestratectl::supervise",
-                run_id = %run_id,
-                error = %e,
-                "could not record run.notified marker; will retry on a later tick"
-            );
-            return false;
-        }
-    };
-    if !appended {
-        // Already fired (this process on an earlier tick, or a prior
-        // supervisor before a restart). At-most-once: do nothing.
-        return true;
+        // The hook already fired. Failing to record the marker only means a
+        // restart may re-fire (at-least-once tolerates that). Surface it.
+        warn!(
+            target: "orchestratectl::supervise",
+            run_id = %run_id,
+            error = %e,
+            "notify hook fired but recording the run.notified marker failed (a restart may re-fire)"
+        );
     }
-
-    spawn_hook(cmd, run_id, status_str, &summary, kind, &title);
+    drop(guard);
     true
 }
 
@@ -328,14 +368,19 @@ mod tests {
     }
 
     #[test]
-    fn at_most_once_across_repeated_ticks() {
+    fn repeated_ticks_dedup_via_marker() {
+        // The common no-crash path: once the hook fires AND records its marker,
+        // later ticks (and a fresh supervisor) see the marker and skip — so a
+        // healthy run notifies exactly once even under at-least-once semantics.
+        // Duplicates arise only from an actual crash between spawn and marker,
+        // which this in-process test cannot stage.
         let tmp = TempDir::new().unwrap();
         let paths = terminal_run(&tmp, "s");
         let counter = tmp.path().join("counter.txt");
         // Each invocation appends a byte; a second fire would make it 2 bytes.
         let cmd = format!("printf 'x' >> {}", counter.display());
 
-        // First tick fires; a durable marker is recorded.
+        // First tick fires; a durable marker is recorded (AFTER the spawn).
         assert!(maybe_fire(
             &paths,
             RID,
@@ -347,8 +392,8 @@ mod tests {
         assert!(wait_for_file(&counter));
         assert_eq!(notified_count(&paths), 1);
 
-        // Subsequent ticks (and a simulated supervisor restart) must NOT re-fire,
-        // and each reports "settled" so the loop does not spin retrying.
+        // Subsequent ticks (and a simulated supervisor restart) see the marker
+        // and must NOT re-fire, and each reports "settled".
         assert!(maybe_fire(
             &paths,
             RID,
@@ -368,12 +413,63 @@ mod tests {
 
         // Give any (erroneously-spawned) second hook time to land before asserting.
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(notified_count(&paths), 1, "marker appended at most once");
+        assert_eq!(notified_count(&paths), 1, "marker recorded once");
         assert_eq!(
             std::fs::read_to_string(&counter).unwrap(),
             "x",
-            "the hook ran exactly once despite repeated ticks"
+            "the hook ran once despite repeated ticks (marker dedup)"
         );
+    }
+
+    #[test]
+    fn preexisting_marker_suppresses_refire() {
+        // At-least-once dedup: a `run.notified` marker already on the log (a
+        // prior process that spawned-and-recorded) makes a fresh call skip.
+        let tmp = TempDir::new().unwrap();
+        let paths = terminal_run(&tmp, "s");
+        let key = format!("supervisor-notify:{RID}");
+        append_and_apply_event(
+            &paths,
+            "run.notified",
+            None,
+            Some(&key),
+            json!({ "status": "done" }),
+        )
+        .unwrap();
+        let out = tmp.path().join("should-not-exist");
+        let cmd = format!("touch {}", out.display());
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !out.exists(),
+            "a pre-existing marker must suppress the hook"
+        );
+        assert_eq!(notified_count(&paths), 1, "no second marker recorded");
+    }
+
+    #[test]
+    fn records_marker_after_firing() {
+        // Ordering check underpinning at-least-once: after a fire the marker
+        // exists — so a crash BEFORE this point (no marker) would re-fire.
+        let tmp = TempDir::new().unwrap();
+        let paths = terminal_run(&tmp, "s");
+        assert_eq!(notified_count(&paths), 0, "no marker before firing");
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some("true"),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
+        assert_eq!(notified_count(&paths), 1, "marker recorded after firing");
     }
 
     #[test]

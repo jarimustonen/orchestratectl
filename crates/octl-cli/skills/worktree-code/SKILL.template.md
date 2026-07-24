@@ -124,19 +124,20 @@ Flag rules:
 - `--idempotency-key <key>` makes the call safe to retry on transient
   errors (network blip, disk full). Use the same key on retry and the
   CLI returns the original run without spawning twice.
-- `--notify <cmd>` registers a completion hook the supervisor runs
-  **exactly once** when the run reaches a terminal state — for an
-  interactive `code` run that is the moment the user finishes review and
-  runs `/worktree-merge` (or `run cancel`), not when the agent stops
-  typing. The command runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`,
-  `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its
-  environment. Pass it only if you have a real sink (a file/FIFO the
-  harness watches, or a desktop toast); otherwise do not promise a
-  notification. The command runs in the **supervisor's** environment (a
-  long-lived detached process), not your login shell — a file/FIFO sink is
-  more robust than a desktop toast that depends on the session's
-  `DISPLAY` / `DBUS_SESSION_BUS_ADDRESS`. See "Following progress" for how
-  completion reaches this session.
+- `--notify <cmd>` registers a completion hook the supervisor runs when
+  the run reaches a terminal state — for an interactive `code` run that is
+  the moment the user finishes review and runs `/worktree-merge` (or
+  `run cancel`), not when the agent stops typing. The command runs via
+  `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`, `OCTL_SUMMARY`,
+  `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its environment. Delivery is
+  **at-least-once** (a supervisor crash mid-fire can re-fire on restart),
+  so write a command that tolerates running more than once. Pass it only
+  if you have a real sink (a file/FIFO the harness watches, or a desktop
+  toast); otherwise do not promise a notification. The command runs in the
+  **supervisor's** environment (a long-lived detached process), not your
+  login shell — a file/FIFO sink is more robust than a desktop toast that
+  depends on the session's `DISPLAY` / `DBUS_SESSION_BUS_ADDRESS`. See
+  "Following progress" for how completion reaches this session.
 - `--parent-run-id` / `--parent-node-id` are NOT valid here — interactive
   worktrees are top-level only. If the caller is a driver wanting a
   child unit, it must use a different `--kind`.

@@ -129,23 +129,25 @@ Flag rules:
 - `--idempotency-key` makes the call safe to retry on transient errors
   (network blip, disk full). Use the same key on retry and the CLI
   returns the original run without spawning twice.
-- `--notify <cmd>` registers a completion hook the supervisor runs
-  **exactly once** when the run reaches a terminal state
-  (`done | failed | cancelled`), before teardown — the push signal that
-  tells this session the spinoff finished without you polling. The
-  command runs via `sh -c` with `OCTL_RUN_ID`, `OCTL_STATUS`,
-  `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its
-  environment. Pass it **only if you have a real sink** the harness
-  watches — e.g. appending a line to a file (`--notify 'printf
-  "%s %s\n" "$OCTL_RUN_ID" "$OCTL_STATUS" >> ~/.octl-completions'`) or a
-  desktop toast (`--notify 'terminal-notifier -message "$OCTL_SUMMARY"'`
-  / `notify-send`). Without such a sink, do **not** promise the user a
-  notification; use the `run wait` approach under "Following progress"
-  instead. See "Reporting completion back to this session" below. Note the
-  command runs in the **supervisor's** environment (a long-lived detached
-  process), not your login shell — a desktop-toast hook may need the
-  session's `DISPLAY` / `DBUS_SESSION_BUS_ADDRESS`; a file/FIFO sink is the
-  robust choice.
+- `--notify <cmd>` registers a completion hook the supervisor runs when
+  the run reaches a terminal state (`done | failed | cancelled`), before
+  teardown — the push signal that tells this session the spinoff finished
+  without you polling. The command runs via `sh -c` with `OCTL_RUN_ID`,
+  `OCTL_STATUS`, `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in
+  its environment. Delivery is **at-least-once**: the healthy path fires
+  once, but a supervisor crash mid-fire can re-fire on restart, so write a
+  command that tolerates running more than once (an idempotent file
+  write / notification, not something that double-counts). Pass it **only
+  if you have a real sink** the harness watches — e.g. appending a line to
+  a file (`--notify 'printf "%s %s\n" "$OCTL_RUN_ID" "$OCTL_STATUS" >>
+  ~/.octl-completions'`) or a desktop toast (`--notify 'terminal-notifier
+  -message "$OCTL_SUMMARY"'` / `notify-send`). Without such a sink, do
+  **not** promise the user a notification; use the `run wait` approach
+  under "Following progress" instead. See "Reporting completion back to
+  this session" below. Note the command runs in the **supervisor's**
+  environment (a long-lived detached process), not your login shell — a
+  desktop-toast hook may need the session's `DISPLAY` /
+  `DBUS_SESSION_BUS_ADDRESS`; a file/FIFO sink is the robust choice.
 - Output defaults to `--output jsonl` — one compact envelope per line.
 
 ### 4. Success envelope
