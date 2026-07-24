@@ -20,9 +20,12 @@
 //!
 //! ## Non-blocking
 //!
-//! The command is spawned detached (`sh -c`, no `wait`) so a slow or hung hook
-//! can never wedge the single-threaded supervisor tick. The supervisor is
-//! about to wind down anyway; a still-running hook is reparented to init.
+//! The command runs via `sh -c` and the supervisor never `wait`s on it inline,
+//! so a slow or hung hook can never wedge the single-threaded supervisor tick.
+//! A dedicated reaper thread blocks on the child so a fast hook is collected
+//! promptly rather than lingering as a zombie until the supervisor exits (which
+//! is unbounded for a cancelled parent that keeps ticking until its children
+//! settle).
 
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -36,14 +39,34 @@ use crate::run::from_core;
 /// (`n-0001`); mirrors `run wait`'s and `run merge`'s `DEFAULT_NODE_ID`.
 const DEFAULT_NODE_ID: &str = "n-0001";
 
+/// Cap on the `OCTL_SUMMARY` env value (bytes-ish, counted in chars). A
+/// `node.report` summary is arbitrary agent-authored text; an unbounded value
+/// risks `E2BIG` at `spawn` time, which — because the durable marker is already
+/// recorded — would permanently drop the notification. Bounded well under the
+/// platform `ARG_MAX`/env ceiling with headroom for the rest of the environment.
+const SUMMARY_MAX_CHARS: usize = 4096;
+/// Cap on the `OCTL_RUN_TITLE` env value; a title is short by construction, but
+/// bound it defensively for the same reason.
+const TITLE_MAX_CHARS: usize = 512;
+
 /// Fire the run's `--notify` hook once, if one is registered and this is the
 /// first time the run is observed terminal.
 ///
 /// `status` is the run's terminal manifest status; `kind`/`title` are surfaced
 /// to the hook for a richer message. Best-effort throughout: any failure is
 /// logged and swallowed — a broken notification must never block teardown or
-/// crash the supervisor. Returns without doing anything when `notify_cmd` is
-/// `None`.
+/// crash the supervisor.
+///
+/// # Return
+///
+/// `true` when there is nothing left to do for this run — no hook was
+/// registered, the hook was already fired (by this process on an earlier tick
+/// or by a pre-restart supervisor), or the hook was spawned just now. `false`
+/// only when recording the durable marker failed transiently (lock contention,
+/// I/O): the caller should keep the run's `notified` flag unset so a later tick
+/// retries, honestly delivering on the "retry" contract that the old
+/// unconditional-`cleaned` gate silently broke.
+#[must_use]
 pub fn maybe_fire(
     paths: &RunPaths,
     run_id: &str,
@@ -51,12 +74,20 @@ pub fn maybe_fire(
     status: Status,
     kind: &str,
     title: &str,
-) {
+) -> bool {
     let Some(cmd) = notify_cmd else {
-        return;
+        return true;
     };
+    // Defensive: the marker is a permanent gate, so never fire (and never
+    // record it) for a non-terminal status. The sole caller guards on
+    // `status.is_terminal()`, but a future caller that forgets to must not be
+    // able to poison the gate on a still-running run.
+    if !status.is_terminal() {
+        return true;
+    }
 
-    let summary = read_summary(paths).unwrap_or_default();
+    let summary = env_safe(&read_summary(paths).unwrap_or_default(), SUMMARY_MAX_CHARS);
+    let title = env_safe(title, TITLE_MAX_CHARS);
     let status_str = status_kebab(status);
 
     // Durable at-most-once gate: record the marker (fsynced) BEFORE spawning.
@@ -68,7 +99,7 @@ pub fn maybe_fire(
         "run.notified",
         None,
         Some(&key),
-        json!({ "status": status_str, "notify_cmd": cmd }),
+        json!({ "status": status_str }),
     ) {
         Ok(res) => !res.idempotent_replay,
         Err(e) => {
@@ -76,22 +107,33 @@ pub fn maybe_fire(
                 target: "orchestratectl::supervise",
                 run_id = %run_id,
                 error = %e,
-                "could not record run.notified marker; skipping notify hook (will retry next tick)"
+                "could not record run.notified marker; will retry on a later tick"
             );
-            return;
+            return false;
         }
     };
     if !appended {
         // Already fired (this process on an earlier tick, or a prior
         // supervisor before a restart). At-most-once: do nothing.
-        return;
+        return true;
     }
 
-    spawn_hook(cmd, run_id, status_str, &summary, kind, title);
+    spawn_hook(cmd, run_id, status_str, &summary, kind, &title);
+    true
 }
 
-/// Spawn `sh -c <cmd>` detached with the completion context in its
-/// environment. Not waited on — a hung hook cannot stall the supervisor.
+/// Spawn `sh -c <cmd>` with the completion context in its environment, and
+/// reap it on a detached thread so a fast hook never lingers as a zombie.
+///
+/// The supervisor is single-threaded and must not block on the hook — a hung
+/// command cannot stall the tick — so we do not `wait` inline. But a plain
+/// `spawn` + drop of the `Child` does NOT reap: the finished `sh` would sit as
+/// a zombie until the supervisor process exits, which is unbounded for a
+/// cancelled parent that keeps ticking until its children settle. A dedicated
+/// thread that blocks on `child.wait()` reaps it promptly while blocking only
+/// itself. Stdout/stderr go to `/dev/null`: the supervisor's own stderr fd can
+/// be closed out from under a still-running detached hook (→ `EBADF`/`SIGPIPE`
+/// mid-write), and a hook that wants output routes it itself (`>> file 2>&1`).
 fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, title: &str) {
     let mut command = std::process::Command::new("sh");
     command
@@ -102,15 +144,17 @@ fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, 
         .env("OCTL_SUMMARY", summary)
         .env("OCTL_RUN_KIND", kind)
         .env("OCTL_RUN_TITLE", title)
-        // Detach stdin; let stdout/stderr inherit so a `notify-send` or a
-        // file-append is visible in the supervisor's captured stderr log if it
-        // writes there. The hook owns its own output routing otherwise.
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     match command.spawn() {
-        Ok(_child) => {
-            // Fire-and-forget: the grandchild is reparented to init when the
-            // supervisor exits moments later, so we do not reap it here (that
-            // would reintroduce the blocking wait we are avoiding).
+        Ok(child) => {
+            // Reap asynchronously: the thread outlives the tick but not the
+            // hook, and never blocks the supervisor loop.
+            std::thread::spawn(move || {
+                let mut child = child;
+                let _ = child.wait();
+            });
             info!(
                 target: "orchestratectl::supervise",
                 run_id = %run_id,
@@ -128,6 +172,22 @@ fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, 
                 "run completion notify hook failed to spawn (not retried; marker already recorded)"
             );
         }
+    }
+}
+
+/// Sanitize a string for use as a process environment value: drop NUL bytes
+/// (which `Command::env` rejects — a NUL in an agent-authored summary would
+/// otherwise fail `spawn` *after* the durable marker, silently dropping the
+/// notification) and bound the length so an oversized value can't trip
+/// `E2BIG`. Truncation is on a char boundary with an ellipsis marker.
+fn env_safe(s: &str, max_chars: usize) -> String {
+    let filtered: String = s.chars().filter(|&c| c != '\0').collect();
+    if filtered.chars().count() > max_chars {
+        let mut out: String = filtered.chars().take(max_chars).collect();
+        out.push('…');
+        out
+    } else {
+        filtered
     }
 }
 
@@ -219,12 +279,14 @@ mod tests {
         paths
     }
 
-    /// Count `run.notified` events in the log.
+    /// Count `run.notified` events in the log, matching the parsed event
+    /// `kind` (not a substring, which a data payload could false-match).
     fn notified_count(paths: &RunPaths) -> usize {
         std::fs::read_to_string(paths.events())
             .unwrap()
             .lines()
-            .filter(|l| l.contains("\"run.notified\""))
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("kind").and_then(Value::as_str) == Some("run.notified"))
             .count()
     }
 
@@ -251,7 +313,10 @@ mod tests {
             out.display()
         );
 
-        maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t");
+        assert!(
+            maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t"),
+            "a fired hook settles the notify state"
+        );
 
         assert!(
             wait_for_file(&out),
@@ -271,13 +336,35 @@ mod tests {
         let cmd = format!("printf 'x' >> {}", counter.display());
 
         // First tick fires; a durable marker is recorded.
-        maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t");
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
         assert!(wait_for_file(&counter));
         assert_eq!(notified_count(&paths), 1);
 
-        // Subsequent ticks (and a simulated supervisor restart) must NOT re-fire.
-        maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t");
-        maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t");
+        // Subsequent ticks (and a simulated supervisor restart) must NOT re-fire,
+        // and each reports "settled" so the loop does not spin retrying.
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
 
         // Give any (erroneously-spawned) second hook time to land before asserting.
         std::thread::sleep(Duration::from_millis(200));
@@ -293,12 +380,78 @@ mod tests {
     fn no_notify_cmd_is_a_noop() {
         let tmp = TempDir::new().unwrap();
         let paths = terminal_run(&tmp, "s");
-        maybe_fire(&paths, RID, None, Status::Done, "spinoff", "t");
+        assert!(
+            maybe_fire(&paths, RID, None, Status::Done, "spinoff", "t"),
+            "no hook registered is a settled no-op"
+        );
         assert_eq!(
             notified_count(&paths),
             0,
             "a run with no --notify records no marker and runs nothing"
         );
+    }
+
+    #[test]
+    fn non_terminal_status_never_fires_or_marks() {
+        // Defensive guard: a non-terminal status must not poison the durable
+        // gate — no marker, no hook, and it reports "settled" so a caller does
+        // not spin retrying.
+        let tmp = TempDir::new().unwrap();
+        let paths = terminal_run(&tmp, "s");
+        let out = tmp.path().join("should-not-exist");
+        let cmd = format!("touch {}", out.display());
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Running,
+            "spinoff",
+            "t"
+        ));
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !out.exists(),
+            "hook must not fire for a non-terminal status"
+        );
+        assert_eq!(
+            notified_count(&paths),
+            0,
+            "no marker for a non-terminal run"
+        );
+    }
+
+    #[test]
+    fn returns_true_on_idempotent_replay() {
+        let tmp = TempDir::new().unwrap();
+        let paths = terminal_run(&tmp, "s");
+        let cmd = "true".to_string();
+        assert!(maybe_fire(
+            &paths,
+            RID,
+            Some(&cmd),
+            Status::Done,
+            "spinoff",
+            "t"
+        ));
+        // Second call sees the marker → idempotent replay → settled, no re-fire.
+        assert!(
+            maybe_fire(&paths, RID, Some(&cmd), Status::Done, "spinoff", "t"),
+            "an already-fired hook reports settled"
+        );
+        assert_eq!(notified_count(&paths), 1);
+    }
+
+    #[test]
+    fn env_safe_strips_nul_and_bounds_length() {
+        // NUL is stripped (Command::env would otherwise reject the value).
+        assert_eq!(env_safe("a\0b\0c", 100), "abc");
+        // Under the cap is passed through unchanged.
+        assert_eq!(env_safe("short", 100), "short");
+        // Over the cap is truncated with an ellipsis marker.
+        let long = "x".repeat(50);
+        let got = env_safe(&long, 10);
+        assert_eq!(got.chars().filter(|&c| c == 'x').count(), 10);
+        assert!(got.ends_with('…'));
     }
 
     #[test]

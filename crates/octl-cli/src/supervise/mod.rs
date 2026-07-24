@@ -64,6 +64,14 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 /// so a transient `stat` hiccup cannot kill a live supervisor.
 const SELF_TERMINATE_TICKS: u32 = 3;
 
+/// Max attempts to record the `run.notified` marker for the `--notify`
+/// completion hook before the supervisor gives up and winds down anyway. The
+/// marker append only fails on transient I/O / lock contention, so a small
+/// bound is plenty; without it a persistent failure (disk full) would spin the
+/// loop-exit gate forever. A drop after this many tries is logged and allowed
+/// (at-most-once already permits a missed notification).
+const NOTIFY_MAX_ATTEMPTS: u32 = 5;
+
 /// Minimum age a node must reach before the watchdog will synthesize a
 /// terminal `agent-died` (or `agent-tmux-window-gone` / `agent-pid-recycled`)
 /// report for it. Within this window the watchdog leaves a non-Alive verdict
@@ -262,6 +270,16 @@ pub fn dispatch(
     // steps are idempotent/lenient anyway, but the flag avoids re-shelling
     // out every tick between the terminal transition and the loop exit.
     let mut cleaned = false;
+
+    // Whether the terminal-completion notification hook (`run create --notify`)
+    // has been settled (fired, already-fired, or none registered). Tracked
+    // SEPARATELY from `cleaned` so a transient marker-append failure does not
+    // permanently drop the notification: `cleaned` guards the one-shot teardown
+    // (which is fine to do once), but a failed notify must be retried on a later
+    // tick. Bounded by `notify_attempts` so a persistent failure (disk full)
+    // still lets the supervisor exit rather than spinning forever.
+    let mut notified = false;
+    let mut notify_attempts: u32 = 0;
 
     // Rate-limit state for the periodic lossy-drop warning (see
     // `maybe_warn_dropped`). The supervisor renders no envelope mid-run, so
@@ -603,7 +621,7 @@ pub fn dispatch(
         // window. This runs the same tick the rollup above (or a `run cancel`)
         // made the manifest terminal, since `append_and_apply_event` folded it
         // before this read.
-        if !cleaned {
+        if !cleaned || !notified {
             if let Ok(Some(m)) = read_manifest_opt(&paths) {
                 if m.status.is_terminal() {
                     // Fire the completion-notification hook (if any) FIRST —
@@ -612,18 +630,34 @@ pub fn dispatch(
                     // whose cleanup is not warranted (a plain interactive run
                     // that ended without an explicit merge). At-most-once,
                     // gated on a durable `run.notified` marker
-                    // (`no-completion-notification-to-parent`).
-                    notify::maybe_fire(
-                        &paths,
-                        &run_id,
-                        m.notify_cmd.as_deref(),
-                        m.status,
-                        crate::run::kind_kebab(m.kind),
-                        &m.title,
-                    );
+                    // (`no-completion-notification-to-parent`). Retried across
+                    // ticks on a transient failure (tracked via `notified`,
+                    // separate from `cleaned`), bounded by `notify_attempts`.
+                    if !notified {
+                        notify_attempts += 1;
+                        notified = notify::maybe_fire(
+                            &paths,
+                            &run_id,
+                            m.notify_cmd.as_deref(),
+                            m.status,
+                            crate::run::kind_kebab(m.kind),
+                            &m.title,
+                        );
+                        if !notified && notify_attempts >= NOTIFY_MAX_ATTEMPTS {
+                            warn!(
+                                target: "orchestratectl::supervise",
+                                run_id = %run_id,
+                                attempts = notify_attempts,
+                                "giving up on completion notify hook after repeated marker-append failures"
+                            );
+                            // Stop retrying so the run can wind down; the miss
+                            // is logged. At-most-once already permits a drop.
+                            notified = true;
+                        }
+                    }
                     let warranted = m.kind.lifecycle() == Lifecycle::Autonomous
                         || cleanup::any_node_merged_explicitly(&paths);
-                    if warranted {
+                    if !cleaned && warranted {
                         cleanup::cleanup_terminal_nodes(&paths);
                         // After the node windows are closed, tear down the
                         // managed `--headless` session if this run owned one and
@@ -663,8 +697,12 @@ pub fn dispatch(
         }
 
         // Cheap idle check: if our run is terminal AND no child
-        // remains non-terminal, we're done.
-        if all_work_done(&paths, &child_tails) {
+        // remains non-terminal, we're done — but not while a registered
+        // completion-notify hook is still pending (`notified` false), so a
+        // transient marker-append failure gets its retry ticks before the loop
+        // exits. `notify_attempts` bounds this, so a persistent failure still
+        // lets us leave.
+        if notified && all_work_done(&paths, &child_tails) {
             break "work-complete";
         }
 
