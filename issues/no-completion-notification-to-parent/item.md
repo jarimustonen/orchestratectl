@@ -11,6 +11,8 @@ commits:
   summary: run create --notify completion hook + skill docs
 - hash: ee472ee
   summary: review fixes — notify retry, reaping, env hardening
+- hash: fe60e88
+  summary: skill docs — supervisor env note
 ---
 
 # Spawning session gets no completion notification when an async run finishes/merges
