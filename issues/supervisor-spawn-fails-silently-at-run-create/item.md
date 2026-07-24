@@ -1,6 +1,6 @@
 ---
 created: 2026-07-22
-updated: 2026-07-23
+updated: 2026-07-24
 type: bug
 status: open
 priority: high
@@ -134,3 +134,92 @@ signature above. Only v2 (the reattached one) has supervisor artifacts.
 first_access work will proceed via interactive `/worktree-code` (not another
 autonomous spinoff) to route around this bug. This issue stays `open` as the
 root-cause tracker.
+
+## New evidence (2026-07-24) — reproduces under a `/fan-out` load; adds a second failure shape (supervisor started then died)
+
+Another `/stint` session (`s2-canvas-lti-passback`, the S2 Canvas-LTI grade
+passback work) hit this again while fanning out **8 `--kind fan-out` children +
+2 spinoffs** in a tight window (~07:00–07:40). Of ~11 runs spawned, **9 landed
+cleanly** (agent ran, committed, self-merged, verified in git) and **4 got stuck
+in `pending` with a dead/absent supervisor**. Two distinct signatures appeared:
+
+**Signature A — supervisor never started (identical to the original report).**
+- `s2-canvas-lti-v2/puhekielen-tulkkinauha` (`01ky9fgmfx005h9ytjd4j913h2`):
+  `events.jsonl` has **only `run.created`** (1 line) — no `node.created`, no
+  `supervisor.started`. `manifest.supervisor.pid = None`, `alive = None`,
+  `status = pending`, `updated_at == created_at` (07:12:55, frozen). No
+  `supervisor.stderr.log`. Worktree materialised but sat at base commit
+  (`29ca1ec93`) with zero commits — agent never launched. Exactly the "silent
+  spawn failure, zero trace" signature.
+
+**Signature B — supervisor DID start, then died, leaving `pending` (new).**
+- `canvas-lti-v3-bcf` (`01ky9fms4gyqde21ac5te08fqt`): `events.jsonl` has
+  `run.created` → `node.created` → `supervisor.started` (3 lines) — so the
+  supervisor **did** come up. But then silence: agent never committed (worktree
+  at base commit, 0 commits), supervisor later shows `pid=None, alive=None`, and
+  the run is frozen at `status: pending` (`updated_at` 07:16:23). This is *past*
+  the spawn point of Signature A but still terminates in the same stuck-`pending`
+  state — so the guard in suggested-fix #5 ("no `work-complete` with empty
+  children") must also cover *supervisor death after start* transitioning the run
+  to a terminal `failed`, not leaving it `pending` indefinitely.
+
+**Two of the four "stuck" runs had actually completed their work** — the dead
+supervisor just never terminalised them:
+- `s2-canvas-lti-v2/yhdyssanapommi` (`01ky9gjvcxbb…`): agent committed **and
+  self-merged** — commit `9ef00d7a3` is in `main`, worktree already torn down —
+  yet `run wait` / `run show` still needed a git cross-check to confirm (the run
+  did eventually read `done`, but only after the merge; during the stall window
+  it read `pending`). Matches the existing
+  `supervisor-stuck-pending-after-self-merge` issue.
+- `s2-canvas-lti-v2/kayttolupa-detektiivi` (`01ky9g40db…`): agent committed its
+  full work (`99f696a6d`, game + Playwright spec, +228 lines) but **had not
+  merged** — worktree left with an uncommitted `test-results/` (Playwright run
+  artifact) which then made `run merge` fail with `merge_failed`
+  (`git rebase main` → "cannot rebase: You have unstaged changes"). After manually
+  removing the untracked `test-results/` dir, `run merge` succeeded and it landed
+  as `bf34326c8`.
+
+### Two additional problems this session surfaced
+
+6. **`run merge` is blocked by agent-left untracked build artifacts.** The
+   Playwright test run wrote `test-results/` into the worktree; the agent
+   committed its source but not that dir (correctly — it's an artifact), yet
+   `run merge`'s `git rebase main` refuses with "You have unstaged changes" and
+   returns `merge_failed`. The merge step should either (a) ignore untracked
+   artifacts when deciding whether the tree is clean enough to rebase, or (b)
+   surface a clearer error than a raw rebase failure. Consider shipping a default
+   `.gitignore` entry for `test-results/` in worktree scaffolding, or having the
+   merge step stash/clean untracked files before the rebase.
+
+7. **`run wait` is effectively unusable for a batch here — argument parsing.**
+   Passing several run-ids to `orchestratectl run wait` as documented
+   ("pass several run-ids to block until all settle") repeatedly failed with
+   `invalid_run_id` when the ids arrived as a single space- or newline-separated
+   argument (shell expansion / word-splitting in a non-interactive `bash -c`
+   context). Every multi-id `run wait` in this session returned
+   `invalid_run_id` **immediately** (exit non-zero) instead of waiting, so the
+   conductor fell back to polling `manifest.json` directly. Either the docs
+   overstate multi-id support, or `run wait` should accept a
+   whitespace-separated list in one argv token (or a `--runs-file`). Right now the
+   documented batch-wait primitive silently no-ops under a very common invocation
+   shape.
+
+**Aggregate impact for this session:** none of the 4 stuck runs lost committed
+work (2 had done nothing → re-spawned clean with fresh `-r2` idempotency keys;
+2 were recovered from git), but recovery required ~4 rounds of manual
+git-verification + worktree cleanup + re-spawn, and the batch could not be
+trusted to `run wait`. The recurring pattern is: **a dead/absent supervisor
+leaves a run `pending` with no terminal transition, so the caller cannot
+distinguish "still running" / "silently failed to spawn" / "done but not
+terminalised" without cross-checking git per run.** Fixes #1 (fail loudly), #5
+(no false terminal with empty children), and a symmetric "supervisor death after
+start → `failed`, never stuck `pending`" would let a fan-out driver trust run
+status again.
+
+### Environment (2026-07-24 repro)
+- orchestratectl 0.1.0 (commit a54f0ff6)
+- macOS (Darwin 25.5.0)
+- Repo: 3dbear-monorepo; heavy parallel-session day again; 8 fan-out children +
+  2 spinoffs spawned within ~40 min, main moving under the stint via other
+  sessions. Failure rate this batch: 4/11 runs stuck (1 Signature A, 1 Signature
+  B, 2 done-but-not-terminalised).
