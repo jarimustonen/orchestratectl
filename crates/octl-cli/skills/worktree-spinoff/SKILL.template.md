@@ -141,7 +141,11 @@ Flag rules:
   desktop toast (`--notify 'terminal-notifier -message "$OCTL_SUMMARY"'`
   / `notify-send`). Without such a sink, do **not** promise the user a
   notification; use the `run wait` approach under "Following progress"
-  instead. See "Reporting completion back to this session" below.
+  instead. See "Reporting completion back to this session" below. Note the
+  command runs in the **supervisor's** environment (a long-lived detached
+  process), not your login shell — a desktop-toast hook may need the
+  session's `DISPLAY` / `DBUS_SESSION_BUS_ADDRESS`; a file/FIFO sink is the
+  robust choice.
 - Output defaults to `--output jsonl` — one compact envelope per line.
 
 ### 4. Success envelope

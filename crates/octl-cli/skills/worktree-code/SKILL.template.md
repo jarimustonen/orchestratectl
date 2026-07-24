@@ -132,8 +132,11 @@ Flag rules:
   `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in its
   environment. Pass it only if you have a real sink (a file/FIFO the
   harness watches, or a desktop toast); otherwise do not promise a
-  notification. See "Following progress" for how completion reaches this
-  session.
+  notification. The command runs in the **supervisor's** environment (a
+  long-lived detached process), not your login shell — a file/FIFO sink is
+  more robust than a desktop toast that depends on the session's
+  `DISPLAY` / `DBUS_SESSION_BUS_ADDRESS`. See "Following progress" for how
+  completion reaches this session.
 - `--parent-run-id` / `--parent-node-id` are NOT valid here — interactive
   worktrees are top-level only. If the caller is a driver wanting a
   child unit, it must use a different `--kind`.
