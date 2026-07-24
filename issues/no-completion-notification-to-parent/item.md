@@ -3,7 +3,7 @@ created: 2026-07-24
 updated: 2026-07-24
 type: bug
 reporter: jari
-status: fixed
+status: open
 priority: normal
 labels: [supervisor]
 commits:
@@ -15,7 +15,6 @@ commits:
   summary: skill docs — supervisor env note
 - hash: 6a91973
   summary: switch to at-least-once delivery (owner decision)
-closed: 2026-07-24
 ---
 
 # Spawning session gets no completion notification when an async run finishes/merges
@@ -59,3 +58,29 @@ The only completion-observation primitives are **`run wait`** (blocking) and **`
 - [ ] A spawning session can learn of run completion without a human relaying it — via a notify hook, documented backgrounded `run wait`, or equivalent.
 - [ ] The relevant `/worktree-*` skills no longer imply a completion notification the tooling can't deliver.
 - [ ] (Optional) `run show <id>` returns a terminal summary for a recently-completed run instead of empty.
+
+## Comments
+
+### 2026-07-24T12:27:33Z · @jari
+
+Fresh reproduction on `--kind research` (orchestratectl 0.1.0) — 2026-07-24, frondeo-monorepo `/stint` session.
+
+This was marked **fixed** but reproduced end-to-end with a research worktree. The `worktree-research` skill was NOT covered by the earlier fix: it still tells the agent to "report completion to the user" and the spawning agent said *"I'll be notified when it completes"* — but nothing pushed a signal back. The run finished and self-merged silently; the **user had to tell the agent** it was done.
+
+Run trace (`01kya0qhh43kr4sx6ryh0wqrpv`, kind=research):
+- seq 1 `run.created` 12:13:47Z
+- seq 4 `node.report` (via=explicit-merge, success=true) 12:22:45Z
+- seq 5 `run.status` → done
+- seq 6 `supervisor.exited` reason=work-complete 12:22:45Z
+
+The run itself worked perfectly — report `research/stalwart-mailbox-continuity.md` merged cleanly (commit c11115c). Purely the missing completion signal, identical to the original report but via `--kind research`.
+
+Scope gap in the fix: whichever remedy was applied (skill guidance to background `run wait`, and/or a notify hook) did not reach the `worktree-research` skill. Either:
+- the fix was skill-guidance only and `worktree-research` (plus any other `--kind` skills) was never updated to background `orchestratectl run wait <id>`, or
+- a supervisor-side notify mechanism exists but research runs don't trigger it.
+
+Recommend: verify the fix covers ALL autonomous kinds (spinoff, code, research, bugfix, orchestrated, technical-decision, make-skill, fan-out), not just spinoff/code — a per-skill audit — and/or land the supervisor-side `--notify` hook so the mechanism is skill-independent.
+
+## Reopen Notes — 2026-07-24
+
+_Add rationale for reopening here._
