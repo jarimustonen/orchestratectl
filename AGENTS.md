@@ -45,6 +45,17 @@ All planning documents (plans, analyses, validations, designs, breakdowns, todos
 - `issues/<slug>/breakdown.md` — epic → child-issue breakdown with dependencies and critical path
 - `issues/<slug>/todo.md` — task checklists
 
+## Operating policy (for `/stint` and orchestrators)
+
+Read by `/stint` Phase 0. Every project-specific fact an orchestrator needs:
+
+- **No server deploy.** This project has no staging/production server. Changes land on `main` and the human pushes. A stint's "deploy" is therefore either nothing (work lands on main) or, when a CLI-surface / SKILL change must be reflected in the running tool, a **local rebuild**: `cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor` (expect 0 fail / 0 warn).
+- **Deploy autonomy:** local rebuild is always fine (no ask). **Pushing `main` is the human's call** (Jari's global CLAUDE.md) — never push without being asked.
+- **Green gate (run before merging any worktree):** `cargo fmt --all`, `cargo clippy --workspace --all-targets` (no NEW warnings), `cargo test --workspace` (green). CLI-surface / bundled-skill changes also need the insta snapshot loop — see `crates/octl-cli/CLAUDE.md`.
+- **Hot / correctness-sensitive files (sequence edits; never parallelize worktrees that touch the same one):** `crates/octl-core/src/{events,lock,reducer,schema}.rs`, `crates/octl-cli/src/supervise/*`, and the code-pipeline modules `crates/octl-cli/src/{harness,floor,pipeline}/*`. See "State integrity invariants".
+- **Coding happens in worktrees, never in the orchestrator/stint session.** Spawn `/worktree-spinoff <issue-slug>` (headless for batches > 3; see the macOS PTY note). **Verify every landing from git** — `run` status can lag reality.
+- **Test accounts / reset:** n/a (no external test accounts).
+
 ## Spinoff workflow + lifecycle
 
 Use `/worktree-spinoff <issue-slug>` for bug fixes / improvements; the bundled SKILL handles the whole loop end-to-end: spawn → work → merge (`orchestratectl run merge`) → self-cleanup (tmux window + worktree + branch all gone). Same for `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill`. Interactive `/worktree-code` works the same way but waits for the user's explicit `/worktree-merge`.
