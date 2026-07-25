@@ -271,3 +271,10 @@ Spun off:
 
 Tests: creation_reliability.rs (fail-loud envelope + stderr trace + recoverable run),
 supervise_gates.rs no_worker_node_run_terminalizes_failed / no_worker_guard_defers_within_create_window.
+
+### 2026-07-25T12:49:33Z · @claude
+
+Confirmation ambiguity (suggested-fix #1 / finding F4b) is now resolved by the readiness pipe (issue supervisor-confirm-readiness-pipe, landed): run create no longer decides boot via a bounded pid-file poll, so a slow-but-healthy supervisor is never false-failed into supervisor_spawn_failed and there is no orphan window. The always-write supervisor.stderr.log + no-false-work-complete guards from this issue remain intact.
+
+Leaving THIS tracker open for the stateful-trigger concern (#4) — the load-dependent conditions under which the spawn originally misbehaved — which the readiness pipe does not itself address.
+
