@@ -2244,6 +2244,93 @@ expression: value
                 }
               },
               {
+                "name": "max_fix_iterations",
+                "long": "max-fix-iterations",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Circuit-breaker: max verify→triage→fix cycles after the code stage first goes green (design §8/§9). Omit for the default (2); 0 makes a failed verify terminal",
+                "value_names": [
+                  "N"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "max_recode_per_chunk",
+                "long": "max-recode-per-chunk",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Circuit-breaker: max `RE_CODE` re-attempts per chunk on a floor / harness failure before the repeated-failure breaker stops the loop (design §8/§9). Omit for the default (1); 0 disables per-chunk re-coding",
+                "value_names": [
+                  "N"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "max_respec",
+                "long": "max-respec",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Circuit-breaker: max `TRIGGER_RE_SPEC` events across the run (design §7/§9). Omit for the default (1); 0 disables re-spec",
+                "value_names": [
+                  "N"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],

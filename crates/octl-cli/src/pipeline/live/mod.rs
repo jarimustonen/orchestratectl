@@ -22,16 +22,29 @@
 //! state-integrity invariants (no new raw event-append path) while it proves the
 //! whole system end to end.
 //!
-//! # Scope (v1 skeleton)
+//! # Scope
 //!
-//! Happy path only. The verify→triage→fix loop, re-spec, tier promotion, and the
-//! tiered fast-coordinator triage are deferred to follow-ups (filed as issues);
-//! a chunk or feature that fails the floor is preserved and the run stops — it is
-//! never merged (the floor is the hard gate, design §4/§14).
+//! Beyond the original happy-path skeleton, this now wires the **bounded
+//! verify→triage→fix loop** (design §7 TRIGGER_RE_SPEC, §8 RE_CODE_CHUNK): a
+//! floor-blocked chunk or a failed verify is fed back as a RE_CODE_CHUNK
+//! re-brief and MUST re-verify before it can close; a SPEC-FLAW verdict emits
+//! TRIGGER_RE_SPEC (a new `plan.v(N+1)` + a DAG-diff deciding which chunks revert
+//! to Pending). The loop is bounded **hard** by the deterministic circuit-breakers
+//! of [`fixloop::FixLoopConfig`] (design §9) so it can never loop on judgment
+//! alone. With the breakers set to [`OFF`](fixloop::FixLoopConfig::OFF) the driver
+//! reverts to the original walking-skeleton behaviour (the first failure is
+//! terminal), which is how the pre-loop tests stay meaningful. The floor stays
+//! the hard merge gate throughout (design §4/§14): a chunk or feature it blocks is
+//! never merged.
+//!
+//! Tier promotion and the finer per-finding triage of design §8 (DISCUSS /
+//! SPIN_OFF / DROP) remain deferred to follow-ups.
 
+pub mod fixloop;
 pub mod git;
 pub mod providers;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -44,10 +57,13 @@ use crate::floor::{
 };
 use crate::harness::{CancelToken, Check as HarnessCheck, ChunkOutcome, ChunkRequest, CodeHarness};
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::pipeline::{DecisionEnvelope, DecisionTier};
+use crate::pipeline::{Action, DecisionEnvelope, DecisionTier, Finding, FindingVerdict, Severity};
 
+use fixloop::FixLoopConfig;
 use git::MergeOutcome;
-use providers::{SpecContext, SpecProvider, VerifyContext, VerifyJudgment, VerifyProvider};
+use providers::{
+    SpecContext, SpecProvider, VerifyContext, VerifyDisposition, VerifyJudgment, VerifyProvider,
+};
 
 /// A failure in the live pipeline. Mapped to a [`CliError`] at the command
 /// boundary; each variant carries a stable code for the error envelope.
@@ -150,6 +166,9 @@ pub struct PipelineConfig {
     pub keep: bool,
     /// Optional per-chunk wall-clock ceiling for the code harness.
     pub chunk_timeout: Option<Duration>,
+    /// Circuit-breaker bounds for the verify→triage→fix loop (design §9). Use
+    /// [`FixLoopConfig::OFF`] for the v1 "first failure is terminal" behaviour.
+    pub fix_loop: FixLoopConfig,
 }
 
 /// One chunk's outcome in the report.
@@ -237,6 +256,17 @@ pub struct PipelineReport {
     pub status: String,
     /// Decision envelopes recording the tier that made each call (design §2).
     pub decisions: Vec<DecisionEnvelope>,
+    /// Number of `RE_CODE_CHUNK` re-briefs performed across the whole run (design
+    /// §8) — both code-stage floor re-codes and verify-driven fix re-codes.
+    pub recode_count: u32,
+    /// Number of `TRIGGER_RE_SPEC` events (design §7). `plan_rev` equals `1 +
+    /// respec_count`.
+    pub respec_count: u32,
+    /// Set when a deterministic circuit-breaker stopped the loop (design §9),
+    /// naming which ceiling tripped. Its presence means the run terminated on a
+    /// breaker rather than converging or hitting a plain terminal state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker: Option<String>,
     /// A terminal failure reason, when the pipeline could not complete the loop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
@@ -394,11 +424,33 @@ struct Run<'a> {
     /// The feature-level floor verdict, once the final re-check runs.
     feature_floor: Option<FloorVerdict>,
     /// Set when the code stage stopped a chunk short; names the terminal status
-    /// (`chunk_floor_blocked` vs `chunk_failed` vs `chunk_merge_conflict`).
+    /// (`chunk_floor_blocked` vs `chunk_failed` vs `chunk_merge_conflict`, or
+    /// `circuit_breaker` once a chunk's re-code budget is exhausted).
     code_block_status: Option<&'static str>,
+    /// Per-chunk lifecycle across the fix loop (design §7). Seeded Pending from
+    /// the plan; a chunk becomes `Merged` when it lands on `feat/<slug>`, and is
+    /// reset to `Pending` by a `RE_CODE_CHUNK` re-brief or a re-spec DAG-diff.
+    chunk_status: BTreeMap<String, LiveChunkStatus>,
     /// Chunk (worktree, branch) pairs preserved because they were not merged.
     preserved: Vec<(PathBuf, String)>,
+    /// Total `RE_CODE_CHUNK` re-briefs (design §8), for the report + breaker audit.
+    recode_count: u32,
+    /// Total `TRIGGER_RE_SPEC` events (design §7).
+    respec_count: u32,
+    /// Set when a circuit-breaker stopped the loop (design §9).
+    circuit_breaker: Option<String>,
     merged_to_source: bool,
+}
+
+/// A chunk's lifecycle in the live fix loop (a coarse projection of design §7's
+/// chunk states, sufficient for the skeleton). `NeedsReverify` is modelled by
+/// resetting to `Pending`: a re-coded chunk is re-run *and* re-verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveChunkStatus {
+    /// Not yet coded, reverted by a re-code / re-spec, or awaiting a re-run.
+    Pending,
+    /// Committed and merged into the integration branch.
+    Merged,
 }
 
 impl Drop for Run<'_> {
@@ -484,7 +536,11 @@ pub fn run_pipeline(
         chunk_reports: Vec::new(),
         feature_floor: None,
         code_block_status: None,
+        chunk_status: BTreeMap::new(),
         preserved: Vec::new(),
+        recode_count: 0,
+        respec_count: 0,
+        circuit_breaker: None,
         merged_to_source: false,
     };
 
@@ -492,16 +548,13 @@ pub fn run_pipeline(
     let baseline_snapshot = capture_snapshot(cfg, &integration_wt)?;
     let baseline = BaselineSnapshot::new(format!("{integration_branch}@fork"), baseline_snapshot);
 
-    // --- 2. Spec [Opus]: produce + validate the plan (retry once). ---
-    let plan = produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline())?;
+    // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
+    let mut plan = produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline(), 1, None)?;
     // Discard any side effect the (headless, permission-skipped) spec stage left
     // in the worktree: spec is a planner, so chunks must fork from a pristine
     // fork commit, not from spec's stray edits.
     git::restore_to(&run.integration_wt, &run.fork_commit)?;
-    let plan_json = serde_json::to_string_pretty(&plan)
-        .map_err(|e| PipelineError::Io(format!("could not serialize plan.json: {e}")))?;
-    std::fs::write(cfg.workdir.join("plan.json"), &plan_json)
-        .map_err(|e| PipelineError::Io(format!("could not write plan.json: {e}")))?;
+    write_plan(&run, &plan)?;
     run.decisions.push(envelope(
         "spec",
         DecisionTier::Decider,
@@ -513,37 +566,143 @@ pub fn run_pipeline(
         spec.model(),
         spec.prompt_version(),
     ));
+    // Seed every chunk Pending (design §7): the code stage advances them to Merged.
+    run.chunk_status = plan
+        .chunks
+        .iter()
+        .map(|c| (c.id.clone(), LiveChunkStatus::Pending))
+        .collect();
 
-    // --- 3. Code [claude-deepseek]: run each chunk, floor-gate, merge. ---
-    run_code_stage(&mut run, &plan, code, &baseline)?;
-    let code_ok = run.chunk_reports.iter().all(|c| c.merged);
+    // Per-chunk verify findings to fold into the next code-stage re-brief (design
+    // §8 RE_CODE_CHUNK). Populated when a FIX verdict targets chunks; the code
+    // stage consumes them, so it is cleared after each pass.
+    let mut pending_findings: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    if !code_ok {
-        // A chunk failed the floor / harness: v1 has no fix loop. Stop, preserve
-        // the failing chunk, and report (the floor is the hard gate — no merge).
-        // The specific terminal status was recorded by the code stage.
-        let status = run.code_block_status.unwrap_or("chunk_failed");
-        return Ok(finalize(&run, &plan, None, false, None, status));
-    }
+    // --- 3-5. The bounded verify→triage→fix loop (design §7/§8), stopped hard by
+    //          the deterministic circuit-breakers of §9. ---
+    let mut fix_iter = 0u32;
+    let outcome = loop {
+        // CODE STAGE over the Pending chunks, each with its own bounded RE_CODE
+        // re-brief loop (design §8). Already-Merged chunks are skipped.
+        run_code_stage(&mut run, &plan, code, &baseline, &pending_findings)?;
+        pending_findings.clear();
+        if run.circuit_breaker.is_some() {
+            // A chunk exhausted its re-code budget — the repeated-failure breaker
+            // tripped (design §9). Stop; the failing chunk is preserved.
+            break LoopExit::Terminal {
+                verify: None,
+                status: "circuit_breaker",
+            };
+        }
+        if !all_merged(&run, &plan) {
+            // A chunk could not be merged and re-code was off / not applicable:
+            // terminal at the specific status the code stage recorded (the floor
+            // is the hard gate — no merge, design §4/§14).
+            let status = run.code_block_status.unwrap_or("chunk_failed");
+            break LoopExit::Terminal {
+                verify: None,
+                status,
+            };
+        }
 
-    // --- 4. Verify [Opus]: run acceptance checks + judge product-vs-intent. ---
-    let verify_report = run_verify_stage(&mut run, &plan, verify)?;
-    // The verify stage is a judge, but it too ran headless with skipped
-    // permissions — restore the worktree to the exact floor-gated feature tip so
-    // no verify-time mutation can smuggle content past the floor into the merge.
-    let feat_tip = git::head(&run.integration_wt)?;
-    git::restore_to(&run.integration_wt, &feat_tip)?;
+        // VERIFY on the feature tip (design §6 VAIHE 3). Restore the worktree to
+        // the exact floor-gated tip afterwards so no verify-time mutation can
+        // smuggle content past the floor.
+        let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
+        let feat_tip = git::head(&run.integration_wt)?;
+        git::restore_to(&run.integration_wt, &feat_tip)?;
+        if verify_report.passed {
+            break LoopExit::Converged {
+                verify: verify_report,
+                feat_tip,
+            };
+        }
 
-    if !verify_report.passed {
-        return Ok(finalize(
-            &run,
-            &plan,
-            Some(verify_report),
-            false,
-            None,
-            "verify_failed",
-        ));
-    }
+        // Verify failed → triage, bounded by the fix-iteration breaker (design §9).
+        if fix_iter >= run.cfg.fix_loop.max_fix_iterations {
+            // With the bound at 0 no fix was ever attempted → the v1 terminal
+            // `verify_failed`; otherwise the loop tried and the breaker trips.
+            let status = if run.cfg.fix_loop.max_fix_iterations == 0 {
+                "verify_failed"
+            } else {
+                run.circuit_breaker = Some(format!(
+                    "verify still failing after {} fix iteration(s)",
+                    run.cfg.fix_loop.max_fix_iterations
+                ));
+                "circuit_breaker"
+            };
+            break LoopExit::Terminal {
+                verify: Some(verify_report),
+                status,
+            };
+        }
+        fix_iter += 1;
+
+        match disposition {
+            VerifyDisposition::Fix | VerifyDisposition::FixChunks { .. } => {
+                // v1 limitation (design §7 "RE_CODE re-commits on feat"): a
+                // re-coded chunk forks off the current feat tip and commits a NEW
+                // fix ON TOP of its prior merged work — the old commit is not
+                // reverted first. The re-brief carries the findings, so an additive
+                // fix converges; a fix that must *replace* prior output is not
+                // fully modelled yet (a per-chunk revert is a follow-up).
+                let targets = resolve_fix_targets(&disposition, &plan, &run);
+                if targets.is_empty() {
+                    // No chunk to re-code (e.g. nothing merged yet) — cannot make
+                    // progress on a fix, so this is a terminal verify failure.
+                    break LoopExit::Terminal {
+                        verify: Some(verify_report),
+                        status: "verify_failed",
+                    };
+                }
+                for id in &targets {
+                    record_recode_decision(
+                        &mut run,
+                        id,
+                        &verify_report.findings,
+                        &verify.model(),
+                        &verify.prompt_version(),
+                        "verify FIX",
+                    );
+                    pending_findings.insert(id.clone(), verify_report.findings.clone());
+                    run.chunk_status
+                        .insert(id.clone(), LiveChunkStatus::Pending);
+                }
+                // Loop back → the code stage re-runs the reverted chunks, then the
+                // loop re-verifies (design §8: FIX-class MUST re-verify before close).
+            }
+            VerifyDisposition::SpecFlaw { reason, chunk_ids } => {
+                if run.respec_count >= run.cfg.fix_loop.max_respec {
+                    // Re-spec off (0) → terminal verify failure; else breaker trip.
+                    let status = if run.cfg.fix_loop.max_respec == 0 {
+                        "verify_failed"
+                    } else {
+                        run.circuit_breaker = Some(format!(
+                            "re-spec budget exhausted after {} re-spec(s)",
+                            run.cfg.fix_loop.max_respec
+                        ));
+                        "circuit_breaker"
+                    };
+                    break LoopExit::Terminal {
+                        verify: Some(verify_report),
+                        status,
+                    };
+                }
+                // TRIGGER_RE_SPEC (design §7): produce plan.v(N+1), DAG-diff which
+                // chunks revert to Pending, then loop back to the code stage.
+                plan = trigger_re_spec(&mut run, spec, &plan, &reason, &chunk_ids, &baseline)?;
+                // Loop back → code stage re-runs reverted chunks, then re-verifies.
+            }
+        }
+    };
+
+    // Resolve the loop outcome into a report.
+    let (verify_report, feat_tip) = match outcome {
+        LoopExit::Terminal { verify, status } => {
+            return Ok(finalize(&run, &plan, verify, false, None, status));
+        }
+        LoopExit::Converged { verify, feat_tip } => (verify, feat_tip),
+    };
 
     // --- 5. Merge: re-check the feature floor at the tip, then merge → source. ---
     let declared: Vec<PathBuf> = union_declared_files(&plan);
@@ -619,6 +778,199 @@ pub fn run_pipeline(
     }
 }
 
+/// The outcome of the bounded fix loop: either a terminal state (a breaker trip,
+/// a floor block, or a failed verify with the fix budget spent) or convergence
+/// (verify passed, ready to merge at `feat_tip`).
+enum LoopExit {
+    /// The loop stopped without converging; carries the report status and the
+    /// verify report, if the loop reached verify.
+    Terminal {
+        verify: Option<VerifyReport>,
+        status: &'static str,
+    },
+    /// Verify passed; merge the feature at this tip.
+    Converged {
+        verify: VerifyReport,
+        feat_tip: String,
+    },
+}
+
+/// Whether every chunk in the current plan is Merged (design §7). The fix loop
+/// proceeds to verify only when the whole plan is on the integration branch.
+fn all_merged(run: &Run, plan: &Plan) -> bool {
+    plan.chunks
+        .iter()
+        .all(|c| run.chunk_status.get(&c.id) == Some(&LiveChunkStatus::Merged))
+}
+
+/// The chunks a FIX verdict should re-code (design §8). An explicit, in-plan
+/// `chunk_ids` list wins; otherwise (a bare `Fix`, or a list naming no known
+/// chunk) fall back to every currently-merged chunk — a coarse but safe default
+/// that re-verifies afterward.
+fn resolve_fix_targets(disp: &VerifyDisposition, plan: &Plan, run: &Run) -> Vec<String> {
+    let merged: Vec<String> = plan
+        .chunks
+        .iter()
+        .filter(|c| run.chunk_status.get(&c.id) == Some(&LiveChunkStatus::Merged))
+        .map(|c| c.id.clone())
+        .collect();
+    match disp {
+        VerifyDisposition::FixChunks { chunk_ids } => {
+            let valid: Vec<String> = chunk_ids
+                .iter()
+                .filter(|id| run.chunk_status.contains_key(*id))
+                .cloned()
+                .collect();
+            if valid.is_empty() {
+                merged
+            } else {
+                valid
+            }
+        }
+        _ => merged,
+    }
+}
+
+/// Record a `RE_CODE_CHUNK` decision as the T4 [`Action`] primitive with a
+/// tier-correct [`DecisionEnvelope`] (design §8, reusing the landed scaffold),
+/// and bump the run's re-code counter. `findings` are the verify/floor findings
+/// folded into the re-brief.
+fn record_recode_decision(
+    run: &mut Run,
+    chunk_id: &str,
+    findings: &[String],
+    model: &str,
+    prompt_version: &str,
+    source: &str,
+) {
+    let action = Action::ReCodeChunk {
+        chunk_id: chunk_id.to_string(),
+        findings: findings
+            .iter()
+            .enumerate()
+            .map(|(i, f)| Finding {
+                id: format!("{chunk_id}-f{i}"),
+                summary: f.clone(),
+                verdict: FindingVerdict::Fix,
+                severity: Severity::Medium,
+            })
+            .collect(),
+    };
+    let env = fixloop::action_envelope(
+        &action,
+        "coordinator",
+        model,
+        prompt_version,
+        format!("re-code chunk {chunk_id} ({source})"),
+        vec![format!("chunk:{chunk_id}")],
+    );
+    run.recode_count += 1;
+    run.decisions.push(env);
+}
+
+/// `TRIGGER_RE_SPEC` (design §7): record the decision, ask the spec provider for a
+/// new plan revision against the flaw reason, DAG-diff old→new to decide which
+/// chunks revert to Pending, apply that to the run's chunk state, persist the new
+/// plan revision, and return it.
+fn trigger_re_spec(
+    run: &mut Run,
+    spec: &dyn SpecProvider,
+    old_plan: &Plan,
+    reason: &str,
+    forced: &[String],
+    baseline: &BaselineSnapshot,
+) -> Result<Plan, PipelineError> {
+    run.respec_count += 1;
+    let new_rev = old_plan.plan_rev.saturating_add(1);
+
+    // Record the consequential TRIGGER_RE_SPEC as the T4 primitive (decider-tier).
+    let action = Action::TriggerReSpec {
+        reason: reason.to_string(),
+        chunk_ids: forced.to_vec(),
+    };
+    let env = fixloop::action_envelope(
+        &action,
+        "decider",
+        &spec.model(),
+        &spec.prompt_version(),
+        format!("re-spec to plan.v{new_rev}: {reason}"),
+        vec![format!("plan:{}", old_plan.plan_rev)],
+    );
+    run.decisions.push(env);
+
+    // Produce plan.v(N+1). The spec stage runs headless in the integration
+    // worktree; restore it to the current tip afterward so a planner's stray edit
+    // never bleeds into the code stage.
+    let feat_tip = git::head(&run.integration_wt)?;
+    let old_raw = serde_json::to_value(old_plan)
+        .map_err(|e| PipelineError::Io(format!("could not serialize prior plan: {e}")))?;
+    let new_plan = produce_and_validate_plan(
+        run,
+        spec,
+        &baseline.to_plan_baseline(),
+        new_rev,
+        Some((&old_raw, reason)),
+    )?;
+    git::restore_to(&run.integration_wt, &feat_tip)?;
+
+    // DAG-diff old→new: which chunks revert to Pending vs. stay Done (design §7).
+    let merged: BTreeSet<String> = run
+        .chunk_status
+        .iter()
+        .filter(|(_, s)| **s == LiveChunkStatus::Merged)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let diff = fixloop::dag_diff(old_plan, &new_plan, &merged, forced);
+
+    // Rebuild the chunk-status map for the NEW plan. Removed chunks drop out (with
+    // their reports); kept-done chunks stay Merged; everything else is Pending.
+    let mut status = BTreeMap::new();
+    for id in &diff.kept_done {
+        status.insert(id.clone(), LiveChunkStatus::Merged);
+    }
+    for id in &diff.revert_to_pending {
+        status.insert(id.clone(), LiveChunkStatus::Pending);
+    }
+    run.chunk_status = status;
+    // Drop reports for chunks no longer in the plan (removed) or about to be
+    // re-coded (reverted) — the re-run upserts a fresh report for the latter.
+    let keep: BTreeSet<&str> = diff.kept_done.iter().map(String::as_str).collect();
+    run.chunk_reports.retain(|r| keep.contains(r.id.as_str()));
+
+    write_plan(run, &new_plan)?;
+    run.decisions.push(envelope(
+        "spec",
+        DecisionTier::Decider,
+        format!(
+            "re-spec plan.v{new_rev}: {} chunk(s) revert to pending, {} kept done",
+            diff.revert_to_pending.len(),
+            diff.kept_done.len()
+        ),
+        vec![format!("plan:{new_rev}"), format!("intent_rev:1")],
+        spec.model(),
+        spec.prompt_version(),
+    ));
+    Ok(new_plan)
+}
+
+/// Persist the plan for a revision to the workdir: `plan.json` always (the
+/// current plan) plus `plan.v{N}.json` for the revision, so the immutable
+/// per-revision history is retained for audit (design §7).
+fn write_plan(run: &Run, plan: &Plan) -> Result<(), PipelineError> {
+    let plan_json = serde_json::to_string_pretty(plan)
+        .map_err(|e| PipelineError::Io(format!("could not serialize plan.json: {e}")))?;
+    std::fs::write(run.cfg.workdir.join("plan.json"), &plan_json)
+        .map_err(|e| PipelineError::Io(format!("could not write plan.json: {e}")))?;
+    std::fs::write(
+        run.cfg
+            .workdir
+            .join(format!("plan.v{}.json", plan.plan_rev)),
+        &plan_json,
+    )
+    .map_err(|e| PipelineError::Io(format!("could not write plan revision: {e}")))?;
+    Ok(())
+}
+
 /// Bounded number of spec attempts: the initial produce plus repair re-prompts.
 /// Keeps the pre-existing count (design §6 VAIHE 1 — bounded re-spec).
 const MAX_PLAN_ATTEMPTS: u32 = 2;
@@ -642,6 +994,8 @@ fn produce_and_validate_plan(
     run: &Run,
     spec: &dyn SpecProvider,
     baseline: &plan::Baseline,
+    plan_rev: u32,
+    respec: Option<(&serde_json::Value, &str)>,
 ) -> Result<Plan, PipelineError> {
     let ctx = SpecContext {
         intent: &run.cfg.intent,
@@ -661,11 +1015,16 @@ fn produce_and_validate_plan(
     let mut last_err: Option<String> = None;
 
     for attempt in 0..MAX_PLAN_ATTEMPTS {
-        // First attempt produces from scratch; every later attempt is a repair
-        // re-prompt carrying the previous error + invalid JSON forward (after
-        // attempt 0 both `last_raw` and `last_err` are always set).
+        // The first attempt produces the candidate (a re-spec if `respec` is set,
+        // else a fresh plan); every later attempt is a VALIDATOR repair re-prompt
+        // carrying the previous error + invalid JSON forward (after attempt 0 both
+        // `last_raw` and `last_err` are always set). A re-spec that produces an
+        // invalid plan is thus still repaired the same bounded way.
         let produced = match (attempt, &last_raw, &last_err) {
-            (0, _, _) => spec.produce_plan(&ctx),
+            (0, _, _) => match respec {
+                Some((prev, reason)) => spec.respec_plan(&ctx, prev, reason),
+                None => spec.produce_plan(&ctx),
+            },
             (_, Some(invalid), Some(err)) => spec.repair_plan(&ctx, invalid, err),
             // Unreachable: fall back to a fresh produce rather than panic.
             _ => spec.produce_plan(&ctx),
@@ -680,7 +1039,7 @@ fn produce_and_validate_plan(
                 return Err(e);
             }
         };
-        let normalized = normalize_plan(raw.clone(), run, baseline);
+        let normalized = normalize_plan(raw.clone(), run, baseline, plan_rev);
         match plan::parse_and_validate_plan(&normalized) {
             Ok(p) => return Ok(p),
             Err(e) => {
@@ -723,6 +1082,7 @@ fn normalize_plan(
     raw: serde_json::Value,
     run: &Run,
     baseline: &plan::Baseline,
+    plan_rev: u32,
 ) -> serde_json::Value {
     use serde_json::json;
     let mut obj = match raw {
@@ -734,7 +1094,7 @@ fn normalize_plan(
         "schema_version".to_string(),
         json!(plan::PLAN_SCHEMA_VERSION),
     );
-    obj.insert("plan_rev".to_string(), json!(1));
+    obj.insert("plan_rev".to_string(), json!(plan_rev));
     obj.insert("intent_rev".to_string(), json!(1));
     obj.insert(
         "feature".to_string(),
@@ -767,277 +1127,374 @@ fn union_declared_files(plan: &Plan) -> Vec<PathBuf> {
     seen.into_iter().collect()
 }
 
-/// Run every chunk in dependency order: fork a chunk worktree off the current
-/// integration tip, drive the code harness, apply the floor gates, and merge on
-/// green (design §6 VAIHE 2). Stops at the first chunk that does not merge (v1
-/// has no fix loop); the failing chunk's branch/worktree are preserved.
+/// Run the plan's still-Pending chunks in dependency order, each through its own
+/// bounded `RE_CODE` re-brief loop (design §6 VAIHE 2 + §8). For each chunk: fork a
+/// worktree off the current integration tip, drive the harness, gate the floor,
+/// and merge on green. A floor-blocked / harness-failed attempt is re-briefed
+/// with its findings and retried up to
+/// [`max_recode_per_chunk`](FixLoopConfig::max_recode_per_chunk) times; once that
+/// budget is exhausted the repeated-failure circuit-breaker (design §9) stops the
+/// stage and the last failing attempt is preserved. Already-Merged chunks (from a
+/// prior iteration or a re-spec's kept-done set) are skipped. On any block the
+/// stage stops (the floor is the hard gate); the caller inspects
+/// [`Run::circuit_breaker`] / [`Run::code_block_status`].
 fn run_code_stage(
     run: &mut Run,
     plan: &Plan,
     code: &dyn CodeHarness,
     baseline: &BaselineSnapshot,
+    pending_findings: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), PipelineError> {
     let order = topo_order(&plan.chunks);
     for &idx in &order {
         let chunk = &plan.chunks[idx];
-        let base_commit = git::head(&run.integration_wt)?;
-        let chunk_branch = format!("{}/chunk-{}", run.slug, chunk.id);
-        let chunk_wt = run.cfg.workdir.join(format!("chunk-{}", chunk.id));
+        if run.chunk_status.get(&chunk.id) == Some(&LiveChunkStatus::Merged) {
+            continue; // already on feat/<slug> (kept-done or merged earlier)
+        }
 
-        git::worktree_add_new_branch(&run.repo, &chunk_wt, &chunk_branch, &base_commit)?;
-
-        let checks: Vec<HarnessCheck> = chunk
-            .checks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| to_harness_check(i, c))
-            .collect();
-        let req = ChunkRequest {
-            run_id: format!("pipeline-{}", run.slug),
-            chunk_id: chunk.id.clone(),
-            attempt_id: "a1".to_string(),
-            worktree_path: chunk_wt.clone(),
-            base_commit: base_commit.clone(),
-            plan_rev: plan.plan_rev.to_string(),
-            brief: chunk.brief.clone(),
-            checks,
-            files: chunk.files_touched.iter().map(PathBuf::from).collect(),
-            timeout: run.cfg.chunk_timeout,
-        };
-
-        let cancel = CancelToken::new();
-        let result = code
-            .run_chunk(&req, &cancel)
-            .map_err(|e| PipelineError::Harness(e.to_string()))?;
-
-        match &result.outcome {
-            ChunkOutcome::Committed { commit } => {
-                // Validate the harness's claimed commit against real git state
-                // BEFORE the floor — an adapter that lies (reports a commit but
-                // left HEAD unmoved, or committed an empty/rewritten tree, or
-                // left the passing work uncommitted) must not slip a merge past
-                // the floor. The floor then gates the exact committed tree.
-                let head = git::head(&chunk_wt)?;
-                if &head != commit {
-                    return block_and_stop(
-                        run,
-                        chunk,
-                        "failed",
-                        "chunk_failed",
-                        format!("harness reported commit {commit} but worktree HEAD is {head}"),
-                        &chunk_wt,
-                        &chunk_branch,
-                    );
-                }
-                if head == base_commit {
-                    return block_and_stop(
-                        run,
-                        chunk,
-                        "no_change",
-                        "chunk_failed",
-                        "harness reported a commit but HEAD did not advance".to_string(),
-                        &chunk_wt,
-                        &chunk_branch,
-                    );
-                }
-                if !git::is_ancestor(&chunk_wt, &base_commit, &head)? {
-                    return block_and_stop(
-                        run, chunk, "failed", "chunk_failed",
-                        format!("chunk commit {head} is not a descendant of its base {base_commit} (history rewritten)"),
-                        &chunk_wt, &chunk_branch,
-                    );
-                }
-                if !git::is_clean(&chunk_wt)? {
-                    return block_and_stop(
-                        run,
-                        chunk,
-                        "failed",
-                        "chunk_failed",
-                        "chunk worktree has uncommitted changes after the commit".to_string(),
-                        &chunk_wt,
-                        &chunk_branch,
-                    );
-                }
-                let changed = floor::git::changed_files(&chunk_wt, &base_commit, &head)?;
-                if changed.is_empty() {
-                    return block_and_stop(
-                        run,
-                        chunk,
-                        "no_change",
-                        "chunk_failed",
-                        "committed chunk has an empty diff".to_string(),
-                        &chunk_wt,
-                        &chunk_branch,
-                    );
-                }
-
-                let verdict = gate_chunk(run, chunk, &chunk_wt, &base_commit, &changed, baseline)?;
-                if verdict.passed() {
-                    // Floor green → supervisor-side merge of the EXACT gated
-                    // commit oid (not the mutable branch name — a stray child
-                    // process could have advanced the branch after the gate).
-                    let outcome = git::merge_no_ff(
-                        &run.integration_wt,
-                        &head,
-                        &format!("pipeline: merge chunk {}", chunk.id),
-                    )?;
-                    match outcome {
-                        MergeOutcome::Merged {
-                            commit: merge_commit,
-                        } => {
-                            run.decisions.push(envelope(
-                                "supervisor",
-                                DecisionTier::Coordinator,
-                                format!("chunk {} floor green — merged", chunk.id),
-                                vec![format!("chunk:{}", chunk.id), format!("commit:{head}")],
-                                "supervisor",
-                                "v1",
-                            ));
-                            run.chunk_reports.push(ChunkReport {
-                                id: chunk.id.clone(),
-                                title: chunk.title.clone(),
-                                tier: chunk.tier.wire_name().to_string(),
-                                outcome: "committed".to_string(),
-                                floor_passed: Some(true),
-                                floor: Some(verdict),
-                                merged: true,
-                                commit: Some(head.clone()),
-                                merge_commit: Some(merge_commit),
-                                reason: None,
-                                branch_preserved: None,
-                            });
-                            // Chunk branch is now merged into feat → safe to drop
-                            // its worktree and branch.
-                            let _ = git::worktree_remove(&run.repo, &chunk_wt);
-                            let _ = git::delete_branch(&run.repo, &chunk_branch, false);
-                        }
-                        MergeOutcome::Conflict { details } => {
-                            return block_and_stop(
-                                run,
-                                chunk,
-                                "committed",
-                                "chunk_merge_conflict",
-                                format!("chunk merge conflict: {details}"),
-                                &chunk_wt,
-                                &chunk_branch,
-                            )
-                            .map(|()| record_chunk_floor(run, Some(verdict), Some(true)));
-                        }
-                    }
-                } else {
-                    // Floor blocked → preserve the chunk branch, record, stop.
+        // Seed the first attempt's re-brief with any verify findings the fix loop
+        // routed to this chunk (a verify-driven RE_CODE_CHUNK); subsequent
+        // attempts re-brief with the floor findings from the prior failure.
+        let mut findings: Vec<String> =
+            pending_findings.get(&chunk.id).cloned().unwrap_or_default();
+        let mut attempt = 1u32;
+        loop {
+            match attempt_chunk(run, plan, chunk, code, baseline, attempt, &findings)? {
+                ChunkAttempt::Merged {
+                    verdict,
+                    commit,
+                    merge_commit,
+                } => {
                     run.decisions.push(envelope(
                         "supervisor",
                         DecisionTier::Coordinator,
-                        format!("chunk {} floor blocked — preserved, not merged", chunk.id),
+                        format!("chunk {} floor green — merged", chunk.id),
+                        vec![format!("chunk:{}", chunk.id), format!("commit:{commit}")],
+                        "supervisor",
+                        "v1",
+                    ));
+                    upsert_chunk_report(
+                        run,
+                        ChunkReport {
+                            id: chunk.id.clone(),
+                            title: chunk.title.clone(),
+                            tier: chunk.tier.wire_name().to_string(),
+                            outcome: "committed".to_string(),
+                            floor_passed: Some(true),
+                            floor: Some(verdict),
+                            merged: true,
+                            commit: Some(commit),
+                            merge_commit: Some(merge_commit),
+                            reason: None,
+                            branch_preserved: None,
+                        },
+                    );
+                    run.chunk_status
+                        .insert(chunk.id.clone(), LiveChunkStatus::Merged);
+                    break;
+                }
+                ChunkAttempt::Blocked {
+                    outcome,
+                    status,
+                    reason,
+                    findings: attempt_findings,
+                    floor,
+                    floor_passed,
+                    recodable,
+                    wt,
+                    branch,
+                } => {
+                    // Re-code while the chunk is re-codable and its budget holds
+                    // (design §8). `attempt` is 1-based, so attempt N is allowed a
+                    // re-code iff N ≤ max_recode_per_chunk.
+                    if recodable && attempt <= run.cfg.fix_loop.max_recode_per_chunk {
+                        record_recode_decision(
+                            run,
+                            &chunk.id,
+                            &attempt_findings,
+                            "supervisor",
+                            "v1",
+                            "floor re-code",
+                        );
+                        // The floor-failed attempt is superseded — drop its
+                        // worktree + branch to make room for the re-brief (it is
+                        // not mergeable work; the final failed attempt, if the
+                        // budget runs out, IS preserved below).
+                        let _ = git::worktree_remove(&run.repo, &wt);
+                        let _ = git::delete_branch(&run.repo, &branch, true);
+                        findings = attempt_findings;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    // Terminal for this chunk. Distinguish a breaker trip (we tried
+                    // re-codes and exhausted them) from the v1 first-failure block
+                    // (re-code off, or a non-re-codable outcome like a conflict).
+                    if recodable && run.cfg.fix_loop.max_recode_per_chunk > 0 {
+                        run.circuit_breaker = Some(format!(
+                            "chunk {} still blocked after {} re-code attempt(s): {reason}",
+                            chunk.id, run.cfg.fix_loop.max_recode_per_chunk
+                        ));
+                        run.code_block_status = Some("circuit_breaker");
+                    } else {
+                        run.code_block_status = Some(status);
+                    }
+                    run.decisions.push(envelope(
+                        "supervisor",
+                        DecisionTier::Coordinator,
+                        format!(
+                            "chunk {} blocked — preserved, not merged ({reason})",
+                            chunk.id
+                        ),
                         vec![format!("chunk:{}", chunk.id)],
                         "supervisor",
                         "v1",
                     ));
-                    run.code_block_status = Some("chunk_floor_blocked");
                     push_blocked_chunk(
                         run,
                         chunk,
-                        "committed",
-                        Some(verdict),
-                        Some(false),
-                        "floor gate failed".to_string(),
-                        &chunk_wt,
-                        &chunk_branch,
+                        outcome,
+                        floor,
+                        floor_passed,
+                        reason,
+                        &wt,
+                        &branch,
                     );
                     return Ok(());
                 }
-            }
-            ChunkOutcome::NoChange => {
-                return block_and_stop(
-                    run,
-                    chunk,
-                    "no_change",
-                    "chunk_failed",
-                    "chunk produced no commit".to_string(),
-                    &chunk_wt,
-                    &chunk_branch,
-                );
-            }
-            ChunkOutcome::Failed { reason } => {
-                return block_and_stop(
-                    run,
-                    chunk,
-                    "failed",
-                    "chunk_failed",
-                    reason.clone(),
-                    &chunk_wt,
-                    &chunk_branch,
-                );
-            }
-            ChunkOutcome::Timeout => {
-                return block_and_stop(
-                    run,
-                    chunk,
-                    "timeout",
-                    "chunk_failed",
-                    "chunk timed out".to_string(),
-                    &chunk_wt,
-                    &chunk_branch,
-                );
-            }
-            ChunkOutcome::Cancelled => {
-                return block_and_stop(
-                    run,
-                    chunk,
-                    "cancelled",
-                    "chunk_failed",
-                    "chunk cancelled".to_string(),
-                    &chunk_wt,
-                    &chunk_branch,
-                );
             }
         }
     }
     Ok(())
 }
 
-/// Record a blocked chunk with its terminal status and stop the code stage.
-/// A thin wrapper over [`push_blocked_chunk`] that also stamps
-/// [`Run::code_block_status`] so the driver reports the precise reason
-/// (`chunk_failed` vs `chunk_merge_conflict`). Returns `Ok(())` (never an error)
-/// so the many call sites can `return block_and_stop(…)` to end the loop.
-#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
-fn block_and_stop(
-    run: &mut Run,
-    chunk: &Chunk,
-    outcome: &str,
-    status: &'static str,
-    reason: String,
-    chunk_wt: &Path,
-    chunk_branch: &str,
-) -> Result<(), PipelineError> {
-    run.code_block_status = Some(status);
-    push_blocked_chunk(
-        run,
-        chunk,
-        outcome,
-        None,
-        None,
-        reason,
-        chunk_wt,
-        chunk_branch,
-    );
-    Ok(())
+/// The result of one chunk attempt: a green-floor merge, or a block (with the
+/// findings a re-code would fold into the next brief, and whether the outcome is
+/// re-codable at all — a merge conflict is not).
+enum ChunkAttempt {
+    /// Floor green and merged into the integration branch.
+    Merged {
+        /// The floor verdict at the gated commit.
+        verdict: FloorVerdict,
+        /// The chunk's own resulting commit oid.
+        commit: String,
+        /// The integration-branch merge commit.
+        merge_commit: String,
+    },
+    /// The attempt did not merge; the worktree/branch are the (as-yet un-torn-down)
+    /// attempt state.
+    Blocked {
+        /// Report `outcome` label (`committed`/`no_change`/`failed`/…).
+        outcome: &'static str,
+        /// Terminal status if this is the final attempt and re-code is off.
+        status: &'static str,
+        /// Human-readable block reason.
+        reason: String,
+        /// Findings folded into a re-code re-brief (floor violations, or the
+        /// harness failure reason).
+        findings: Vec<String>,
+        /// The floor verdict, when the block came from the floor gate.
+        floor: Option<FloorVerdict>,
+        /// Whether the floor passed (`Some(true)` only on a merge conflict).
+        floor_passed: Option<bool>,
+        /// Whether this outcome can be retried by a re-code (a merge conflict
+        /// cannot — re-coding the same chunk would not resolve a moved tip here).
+        recodable: bool,
+        /// The attempt's worktree (preserved on a terminal block).
+        wt: PathBuf,
+        /// The attempt's branch (preserved on a terminal block).
+        branch: String,
+    },
 }
 
-/// Backfill the floor verdict onto the just-pushed (blocked) chunk report — used
-/// on the chunk-merge-conflict path, where the floor DID pass but the merge did
-/// not, so the report should still carry the green floor verdict.
-fn record_chunk_floor(run: &mut Run, floor: Option<FloorVerdict>, floor_passed: Option<bool>) {
-    if let Some(last) = run.chunk_reports.last_mut() {
-        last.floor = floor;
-        last.floor_passed = floor_passed;
+/// Run ONE attempt of a chunk: fork an attempt worktree off the current
+/// integration tip, drive the harness with the (possibly re-briefed) brief,
+/// validate the harness's claimed commit against real git state, gate the floor,
+/// and — on green — merge the exact gated oid into the integration branch. Every
+/// integrity check (lying commit, empty diff, rewritten history, dirty worktree)
+/// is preserved from the pre-loop driver; a failure returns a re-codable
+/// [`ChunkAttempt::Blocked`].
+fn attempt_chunk(
+    run: &mut Run,
+    plan: &Plan,
+    chunk: &Chunk,
+    code: &dyn CodeHarness,
+    baseline: &BaselineSnapshot,
+    attempt: u32,
+    findings: &[String],
+) -> Result<ChunkAttempt, PipelineError> {
+    let base_commit = git::head(&run.integration_wt)?;
+    // Attempt 1 keeps the bare chunk names; re-code attempts suffix `-a{n}` so a
+    // preserved prior attempt never collides.
+    let suffix = if attempt == 1 {
+        String::new()
+    } else {
+        format!("-a{attempt}")
+    };
+    let chunk_branch = format!("{}/chunk-{}{suffix}", run.slug, chunk.id);
+    let chunk_wt = run.cfg.workdir.join(format!("chunk-{}{suffix}", chunk.id));
+
+    git::worktree_add_new_branch(&run.repo, &chunk_wt, &chunk_branch, &base_commit)?;
+
+    let checks: Vec<HarnessCheck> = chunk
+        .checks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| to_harness_check(i, c))
+        .collect();
+    let req = ChunkRequest {
+        run_id: format!("pipeline-{}", run.slug),
+        chunk_id: chunk.id.clone(),
+        attempt_id: format!("a{attempt}"),
+        worktree_path: chunk_wt.clone(),
+        base_commit: base_commit.clone(),
+        plan_rev: plan.plan_rev.to_string(),
+        brief: fixloop::rebrief(&chunk.brief, findings),
+        checks,
+        files: chunk.files_touched.iter().map(PathBuf::from).collect(),
+        timeout: run.cfg.chunk_timeout,
+    };
+
+    let cancel = CancelToken::new();
+    let result = code
+        .run_chunk(&req, &cancel)
+        .map_err(|e| PipelineError::Harness(e.to_string()))?;
+
+    // A harness failure (no change / failed / timeout / cancelled) is re-codable;
+    // its reason is the sole re-brief finding.
+    let harness_block = |outcome: &'static str, reason: String| ChunkAttempt::Blocked {
+        outcome,
+        status: "chunk_failed",
+        findings: vec![reason.clone()],
+        reason,
+        floor: None,
+        floor_passed: None,
+        recodable: true,
+        wt: chunk_wt.clone(),
+        branch: chunk_branch.clone(),
+    };
+
+    let commit = match &result.outcome {
+        ChunkOutcome::Committed { commit } => commit.clone(),
+        ChunkOutcome::NoChange => {
+            return Ok(harness_block(
+                "no_change",
+                "chunk produced no commit".to_string(),
+            ))
+        }
+        ChunkOutcome::Failed { reason } => return Ok(harness_block("failed", reason.clone())),
+        ChunkOutcome::Timeout => {
+            return Ok(harness_block("timeout", "chunk timed out".to_string()))
+        }
+        ChunkOutcome::Cancelled => {
+            return Ok(harness_block("cancelled", "chunk cancelled".to_string()))
+        }
+    };
+
+    // Validate the harness's claimed commit against real git state BEFORE the
+    // floor — an adapter that lies (reports a commit but left HEAD unmoved,
+    // committed an empty/rewritten tree, or left the passing work uncommitted)
+    // must not slip a merge past the floor. These are re-codable failures.
+    let head = git::head(&chunk_wt)?;
+    if head != commit {
+        return Ok(harness_block(
+            "failed",
+            format!("harness reported commit {commit} but worktree HEAD is {head}"),
+        ));
+    }
+    if head == base_commit {
+        return Ok(harness_block(
+            "no_change",
+            "harness reported a commit but HEAD did not advance".to_string(),
+        ));
+    }
+    if !git::is_ancestor(&chunk_wt, &base_commit, &head)? {
+        return Ok(harness_block(
+            "failed",
+            format!(
+                "chunk commit {head} is not a descendant of its base {base_commit} (history rewritten)"
+            ),
+        ));
+    }
+    if !git::is_clean(&chunk_wt)? {
+        return Ok(harness_block(
+            "failed",
+            "chunk worktree has uncommitted changes after the commit".to_string(),
+        ));
+    }
+    let changed = floor::git::changed_files(&chunk_wt, &base_commit, &head)?;
+    if changed.is_empty() {
+        return Ok(harness_block(
+            "no_change",
+            "committed chunk has an empty diff".to_string(),
+        ));
+    }
+
+    let verdict = gate_chunk(run, chunk, &chunk_wt, &base_commit, &changed, baseline)?;
+    if !verdict.passed() {
+        // Floor blocked → re-codable, with the floor violations as findings.
+        return Ok(ChunkAttempt::Blocked {
+            outcome: "committed",
+            status: "chunk_floor_blocked",
+            reason: "floor gate failed".to_string(),
+            findings: fixloop::floor_findings(&verdict),
+            floor: Some(verdict),
+            floor_passed: Some(false),
+            recodable: true,
+            wt: chunk_wt,
+            branch: chunk_branch,
+        });
+    }
+
+    // Floor green → supervisor-side merge of the EXACT gated commit oid (not the
+    // mutable branch name — a stray child could have advanced the branch).
+    match git::merge_no_ff(
+        &run.integration_wt,
+        &head,
+        &format!("pipeline: merge chunk {}", chunk.id),
+    )? {
+        MergeOutcome::Merged {
+            commit: merge_commit,
+        } => {
+            // Merged into feat → drop the chunk worktree + branch. Force-delete:
+            // the branch is provably merged into the integration branch (its work
+            // is preserved there), but `git branch -d` checks against the repo's
+            // ambient HEAD — which is not `feat/<slug>` — and so would refuse and
+            // leak the branch, colliding when a later fix-loop iteration re-runs
+            // the same chunk.
+            let _ = git::worktree_remove(&run.repo, &chunk_wt);
+            let _ = git::delete_branch(&run.repo, &chunk_branch, true);
+            Ok(ChunkAttempt::Merged {
+                verdict,
+                commit: head,
+                merge_commit,
+            })
+        }
+        MergeOutcome::Conflict { details } => Ok(ChunkAttempt::Blocked {
+            outcome: "committed",
+            status: "chunk_merge_conflict",
+            reason: format!("chunk merge conflict: {details}"),
+            findings: vec![format!("chunk merge conflict: {details}")],
+            floor: Some(verdict),
+            floor_passed: Some(true),
+            recodable: false,
+            wt: chunk_wt,
+            branch: chunk_branch,
+        }),
     }
 }
 
+/// Push a chunk report, replacing any existing report for the same chunk id
+/// (a chunk can be re-run across fix-loop iterations — the latest outcome wins,
+/// so the report stays one-per-chunk).
+fn upsert_chunk_report(run: &mut Run, report: ChunkReport) {
+    run.chunk_reports.retain(|r| r.id != report.id);
+    run.chunk_reports.push(report);
+}
+
 /// Record a chunk that did not merge and mark its worktree/branch preserved for
-/// inspection (state-integrity invariant 5).
+/// inspection (state-integrity invariant 5). Upserts so a re-run's terminal block
+/// replaces any earlier report for the chunk.
 #[allow(clippy::too_many_arguments)]
 fn push_blocked_chunk(
     run: &mut Run,
@@ -1051,19 +1508,22 @@ fn push_blocked_chunk(
 ) {
     run.preserved
         .push((chunk_wt.to_path_buf(), chunk_branch.to_string()));
-    run.chunk_reports.push(ChunkReport {
-        id: chunk.id.clone(),
-        title: chunk.title.clone(),
-        tier: chunk.tier.wire_name().to_string(),
-        outcome: outcome.to_string(),
-        floor_passed,
-        floor,
-        merged: false,
-        commit: None,
-        merge_commit: None,
-        reason: Some(reason),
-        branch_preserved: Some(chunk_branch.to_string()),
-    });
+    upsert_chunk_report(
+        run,
+        ChunkReport {
+            id: chunk.id.clone(),
+            title: chunk.title.clone(),
+            tier: chunk.tier.wire_name().to_string(),
+            outcome: outcome.to_string(),
+            floor_passed,
+            floor,
+            merged: false,
+            commit: None,
+            merge_commit: None,
+            reason: Some(reason),
+            branch_preserved: Some(chunk_branch.to_string()),
+        },
+    );
 }
 
 /// Evaluate the per-chunk floor (design §4): the chunk's own checks pass, no
@@ -1110,7 +1570,7 @@ fn run_verify_stage(
     run: &mut Run,
     plan: &Plan,
     verify: &dyn VerifyProvider,
-) -> Result<VerifyReport, PipelineError> {
+) -> Result<(VerifyReport, VerifyDisposition), PipelineError> {
     let acceptance_checks: Vec<plan::Check> = plan
         .acceptance
         .iter()
@@ -1143,13 +1603,27 @@ fn run_verify_stage(
         verify.prompt_version(),
     ));
 
-    Ok(VerifyReport {
-        acceptance_checks_passed,
-        judged_passed: judgment.passed,
-        passed: acceptance_checks_passed && judgment.passed,
-        summary: judgment.summary,
-        findings: judgment.findings,
-    })
+    // The combined verdict is mechanical (acceptance checks) ∧ judged. The judge's
+    // disposition (FIX vs SPEC-FLAW) only carries a signal when the JUDGE failed;
+    // if the judge passed but an acceptance check failed, there is no SPEC-FLAW
+    // signal, so fall back to a bare FIX (re-code, don't re-spec).
+    let passed = acceptance_checks_passed && judgment.passed;
+    let disposition = if judgment.passed {
+        VerifyDisposition::Fix
+    } else {
+        judgment.disposition.clone()
+    };
+
+    Ok((
+        VerifyReport {
+            acceptance_checks_passed,
+            judged_passed: judgment.passed,
+            passed,
+            summary: judgment.summary,
+            findings: judgment.findings,
+        },
+        disposition,
+    ))
 }
 
 /// Convert an executable `acceptance` item into a runnable [`plan::Check`];
@@ -1265,6 +1739,11 @@ fn finalize(
         "merge_conflict" => {
             Some("the feature floor was green but the source branch moved and the merge conflicted".to_string())
         }
+        "circuit_breaker" => Some(
+            run.circuit_breaker
+                .clone()
+                .unwrap_or_else(|| "a circuit-breaker stopped the fix loop; not merged".to_string()),
+        ),
         other => Some(other.to_string()),
     };
     PipelineReport {
@@ -1281,6 +1760,9 @@ fn finalize(
         final_commit,
         status: status.to_string(),
         decisions: run.decisions.clone(),
+        recode_count: run.recode_count,
+        respec_count: run.respec_count,
+        circuit_breaker: run.circuit_breaker.clone(),
         failure,
     }
 }
@@ -1341,6 +1823,13 @@ pub struct PipelineRunConfig {
     pub keep: bool,
     /// Optional per-chunk timeout (seconds).
     pub chunk_timeout_secs: Option<u64>,
+    /// Max `RE_CODE` re-attempts per chunk in the code stage (design §8/§9).
+    /// `None` uses the live default.
+    pub max_recode_per_chunk: Option<u32>,
+    /// Max verify→fix cycles (design §8/§9). `None` uses the live default.
+    pub max_fix_iterations: Option<u32>,
+    /// Max `TRIGGER_RE_SPEC` events (design §7/§9). `None` uses the live default.
+    pub max_respec: Option<u32>,
 }
 
 /// `pipeline run` entry point: resolve config, wire the LIVE Claude/deepseek
@@ -1381,6 +1870,17 @@ pub fn cmd_run(
         file_scope_slack: cfg.file_scope_slack,
         keep: cfg.keep,
         chunk_timeout: cfg.chunk_timeout_secs.map(Duration::from_secs),
+        fix_loop: {
+            // The verify→triage→fix loop is ON by default for the live command
+            // (design §7/§8), bounded by the §9 breakers; each bound is
+            // individually overridable.
+            let d = FixLoopConfig::live_default();
+            FixLoopConfig {
+                max_recode_per_chunk: cfg.max_recode_per_chunk.unwrap_or(d.max_recode_per_chunk),
+                max_fix_iterations: cfg.max_fix_iterations.unwrap_or(d.max_fix_iterations),
+                max_respec: cfg.max_respec.unwrap_or(d.max_respec),
+            }
+        },
     };
 
     // LIVE stages: spec/verify on ambient-login `claude` (Opus), code on the
@@ -1434,9 +1934,18 @@ fn print_report(r: &PipelineReport) {
             output::escape_one_line(&v.summary)
         );
     }
+    if r.recode_count > 0 || r.respec_count > 0 {
+        println!(
+            "  fix loop: {} re-code(s), {} re-spec(s) → plan.v{}",
+            r.recode_count, r.respec_count, r.plan_rev
+        );
+    }
     match (&r.merged, &r.final_commit) {
         (true, Some(commit)) => println!("  merged → {} @ {}", r.source_branch, commit),
         _ => println!("  merged: no"),
+    }
+    if let Some(cb) = &r.circuit_breaker {
+        println!("  circuit-breaker: {}", output::escape_one_line(cb));
     }
     if let Some(f) = &r.failure {
         println!("  failure: {}", output::escape_one_line(f));

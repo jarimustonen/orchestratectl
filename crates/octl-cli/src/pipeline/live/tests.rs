@@ -147,6 +147,9 @@ fn config(repo: &Path, workdir: &Path, plan_files: &[&str]) -> PipelineConfig {
         file_scope_slack: 0,
         keep: false,
         chunk_timeout: None,
+        // Default the fix loop OFF so the pre-loop tests keep asserting the
+        // first-failure-is-terminal behaviour; fix-loop tests opt in explicitly.
+        fix_loop: super::fixloop::FixLoopConfig::OFF,
     }
 }
 
@@ -239,6 +242,7 @@ fn verify_failure_blocks_the_merge() {
         passed: false,
         summary: "does not match intent".to_string(),
         findings: vec!["missing edge case".to_string()],
+        disposition: providers::VerifyDisposition::Fix,
     });
 
     let report = run_pipeline(&cfg, &spec, &code, &verify).expect("pipeline runs");
@@ -663,6 +667,324 @@ fn empty_commit_is_blocked_not_merged() {
     let report = run_pipeline(&cfg, &spec, &EmptyCommitter, &verify).expect("pipeline runs");
     assert_eq!(report.status, "chunk_failed", "{report:#?}");
     assert!(!report.merged);
+}
+
+// --- fix-loop tests (design §7/§8/§9) --------------------------------------
+
+use super::fixloop::FixLoopConfig;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// A harness that writes an out-of-scope `stray.txt` (floor-blocking) ONLY on the
+/// first attempt (`attempt_id == "a1"`), then behaves on later attempts — so a
+/// `RE_CODE` re-brief can un-block it.
+struct StrayOnFirstAttempt;
+impl CodeHarness for StrayOnFirstAttempt {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let wt = &req.worktree_path;
+        std::fs::write(wt.join("feature.txt"), "hi\n").unwrap();
+        let mut changed = vec![PathBuf::from("feature.txt")];
+        if req.attempt_id == "a1" {
+            std::fs::write(wt.join("stray.txt"), "leak\n").unwrap();
+            changed.push(PathBuf::from("stray.txt"));
+        }
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            changed,
+        ))
+    }
+}
+
+/// A harness that always writes `stray.txt` — a persistent floor failure no
+/// re-code can fix, for exercising the circuit-breaker.
+struct AlwaysStray;
+impl CodeHarness for AlwaysStray {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let wt = &req.worktree_path;
+        std::fs::write(wt.join("feature.txt"), "hi\n").unwrap();
+        std::fs::write(wt.join("stray.txt"), "leak\n").unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            vec![PathBuf::from("feature.txt"), PathBuf::from("stray.txt")],
+        ))
+    }
+}
+
+/// A harness that writes a fresh, ever-changing `feature.txt` each call, so a
+/// re-code (which forks off the current tip that already holds the prior content)
+/// always produces a non-empty diff. In-scope; floor always green.
+struct IncrementingFeature {
+    calls: AtomicU32,
+}
+impl IncrementingFeature {
+    fn new() -> Self {
+        Self {
+            calls: AtomicU32::new(0),
+        }
+    }
+}
+impl CodeHarness for IncrementingFeature {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let wt = &req.worktree_path;
+        std::fs::write(wt.join("feature.txt"), format!("version {n}\n")).unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            vec![PathBuf::from("feature.txt")],
+        ))
+    }
+}
+
+#[test]
+fn floor_blocked_chunk_recodes_then_merges() {
+    // Design §8: a floor-blocked chunk is re-briefed with its findings and
+    // re-run; it MUST re-pass the floor before it can merge. The first attempt
+    // writes an out-of-scope file (floor block); the RE_CODE attempt does not,
+    // so the chunk reaches merge.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+
+    let report = run_pipeline(
+        &cfg,
+        &spec,
+        &StrayOnFirstAttempt,
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.merged);
+    assert_eq!(report.recode_count, 1, "exactly one RE_CODE happened");
+    assert!(report.chunks[0].merged);
+    assert_eq!(report.chunks[0].floor_passed, Some(true));
+    // The feature landed on main; the stray never did.
+    assert!(main_has(&repo, "feature.txt"));
+    assert!(!main_has(&repo, "stray.txt"));
+    // A RE_CODE_CHUNK decision was recorded (T4 primitive), coordinator-tier.
+    let recode = report
+        .decisions
+        .iter()
+        .find(|d| d.reason.contains("re-code chunk"))
+        .expect("a re-code decision is recorded");
+    assert_eq!(recode.decision_tier, DecisionTier::Coordinator);
+}
+
+#[test]
+fn persistent_floor_failure_trips_the_circuit_breaker() {
+    // Design §9: a chunk that keeps failing the floor must terminate on the
+    // repeated-failure breaker, not loop forever.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 2,
+        max_fix_iterations: 0,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+
+    let report =
+        run_pipeline(&cfg, &spec, &AlwaysStray, &ScriptedVerify::passing()).expect("pipeline runs");
+
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(!report.merged);
+    assert!(report.circuit_breaker.is_some(), "breaker reason recorded");
+    assert_eq!(report.recode_count, 2, "both re-codes were attempted");
+    // The last failing attempt's branch is preserved (invariant 5).
+    let branch = report.chunks[0].branch_preserved.as_ref().unwrap();
+    assert!(super::git::branch_exists(repo.path(), branch));
+    assert!(!main_has(&repo, "feature.txt"));
+}
+
+#[test]
+fn verify_failure_recodes_then_merges() {
+    // Design §8: a failed verify feeds RE_CODE_CHUNK; the re-coded chunk MUST
+    // re-verify before close. Verify fails once (FIX), passes after the re-code.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "not yet".to_string(),
+            findings: vec!["needs the greeting".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c1".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "matches intent".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report =
+        run_pipeline(&cfg, &spec, &IncrementingFeature::new(), &verify).expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.merged);
+    assert_eq!(report.recode_count, 1, "verify FIX drove one re-code");
+    assert!(report.verify.as_ref().unwrap().passed);
+    assert!(main_has(&repo, "feature.txt"));
+}
+
+#[test]
+fn verify_fix_loop_exhaustion_trips_the_breaker() {
+    // Design §9: verify that never passes must terminate on the fix-iteration
+    // breaker, not loop forever.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 1,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "never happy".to_string(),
+        findings: vec!["still wrong".to_string()],
+        disposition: providers::VerifyDisposition::Fix,
+    });
+
+    let report =
+        run_pipeline(&cfg, &spec, &IncrementingFeature::new(), &verify).expect("pipeline runs");
+
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(!report.merged);
+    assert!(report.circuit_breaker.is_some());
+}
+
+#[test]
+fn spec_flaw_triggers_respec_then_merges() {
+    // Design §7: a SPEC-FLAW verdict emits TRIGGER_RE_SPEC — a new plan.v2 whose
+    // DAG-diff reverts the flagged chunk to Pending; the re-coded chunk then
+    // re-verifies clean and the feature merges.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 1,
+    };
+    // v1 then v2 (a materially-different brief so the plan revision is distinct).
+    let v2 = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f feature.txt"}],
+        "chunks": [{
+            "id": "c1", "title": "the feature", "tier": "code",
+            "brief": "implement the feature CORRECTLY this time",
+            "files_touched": ["feature.txt"],
+            "checks": [{"desc": "chunk check", "run": "true"}],
+        }],
+    });
+    let spec = ScriptedSpec::sequence(vec![
+        one_chunk_plan(&["feature.txt"], "true", "test -f feature.txt"),
+        v2,
+    ]);
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "the plan cannot meet intent".to_string(),
+            findings: vec!["wrong approach".to_string()],
+            disposition: providers::VerifyDisposition::SpecFlaw {
+                reason: "the plan cannot meet intent".to_string(),
+                chunk_ids: vec!["c1".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "now matches".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report =
+        run_pipeline(&cfg, &spec, &IncrementingFeature::new(), &verify).expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.merged);
+    assert_eq!(report.respec_count, 1, "one re-spec happened");
+    assert_eq!(report.plan_rev, 2, "plan advanced to v2");
+    // The re-spec fed the flaw reason forward to the spec provider.
+    let calls = spec.respec_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(
+        calls[0].1.contains("cannot meet intent"),
+        "reason fed: {}",
+        calls[0].1
+    );
+    // A TRIGGER_RE_SPEC decision was recorded (T4 primitive), decider-tier.
+    let respec = report
+        .decisions
+        .iter()
+        .find(|d| d.reason.contains("re-spec to plan.v2"))
+        .expect("a re-spec decision is recorded");
+    assert_eq!(respec.decision_tier, DecisionTier::Decider);
+    // plan.v2.json was persisted for audit.
+    assert!(workdir.path().join("plan.v2.json").is_file());
+    assert!(main_has(&repo, "feature.txt"));
+}
+
+/// Whether `path` exists on `main` (a committed blob).
+fn main_has(repo: &TempDir, path: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["cat-file", "-e", &format!("main:{path}")])
+        .status()
+        .unwrap()
+        .success()
 }
 
 // --- unit tests for the pure helpers ---------------------------------------
