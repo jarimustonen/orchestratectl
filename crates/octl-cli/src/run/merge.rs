@@ -255,11 +255,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the watchdog terminal already rolled the run up and its supervisor exited, so
     // there is nothing running to consume our now-adopted report. `ensure_report_
     // consumer` reattaches one — including on a terminal-but-teardown-warranted run
-    // when this call FRESHLY adopted the report (`result.applied`) — so the
-    // reattached supervisor runs the same `cleanup_terminal_nodes` and exits. A bare
-    // `merged: true` never returns while teardown has no actor.
-    let (outcome, warnings) =
-        ensure_report_consumer(&paths, &run_id, args.warnings, result.applied);
+    // — so the reattached supervisor runs the same `cleanup_terminal_nodes` and
+    // exits. A bare `merged: true` never returns while teardown has no actor.
+    //
+    // `result` (seq / idempotent_replay / applied) is intentionally NOT used to
+    // gate the reattach: the reattach is driven by durable projection state
+    // (`manifest.status` + the adopted merge marker), read fresh under the shared
+    // lock, so an idempotent `run merge` retry after a crash between append and
+    // reattach still reattaches and completes teardown (the reducer's adoption is
+    // durable even though this call's `applied` is false). See the 4-model review
+    // (`reducer-adopt-explicit-merge`) — gating on `applied` here was a crash-retry
+    // leak. (`result.seq` is still surfaced in the envelope below.)
+    let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
 
     let payload = MergePayload {
         run_id: &run_id,
@@ -290,19 +297,28 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// would otherwise silently strand the run). The sound rule is:
 ///
 ///   reattach  ⟺  no live supervisor  ∧  ever supervised
-///                ∧  ( run not yet terminal  ∨  (terminal ∧ warranted ∧ fresh) )
+///                ∧  ( run not yet terminal  ∨  (terminal ∧ warranted) )
 ///
 /// where "ever supervised" = a recorded pid (stale file) OR a `supervisor.started`
-/// event in the log, "warranted" = the adopted merge means the supervisor will
-/// tear the worktree/branch/window down, and "fresh" = THIS call actually adopted
-/// the report (`fresh_adoption`, from [`AppendResult::applied`]). The terminal
+/// event in the log, and "warranted" = the adopted merge (or an autonomous kind)
+/// means the supervisor will tear the worktree/branch/window down. The terminal
 /// clause is what closes the swallowed-report leak (issues `merge-skips-teardown`,
 /// `agent-died-merge-no-teardown-interactive`): a watchdog `agent-died` false
 /// positive rolled the run up and its supervisor exited BEFORE the merge, so
 /// reattaching one is the ONLY way teardown runs — and the reattached supervisor,
-/// seeing the now-adopted `via: "explicit-merge"` report, warrants it. Gating on
-/// `fresh` keeps an idempotent `run merge` retry (whose prior call already
-/// reattached + tore down) from spawning a redundant supervisor.
+/// seeing the now-adopted `via: "explicit-merge"` report, warrants it.
+///
+/// The reattach is driven purely by DURABLE state (`manifest.status` + the adopted
+/// merge marker), never by whether THIS call freshly adopted the report. An
+/// earlier revision gated it on `AppendResult::applied`, but the 4-model review of
+/// `reducer-adopt-explicit-merge` showed that leaks: if `run merge` adopts, then
+/// crashes before reattaching, the retried merge is an idempotent replay
+/// (`applied == false`) and would skip the reattach, stranding the worktree
+/// forever. Reattaching whenever teardown is warranted-but-unmanned is safe
+/// because the supervisor's cleanup is idempotent — a redundant reattach on an
+/// already-torn-down run boots, finds nothing to remove, and exits — and
+/// `spawn_supervisor`'s `supervisor_already_running` guard prevents a double
+/// reattach race.
 ///
 /// A never-materialized skeleton run (e.g. a `--skip-materialize` test run) has
 /// no recorded pid and no `supervisor.started`, so it is left untouched
@@ -318,7 +334,6 @@ fn ensure_report_consumer(
     paths: &octl_core::RunPaths,
     run_id: &str,
     base: &[String],
-    fresh_adoption: bool,
 ) -> (ConsumerOutcome, Vec<String>) {
     // One shared-locked read of manifest.json + nodes/* + supervisor.pid +
     // events.jsonl: the reattach decision is a multi-projection read, so it must
@@ -372,14 +387,15 @@ fn ensure_report_consumer(
     if !ever_supervised {
         return (ConsumerOutcome::NotSupervised, base.to_vec());
     }
-    // Already rolled up by a supervisor that has since exited. If this call did
-    // NOT freshly warrant teardown (an idempotent retry, or a terminal run whose
-    // teardown was never warranted — e.g. an interactive run that ended without an
-    // explicit merge), there is nothing to consume. But when THIS call freshly
-    // adopted a merge that warrants teardown, the exited supervisor never saw it,
-    // so fall through to reattach — the ONLY actor that will tear the worktree /
-    // branch / window down (the swallowed-report path).
-    if terminal && !(warranted && fresh_adoption) {
+    // Already rolled up by a supervisor that has since exited. When teardown is
+    // NOT warranted (a terminal interactive run that ended without an explicit
+    // merge — the human owns that window), there is nothing to tear down, so
+    // report `Terminal`. But when teardown IS warranted (the adopted merge, or an
+    // autonomous kind) and no supervisor is live, the exited supervisor never ran
+    // it — fall through to reattach, the ONLY actor that will tear the worktree /
+    // branch / window down (the swallowed-report path). Idempotent, so a retry
+    // whose teardown already completed simply reattaches, no-ops, and exits.
+    if terminal && !warranted {
         return (ConsumerOutcome::Terminal, base.to_vec());
     }
 
@@ -461,9 +477,30 @@ fn build_report(
             "--report-file payload must be a JSON object",
         )
     })?;
+    // A clean merge is by definition a SUCCESS. Reject (rather than silently
+    // rewrite) a `--report-file` that claims `success: false` or `cancelled: true`:
+    // such a report contradicts the merge that just landed, and — stamped with the
+    // explicit-merge marker — it would either mis-terminalize a live node as
+    // Failed/Cancelled or, against an already-terminal node, fail the reducer's
+    // confirmed-merge adoption gate and strand teardown (4-model review of
+    // `reducer-adopt-explicit-merge`). Silently changing the caller's outcome
+    // fields would be worse than refusing, so refuse.
+    if obj
+        .get("success")
+        .is_some_and(|v| v.as_bool() != Some(true))
+        || obj
+            .get("cancelled")
+            .is_some_and(|v| v.as_bool() == Some(true))
+    {
+        return Err(CliError::user(
+            "invalid_merge_report",
+            "--report-file for `run merge` must set `success: true` (a merge is a success) \
+             and must not set `cancelled: true`",
+        ));
+    }
     obj.insert(
         "via".to_string(),
-        Value::String("explicit-merge".to_string()),
+        Value::String(octl_core::VIA_EXPLICIT_MERGE.to_string()),
     );
 
     validate_report_payload(&report)

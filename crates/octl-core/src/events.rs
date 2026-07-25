@@ -282,13 +282,17 @@ pub struct AppendResult {
     /// True when the reducer produced at least one projection write for THIS
     /// append — i.e. the event actually changed state, rather than folding to a
     /// no-op (an unknown/audit kind, or an event dropped by a `*.created` /
-    /// terminal-state guard). Lets a caller distinguish "the reducer ADOPTED my
+    /// terminal-state guard). Lets a caller distinguish "the reducer applied my
     /// event" from "it was a dead event" WITHOUT re-reading the projection and
-    /// pattern-matching a field (issue `reducer-adopt-explicit-merge`): e.g.
-    /// `run merge` uses it to tell a fresh late-explicit-merge adoption (needs a
-    /// teardown actor) from an idempotent retry. Always `false` on an idempotent
-    /// replay (nothing was applied by this call; the prior event carried the
-    /// state change).
+    /// pattern-matching a field (issue `reducer-adopt-explicit-merge`).
+    ///
+    /// This is a report of what the reducer did on THIS call, NOT a durable
+    /// "is teardown pending?" signal: it is `false` both on an idempotent replay
+    /// AND on a fresh append the reducer no-op'd (e.g. re-submitting the exact
+    /// report already adopted). Callers making a DURABLE decision (does the run
+    /// still need a teardown actor?) must read projection state, not this flag —
+    /// see `run merge`'s `ensure_report_consumer`, which deliberately does NOT gate
+    /// its reattach on `applied` (that was a crash-retry leak caught in review).
     pub applied: bool,
     /// On an idempotent replay, the prior event's recorded `node_id` and
     /// `data`, so a caller can reject a key reused with a conflicting

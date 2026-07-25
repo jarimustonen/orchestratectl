@@ -50,6 +50,7 @@ use std::process::{Command, Stdio};
 
 use octl_core::{
     append_and_apply_event, read_manifest_opt, read_node_opt, Node, NodeId, RunPaths, Status,
+    VIA_EXPLICIT_MERGE,
 };
 use serde_json::json;
 use tracing::{info, warn};
@@ -131,7 +132,7 @@ pub fn any_node_merged_explicitly(paths: &RunPaths) -> bool {
 /// confirmed merge earns the force delete; every other terminal outcome falls
 /// back to the safe `git branch -d`, which refuses an unmerged branch.
 fn node_merged_explicitly(n: &Node) -> bool {
-    report_via(n) == Some("explicit-merge")
+    report_via(n) == Some(VIA_EXPLICIT_MERGE)
 }
 
 /// The `via` marker a supervisor stamps on a terminal `node.report` it
@@ -165,7 +166,11 @@ fn node_branch_merged(n: &Node) -> bool {
         return false;
     };
     let success = report.get("success").and_then(serde_json::Value::as_bool) == Some(true);
-    success && matches!(report_via(n), Some("explicit-merge" | VIA_MERGE_RECONCILED))
+    success
+        && matches!(
+            report_via(n),
+            Some(VIA_EXPLICIT_MERGE | VIA_MERGE_RECONCILED)
+        )
 }
 
 /// True when this node's terminal report is a **BLOCKED** report — the agent hit

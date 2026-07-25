@@ -190,6 +190,55 @@ fn report_file_payload_is_submitted_with_marker() {
     assert_eq!(data["wrap_up_recommendations"][0], "read sources/");
 }
 
+/// A `--report-file` that contradicts the merge (`success: false` or
+/// `cancelled: true`) is rejected BEFORE the merge runs. A clean merge is a
+/// success; such a report — stamped explicit-merge — would either mis-terminalize
+/// a live node or fail the reducer's confirmed-merge adoption gate and strand
+/// teardown (4-model review of `reducer-adopt-explicit-merge`).
+#[test]
+fn non_success_report_file_is_rejected() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+
+    for body in [
+        r#"{"success": false, "summary": "blocked"}"#,
+        r#"{"success": true, "cancelled": true, "summary": "cancelled"}"#,
+    ] {
+        let run_id = create_run(&home, "code", "reject-nonsuccess");
+        forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/foo");
+        let report = scratch.path().join("bad-report.json");
+        std::fs::write(&report, body).unwrap();
+        let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+        let out = bin(&home)
+            .env("OCTL_MERGE_SH", &merge_sh)
+            .args([
+                "--output",
+                "json",
+                "run",
+                "merge",
+                &run_id,
+                "--source",
+                "main",
+                "--report-file",
+                report.to_str().unwrap(),
+            ])
+            .output()
+            .expect("spawn");
+        assert!(!out.status.success(), "must reject: {body}");
+        let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+        assert_eq!(err["error"]["code"], "invalid_merge_report", "body: {body}");
+        // The merge backend must NOT have run (rejection is pre-merge).
+        assert!(
+            !scratch.path().join("merge.log").exists(),
+            "merge backend must not run when the report is rejected: {body}"
+        );
+        // No terminal report was appended.
+        let events = run_dir(&home, &run_id).join("events.jsonl");
+        assert_eq!(node_reports(&events).len(), 0, "no report appended: {body}");
+    }
+}
+
 /// A malformed `--report-file` is rejected BEFORE the merge runs — the backend
 /// is never invoked and no event is appended.
 #[test]

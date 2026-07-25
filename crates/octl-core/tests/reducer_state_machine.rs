@@ -334,6 +334,62 @@ fn adopted_explicit_merge_replay_is_idempotent() {
     );
 }
 
+/// A genuinely `Done` node that then gets an explicit-merge report (e.g. it
+/// succeeded but was not merged, then the user runs `run merge`) adopts the merge
+/// marker onto `last_report` so teardown becomes warranted; status stays `Done`.
+/// Documents the latest-wins overwrite for a Done node.
+#[test]
+fn done_node_adopts_explicit_merge_marker() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let first = json!({ "success": true, "summary": "work done, not yet merged" });
+    h.append("node.report", Some("n-0001"), first);
+    assert_eq!(h.node("n-0001").status, Status::Done);
+
+    let merge = json!({ "success": true, "via": "explicit-merge", "summary": "now merged" });
+    h.append("node.report", Some("n-0001"), merge.clone());
+
+    let n = h.node("n-0001");
+    assert_eq!(n.status, Status::Done);
+    assert_eq!(
+        n.last_report,
+        Some(merge),
+        "the merge marker must be adopted so any_node_merged_explicitly warrants teardown"
+    );
+}
+
+/// Strict boolean typing on the adoption gate: a malformed explicit-merge payload
+/// (non-boolean `cancelled`) that a LIVE node would reject as `CorruptEventLog` must
+/// NOT sneak an adoption in through the terminal-only exception — it stays a dead
+/// no-op (and, being terminal, does not error). Mirrors the live-node strict
+/// contract (`non_boolean_cancelled_is_corrupt`).
+#[test]
+fn malformed_explicit_merge_against_terminal_node_is_not_adopted() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let agent_died = json!({ "success": false, "failed": true, "reason": "agent-died" });
+    h.append("node.report", Some("n-0001"), agent_died.clone());
+    assert_eq!(h.node("n-0001").status, Status::Failed);
+
+    // `cancelled: "true"` (string, not bool) — malformed. Must not adopt.
+    h.try_append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": true, "via": "explicit-merge", "cancelled": "true" }),
+    )
+    .expect("a malformed dead report against a terminal node is a clean no-op, not an error");
+
+    let n = h.node("n-0001");
+    assert_eq!(n.status, Status::Failed, "malformed merge must not adopt");
+    assert_eq!(
+        n.last_report,
+        Some(agent_died),
+        "malformed merge must not overwrite last_report"
+    );
+}
+
 /// `node.status` terminal guard: a settled node ignores a late status event.
 #[test]
 fn node_status_terminal_guard() {

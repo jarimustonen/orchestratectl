@@ -708,15 +708,29 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         //     matches exactly the force-`-D` teardown gate (`node_branch_merged`),
         //     so a failed/cancelled or non-merge late report never resurrects a
         //     settled node and unmerged-work preservation is untouched.
-        //   - prior: NOT a `Cancelled` node. A `Cancelled` terminal is a
-        //     DELIBERATE `run cancel` teardown, not a watchdog false positive, so a
-        //     later merge does not override it (it stays cancelled — matching the
-        //     existing "late success report keeps the cancel" reducer contract).
-        //     Only a `Failed` (watchdog `agent-died`) — or an idempotent re-`Done`
-        //     — is adopted, which is exactly the bug scenario.
+        //   - prior: only a `Failed` or `Done` node (positive whitelist). A
+        //     `Cancelled` terminal is a DELIBERATE `run cancel` teardown, not a
+        //     watchdog false positive, so a later merge does not override it (it
+        //     stays cancelled — matching the existing "late success report keeps the
+        //     cancel" reducer contract). The whitelist (rather than `!= Cancelled`)
+        //     is future-safe: a new deliberate-teardown terminal added later is not
+        //     silently resurrected to Done.
         // Idempotent: if this exact report is already the node's `last_report`,
         // re-folding it on replay is a clean no-op (never churns `updated_at`).
-        if n.status != Status::Cancelled && report_is_confirmed_explicit_merge(&ev.data) {
+        //
+        // NOTE — the RUN manifest is intentionally NOT reconciled here (it may stay
+        // `Failed` if a supervisor already rolled it up from the watchdog terminal).
+        // That is the pre-existing `false-failed-after-merge` symptom, NOT introduced
+        // by this change (the prior inline reclaim left the manifest `Failed` too):
+        // a run whose manifest was still non-terminal at adoption time DOES roll up
+        // to `Done` (the reattached supervisor's rollup sees the node `Done`); only
+        // an ALREADY-rolled-up terminal manifest stays put, because reconciling a
+        // settled run status is a distinct change to the run-status terminal guard,
+        // deliberately out of scope. Teardown fires either way (gated on
+        // `manifest.status.is_terminal()` + the merge marker), so no resource leaks.
+        if matches!(n.status, Status::Failed | Status::Done)
+            && report_is_confirmed_explicit_merge(&ev.data)
+        {
             if n.last_report.as_ref() == Some(&ev.data) && n.status == Status::Done {
                 return Ok(vec![]);
             }
@@ -727,6 +741,8 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             );
             n.last_report = Some(ev.data.clone());
             // A confirmed merge is a terminal SUCCESS: the work landed in source.
+            // (A false watchdog `Failed` is corrected to `Done`; a genuine `Done`
+            // stays `Done` with the merge marker adopted so teardown is warranted.)
             n.status = Status::Done;
             n.updated_at = ev.ts;
             return Ok(vec![ProjectionOp::Node(n)]);
@@ -783,16 +799,27 @@ fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
 pub const VIA_EXPLICIT_MERGE: &str = "explicit-merge";
 
 /// True when a `node.report` payload is a CONFIRMED, SUCCESSFUL explicit merge —
-/// `via == "explicit-merge"`, `success == true`, and NOT `cancelled`. This is the
-/// sole payload shape the terminal-node guard in [`reduce_node_report`] adopts,
-/// and it mirrors the supervisor's force-`-D` teardown gate (`node_branch_merged`)
-/// so a report carrying the merge marker but `success: false` (malformed/spoofed)
-/// never earns adoption or, downstream, a force delete.
+/// `via == "explicit-merge"`, `success` is the JSON boolean `true`, and
+/// `cancelled` is absent/null/`false`. This is the sole payload shape the
+/// terminal-node guard in [`reduce_node_report`] adopts, and it mirrors the
+/// supervisor's force-`-D` teardown gate (`node_branch_merged`) so a report
+/// carrying the merge marker but `success: false` (malformed/spoofed) never earns
+/// adoption or, downstream, a force delete.
+///
+/// Boolean typing is STRICT — matching the live-node path's `optional_bool`
+/// contract (`report_terminal_status`): a non-boolean `success` or `cancelled`
+/// (e.g. `"true"`, `"yes"`) makes this return `false` (not adoptable), so a
+/// malformed payload that a live node would reject as `CorruptEventLog` can never
+/// sneak an adoption in through this terminal-only exception. It returns `false`
+/// rather than erroring so a replay of such a dead event stays a clean no-op.
 fn report_is_confirmed_explicit_merge(data: &Value) -> bool {
     let via = data.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE);
-    let success = data.get("success").and_then(Value::as_bool) == Some(true);
-    let cancelled = data.get("cancelled").and_then(Value::as_bool) == Some(true);
-    via && success && !cancelled
+    let success = matches!(data.get("success"), Some(Value::Bool(true)));
+    let not_cancelled = matches!(
+        data.get("cancelled"),
+        None | Some(Value::Null | Value::Bool(false))
+    );
+    via && success && not_cancelled
 }
 
 /// Derive the terminal status a `node.report` event asserts, enforcing the
