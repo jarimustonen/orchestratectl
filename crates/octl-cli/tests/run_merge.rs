@@ -467,3 +467,46 @@ fn merge_defers_to_supervisor_when_report_adopted() {
         run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
     assert_eq!(node_show["data"]["last_report"]["via"], "explicit-merge");
 }
+
+/// A FAILED merge (backend exits non-zero) on an already-terminal node must NOT
+/// reclaim anything — the worktree + branch survive and `run merge` surfaces
+/// `merge_failed`. Guards the ordering: inline teardown lives AFTER the merge
+/// outcome check, so a future refactor cannot force-delete a branch whose merge
+/// never landed (review finding: the swallowed-path force delete must be gated on
+/// a real merge, and `run_merge_sh`'s error is that gate).
+#[test]
+fn failed_merge_on_preterminal_node_reclaims_nothing() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "code", "swallowed-merge-fail");
+    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+
+    // Pre-terminalize the node so its report would be swallowed on a *successful*
+    // merge — but here the merge itself fails.
+    append_node_report(
+        &home,
+        &run_id,
+        scratch.path(),
+        r#"{"success": false, "failed": true, "reason": "agent-died"}"#,
+    );
+
+    let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+
+    assert!(!out.status.success(), "a failed merge must exit non-zero");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(err["error"]["code"], "merge_failed");
+    assert!(wt.exists(), "a failed merge must not reclaim the worktree");
+    assert!(
+        branch_exists(&repo, "wt/foo"),
+        "a failed merge must not reclaim the branch"
+    );
+}

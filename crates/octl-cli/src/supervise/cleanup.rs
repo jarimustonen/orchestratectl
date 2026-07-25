@@ -284,12 +284,18 @@ pub fn reclaim_merged_worktree_branch(paths: &RunPaths, n: &Node) -> Vec<String>
     warnings
 }
 
-/// True when local branch `branch` exists in `repo`
-/// (`git -C <repo> rev-parse --verify --quiet refs/heads/<branch>` exits 0). Used
-/// to keep [`reclaim_merged_worktree_branch`] idempotent — an already-deleted
-/// branch is a completed reclaim, not a failure to warn about. A git error reads
-/// as "exists" so a transient hiccup falls through to the lenient delete rather
-/// than silently skipping a real branch.
+/// True when local branch `branch` demonstrably exists in `repo`, used ONLY to
+/// keep [`reclaim_merged_worktree_branch`] idempotent: an already-deleted branch
+/// is a completed reclaim, not a failure to warn about.
+///
+/// `git -C <repo> rev-parse --verify --quiet refs/heads/<branch>` exits **0** when
+/// the ref resolves and **1** when it is simply absent. Only exit 1 is a definitive
+/// "branch is gone" — every OTHER outcome (a fatal 128 because `repo` is not a git
+/// dir / was removed, a spawn failure, any unexpected code) is NOT proof of absence,
+/// so it returns `true` to fall through to the lenient [`delete_branch`], which
+/// then surfaces the real failure as a warning + audit event. Returning `false` on
+/// a fatal error would silently skip the delete and leak the branch with a clean
+/// envelope (the review's `branch_exists`-swallows-128 finding).
 fn branch_exists(repo: &str, branch: &str, git: &str) -> bool {
     match Command::new(git)
         .arg("-C")
@@ -304,7 +310,9 @@ fn branch_exists(repo: &str, branch: &str, git: &str) -> bool {
         .stderr(Stdio::null())
         .status()
     {
-        Ok(s) => s.success(),
+        // Exit 1 is the ONLY definitive "absent". 0 → exists; anything else
+        // (128 fatal, signals) → not proof of absence, attempt the delete.
+        Ok(s) => s.code() != Some(1),
         // Could not run git at all: don't skip a possibly-real branch.
         Err(_) => true,
     }
@@ -1934,8 +1942,12 @@ mod tests {
     fn reclaim_merged_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
-        bootstrap(&paths, 0);
         let (repo, wt) = init_repo_with_worktree(&tmp);
+        // Record `source_repo` (every real run does): the second pass finds the
+        // linked worktree gone and resolves the branch's repo from the manifest
+        // instead of a dead worktree path, so `branch_exists` reads exit-1 (gone),
+        // not a fatal 128 that would (correctly) warn. This is the production shape.
+        bootstrap_with_source(&paths, &repo, "main");
         commit_in_worktree(&wt, "feat.rs", "merged work");
         let n = forge_node(
             &paths,
@@ -1996,6 +2008,37 @@ mod tests {
         );
         let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
         assert_eq!(evs.len(), 1, "the refused delete must be recorded too");
+    }
+
+    /// The `branch_exists`-swallows-128 review finding: when the worktree is gone
+    /// AND no `source_repo` is recorded, repo resolution falls back to the dead
+    /// worktree path, so `git rev-parse` there exits 128 (not a git dir). That is
+    /// NOT proof the branch is absent, so reclaim must ATTEMPT the delete and
+    /// SURFACE a warning rather than silently skip — a silent skip would leak a
+    /// real branch behind a clean envelope.
+    #[test]
+    fn reclaim_merged_warns_when_repo_unresolvable() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // no source_repo recorded
+        let gone = tmp.path().join("gone-wt");
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": gone.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+
+        let warnings = reclaim_merged_worktree_branch(&paths, &n);
+
+        assert_eq!(
+            warnings.len(),
+            1,
+            "an unresolvable repo must surface a branch warning, not a silent skip: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("wt/foo"),
+            "warning names the branch: {warnings:?}"
+        );
     }
 
     /// A driver node (no materialized worktree) has nothing to reclaim: `reclaim`

@@ -252,12 +252,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the two apart: `adopted` means a supervisor owns teardown as usual;
     // `!adopted` means `run merge` must reclaim the resources itself, using the
     // merge's own ground truth (merge.sh exited 0 → branch landed in source).
-    let adopted = read_node_opt(&paths, &node_id)
-        .map_err(from_core)?
-        .and_then(|n| n.last_report)
-        .and_then(|r| r.get("via").and_then(Value::as_str).map(str::to_string))
-        .as_deref()
-        == Some("explicit-merge");
+    let adopted = matches!(
+        read_node_opt(&paths, &node_id)
+            .map_err(from_core)?
+            .as_ref()
+            .and_then(|n| n.last_report.as_ref())
+            .and_then(|r| r.get("via"))
+            .and_then(Value::as_str),
+        Some("explicit-merge")
+    );
+    let do_inline_teardown = !adopted;
 
     // The terminal report is only useful if a live supervisor consumes it: the
     // supervisor is the canonical teardown actor (close tmux window, remove
@@ -267,17 +271,39 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // bug), reporting a bare `merged: true` would mislead the caller into
     // telling the user cleanup happened when it never will. So ensure a live
     // consumer before returning, and never return silently on the dead path.
-    let (outcome, mut warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+    //
+    // EXCEPTION — the swallowed path on an already-terminal run: the reducer
+    // dropped our report, so there is nothing for a supervisor to CONSUME, and
+    // the run is already rolled up. Reattaching one here would only contend with
+    // the inline teardown below — for an autonomous kind the reattached supervisor
+    // would read the stale `agent-died` report as a blocked handoff and try to
+    // PRESERVE the very branch/worktree this call is reclaiming, writing a
+    // misleading `cleanup.branch_preserved` audit event. So skip it and reclaim
+    // directly (the run merge review finding on the double-teardown race). A
+    // swallowed-but-not-yet-rolled-up run still goes through `ensure_report_consumer`
+    // so the run gets rolled up; the inline teardown below is idempotent with it.
+    let manifest_terminal = read_manifest_opt(&paths)
+        .map_err(from_core)?
+        .is_some_and(|m| m.status.is_terminal());
+    let (outcome, mut warnings) = if do_inline_teardown && manifest_terminal {
+        (ConsumerOutcome::Terminal, args.warnings.to_vec())
+    } else {
+        ensure_report_consumer(&paths, &run_id, args.warnings)
+    };
 
     // Synchronous teardown on the swallowed-report path. When the reducer dropped
     // our report, the canonical supervisor teardown can never fire, so reclaim the
     // worktree + branch here through the SAME cleanup primitives the supervisor
     // uses (invariant #5's actor is unchanged for every path where it CAN act; this
-    // is the one path where it provably cannot). Teardown runs and completes before
-    // this call returns — never after a `merged: true` envelope — and any step that
-    // could not finish is surfaced as a `warnings[]` entry rather than a clean
-    // close. The tmux window is closed AFTER the envelope is emitted (below).
-    let do_inline_teardown = !adopted;
+    // is the one path where it provably cannot). Force teardown is authorized by
+    // the merge's own ground truth — `merge.sh` exited 0, so the branch landed in
+    // source — exactly the trust the accepted `via: "explicit-merge"` arm rests on
+    // (a `--rebase`/squash merge legitimately leaves the branch "ahead" of source,
+    // so the source-relative preservation check would false-positive here just as
+    // it would there). Teardown runs and completes before this call returns — never
+    // after a `merged: true` envelope — and any step that could not finish is
+    // surfaced as a `warnings[]` entry rather than a clean close. The tmux window
+    // is closed AFTER the envelope is emitted + flushed (below).
     if do_inline_teardown {
         warnings.extend(cleanup::reclaim_merged_worktree_branch(&paths, &node));
     }
@@ -294,14 +320,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
     emit(&payload, args.spec, &warnings)?;
 
-    // Close the merged node's tmux window LAST — after the envelope is flushed.
-    // A foreground/interactive `run merge` runs inside the very window it closes,
-    // so killing it can end this process; reclaiming the worktree + branch and
-    // reporting the outcome must complete first (deliverable: a window-kill must
-    // never abort the rest of the teardown). Best-effort and idempotent — an
-    // already-closed window (the supervisor won the race, or a prior run merge)
-    // is a clean no-op.
+    // Close the merged node's tmux window LAST — after the envelope is emitted AND
+    // explicitly flushed. A foreground/interactive `run merge` runs inside the very
+    // window it closes, so `tmux kill-window` can SIGHUP this process; the envelope
+    // (with any teardown warnings) must be on the wire first, and Rust's block-
+    // buffered stdout is not guaranteed flushed on a signal-killed exit. Reclaiming
+    // the worktree + branch and reporting them must also complete first (deliverable:
+    // a window-kill must never abort the rest of the teardown). Best-effort and
+    // idempotent — an already-closed window (a prior run merge, or a supervisor that
+    // won the race) is a clean no-op.
     if do_inline_teardown {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
         cleanup::close_merged_node_window(&paths, &node);
     }
     Ok(())
