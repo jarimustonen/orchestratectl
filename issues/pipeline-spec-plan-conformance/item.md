@@ -2,8 +2,9 @@
 created: 2026-07-25
 updated: 2026-07-25
 type: bug
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-25
 ---
 
 # pipeline: spec stage produces schema-invalid plan.json (missing acceptance); blind retry doesn't repair — add schema-complete prompt + validation-error repair loop
