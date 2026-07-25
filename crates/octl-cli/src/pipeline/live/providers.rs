@@ -156,9 +156,10 @@ fn claude_bin() -> String {
 
 /// Run `claude -p --output-format json --dangerously-skip-permissions` in
 /// `worktree` with `prompt` as the sole positional (after `--`), and return the
-/// model's textual answer — the `result` field of the `--output-format json`
-/// envelope, or, failing that, stdout verbatim. `stage` names the caller for
-/// error messages.
+/// model's textual answer — the `result` field of the final `type:result` message
+/// in the `--output-format json` transcript (see [`extract_result_text`] for why
+/// the transcript is a sequence, not one object), or, failing that, stdout
+/// verbatim. `stage` names the caller for error messages.
 fn run_claude(worktree: &Path, prompt: &str, stage: &str) -> Result<String, PipelineError> {
     let mut cmd = Command::new(claude_bin());
     cmd.arg("-p")
@@ -193,16 +194,102 @@ fn run_claude(worktree: &Path, prompt: &str, stage: &str) -> Result<String, Pipe
     }
 }
 
-/// Lift claude's answer out of the `--output-format json` result object
-/// (`{"type":"result","result":"…"}`). Falls back to the raw transcript when the
-/// output is not that envelope, so a plainly-printed answer still works.
+/// Lift claude's final answer out of `claude -p --output-format json`.
+///
+/// Claude Code emits its `-p` output as a **sequence** of JSON messages, not one
+/// object: on current versions (≥ 2.1.211) a `{"type":"system","subtype":"init",…}`
+/// banner (`agents`/`skills`/`tools`/`model`/`session_id`/…) comes FIRST, then the model's
+/// answer arrives as `{"type":"result","result":"…"}`. Depending on version the
+/// sequence is a top-level JSON array, newline-delimited JSON (NDJSON, one object
+/// per line), or — the single-turn case — a lone object.
+///
+/// The selection rule is therefore "the `type == "result"` message's `.result`
+/// field" (take the LAST such if several), never "the first JSON object" — the
+/// first object is the init banner and reading it as the answer is the bug this
+/// function exists to prevent (issue `pipeline-claude-output-parse`).
+///
+/// The raw-transcript fallback is deliberately narrow: it fires ONLY when the
+/// output carried no Claude envelope at all (a plainly printed answer from an old
+/// / non-`-p` version). If we DID recognize an envelope (any message with a
+/// `type`) but found no usable `result`, returning the raw transcript would let
+/// the downstream [`extract_json_object`] grab the init banner and reintroduce the
+/// very bug — so we return an empty string, which makes the caller fail loudly
+/// ("did not emit a JSON plan/verdict object") instead of silently mis-parsing the
+/// banner as the answer.
 fn extract_result_text(raw: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<Value>(raw.trim()) {
-        if let Some(s) = v.get("result").and_then(Value::as_str) {
-            return s.to_string();
+    let messages = parse_json_message_sequence(raw);
+    let mut last_result: Option<String> = None;
+    let mut saw_envelope = false;
+    for v in &messages {
+        let Some(kind) = v.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        saw_envelope = true;
+        if kind == "result" {
+            // Take the LAST result message's `.result`. A non-string `.result`
+            // (a structured object, or `null` on an error/aborted turn) is
+            // serialized rather than skipped — so a structured answer still
+            // reaches the caller, and a `null` overwrites any earlier value so a
+            // failed terminal state can't reuse a stale earlier answer.
+            if let Some(r) = v.get("result") {
+                last_result = Some(match r.as_str() {
+                    Some(s) => s.to_string(),
+                    None => r.to_string(),
+                });
+            }
         }
     }
-    raw.to_string()
+    if let Some(s) = last_result {
+        return s;
+    }
+    // A recognized envelope with no usable result → protocol failure; empty string
+    // routes to a loud downstream error (see doc comment). No envelope at all → a
+    // plainly printed answer we trust verbatim.
+    if saw_envelope {
+        String::new()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Parse a `claude -p --output-format json` transcript into the sequence of JSON
+/// messages it carries, tolerant of the shapes Claude Code emits across versions:
+/// a single top-level object, a top-level JSON array of objects, or a
+/// whitespace-delimited stream of objects (NDJSON, concatenated `{…}{…}` with no
+/// newline, OR pretty-printed multi-line objects — all handled identically by the
+/// streaming deserializer, unlike a `.lines()` split which would drop any object
+/// spanning multiple lines).
+fn parse_json_message_sequence(raw: &str) -> Vec<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    // A top-level array is the whole transcript as one JSON array — flatten it to
+    // its element messages. (Handled before the stream pass, which would otherwise
+    // yield the array as a single un-flattened value.)
+    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(trimmed) {
+        return items;
+    }
+    // Otherwise consume a whitespace-delimited stream of JSON values. This covers
+    // the lone object, NDJSON, concatenated objects, and pretty-printed multi-line
+    // objects. Stop at the first unparseable tail, keeping the complete messages
+    // that preceded it (a truncated final message can't drop the earlier ones).
+    let mut out = Vec::new();
+    for v in serde_json::Deserializer::from_str(trimmed).into_iter::<Value>() {
+        match v {
+            Ok(v) => out.push(v),
+            Err(_) => break,
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // Last resort: the stream stalled on leading non-JSON. Recover any compact
+    // one-line JSON messages a stray leading line may have wedged in front of.
+    trimmed
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .collect()
 }
 
 /// Extract the first embedded JSON object from a model answer that may wrap it
@@ -632,5 +719,109 @@ mod tests {
     #[test]
     fn extract_result_text_falls_back_to_raw() {
         assert_eq!(extract_result_text("plain output"), "plain output");
+    }
+
+    /// The real-world regression (issue `pipeline-claude-output-parse`): Claude
+    /// Code ≥ 2.1.211 prints a `type:system` init banner FIRST, then the
+    /// `type:result` message. We must extract the PLAN from `.result`, never read
+    /// the banner. Uses the exact init-banner shape recorded in the issue.
+    #[test]
+    fn extract_result_text_skips_system_init_banner_ndjson() {
+        let plan = r#"```json
+{"chunks":[{"id":"A"}],"acceptance":[{"kind":"check","desc":"builds","run":"cargo build"}]}
+```"#;
+        let result_msg = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "result": plan,
+        });
+        let raw = format!(
+            "{}\n{}\n",
+            r#"{"type":"system","subtype":"init","session_id":"abc-123","agents":["claude"],"skills":["issue"],"tools":["Read","Edit"],"mcp_servers":[],"model":"claude-opus-4-8[1m]"}"#,
+            serde_json::to_string(&result_msg).unwrap(),
+        );
+        let answer = extract_result_text(&raw);
+        assert_eq!(answer, plan);
+        // And the downstream extraction lifts the PLAN object, not the banner.
+        let obj = extract_json_object(&answer).unwrap();
+        let v: Value = serde_json::from_str(obj).unwrap();
+        assert!(v.get("acceptance").is_some(), "got banner, not plan: {obj}");
+        assert!(v.get("session_id").is_none(), "extracted the init banner");
+    }
+
+    /// The array-shaped variant of the same transcript: some Claude Code versions
+    /// emit `-p --output-format json` as one top-level JSON array of messages.
+    #[test]
+    fn extract_result_text_selects_result_from_top_level_array() {
+        let raw = r#"[
+          {"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-8[1m]"},
+          {"type":"assistant","message":{"role":"assistant"}},
+          {"type":"result","subtype":"success","result":"the plan"}
+        ]"#;
+        assert_eq!(extract_result_text(raw), "the plan");
+    }
+
+    /// When several `result` messages appear, the LAST one wins.
+    #[test]
+    fn extract_result_text_takes_last_result() {
+        let raw = concat!(
+            "{\"type\":\"result\",\"result\":\"first\"}\n",
+            "{\"type\":\"result\",\"result\":\"second\"}\n",
+        );
+        assert_eq!(extract_result_text(raw), "second");
+    }
+
+    /// A transcript that IS a recognized Claude envelope but carries no `result`
+    /// message must NOT fall back to the raw transcript — that would let
+    /// `extract_json_object` grab the init banner and reintroduce the bug. We
+    /// return empty so the caller fails loudly instead.
+    #[test]
+    fn extract_result_text_envelope_without_result_does_not_return_banner() {
+        let raw = r#"{"type":"system","subtype":"init","session_id":"s1"}"#;
+        assert_eq!(extract_result_text(raw), "");
+        // And downstream extraction finds nothing → caller emits its own error.
+        assert_eq!(extract_json_object(&extract_result_text(raw)), None);
+    }
+
+    /// Concatenated objects with no newline between them (`{…}{…}`) — the
+    /// streaming deserializer handles these where a `.lines()` split would not.
+    #[test]
+    fn extract_result_text_concatenated_objects_no_newline() {
+        let raw = r#"{"type":"system","subtype":"init"}{"type":"result","result":"x"}"#;
+        assert_eq!(extract_result_text(raw), "x");
+    }
+
+    /// Pretty-printed (multi-line) messages in the stream — a `.lines()` split
+    /// would shred these into fragments; the deserializer parses them whole.
+    #[test]
+    fn extract_result_text_pretty_printed_multiline_stream() {
+        let raw = "{\n  \"type\": \"system\",\n  \"subtype\": \"init\"\n}\n\
+                   {\n  \"type\": \"result\",\n  \"result\": \"the plan\"\n}\n";
+        assert_eq!(extract_result_text(raw), "the plan");
+    }
+
+    /// A `type:result` whose `.result` is a structured object (not a string) is
+    /// serialized back to JSON rather than dropped, so the answer still reaches
+    /// the caller and `extract_json_object` can lift it.
+    #[test]
+    fn extract_result_text_serializes_non_string_result() {
+        let raw = r#"{"type":"result","result":{"passed":true,"summary":"ok"}}"#;
+        let answer = extract_result_text(raw);
+        let obj = extract_json_object(&answer).unwrap();
+        let v: Value = serde_json::from_str(obj).unwrap();
+        assert_eq!(v.get("passed").and_then(Value::as_bool), Some(true));
+    }
+
+    /// A trailing `null` result (an aborted/errored terminal turn) overwrites an
+    /// earlier valid result — the stale answer is never reused; the caller instead
+    /// fails loudly on the unusable `null`.
+    #[test]
+    fn extract_result_text_trailing_null_result_does_not_reuse_earlier() {
+        let raw = concat!(
+            "{\"type\":\"result\",\"result\":\"stale\"}\n",
+            "{\"type\":\"result\",\"result\":null}\n",
+        );
+        assert_eq!(extract_result_text(raw), "null");
+        assert_eq!(extract_json_object(&extract_result_text(raw)), None);
     }
 }
