@@ -6,76 +6,94 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-07-25
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-07-25 (after the reliability stint)
 
-**One-paragraph state.** The **code-pipeline** (spec→code→verify, model-tiered) is
-the active workstream. Its **walking skeleton is LIVE and proven end-to-end**:
-`orchestratectl pipeline run` took a real feature from intent to a merged, tested
-result — **Opus** specced + verified, **claude-deepseek** wrote the code, the
-**deterministic floor** gated every merge, and it auto-merged correct code
-(factorial demo: all floor gates green, `Ran 2 tests — OK`). All foundation +
-skeleton landed behind the seam / as an additive command; **default coding paths
-are unchanged**. `main` is pushed. The v0.1.0 publish is **deferred** (maybe never;
-may instead be merged into the `issuectl` tool).
+**One-paragraph state.** A two-round `/stint` closed the **supervisor/lifecycle
+reliability cluster** and advanced the **code-pipeline** by one step. The pipeline
+**fix loop is now LIVE** (`pipeline run` recovers on floor/verify failure via
+`RE_CODE_CHUNK` + `TRIGGER_RE_SPEC`, bounded by a hard iteration cap) on top of the
+already-proven walking skeleton. On the reliability side: `run create` now fails
+loudly (readiness-pipe confirmation via daemonization double-fork, no more pid-file
+poll ambiguity / orphan window), always writes `supervisor.stderr.log`, never
+false-reports `work-complete` with no child; the headless tmux-window race is fixed;
+`run merge` teardown is fixed at the source (reducer now **adopts** a late
+`explicit-merge` report even against a terminal node → supervisor is the sole
+teardown actor again, inline CLI reclaim removed); and both aider + pi harness
+adapters are live-verified so a full 4-way bakeoff runs. All green, rebuilt locally,
+`doctor` 0 fail / 0 warn. The v0.1.0 publish is still **deferred** (maybe merged into
+`issuectl` instead).
 
-**NEXT — do this first: option (a), `pipeline-fix-loop`.** Build the fix loop so the
-pipeline is resilient when code doesn't land right the first time (verify/floor
-failure → `RE_CODE_CHUNK` with findings; the T4 driver scaffold + typed primitives
-already exist). This is what turns the happy-path walking skeleton into something
-production-worthy. → `issuectl show pipeline-fix-loop`, then `/worktree-spinoff
-pipeline-fix-loop` (or `/stint` and plan the round).
+**NEXT — pick one:**
+- **(a) Back to the pipeline (recommended).** With the fix loop landed, the next
+  pipeline steps are `pipeline-tiered-triage` (adaptive tier promotion + tiered
+  fast-coordinator) and `pipeline-circuit-breakers` (cost/token metering + richer
+  breakers — this also absorbs the cosmetic **pi bakeoff cost-column shows `-`**
+  gap, pi 0.82 `--mode json` usage shape). New follow-up `pipeline-fix-loop-provenance`
+  (provenance-aware chunk rollback) is also filed. → `/stint` or `/worktree-spinoff
+  pipeline-tiered-triage`.
+- **(b) Finish the last reliability remainders.** The cluster is **safe** but not
+  100% cured — see "Reliability remainders still open" below. Highest-value: the
+  `supervisor-spawn-fails-silently` **#4 stateful load-trigger** (only the
+  confirmation ambiguity was cured this session) and the NEW
+  `child-supervisor-spawn-unconfirmed-no-retry` (the child-supervisor analogue of the
+  readiness fix — records pid 0 as success, no retry).
 
-### Where the pipeline stands (all on `main`)
-- **Foundation (behind the seam):** `CodeHarness` contract + adapters
-  (aider / claude / claude-deepseek / pi) + timeout/cancellation; `plan.json` v2
-  types + validator + checked-in JSON Schema; **deterministic floor** (baseline
-  snapshot + gates: checks/regression/clippy/test-gaming/file-scope); **T4
-  inverted-loop scaffold** (tiered orchestrator = fast coordinator + Opus decider,
-  typed action primitives, decision envelopes).
-- **Live:** `orchestratectl pipeline run --intent … --source-branch …` — additive
-  command; spec[Opus] → code[claude-deepseek] → floor-gate → verify[Opus] → merge.
-- **Bakeoff:** `orchestratectl harness bakeoff --brief <file>` compares the 4 agent
-  loops. Measured 2026-07-24: **claude + claude-deepseek pass**; aider + pi failed
-  their first run (adapter/config hardening needed only if a full 4-way compare is
-  wanted).
-- **Design of record:** `issues/code-pipeline/{design.md,plan-schema.md,breakdown.md}`
-  — read `design.md` for the architecture + all owner decisions (bold-to-live,
-  fast-coordinator/Opus-decider, floor as the guardrail).
+### What landed this session (all on `main`, green, deployed)
+- **Pipeline fix loop** (`pipeline-fix-loop` ✅ done): `RE_CODE_CHUNK` + `TRIGGER_RE_SPEC`
+  + hard iteration bound, reusing the T4 driver primitives; tested.
+- **Creation-path reliability**: fail-loud `supervisor_spawn_failed` envelope,
+  always-write `supervisor.stderr.log`, no false `work-complete` w/ empty children,
+  idempotency-before-spawn (`supervisor-spawn-fails-silently` partial — guards landed);
+  **readiness pipe** replaces the pid-file poll (`supervisor-confirm-readiness-pipe` ✅);
+  headless tmux-window race (`headless-spawn-tmux-window-race` ✅).
+- **Merge teardown**: inline reclaim shipped, then the proper fix —
+  `reducer-adopt-explicit-merge` ✅ (reducer adopts late explicit-merge, supervisor sole
+  teardown actor, `append_and_apply_*` reports applied-vs-noop, unmerged-work
+  preservation gates kept). `merge-skips-teardown` ✅.
+- **Bakeoff adapters** (`bakeoff-aider-pi-live-fail` ✅): pi `--` terminator dropped,
+  aider commits its leftovers; both live-verified (aider 0.86.2, pi 0.82.0).
+- **Test hygiene**: `notify-test-toctou-flake` ✅ (integration-surfaced order-dependent
+  flake in `fires_hook_with_completion_env`; poll-for-content fix).
 
-### Deferred pipeline backlog (all filed)
-`pipeline-fix-loop` ← NEXT (a) · `pipeline-tiered-triage` · `pipeline-circuit-breakers`
-· `pipeline-parallel-chunks` · `pipeline-run-create-wiring` · `pipeline-hardening`
-(incl. stale `$TMPDIR/octl-pipeline/<slug>` workdir handling — a known papercut) ·
-`pipeline-drop-primitive-underspecified` · `floor-capture-trust-model`. Optional:
-harden aider/pi adapters + capture tokens/cost in the bakeoff.
+### Reliability remainders still open (safe, not cured)
+- `supervisor-spawn-fails-silently-at-run-create` (high) — **#4 stateful load-trigger
+  only**; confirmation ambiguity now cured by the readiness pipe. Fails loudly now.
+- `run-create-back-to-back-no-supervisor` — no code race isolated; readiness-pipe
+  worktree recorded findings in the issue.
+- `child-supervisor-spawn-unconfirmed-no-retry` (NEW this session) — child-supervisor
+  spawn records pid 0 as success and never retries; the child analogue of the readiness fix.
+- `agent-died-merge-no-teardown-interactive` — the watchdog agent-died FALSE POSITIVE
+  on long-lived interactive runs is the upstream trigger behind the swallowed-report cases.
 
-### How to resume
-1. `git log --oneline -8` (pipeline commits on main); `git rev-list --count
-   origin/main..main` → expect `0` (pushed).
-2. Redeploy if you'll run it: `cargo install --path crates/octl-cli --force &&
-   orchestratectl doctor`.
-3. Try it live: seed a throwaway git repo, then
-   `orchestratectl pipeline run --intent "…" --source-branch main --repo <dir>
-   --test-cmd "python3 -m unittest discover -q" --clippy-cmd "true"
-   --file-scope-slack 2`. Clean any stale `$TMPDIR/octl-pipeline/<slug>` first.
-4. Start the fix-loop work (a).
+### Design of record + how to resume
+- Pipeline design: `issues/code-pipeline/{design.md,plan-schema.md,breakdown.md}`.
+- `git log --oneline -12`; `git rev-list --count origin/main..main` (human pushes).
+- Redeploy if changing CLI/skills: `cargo install --path crates/octl-cli --force &&
+  orchestratectl skill install --force && orchestratectl doctor` (expect 0 fail/0 warn).
+- Try the pipeline live: seed a throwaway git repo, then `orchestratectl pipeline run
+  --intent "…" --source-branch main --repo <dir> --test-cmd "python3 -m unittest
+  discover -q" --clippy-cmd "true" --file-scope-slack 2`. Clean any stale
+  `$TMPDIR/octl-pipeline/<slug>` first.
 
 ---
 
 ## Adjacent open backlog (NOT this workstream — orchestratectl-core bugs)
 
-Parallel `/stint` sessions filed a cluster of core supervisor/lifecycle bugs
-(`supervisor-spawn-fails-silently-at-run-create`, `run-create-back-to-back-no-supervisor`,
-`headless-spawn-tmux-window-race`, `merge-skips-teardown`,
+The supervisor/lifecycle reliability cluster was largely closed by the 2026-07-25
+stint (see the Continue-here block: `headless-spawn-tmux-window-race`,
+`merge-skips-teardown`, `supervisor-confirm-readiness-pipe`,
+`reducer-adopt-explicit-merge`, `bakeoff-aider-pi-live-fail`,
+`notify-test-toctou-flake` all ✅). **Still open** on the core side:
+`supervisor-spawn-fails-silently-at-run-create` (#4 load-trigger only),
+`run-create-back-to-back-no-supervisor`, `child-supervisor-spawn-unconfirmed-no-retry`
+(new), `agent-died-merge-no-teardown-interactive`,
 `landing-signal-reliable-after-rebase`, `worker-process-hang`,
-`agent-died-merge-no-teardown-interactive`, `orchestrate-integration-branch-no-worktree-merge-fails`,
+`orchestrate-integration-branch-no-worktree-merge-fails`,
 `reattach-does-not-bootstrap-crashed-at-creation-run`, `notify-run-level-summary`,
-`no-completion-notification-to-parent`) plus the earlier v0.2 carry-overs
+`no-completion-notification-to-parent`, plus the v0.2 carry-overs
 (`cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`,
 `teardown-gate-trust-and-lifecycle`, `vendor-workmux-multiplexer`,
-`workmux-extract-libs`). These harden the very spawn/merge machinery the pipeline
-rides on — worth a triage pass, but separate from the pipeline build. `issuectl ls
---status open` for the live list.
+`workmux-extract-libs`). `issuectl ls --status open` for the live list.
 
 ---
 
