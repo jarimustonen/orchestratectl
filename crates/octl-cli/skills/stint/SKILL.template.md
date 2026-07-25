@@ -1,6 +1,6 @@
 ---
 name: stint
-description: "Open and run a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. Bootstraps from the repo's TODO.md handoff + AGENTS.md operating policy, pulls and triages incoming bot-filed bug reports (via `/triage-bugs`), plans the round, spawns worktrees to do the actual coding (never codes in this session), owns the single deploy when the project permits, reports to the user in product-owner language via `/worktree-status`, and — on request — hands off via `/handoff` + `/wrap-up`. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or invokes bare `/stint`. Generic across projects — reads all project specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT for a single one-off coding task (use `/worktree`); NOT for bare triage (`/triage-bugs`), bare status (`/worktree-status`), bare deploy, or bare handoff (`/handoff`)."
+description: "Open and run a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. Bootstraps from the repo's TODO.md handoff + AGENTS.md operating policy, pulls and triages incoming bot-filed bug reports (via `/triage-bugs`), plans the round, spawns worktrees to do the actual coding (never codes in this session), owns the single deploy when the project permits, reports to the user in product-owner language via `/worktree-status`, and — on request — updates the TODO.md handoff block and hands off via `/wrap-up`. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', or invokes bare `/stint`. Generic across projects — reads all project specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT for a single one-off coding task (use `/worktree`); NOT for bare triage (`/triage-bugs`), bare status (`/worktree-status`), bare deploy, or a bare handoff-block update."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -208,11 +208,12 @@ Once the feedback is absorbed (acted on via worktrees, or captured durably), mov
 A stint typically fills this session's context after ~one round. When you notice that
 (or the user asks), **propose** the handoff. On the user's go, and only then:
 
-1. `/handoff` — update the `TODO.md` handoff block so a fresh agent can resume from
-   `jatketaan @TODO.md`.
-2. **Commit the `TODO.md` handoff update immediately** — `/handoff` writes but does
-   not commit, so commit it (`git add TODO.md && git commit`) *before* the next step,
-   or it gets folded into `/wrap-up`'s mixed commit or left dangling.
+1. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so
+   a fresh agent can resume from `jatketaan @TODO.md` — this is an inline stint action,
+   not a separate skill.
+2. **Commit the `TODO.md` handoff update immediately** — commit it on its own
+   (`git add TODO.md && git commit`) *before* the next step, so it doesn't get folded
+   into `/wrap-up`'s mixed commit or left dangling.
 3. `/wrap-up` — it will *present proposed* `AGENTS.md`/issue/preference changes and
    ask before writing; don't assume it committed unless it reports saved changes.
 4. If the project's AGENTS.md/TODO declares a **test-account reset preference**, do it
@@ -241,7 +242,8 @@ If any are missing, ask the user and offer to add them:
   `/worktree-*` family.
 - **Does not write code** in this session — every change goes through a worktree.
 - **Not for a single one-off coding task** — that's `/worktree` (router).
-- **Not for bare** triage / status / deploy / handoff — those are `/triage-bugs`,
-  `/worktree-status`, the project deploy command, and `/handoff`.
+- **Not for bare** triage / status / deploy / handoff-block update — those are
+  `/triage-bugs`, `/worktree-status`, the project deploy command, and an inline
+  `TODO.md` handoff-block edit.
 - **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.
 - Does not decide fix/defer/not-a-bug — the user does (Phase 1).
