@@ -2,9 +2,10 @@
 created: 2026-07-25
 updated: 2026-07-25
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@pipeline-walking-skeleton']
+closed: 2026-07-25
 ---
 
 # Pipeline fix loop: RE_CODE_CHUNK + TRIGGER_RE_SPEC on floor/verify failure
