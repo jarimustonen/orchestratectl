@@ -206,6 +206,134 @@ fn run_cancel_then_late_report_keeps_cancel() {
     );
 }
 
+/// ADOPTION (issue `reducer-adopt-explicit-merge`): a watchdog `agent-died`
+/// terminalizes the node FAILED, then the still-alive agent's `run merge` appends
+/// a confirmed `via: "explicit-merge"` report. The reducer adopts it even though
+/// the node is terminal — overwriting `last_report` and reconciling status to
+/// `Done` — so the supervisor's `any_node_merged_explicitly` gate sees the merge
+/// and can warrant teardown (invariant #5), instead of the CLI compensating inline.
+#[test]
+fn failed_node_adopts_late_explicit_merge_report() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    // Watchdog false positive: agent-died terminalizes the node FAILED.
+    let agent_died = json!({
+        "success": false, "failed": true, "reason": "agent-died",
+        "summary": "Agent stopped responding.",
+    });
+    h.append("node.report", Some("n-0001"), agent_died);
+    assert_eq!(h.node("n-0001").status, Status::Failed);
+
+    // The still-alive agent's explicit merge lands late.
+    let merge = json!({
+        "success": true, "summary": "merged wt/foo into main", "via": "explicit-merge",
+    });
+    h.append("node.report", Some("n-0001"), merge.clone());
+
+    let n = h.node("n-0001");
+    assert_eq!(
+        n.status,
+        Status::Done,
+        "a confirmed late explicit merge reconciles the watchdog-FAILED node to Done"
+    );
+    assert_eq!(
+        n.last_report,
+        Some(merge),
+        "the merge report must be adopted onto the projection so teardown is warranted"
+    );
+}
+
+/// The adoption is scoped: a NON-explicit-merge late report against the same
+/// watchdog-FAILED node stays a dead event — `last_report` keeps the `agent-died`
+/// payload and the node stays FAILED. This is the unmerged-work-preservation half:
+/// only a confirmed explicit merge overrides a terminal, never a bare success.
+#[test]
+fn failed_node_ignores_late_plain_success_report() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let agent_died = json!({ "success": false, "failed": true, "reason": "agent-died" });
+    h.append("node.report", Some("n-0001"), agent_died.clone());
+    assert_eq!(h.node("n-0001").status, Status::Failed);
+
+    // A plain success (no `via: "explicit-merge"`) must NOT resurrect the node.
+    h.append("node.report", Some("n-0001"), json!({ "success": true }));
+
+    let n = h.node("n-0001");
+    assert_eq!(
+        n.status,
+        Status::Failed,
+        "a non-merge late report stays dead"
+    );
+    assert_eq!(
+        n.last_report,
+        Some(agent_died),
+        "a non-merge late report must not overwrite last_report"
+    );
+}
+
+/// A DELIBERATE `run cancel` (Cancelled) is not a watchdog false positive, so a
+/// later explicit merge does NOT override it — the cancel sticks. Only a `Failed`
+/// terminal is adopted. Guards the tightened prior-status scope.
+#[test]
+fn cancelled_node_ignores_late_explicit_merge_report() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    let cancel = json!({ "success": false, "cancelled": true, "reason": "cancelled by user" });
+    h.append("node.report", Some("n-0001"), cancel.clone());
+    assert_eq!(h.node("n-0001").status, Status::Cancelled);
+
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": true, "via": "explicit-merge", "summary": "merged" }),
+    );
+
+    let n = h.node("n-0001");
+    assert_eq!(
+        n.status,
+        Status::Cancelled,
+        "a deliberate cancel is not overridden by a later merge"
+    );
+    assert_eq!(
+        n.last_report,
+        Some(cancel),
+        "the cancel report is preserved"
+    );
+}
+
+/// Re-folding the SAME adopted explicit-merge report is a clean idempotent no-op:
+/// status stays Done, `last_report` unchanged, and `updated_at` does not churn
+/// (the reducer plans zero ops when the exact report is already projected). This
+/// keeps replay stable — a re-fold of an already-applied adoption changes nothing.
+#[test]
+fn adopted_explicit_merge_replay_is_idempotent() {
+    let mut h = Harness::new();
+    h.bootstrap_node();
+
+    h.append(
+        "node.report",
+        Some("n-0001"),
+        json!({ "success": false, "failed": true, "reason": "agent-died" }),
+    );
+    let merge = json!({ "success": true, "via": "explicit-merge", "summary": "merged" });
+    h.append("node.report", Some("n-0001"), merge.clone());
+    let after_adopt = h.node("n-0001");
+    assert_eq!(after_adopt.status, Status::Done);
+
+    // Re-fold the identical report.
+    h.append("node.report", Some("n-0001"), merge.clone());
+    let after_replay = h.node("n-0001");
+    assert_eq!(after_replay.status, Status::Done);
+    assert_eq!(after_replay.last_report, Some(merge));
+    assert_eq!(
+        after_replay.updated_at, after_adopt.updated_at,
+        "re-folding the same adopted report must not churn updated_at"
+    );
+}
+
 /// `node.status` terminal guard: a settled node ignores a late status event.
 #[test]
 fn node_status_terminal_guard() {

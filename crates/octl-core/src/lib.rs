@@ -55,7 +55,7 @@ pub use projections::{
     read_discussion, read_discussion_opt, read_manifest, read_manifest_opt, read_node,
     read_node_opt, read_spinoff, read_spinoff_opt, write_node,
 };
-pub use reducer::plan_projections;
+pub use reducer::{plan_projections, VIA_EXPLICIT_MERGE};
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
     ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,

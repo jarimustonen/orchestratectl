@@ -3,7 +3,7 @@ created: 2026-07-25
 updated: 2026-07-25
 type: improvement
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 related: ['@merge-skips-teardown', '@agent-died-merge-no-teardown-interactive']
 labels: [merge]

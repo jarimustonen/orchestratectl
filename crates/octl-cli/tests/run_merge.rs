@@ -376,16 +376,23 @@ fn append_node_report(home: &TempDir, run_id: &str, scratch: &Path, data: &str) 
     ]));
 }
 
-/// THE `merge-skips-teardown` / `agent-died-merge-no-teardown-interactive`
-/// regression: a long-lived interactive node the watchdog falsely declared
-/// `agent-died` is already terminal when the still-alive agent runs `run merge`.
-/// The reducer drops the late `via: explicit-merge` report as a dead event
-/// (`last_report` keeps the `agent-died` shape), so no supervisor can ever
-/// warrant teardown. `run merge` must reclaim the worktree + branch itself —
-/// `merged: true` must never leave them behind — using the merge's own ground
-/// truth that the branch landed in source.
+/// THE `merge-skips-teardown` / `agent-died-merge-no-teardown-interactive` fix
+/// (issue `reducer-adopt-explicit-merge`): a long-lived interactive node the
+/// watchdog falsely declared `agent-died` is already terminal when the still-alive
+/// agent runs `run merge`. The octl-core reducer now ADOPTS the late
+/// `via: "explicit-merge"` report even against that terminal node — overwriting
+/// `last_report` and reconciling status to `Done` — so `any_node_merged_explicitly`
+/// sees the merge and the SUPERVISOR (invariant #5) warrants teardown. `run merge`
+/// no longer reclaims inline.
+///
+/// This run was never supervised (`--skip-materialize` skeleton), so there is no
+/// live/restartable supervisor and the worktree/branch survive THIS call
+/// (`supervisor: NotSupervised`) — real teardown is driven by a reattached
+/// supervisor, proven end-to-end under a real detached supervisor in
+/// `e2e_spinoff::swallowed_agent_died_then_merge_reattaches_and_tears_down`. Here
+/// we assert the load-bearing projection change: the report is adopted.
 #[test]
-fn merge_reclaims_worktree_and_branch_when_report_swallowed() {
+fn merge_adopts_swallowed_report_and_defers_teardown() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
@@ -394,7 +401,8 @@ fn merge_reclaims_worktree_and_branch_when_report_swallowed() {
     forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
 
     // Watchdog false positive: the node is terminalized as agent-died BEFORE the
-    // merge, so the reducer will swallow the explicit-merge report below.
+    // merge. Pre-fix the reducer would swallow the explicit-merge report; now it
+    // adopts it.
     append_node_report(
         &home,
         &run_id,
@@ -407,28 +415,30 @@ fn merge_reclaims_worktree_and_branch_when_report_swallowed() {
         "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
-    // The merge still reports success — but now the resources are actually gone.
     assert_eq!(v["data"]["merged"], true);
+    // Never supervised → no teardown actor to (re)start; the supervisor owns
+    // teardown, so this call leaves the resources for it.
     assert_eq!(
-        v["warnings"].as_array().map_or(0, Vec::len),
-        0,
-        "a clean reclaim surfaces no warnings: {}",
-        v["warnings"]
+        v["data"]["supervisor"]["state"], "not-supervised",
+        "a never-supervised run has no teardown actor: {}",
+        v["data"]
     );
     assert!(
-        !wt.exists(),
-        "worktree must be reclaimed by run merge on the swallowed path"
+        wt.exists(),
+        "run merge no longer reclaims inline; the supervisor owns teardown"
     );
     assert!(
-        !branch_exists(&repo, "wt/foo"),
-        "branch must be reclaimed by run merge on the swallowed path"
+        branch_exists(&repo, "wt/foo"),
+        "the branch is left for the supervisor"
     );
 
-    // The last_report projection still shows the swallowed agent-died shape —
-    // proving the fix does NOT depend on the reducer adopting the merge report.
+    // THE fix: the reducer ADOPTED the explicit-merge report onto the projection,
+    // reconciling the watchdog-FAILED node to Done, so a supervisor can now warrant
+    // teardown (contrast the pre-fix behavior, where last_report stayed agent-died).
     let node_show =
         run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
-    assert_eq!(node_show["data"]["last_report"]["reason"], "agent-died");
+    assert_eq!(node_show["data"]["last_report"]["via"], "explicit-merge");
+    assert_eq!(node_show["data"]["status"], "done");
 }
 
 /// The healthy interactive path is unchanged: when the node is LIVE at merge
@@ -469,11 +479,11 @@ fn merge_defers_to_supervisor_when_report_adopted() {
 }
 
 /// A FAILED merge (backend exits non-zero) on an already-terminal node must NOT
-/// reclaim anything — the worktree + branch survive and `run merge` surfaces
-/// `merge_failed`. Guards the ordering: inline teardown lives AFTER the merge
-/// outcome check, so a future refactor cannot force-delete a branch whose merge
-/// never landed (review finding: the swallowed-path force delete must be gated on
-/// a real merge, and `run_merge_sh`'s error is that gate).
+/// adopt or tear down anything — the worktree + branch survive and `run merge`
+/// surfaces `merge_failed`. Guards the ordering: the terminal report is appended
+/// (and thus the reducer's adoption + the supervisor's teardown are reachable)
+/// ONLY AFTER `run_merge_sh` confirms the merge landed, so a failed merge can
+/// never mark a branch merged or warrant its deletion.
 #[test]
 fn failed_merge_on_preterminal_node_reclaims_nothing() {
     let home = TestHome::new();

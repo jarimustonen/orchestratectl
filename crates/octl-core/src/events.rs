@@ -279,6 +279,17 @@ pub struct AppendResult {
     /// True when `idempotency_key` matched a prior event so nothing new was
     /// appended or applied; `seq`/`prior` then describe that prior event.
     pub idempotent_replay: bool,
+    /// True when the reducer produced at least one projection write for THIS
+    /// append — i.e. the event actually changed state, rather than folding to a
+    /// no-op (an unknown/audit kind, or an event dropped by a `*.created` /
+    /// terminal-state guard). Lets a caller distinguish "the reducer ADOPTED my
+    /// event" from "it was a dead event" WITHOUT re-reading the projection and
+    /// pattern-matching a field (issue `reducer-adopt-explicit-merge`): e.g.
+    /// `run merge` uses it to tell a fresh late-explicit-merge adoption (needs a
+    /// teardown actor) from an idempotent retry. Always `false` on an idempotent
+    /// replay (nothing was applied by this call; the prior event carried the
+    /// state change).
+    pub applied: bool,
     /// On an idempotent replay, the prior event's recorded `node_id` and
     /// `data`, so a caller can reject a key reused with a conflicting
     /// request (Stripe-style). `None` on a fresh append.
@@ -347,14 +358,19 @@ pub fn append_and_apply_event(
                 return Ok(AppendResult {
                     seq: prior.seq,
                     idempotent_replay: true,
+                    // Nothing was applied by THIS call — the prior event (already
+                    // folded) carried any state change.
+                    applied: false,
                     prior: Some(prior),
                 });
             }
         }
-        let seq = append_and_apply_unlocked(lock, paths, kind, node_id, idempotency_key, data)?;
+        let (seq, applied) =
+            append_and_apply_reporting(lock, paths, kind, node_id, idempotency_key, data)?;
         Ok(AppendResult {
             seq,
             idempotent_replay: false,
+            applied,
             prior: None,
         })
     })
@@ -387,13 +403,31 @@ pub fn append_and_apply_event(
 /// # }
 /// ```
 pub fn append_and_apply_unlocked(
-    _witness: &LockedRun<'_>,
+    witness: &LockedRun<'_>,
     paths: &RunPaths,
     kind: &str,
     node_id: Option<&NodeId>,
     idempotency_key: Option<&str>,
     data: Value,
 ) -> Result<u64> {
+    append_and_apply_reporting(witness, paths, kind, node_id, idempotency_key, data)
+        .map(|(seq, _)| seq)
+}
+
+/// As [`append_and_apply_unlocked`], but also reports whether the reducer APPLIED
+/// (produced ≥1 projection op) vs folded to a no-op — the `bool` feeding
+/// [`AppendResult::applied`]. Kept private so the public composition primitive
+/// stays `-> u64` for its 15+ callers (none of which need the applied bit); only
+/// [`append_and_apply_event`] threads it out. See [`AppendResult::applied`] for
+/// why callers want it (issue `reducer-adopt-explicit-merge`).
+fn append_and_apply_reporting(
+    _witness: &LockedRun<'_>,
+    paths: &RunPaths,
+    kind: &str,
+    node_id: Option<&NodeId>,
+    idempotency_key: Option<&str>,
+    data: Value,
+) -> Result<(u64, bool)> {
     // Symlink containment runs once here, before truncate/recover/open all
     // reuse this path — guarding the run root and the event log itself so a
     // swapped `events.jsonl` can't redirect the run's source-of-truth write
@@ -430,6 +464,9 @@ pub fn append_and_apply_unlocked(
     // planned writes are still valid. One reduce pass serves both the gate and
     // the apply, so there is no validate/apply branch pair to drift apart.
     let ops = reduce_event_to_ops(paths, &ev)?;
+    // Whether the reducer changed state for this event — reported to the caller
+    // via `AppendResult::applied`. Captured before `commit_ops` consumes `ops`.
+    let applied = !ops.is_empty();
     let mut line = serde_json::to_vec(&ev).map_err(|e| Error::json(events_path.clone(), e))?;
     line.push(b'\n');
     let mut f = open_events_append(&events_path)?;
@@ -445,7 +482,7 @@ pub fn append_and_apply_unlocked(
     // them — the projection a reader sees is always at least as new as
     // `applied_seq` claims.
     advance_applied_seq(paths, seq)?;
-    Ok(seq)
+    Ok((seq, applied))
 }
 
 /// The three observable outcomes of an [`append_and_apply_idempotent`] call —
@@ -1518,6 +1555,10 @@ mod tests {
         )
         .unwrap();
         assert!(replay.idempotent_replay);
+        assert!(
+            !replay.applied,
+            "an idempotent replay applies nothing this call (applied: false)"
+        );
         assert_eq!(replay.seq, first.seq);
         let prior = replay.prior.expect("replay carries the prior event");
         assert_eq!(prior.node_id.as_deref(), Some("n-0001"));
@@ -1535,9 +1576,9 @@ mod tests {
         let paths = fresh_run(&tmp);
         bootstrap_live_node(&paths);
 
-        // Settle the node terminal.
+        // Settle the node terminal. A real state change → `applied: true`.
         let n0001 = nid("n-0001");
-        append_and_apply_event(
+        let settle = append_and_apply_event(
             &paths,
             "node.report",
             Some(&n0001),
@@ -1545,6 +1586,10 @@ mod tests {
             serde_json::json!({ "success": true }),
         )
         .unwrap();
+        assert!(
+            settle.applied,
+            "a report that terminalizes a live node applied a projection op"
+        );
         assert_eq!(
             crate::read_node(&paths, &n0001).unwrap().status,
             crate::schema::Status::Done
@@ -1552,7 +1597,8 @@ mod tests {
 
         // A later status event is dropped by the terminal-state guard, but the
         // append still happened: the result names the appended event's seq and
-        // is not a replay. The node stays Done.
+        // is not a replay. The node stays Done. `applied` is FALSE — the reducer
+        // planned zero ops (issue `reducer-adopt-explicit-merge`).
         let before = read_all_events(&paths.events()).unwrap().len();
         let r = append_and_apply_event(
             &paths,
@@ -1563,6 +1609,10 @@ mod tests {
         )
         .unwrap();
         assert!(!r.idempotent_replay);
+        assert!(
+            !r.applied,
+            "a dead event dropped by the terminal guard reports applied: false"
+        );
         assert_eq!(r.seq as usize, before + 1);
         assert_eq!(
             read_all_events(&paths.events()).unwrap().len(),

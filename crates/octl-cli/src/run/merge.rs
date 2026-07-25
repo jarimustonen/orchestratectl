@@ -20,20 +20,20 @@
 //!      supervisor's cleanup gate checks to extend teardown to
 //!      *interactive* kinds: a user who runs `run merge` is done with the
 //!      review window, so it may close (see supervise/cleanup.rs).
-//!   3. **Ensure teardown actually happens.** The supervisor is the canonical
-//!      teardown actor, but there is one path where it provably cannot act: a
-//!      node the watchdog already terminalized (e.g. an `agent-died` false
-//!      positive on a long-lived interactive run) before the merge. The reducer
-//!      then drops the late `explicit-merge` report as a dead event, so the
-//!      cleanup gate never sees the merge marker and the worktree/branch/window
-//!      leak while the envelope says `merged: true` (issues
-//!      `merge-skips-teardown`, `agent-died-merge-no-teardown-interactive`). On
-//!      exactly that path — detected by re-reading whether the reducer ADOPTED
-//!      the report — `run merge` reclaims the worktree + branch itself through
-//!      the shared cleanup primitives (the merge landing is authoritative
-//!      ground truth), surfacing any incomplete step as an envelope warning,
-//!      then closes the tmux window as its last act. Every other path stays the
-//!      supervisor's (via [`ensure_report_consumer`]).
+//!   3. **Ensure the supervisor tears down.** The supervisor is the SOLE
+//!      teardown actor (state-integrity invariant #5); `run merge` never reclaims
+//!      resources itself. Once its `via: "explicit-merge"` report is appended, the
+//!      octl-core reducer ADOPTS it — even against a node an earlier watchdog
+//!      `agent-died` false positive already terminalized (issue
+//!      `reducer-adopt-explicit-merge`) — so the cleanup gate sees the merge marker
+//!      on every path and warrants teardown. The one path with no LIVE supervisor
+//!      is exactly that swallowed case: the watchdog terminal rolled the run up and
+//!      its supervisor exited before the merge. [`ensure_report_consumer`]
+//!      reattaches one there (reattaching on a terminal-but-teardown-warranted run
+//!      when the reducer freshly adopted the report), so the reattached supervisor
+//!      runs the same `cleanup_terminal_nodes` and exits. This replaced the inline
+//!      worktree/branch reclaim shipped for `merge-skips-teardown` /
+//!      `agent-died-merge-no-teardown-interactive`, restoring single-owner teardown.
 //!
 //! On a merge failure (conflicts, dirty tree, lock timeout) the report is
 //! NOT submitted — the node stays live so the agent can recover (e.g.
@@ -239,74 +239,27 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )
     .map_err(from_core)?;
 
-    // Did the reducer ADOPT our terminal report, or drop it as a dead event?
-    // The reducer's terminal guard silently no-ops a `node.report` against an
-    // already-terminal node and leaves `last_report` untouched (octl-core
-    // `reduce_node_report`). So when a prior report terminalized the node before
-    // this merge — most commonly a watchdog `agent-died` false positive on a
-    // long-lived interactive run — our `via: "explicit-merge"` marker never
-    // reaches the projection, `any_node_merged_explicitly` never sees it, and NO
-    // supervisor (live or reattached) will ever warrant teardown. That is the
-    // silent worktree/branch/window leak of `merge-skips-teardown` /
-    // `agent-died-merge-no-teardown-interactive`. Re-read the projection to tell
-    // the two apart: `adopted` means a supervisor owns teardown as usual;
-    // `!adopted` means `run merge` must reclaim the resources itself, using the
-    // merge's own ground truth (merge.sh exited 0 → branch landed in source).
-    let adopted = matches!(
-        read_node_opt(&paths, &node_id)
-            .map_err(from_core)?
-            .as_ref()
-            .and_then(|n| n.last_report.as_ref())
-            .and_then(|r| r.get("via"))
-            .and_then(Value::as_str),
-        Some("explicit-merge")
-    );
-    let do_inline_teardown = !adopted;
-
-    // The terminal report is only useful if a live supervisor consumes it: the
+    // The terminal report is only useful if a supervisor consumes it: the
     // supervisor is the canonical teardown actor (close tmux window, remove
     // worktree, delete branch) AND the roller-up of `manifest.status` (state
-    // integrity invariant #5). If the recorded supervisor has died (e.g. a
-    // SIGTERM from a cycling tmux server — the `supervisor-dead-merge-no-teardown`
-    // bug), reporting a bare `merged: true` would mislead the caller into
-    // telling the user cleanup happened when it never will. So ensure a live
-    // consumer before returning, and never return silently on the dead path.
+    // integrity invariant #5). `run merge` no longer tears anything down itself:
+    // the octl-core reducer now ADOPTS a late `via: "explicit-merge"` report even
+    // against a node an earlier watchdog `agent-died` false positive already
+    // terminalized (issue `reducer-adopt-explicit-merge`). So `last_report` carries
+    // the merge marker, `any_node_merged_explicitly` sees it, and the supervisor
+    // warrants teardown on every path — restoring single-owner teardown and
+    // retiring the inline reclaim of `merge-skips-teardown` /
+    // `agent-died-merge-no-teardown-interactive`.
     //
-    // EXCEPTION — the swallowed path on an already-terminal run: the reducer
-    // dropped our report, so there is nothing for a supervisor to CONSUME, and
-    // the run is already rolled up. Reattaching one here would only contend with
-    // the inline teardown below — for an autonomous kind the reattached supervisor
-    // would read the stale `agent-died` report as a blocked handoff and try to
-    // PRESERVE the very branch/worktree this call is reclaiming, writing a
-    // misleading `cleanup.branch_preserved` audit event. So skip it and reclaim
-    // directly (the run merge review finding on the double-teardown race). A
-    // swallowed-but-not-yet-rolled-up run still goes through `ensure_report_consumer`
-    // so the run gets rolled up; the inline teardown below is idempotent with it.
-    let manifest_terminal = read_manifest_opt(&paths)
-        .map_err(from_core)?
-        .is_some_and(|m| m.status.is_terminal());
-    let (outcome, mut warnings) = if do_inline_teardown && manifest_terminal {
-        (ConsumerOutcome::Terminal, args.warnings.to_vec())
-    } else {
-        ensure_report_consumer(&paths, &run_id, args.warnings)
-    };
-
-    // Synchronous teardown on the swallowed-report path. When the reducer dropped
-    // our report, the canonical supervisor teardown can never fire, so reclaim the
-    // worktree + branch here through the SAME cleanup primitives the supervisor
-    // uses (invariant #5's actor is unchanged for every path where it CAN act; this
-    // is the one path where it provably cannot). Force teardown is authorized by
-    // the merge's own ground truth — `merge.sh` exited 0, so the branch landed in
-    // source — exactly the trust the accepted `via: "explicit-merge"` arm rests on
-    // (a `--rebase`/squash merge legitimately leaves the branch "ahead" of source,
-    // so the source-relative preservation check would false-positive here just as
-    // it would there). Teardown runs and completes before this call returns — never
-    // after a `merged: true` envelope — and any step that could not finish is
-    // surfaced as a `warnings[]` entry rather than a clean close. The tmux window
-    // is closed AFTER the envelope is emitted + flushed (below).
-    if do_inline_teardown {
-        warnings.extend(cleanup::reclaim_merged_worktree_branch(&paths, &node));
-    }
+    // The one path where no live supervisor exists is exactly that swallowed case:
+    // the watchdog terminal already rolled the run up and its supervisor exited, so
+    // there is nothing running to consume our now-adopted report. `ensure_report_
+    // consumer` reattaches one — including on a terminal-but-teardown-warranted run
+    // when this call FRESHLY adopted the report (`result.applied`) — so the
+    // reattached supervisor runs the same `cleanup_terminal_nodes` and exits. A bare
+    // `merged: true` never returns while teardown has no actor.
+    let (outcome, warnings) =
+        ensure_report_consumer(&paths, &run_id, args.warnings, result.applied);
 
     let payload = MergePayload {
         run_id: &run_id,
@@ -318,23 +271,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         supervisor: Some(outcome),
         dry_run: None,
     };
-    emit(&payload, args.spec, &warnings)?;
-
-    // Close the merged node's tmux window LAST — after the envelope is emitted AND
-    // explicitly flushed. A foreground/interactive `run merge` runs inside the very
-    // window it closes, so `tmux kill-window` can SIGHUP this process; the envelope
-    // (with any teardown warnings) must be on the wire first, and Rust's block-
-    // buffered stdout is not guaranteed flushed on a signal-killed exit. Reclaiming
-    // the worktree + branch and reporting them must also complete first (deliverable:
-    // a window-kill must never abort the rest of the teardown). Best-effort and
-    // idempotent — an already-closed window (a prior run merge, or a supervisor that
-    // won the race) is a clean no-op.
-    if do_inline_teardown {
-        use std::io::Write as _;
-        let _ = std::io::stdout().flush();
-        cleanup::close_merged_node_window(&paths, &node);
-    }
-    Ok(())
+    emit(&payload, args.spec, &warnings)
 }
 
 /// Guarantee the terminal `node.report` just appended has a live consumer, or
@@ -342,20 +279,36 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// [`ConsumerOutcome`] plus the caller's `base` warnings with (at most) one
 /// human-readable entry appended.
 ///
-/// The recovery decision reasons across THREE facts, read together under one
-/// shared lock (state-integrity invariant #3): the manifest status, the
+/// The recovery decision reasons across FOUR facts, read together under one
+/// shared lock (state-integrity invariant #3): the manifest status, whether
+/// teardown is warranted (`any_node_merged_explicitly`, since a `run merge`
+/// always makes teardown warranted once its report is adopted), the
 /// `supervisor.pid` liveness, and whether a supervisor was EVER started. The
 /// discriminator for "reattach or not" is deliberately NOT "is a dead pid file
 /// present" — an orphan can also have NO pid file (the `claim_pid_atomic` hint
 /// tells an operator to delete a stale `supervisor.pid`, after which a merge
 /// would otherwise silently strand the run). The sound rule is:
 ///
-///   reattach  ⟺  no live supervisor  ∧  run not yet terminal  ∧  ever supervised
+///   reattach  ⟺  no live supervisor  ∧  ever supervised
+///                ∧  ( run not yet terminal  ∨  (terminal ∧ warranted ∧ fresh) )
 ///
 /// where "ever supervised" = a recorded pid (stale file) OR a `supervisor.started`
-/// event in the log. A never-materialized skeleton run (e.g. a `--skip-materialize`
-/// test run) has neither, so it is left untouched — spawning a supervisor for it
-/// would be wrong.
+/// event in the log, "warranted" = the adopted merge means the supervisor will
+/// tear the worktree/branch/window down, and "fresh" = THIS call actually adopted
+/// the report (`fresh_adoption`, from [`AppendResult::applied`]). The terminal
+/// clause is what closes the swallowed-report leak (issues `merge-skips-teardown`,
+/// `agent-died-merge-no-teardown-interactive`): a watchdog `agent-died` false
+/// positive rolled the run up and its supervisor exited BEFORE the merge, so
+/// reattaching one is the ONLY way teardown runs — and the reattached supervisor,
+/// seeing the now-adopted `via: "explicit-merge"` report, warrants it. Gating on
+/// `fresh` keeps an idempotent `run merge` retry (whose prior call already
+/// reattached + tore down) from spawning a redundant supervisor.
+///
+/// A never-materialized skeleton run (e.g. a `--skip-materialize` test run) has
+/// no recorded pid and no `supervisor.started`, so it is left untouched
+/// (`NotSupervised`) — spawning a supervisor for it would be wrong. This is never
+/// a production worktree run: `run create` spawns + confirms a supervisor before
+/// returning, so a real run always reads `ever supervised`.
 ///
 /// KNOWN RESIDUAL: a legacy bare-integer `supervisor.pid` whose pid has been
 /// recycled by an unrelated live process reads as `alive` (§7.6 identity check
@@ -365,23 +318,33 @@ fn ensure_report_consumer(
     paths: &octl_core::RunPaths,
     run_id: &str,
     base: &[String],
+    fresh_adoption: bool,
 ) -> (ConsumerOutcome, Vec<String>) {
-    // One shared-locked read of manifest.json + supervisor.pid + events.jsonl:
-    // the reattach decision is a multi-projection read, so it must not observe a
-    // half-applied set (invariant #3). The event scan is short-circuited when a
-    // pid file is already present, so the common (signal-death) path pays only
-    // the manifest read + pid probe.
+    // One shared-locked read of manifest.json + nodes/* + supervisor.pid +
+    // events.jsonl: the reattach decision is a multi-projection read, so it must
+    // not observe a half-applied set (invariant #3). The event scan is
+    // short-circuited when a pid file is already present, so the common
+    // (signal-death) path pays only the manifest read + node scan + pid probe.
     let probed = RunLock::with_shared_lock(&paths.lock(), || {
-        let terminal = read_manifest_opt(paths)?.is_some_and(|m| m.status.is_terminal());
+        let manifest = read_manifest_opt(paths)?;
+        let terminal = manifest.as_ref().is_some_and(|m| m.status.is_terminal());
+        // Teardown is warranted for an autonomous kind unconditionally, or for any
+        // kind once an explicit `run merge` report has been adopted onto a node —
+        // exactly the supervisor's own `cleanup` gate. Read under the same shared
+        // lock as the manifest (the fold scans every node projection).
+        let warranted = manifest
+            .as_ref()
+            .is_some_and(|m| m.kind.lifecycle() == octl_core::Lifecycle::Autonomous)
+            || cleanup::any_node_merged_explicitly(paths);
         let live = SupervisorView::probe(paths);
         let ever_supervised = live.pid.is_some()
             || read_all_events(&paths.events())?
                 .iter()
                 .any(|e| e.kind == "supervisor.started");
-        Ok((terminal, live, ever_supervised))
+        Ok((terminal, warranted, live, ever_supervised))
     });
 
-    let (terminal, live, ever_supervised) = match probed {
+    let (terminal, warranted, live, ever_supervised) = match probed {
         Ok(v) => v,
         // A locked read failed (corrupt log / I/O). Don't guess the run's health
         // — the merge itself already landed; surface a deferred-teardown warning
@@ -405,17 +368,25 @@ fn ensure_report_consumer(
     if live.alive {
         return (ConsumerOutcome::Alive, base.to_vec());
     }
-    // Already rolled up by a supervisor that has since exited: nothing to consume.
-    if terminal {
-        return (ConsumerOutcome::Terminal, base.to_vec());
-    }
     // Never supervised (skeleton run): no teardown actor to restart.
     if !ever_supervised {
         return (ConsumerOutcome::NotSupervised, base.to_vec());
     }
+    // Already rolled up by a supervisor that has since exited. If this call did
+    // NOT freshly warrant teardown (an idempotent retry, or a terminal run whose
+    // teardown was never warranted — e.g. an interactive run that ended without an
+    // explicit merge), there is nothing to consume. But when THIS call freshly
+    // adopted a merge that warrants teardown, the exited supervisor never saw it,
+    // so fall through to reattach — the ONLY actor that will tear the worktree /
+    // branch / window down (the swallowed-report path).
+    if terminal && !(warranted && fresh_adoption) {
+        return (ConsumerOutcome::Terminal, base.to_vec());
+    }
 
-    // Orphaned: non-terminal, was supervised, no live supervisor remains to
-    // consume the terminal report. Restore the invariant by reattaching.
+    // Orphaned: was supervised, no live supervisor remains to consume the
+    // terminal report — either the run is still non-terminal, or it is terminal
+    // but this call freshly adopted a merge that warrants teardown the exited
+    // supervisor never saw. Restore the invariant by reattaching.
     let who = live.pid.map_or_else(
         || "the supervisor".to_string(),
         |p| format!("supervisor (pid {p})"),

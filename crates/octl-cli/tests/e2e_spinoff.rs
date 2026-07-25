@@ -660,6 +660,170 @@ fn merge_path_deletes_branch_e2e() {
     );
 }
 
+/// THE `reducer-adopt-explicit-merge` end-to-end proof (staging the
+/// watchdog-terminal-then-explicit-merge sequence of
+/// `agent-died-merge-no-teardown-interactive`): a node is terminalized FAILED by
+/// a (here forged) watchdog `agent-died` report BEFORE the merge, so the first
+/// supervisor rolls the run up and exits WITHOUT tearing the branch/worktree down
+/// (they are PRESERVED — a `success: false` handoff). Then `run merge` appends its
+/// `via: "explicit-merge"` report. Pre-fix the reducer dropped that as a dead
+/// event and the resources leaked forever; now the reducer ADOPTS it, so
+/// `any_node_merged_explicitly` sees the merge and `run merge` reattaches a
+/// supervisor that — as the SOLE teardown actor (invariant #5) — force-removes the
+/// worktree and deletes the branch. Runs against REAL git (`GIT_BIN` removed) so
+/// the teardown is genuine, not a stub no-op.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn swallowed_agent_died_then_merge_reattaches_and_tears_down() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let branch = "wt/e2e-swallowed";
+    let (repo, worktree) = init_real_repo_with_committed_work(scratch.path(), branch);
+
+    let agent_pid_file = scratch.path().join("agent.pid");
+    let create_sh = write_create_sh(scratch.path(), &worktree, &agent_pid_file, branch);
+    let merge_sh = write_merge_sh(scratch.path());
+    let no_tmux = scratch.path().join("no-such-tmux");
+
+    // 1. Create a supervised run (real detached supervisor, real git for teardown).
+    let created = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_CREATE_SH", &create_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .env_remove("GIT_BIN")
+            .args([
+                "--output",
+                "json",
+                "run",
+                "create",
+                "--kind",
+                "spinoff",
+                "--headless",
+                "--title",
+                "e2e-swallowed",
+                "--task",
+                "echo done",
+            ]),
+    );
+    let run_id = created["data"]["run_id"].as_str().unwrap().to_string();
+
+    let agent_pid: i32 = std::fs::read_to_string(&agent_pid_file)
+        .expect("create.sh recorded the agent pid")
+        .trim()
+        .parse()
+        .expect("agent pid is an integer");
+    let _agent = AgentGuard { pid: agent_pid };
+
+    let run_root = home.path().join("runs").join(&run_id);
+    let events = run_root.join("events.jsonl");
+    let pid_file = run_root.join("supervisor.pid");
+
+    assert!(
+        wait_for_event(&events, "supervisor.started", Duration::from_secs(15)),
+        "supervisor never started; events: {:?}",
+        event_kinds(&events)
+    );
+    let first_pid = read_supervisor_pid(&pid_file).expect("supervisor.pid recorded a pid");
+
+    // 2. Forge a watchdog `agent-died` FALSE POSITIVE terminal report (the agent
+    //    `sleep` is still alive). The first supervisor rolls the run up and, since
+    //    this is a blocked `success: false` handoff, PRESERVES the branch+worktree
+    //    and exits — the exact "terminal, but no teardown" precondition of the bug.
+    let report = scratch.path().join("agent-died.json");
+    std::fs::write(
+        &report,
+        r#"{"success": false, "failed": true, "reason": "agent-died", "summary": "watchdog false positive"}"#,
+    )
+    .unwrap();
+    run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("TMUX_BIN", &no_tmux)
+            .env_remove("GIT_BIN")
+            .args([
+                "--output",
+                "json",
+                "node",
+                "report",
+                &run_id,
+                "n-0001",
+                "--from-file",
+                report.to_str().unwrap(),
+            ]),
+    );
+
+    // The first supervisor sees the terminal node, preserves (does not tear down),
+    // and exits.
+    assert!(
+        wait_for_event(&events, "supervisor.exited", Duration::from_secs(30)),
+        "first supervisor never exited after the agent-died terminal; events: {:?}",
+        event_kinds(&events)
+    );
+    assert!(
+        wait_for_process_gone(first_pid, Duration::from_secs(10)),
+        "first supervisor pid {first_pid} still alive"
+    );
+    // Precondition proven: the branch + worktree survived the (blocked) terminal.
+    assert!(
+        branch_exists(&repo, branch),
+        "the blocked terminal must PRESERVE the branch (not tear it down)"
+    );
+    assert!(
+        worktree.exists(),
+        "the blocked terminal must preserve the worktree"
+    );
+    assert!(
+        read_events(&events)
+            .into_iter()
+            .any(|v| v["kind"] == "cleanup.branch_preserved"),
+        "expected a cleanup.branch_preserved on the pre-merge terminal; events: {:?}",
+        event_kinds(&events)
+    );
+
+    // 3. The still-alive agent runs `run merge`. The reducer ADOPTS the late
+    //    explicit-merge report against the terminal node, so `run merge`
+    //    reattaches a supervisor to own teardown (single-owner, invariant #5).
+    let merged = run_ok(
+        Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("OCTL_MERGE_SH", &merge_sh)
+            .env("TMUX_BIN", &no_tmux)
+            .env_remove("GIT_BIN")
+            .args(["--output", "json", "run", "merge", &run_id]),
+    );
+    assert_eq!(merged["data"]["merged"], true);
+    assert_eq!(
+        merged["data"]["supervisor"]["state"], "reattached",
+        "the swallowed path must reattach a supervisor to tear down, got: {}",
+        merged["data"]["supervisor"]
+    );
+
+    // 4. The reattached supervisor — the SOLE teardown actor — force-removes the
+    //    worktree and deletes the branch that was preserved a moment ago.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while (branch_exists(&repo, branch) || worktree.exists()) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        !branch_exists(&repo, branch),
+        "the reattached supervisor must delete the adopted-merge branch; events: {:?}",
+        event_kinds(&events)
+    );
+    assert!(
+        !worktree.exists(),
+        "the reattached supervisor must remove the worktree; events: {:?}",
+        event_kinds(&events)
+    );
+    assert!(
+        event_kinds(&events)
+            .iter()
+            .any(|k| k == "supervisor.reattached"),
+        "expected a supervisor.reattached event; got {:?}",
+        event_kinds(&events)
+    );
+}
+
 /// Regression for `supervisor-dead-merge-no-teardown`: if the per-run
 /// supervisor has died (here: SIGKILL, leaving a stale `supervisor.pid`), a
 /// subsequent `run merge` must NOT report a bare, silent `merged: true`. It

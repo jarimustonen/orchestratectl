@@ -690,6 +690,47 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     // reverse the issue spec sketched; the required CorruptEventLog cases
     // all target live nodes, so validation still runs for them.)
     if n.status.is_terminal() {
+        // ONE exception to the dead-event rule: a late, CONFIRMED explicit-merge
+        // report is adopted even against a terminal node (issue
+        // `reducer-adopt-explicit-merge`). A watchdog `agent-died` false positive
+        // on a long-lived interactive run can terminalize a node BEFORE the user's
+        // `run merge` report arrives; an explicit user merge carries strictly
+        // higher-fidelity ground truth (the branch demonstrably landed in source)
+        // than a watchdog timeout, so it wins. Overwriting `last_report` here is
+        // what lets `any_node_merged_explicitly` see the merge and the SUPERVISOR
+        // — invariant #5's canonical teardown actor — warrant teardown, instead of
+        // the CLI compensating inline (issues `merge-skips-teardown`,
+        // `agent-died-merge-no-teardown-interactive`).
+        //
+        // Scoped tightly, on BOTH sides:
+        //   - incoming: a CONFIRMED SUCCESSFUL explicit merge
+        //     (`via == "explicit-merge"`, `success == true`, not `cancelled`) —
+        //     matches exactly the force-`-D` teardown gate (`node_branch_merged`),
+        //     so a failed/cancelled or non-merge late report never resurrects a
+        //     settled node and unmerged-work preservation is untouched.
+        //   - prior: NOT a `Cancelled` node. A `Cancelled` terminal is a
+        //     DELIBERATE `run cancel` teardown, not a watchdog false positive, so a
+        //     later merge does not override it (it stays cancelled — matching the
+        //     existing "late success report keeps the cancel" reducer contract).
+        //     Only a `Failed` (watchdog `agent-died`) — or an idempotent re-`Done`
+        //     — is adopted, which is exactly the bug scenario.
+        // Idempotent: if this exact report is already the node's `last_report`,
+        // re-folding it on replay is a clean no-op (never churns `updated_at`).
+        if n.status != Status::Cancelled && report_is_confirmed_explicit_merge(&ev.data) {
+            if n.last_report.as_ref() == Some(&ev.data) && n.status == Status::Done {
+                return Ok(vec![]);
+            }
+            tracing::info!(
+                target: "octl_core::reducer",
+                seq = ev.seq, kind = %ev.kind, node_id = %node_id, prior = ?n.status,
+                "adopting late explicit-merge report against terminal node (invariant #5 teardown)"
+            );
+            n.last_report = Some(ev.data.clone());
+            // A confirmed merge is a terminal SUCCESS: the work landed in source.
+            n.status = Status::Done;
+            n.updated_at = ev.ts;
+            return Ok(vec![ProjectionOp::Node(n)]);
+        }
         tracing::debug!(
             target: "octl_core::reducer",
             seq = ev.seq, kind = %ev.kind, node_id = %node_id, current = ?n.status,
@@ -732,6 +773,26 @@ fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
             "no-op: ignored conflicting transition from terminal target"
         );
     }
+}
+
+/// The `via` marker `run merge` stamps on the terminal `node.report` it appends
+/// after a clean merge. This is the octl-cli/octl-core contract point: the CLI
+/// (`crates/octl-cli/src/run/merge.rs`) writes it and the reducer reads it here
+/// to decide adoption. Kept in core so the reducer's adoption gate and the
+/// supervisor's teardown gate (`supervise/cleanup.rs`) agree on the exact string.
+pub const VIA_EXPLICIT_MERGE: &str = "explicit-merge";
+
+/// True when a `node.report` payload is a CONFIRMED, SUCCESSFUL explicit merge —
+/// `via == "explicit-merge"`, `success == true`, and NOT `cancelled`. This is the
+/// sole payload shape the terminal-node guard in [`reduce_node_report`] adopts,
+/// and it mirrors the supervisor's force-`-D` teardown gate (`node_branch_merged`)
+/// so a report carrying the merge marker but `success: false` (malformed/spoofed)
+/// never earns adoption or, downstream, a force delete.
+fn report_is_confirmed_explicit_merge(data: &Value) -> bool {
+    let via = data.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE);
+    let success = data.get("success").and_then(Value::as_bool) == Some(true);
+    let cancelled = data.get("cancelled").and_then(Value::as_bool) == Some(true);
+    via && success && !cancelled
 }
 
 /// Derive the terminal status a `node.report` event asserts, enforcing the
