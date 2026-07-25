@@ -4,19 +4,22 @@
 //! Two properties that must hold WITHOUT reproducing the flaky load trigger:
 //!
 //! 1. **Fail loudly, not silently.** When the detached supervisor never
-//!    confirms start (no live `supervisor.pid` within the deadline), `run
-//!    create` must return a `supervisor_spawn_failed` error envelope carrying
-//!    the run id — never hang, never misreport `pid: 0` as success — and a
-//!    `supervisor.stderr.log` with the failure reason must exist on disk.
+//!    confirms boot (its readiness pipe closes without a ready signal because
+//!    it died during init), `run create` must return a `supervisor_spawn_failed`
+//!    error envelope carrying the run id — never hang, never misreport `pid: 0`
+//!    as success — and a `supervisor.stderr.log` with the failure reason must
+//!    exist on disk.
 //!
 //! 2. **No stuck `pending`.** A supervised run that never got a worker node
 //!    (and has no children) must be terminalized `failed`, not left `pending`
 //!    forever or falsely reported `work-complete`.
 //!
 //! The supervisor spawn is forced to fail deterministically via the
-//! `OCTL_SUPERVISE_BIN` seam (point it at `/usr/bin/false`, which never writes
-//! a pid file) with a short `OCTL_PID_FILE_WAIT_MS`, mirroring the existing
-//! `OCTL_CREATE_SH` binary-override hook. No real tmux/workmux/git is touched.
+//! `OCTL_SUPERVISE_BIN` seam (point it at `/usr/bin/false`, which execs and
+//! exits at once without signalling readiness), so the parent's readiness read
+//! returns EOF — a real death, detected immediately with no timeout. Mirrors the
+//! existing `OCTL_CREATE_SH` binary-override hook. No real tmux/workmux/git is
+//! touched.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -104,10 +107,11 @@ fn run_create_fails_loud_when_supervisor_never_confirms() {
     let out = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("ORCHESTRATECTL_HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
-        // Force the supervisor spawn to "succeed" at fork/exec but never write a
-        // pid file: /usr/bin/false exits 1 immediately.
+        // Force the supervisor spawn to "succeed" at fork/exec but never confirm
+        // boot: /usr/bin/false execs then exits 1 at once, so its readiness-pipe
+        // write end closes with no ready signal → the parent reads EOF (a real
+        // death), not a slow boot.
         .env("OCTL_SUPERVISE_BIN", "/usr/bin/false")
-        .env("OCTL_PID_FILE_WAIT_MS", "400")
         .env("GIT_BIN", &no_git)
         .args([
             "--output",
@@ -159,7 +163,7 @@ fn run_create_fails_loud_when_supervisor_never_confirms() {
     //    (the original bug wrote nothing at all).
     let log = std::fs::read_to_string(run_dir.join("supervisor.stderr.log")).unwrap_or_default();
     assert!(
-        log.contains("did not confirm start"),
+        log.contains("readiness pipe closed") || log.contains("died during init"),
         "supervisor.stderr.log must record the spawn failure reason, got: {log:?}"
     );
 

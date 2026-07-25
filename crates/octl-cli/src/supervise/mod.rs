@@ -47,7 +47,7 @@ use octl_core::{
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_run_id, run_paths};
+use crate::run::{from_core, parse_run_id, run_paths, supervisor_readiness};
 
 /// Polling cadences (design.md §7.5 defaults).
 const TAIL_TICK: Duration = Duration::from_millis(500);
@@ -224,20 +224,35 @@ pub struct SuperviseArgs {
     pub no_quarantine_corrupt_lines: bool,
 }
 
-pub fn dispatch(
-    args: SuperviseArgs,
-    spec: &OutputSpec,
-    warnings: &[String],
-) -> Result<(), CliError> {
-    let run_id = args.run_id.clone();
+/// Everything the supervise loop needs, assembled by [`boot_supervisor`]. Boot
+/// is fallible and side-effecting (it claims `supervisor.pid` under the run
+/// flock and emits `supervisor.started`); extracting it lets [`dispatch`] report
+/// boot success/failure down the readiness pipe at a single, clear seam before
+/// entering the loop.
+struct SupervisorBoot {
+    root: PathBuf,
+    paths: RunPaths,
+    pid_path: PathBuf,
+    our_pid: u32,
+    state: state::SupervisorState,
+    own_tail: tail::EventTail,
+    child_tails: std::collections::BTreeMap<String, ChildTracking>,
+}
+
+/// Perform the supervisor's boot: resolve paths, verify the run exists, install
+/// signal handlers, atomically claim `supervisor.pid`, emit `supervisor.started`,
+/// and seed the own-run + child tails. Any error here means the supervisor is
+/// NOT going to supervise — [`dispatch`] reports the reason down the readiness
+/// pipe and propagates it.
+fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths(root.as_path(), run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(CliError {
             kind: ExitKind::User,
             code: "run_not_found".into(),
             message: format!("no run with id {run_id}"),
-            invalid_value: Some(run_id),
+            invalid_value: Some(run_id.to_string()),
             expected: None,
         });
     }
@@ -274,8 +289,8 @@ pub fn dispatch(
     )
     .map_err(from_core);
 
-    let mut state = state::load(&paths.root)?;
-    let mut own_tail = tail::EventTail::new(paths.events(), state.last_seq_own);
+    let state = state::load(&paths.root)?;
+    let own_tail = tail::EventTail::new(paths.events(), state.last_seq_own);
     let mut child_tails: std::collections::BTreeMap<String, ChildTracking> =
         std::collections::BTreeMap::new();
     // Reseed child tails from the canonical node projections, NOT from
@@ -301,6 +316,59 @@ pub fn dispatch(
             },
         );
     }
+
+    Ok(SupervisorBoot {
+        root,
+        paths,
+        pid_path,
+        our_pid,
+        state,
+        own_tail,
+        child_tails,
+    })
+}
+
+pub fn dispatch(
+    args: SuperviseArgs,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    let run_id = args.run_id.clone();
+
+    // Readiness pipe (issue `supervisor-confirm-readiness-pipe`): when `run
+    // create` spawned us it passed the write end of a pipe via
+    // `OCTL_READINESS_FD`; it is blocked reading it. We confirm boot down that
+    // pipe AFTER `claim_pid_atomic` + init succeeds, or report the real reason
+    // if boot fails — so the parent never false-fails a slow-but-healthy boot,
+    // and never orphans a supervisor it was told died. `from_env` is a no-op
+    // when the variable is unset (the lenient spawn paths and direct
+    // `supervise` invocations).
+    let mut readiness = supervisor_readiness::ReadinessReporter::from_env();
+
+    // Everything that must succeed before the supervise loop is fallible boot.
+    // On failure we tell the parent the specific reason (a bare pipe EOF would
+    // otherwise read as an unexplained death) and propagate.
+    let boot = match boot_supervisor(&run_id) {
+        Ok(b) => {
+            // Init complete and the pid file is claimed + durable. Confirm boot
+            // to the parent BEFORE the (potentially long-blocking) loop.
+            readiness.ready(b.our_pid);
+            b
+        }
+        Err(e) => {
+            readiness.error(&e.code, &e.message);
+            return Err(e);
+        }
+    };
+    let SupervisorBoot {
+        root,
+        paths,
+        pid_path,
+        our_pid,
+        mut state,
+        mut own_tail,
+        mut child_tails,
+    } = boot;
 
     // Per-node count of consecutive ticks a node has presented the
     // `TmuxGone` half-state. §7.5 requires half-states to "resolve via

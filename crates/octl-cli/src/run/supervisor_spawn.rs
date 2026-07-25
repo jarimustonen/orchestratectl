@@ -39,8 +39,23 @@
 //! One consequence: the PID `Command::spawn` returns is the intermediate's,
 //! not the grandchild's. The authoritative supervisor PID is the one the
 //! supervisor writes into its own `supervisor.pid` during
-//! [`crate::supervise::pid_file::claim_pid_atomic`]; callers that need it
-//! read it back from that file (see [`spawn_for_run`]).
+//! [`crate::supervise::pid_file::claim_pid_atomic`]; lenient callers that need
+//! it read it back from that file (see [`await_recorded_pid`]).
+//!
+//! # Confirming boot — readiness pipe vs. pid-file poll
+//!
+//! `run create` cannot record a run as started until it knows the supervisor
+//! booted. It confirms that with a [readiness pipe](crate::run::supervisor_readiness)
+//! threaded through the double-fork: the grandchild writes a readiness byte
+//! carrying its pid AFTER `claim_pid_atomic` + init, and [`spawn_for_run`]
+//! blocks reading it (a byte → confirmed; EOF → the supervisor died during
+//! init; a structured error → the real reason). This has no timeout and no
+//! orphan window — replacing the old bounded `supervisor.pid` poll that
+//! false-failed a slow-but-healthy boot into `supervisor_spawn_failed` while
+//! the grandchild kept running (issue `supervisor-confirm-readiness-pipe`).
+//! The lenient callers (`run reattach`, child-spawn) do NOT confirm via the
+//! pipe; they read `supervisor.pid` directly ([`await_recorded_pid`] /
+//! [`read_live_recorded_pid`]) and tolerate "not yet confirmed".
 
 use std::path::Path;
 use std::process::Command;
@@ -49,15 +64,17 @@ use std::time::{Duration, Instant};
 use octl_core::RunPaths;
 
 use crate::error::CliError;
+use crate::run::supervisor_readiness::{Readiness, ReadinessPipe, ENV_READINESS_FD};
 use crate::supervise::pid_file;
 
-/// How long we wait for a freshly-forked supervisor to write its live pid file
-/// before `run create` declares the spawn unconfirmed. The supervisor normally
-/// writes it within milliseconds of `exec`; the deadline is generous so a
-/// slow-but-healthy boot under heavy load (fork storms, cgroup CPU throttling,
-/// degraded I/O) is NOT false-failed into an orphaned-supervisor situation. A
-/// readiness pipe would remove the timeout entirely — tracked as a follow-up
-/// (issue `supervisor-spawn-fails-silently-at-run-create`).
+/// How long the *lenient* pid-file poll ([`await_recorded_pid`], used by
+/// `run reattach`) waits for a freshly-forked supervisor to write its live pid
+/// file before giving up and reporting pid 0 ("spawned, pid unconfirmed").
+///
+/// `run create`'s confirmation path no longer uses this: it uses the readiness
+/// pipe ([`spawn_for_run`]), which has no timeout and no orphan window. This
+/// deadline governs only the lenient callers that tolerate an unconfirmed pid
+/// and rely on `supervisor.pid` as the durable truth.
 const PID_FILE_WAIT: Duration = Duration::from_secs(15);
 const POLL_TICK: Duration = Duration::from_millis(200);
 
@@ -89,15 +106,18 @@ fn supervise_bin() -> Result<std::path::PathBuf, CliError> {
 /// to represent the contradictory "confirmed with pid 0" that reintroduced the
 /// original silent-success bug.
 pub enum SupervisorSpawn {
-    /// The supervisor confirmed start — it wrote a live, identity-verified
-    /// `supervisor.pid` within [`PID_FILE_WAIT`]. Carries that PID.
+    /// The supervisor confirmed boot down the readiness pipe, carrying its own
+    /// pid (identical to the value it wrote into `supervisor.pid` under the run
+    /// flock during `claim_pid_atomic`).
     Confirmed { pid: u32 },
-    /// No live pid file appeared before the deadline. `run create` surfaces
-    /// this as a loud `supervisor_spawn_failed` envelope rather than recording
-    /// a bogus success (issue `supervisor-spawn-fails-silently-at-run-create`).
-    /// Lenient callers (`run reattach`, child-spawn) read the pid file directly
-    /// and never construct this variant.
-    Unconfirmed,
+    /// The supervisor never confirmed boot: the readiness pipe closed without a
+    /// ready signal (it died during init), it reported a structured boot error,
+    /// or the fork/exec itself failed. `reason` carries the specific cause.
+    /// `run create` surfaces this as a loud `supervisor_spawn_failed` envelope
+    /// rather than recording a bogus success (issue
+    /// `supervisor-spawn-fails-silently-at-run-create`). Only `run create`
+    /// constructs/consumes this — the lenient callers read the pid file directly.
+    Unconfirmed { reason: String },
 }
 
 /// Attach the detach hardening (`setsid` + double-fork) to `cmd`'s child via
@@ -150,7 +170,15 @@ pub fn detached_supervise_command(run_id: &str, log_path: &Path) -> Result<Comma
         // but not the fd itself.
         .stdin(std::process::Stdio::null())
         .stdout(stderr_file)
-        .stderr(stderr_clone);
+        .stderr(stderr_clone)
+        // Clear any inherited readiness-fd hint. Only `run create`'s
+        // confirmation path ([`spawn_for_run`]) sets `OCTL_READINESS_FD`, and it
+        // does so on its OWN command AFTER this builder. Without this clear, a
+        // running supervisor (which itself inherited the variable from its
+        // parent `run create`) would leak it to every child supervisor it forks,
+        // and each child would write a readiness signal to an fd it never
+        // inherited.
+        .env_remove(ENV_READINESS_FD);
     apply_detach(&mut cmd);
     Ok(cmd)
 }
@@ -231,24 +259,54 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
 }
 
 /// Fork+exec a fully-detached supervisor with stdout/stderr redirected to
-/// `<run-dir>/supervisor.stderr.log`, then wait up to [`PID_FILE_WAIT`] for the
-/// supervisor's own PID file to appear and be alive.
+/// `<run-dir>/supervisor.stderr.log`, then confirm its boot over a
+/// [readiness pipe](crate::run::supervisor_readiness) — no timeout, no orphan
+/// window.
 ///
 /// The stderr log is opened (created, possibly empty) *before* the fork by
 /// [`detached_supervise_command`], so a trace file always exists on disk from
 /// the moment of spawn. A fork/exec failure, or a supervisor that never
-/// confirms start, is additionally recorded into that log via
+/// confirms boot, is additionally recorded into that log via
 /// [`append_spawn_diag`] — otherwise a silent spawn failure leaves zero trace
 /// to diagnose from (the original bug signature).
 ///
-/// Returns [`SupervisorSpawn::Confirmed`] with the recorded PID on success. On
-/// timeout (the supervisor did not write a live pid file within the deadline)
-/// returns [`SupervisorSpawn::Unconfirmed`]; `run create` turns that into a loud
-/// `supervisor_spawn_failed` error, while lenient callers treat it as "not yet
-/// confirmed" and rely on the pid file directly.
+/// Confirmation mechanism (issue `supervisor-confirm-readiness-pipe`): the
+/// parent creates a pipe whose write end the grandchild inherits across
+/// `exec`. The grandchild writes a readiness signal carrying its pid AFTER it
+/// has claimed `supervisor.pid` and finished init, then closes the write end.
+/// The parent closes its own write-end copy and blocks reading the read end:
+///   - a `ready` signal → [`SupervisorSpawn::Confirmed`] with the supervisor pid;
+///   - EOF with no signal → the supervisor died during init (fate-sharing) →
+///     [`SupervisorSpawn::Unconfirmed`];
+///   - a structured error signal → `Unconfirmed` carrying the real reason.
+///
+/// Because `read()` returns as soon as the grandchild signals OR every
+/// write-end copy is closed, a slow-but-healthy boot is confirmed whenever it
+/// finishes (no deadline to overrun) and a genuinely dead supervisor is
+/// detected immediately — the ambiguity of the old bounded pid-file poll is
+/// gone. `run create` turns `Unconfirmed` into a loud `supervisor_spawn_failed`
+/// error; lenient callers never use this path.
 pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, CliError> {
     let log_path = paths.root.join("supervisor.stderr.log");
     let mut cmd = detached_supervise_command(run_id, &log_path)?;
+
+    // Readiness pipe: the write end (no CLOEXEC) is inherited across the
+    // double-fork + exec into the grandchild; we advertise its fd number via
+    // the environment. Created after the command so the write-end fd cannot
+    // collide with the log-file fds the command already holds.
+    let mut pipe = match ReadinessPipe::new() {
+        Ok(p) => p,
+        Err(e) => {
+            // Falling back to a pid-file poll here would reintroduce the very
+            // timeout ambiguity this fix removes; a pipe() failure is a real,
+            // rare resource exhaustion worth surfacing loudly instead.
+            let reason = format!("failed to create supervisor readiness pipe: {e}");
+            append_spawn_diag(&log_path, &reason);
+            return Ok(SupervisorSpawn::Unconfirmed { reason });
+        }
+    };
+    cmd.env(ENV_READINESS_FD, pipe.write_fd().to_string());
+
     if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
         append_spawn_diag(
             &log_path,
@@ -256,16 +314,38 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
         );
         return Err(e);
     }
-    if let Some(pid) = await_recorded_pid(paths) {
-        Ok(SupervisorSpawn::Confirmed { pid })
-    } else {
-        append_spawn_diag(
-            &log_path,
-            &format!(
-                "supervisor did not confirm start: no live supervisor.pid appeared within {:?} of fork/exec (it may still be booting under load)",
-                pid_file_wait()
-            ),
-        );
-        Ok(SupervisorSpawn::Unconfirmed)
+
+    // The parent must stop being a writer, or `await_ready` never observes EOF
+    // on the grandchild's death. After this, the only remaining write-end copy
+    // is the grandchild's (the double-fork intermediate already `_exit`ed and
+    // was reaped by `spawn_and_reap`).
+    pipe.close_write();
+
+    match pipe.await_ready() {
+        Readiness::Ready { pid } => Ok(SupervisorSpawn::Confirmed { pid }),
+        Readiness::Died => {
+            let reason = "supervisor died during init: the readiness pipe closed \
+                          without a ready signal (see supervisor.stderr.log)"
+                .to_string();
+            append_spawn_diag(&log_path, &reason);
+            Ok(SupervisorSpawn::Unconfirmed { reason })
+        }
+        Readiness::Error { code, message } => {
+            let reason = if message.is_empty() {
+                format!("supervisor reported a boot error: {code}")
+            } else {
+                format!("supervisor reported a boot error: {code}: {message}")
+            };
+            append_spawn_diag(&log_path, &reason);
+            Ok(SupervisorSpawn::Unconfirmed { reason })
+        }
+        Readiness::Malformed(raw) => {
+            let reason = format!(
+                "supervisor sent a malformed/truncated readiness signal ({raw:?}); \
+                 treating boot as failed (see supervisor.stderr.log)"
+            );
+            append_spawn_diag(&log_path, &reason);
+            Ok(SupervisorSpawn::Unconfirmed { reason })
+        }
     }
 }

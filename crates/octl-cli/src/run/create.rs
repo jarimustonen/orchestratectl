@@ -656,10 +656,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// silent boot failure into a loud, actionable error.
 ///
 /// [`supervisor_spawn::spawn_for_run`] returns [`SupervisorSpawn::Unconfirmed`]
-/// when the detached supervisor never wrote a live `supervisor.pid` within the
-/// startup deadline — the run would otherwise be left in `pending` with a
-/// dead/absent supervisor and its envelope would misreport a bogus success
-/// (issue `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #1).
+/// when the detached supervisor never confirms boot over its readiness pipe —
+/// it died during init, reported a structured boot error, or the fork/exec
+/// failed — the run would otherwise be left in `pending` with a dead/absent
+/// supervisor and its envelope would misreport a bogus success (issue
+/// `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #1; the
+/// timeout ambiguity itself is retired by `supervisor-confirm-readiness-pipe`).
 /// We instead return `supervisor_spawn_failed` carrying the run id, so the
 /// caller can inspect `supervisor.stderr.log`, `run reattach`, or `run cancel`
 /// rather than hang until its own timeout. The run.created / node.created
@@ -669,15 +671,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 fn spawn_supervisor_or_fail(paths: &octl_core::RunPaths, run_id: &str) -> Result<u32, CliError> {
     match supervisor_spawn::spawn_for_run(paths, run_id)? {
         supervisor_spawn::SupervisorSpawn::Confirmed { pid } => Ok(pid),
-        supervisor_spawn::SupervisorSpawn::Unconfirmed => Err(CliError::system(
+        supervisor_spawn::SupervisorSpawn::Unconfirmed { reason } => Err(CliError::system(
             "supervisor_spawn_failed",
             format!(
-                "supervisor for run {run_id} did not confirm start (no live supervisor.pid \
-                 within the startup deadline; it may still be booting under load). The run is \
-                 on disk in `pending`. Inspect '{}/supervisor.stderr.log' and check whether a \
-                 supervisor.pid appeared; then `orchestratectl run reattach {run_id}` to retry \
-                 (a no-op if one is already live) or `orchestratectl run cancel {run_id}` to \
-                 tear it down",
+                "supervisor for run {run_id} did not confirm boot ({reason}). The run is on \
+                 disk in `pending`. Inspect '{}/supervisor.stderr.log', then \
+                 `orchestratectl run reattach {run_id}` to retry (a no-op if one is already \
+                 live) or `orchestratectl run cancel {run_id}` to tear it down",
                 paths.root.display()
             ),
         )

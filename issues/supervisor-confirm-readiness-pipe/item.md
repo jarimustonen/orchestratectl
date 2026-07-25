@@ -2,7 +2,7 @@
 created: 2026-07-25
 updated: 2026-07-25
 type: improvement
-status: open
+status: in-progress
 priority: normal
 related: ['@supervisor-spawn-fails-silently-at-run-create']
 ---

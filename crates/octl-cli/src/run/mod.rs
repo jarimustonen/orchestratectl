@@ -12,6 +12,7 @@ pub mod merge;
 pub mod reattach;
 pub mod show;
 pub mod spawn;
+pub mod supervisor_readiness;
 pub mod supervisor_spawn;
 pub mod wait;
 
