@@ -307,3 +307,163 @@ fn missing_run_is_run_not_found() {
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
     assert_eq!(err["error"]["code"], "run_not_found");
 }
+
+/// Run `git <args>` in `cwd`, asserting success.
+fn git(cwd: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("spawn git")
+        .status
+        .success();
+    assert!(ok, "git {args:?} failed in {}", cwd.display());
+}
+
+/// True when local branch `branch` exists in `repo`.
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .current_dir(repo)
+        .args(["rev-parse", "--verify", "--quiet", branch])
+        .output()
+        .expect("spawn git")
+        .status
+        .success()
+}
+
+/// Init a real repo on `main` with a linked worktree on `wt/foo`, returning
+/// `(repo, worktree)` — enough for a full `git worktree remove` + `branch -D`
+/// round-trip through `run merge`'s synchronous teardown.
+fn init_repo_with_worktree(tmp: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let repo = tmp.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("README"), "x").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "init"]);
+    let wt = tmp.join("wt");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt/foo",
+            wt.to_str().unwrap(),
+        ],
+    );
+    (repo, wt)
+}
+
+/// Submit a terminal `node.report` for `n-0001` via the agent self-report path,
+/// so a test can pre-terminalize a node the way the watchdog's synthesized
+/// report does — before `run merge` runs.
+fn append_node_report(home: &TempDir, run_id: &str, scratch: &Path, data: &str) {
+    let f = scratch.join("pre-report.json");
+    std::fs::write(&f, data).unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "node",
+        "report",
+        run_id,
+        "n-0001",
+        "--from-file",
+        f.to_str().unwrap(),
+    ]));
+}
+
+/// THE `merge-skips-teardown` / `agent-died-merge-no-teardown-interactive`
+/// regression: a long-lived interactive node the watchdog falsely declared
+/// `agent-died` is already terminal when the still-alive agent runs `run merge`.
+/// The reducer drops the late `via: explicit-merge` report as a dead event
+/// (`last_report` keeps the `agent-died` shape), so no supervisor can ever
+/// warrant teardown. `run merge` must reclaim the worktree + branch itself —
+/// `merged: true` must never leave them behind — using the merge's own ground
+/// truth that the branch landed in source.
+#[test]
+fn merge_reclaims_worktree_and_branch_when_report_swallowed() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "code", "swallowed-merge");
+    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+
+    // Watchdog false positive: the node is terminalized as agent-died BEFORE the
+    // merge, so the reducer will swallow the explicit-merge report below.
+    append_node_report(
+        &home,
+        &run_id,
+        scratch.path(),
+        r#"{"success": false, "failed": true, "reason": "agent-died"}"#,
+    );
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
+
+    // The merge still reports success — but now the resources are actually gone.
+    assert_eq!(v["data"]["merged"], true);
+    assert_eq!(
+        v["warnings"].as_array().map_or(0, Vec::len),
+        0,
+        "a clean reclaim surfaces no warnings: {}",
+        v["warnings"]
+    );
+    assert!(
+        !wt.exists(),
+        "worktree must be reclaimed by run merge on the swallowed path"
+    );
+    assert!(
+        !branch_exists(&repo, "wt/foo"),
+        "branch must be reclaimed by run merge on the swallowed path"
+    );
+
+    // The last_report projection still shows the swallowed agent-died shape —
+    // proving the fix does NOT depend on the reducer adopting the merge report.
+    let node_show =
+        run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
+    assert_eq!(node_show["data"]["last_report"]["reason"], "agent-died");
+}
+
+/// The healthy interactive path is unchanged: when the node is LIVE at merge
+/// time the reducer adopts the `explicit-merge` report, so `run merge` leaves
+/// teardown to the supervisor (invariant #5) and does NOT reclaim inline — the
+/// worktree/branch survive this call (a real supervisor, absent in this test,
+/// would tear them down). Guards against the fix over-reaching into the path
+/// that already works.
+#[test]
+fn merge_defers_to_supervisor_when_report_adopted() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "code", "adopted-merge");
+    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+
+    // No pre-terminalization: the node is live, so the explicit-merge report is
+    // adopted and a supervisor owns teardown.
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
+
+    assert_eq!(v["data"]["merged"], true);
+    assert!(
+        wt.exists(),
+        "adopted path must NOT reclaim inline — the supervisor is the teardown actor"
+    );
+    assert!(
+        branch_exists(&repo, "wt/foo"),
+        "adopted path must leave the branch for the supervisor"
+    );
+    // The report was adopted onto the projection.
+    let node_show =
+        run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
+    assert_eq!(node_show["data"]["last_report"]["via"], "explicit-merge");
+}

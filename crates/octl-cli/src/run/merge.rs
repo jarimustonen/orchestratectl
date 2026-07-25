@@ -10,15 +10,30 @@
 //!
 //!   1. **Merge mechanics** — shell out to the bundled `merge.sh`
 //!      (embedded below, materialized to a temp file at runtime). It owns
-//!      the rebase, the cross-worktree `flock`, the `workmux merge`, and
-//!      the proven detached worktree/window/branch teardown. v1
+//!      the rebase, the cross-worktree `flock`, and the `workmux merge`. v1
 //!      deliberately wraps the script rather than re-implementing git
-//!      wrappers in Rust (issue §4); v2 can move it into core.
+//!      wrappers in Rust (issue §4); v2 can move it into core. The worktree /
+//!      window / branch teardown is NOT merge.sh's — it belongs to the
+//!      supervisor (state-integrity invariant #5).
 //!   2. **Terminal report** — on a clean merge, append a `node.report`
 //!      with `via: "explicit-merge"`. That flag is the signal the
 //!      supervisor's cleanup gate checks to extend teardown to
 //!      *interactive* kinds: a user who runs `run merge` is done with the
 //!      review window, so it may close (see supervise/cleanup.rs).
+//!   3. **Ensure teardown actually happens.** The supervisor is the canonical
+//!      teardown actor, but there is one path where it provably cannot act: a
+//!      node the watchdog already terminalized (e.g. an `agent-died` false
+//!      positive on a long-lived interactive run) before the merge. The reducer
+//!      then drops the late `explicit-merge` report as a dead event, so the
+//!      cleanup gate never sees the merge marker and the worktree/branch/window
+//!      leak while the envelope says `merged: true` (issues
+//!      `merge-skips-teardown`, `agent-died-merge-no-teardown-interactive`). On
+//!      exactly that path — detected by re-reading whether the reducer ADOPTED
+//!      the report — `run merge` reclaims the worktree + branch itself through
+//!      the shared cleanup primitives (the merge landing is authoritative
+//!      ground truth), surfacing any incomplete step as an envelope warning,
+//!      then closes the tmux window as its last act. Every other path stays the
+//!      supervisor's (via [`ensure_report_consumer`]).
 //!
 //! On a merge failure (conflicts, dirty tree, lock timeout) the report is
 //! NOT submitted — the node stays live so the agent can recover (e.g.
@@ -41,6 +56,7 @@ use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::SupervisorView;
 use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths};
+use crate::supervise::cleanup;
 
 /// The bundled merge backend, embedded at compile time so the binary is
 /// self-contained (the homebase `merge.sh` is sunset). Materialized to a
@@ -223,6 +239,26 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )
     .map_err(from_core)?;
 
+    // Did the reducer ADOPT our terminal report, or drop it as a dead event?
+    // The reducer's terminal guard silently no-ops a `node.report` against an
+    // already-terminal node and leaves `last_report` untouched (octl-core
+    // `reduce_node_report`). So when a prior report terminalized the node before
+    // this merge — most commonly a watchdog `agent-died` false positive on a
+    // long-lived interactive run — our `via: "explicit-merge"` marker never
+    // reaches the projection, `any_node_merged_explicitly` never sees it, and NO
+    // supervisor (live or reattached) will ever warrant teardown. That is the
+    // silent worktree/branch/window leak of `merge-skips-teardown` /
+    // `agent-died-merge-no-teardown-interactive`. Re-read the projection to tell
+    // the two apart: `adopted` means a supervisor owns teardown as usual;
+    // `!adopted` means `run merge` must reclaim the resources itself, using the
+    // merge's own ground truth (merge.sh exited 0 → branch landed in source).
+    let adopted = read_node_opt(&paths, &node_id)
+        .map_err(from_core)?
+        .and_then(|n| n.last_report)
+        .and_then(|r| r.get("via").and_then(Value::as_str).map(str::to_string))
+        .as_deref()
+        == Some("explicit-merge");
+
     // The terminal report is only useful if a live supervisor consumes it: the
     // supervisor is the canonical teardown actor (close tmux window, remove
     // worktree, delete branch) AND the roller-up of `manifest.status` (state
@@ -231,7 +267,20 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // bug), reporting a bare `merged: true` would mislead the caller into
     // telling the user cleanup happened when it never will. So ensure a live
     // consumer before returning, and never return silently on the dead path.
-    let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+    let (outcome, mut warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+
+    // Synchronous teardown on the swallowed-report path. When the reducer dropped
+    // our report, the canonical supervisor teardown can never fire, so reclaim the
+    // worktree + branch here through the SAME cleanup primitives the supervisor
+    // uses (invariant #5's actor is unchanged for every path where it CAN act; this
+    // is the one path where it provably cannot). Teardown runs and completes before
+    // this call returns — never after a `merged: true` envelope — and any step that
+    // could not finish is surfaced as a `warnings[]` entry rather than a clean
+    // close. The tmux window is closed AFTER the envelope is emitted (below).
+    let do_inline_teardown = !adopted;
+    if do_inline_teardown {
+        warnings.extend(cleanup::reclaim_merged_worktree_branch(&paths, &node));
+    }
 
     let payload = MergePayload {
         run_id: &run_id,
@@ -243,7 +292,19 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         supervisor: Some(outcome),
         dry_run: None,
     };
-    emit(&payload, args.spec, &warnings)
+    emit(&payload, args.spec, &warnings)?;
+
+    // Close the merged node's tmux window LAST — after the envelope is flushed.
+    // A foreground/interactive `run merge` runs inside the very window it closes,
+    // so killing it can end this process; reclaiming the worktree + branch and
+    // reporting the outcome must complete first (deliverable: a window-kill must
+    // never abort the rest of the teardown). Best-effort and idempotent — an
+    // already-closed window (the supervisor won the race, or a prior run merge)
+    // is a clean no-op.
+    if do_inline_teardown {
+        cleanup::close_merged_node_window(&paths, &node);
+    }
+    Ok(())
 }
 
 /// Guarantee the terminal `node.report` just appended has a live consumer, or

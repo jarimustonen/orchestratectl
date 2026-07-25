@@ -210,6 +210,123 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) {
     }
 }
 
+/// Synchronously reclaim a **confirmed-merged** node's worktree + branch, driven
+/// directly by `run merge` after `merge.sh` exits 0 (issues `merge-skips-teardown`,
+/// `agent-died-merge-no-teardown-interactive`).
+///
+/// The supervisor is the canonical teardown actor for every autonomous /
+/// watchdog-driven terminal transition (state-integrity invariant #5), and on the
+/// healthy path a live/reattached supervisor still owns it. But there is one case
+/// the supervisor can never handle: a node that was already terminalized by an
+/// earlier report (e.g. a watchdog `agent-died` false positive) BEFORE the explicit
+/// `run merge` report arrived. The reducer's terminal guard then drops the
+/// `via: "explicit-merge"` report as a dead event
+/// ([`reduce_node_report`](octl_core) leaves `last_report` untouched), so
+/// `any_node_merged_explicitly` never sees it and no supervisor ever warrants
+/// teardown — the worktree, branch, and window leak while `run merge` reports
+/// `merged: true`. `run merge` alone holds ground truth that the branch landed in
+/// source (the merge exited 0), a signal strictly stronger than the stale
+/// projection, so on exactly that path it reclaims the resources itself through
+/// these SAME primitives rather than the sunset ad-hoc `merge.sh` teardown.
+///
+/// A confirmed merge earns the force `-D` delete (the branch is in source; a
+/// `--rebase`/squash merge legitimately leaves it "ahead", so the source-relative
+/// preservation check is correctly skipped here — identical to the
+/// `via: "explicit-merge"` arm of [`cleanup_node`]). This never loosens the
+/// preservation gates: it fires ONLY on a merge the caller has already confirmed.
+///
+/// The tmux window is intentionally NOT touched here — see
+/// [`close_merged_node_window`]. Every step is idempotent and lenient; a step that
+/// could not complete is recorded as an audit event AND returned as a
+/// human-readable warning so `run merge` can surface incomplete teardown instead
+/// of a clean envelope.
+pub fn reclaim_merged_worktree_branch(paths: &RunPaths, n: &Node) -> Vec<String> {
+    let git = git_bin();
+    let mut warnings = Vec::new();
+
+    let Some(worktree_path) = n.worktree_path.as_deref() else {
+        // A driver node (no materialized worktree) has nothing to reclaim.
+        return warnings;
+    };
+
+    // Resolve the main worktree to run `git worktree remove` / `branch -D` from
+    // while the linked worktree still exists, falling back to the run's recorded
+    // source repo so branch cleanup still has a valid `-C` target when the
+    // worktree dir is already gone.
+    let main_repo = main_worktree_of(worktree_path, &git).or_else(|| manifest_source_repo(paths));
+    let repo = main_repo.as_deref().unwrap_or(worktree_path);
+
+    // `--force`: on a confirmed merge anything left in the tree is throwaway.
+    if !remove_worktree(repo, worktree_path, &git) {
+        if std::path::Path::new(worktree_path).exists() {
+            warnings.push(format!(
+                "worktree not reclaimed: {worktree_path} still present after `git worktree remove --force` (run `orchestratectl run reattach {}` or remove it by hand)",
+                paths.run_id.as_str()
+            ));
+        } else {
+            // Already gone (operator removed it): record the miss, not a warning.
+            record_worktree_missing(paths, n, worktree_path);
+        }
+    }
+
+    if let Some(branch) = n.branch.as_deref() {
+        // Existence-guard the delete so a retried `run merge` (idempotent) does
+        // not warn on an already-reclaimed branch: a gone branch is a completed
+        // teardown, not a failure. Only a branch that still exists AND refuses to
+        // delete is surfaced.
+        if branch_exists(repo, branch, &git) {
+            if let Some(detail) = delete_branch(paths, n, repo, branch, &git, true) {
+                warnings.push(format!("branch not reclaimed: {branch} ({detail})"));
+            }
+        }
+    }
+
+    warnings
+}
+
+/// True when local branch `branch` exists in `repo`
+/// (`git -C <repo> rev-parse --verify --quiet refs/heads/<branch>` exits 0). Used
+/// to keep [`reclaim_merged_worktree_branch`] idempotent — an already-deleted
+/// branch is a completed reclaim, not a failure to warn about. A git error reads
+/// as "exists" so a transient hiccup falls through to the lenient delete rather
+/// than silently skipping a real branch.
+fn branch_exists(repo: &str, branch: &str, git: &str) -> bool {
+    match Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(s) => s.success(),
+        // Could not run git at all: don't skip a possibly-real branch.
+        Err(_) => true,
+    }
+}
+
+/// Close a **confirmed-merged** node's tmux window, driven by `run merge` on the
+/// same swallowed-report path [`reclaim_merged_worktree_branch`] handles.
+///
+/// Split from the worktree/branch reclaim for two reasons. First, ORDER
+/// (deliverable): a foreground/interactive `run merge` runs INSIDE the very window
+/// it is closing, so `run merge` must reclaim the worktree + branch and emit its
+/// result envelope FIRST, then close the window as its last act — a window-kill
+/// that ends the caller's own session can therefore never abort (or truncate the
+/// report of) the worktree/branch teardown. Second, it reuses the supervisor's
+/// rename-proof [`close_tmux_window`] (recorded-id → session-scoped worktree-path
+/// recovery → non-fatal `cleanup.window_missing`), so the session-scoped +
+/// exact-cwd-match safety constraint is preserved unchanged. Best-effort: an
+/// already-closed window is a clean no-op.
+pub fn close_merged_node_window(paths: &RunPaths, n: &Node) {
+    close_tmux_window(paths, n, &tmux_bin());
+}
+
 /// Kill the managed `--headless` / `--tmux-session` session orchestratectl
 /// created for this run, once its last managed window has been torn down — so an
 /// otherwise-empty session is not left lingering with only its synthetic
@@ -508,7 +625,7 @@ fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
         record_worktree_missing(paths, n, worktree_path);
     }
     if let Some(branch) = n.branch.as_deref() {
-        delete_branch(paths, n, repo, branch, git, merged);
+        let _ = delete_branch(paths, n, repo, branch, git, merged);
     }
 }
 
@@ -1108,12 +1225,27 @@ fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
 /// branch simply does not exist), record a non-fatal `cleanup.branch_remove_failed`
 /// audit event and continue — branch-cleanup failures must never block run
 /// completion, and the recorded stderr shows the operator a preserved branch.
-fn delete_branch(paths: &RunPaths, n: &Node, repo: &str, branch: &str, git: &str, merged: bool) {
+///
+/// Returns the captured failure detail (`Some`) when the delete did not succeed,
+/// `None` on success, so a caller (`run merge`'s synchronous teardown) can also
+/// surface the incompletion as an envelope warning in addition to the audit event.
+fn delete_branch(
+    paths: &RunPaths,
+    n: &Node,
+    repo: &str,
+    branch: &str,
+    git: &str,
+    merged: bool,
+) -> Option<String> {
     let flag = if merged { "-D" } else { "-d" };
     let mut cmd = Command::new(git);
     cmd.arg("-C").arg(repo).args(["branch", flag, "--", branch]);
-    if let Some(detail) = run_lenient_detail(cmd, &format!("git branch {flag} -- {branch}")) {
-        record_branch_remove_failed(paths, n, branch, &detail);
+    match run_lenient_detail(cmd, &format!("git branch {flag} -- {branch}")) {
+        Some(detail) => {
+            record_branch_remove_failed(paths, n, branch, &detail);
+            Some(detail)
+        }
+        None => None,
     }
 }
 
@@ -1757,6 +1889,130 @@ mod tests {
             "a source-merged branch is deleted"
         );
         assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+    }
+
+    /// `run merge`'s synchronous, confirmed-merge teardown reclaims BOTH the
+    /// worktree and the branch with no warnings on the happy path — the
+    /// swallowed-report fix (`merge-skips-teardown`). Force teardown applies even
+    /// though `wt/foo` shows commits ahead of `main` (a squash/rebase merge leaves
+    /// it "ahead"), mirroring the `via: explicit-merge` arm of `cleanup_node`.
+    #[test]
+    fn reclaim_merged_reclaims_worktree_and_branch() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // Commit ahead of main and do NOT merge into main — the source-relative
+        // check would preserve this, but a confirmed merge force-deletes it.
+        commit_in_worktree(&wt, "feat.rs", "merged work");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+
+        let warnings = reclaim_merged_worktree_branch(&paths, &n);
+
+        assert!(
+            warnings.is_empty(),
+            "clean reclaim must not warn: {warnings:?}"
+        );
+        assert!(!wt.exists(), "worktree must be force-removed");
+        assert!(
+            !branch_exists(&repo, "wt/foo"),
+            "confirmed-merged branch must be force-deleted"
+        );
+    }
+
+    /// Idempotency (done-criterion): a second `reclaim` pass over an
+    /// already-reclaimed node is a clean no-op — no panic, no spurious "branch not
+    /// reclaimed" warning (the existence guard), and the `worktree_missing` audit
+    /// event is deduped by its `(run, node)` key.
+    #[test]
+    fn reclaim_merged_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "feat.rs", "merged work");
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+
+        let first = reclaim_merged_worktree_branch(&paths, &n);
+        let second = reclaim_merged_worktree_branch(&paths, &n);
+
+        assert!(first.is_empty(), "first pass clean: {first:?}");
+        assert!(
+            second.is_empty(),
+            "second pass must be a clean no-op, not warn on the already-gone branch: {second:?}"
+        );
+        assert!(!wt.exists());
+        assert!(!branch_exists(&repo, "wt/foo"));
+        // The worktree-missing audit event is recorded at most once across passes.
+        assert!(
+            events_of_kind(&paths, "cleanup.worktree_missing").len() <= 1,
+            "worktree_missing must be idempotent"
+        );
+    }
+
+    /// Warnings-on-partial-failure (done-criterion): when the worktree is reclaimed
+    /// but the branch delete refuses (here: the branch does not exist as a real ref
+    /// but is still recorded on the node so the delete is attempted), `reclaim`
+    /// returns a human-readable warning AND records `cleanup.branch_remove_failed`,
+    /// so `run merge` surfaces the incomplete teardown instead of a clean envelope.
+    #[test]
+    fn reclaim_merged_warns_on_branch_delete_failure() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // Check out a branch in the MAIN repo so `git branch -D wt/pinned` from
+        // there refuses to delete the currently-checked-out branch — a branch that
+        // exists (so the existence guard passes) yet cannot be removed, exercising
+        // the warning-on-partial-failure path while the worktree still reclaims.
+        git(&repo, &["checkout", "-q", "-b", "wt/pinned"]);
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/pinned" }),
+        );
+
+        let warnings = reclaim_merged_worktree_branch(&paths, &n);
+
+        assert!(!wt.exists(), "worktree must still be reclaimed");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "one branch warning expected: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("branch not reclaimed") && warnings[0].contains("wt/pinned"),
+            "warning must name the branch: {warnings:?}"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
+        assert_eq!(evs.len(), 1, "the refused delete must be recorded too");
+    }
+
+    /// A driver node (no materialized worktree) has nothing to reclaim: `reclaim`
+    /// returns no warnings and touches nothing.
+    #[test]
+    fn reclaim_merged_noop_for_driver_node() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let n = forge_node(&paths, "n-0001", json!({ "branch": "wt/x" }));
+
+        let warnings = reclaim_merged_worktree_branch(&paths, &n);
+
+        assert!(
+            warnings.is_empty(),
+            "driver node reclaim is a no-op: {warnings:?}"
+        );
     }
 
     /// `node_report_is_blocked` classifies the terminal outcomes it gates on:
