@@ -17,3 +17,32 @@ Observed: create A printed its success envelope (supervisor pid set, alive). cre
 Expected: either 'run create' fully spawns the supervisor before returning (and prints its envelope), or it fails loudly. A silently supervisor-less pending run is confusing — it looks stuck and only 'run reattach' (non-obvious) recovers it.
 
 Uncertain whether root cause is a race between rapid successive 'run create' calls or an artifact of backgrounding both in one shell; reattach recovery worked cleanly. Filing as low-severity friction with the exact repro. Env: macOS, headless session (detached 'headless' tmux).
+
+## Comments
+
+### 2026-07-25T09:41:39Z · @claude
+
+Investigated; no code-level race found in rapid successive `run create`. Each call mints
+a fresh ULID run id into its own run dir; the only shared state (`ensure_root`, the
+idempotency store keyed by (repo,branch,key)) is lock-safe and per-key. The reported
+symptom (second call's envelope never printed to stdout, run created with pid null / no
+worker node, recovered only by `run reattach`) matches the same root as
+`supervisor-spawn-fails-silently-at-run-create`: `create.sh` was slow/blocked so the
+caller's process was interrupted before `node.created` + the supervisor spawn — the
+reporter themselves flagged "artifact of backgrounding both in one shell." The subsequent
+`run reattach` recovering a worker node is consistent with the original backgrounded
+`run create` finishing `create.sh` after the reattach.
+
+What the creation-path guards now give this scenario (so it fails loudly / recovers
+deterministically rather than looking silently stuck):
+- If the supervisor does not confirm, `run create` returns `supervisor_spawn_failed`
+  with the run id instead of a silent supervisor-less `pending`.
+- A reattached supervisor for a run whose worker was never created terminalizes it
+  `failed` (no-worker guard) rather than presenting an ambiguous `pending`.
+- Idempotency keys are now stored BEFORE the supervisor spawn, so a keyed retry replays
+  the same run instead of creating a duplicate.
+
+Left OPEN: no reproducible code race was isolated, so there is nothing more to fix here
+without a live repro. If it recurs, capture whether the two `run create` processes were
+backgrounded in one shell (`create A & create B &`) vs. run sequentially — the former is
+the suspected cause and is a shell-usage issue, not an octl race.

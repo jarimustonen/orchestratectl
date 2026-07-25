@@ -2,7 +2,7 @@
 created: 2026-07-22
 updated: 2026-07-25
 type: bug
-status: in-progress
+status: open
 priority: high
 ---
 
@@ -223,3 +223,51 @@ status again.
   2 spinoffs spawned within ~40 min, main moving under the stint via other
   sessions. Failure rate this batch: 4/11 runs stuck (1 Signature A, 1 Signature
   B, 2 done-but-not-terminalised).
+
+## Comments
+
+### 2026-07-25T09:41:39Z · @claude
+
+Landed the deterministic, testable creation-path guards from this issue's Suggested
+fixes (commits: creation-path reliability). What shipped:
+
+- **#1 Fail loudly, not silently** — `run create` now returns a
+  `supervisor_spawn_failed` error envelope (with the run id in `invalid_value`)
+  when the detached supervisor does not confirm start within the deadline, instead
+  of recording a bogus success. `SupervisorSpawn` is an enum
+  (`Confirmed{pid}`/`Unconfirmed`) so the pid-0-as-success state is unrepresentable.
+- **#2 Always write `supervisor.stderr.log`** — the log is opened at spawn and a
+  fork/exec failure or a no-confirm timeout is appended to it (`append_spawn_diag`).
+  Previously: zero trace.
+- **#5 No false `work-complete` with empty children** — a non-terminal run with
+  `node_count == 0` and no children is terminalized `failed` (reason
+  `no-worker-node`), and the supervisor exit reason is `supervisor-spawn-failed`
+  rather than `work-complete`. This also covers Signature B (supervisor died after
+  start) once the run is reattached: the reattached supervisor either synthesizes
+  an agent-died report (watchdog) or, for a never-created worker, fires this guard.
+- Confirmation timeout raised 5s -> 15s to cut false-fails under load; message now
+  says the supervisor may still be booting (check `supervisor.pid` before reattach).
+
+Soundness guard (from /llm-review): the no-worker terminalization is gated on an
+absolute run age (`NO_WORKER_GRACE`, default 15 min, > max `--agent-startup-timeout`
+of 600s) AND re-verified under the exclusive run lock, so it cannot clip a
+legitimately in-flight `create.sh` reached via `run reattach`.
+
+STILL OPEN (not landed here — root-cause tracker stays open):
+- **#3 `run reattach` should (re)perform the agent spawn.** Not done. A reattached
+  supervisor for a run whose worker was never created now fails the run LOUDLY
+  (guard above) rather than zombie-polling, but it does not re-run `create.sh` to
+  materialize the missing agent.
+- **#4 Stateful trigger root cause** (fd/tmux/lock accumulation under load). Not
+  investigated — per task scope, the deterministic guards were prioritized over
+  chasing the flaky trigger.
+
+Spun off:
+- `supervisor-confirm-readiness-pipe` — replace the pid-file poll timeout with a
+  daemon readiness pipe (removes the orphan-on-slow-boot window entirely).
+- `child-supervisor-spawn-unconfirmed-no-retry` — the parent records a child
+  supervisor pid 0 as success and never retries; the top-level guard cannot catch
+  it (child has node_count>=1). Pre-existing.
+
+Tests: creation_reliability.rs (fail-loud envelope + stderr trace + recoverable run),
+supervise_gates.rs no_worker_node_run_terminalizes_failed / no_worker_guard_defers_within_create_window.
