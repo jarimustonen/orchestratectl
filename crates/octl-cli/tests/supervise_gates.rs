@@ -1796,11 +1796,12 @@ fn self_terminate_when_whole_run_dir_removed() {
 /// children can never make progress. Rather than poll `pending` forever — or,
 /// for a reattached zombie, falsely exit `work-complete` with zero children —
 /// the supervisor must terminalize the run as `failed` with reason
-/// `no-child-spawned`.
+/// `no-worker-node`.
 ///
 /// A `--skip-materialize` spinoff `run create` produces exactly this shape:
 /// `run.created` only, no `node.created`, no supervisor. We then run the
-/// supervisor against it and assert it fails the run loudly.
+/// supervisor against it (with the create-window grace overridden to 0 so the
+/// guard's age gate does not defer) and assert it fails the run loudly.
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn no_worker_node_run_terminalizes_failed() {
@@ -1815,8 +1816,16 @@ fn no_worker_node_run_terminalizes_failed() {
     assert_eq!(manifest["node_count"], 0, "precondition: no worker node");
 
     // Enough ticks (>= NO_WORKER_TICKS) for the guard to fire; the supervisor
-    // exits early via all_work_done once it terminalizes.
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "12"]));
+    // exits early via all_work_done once it terminalizes. `OCTL_NO_WORKER_GRACE_SECS=0`
+    // disables the create-window age gate (production waits 15 min).
+    run_ok(bin(&home).env("OCTL_NO_WORKER_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--max-iter",
+        "12",
+    ]));
 
     // The run is now terminal `failed` — not stuck `pending`.
     let manifest: Value =
@@ -1834,7 +1843,7 @@ fn no_worker_node_run_terminalizes_failed() {
         .iter()
         .filter(|v| v["kind"] == "run.status" && v["data"]["status"] == "failed")
         .find_map(|v| v["data"]["reason"].as_str());
-    assert_eq!(failed_reason, Some("no-child-spawned"));
+    assert_eq!(failed_reason, Some("no-worker-node"));
     let exit_reason = events_v
         .iter()
         .filter(|v| v["kind"] == "supervisor.exited")
@@ -1843,5 +1852,37 @@ fn no_worker_node_run_terminalizes_failed() {
         exit_reason,
         Some("supervisor-spawn-failed"),
         "must not exit work-complete with zero children"
+    );
+}
+
+/// The no-worker guard must NOT clip a legitimately in-flight creation. A run
+/// whose `create.sh` is still materializing the worker sits at `node_count == 0`
+/// for the whole create window (up to `--agent-startup-timeout`); a supervisor
+/// reattached during that window sees the same shape. With the default
+/// (production) create-window grace, a freshly-created zero-node run must stay
+/// `pending`, not be terminalized `failed`.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn no_worker_guard_defers_within_create_window() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "young-no-worker");
+    let rdir = run_dir(&home, &run_id);
+
+    // No OCTL_NO_WORKER_GRACE_SECS override: the default 15-min grace applies, so
+    // this ~0s-old run is well inside the create window and must be left alone.
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "8"]));
+
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(rdir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["status"], "pending",
+        "a young zero-node run is still materializing; the guard must not fail it"
+    );
+    let events_v = read_events(&rdir.join("events.jsonl"));
+    assert!(
+        !events_v
+            .iter()
+            .any(|v| v["kind"] == "run.status" && v["data"]["status"] == "failed"),
+        "no premature no-worker terminalization inside the create window"
     );
 }

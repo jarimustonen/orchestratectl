@@ -65,28 +65,53 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 const SELF_TERMINATE_TICKS: u32 = 3;
 
 /// Consecutive ticks a supervised run may present the "no worker node and no
-/// children" state before we terminalize it as `failed`
-/// (`supervisor_spawn_failed` / `no-child-spawned`).
+/// children" state before the no-worker guard considers terminalizing it.
 ///
-/// Every real run has ≥1 node by the time its supervisor boots: a top-level
+/// Every real run has ≥1 node by the time its OWN supervisor boots: a top-level
 /// worker's `node.created` (n-0001) is emitted by `run create` *before* it
 /// forks the supervisor; a child worker's is emitted before the parent's
-/// `child.spawned`; the orchestrate/fan-out drivers carry their `n-0001` driver
-/// node. So a supervisor observing zero nodes AND zero tracked/forked children
-/// is watching a run whose worker was never created (the `run reattach` of a
-/// silent-spawn-failure run, or the reattached zombie that would otherwise poll
-/// forever / falsely report `work-complete` — issue
-/// `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5). It can
-/// never make progress on its own, so we fail it loudly instead of leaving it
-/// stuck `pending`. The short streak (like [`SELF_TERMINATE_TICKS`]) guards
-/// against a one-off unreadable-manifest read; it is not needed for our own
-/// already-durable node, but costs nothing.
+/// `child.spawned`; the orchestrate driver synthesizes its `n-0001` node and a
+/// fan-out driver materializes one via create.sh. So the ONLY way a supervisor
+/// observes zero nodes AND zero tracked/forked children is a `run reattach` (or
+/// re-spawn) against a run whose worker was never created — the silent
+/// spawn-failure run, or the reattached zombie that would otherwise poll
+/// forever / falsely report `work-complete` (issue
+/// `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5).
+///
+/// The tick streak alone is NOT sufficient, because a run legitimately sits at
+/// `node_count == 0` for the whole `create.sh` window (up to the caller's
+/// `--agent-startup-timeout`, default 90s, MAX 600s) between `run.created` and
+/// `node.created`. A reattach issued during that window would see the same
+/// shape. So terminalization is ALSO gated on [`NO_WORKER_GRACE`] — the run
+/// must have existed longer than any possible create window — and the predicate
+/// is re-verified under the exclusive run lock before the append (below).
 const NO_WORKER_TICKS: u32 = 3;
+
+/// Minimum age (from `manifest.created_at`) a zero-node run must reach before
+/// the no-worker guard may fail it. Comfortably beyond the maximum create.sh
+/// window (`--agent-startup-timeout` caps at 600s) so an in-flight creation is
+/// never clipped; the field-reported stuck runs were frozen for >1h, far past
+/// this. Overridable via `OCTL_NO_WORKER_GRACE_SECS` (tests set `0`).
+const NO_WORKER_GRACE: Duration = Duration::from_secs(900);
+
+/// Env override for [`NO_WORKER_GRACE`] (whole seconds; unparseable → default).
+const NO_WORKER_GRACE_ENV: &str = "OCTL_NO_WORKER_GRACE_SECS";
+
+/// The effective no-worker grace, honoring [`NO_WORKER_GRACE_ENV`].
+fn no_worker_grace() -> Duration {
+    match std::env::var(NO_WORKER_GRACE_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_or(NO_WORKER_GRACE, Duration::from_secs),
+        Err(_) => NO_WORKER_GRACE,
+    }
+}
 
 /// Reason recorded on the synthesized terminal `run.status` when the no-worker
 /// guard fires. Distinct from a genuine agent failure so an operator can tell a
-/// never-spawned run from a spawned-then-died one.
-const NO_WORKER_REASON: &str = "no-child-spawned";
+/// never-created worker from a spawned-then-died one.
+const NO_WORKER_REASON: &str = "no-worker-node";
 
 /// Max attempts to fire the `--notify` completion hook before the supervisor
 /// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
@@ -611,52 +636,94 @@ pub fn dispatch(
         // zombie whose manifest a `run cancel` later flips terminal — falsely
         // exiting `work-complete` with zero children spawned (issue
         // `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5).
+        //
+        // Two gates keep this from clipping a legitimately in-flight creation
+        // (whose `create.sh` may still be materializing the worker for up to
+        // the caller's `--agent-startup-timeout`): the streak, AND the run must
+        // be older than `no_worker_grace()` (well beyond any create window).
         if !spawn_failed_terminal {
-            match read_manifest_opt(&paths) {
-                Ok(Some(m))
-                    if !m.status.is_terminal()
-                        && m.node_count == 0
-                        && child_tails.is_empty()
-                        && state.spawned_children.is_empty() =>
-                {
-                    no_worker_streak += 1;
-                    if no_worker_streak >= NO_WORKER_TICKS {
-                        // Single-arbiter, same as the rollup below: append the
-                        // terminal `run.status` under a deterministic key so the
-                        // per-tick re-evaluation appends at most once and a
-                        // racing cancel is a clean no-op.
-                        let key = format!("supervisor-no-worker:{run_id}:run-status");
-                        match append_and_apply_event(
-                            &paths,
-                            "run.status",
-                            None,
-                            Some(&key),
-                            json!({ "status": "failed", "reason": NO_WORKER_REASON }),
-                        ) {
-                            Ok(_) => {
-                                warn!(
-                                    target: "orchestratectl::supervise",
-                                    run_id = %run_id,
-                                    reason = NO_WORKER_REASON,
-                                    "run has no worker node and no children after \
-                                     {NO_WORKER_TICKS} ticks; terminalizing as failed \
-                                     (supervisor_spawn_failed)"
-                                );
-                                spawn_failed_terminal = true;
+            let unlocked = read_manifest_opt(&paths).ok().flatten();
+            let old_enough = |m: &octl_core::Manifest| {
+                (Utc::now() - m.created_at)
+                    .to_std()
+                    .is_ok_and(|age| age >= no_worker_grace())
+            };
+            let candidate = unlocked.as_ref().is_some_and(|m| {
+                !m.status.is_terminal()
+                    && m.node_count == 0
+                    && child_tails.is_empty()
+                    && state.spawned_children.is_empty()
+                    && old_enough(m)
+            });
+            if candidate {
+                no_worker_streak += 1;
+            } else {
+                // A node or child now exists, the manifest is terminal /
+                // unreadable, or the run is still inside its create window: it
+                // can make progress, so reset.
+                no_worker_streak = 0;
+            }
+            if no_worker_streak >= NO_WORKER_TICKS {
+                // The predicate above was evaluated on an UNLOCKED read. Re-take
+                // the exclusive run lock and re-verify under it before the
+                // destructive terminal append — the sanctioned pattern the
+                // watchdog uses for the F15 race (a concurrent `node.created` /
+                // `run.status` could have landed since the unlocked read). The
+                // deterministic idempotency key makes the append itself at-most-
+                // once, but only the re-check prevents failing a now-valid run.
+                match RunLock::acquire(&paths.lock()) {
+                    Ok(guard) => {
+                        let fresh = read_manifest_opt(&paths).ok().flatten();
+                        let still_no_worker = fresh.as_ref().is_some_and(|m| {
+                            !m.status.is_terminal()
+                                && m.node_count == 0
+                                && child_tails.is_empty()
+                                && state.spawned_children.is_empty()
+                        });
+                        if still_no_worker {
+                            let key = format!("supervisor-no-worker:{run_id}:run-status");
+                            let lock = guard.witness();
+                            match append_and_apply_unlocked(
+                                &lock,
+                                &paths,
+                                "run.status",
+                                None,
+                                Some(&key),
+                                json!({ "status": "failed", "reason": NO_WORKER_REASON }),
+                            ) {
+                                Ok(_) => {
+                                    warn!(
+                                        target: "orchestratectl::supervise",
+                                        run_id = %run_id,
+                                        reason = NO_WORKER_REASON,
+                                        "run has no worker node and no children past the create \
+                                         window; terminalizing as failed (supervisor_spawn_failed)"
+                                    );
+                                    spawn_failed_terminal = true;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        target: "orchestratectl::supervise",
+                                        error = %e,
+                                        "failed to record no-worker terminal run.status; will retry next tick"
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                warn!(
-                                    target: "orchestratectl::supervise",
-                                    error = %e,
-                                    "failed to record no-worker terminal run.status; will retry next tick"
-                                );
-                            }
+                        } else {
+                            // A node/child/terminal landed under the lock: not a
+                            // no-worker run after all. Reset and keep supervising.
+                            no_worker_streak = 0;
                         }
+                        drop(guard);
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "orchestratectl::supervise",
+                            error = %e,
+                            "could not lock run to terminalize no-worker; will retry next tick"
+                        );
                     }
                 }
-                // A node or child now exists (or the manifest is terminal /
-                // transiently unreadable): the run can make progress, so reset.
-                _ => no_worker_streak = 0,
             }
         }
 

@@ -51,7 +51,14 @@ use octl_core::RunPaths;
 use crate::error::CliError;
 use crate::supervise::pid_file;
 
-const PID_FILE_WAIT: Duration = Duration::from_secs(5);
+/// How long we wait for a freshly-forked supervisor to write its live pid file
+/// before `run create` declares the spawn unconfirmed. The supervisor normally
+/// writes it within milliseconds of `exec`; the deadline is generous so a
+/// slow-but-healthy boot under heavy load (fork storms, cgroup CPU throttling,
+/// degraded I/O) is NOT false-failed into an orphaned-supervisor situation. A
+/// readiness pipe would remove the timeout entirely — tracked as a follow-up
+/// (issue `supervisor-spawn-fails-silently-at-run-create`).
+const PID_FILE_WAIT: Duration = Duration::from_secs(15);
 const POLL_TICK: Duration = Duration::from_millis(200);
 
 /// How long [`await_recorded_pid`] waits for the supervisor's pid file.
@@ -77,20 +84,20 @@ fn supervise_bin() -> Result<std::path::PathBuf, CliError> {
     std::env::current_exe().map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))
 }
 
-/// Outcome of a supervisor spawn.
-pub struct SupervisorSpawn {
-    /// The live, identity-verified PID the supervisor recorded for itself, or
-    /// `0` when no live pid file appeared before the deadline.
-    pub pid: u32,
-    /// `true` iff the supervisor confirmed start — it wrote a live,
-    /// identity-verified `supervisor.pid` within [`PID_FILE_WAIT`]. When
-    /// `false`, `pid` is `0` and the supervisor failed to boot: `run create`
-    /// surfaces this as a loud `supervisor_spawn_failed` envelope rather than
-    /// recording a bogus `pid: 0` as success (issue
-    /// `supervisor-spawn-fails-silently-at-run-create`). Lenient callers
-    /// (`run reattach`, child-spawn) read the pid file directly and don't use
-    /// this field.
-    pub confirmed: bool,
+/// Outcome of a supervisor spawn. An enum (not a `{ pid, confirmed }` struct)
+/// so the two states are mutually exclusive by construction — there is no way
+/// to represent the contradictory "confirmed with pid 0" that reintroduced the
+/// original silent-success bug.
+pub enum SupervisorSpawn {
+    /// The supervisor confirmed start — it wrote a live, identity-verified
+    /// `supervisor.pid` within [`PID_FILE_WAIT`]. Carries that PID.
+    Confirmed { pid: u32 },
+    /// No live pid file appeared before the deadline. `run create` surfaces
+    /// this as a loud `supervisor_spawn_failed` envelope rather than recording
+    /// a bogus success (issue `supervisor-spawn-fails-silently-at-run-create`).
+    /// Lenient callers (`run reattach`, child-spawn) read the pid file directly
+    /// and never construct this variant.
+    Unconfirmed,
 }
 
 /// Attach the detach hardening (`setsid` + double-fork) to `cmd`'s child via
@@ -234,10 +241,11 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
 /// [`append_spawn_diag`] — otherwise a silent spawn failure leaves zero trace
 /// to diagnose from (the original bug signature).
 ///
-/// Returns `confirmed: true` with the recorded PID on success. On timeout (the
-/// supervisor did not write a live pid file within the deadline) returns
-/// `confirmed: false, pid: 0`; `run create` turns that into a loud
-/// `supervisor_spawn_failed` error, while lenient callers ignore the flag.
+/// Returns [`SupervisorSpawn::Confirmed`] with the recorded PID on success. On
+/// timeout (the supervisor did not write a live pid file within the deadline)
+/// returns [`SupervisorSpawn::Unconfirmed`]; `run create` turns that into a loud
+/// `supervisor_spawn_failed` error, while lenient callers treat it as "not yet
+/// confirmed" and rely on the pid file directly.
 pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, CliError> {
     let log_path = paths.root.join("supervisor.stderr.log");
     let mut cmd = detached_supervise_command(run_id, &log_path)?;
@@ -249,21 +257,15 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
         return Err(e);
     }
     if let Some(pid) = await_recorded_pid(paths) {
-        Ok(SupervisorSpawn {
-            pid,
-            confirmed: true,
-        })
+        Ok(SupervisorSpawn::Confirmed { pid })
     } else {
         append_spawn_diag(
             &log_path,
             &format!(
-                "supervisor did not confirm start: no live supervisor.pid appeared within {:?} of fork/exec",
+                "supervisor did not confirm start: no live supervisor.pid appeared within {:?} of fork/exec (it may still be booting under load)",
                 pid_file_wait()
             ),
         );
-        Ok(SupervisorSpawn {
-            pid: 0,
-            confirmed: false,
-        })
+        Ok(SupervisorSpawn::Unconfirmed)
     }
 }

@@ -458,11 +458,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             && !is_child
             && !args.skip_materialize
             && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_err();
-        let supervisor_pid = if spawn_driver_supervisor {
-            Some(spawn_supervisor_or_fail(&paths, &run_id)?)
-        } else {
-            None
-        };
+        // Store the idempotency key BEFORE spawning the supervisor: the run is
+        // already durable on disk (run.created + any driver node), so if the
+        // supervisor fails to confirm, a keyed retry must replay THIS run rather
+        // than create a duplicate. Ordering the store after the spawn would
+        // orphan the run without a key on a `supervisor_spawn_failed`.
         if let Some(key) = args.idempotency_key.as_deref() {
             idempotency::store(
                 args.source_repo.as_deref(),
@@ -471,6 +471,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 &run_id,
             )?;
         }
+        let supervisor_pid = if spawn_driver_supervisor {
+            Some(spawn_supervisor_or_fail(&paths, &run_id)?)
+        } else {
+            None
+        };
         return emit(EmitInput {
             run_id: &run_id,
             dir: child_dir.display().to_string(),
@@ -597,15 +602,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the parent is missing its `child.spawned`.
     emit_child_spawned()?;
 
-    // For top-level runs, spawn the supervisor and wait for its PID
-    // file. Child-spawn delegates supervisor creation to the parent
-    // supervisor (design.md §7.2 step 6).
-    let supervisor_pid = if is_child {
-        None
-    } else {
-        Some(spawn_supervisor_or_fail(&paths, &run_id)?)
-    };
-
+    // Store the idempotency key BEFORE spawning the supervisor. The run is
+    // durable on disk now (run.created + node.created), so if the supervisor
+    // fails to confirm (`supervisor_spawn_failed`), a keyed retry must replay
+    // THIS run rather than mint a duplicate. Still emitted AFTER
+    // `emit_child_spawned` so the child.spawned-before-store ordering above
+    // holds: a crash between them can only lose the key (a retry re-spawns
+    // cleanly), never replay a stored key while the parent lacks child.spawned.
     if let Some(key) = args.idempotency_key.as_deref() {
         idempotency::store(
             args.source_repo.as_deref(),
@@ -614,6 +617,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             &run_id,
         )?;
     }
+
+    // For top-level runs, spawn the supervisor and wait for its PID
+    // file. Child-spawn delegates supervisor creation to the parent
+    // supervisor (design.md §7.2 step 6).
+    let supervisor_pid = if is_child {
+        None
+    } else {
+        Some(spawn_supervisor_or_fail(&paths, &run_id)?)
+    };
 
     let spawn_result = SpawnResult {
         branch: outcome.branch,
@@ -643,32 +655,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// Spawn the run's supervisor and require it to confirm start, turning a
 /// silent boot failure into a loud, actionable error.
 ///
-/// [`supervisor_spawn::spawn_for_run`] returns `confirmed: false` (with
-/// `pid: 0`) when the detached supervisor never wrote a live `supervisor.pid`
-/// within the startup deadline — the run would otherwise be left in `pending`
-/// with a dead/absent supervisor and its envelope would misreport `pid: 0` as
-/// success (issue `supervisor-spawn-fails-silently-at-run-create`,
-/// suggested-fix #1). We instead return `supervisor_spawn_failed` carrying the
-/// run id, so the caller can inspect `supervisor.stderr.log`, `run reattach`,
-/// or `run cancel` rather than hang until its own timeout. The run.created /
-/// node.created events are already durable on disk, so the run is fully
-/// recoverable.
+/// [`supervisor_spawn::spawn_for_run`] returns [`SupervisorSpawn::Unconfirmed`]
+/// when the detached supervisor never wrote a live `supervisor.pid` within the
+/// startup deadline — the run would otherwise be left in `pending` with a
+/// dead/absent supervisor and its envelope would misreport a bogus success
+/// (issue `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #1).
+/// We instead return `supervisor_spawn_failed` carrying the run id, so the
+/// caller can inspect `supervisor.stderr.log`, `run reattach`, or `run cancel`
+/// rather than hang until its own timeout. The run.created / node.created
+/// events are already durable on disk (and the idempotency key, if any, is
+/// stored before this call), so the run is fully recoverable and a keyed retry
+/// replays it rather than duplicating it.
 fn spawn_supervisor_or_fail(paths: &octl_core::RunPaths, run_id: &str) -> Result<u32, CliError> {
-    let spawn = supervisor_spawn::spawn_for_run(paths, run_id)?;
-    if !spawn.confirmed {
-        return Err(CliError::system(
+    match supervisor_spawn::spawn_for_run(paths, run_id)? {
+        supervisor_spawn::SupervisorSpawn::Confirmed { pid } => Ok(pid),
+        supervisor_spawn::SupervisorSpawn::Unconfirmed => Err(CliError::system(
             "supervisor_spawn_failed",
             format!(
                 "supervisor for run {run_id} did not confirm start (no live supervisor.pid \
-                 within the startup deadline); the run is on disk in `pending`. Inspect \
-                 {}/supervisor.stderr.log, then `orchestratectl run reattach {run_id}` to \
-                 retry or `orchestratectl run cancel {run_id}` to tear it down",
+                 within the startup deadline; it may still be booting under load). The run is \
+                 on disk in `pending`. Inspect '{}/supervisor.stderr.log' and check whether a \
+                 supervisor.pid appeared; then `orchestratectl run reattach {run_id}` to retry \
+                 (a no-op if one is already live) or `orchestratectl run cancel {run_id}` to \
+                 tear it down",
                 paths.root.display()
             ),
         )
-        .with_invalid_value(run_id));
+        .with_invalid_value(run_id)),
     }
-    Ok(spawn.pid)
 }
 
 /// Default detached session name used when `--headless` is set without an

@@ -272,12 +272,12 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
 /// prefixes propagated codes with `create_sh_error_`.
 const TMUX_WINDOW_NOT_FOUND_CODE: &str = "create_sh_error_tmux-window-not-found";
 
-/// How many extra create.sh attempts to make after a transient
-/// `tmux-window-not-found`, and how long to pause between them. create.sh
-/// cleanly rolls back the partial worktree + branch before exiting on this
-/// error, so each retry starts from a clean slate; the reported real-world
-/// workaround was a 3× retry with a few-seconds sleep.
-const TMUX_RETRY_ATTEMPTS: u32 = 3;
+/// How many EXTRA create.sh attempts to make after a transient
+/// `tmux-window-not-found` (so total executions = 1 initial + `TMUX_MAX_RETRIES`),
+/// and how long to pause between them. create.sh cleanly rolls back the partial
+/// worktree + branch before exiting on this error, so each retry starts from a
+/// clean slate; the reported real-world workaround succeeded on the second try.
+const TMUX_MAX_RETRIES: u32 = 3;
 const TMUX_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Invoke create.sh, retrying on the transient, self-cleaning
@@ -306,13 +306,13 @@ pub fn run_create_sh_with_tmux_retry(req: &SpawnRequest<'_>) -> Result<SpawnOutc
     loop {
         match run_create_sh(req) {
             Ok(o) => return Ok(o),
-            Err(e) if e.code == TMUX_WINDOW_NOT_FOUND_CODE && attempt < TMUX_RETRY_ATTEMPTS => {
+            Err(e) if e.code == TMUX_WINDOW_NOT_FOUND_CODE && attempt < TMUX_MAX_RETRIES => {
                 attempt += 1;
                 tracing::warn!(
                     target: "orchestratectl::run",
                     branch = %req.branch,
                     attempt,
-                    max = TMUX_RETRY_ATTEMPTS,
+                    max = TMUX_MAX_RETRIES,
                     "create.sh hit the transient tmux-window-not-found race \
                      (window created then not found); rolled back cleanly, retrying"
                 );
@@ -887,11 +887,44 @@ exit 1
         );
         let err = run_retry_fixture(dir.path(), &body).unwrap_err();
         assert_eq!(err.code, "create_sh_error_tmux-window-not-found");
-        // 1 initial + TMUX_RETRY_ATTEMPTS retries.
+        // 1 initial + TMUX_MAX_RETRIES retries.
         assert_eq!(
             std::fs::read_to_string(&counter).unwrap().trim(),
-            (TMUX_RETRY_ATTEMPTS + 1).to_string(),
+            (TMUX_MAX_RETRIES + 1).to_string(),
             "expected initial attempt plus the full retry budget"
+        );
+    }
+
+    #[test]
+    fn tmux_retry_surfaces_a_different_error_from_a_later_attempt() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let counter = dir.path().join("attempts");
+        // Attempt 1 hits the transient race; attempt 2 fails with a DIFFERENT,
+        // non-transient error (e.g. a partial rollback left the branch behind).
+        // The wrapper must stop retrying and surface that error loudly — never
+        // loop on it or mask it.
+        let body = format!(
+            r#"#!/bin/bash
+n=0
+if [[ -f "{c}" ]]; then n=$(cat "{c}"); fi
+n=$((n+1))
+echo "$n" > "{c}"
+if [[ "$n" -lt 2 ]]; then
+  echo '{{"schema_version":1,"error":{{"code":"tmux-window-not-found","message":"No tmux window"}}}}' >&2
+  exit 1
+fi
+echo '{{"schema_version":1,"error":{{"code":"branch-exists","message":"branch already exists"}}}}' >&2
+exit 2
+"#,
+            c = counter.display()
+        );
+        let err = run_retry_fixture(dir.path(), &body).unwrap_err();
+        assert_eq!(err.code, "create_sh_error_branch-exists");
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().trim(),
+            "2",
+            "the non-transient error on attempt 2 must be surfaced immediately, no further retries"
         );
     }
 
