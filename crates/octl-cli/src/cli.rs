@@ -96,6 +96,64 @@ enum Command {
         #[command(subcommand)]
         action: HarnessAction,
     },
+    /// Spec-driven code pipeline (design §6). `run` drives ONE feature
+    /// end-to-end — spec[Opus] → code[claude-deepseek] → floor-gate →
+    /// verify[Opus] → merge — as an ADDITIVE command (it does not touch
+    /// `run create` / the supervisor). Bold-to-live: it invokes real
+    /// agents and really merges, gated by the deterministic floor.
+    Pipeline {
+        #[command(subcommand)]
+        action: PipelineAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PipelineAction {
+    /// Run one feature through the whole pipeline end-to-end.
+    Run(PipelineRunArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct PipelineRunArgs {
+    /// The intent — what must exist. A literal string, a path to a file,
+    /// or `@path` (all read the same way; a leading `@` or an existing
+    /// file path loads the file, else the value is the intent verbatim).
+    #[arg(long, value_name = "STR|FILE")]
+    intent: String,
+    /// Branch the feature forks from and (on success) merges back to.
+    #[arg(long, value_name = "BRANCH")]
+    source_branch: String,
+    /// Optional file-scope hints handed to the spec stage (repeatable).
+    #[arg(long, value_name = "PATH")]
+    files: Vec<PathBuf>,
+    /// Override the derived feature slug (else slugified from the intent).
+    #[arg(long, value_name = "SLUG")]
+    slug: Option<String>,
+    /// Repository to operate on (default: current directory).
+    #[arg(long, value_name = "PATH")]
+    repo: Option<PathBuf>,
+    /// Shell command that captures the test pass-list for the floor
+    /// baseline + current snapshots (default `cargo test`).
+    #[arg(long, value_name = "CMD")]
+    test_cmd: Option<String>,
+    /// Shell command that captures the clippy warning-list (default
+    /// `cargo clippy --message-format=short`).
+    #[arg(long, value_name = "CMD")]
+    clippy_cmd: Option<String>,
+    /// Scratch directory for worktrees + artifacts (default: a temp dir
+    /// under the system temp keyed by slug).
+    #[arg(long, value_name = "PATH")]
+    workdir: Option<PathBuf>,
+    /// How many out-of-scope changed files the floor tolerates before it
+    /// fails the file-scope gate (default 0).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    file_scope_slack: usize,
+    /// Keep worktrees/branches after the run (skip teardown) for debugging.
+    #[arg(long)]
+    keep: bool,
+    /// Per-chunk wall-clock ceiling for the code harness, in seconds.
+    #[arg(long, value_name = "SECONDS")]
+    chunk_timeout: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -294,6 +352,24 @@ pub fn run() -> ExitCode {
                     ),
                 };
                 crate::harness::bakeoff::run(&cfg, output, &logging_warnings)
+            }
+        },
+        Command::Pipeline { action } => match action {
+            PipelineAction::Run(args) => {
+                let cfg = crate::pipeline::live::PipelineRunConfig {
+                    intent: args.intent,
+                    source_branch: args.source_branch,
+                    files: args.files,
+                    slug: args.slug,
+                    repo: args.repo,
+                    test_cmd: args.test_cmd,
+                    clippy_cmd: args.clippy_cmd,
+                    workdir: args.workdir,
+                    file_scope_slack: args.file_scope_slack,
+                    keep: args.keep,
+                    chunk_timeout_secs: args.chunk_timeout,
+                };
+                crate::pipeline::live::cmd_run(&cfg, output, &logging_warnings)
             }
         },
     };

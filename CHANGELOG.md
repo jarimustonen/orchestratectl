@@ -8,6 +8,27 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`pipeline run`: the first live end-to-end code pipeline (`pipeline-walking-skeleton`, T5).**
+  A new ADDITIVE command `orchestratectl pipeline run --intent <str|file>
+  --source-branch <branch> [--files <f>…] [--slug …] [--repo …] [--workdir …]
+  [--keep]` drives one feature through the whole loop (design §6):
+  **spec[Opus] → code[claude-deepseek] → floor-gate → verify[Opus] → merge**. It
+  forks a `feat/<slug>` integration branch, captures the T3 baseline at the fork,
+  asks `claude` (Opus) for a validated `plan.json` v2, runs each chunk in an
+  isolated worktree through the `claude-deepseek` `CodeHarness`, applies the
+  deterministic T3 floor as the **hard merge gate** (a chunk or feature that fails
+  the floor is preserved and never merged), has `claude` (Opus) run the plan's
+  acceptance checks + judge product-vs-intent, and on green merges `feat/<slug>`
+  into the source branch — emitting a structured report (plan chunk count,
+  per-chunk floor verdicts, verify result, whether it merged, the final commit,
+  and decision envelopes recording the deciding tier). Bold-to-live (design §14):
+  it invokes the real agents and really merges, but it does NOT touch `run create`
+  / the supervisor. The orchestration loop is unit-tested with a stub harness +
+  scripted spec/verify against a real throwaway git repo (no network); the one
+  live end-to-end test is gated behind `OCTL_PIPELINE_LIVE=1`. The fix loop,
+  re-spec, tier promotion, cost/circuit-breakers, and parallel chunks are deferred
+  to filed follow-ups.
+
 - **Harness bake-off: three new `CodeHarness` adapters + a `harness bakeoff`
   comparison runner (`harness-bakeoff`).** Behind the seam (not wired into
   `run create`/supervisor), the code-pipeline harness (design §10) now has four

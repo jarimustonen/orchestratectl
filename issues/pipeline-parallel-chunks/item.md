@@ -1,0 +1,14 @@
+---
+created: 2026-07-25
+updated: 2026-07-25
+type: task
+status: open
+priority: normal
+related: ['@pipeline-walking-skeleton']
+---
+
+# Pipeline: parallel independent chunks (DAG scheduling)
+
+## Description
+
+The T5 skeleton runs chunks strictly sequentially in a topological order, each stacking on the moved feat/<slug> tip. Schedule independent chunks (no dep path between them) concurrently in separate worktrees, then merge them in a deterministic order with the floor re-checked at each merge (design §6 VAIHE 2). Handle merge-conflict between concurrently-built chunks via the deterministic rebase-and-fix protocol. Bounded by the macOS PTY / process-count limits (see pipeline-circuit-breakers).

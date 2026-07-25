@@ -131,6 +131,16 @@ pub fn plan_v2_json_schema() -> &'static str {
     PLAN_V2_JSON_SCHEMA
 }
 
+/// The checked-in canonical `plan.json` v2 example (`plan-schema.md` sample),
+/// exposed so a spec-node prompt can show the model the exact target shape.
+pub const PLAN_V2_EXAMPLE: &str = include_str!("../schemas/plan.v2.example.json");
+
+/// Return the canonical `plan.json` v2 example document.
+#[must_use]
+pub fn plan_v2_json_schema_example() -> &'static str {
+    PLAN_V2_EXAMPLE
+}
+
 /// A `plan.json` v2 document (design.md §4, §7; `plan-schema.md`).
 ///
 /// Deserialization is deliberately *tolerant* of unknown keys (they are

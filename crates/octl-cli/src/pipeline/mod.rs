@@ -46,6 +46,12 @@
 pub mod action;
 pub mod driver;
 pub mod envelope;
+/// The live end-to-end pipeline driver (T5 walking skeleton) — the FIRST
+/// bold-to-live wiring of the whole system as the additive `pipeline run`
+/// command. Unlike the rest of this module (a behind-the-seam scaffold), `live`
+/// IS wired into a real command; it reuses the harness/floor/plan/envelope
+/// pieces without creating an orchestratectl run or touching the reducer.
+pub mod live;
 pub mod orchestrator;
 
 pub use action::{Action, DecisionClass, Finding, FindingVerdict, Severity, SpinoffScope};
