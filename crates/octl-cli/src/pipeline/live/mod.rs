@@ -662,13 +662,23 @@ fn produce_and_validate_plan(
 
     for attempt in 0..MAX_PLAN_ATTEMPTS {
         // First attempt produces from scratch; every later attempt is a repair
-        // re-prompt carrying the previous error + invalid JSON forward.
-        let raw = match (attempt, &last_raw, &last_err) {
-            (0, _, _) => spec.produce_plan(&ctx)?,
-            (_, Some(invalid), Some(err)) => spec.repair_plan(&ctx, invalid, err)?,
-            // Unreachable: after attempt 0 both are always set. Fall back to a
-            // fresh produce rather than panic.
-            _ => spec.produce_plan(&ctx)?,
+        // re-prompt carrying the previous error + invalid JSON forward (after
+        // attempt 0 both `last_raw` and `last_err` are always set).
+        let produced = match (attempt, &last_raw, &last_err) {
+            (0, _, _) => spec.produce_plan(&ctx),
+            (_, Some(invalid), Some(err)) => spec.repair_plan(&ctx, invalid, err),
+            // Unreachable: fall back to a fresh produce rather than panic.
+            _ => spec.produce_plan(&ctx),
+        };
+        let raw = match produced {
+            Ok(raw) => raw,
+            // The spec provider itself failed (spawn/timeout/parse). If a prior
+            // attempt already produced an invalid plan, persist it so the failure
+            // is still inspectable, then propagate the transport error.
+            Err(e) => {
+                let _ = persist_invalid_plan(run, last_raw.as_ref());
+                return Err(e);
+            }
         };
         let normalized = normalize_plan(raw.clone(), run, baseline);
         match plan::parse_and_validate_plan(&normalized) {

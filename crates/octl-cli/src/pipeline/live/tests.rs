@@ -375,6 +375,34 @@ fn repair_loop_feeds_validator_error_back_and_succeeds() {
 }
 
 #[test]
+fn repair_call_failure_persists_the_prior_invalid_plan() {
+    // attempt 0 produces an invalid plan; the repair re-prompt itself fails
+    // (spawn/timeout). The prior invalid plan must still be persisted for
+    // inspection rather than lost behind the transport error.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::sequence_then_error(vec![plan_missing_acceptance(&["feature.txt"])]);
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let verify = ScriptedVerify::passing();
+
+    let err = run_pipeline(&cfg, &spec, &code, &verify).unwrap_err();
+    // The surfaced error is the spec transport failure (repair could not run).
+    assert!(matches!(err, PipelineError::Spec(_)), "{err:?}");
+    // But the invalid plan from attempt 0 was persisted anyway.
+    let persisted = workdir.path().join("plan.invalid.json");
+    assert!(
+        persisted.is_file(),
+        "prior invalid plan not persisted on repair failure"
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&persisted).unwrap()).unwrap();
+    assert!(saved.get("acceptance").is_none() && saved.get("chunks").is_some());
+    // The repair path was reached (fed the error) before it failed.
+    assert_eq!(spec.repair_calls().len(), 1);
+}
+
+#[test]
 fn invalid_then_valid_plan_recovers_on_repair() {
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
