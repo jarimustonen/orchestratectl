@@ -282,24 +282,100 @@ fn acceptance_check_failure_blocks_verify() {
     assert!(!report.merged);
 }
 
+/// A structurally-valid chunk missing the top-level `acceptance` array — the
+/// exact shape the first live run produced (`missing field acceptance`).
+fn plan_missing_acceptance(files: &[&str]) -> serde_json::Value {
+    json!({
+        "chunks": [{
+            "id": "c1", "title": "t", "tier": "code", "brief": "b",
+            "files_touched": files,
+            "checks": [{"desc": "d", "run": "true"}],
+        }],
+    })
+}
+
 #[test]
-fn invalid_plan_is_retried_once_then_fails() {
+fn persistently_invalid_plan_fails_with_raw_persisted_and_error_surfaced() {
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
-    // Both attempts return a structurally-invalid plan (no chunks).
-    let spec = ScriptedSpec::sequence(vec![json!({"acceptance": []}), json!({"acceptance": []})]);
+    // Every attempt omits the required `acceptance` array (the observed bug).
+    let spec = ScriptedSpec::sequence(vec![
+        plan_missing_acceptance(&["feature.txt"]),
+        plan_missing_acceptance(&["feature.txt"]),
+    ]);
     let code = CommitFake::new(&[("feature.txt", "hi\n")]);
     let verify = ScriptedVerify::passing();
 
     let err = run_pipeline(&cfg, &spec, &code, &verify).unwrap_err();
-    assert!(matches!(err, PipelineError::PlanInvalid(_)), "{err:?}");
+    // The last validator message is surfaced (not swallowed into "attempt N").
+    match &err {
+        PipelineError::PlanInvalid(msg) => {
+            assert!(
+                msg.contains("acceptance"),
+                "validator error not surfaced: {msg}"
+            );
+            assert!(
+                msg.contains("plan.invalid.json"),
+                "persisted path not named: {msg}"
+            );
+        }
+        other => panic!("expected PlanInvalid, got {other:?}"),
+    }
+    // The repair loop actually re-prompted once, carrying the error forward.
+    let calls = spec.repair_calls();
+    assert_eq!(calls.len(), 1, "expected exactly one repair re-prompt");
+    assert!(
+        calls[0].1.contains("acceptance"),
+        "repair was not fed the validator error: {}",
+        calls[0].1
+    );
+    // The raw invalid plan the model produced was persisted for inspection.
+    let persisted = workdir.path().join("plan.invalid.json");
+    assert!(persisted.is_file(), "invalid plan not persisted");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&persisted).unwrap()).unwrap();
+    assert!(
+        saved.get("acceptance").is_none(),
+        "persisted plan should be the raw invalid one"
+    );
+    assert!(saved.get("chunks").is_some());
     // The failed run tore its integration branch down (nothing merged).
     assert!(!super::git::branch_exists(repo.path(), "feat/demo"));
 }
 
 #[test]
-fn invalid_then_valid_plan_recovers_on_retry() {
+fn repair_loop_feeds_validator_error_back_and_succeeds() {
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    // Invalid first (missing acceptance), corrected on the repair re-prompt.
+    let spec = ScriptedSpec::sequence(vec![
+        plan_missing_acceptance(&["feature.txt"]),
+        one_chunk_plan(&["feature.txt"], "true", "true"),
+    ]);
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let verify = ScriptedVerify::passing();
+
+    let report = run_pipeline(&cfg, &spec, &code, &verify).expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+
+    // The loop fed the exact validator error (and the invalid JSON) back to the
+    // model on the repair attempt — not a blind re-produce.
+    let calls = spec.repair_calls();
+    assert_eq!(calls.len(), 1, "expected exactly one repair re-prompt");
+    let (invalid, error) = &calls[0];
+    assert!(error.contains("acceptance"), "error not fed back: {error}");
+    assert!(
+        invalid.get("acceptance").is_none() && invalid.get("chunks").is_some(),
+        "the invalid JSON produced was not fed back: {invalid}"
+    );
+    // A recovered run must NOT leave a stray invalid-plan artifact behind.
+    assert!(!workdir.path().join("plan.invalid.json").exists());
+}
+
+#[test]
+fn invalid_then_valid_plan_recovers_on_repair() {
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);

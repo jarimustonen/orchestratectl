@@ -619,10 +619,25 @@ pub fn run_pipeline(
     }
 }
 
+/// Bounded number of spec attempts: the initial produce plus repair re-prompts.
+/// Keeps the pre-existing count (design §6 VAIHE 1 — bounded re-spec).
+const MAX_PLAN_ATTEMPTS: u32 = 2;
+
+/// Filename the last invalid plan is persisted under (in the workdir) when the
+/// spec stage exhausts its attempts, so a human can inspect what the model
+/// actually produced.
+const INVALID_PLAN_FILE: &str = "plan.invalid.json";
+
 /// Ask the spec provider for a plan, normalize the authoritative fields
-/// (feature/baseline/versions) over its output, validate with the T2 validator,
-/// and retry once on an invalid plan (design §6 VAIHE 1). Returns the validated
-/// [`Plan`].
+/// (feature/baseline/versions) over its output, and validate with the T2
+/// validator. On a validation failure this runs a **repair loop** (design §6
+/// VAIHE 1): it re-prompts the spec model with the exact validator error and the
+/// invalid JSON it produced, so the model corrects precisely that error rather
+/// than re-guessing blind. The parse stays strict — the driver never patches a
+/// missing field server-side; the model must produce valid output. Bounded to
+/// [`MAX_PLAN_ATTEMPTS`]; on exhaustion the last invalid plan is persisted to the
+/// workdir ([`INVALID_PLAN_FILE`]) and the error surfaces the last validator
+/// message. Returns the validated [`Plan`].
 fn produce_and_validate_plan(
     run: &Run,
     spec: &dyn SpecProvider,
@@ -638,21 +653,56 @@ fn produce_and_validate_plan(
         baseline,
     };
 
-    let mut last_err: Option<PipelineError> = None;
-    for attempt in 0..2 {
-        let raw = spec.produce_plan(&ctx)?;
-        let normalized = normalize_plan(raw, run, baseline);
+    // Carried across attempts so a repair re-prompt can feed back the exact
+    // validator error and the raw JSON the model produced. `last_raw` holds the
+    // model's own output (pre-normalize) — what it must correct — and is what we
+    // persist on exhaustion.
+    let mut last_raw: Option<serde_json::Value> = None;
+    let mut last_err: Option<String> = None;
+
+    for attempt in 0..MAX_PLAN_ATTEMPTS {
+        // First attempt produces from scratch; every later attempt is a repair
+        // re-prompt carrying the previous error + invalid JSON forward.
+        let raw = match (attempt, &last_raw, &last_err) {
+            (0, _, _) => spec.produce_plan(&ctx)?,
+            (_, Some(invalid), Some(err)) => spec.repair_plan(&ctx, invalid, err)?,
+            // Unreachable: after attempt 0 both are always set. Fall back to a
+            // fresh produce rather than panic.
+            _ => spec.produce_plan(&ctx)?,
+        };
+        let normalized = normalize_plan(raw.clone(), run, baseline);
         match plan::parse_and_validate_plan(&normalized) {
             Ok(p) => return Ok(p),
             Err(e) => {
-                last_err = Some(PipelineError::PlanInvalid(format!(
-                    "attempt {} of 2: {e}",
-                    attempt + 1
-                )));
+                last_err = Some(e.to_string());
+                last_raw = Some(raw);
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| PipelineError::PlanInvalid("no plan produced".to_string())))
+
+    // Exhausted: persist the last invalid plan so a human can inspect it (right
+    // now nothing was kept), then fail with the last validator message.
+    let last_err = last_err.unwrap_or_else(|| "no plan produced".to_string());
+    let persisted = persist_invalid_plan(run, last_raw.as_ref());
+    Err(PipelineError::PlanInvalid(format!(
+        "spec produced an invalid plan after {MAX_PLAN_ATTEMPTS} attempt(s): {last_err}{persisted}"
+    )))
+}
+
+/// Best-effort write of the last invalid plan to `<workdir>/plan.invalid.json`
+/// and return a suffix naming the file for the error message (or a note that it
+/// could not be persisted). Never fails the run — the primary error is the
+/// validation failure, and losing the artifact must not mask it.
+fn persist_invalid_plan(run: &Run, raw: Option<&serde_json::Value>) -> String {
+    let Some(raw) = raw else {
+        return String::new();
+    };
+    let path = run.cfg.workdir.join(INVALID_PLAN_FILE);
+    let body = serde_json::to_string_pretty(raw).unwrap_or_else(|_| raw.to_string());
+    match std::fs::write(&path, body) {
+        Ok(()) => format!(" (raw invalid plan written to {})", path.display()),
+        Err(e) => format!(" (could not persist invalid plan: {e})"),
+    }
 }
 
 /// Overwrite the supervisor-owned fields on a spec-produced plan value so the
