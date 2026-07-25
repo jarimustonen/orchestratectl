@@ -976,6 +976,113 @@ fn spec_flaw_triggers_respec_then_merges() {
     assert!(main_has(&repo, "feature.txt"));
 }
 
+#[test]
+fn verify_fix_with_only_unknown_chunk_ids_does_not_blast_all_chunks() {
+    // A FixChunks verdict that names only a hallucinated chunk id must NOT fall
+    // back to re-coding every merged chunk — it resolves to no target and the run
+    // ends as a plain verify failure (post-review hardening of resolve_fix_targets).
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "nope".to_string(),
+        findings: vec!["x".to_string()],
+        disposition: providers::VerifyDisposition::FixChunks {
+            chunk_ids: vec!["ghost-chunk".to_string()],
+        },
+    });
+
+    let report =
+        run_pipeline(&cfg, &spec, &IncrementingFeature::new(), &verify).expect("pipeline runs");
+
+    assert_eq!(report.status, "verify_failed", "{report:#?}");
+    assert_eq!(report.recode_count, 0, "no chunk should be re-coded");
+    assert!(!report.merged);
+}
+
+#[test]
+fn acceptance_check_failure_recodes_with_the_check_as_a_finding() {
+    // Judge passes but an executable acceptance check fails → the disposition is a
+    // bare Fix, and the failed check description is fed back as a finding so the
+    // re-code has context (post-review: acceptance failures reach the re-brief).
+    // The acceptance check `test -f marker.txt` fails until the harness writes it.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt", "marker.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt", "marker.txt"],
+        "true",
+        "test -f marker.txt",
+    ));
+
+    // First harness call writes only feature.txt (acceptance fails); the re-code
+    // writes marker.txt too (acceptance passes).
+    struct MarkerOnRecode {
+        calls: AtomicU32,
+    }
+    impl CodeHarness for MarkerOnRecode {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let wt = &req.worktree_path;
+            std::fs::write(wt.join("feature.txt"), format!("v{n}\n")).unwrap();
+            let mut changed = vec![PathBuf::from("feature.txt")];
+            if n >= 2 {
+                std::fs::write(wt.join("marker.txt"), "m\n").unwrap();
+                changed.push(PathBuf::from("marker.txt"));
+            }
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "edit"]);
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                changed,
+            ))
+        }
+    }
+
+    // Judge always passes; only the acceptance check drives the failure→fix.
+    let verify = ScriptedVerify::passing();
+    let report = run_pipeline(
+        &cfg,
+        &spec,
+        &MarkerOnRecode {
+            calls: AtomicU32::new(0),
+        },
+        &verify,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert_eq!(
+        report.recode_count, 1,
+        "the acceptance failure drove one re-code"
+    );
+    assert!(main_has(&repo, "marker.txt"));
+}
+
 /// Whether `path` exists on `main` (a committed blob).
 fn main_has(repo: &TempDir, path: &str) -> bool {
     Command::new("git")

@@ -160,8 +160,10 @@ fn violation_line(v: &Violation) -> String {
 /// action is stamped [`Decider`](DecisionTier::Decider), a routine one
 /// [`Coordinator`](DecisionTier::Coordinator). Because the tier is derived *from*
 /// the action's own class, the resulting envelope satisfies
-/// [`DecisionEnvelope::validate_for`] by construction — the `debug_assert` guards
-/// that invariant in tests without a release-build cost.
+/// [`DecisionEnvelope::validate_for`] by construction — the `assert!` guards that
+/// invariant even in release: envelopes are built rarely (once per fix-loop
+/// decision), so the cost is negligible, and a mis-tiered decision silently
+/// stamped would corrupt the audit trail's authority record.
 #[must_use]
 pub fn action_envelope(
     action: &Action,
@@ -183,7 +185,7 @@ pub fn action_envelope(
         model: model.to_string(),
         prompt_version: prompt_version.to_string(),
     };
-    debug_assert!(
+    assert!(
         env.validate_for(action).is_ok(),
         "action_envelope produced a tier-invariant violation for {}",
         action.name()
@@ -244,14 +246,20 @@ pub fn dag_diff(old: &Plan, new: &Plan, merged: &BTreeSet<String>, forced: &[Str
     }
 
     // Fixpoint: propagate dirtiness downstream — a chunk whose dependency is
-    // dirty must itself revert (its inputs changed under it).
+    // dirty must itself revert (its inputs changed under it). A dep that is
+    // absent from the new plan altogether also dirties the chunk (defensive: the
+    // plan validator should reject a dangling dep, but a missing dependency
+    // unambiguously invalidates the dependent's prior work).
     loop {
         let mut grew = false;
         for c in &new.chunks {
             if dirty.contains(&c.id) {
                 continue;
             }
-            if c.deps.iter().any(|d| dirty.contains(d)) {
+            if c.deps
+                .iter()
+                .any(|d| dirty.contains(d) || !new_ids.contains(d.as_str()))
+            {
                 dirty.insert(c.id.clone());
                 grew = true;
             }
@@ -288,18 +296,35 @@ pub fn dag_diff(old: &Plan, new: &Plan, merged: &BTreeSet<String>, forced: &[Str
 /// signal that a previously-done chunk must be re-coded. Compares the fields a
 /// code node acts on (`brief`, `files_touched`, `deps`, `checks`); cosmetic
 /// changes (`title`, `assertions`, `tier`) do not force a re-code.
+///
+/// `files_touched`, `deps`, and `checks` are logically **sets** — a pure reorder
+/// (which a re-spec or plan normalization can introduce) is not a material change
+/// and must not spuriously burn a chunk's re-code budget. So all three are
+/// compared order-insensitively.
 fn chunk_materially_changed(old: &octl_core::plan::Chunk, new: &octl_core::plan::Chunk) -> bool {
     old.brief != new.brief
-        || old.files_touched != new.files_touched
+        || sorted(&old.files_touched) != sorted(&new.files_touched)
         || sorted(&old.deps) != sorted(&new.deps)
-        || old.checks != new.checks
+        || checks_key(&old.checks) != checks_key(&new.checks)
 }
 
-/// A sorted copy of a string slice, for order-insensitive comparison of `deps`.
+/// A sorted copy of a string slice, for order-insensitive comparison of
+/// `deps` / `files_touched`.
 fn sorted(v: &[String]) -> Vec<String> {
     let mut v = v.to_vec();
     v.sort();
     v
+}
+
+/// An order-insensitive canonical key for a chunk's `checks`: each check
+/// serialized to JSON, then sorted, so a reordered `checks` array compares equal.
+fn checks_key(checks: &[octl_core::plan::Check]) -> Vec<String> {
+    let mut keys: Vec<String> = checks
+        .iter()
+        .map(|c| serde_json::to_string(c).unwrap_or_default())
+        .collect();
+    keys.sort();
+    keys
 }
 
 #[cfg(test)]
@@ -495,5 +520,17 @@ mod tests {
         let diff = dag_diff(&old, &new, &merged, &[]);
         assert_eq!(diff.revert_to_pending, vec!["c1"]);
         assert!(diff.kept_done.is_empty());
+    }
+
+    #[test]
+    fn dag_diff_ignores_reordered_files_touched() {
+        // A pure reorder of `files_touched` is NOT a material change — the merged
+        // chunk stays done rather than spuriously burning its re-code budget.
+        let old = plan_with(json!([chunk("c1", "b", &["a.rs", "b.rs"], &[], "true")]));
+        let new = plan_with(json!([chunk("c1", "b", &["b.rs", "a.rs"], &[], "true")]));
+        let merged: BTreeSet<String> = ["c1".to_string()].into_iter().collect();
+        let diff = dag_diff(&old, &new, &merged, &[]);
+        assert_eq!(diff.kept_done, vec!["c1"], "reorder must not revert");
+        assert!(diff.revert_to_pending.is_empty());
     }
 }

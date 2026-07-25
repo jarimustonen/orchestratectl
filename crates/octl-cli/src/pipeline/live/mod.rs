@@ -605,11 +605,13 @@ pub fn run_pipeline(
             };
         }
 
-        // VERIFY on the feature tip (design §6 VAIHE 3). Restore the worktree to
-        // the exact floor-gated tip afterwards so no verify-time mutation can
-        // smuggle content past the floor.
-        let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
+        // VERIFY on the feature tip (design §6 VAIHE 3). Capture the floor-gated
+        // tip BEFORE verify runs, then restore to it afterwards — verify runs
+        // headless with skipped permissions, so a verify-time commit or untracked
+        // write must never become the tip and smuggle content past the floor
+        // (`restore_to` hard-resets AND cleans untracked files).
         let feat_tip = git::head(&run.integration_wt)?;
+        let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
         git::restore_to(&run.integration_wt, &feat_tip)?;
         if verify_report.passed {
             break LoopExit::Converged {
@@ -803,31 +805,33 @@ fn all_merged(run: &Run, plan: &Plan) -> bool {
         .all(|c| run.chunk_status.get(&c.id) == Some(&LiveChunkStatus::Merged))
 }
 
-/// The chunks a FIX verdict should re-code (design §8). An explicit, in-plan
-/// `chunk_ids` list wins; otherwise (a bare `Fix`, or a list naming no known
-/// chunk) fall back to every currently-merged chunk — a coarse but safe default
-/// that re-verifies afterward.
+/// The chunks a FIX verdict should re-code (design §8). Only **merged** chunks
+/// are eligible (verify runs after the whole plan is on `feat`, so a Pending
+/// chunk is not a re-code target). An explicit, in-plan `FixChunks` list is
+/// honoured verbatim (deduplicated, plan order); a bare `Fix` falls back to every
+/// merged chunk — the coarse default, since the judge did not attribute the
+/// failure. An explicit list that names ONLY unknown/unmerged chunks yields an
+/// empty target set (the caller then treats it as a terminal verify failure)
+/// rather than silently exploding to an all-chunk re-code from one bad id.
 fn resolve_fix_targets(disp: &VerifyDisposition, plan: &Plan, run: &Run) -> Vec<String> {
-    let merged: Vec<String> = plan
+    let is_merged = |id: &str| run.chunk_status.get(id) == Some(&LiveChunkStatus::Merged);
+    let all_merged: Vec<String> = plan
         .chunks
         .iter()
-        .filter(|c| run.chunk_status.get(&c.id) == Some(&LiveChunkStatus::Merged))
+        .filter(|c| is_merged(&c.id))
         .map(|c| c.id.clone())
         .collect();
     match disp {
         VerifyDisposition::FixChunks { chunk_ids } => {
-            let valid: Vec<String> = chunk_ids
+            // Keep only merged, in-plan ids, in plan order, deduplicated. An empty
+            // result is returned as-is (NOT widened to every chunk).
+            plan.chunks
                 .iter()
-                .filter(|id| run.chunk_status.contains_key(*id))
-                .cloned()
-                .collect();
-            if valid.is_empty() {
-                merged
-            } else {
-                valid
-            }
+                .map(|c| c.id.clone())
+                .filter(|id| is_merged(id) && chunk_ids.iter().any(|c| c == id))
+                .collect()
         }
-        _ => merged,
+        _ => all_merged,
     }
 }
 
@@ -864,7 +868,7 @@ fn record_recode_decision(
         format!("re-code chunk {chunk_id} ({source})"),
         vec![format!("chunk:{chunk_id}")],
     );
-    run.recode_count += 1;
+    run.recode_count = run.recode_count.saturating_add(1);
     run.decisions.push(env);
 }
 
@@ -880,7 +884,7 @@ fn trigger_re_spec(
     forced: &[String],
     baseline: &BaselineSnapshot,
 ) -> Result<Plan, PipelineError> {
-    run.respec_count += 1;
+    run.respec_count = run.respec_count.saturating_add(1);
     let new_rev = old_plan.plan_rev.saturating_add(1);
 
     // Record the consequential TRIGGER_RE_SPEC as the T4 primitive (decider-tier).
@@ -1152,11 +1156,13 @@ fn run_code_stage(
             continue; // already on feat/<slug> (kept-done or merged earlier)
         }
 
-        // Seed the first attempt's re-brief with any verify findings the fix loop
-        // routed to this chunk (a verify-driven RE_CODE_CHUNK); subsequent
-        // attempts re-brief with the floor findings from the prior failure.
-        let mut findings: Vec<String> =
-            pending_findings.get(&chunk.id).cloned().unwrap_or_default();
+        // Seed the re-brief with any verify findings the fix loop routed to this
+        // chunk (a verify-driven RE_CODE_CHUNK). This seed PERSISTS across
+        // floor-retry attempts: a floor failure mid re-code appends its findings
+        // rather than erasing the verify context (why the chunk is being re-coded
+        // at all), so the model never "forgets" the original fix on attempt 2.
+        let verify_seed: Vec<String> = pending_findings.get(&chunk.id).cloned().unwrap_or_default();
+        let mut findings: Vec<String> = verify_seed.clone();
         let mut attempt = 1u32;
         loop {
             match attempt_chunk(run, plan, chunk, code, baseline, attempt, &findings)? {
@@ -1222,7 +1228,13 @@ fn run_code_stage(
                         // budget runs out, IS preserved below).
                         let _ = git::worktree_remove(&run.repo, &wt);
                         let _ = git::delete_branch(&run.repo, &branch, true);
-                        findings = attempt_findings;
+                        // Persist the verify seed, append this attempt's floor
+                        // findings (see `verify_seed` above).
+                        findings = verify_seed
+                            .iter()
+                            .cloned()
+                            .chain(attempt_findings)
+                            .collect();
                         attempt += 1;
                         continue;
                     }
@@ -1614,16 +1626,42 @@ fn run_verify_stage(
         judgment.disposition.clone()
     };
 
+    // Build the re-brief findings. Feed the FAILED acceptance checks in as
+    // mechanical findings (a judge-passed / check-failed verdict would otherwise
+    // re-code with no context and just reproduce the same output → NoChange →
+    // breaker). And guarantee at least one finding on any failure, so the
+    // RE_CODE_CHUNK re-brief always differs from the original brief.
+    let mut findings = judgment.findings;
+    for r in acceptance_results.iter().filter(|r| !r.passed) {
+        findings.push(format!("acceptance check failed: {} (`{}`)", r.desc, r.run));
+    }
+    if !passed && findings.is_empty() {
+        findings.push(format!(
+            "verify failed without specific findings: {}. Review the implementation against the intent and correct it.",
+            summary_or_default(&judgment.summary)
+        ));
+    }
+
     Ok((
         VerifyReport {
             acceptance_checks_passed,
             judged_passed: judgment.passed,
             passed,
             summary: judgment.summary,
-            findings: judgment.findings,
+            findings,
         },
         disposition,
     ))
+}
+
+/// The judge summary, or a placeholder when it is blank — so a synthetic
+/// fallback finding is never an empty sentence.
+fn summary_or_default(summary: &str) -> &str {
+    if summary.trim().is_empty() {
+        "(no summary)"
+    } else {
+        summary
+    }
 }
 
 /// Convert an executable `acceptance` item into a runnable [`plan::Check`];
