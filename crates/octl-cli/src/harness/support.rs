@@ -37,11 +37,12 @@ pub(super) trait AgentLaunch {
     /// [`CodeHarness::capabilities`]: super::CodeHarness::capabilities
     fn capabilities(&self) -> HarnessCapabilities;
 
-    /// Whether the agent commits its own edits in-process. The Claude family and
-    /// pi are told to `git add -A && git commit` by [`commit_framed_prompt`], so
-    /// they return `true`; aider is *expected* to auto-commit but a live run can
-    /// finish with edits left uncommitted (aider's auto-commit disabled by its own
-    /// heuristics/config), so it returns `false`.
+    /// Whether the adapter expects the agent to commit its own edits in-process.
+    /// Returns `true` when the agent is relied on to `git commit` itself — the
+    /// Claude family and pi, which [`commit_framed_prompt`] instructs to do so.
+    /// Returns `false` when the adapter must commit the agent's leftovers itself:
+    /// aider is *expected* to auto-commit but a live run can finish with edits left
+    /// uncommitted (aider's auto-commit disabled by its own heuristics/config).
     ///
     /// When `false`, [`run_chunk`] commits any edits the agent left after a clean
     /// exit — landing a dirty tree as a real commit so the git-outcome mapping
@@ -254,9 +255,21 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String, HarnessError> {
 /// is `false` — aider). Best-effort: on a clean tree it is a no-op (the agent
 /// already committed); a `git` failure is logged and swallowed so the caller's
 /// git-outcome mapping stays the single source of truth (a still-dirty tree then
-/// maps to [`ChunkOutcome::Failed`] as before). `git add -A` respects the
-/// worktree's `.gitignore`, so aider's own `.aider.*` droppings are not swept in.
-fn commit_leftover_changes(worktree: &Path, tool: &str) {
+/// maps to [`ChunkOutcome::Failed`] as before).
+///
+/// The staging pathspec excludes `.aider*`: the only non-committing adapter is
+/// aider, which litters the worktree with `.aider.chat.history.md` /
+/// `.aider.tags.cache.*` scratch files. Excluding them keeps the chunk commit to
+/// the agent's real deliverables no matter whether the repo's own `.gitignore`
+/// happens to cover them (it need not) — the pathspec is a harmless no-op in any
+/// repo without such files.
+///
+/// The commit itself is deterministic: an explicit committer identity, `--no-verify`
+/// and `--no-gpg-sign` mean a machine-generated chunk commit never depends on
+/// ambient git config, a pre-commit hook, or gpg-signing setup — any of which
+/// would fail the commit and wrongly map a good run to `Failed`. This mirrors
+/// aider's own `--no-verify` auto-commit behaviour.
+fn commit_leftover_changes(worktree: &Path, req: &ChunkRequest, tool: &str) {
     match worktree_status(worktree) {
         // Clean tree — the agent's own auto-commit already ran; nothing to do.
         Ok(status) if status.is_empty() => return,
@@ -266,12 +279,28 @@ fn commit_leftover_changes(worktree: &Path, tool: &str) {
             return;
         }
     }
-    if let Err(e) = git(worktree, &["add", "-A"]) {
-        tracing::warn!(error = %e, tool, "adapter `git add -A` failed; leaving tree for the Failed mapping");
+    if let Err(e) = git(worktree, &["add", "-A", "--", ".", ":(exclude).aider*"]) {
+        tracing::warn!(error = %e, tool, "adapter `git add` failed; leaving tree for the Failed mapping");
         return;
     }
-    let message = format!("{tool}: commit chunk edits (adapter-committed)");
-    if let Err(e) = git(worktree, &["commit", "-q", "-m", &message]) {
+    let message = format!(
+        "{tool}: chunk {chunk} attempt {attempt} (adapter-committed)",
+        chunk = req.chunk_id,
+        attempt = req.attempt_id,
+    );
+    let args = [
+        "-c",
+        "user.name=orchestratectl",
+        "-c",
+        "user.email=orchestratectl@localhost",
+        "commit",
+        "-q",
+        "--no-verify",
+        "--no-gpg-sign",
+        "-m",
+        message.as_str(),
+    ];
+    if let Err(e) = git(worktree, &args) {
         tracing::warn!(error = %e, tool, "adapter `git commit` failed; leaving tree for the Failed mapping");
     }
 }
@@ -633,7 +662,7 @@ pub(super) fn run_chunk(
     //     agent run is left dirty for the `Failed` mapping (we never fabricate a
     //     commit over an error). A no-op when the tree is already clean.
     if !launch.commits_in_agent() && status.success() {
-        commit_leftover_changes(worktree, launch.tool_label());
+        commit_leftover_changes(worktree, req, launch.tool_label());
     }
 
     // 5. Read the outcome from git, never from the agent's prose.

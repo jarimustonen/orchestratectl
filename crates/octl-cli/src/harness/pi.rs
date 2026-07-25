@@ -129,11 +129,17 @@ impl AgentLaunch for PiHarness {
         // pi's arg parser does NOT support a `--` end-of-options terminator — it
         // rejects it with `Error: Unknown option: --` and exits non-zero (the live
         // bake-off's exit-1). The prompt is passed as the sole positional message
-        // (`pi [options] [messages...]`). pi likewise treats a leading-dash token
-        // as an unknown option, so a brief that begins with `-` is an inherent pi
-        // limitation with no argv escape; the commit-framing keeps normal briefs
-        // safely non-dash-leading.
-        cmd.arg(prompt);
+        // (`pi [options] [messages...]`). pi also treats a leading-dash token as an
+        // unknown option and offers no argv escape, so if the (commit-framed) prompt
+        // begins with `-` we prepend a single space: invisible to the model, but it
+        // keeps pi's parser from mistaking the prompt for a flag. Verified against
+        // pi 0.82 — a space-prefixed dash arg parses as an ordinary message.
+        let positional = if prompt.starts_with('-') {
+            format!(" {prompt}")
+        } else {
+            prompt.to_string()
+        };
+        cmd.arg(positional);
         cmd
     }
 
@@ -352,6 +358,39 @@ mod tests {
             "prompt is the final positional: {:?}",
             args.last()
         );
+
+        std::env::remove_var("OCTL_PI_BIN");
+        std::env::remove_var("OCTL_TEST_ARGV_OUT");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn pi_dash_leading_prompt_is_space_guarded() {
+        let _g = env_lock();
+        let repo = init_repo();
+        let sdir = TempDir::new().unwrap();
+        let argv_out = sdir.path().join("argv");
+        let bin = write_script(sdir.path(), "fake-pi.sh", ARGV_DUMP);
+        std::env::set_var("OCTL_PI_BIN", &bin);
+        std::env::set_var("OCTL_TEST_ARGV_OUT", &argv_out);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        // A brief that begins with a dash. pi has no `--` escape and rejects a
+        // leading-dash positional as an unknown option, so the adapter must guard
+        // it with a leading space — otherwise a valid brief exits 1 (regression).
+        let h = PiHarness::new(PiConfig::deepseek("deepseek-v4-flash"));
+        let mut req = base_request(repo.path());
+        req.brief = "--delete the old parser".into();
+        let _ = run_and_check(&h, &req).unwrap();
+
+        let args = captured_argv(&argv_out);
+        let last = args.last().unwrap();
+        assert!(
+            last.starts_with(' '),
+            "a dash-leading prompt must be space-guarded so pi accepts it: {last:?}"
+        );
+        // The brief content survives verbatim after the guard space.
+        assert!(last.trim_start().starts_with("--delete the old parser"));
 
         std::env::remove_var("OCTL_PI_BIN");
         std::env::remove_var("OCTL_TEST_ARGV_OUT");

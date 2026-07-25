@@ -323,6 +323,17 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// Subject line of the repo's HEAD commit (real git).
+    fn head_message(worktree: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     /// A request whose `base_commit` is the repo's real HEAD (the adapter now
     /// verifies the two agree). Uses a bogus base only where the test returns
     /// before the base check (credential / dirty guards).
@@ -579,6 +590,84 @@ mod tests {
         // The self-check still runs against the committed state.
         assert_eq!(res.check_results.len(), 1);
         assert!(res.check_results[0].passed);
+        // The adapter commit is auditable: its message names the tool + chunk and
+        // marks it adapter-committed (so downstream never confuses it with an
+        // aider-authored auto-commit).
+        assert_eq!(
+            head_message(repo.path()),
+            "aider: chunk c1 attempt a1 (adapter-committed)"
+        );
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn aider_scratch_droppings_are_not_committed() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Fake aider edits a real deliverable AND drops its own history/cache files
+        // in the worktree, then exits 0 without committing. The adapter must commit
+        // the deliverable but NOT aider's `.aider.*` scratch files — regardless of
+        // whether the repo's .gitignore covers them (this repo's does not).
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\n\
+             printf 'real\\n' > out.txt\n\
+             printf 'chat\\n' > .aider.chat.history.md\n\
+             mkdir -p .aider.tags.cache.v4 && printf 'x\\n' > .aider.tags.cache.v4/cache.db\n\
+             exit 0\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let res = run_and_check(&h, &base_request(repo.path())).unwrap();
+        assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
+        // Only the deliverable was committed; no `.aider*` path leaked into the diff.
+        assert_eq!(res.changed_files, vec![PathBuf::from("out.txt")]);
+        assert!(
+            !res.changed_files
+                .iter()
+                .any(|p| p.to_string_lossy().contains(".aider")),
+            "aider scratch files must not be committed: {:?}",
+            res.changed_files
+        );
+        // The scratch files still exist on disk (untracked) — we excluded, not deleted.
+        assert!(repo.path().join(".aider.chat.history.md").exists());
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn history_rewrite_left_dirty_is_not_a_commit() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // Fake aider rewrites history onto an orphan root and leaves the tree dirty
+        // WITHOUT committing (exit 0). The adapter's leftover-commit lands on the
+        // rewritten history, but base_commit is no longer an ancestor of the new
+        // HEAD — so the git-outcome mapping must still refuse it as `Failed`, never
+        // launder a rewrite into a `Committed`.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\n\
+             git checkout -q --orphan rogue\n\
+             git rm -q -rf . >/dev/null 2>&1\n\
+             printf 'x\\n' > other.txt\n\
+             exit 0\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let res = run_and_check(&h, &base_request(repo.path())).unwrap();
+        assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
+        assert!(res.resulting_commit.is_none());
 
         std::env::remove_var("OCTL_AIDER_BIN");
         std::env::remove_var("DEEPSEEK_API_KEY");
