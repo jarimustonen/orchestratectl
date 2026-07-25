@@ -330,16 +330,25 @@ mod tests {
             .count()
     }
 
-    /// Poll for `path` to exist (the detached hook is async), up to ~3s.
-    fn wait_for_file(path: &std::path::Path) -> bool {
+    /// Poll until `path` holds exactly `expected`, up to ~3s.
+    ///
+    /// The detached hook runs `sh -c '… > file'`: the shell's `>` redirect
+    /// *creates and truncates* the file to empty before `printf` writes into
+    /// it. Waiting on mere existence (or non-emptiness) is a TOCTOU — under
+    /// suite load the poller can observe the empty intermediate state and read
+    /// `""`. Waiting for the exact expected content closes that window while
+    /// still proving the hook delivered the right value.
+    fn wait_for_content(path: &std::path::Path, expected: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if path.exists() {
+        loop {
+            if std::fs::read_to_string(path).is_ok_and(|got| got == expected) {
                 return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        path.exists()
     }
 
     #[test]
@@ -358,12 +367,11 @@ mod tests {
             "a fired hook settles the notify state"
         );
 
+        let expected = format!("{RID}|done|did the thing|spinoff");
         assert!(
-            wait_for_file(&out),
-            "hook must run and write its output file"
+            wait_for_content(&out, &expected),
+            "hook must run and write the completion env into its output file"
         );
-        let got = std::fs::read_to_string(&out).unwrap();
-        assert_eq!(got, format!("{RID}|done|did the thing|spinoff"));
         assert_eq!(notified_count(&paths), 1, "exactly one marker recorded");
     }
 
@@ -389,7 +397,7 @@ mod tests {
             "spinoff",
             "t"
         ));
-        assert!(wait_for_file(&counter));
+        assert!(wait_for_content(&counter, "x"));
         assert_eq!(notified_count(&paths), 1);
 
         // Subsequent ticks (and a simulated supervisor restart) see the marker
