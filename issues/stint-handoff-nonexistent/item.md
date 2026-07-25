@@ -2,8 +2,9 @@
 created: 2026-07-25
 updated: 2026-07-25
 type: bug
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-07-25
 ---
 
 The stint `SKILL.template.md` references a `/handoff` slash-command skill in its
