@@ -37,6 +37,24 @@ pub(super) trait AgentLaunch {
     /// [`CodeHarness::capabilities`]: super::CodeHarness::capabilities
     fn capabilities(&self) -> HarnessCapabilities;
 
+    /// Whether the agent commits its own edits in-process. The Claude family and
+    /// pi are told to `git add -A && git commit` by [`commit_framed_prompt`], so
+    /// they return `true`; aider is *expected* to auto-commit but a live run can
+    /// finish with edits left uncommitted (aider's auto-commit disabled by its own
+    /// heuristics/config), so it returns `false`.
+    ///
+    /// When `false`, [`run_chunk`] commits any edits the agent left after a clean
+    /// exit — landing a dirty tree as a real commit so the git-outcome mapping
+    /// yields [`ChunkOutcome::Committed`] instead of [`ChunkOutcome::Failed`],
+    /// matching the contract the committing adapters already satisfy (design §10:
+    /// the adapter presents a committed result read from git). Default `true`.
+    ///
+    /// [`ChunkOutcome::Committed`]: super::ChunkOutcome::Committed
+    /// [`ChunkOutcome::Failed`]: super::ChunkOutcome::Failed
+    fn commits_in_agent(&self) -> bool {
+        true
+    }
+
     /// Verify any credential the provider needs is present, failing fast with
     /// [`HarnessError::MissingCredential`] before the agent is spawned. Adapters
     /// that source their own credentials (or use an ambient login) return
@@ -229,6 +247,33 @@ fn git(worktree: &Path, args: &[&str]) -> Result<String, HarnessError> {
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Land any uncommitted edits the agent left in `worktree` as a single commit,
+/// for an adapter that does not commit in-process ([`AgentLaunch::commits_in_agent`]
+/// is `false` — aider). Best-effort: on a clean tree it is a no-op (the agent
+/// already committed); a `git` failure is logged and swallowed so the caller's
+/// git-outcome mapping stays the single source of truth (a still-dirty tree then
+/// maps to [`ChunkOutcome::Failed`] as before). `git add -A` respects the
+/// worktree's `.gitignore`, so aider's own `.aider.*` droppings are not swept in.
+fn commit_leftover_changes(worktree: &Path, tool: &str) {
+    match worktree_status(worktree) {
+        // Clean tree — the agent's own auto-commit already ran; nothing to do.
+        Ok(status) if status.is_empty() => return,
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, tool, "could not read worktree status before adapter commit");
+            return;
+        }
+    }
+    if let Err(e) = git(worktree, &["add", "-A"]) {
+        tracing::warn!(error = %e, tool, "adapter `git add -A` failed; leaving tree for the Failed mapping");
+        return;
+    }
+    let message = format!("{tool}: commit chunk edits (adapter-committed)");
+    if let Err(e) = git(worktree, &["commit", "-q", "-m", &message]) {
+        tracing::warn!(error = %e, tool, "adapter `git commit` failed; leaving tree for the Failed mapping");
+    }
 }
 
 /// The current `HEAD` oid, validated to a full hex object id.
@@ -582,6 +627,14 @@ pub(super) fn run_chunk(
     // marked inline so a capped transcript is never mistaken for a complete one.
     let transcript = render_transcript(&stdout, &stderr);
     let transcript_ref = write_transcript(&transcript_file, &transcript);
+
+    // 4b. For an adapter that does not commit in-process (aider), land whatever
+    //     edits it left as a commit — but only after a clean exit, so a failed
+    //     agent run is left dirty for the `Failed` mapping (we never fabricate a
+    //     commit over an error). A no-op when the tree is already clean.
+    if !launch.commits_in_agent() && status.success() {
+        commit_leftover_changes(worktree, launch.tool_label());
+    }
 
     // 5. Read the outcome from git, never from the agent's prose.
     let new_head = head_oid(worktree)?;

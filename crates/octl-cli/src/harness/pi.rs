@@ -126,9 +126,14 @@ impl AgentLaunch for PiHarness {
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
-        // `--` terminates option parsing so a prompt starting with a dash cannot
-        // be mistaken for a pi flag; the prompt is the sole positional.
-        cmd.arg("--").arg(prompt);
+        // pi's arg parser does NOT support a `--` end-of-options terminator — it
+        // rejects it with `Error: Unknown option: --` and exits non-zero (the live
+        // bake-off's exit-1). The prompt is passed as the sole positional message
+        // (`pi [options] [messages...]`). pi likewise treats a leading-dash token
+        // as an unknown option, so a brief that begins with `-` is an inherent pi
+        // limitation with no argv escape; the commit-framing keeps normal briefs
+        // safely non-dash-leading.
+        cmd.arg(prompt);
         cmd
     }
 
@@ -295,6 +300,61 @@ mod tests {
         let res = run_and_check(&h, &base_request(repo.path())).unwrap();
         assert_eq!(res.outcome, ChunkOutcome::NoChange);
         std::env::remove_var("OCTL_PI_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    /// A fixture that dumps its argv (NUL-delimited) to `$OCTL_TEST_ARGV_OUT`,
+    /// then exits 0 without editing — the outcome is irrelevant to an argv check.
+    const ARGV_DUMP: &str =
+        "#!/bin/bash\nprintf '%s\\0' \"$@\" > \"$OCTL_TEST_ARGV_OUT\"\nexit 0\n";
+
+    fn captured_argv(argv_out: &Path) -> Vec<String> {
+        let raw = std::fs::read(argv_out).unwrap();
+        raw.split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn pi_argv_omits_option_terminator_and_ends_with_prompt() {
+        let _g = env_lock();
+        let repo = init_repo();
+        let sdir = TempDir::new().unwrap();
+        let argv_out = sdir.path().join("argv");
+        let bin = write_script(sdir.path(), "fake-pi.sh", ARGV_DUMP);
+        std::env::set_var("OCTL_PI_BIN", &bin);
+        std::env::set_var("OCTL_TEST_ARGV_OUT", &argv_out);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = PiHarness::new(PiConfig::deepseek("deepseek-v4-flash"));
+        let res = run_and_check(&h, &base_request(repo.path())).unwrap();
+        assert_eq!(res.outcome, ChunkOutcome::NoChange);
+
+        let args = captured_argv(&argv_out);
+        // pi rejects `--` (`Error: Unknown option: --`) — it must NOT appear, or a
+        // live run exits 1 (the bug this fixes).
+        assert!(
+            !args.iter().any(|a| a == "--"),
+            "pi must not receive a `--` terminator: {args:?}"
+        );
+        // The selection flags survive and the prompt is the sole trailing positional.
+        assert!(args.iter().any(|a| a == "-p"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--provider" && w[1] == "deepseek"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "deepseek-v4-flash"));
+        // The last arg is the commit-framed prompt (begins with the brief text).
+        assert!(
+            args.last().unwrap().starts_with("do the thing"),
+            "prompt is the final positional: {:?}",
+            args.last()
+        );
+
+        std::env::remove_var("OCTL_PI_BIN");
+        std::env::remove_var("OCTL_TEST_ARGV_OUT");
         std::env::remove_var("DEEPSEEK_API_KEY");
     }
 

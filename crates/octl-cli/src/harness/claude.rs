@@ -395,6 +395,28 @@ mod tests {
     }
 
     #[test]
+    fn clean_exit_but_dirty_tree_maps_to_failed() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // The Claude family commits in-agent (`commits_in_agent() == true`), so the
+        // adapter must NOT auto-commit leftovers: a clean exit that leaves the tree
+        // dirty is a `Failed`, not a `Committed`. This pins the default path so the
+        // aider-only auto-commit change never leaks into the committing adapters.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-claude.sh",
+            "#!/bin/bash\nprintf 'dirty\\n' >> seed.txt\nexit 0\n",
+        );
+        std::env::set_var("OCTL_CLAUDE_BIN", &bin);
+        let h = ClaudeHarness::claude(None);
+        let res = run_and_check(&h, &base_request(repo.path())).unwrap();
+        assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
+        assert!(res.resulting_commit.is_none());
+        std::env::remove_var("OCTL_CLAUDE_BIN");
+    }
+
+    #[test]
     fn timeout_kills_hung_claude() {
         let _g = env_lock();
         let repo = init_repo();

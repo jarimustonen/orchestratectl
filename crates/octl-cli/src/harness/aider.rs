@@ -175,6 +175,16 @@ impl AgentLaunch for AiderHarness {
         }
     }
 
+    fn commits_in_agent(&self) -> bool {
+        // aider is *expected* to auto-commit its edits, but a live run can finish
+        // with the tree dirty and no commit (auto-commit disabled by aider's own
+        // heuristics/config). Returning false makes the shared skeleton commit
+        // whatever aider left after a clean exit, so a dirty tree becomes a
+        // `Committed` result — matching the contract the Claude family + pi satisfy
+        // by committing in-agent, instead of a spurious `Failed`.
+        false
+    }
+
     fn check_credentials(&self) -> Result<(), HarnessError> {
         // aider itself reads the key from the process environment; this adapter
         // only *checks* it is present so a missing key fails fast with a
@@ -537,15 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn uncommitted_edits_without_commit_map_to_failed() {
+    fn uncommitted_edits_are_committed_by_the_adapter() {
         let _g = env_lock();
         let repo = init_repo();
-        // Fake aider edits a tracked file but never commits.
+        // Fake aider that mimics the live bug: it edits a tracked file AND creates
+        // a new untracked file, but (auto-commit no-op) never commits. The adapter
+        // must land those edits as a commit itself — the whole point of
+        // `commits_in_agent() == false` — so the result is `Committed`, not the old
+        // `Failed`.
         let sdir = TempDir::new().unwrap();
         let bin = write_script(
             sdir.path(),
             "fake-aider.sh",
-            "#!/bin/bash\nprintf 'dirty\\n' >> seed.txt\nexit 0\n",
+            "#!/bin/bash\nprintf 'dirty\\n' >> seed.txt\nprintf 'new\\n' > out.txt\nexit 0\n",
         );
         std::env::set_var("OCTL_AIDER_BIN", &bin);
         std::env::set_var("DEEPSEEK_API_KEY", "test-key");
@@ -553,7 +567,42 @@ mod tests {
         let h = AiderHarness::new(AiderConfig::new("m"));
         let req = base_request(repo.path());
         let res = run_and_check(&h, &req).unwrap();
-        // NOT NoChange — the worktree was left dirty without a commit.
+        // The adapter committed aider's leftover edits (tracked + untracked).
+        assert!(matches!(res.outcome, ChunkOutcome::Committed { .. }));
+        assert!(res.resulting_commit.is_some());
+        let mut files = res.changed_files.clone();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![PathBuf::from("out.txt"), PathBuf::from("seed.txt")]
+        );
+        // The self-check still runs against the committed state.
+        assert_eq!(res.check_results.len(), 1);
+        assert!(res.check_results[0].passed);
+
+        std::env::remove_var("OCTL_AIDER_BIN");
+        std::env::remove_var("DEEPSEEK_API_KEY");
+    }
+
+    #[test]
+    fn nonzero_exit_leaves_dirty_tree_uncommitted() {
+        let _g = env_lock();
+        let repo = init_repo();
+        // aider exits non-zero AND leaves edits behind. The adapter must NOT
+        // fabricate a commit over a failed run — the dirty tree maps to `Failed`,
+        // and the leftover edits survive for the supervisor to reset.
+        let sdir = TempDir::new().unwrap();
+        let bin = write_script(
+            sdir.path(),
+            "fake-aider.sh",
+            "#!/bin/bash\nprintf 'dirty\\n' >> seed.txt\necho boom >&2\nexit 3\n",
+        );
+        std::env::set_var("OCTL_AIDER_BIN", &bin);
+        std::env::set_var("DEEPSEEK_API_KEY", "test-key");
+
+        let h = AiderHarness::new(AiderConfig::new("m"));
+        let req = base_request(repo.path());
+        let res = run_and_check(&h, &req).unwrap();
         assert!(matches!(res.outcome, ChunkOutcome::Failed { .. }));
         assert!(res.resulting_commit.is_none());
 
