@@ -3,10 +3,11 @@ created: 2026-07-25
 updated: 2026-07-25
 type: improvement
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 related: ['@merge-skips-teardown', '@agent-died-merge-no-teardown-interactive']
 labels: [merge]
+closed: 2026-07-25
 ---
 
 # Reducer should adopt a late explicit-merge report (durable merge-completed event) so the supervisor stays the sole teardown actor
