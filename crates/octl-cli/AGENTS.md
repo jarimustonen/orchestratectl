@@ -28,3 +28,16 @@ After `cargo test -p octl-cli` finishes, `pgrep -lf "orchestratectl.*supervise"`
 `tests/e2e_spinoff.rs` drives ONE full autonomous-spinoff round-trip on every run — `run create --kind spinoff --headless` (real detached supervisor) → live stub agent → `run merge` → supervisor rolls the run up to `done`, tears down, and exits — and asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) + terminal manifest. It is the CI gate for the merge / cleanup / supervisor-lifecycle paths.
 
 It stubs the two shell-out boundaries through the production override hooks — `OCTL_CREATE_SH` (`run::spawn`) and `OCTL_MERGE_SH` (`run::merge`) — and points `TMUX_BIN`/`GIT_BIN` at nonexistent paths so the supervisor's tmux liveness probe reads `Unknown` (PID liveness governs → the live stub agent stays `Alive` until the merge terminalizes the node) and every teardown step is a lenient no-op. The stub agent (a `sleep`) is reaped by an `AgentGuard` on drop, panic-safe, alongside `TestHome`'s supervisor reaper. No new test-only hook was needed; adding lifecycle scenarios (failure path, concurrency, reattach) means extending this file.
+
+## Shelling out to `claude -p` (pipeline spec/verify + harness adapters)
+
+`claude -p --output-format json` does **not** emit a single result object — it
+emits a **sequence** of JSON messages, and the FIRST is a `{"type":"system",
+"subtype":"init", …}` banner (session_id, skills, tools, mcp_servers, model, …).
+When parsing the model's answer, select the message whose **`type == "result"`**
+and read its `.result` field; never take "the first JSON object" (that's the init
+banner, and you'll parse the banner as the model's output). This cost three live
+`pipeline run` iterations to diagnose — the spec stage kept reading the init banner
+and the plan was always "missing acceptance". Fixed in
+`src/pipeline/live/providers.rs` (`extract_result_text`); any new code that shells
+to `claude -p` for a structured answer must apply the same selection rule.
