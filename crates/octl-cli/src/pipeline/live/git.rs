@@ -20,11 +20,14 @@ fn git_bin() -> String {
 
 /// A `git -C <dir>` command with a stabilized environment (`LC_ALL=C`, no
 /// path re-encoding) so any message we must read is locale-independent.
+/// `commit.gpgsign=false` is forced so a merge commit created under a user
+/// whose global config signs commits cannot block on a gpg passphrase prompt
+/// (which would wedge the non-interactive pipeline).
 fn git_at(dir: &Path) -> Command {
     let mut cmd = Command::new(git_bin());
     cmd.arg("-C")
         .arg(dir)
-        .args(["-c", "core.quotePath=false"])
+        .args(["-c", "core.quotePath=false", "-c", "commit.gpgsign=false"])
         .env("LC_ALL", "C");
     cmd
 }
@@ -151,6 +154,42 @@ pub fn is_clean(worktree: &Path) -> Result<bool, PipelineError> {
     Ok(git(worktree, &["status", "--porcelain"])?.is_empty())
 }
 
+/// Whether `ancestor` is an ancestor of `descendant` (i.e. HEAD only moved
+/// forward from the base). `git merge-base --is-ancestor` exits 0 for yes, 1 for
+/// no; any other failure is surfaced. Used to reject a chunk that rewrote history
+/// instead of forking forward from its assigned base.
+pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool, PipelineError> {
+    let out = git_at(dir)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .map_err(|e| {
+            PipelineError::Git(format!(
+                "could not run git merge-base in {}: {e}",
+                dir.display()
+            ))
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(PipelineError::Git(format!(
+            "git merge-base --is-ancestor failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
+}
+
+/// Hard-reset `worktree` to `rev` and remove untracked files/dirs, restoring it
+/// to exactly the tree at `rev`. Used to discard any side effects a
+/// planner/judge (spec/verify) stage left in the worktree, so ONLY the
+/// floor-gated chunk content can ever reach the source branch — the LLM stages
+/// run headless with skipped permissions and could otherwise mutate the tree
+/// between the gate and the merge.
+pub fn restore_to(worktree: &Path, rev: &str) -> Result<(), PipelineError> {
+    git(worktree, &["reset", "--hard", rev])?;
+    git(worktree, &["clean", "-fdq"])?;
+    Ok(())
+}
+
 /// The outcome of a merge attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeOutcome {
@@ -183,15 +222,32 @@ pub fn merge_no_ff(
             commit: head(worktree)?,
         });
     }
-    // Non-zero: most likely a conflict. Abort so the worktree is not left mid-
-    // merge, then report the conflict. `merge --abort` is a best-effort cleanup.
     let details = format!(
-        "{}{}",
+        "{} {}",
         String::from_utf8_lossy(&out.stdout).trim(),
         String::from_utf8_lossy(&out.stderr).trim()
-    );
-    let _ = git(worktree, &["merge", "--abort"]);
-    Ok(MergeOutcome::Conflict { details })
+    )
+    .trim()
+    .to_string();
+    // Distinguish a genuine content conflict (git entered a merge state with
+    // `MERGE_HEAD`) from any other non-zero exit (missing identity, a rejecting
+    // hook, disk full, a bad ref). Only the former is a `Conflict` outcome; the
+    // rest are hard git errors — misreporting them as "conflict" would send the
+    // caller down the resolve-and-retry path for an unrelated failure.
+    let in_merge = git_at(worktree)
+        .args(["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if in_merge {
+        // Abort so the worktree is not left mid-merge (best-effort cleanup).
+        let _ = git(worktree, &["merge", "--abort"]);
+        Ok(MergeOutcome::Conflict { details })
+    } else {
+        Err(PipelineError::Git(format!(
+            "git merge failed in {} (not a content conflict): {details}",
+            worktree.display()
+        )))
+    }
 }
 
 /// Count of commits reachable from `branch` but not from `base` (`git rev-list
@@ -215,6 +271,9 @@ pub fn worktree_for_branch(dir: &Path, branch: &str) -> Result<Option<PathBuf>, 
     let mut current_path: Option<PathBuf> = None;
     for line in listing.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
+            // A new worktree block: reset state so a detached-HEAD worktree
+            // (which omits the `branch` line) cannot carry the previous block's
+            // path into this one.
             current_path = Some(PathBuf::from(p));
         } else if let Some(b) = line.strip_prefix("branch ") {
             if b == want {

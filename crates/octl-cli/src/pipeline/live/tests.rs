@@ -206,7 +206,7 @@ fn floor_blocks_an_out_of_scope_merge() {
 
     let report = run_pipeline(&cfg, &spec, &code, &verify).expect("pipeline runs");
 
-    assert_eq!(report.status, "chunk_failed", "{report:#?}");
+    assert_eq!(report.status, "chunk_floor_blocked", "{report:#?}");
     assert!(!report.merged);
     assert_eq!(report.chunks[0].floor_passed, Some(false));
     assert!(!report.chunks[0].merged);
@@ -457,7 +457,7 @@ fn later_chunk_failure_preserves_the_integration_branch() {
         &ScriptedVerify::passing(),
     )
     .expect("pipeline runs");
-    assert_eq!(report.status, "chunk_failed", "{report:#?}");
+    assert_eq!(report.status, "chunk_floor_blocked", "{report:#?}");
     assert!(report.chunks[0].merged, "c1 merged");
     assert!(!report.chunks[1].merged, "c2 floor-blocked");
     // feat/demo holds c1 — preserved, not deleted.
@@ -470,6 +470,95 @@ fn later_chunk_failure_preserves_the_integration_branch() {
         .status()
         .unwrap()
         .success());
+}
+
+#[test]
+fn lying_harness_no_commit_is_blocked_not_merged() {
+    // The harness claims `Committed` but never advances HEAD (it left the real
+    // work uncommitted, or fabricated the oid). The driver must catch this BEFORE
+    // the floor and never merge — otherwise a no-op masquerades as a merged chunk.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let verify = ScriptedVerify::passing();
+
+    struct Liar;
+    impl CodeHarness for Liar {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _cancel: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            // Write an UNCOMMITTED file, then claim a committed oid == base.
+            std::fs::write(req.worktree_path.join("feature.txt"), "hi\n").unwrap();
+            Ok(ChunkResult::committed(
+                req.base_commit.clone(),
+                vec![PathBuf::from("feature.txt")],
+            ))
+        }
+    }
+
+    let report = run_pipeline(&cfg, &spec, &Liar, &verify).expect("pipeline runs");
+    assert_eq!(report.status, "chunk_failed", "{report:#?}");
+    assert!(!report.merged);
+    assert!(!report.chunks[0].merged);
+    // Nothing reached main.
+    assert!(!Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["cat-file", "-e", "main:feature.txt"])
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn empty_commit_is_blocked_not_merged() {
+    // The harness makes a real (but EMPTY) commit — HEAD advances, diff is empty.
+    // An empty diff trivially satisfies file-scope, so without the non-empty-diff
+    // guard it would sail through. It must be blocked instead.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let verify = ScriptedVerify::passing();
+
+    struct EmptyCommitter;
+    impl CodeHarness for EmptyCommitter {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _cancel: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            git(
+                &req.worktree_path,
+                &["commit", "-q", "--allow-empty", "-m", "empty"],
+            );
+            let head = git_out(&req.worktree_path, &["rev-parse", "HEAD"]);
+            Ok(ChunkResult::committed(head, vec![]))
+        }
+    }
+
+    let report = run_pipeline(&cfg, &spec, &EmptyCommitter, &verify).expect("pipeline runs");
+    assert_eq!(report.status, "chunk_failed", "{report:#?}");
+    assert!(!report.merged);
 }
 
 // --- unit tests for the pure helpers ---------------------------------------
@@ -552,4 +641,27 @@ fn live_end_to_end_smoke() {
     let code = crate::harness::claude::ClaudeHarness::deepseek("flash");
     let report = run_pipeline(&cfg, &spec, &code, &verify).expect("live pipeline runs");
     eprintln!("live report: {report:#?}");
+    // A live run may or may not merge (depends on the real agents), but the loop
+    // must reach a well-formed terminal state with a real plan.
+    assert!(
+        report.chunk_count >= 1,
+        "spec must produce at least one chunk"
+    );
+    assert!(
+        [
+            "merged",
+            "chunk_floor_blocked",
+            "chunk_failed",
+            "chunk_merge_conflict",
+            "verify_failed",
+            "floor_blocked",
+            "merge_conflict",
+        ]
+        .contains(&report.status.as_str()),
+        "unexpected terminal status: {}",
+        report.status
+    );
+    if report.status == "merged" {
+        assert!(report.merged && report.final_commit.is_some());
+    }
 }

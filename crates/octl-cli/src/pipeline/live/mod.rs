@@ -171,9 +171,14 @@ pub struct ChunkReport {
     pub floor: Option<FloorVerdict>,
     /// Whether the chunk was merged into the integration branch.
     pub merged: bool,
-    /// The chunk's resulting commit, when it committed.
+    /// The chunk's own resulting commit (the harness-produced, floor-gated oid),
+    /// when it committed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// The integration-branch merge commit that folded the chunk in, when merged
+    /// (distinct from `commit`, the chunk's own tip — so provenance is unambiguous).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_commit: Option<String>,
     /// A failure/blocked reason, when not merged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -218,6 +223,11 @@ pub struct PipelineReport {
     /// Verify result, when the pipeline reached the verify stage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<VerifyReport>,
+    /// The feature-level floor verdict at the tip, when the final re-check ran —
+    /// so a `floor_blocked` status names exactly which gate failed, rather than
+    /// hiding it in the verify summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_floor: Option<FloorVerdict>,
     /// Whether the feature merged into the source branch.
     pub merged: bool,
     /// The final commit on the source branch, when merged.
@@ -381,9 +391,24 @@ struct Run<'a> {
     fork_commit: String,
     decisions: Vec<DecisionEnvelope>,
     chunk_reports: Vec<ChunkReport>,
+    /// The feature-level floor verdict, once the final re-check runs.
+    feature_floor: Option<FloorVerdict>,
+    /// Set when the code stage stopped a chunk short; names the terminal status
+    /// (`chunk_floor_blocked` vs `chunk_failed` vs `chunk_merge_conflict`).
+    code_block_status: Option<&'static str>,
     /// Chunk (worktree, branch) pairs preserved because they were not merged.
     preserved: Vec<(PathBuf, String)>,
     merged_to_source: bool,
+}
+
+impl Drop for Run<'_> {
+    /// Teardown runs unconditionally when the `Run` goes out of scope — on every
+    /// success AND every error path — so no `?` early-return can leak a worktree
+    /// or branch (the manual-teardown-per-return approach reviewers flagged as
+    /// leaky). [`teardown`] is idempotent-safe and honours `--keep`.
+    fn drop(&mut self) {
+        teardown(self);
+    }
 }
 
 /// Run the whole pipeline for one feature and return the structured report.
@@ -406,13 +431,26 @@ pub fn run_pipeline(
     verify: &dyn VerifyProvider,
 ) -> Result<PipelineReport, PipelineError> {
     // --- 1. Setup: validate repo/branch, fork the integration branch, snapshot
-    //        the baseline, write intent.md. ---
+    //        the baseline, write intent.md. Every fallible step after the branch
+    //        is created runs under `run`, whose `Drop` guarantees teardown. ---
     let repo = git::toplevel(&cfg.repo)?;
-    let source_commit = git::resolve_commit(&repo, &cfg.source_branch).map_err(|_| {
-        PipelineError::Setup(format!("source branch `{}` not found", cfg.source_branch))
-    })?;
+    // The source MUST be a real local branch — a tag / remote-tracking ref /
+    // `HEAD` would resolve but then `git worktree add` and the final merge would
+    // target a detached or non-updatable ref and the run would "merge" nowhere.
+    if !git::branch_exists(&repo, &cfg.source_branch) {
+        return Err(PipelineError::Setup(format!(
+            "source `{}` is not a local branch (tags, remotes, and HEAD are rejected)",
+            cfg.source_branch
+        )));
+    }
+    let source_commit = git::resolve_commit(&repo, &cfg.source_branch)?;
 
-    let slug = cfg.slug.clone().unwrap_or_else(|| slugify(&cfg.intent));
+    // A caller-supplied slug is slugified too — never trusted verbatim into a
+    // branch name / filesystem path (an unsanitised `../x` would traverse).
+    let slug = cfg
+        .slug
+        .as_deref()
+        .map_or_else(|| slugify(&cfg.intent), slugify);
     let integration_branch = format!("feat/{slug}");
     if git::branch_exists(&repo, &integration_branch) {
         return Err(PipelineError::Setup(format!(
@@ -429,13 +467,11 @@ pub fn run_pipeline(
     std::fs::write(cfg.workdir.join("intent.md"), &cfg.intent)
         .map_err(|e| PipelineError::Io(format!("could not write intent.md: {e}")))?;
 
-    git::create_branch(&repo, &integration_branch, &cfg.source_branch)?;
+    // Fork the integration branch from the pinned source OID (not the mutable
+    // branch name), so the whole run is anchored to one commit even if the source
+    // branch moves under us. The fork commit IS the source commit by construction.
+    git::create_branch(&repo, &integration_branch, &source_commit)?;
     let integration_wt = cfg.workdir.join("integration");
-    git::worktree_add(&repo, &integration_wt, &integration_branch)?;
-    let fork_commit = git::head(&integration_wt)?;
-
-    let baseline_snapshot = capture_snapshot(cfg, &integration_wt)?;
-    let baseline = BaselineSnapshot::new(format!("{integration_branch}@fork"), baseline_snapshot);
 
     let mut run = Run {
         cfg,
@@ -443,99 +479,94 @@ pub fn run_pipeline(
         slug: slug.clone(),
         integration_branch: integration_branch.clone(),
         integration_wt: integration_wt.clone(),
-        fork_commit: fork_commit.clone(),
+        fork_commit: source_commit.clone(),
         decisions: Vec::new(),
         chunk_reports: Vec::new(),
+        feature_floor: None,
+        code_block_status: None,
         preserved: Vec::new(),
         merged_to_source: false,
     };
 
+    git::worktree_add(&repo, &integration_wt, &integration_branch)?;
+    let baseline_snapshot = capture_snapshot(cfg, &integration_wt)?;
+    let baseline = BaselineSnapshot::new(format!("{integration_branch}@fork"), baseline_snapshot);
+
     // --- 2. Spec [Opus]: produce + validate the plan (retry once). ---
-    let plan =
-        match produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline(), &source_commit) {
-            Ok(p) => p,
-            Err(e) => {
-                teardown(&run);
-                return Err(e);
-            }
-        };
-    let plan_json = serde_json::to_string_pretty(&plan).unwrap_or_default();
-    let _ = std::fs::write(cfg.workdir.join("plan.json"), &plan_json);
+    let plan = produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline())?;
+    // Discard any side effect the (headless, permission-skipped) spec stage left
+    // in the worktree: spec is a planner, so chunks must fork from a pristine
+    // fork commit, not from spec's stray edits.
+    git::restore_to(&run.integration_wt, &run.fork_commit)?;
+    let plan_json = serde_json::to_string_pretty(&plan)
+        .map_err(|e| PipelineError::Io(format!("could not serialize plan.json: {e}")))?;
+    std::fs::write(cfg.workdir.join("plan.json"), &plan_json)
+        .map_err(|e| PipelineError::Io(format!("could not write plan.json: {e}")))?;
     run.decisions.push(envelope(
         "spec",
         DecisionTier::Decider,
         format!("produced plan with {} chunk(s)", plan.chunks.len()),
-        vec!["intent:1".to_string()],
+        vec![
+            format!("intent_rev:1"),
+            format!("baseline:{}", baseline.r#ref),
+        ],
         spec.model(),
         spec.prompt_version(),
     ));
 
     // --- 3. Code [claude-deepseek]: run each chunk, floor-gate, merge. ---
-    let code_result = run_code_stage(&mut run, &plan, code, &baseline);
-    if let Err(e) = code_result {
-        teardown(&run);
-        return Err(e);
-    }
+    run_code_stage(&mut run, &plan, code, &baseline)?;
     let code_ok = run.chunk_reports.iter().all(|c| c.merged);
 
     if !code_ok {
         // A chunk failed the floor / harness: v1 has no fix loop. Stop, preserve
         // the failing chunk, and report (the floor is the hard gate — no merge).
-        let report = finalize(&run, &plan, None, false, None, "chunk_failed");
-        teardown(&run);
-        return Ok(report);
+        // The specific terminal status was recorded by the code stage.
+        let status = run.code_block_status.unwrap_or("chunk_failed");
+        return Ok(finalize(&run, &plan, None, false, None, status));
     }
 
     // --- 4. Verify [Opus]: run acceptance checks + judge product-vs-intent. ---
-    let (verify_report, acceptance_results) = match run_verify_stage(&mut run, &plan, verify) {
-        Ok(v) => v,
-        Err(e) => {
-            teardown(&run);
-            return Err(e);
-        }
-    };
-    let verify_passed = verify_report.passed;
+    let verify_report = run_verify_stage(&mut run, &plan, verify)?;
+    // The verify stage is a judge, but it too ran headless with skipped
+    // permissions — restore the worktree to the exact floor-gated feature tip so
+    // no verify-time mutation can smuggle content past the floor into the merge.
+    let feat_tip = git::head(&run.integration_wt)?;
+    git::restore_to(&run.integration_wt, &feat_tip)?;
 
-    if !verify_passed {
-        let report = finalize(
+    if !verify_report.passed {
+        return Ok(finalize(
             &run,
             &plan,
             Some(verify_report),
             false,
             None,
             "verify_failed",
-        );
-        teardown(&run);
-        return Ok(report);
+        ));
     }
 
-    // --- 5. Merge: re-check the feature floor, then merge feat → source. ---
-    let feat_tip = git::head(&run.integration_wt)?;
+    // --- 5. Merge: re-check the feature floor at the tip, then merge → source. ---
     let declared: Vec<PathBuf> = union_declared_files(&plan);
-    let feature_floor = evaluate_feature_floor(
-        &run,
-        &baseline,
-        &acceptance_results,
-        &declared,
-        &source_commit,
-        &feat_tip,
-    )?;
+    let feature_floor = evaluate_feature_floor(&run, &plan, &baseline, &declared, &feat_tip)?;
+    run.feature_floor = Some(feature_floor.clone());
 
     if !feature_floor.passed() {
         // Floor regressed at the tip — do NOT merge (design §4/§14).
-        let mut vr = verify_report;
-        vr.summary = format!("{} (feature floor blocked the merge)", vr.summary);
-        let report = finalize(&run, &plan, Some(vr), false, None, "floor_blocked");
-        teardown(&run);
-        return Ok(report);
+        return Ok(finalize(
+            &run,
+            &plan,
+            Some(verify_report),
+            false,
+            None,
+            "floor_blocked",
+        ));
     }
 
-    let final_commit = merge_feature_to_source(&run)?;
-    run.merged_to_source = true;
+    // The consequential ship judgment (Opus-tier decider): the feature converged.
     run.decisions.push(envelope(
         "orchestrator",
         DecisionTier::Decider,
-        "declared converged and merged feature into source",
+        "declared converged: verify passed and the feature floor is green",
         vec![
             format!("feat:{feat_tip}"),
             format!("source:{source_commit}"),
@@ -544,16 +575,48 @@ pub fn run_pipeline(
         verify.prompt_version(),
     ));
 
-    let report = finalize(
-        &run,
-        &plan,
-        Some(verify_report),
-        true,
-        Some(final_commit),
-        "merged",
-    );
-    teardown(&run);
-    Ok(report)
+    // The merge mechanics are routine coordination (supervisor-tier), gated by
+    // the decider decision above — kept as a SEPARATE envelope so the tier split
+    // is honest (the merge is not itself an Opus judgment).
+    match merge_feature_to_source(&run, &feat_tip)? {
+        MergeOutcome::Merged { commit } => {
+            run.merged_to_source = true;
+            run.decisions.push(envelope(
+                "supervisor",
+                DecisionTier::Coordinator,
+                format!("merged {feat_tip} into {}", run.cfg.source_branch),
+                vec![
+                    format!("feat:{feat_tip}"),
+                    format!("source:{source_commit}"),
+                ],
+                "supervisor",
+                "v1",
+            ));
+            Ok(finalize(
+                &run,
+                &plan,
+                Some(verify_report),
+                true,
+                Some(commit),
+                "merged",
+            ))
+        }
+        MergeOutcome::Conflict { details } => {
+            // The floor was green, but the source branch moved underneath us and
+            // the merge conflicts. Report it (preserve the integration branch);
+            // it is not a crash — the caller resolves and re-runs.
+            let mut vr = verify_report;
+            vr.summary = format!("{} (source merge conflicted: {details})", vr.summary);
+            Ok(finalize(
+                &run,
+                &plan,
+                Some(vr),
+                false,
+                None,
+                "merge_conflict",
+            ))
+        }
+    }
 }
 
 /// Ask the spec provider for a plan, normalize the authoritative fields
@@ -564,7 +627,6 @@ fn produce_and_validate_plan(
     run: &Run,
     spec: &dyn SpecProvider,
     baseline: &plan::Baseline,
-    _source_commit: &str,
 ) -> Result<Plan, PipelineError> {
     let ctx = SpecContext {
         intent: &run.cfg.intent,
@@ -690,13 +752,73 @@ fn run_code_stage(
 
         match &result.outcome {
             ChunkOutcome::Committed { commit } => {
-                let verdict = gate_chunk(run, plan, chunk, &chunk_wt, &base_commit, baseline)?;
+                // Validate the harness's claimed commit against real git state
+                // BEFORE the floor — an adapter that lies (reports a commit but
+                // left HEAD unmoved, or committed an empty/rewritten tree, or
+                // left the passing work uncommitted) must not slip a merge past
+                // the floor. The floor then gates the exact committed tree.
+                let head = git::head(&chunk_wt)?;
+                if &head != commit {
+                    return block_and_stop(
+                        run,
+                        chunk,
+                        "failed",
+                        "chunk_failed",
+                        format!("harness reported commit {commit} but worktree HEAD is {head}"),
+                        &chunk_wt,
+                        &chunk_branch,
+                    );
+                }
+                if head == base_commit {
+                    return block_and_stop(
+                        run,
+                        chunk,
+                        "no_change",
+                        "chunk_failed",
+                        "harness reported a commit but HEAD did not advance".to_string(),
+                        &chunk_wt,
+                        &chunk_branch,
+                    );
+                }
+                if !git::is_ancestor(&chunk_wt, &base_commit, &head)? {
+                    return block_and_stop(
+                        run, chunk, "failed", "chunk_failed",
+                        format!("chunk commit {head} is not a descendant of its base {base_commit} (history rewritten)"),
+                        &chunk_wt, &chunk_branch,
+                    );
+                }
+                if !git::is_clean(&chunk_wt)? {
+                    return block_and_stop(
+                        run,
+                        chunk,
+                        "failed",
+                        "chunk_failed",
+                        "chunk worktree has uncommitted changes after the commit".to_string(),
+                        &chunk_wt,
+                        &chunk_branch,
+                    );
+                }
+                let changed = floor::git::changed_files(&chunk_wt, &base_commit, &head)?;
+                if changed.is_empty() {
+                    return block_and_stop(
+                        run,
+                        chunk,
+                        "no_change",
+                        "chunk_failed",
+                        "committed chunk has an empty diff".to_string(),
+                        &chunk_wt,
+                        &chunk_branch,
+                    );
+                }
+
+                let verdict = gate_chunk(run, chunk, &chunk_wt, &base_commit, &changed, baseline)?;
                 if verdict.passed() {
-                    // Floor green → supervisor-side merge into the integration
-                    // branch, advancing the tip so the next chunk stacks on it.
+                    // Floor green → supervisor-side merge of the EXACT gated
+                    // commit oid (not the mutable branch name — a stray child
+                    // process could have advanced the branch after the gate).
                     let outcome = git::merge_no_ff(
                         &run.integration_wt,
-                        &chunk_branch,
+                        &head,
                         &format!("pipeline: merge chunk {}", chunk.id),
                     )?;
                     match outcome {
@@ -707,7 +829,7 @@ fn run_code_stage(
                                 "supervisor",
                                 DecisionTier::Coordinator,
                                 format!("chunk {} floor green — merged", chunk.id),
-                                vec![format!("chunk:{}", chunk.id), format!("commit:{commit}")],
+                                vec![format!("chunk:{}", chunk.id), format!("commit:{head}")],
                                 "supervisor",
                                 "v1",
                             ));
@@ -719,7 +841,8 @@ fn run_code_stage(
                                 floor_passed: Some(true),
                                 floor: Some(verdict),
                                 merged: true,
-                                commit: Some(merge_commit),
+                                commit: Some(head.clone()),
+                                merge_commit: Some(merge_commit),
                                 reason: None,
                                 branch_preserved: None,
                             });
@@ -729,17 +852,16 @@ fn run_code_stage(
                             let _ = git::delete_branch(&run.repo, &chunk_branch, false);
                         }
                         MergeOutcome::Conflict { details } => {
-                            push_blocked_chunk(
+                            return block_and_stop(
                                 run,
                                 chunk,
                                 "committed",
-                                Some(verdict),
-                                Some(true),
+                                "chunk_merge_conflict",
                                 format!("chunk merge conflict: {details}"),
                                 &chunk_wt,
                                 &chunk_branch,
-                            );
-                            return Ok(());
+                            )
+                            .map(|()| record_chunk_floor(run, Some(verdict), Some(true)));
                         }
                     }
                 } else {
@@ -752,6 +874,7 @@ fn run_code_stage(
                         "supervisor",
                         "v1",
                     ));
+                    run.code_block_status = Some("chunk_floor_blocked");
                     push_blocked_chunk(
                         run,
                         chunk,
@@ -766,60 +889,91 @@ fn run_code_stage(
                 }
             }
             ChunkOutcome::NoChange => {
-                push_blocked_chunk(
+                return block_and_stop(
                     run,
                     chunk,
                     "no_change",
-                    None,
-                    None,
+                    "chunk_failed",
                     "chunk produced no commit".to_string(),
                     &chunk_wt,
                     &chunk_branch,
                 );
-                return Ok(());
             }
             ChunkOutcome::Failed { reason } => {
-                push_blocked_chunk(
+                return block_and_stop(
                     run,
                     chunk,
                     "failed",
-                    None,
-                    None,
+                    "chunk_failed",
                     reason.clone(),
                     &chunk_wt,
                     &chunk_branch,
                 );
-                return Ok(());
             }
             ChunkOutcome::Timeout => {
-                push_blocked_chunk(
+                return block_and_stop(
                     run,
                     chunk,
                     "timeout",
-                    None,
-                    None,
+                    "chunk_failed",
                     "chunk timed out".to_string(),
                     &chunk_wt,
                     &chunk_branch,
                 );
-                return Ok(());
             }
             ChunkOutcome::Cancelled => {
-                push_blocked_chunk(
+                return block_and_stop(
                     run,
                     chunk,
                     "cancelled",
-                    None,
-                    None,
+                    "chunk_failed",
                     "chunk cancelled".to_string(),
                     &chunk_wt,
                     &chunk_branch,
                 );
-                return Ok(());
             }
         }
     }
     Ok(())
+}
+
+/// Record a blocked chunk with its terminal status and stop the code stage.
+/// A thin wrapper over [`push_blocked_chunk`] that also stamps
+/// [`Run::code_block_status`] so the driver reports the precise reason
+/// (`chunk_failed` vs `chunk_merge_conflict`). Returns `Ok(())` (never an error)
+/// so the many call sites can `return block_and_stop(…)` to end the loop.
+#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+fn block_and_stop(
+    run: &mut Run,
+    chunk: &Chunk,
+    outcome: &str,
+    status: &'static str,
+    reason: String,
+    chunk_wt: &Path,
+    chunk_branch: &str,
+) -> Result<(), PipelineError> {
+    run.code_block_status = Some(status);
+    push_blocked_chunk(
+        run,
+        chunk,
+        outcome,
+        None,
+        None,
+        reason,
+        chunk_wt,
+        chunk_branch,
+    );
+    Ok(())
+}
+
+/// Backfill the floor verdict onto the just-pushed (blocked) chunk report — used
+/// on the chunk-merge-conflict path, where the floor DID pass but the merge did
+/// not, so the report should still carry the green floor verdict.
+fn record_chunk_floor(run: &mut Run, floor: Option<FloorVerdict>, floor_passed: Option<bool>) {
+    if let Some(last) = run.chunk_reports.last_mut() {
+        last.floor = floor;
+        last.floor_passed = floor_passed;
+    }
 }
 
 /// Record a chunk that did not merge and mark its worktree/branch preserved for
@@ -846,6 +1000,7 @@ fn push_blocked_chunk(
         floor,
         merged: false,
         commit: None,
+        merge_commit: None,
         reason: Some(reason),
         branch_preserved: Some(chunk_branch.to_string()),
     });
@@ -853,22 +1008,24 @@ fn push_blocked_chunk(
 
 /// Evaluate the per-chunk floor (design §4): the chunk's own checks pass, no
 /// baseline regression / new clippy / test-gaming, and the changed files stay in
-/// scope. Compared against the fork baseline; file-scope against the chunk's
-/// `files_touched`.
+/// scope. Test/clippy regressions are judged against the fork baseline; the
+/// assertion-density signal is judged against the chunk's own **base commit**
+/// (the current integration tip), not the fork — so a later chunk that guts a
+/// test an earlier chunk added is caught, instead of hiding behind the fork's
+/// lower count. File-scope is against the chunk's `files_touched`.
 fn gate_chunk(
     run: &Run,
-    _plan: &Plan,
     chunk: &Chunk,
     chunk_wt: &Path,
     base_commit: &str,
+    changed: &[PathBuf],
     baseline: &BaselineSnapshot,
 ) -> Result<FloorVerdict, PipelineError> {
     let check_results: Vec<CheckRun> = floor::runner::run_checks(&chunk.checks, chunk_wt);
     let current = capture_snapshot(run.cfg, chunk_wt)?;
-    let changed = floor::git::changed_files(chunk_wt, base_commit, "HEAD")?;
     let declared: Vec<PathBuf> = chunk.files_touched.iter().map(PathBuf::from).collect();
     let baseline_assertions =
-        floor::runner::assertion_counts_at_ref(&run.repo, &run.fork_commit, &declared)?;
+        floor::runner::assertion_counts_at_ref(&run.repo, base_commit, &declared)?;
     let current_assertions = floor::runner::assertion_counts_on_disk(chunk_wt, &declared);
 
     let inputs = FloorInputs {
@@ -876,7 +1033,7 @@ fn gate_chunk(
         current: &current,
         check_results: &check_results,
         declared_files: &declared,
-        changed_files: &changed,
+        changed_files: changed,
         baseline_assertions: &baseline_assertions,
         current_assertions: &current_assertions,
         file_scope_slack: run.cfg.file_scope_slack,
@@ -885,13 +1042,15 @@ fn gate_chunk(
 }
 
 /// Run the plan's executable acceptance checks, then ask the verify provider to
-/// judge product-vs-intent (design §6 VAIHE 3). Returns the verify report and
-/// the acceptance-check results (reused by the feature floor re-check).
+/// judge product-vs-intent (design §6 VAIHE 3). Returns the verify report. The
+/// feature-floor re-check re-runs the acceptance checks itself (on the pristine,
+/// gated tip) rather than reusing these results, so a verify-time mutation can
+/// never leave a stale-green acceptance result behind the final gate.
 fn run_verify_stage(
     run: &mut Run,
     plan: &Plan,
     verify: &dyn VerifyProvider,
-) -> Result<(VerifyReport, Vec<CheckRun>), PipelineError> {
+) -> Result<VerifyReport, PipelineError> {
     let acceptance_checks: Vec<plan::Check> = plan
         .acceptance
         .iter()
@@ -924,14 +1083,13 @@ fn run_verify_stage(
         verify.prompt_version(),
     ));
 
-    let report = VerifyReport {
+    Ok(VerifyReport {
         acceptance_checks_passed,
         judged_passed: judgment.passed,
         passed: acceptance_checks_passed && judgment.passed,
         summary: judgment.summary,
         findings: judgment.findings,
-    };
-    Ok((report, acceptance_results))
+    })
 }
 
 /// Convert an executable `acceptance` item into a runnable [`plan::Check`];
@@ -955,25 +1113,32 @@ fn acceptance_to_check(a: &Acceptance) -> Option<plan::Check> {
 }
 
 /// The feature-level floor re-check before the final merge (design §4: the floor
-/// is re-checked at the tip). Same gates as a chunk, but scoped to the whole
-/// feature: changed files are `source..feat`, declared files are the union.
+/// is re-checked at the tip). Scoped to the whole feature: the acceptance checks
+/// are re-run FRESH on the current (restored, gated) tip, changed files are
+/// `fork..feat`, declared files are the union. The assertion-density baseline is
+/// the fork (the whole feature is judged against the pre-feature state).
 fn evaluate_feature_floor(
     run: &Run,
+    plan: &Plan,
     baseline: &BaselineSnapshot,
-    acceptance_results: &[CheckRun],
     declared: &[PathBuf],
-    source_commit: &str,
     feat_tip: &str,
 ) -> Result<FloorVerdict, PipelineError> {
+    let acceptance_checks: Vec<plan::Check> = plan
+        .acceptance
+        .iter()
+        .filter_map(acceptance_to_check)
+        .collect();
+    let check_results = floor::runner::run_checks(&acceptance_checks, &run.integration_wt);
     let current = capture_snapshot(run.cfg, &run.integration_wt)?;
-    let changed = floor::git::changed_files(&run.integration_wt, source_commit, feat_tip)?;
+    let changed = floor::git::changed_files(&run.integration_wt, &run.fork_commit, feat_tip)?;
     let baseline_assertions =
         floor::runner::assertion_counts_at_ref(&run.repo, &run.fork_commit, declared)?;
     let current_assertions = floor::runner::assertion_counts_on_disk(&run.integration_wt, declared);
     let inputs = FloorInputs {
         baseline: &baseline.snapshot,
         current: &current,
-        check_results: acceptance_results,
+        check_results: &check_results,
         declared_files: declared,
         changed_files: &changed,
         baseline_assertions: &baseline_assertions,
@@ -983,17 +1148,18 @@ fn evaluate_feature_floor(
     Ok(evaluate_floor(&inputs))
 }
 
-/// Merge `feat/<slug>` into the source branch (design §6 VAIHE 4). Merges in the
-/// worktree that has the source branch checked out (verified clean) when there
-/// is one; otherwise materializes a throwaway worktree, merges, and removes it.
-/// Returns the resulting commit on the source branch.
-fn merge_feature_to_source(run: &Run) -> Result<String, PipelineError> {
+/// Merge the exact floor-gated `feat_tip` oid into the source branch (design §6
+/// VAIHE 4). Merges the OID (not the mutable branch name) in the worktree that
+/// has the source branch checked out (verified clean) when there is one;
+/// otherwise materializes a throwaway worktree, merges, and removes it. Returns
+/// the merge [`MergeOutcome`] so the driver can report a conflict rather than
+/// crash (the source branch may have moved after the floor turned green).
+fn merge_feature_to_source(run: &Run, feat_tip: &str) -> Result<MergeOutcome, PipelineError> {
     let message = format!(
         "pipeline: merge {} into {}",
         run.integration_branch, run.cfg.source_branch
     );
-    let outcome = if let Some(src_wt) = git::worktree_for_branch(&run.repo, &run.cfg.source_branch)?
-    {
+    if let Some(src_wt) = git::worktree_for_branch(&run.repo, &run.cfg.source_branch)? {
         if !git::is_clean(&src_wt)? {
             return Err(PipelineError::Setup(format!(
                 "source branch `{}` worktree {} is dirty; cannot merge",
@@ -1001,20 +1167,14 @@ fn merge_feature_to_source(run: &Run) -> Result<String, PipelineError> {
                 src_wt.display()
             )));
         }
-        git::merge_no_ff(&src_wt, &run.integration_branch, &message)?
+        git::merge_no_ff(&src_wt, feat_tip, &message)
     } else {
         // Source branch not checked out anywhere: materialize a scratch worktree.
         let src_wt = run.cfg.workdir.join("source-merge");
         git::worktree_add(&run.repo, &src_wt, &run.cfg.source_branch)?;
-        let out = git::merge_no_ff(&src_wt, &run.integration_branch, &message);
+        let out = git::merge_no_ff(&src_wt, feat_tip, &message);
         let _ = git::worktree_remove(&run.repo, &src_wt);
-        out?
-    };
-    match outcome {
-        MergeOutcome::Merged { commit } => Ok(commit),
-        MergeOutcome::Conflict { details } => Err(PipelineError::Git(format!(
-            "merge into source conflicted: {details}"
-        ))),
+        out
     }
 }
 
@@ -1029,13 +1189,22 @@ fn finalize(
 ) -> PipelineReport {
     let failure = match status {
         "merged" => None,
+        "chunk_floor_blocked" => {
+            Some("a chunk failed the deterministic floor; the feature was not merged".to_string())
+        }
+        "chunk_merge_conflict" => {
+            Some("a chunk floor-passed but conflicted merging into the integration branch".to_string())
+        }
         "chunk_failed" => {
-            Some("a chunk did not pass the floor; the feature was not merged".to_string())
+            Some("a chunk failed to produce a mergeable commit (harness failure / no change / timeout)".to_string())
         }
         "verify_failed" => {
-            Some("verify judged the product does not match intent; not merged".to_string())
+            Some("verify judged the product does not match intent (or an acceptance check failed); not merged".to_string())
         }
         "floor_blocked" => Some("the feature floor regressed at the tip; not merged".to_string()),
+        "merge_conflict" => {
+            Some("the feature floor was green but the source branch moved and the merge conflicted".to_string())
+        }
         other => Some(other.to_string()),
     };
     PipelineReport {
@@ -1047,6 +1216,7 @@ fn finalize(
         chunk_count: plan.chunks.len(),
         chunks: run.chunk_reports.clone(),
         verify,
+        feature_floor: run.feature_floor.clone(),
         merged,
         final_commit,
         status: status.to_string(),
