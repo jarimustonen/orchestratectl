@@ -3,9 +3,10 @@ created: 2026-07-24
 updated: 2026-07-25
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 labels: [worktree, merge]
+closed: 2026-07-25
 ---
 
 # run merge reports merged+terminal but leaves worktree, branch, and tmux window in place
