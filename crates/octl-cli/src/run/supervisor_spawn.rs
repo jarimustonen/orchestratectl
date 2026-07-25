@@ -57,6 +57,7 @@
 //! pipe; they read `supervisor.pid` directly ([`await_recorded_pid`] /
 //! [`read_live_recorded_pid`]) and tolerate "not yet confirmed".
 
+use std::os::fd::RawFd;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -66,6 +67,22 @@ use octl_core::RunPaths;
 use crate::error::CliError;
 use crate::run::supervisor_readiness::{Readiness, ReadinessPipe, ENV_READINESS_FD};
 use crate::supervise::pid_file;
+
+/// Generous backstop for the readiness read: a wedge circuit-breaker, NOT the
+/// old confirmation deadline. Default 120s (≈8× the retired 15s pid-file poll)
+/// so a merely slow-but-healthy boot is never false-failed; it only bounds a
+/// supervisor genuinely stuck during init (e.g. blocked on the run flock).
+const READY_WAIT: Duration = Duration::from_secs(120);
+
+/// [`READY_WAIT`] in production; tests point `OCTL_READY_WAIT_MS` at a short
+/// value so the wedge-backstop path is exercisable in milliseconds. An
+/// unparseable value falls back to the production default.
+fn ready_wait() -> Duration {
+    std::env::var("OCTL_READY_WAIT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(READY_WAIT, Duration::from_millis)
+}
 
 /// How long the *lenient* pid-file poll ([`await_recorded_pid`], used by
 /// `run reattach`) waits for a freshly-forked supervisor to write its live pid
@@ -122,14 +139,29 @@ pub enum SupervisorSpawn {
 
 /// Attach the detach hardening (`setsid` + double-fork) to `cmd`'s child via
 /// `pre_exec`. See the module docs for the full rationale.
-fn apply_detach(cmd: &mut Command) {
+///
+/// `readiness_write_fd`, when set, is the readiness pipe's write end. The parent
+/// creates the pipe with `FD_CLOEXEC` on both ends (so a concurrent `exec` on
+/// another thread cannot leak it); this closure clears CLOEXEC on that fd inside
+/// the forked child — right before `exec` — so exactly the intended grandchild
+/// inherits it. `fcntl` is async-signal-safe, and the captured `Option<RawFd>`
+/// is `Copy` (no allocation, no `Drop` between fork and exec).
+fn apply_detach(cmd: &mut Command, readiness_write_fd: Option<RawFd>) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: the closure is async-signal-safe — it calls only `setsid`,
-    // `fork`, and `_exit` (all on the POSIX async-signal-safe list) and does
-    // no allocation, locking, or other Rust-runtime work between `fork` and
-    // `exec`.
+    // SAFETY: the closure is async-signal-safe — it calls only `fcntl`,
+    // `setsid`, `fork`, and `_exit` (all on the POSIX async-signal-safe list)
+    // and does no allocation, locking, or other Rust-runtime work between
+    // `fork` and `exec`.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
+            // Uncloak the readiness write end for the exec that follows. Clearing
+            // all fd flags (only FD_CLOEXEC is defined) makes it survive exec
+            // into the grandchild supervisor.
+            if let Some(fd) = readiness_write_fd {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
             // New session: detach from the controlling terminal and the
             // spawner's process group so a terminal SIGHUP cannot reach us.
             if libc::setsid() == -1 {
@@ -151,7 +183,15 @@ fn apply_detach(cmd: &mut Command) {
 /// Build a detach-hardened `supervise <run-id>` command with stdout/stderr
 /// redirected to `log_path`. Callers may append extra args (e.g. `--once`)
 /// before handing it to [`spawn_and_reap`].
-pub fn detached_supervise_command(run_id: &str, log_path: &Path) -> Result<Command, CliError> {
+///
+/// `readiness_write_fd` is `Some` only for `run create`'s confirmation path
+/// ([`spawn_for_run`]), which also sets [`ENV_READINESS_FD`] to that fd number;
+/// the lenient callers pass `None`.
+pub fn detached_supervise_command(
+    run_id: &str,
+    log_path: &Path,
+    readiness_write_fd: Option<RawFd>,
+) -> Result<Command, CliError> {
     let stderr_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -179,7 +219,7 @@ pub fn detached_supervise_command(run_id: &str, log_path: &Path) -> Result<Comma
         // and each child would write a readiness signal to an fd it never
         // inherited.
         .env_remove(ENV_READINESS_FD);
-    apply_detach(&mut cmd);
+    apply_detach(&mut cmd, readiness_write_fd);
     Ok(cmd)
 }
 
@@ -274,26 +314,28 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
 /// parent creates a pipe whose write end the grandchild inherits across
 /// `exec`. The grandchild writes a readiness signal carrying its pid AFTER it
 /// has claimed `supervisor.pid` and finished init, then closes the write end.
-/// The parent closes its own write-end copy and blocks reading the read end:
+/// The parent closes its own write-end copy and reads the read end, bounded by
+/// a generous wedge backstop ([`ready_wait`]):
 ///   - a `ready` signal → [`SupervisorSpawn::Confirmed`] with the supervisor pid;
 ///   - EOF with no signal → the supervisor died during init (fate-sharing) →
 ///     [`SupervisorSpawn::Unconfirmed`];
-///   - a structured error signal → `Unconfirmed` carrying the real reason.
+///   - a structured error signal → `Unconfirmed` carrying the real reason;
+///   - deadline elapsed → `Unconfirmed` (supervisor wedged, e.g. on the run
+///     flock — alive but not progressing).
 ///
-/// Because `read()` returns as soon as the grandchild signals OR every
-/// write-end copy is closed, a slow-but-healthy boot is confirmed whenever it
-/// finishes (no deadline to overrun) and a genuinely dead supervisor is
-/// detected immediately — the ambiguity of the old bounded pid-file poll is
-/// gone. `run create` turns `Unconfirmed` into a loud `supervisor_spawn_failed`
-/// error; lenient callers never use this path.
+/// Confirmation is edge-triggered: the read returns the moment the grandchild
+/// signals OR the write end closes, so a slow-but-healthy boot is confirmed
+/// whenever it finishes and a genuinely dead supervisor is detected at once —
+/// the ambiguity of the old bounded pid-file poll is gone. The backstop only
+/// bounds a true hang (a purely unbounded read would freeze `run create`
+/// forever behind a stuck `claim_pid_atomic` flock). `run create` turns every
+/// `Unconfirmed` into a loud `supervisor_spawn_failed`; lenient callers never
+/// use this path.
 pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, CliError> {
     let log_path = paths.root.join("supervisor.stderr.log");
-    let mut cmd = detached_supervise_command(run_id, &log_path)?;
 
-    // Readiness pipe: the write end (no CLOEXEC) is inherited across the
-    // double-fork + exec into the grandchild; we advertise its fd number via
-    // the environment. Created after the command so the write-end fd cannot
-    // collide with the log-file fds the command already holds.
+    // Readiness pipe first, so its write-end fd can be uncloaked in `pre_exec`
+    // (CLOEXEC cleared only for the intended grandchild — see `apply_detach`).
     let mut pipe = match ReadinessPipe::new() {
         Ok(p) => p,
         Err(e) => {
@@ -305,7 +347,9 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
             return Ok(SupervisorSpawn::Unconfirmed { reason });
         }
     };
-    cmd.env(ENV_READINESS_FD, pipe.write_fd().to_string());
+    let write_fd = pipe.write_fd();
+    let mut cmd = detached_supervise_command(run_id, &log_path, Some(write_fd))?;
+    cmd.env(ENV_READINESS_FD, write_fd.to_string());
 
     if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
         append_spawn_diag(
@@ -321,12 +365,22 @@ pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, 
     // was reaped by `spawn_and_reap`).
     pipe.close_write();
 
-    match pipe.await_ready() {
+    match pipe.await_ready(ready_wait()) {
         Readiness::Ready { pid } => Ok(SupervisorSpawn::Confirmed { pid }),
         Readiness::Died => {
             let reason = "supervisor died during init: the readiness pipe closed \
                           without a ready signal (see supervisor.stderr.log)"
                 .to_string();
+            append_spawn_diag(&log_path, &reason);
+            Ok(SupervisorSpawn::Unconfirmed { reason })
+        }
+        Readiness::Timeout => {
+            let reason = format!(
+                "supervisor did not confirm boot within {:?}: it is wedged during init \
+                 (e.g. blocked acquiring the run lock) — check for a stuck supervisor holding \
+                 the run flock, then inspect supervisor.stderr.log",
+                ready_wait()
+            );
             append_spawn_diag(&log_path, &reason);
             Ok(SupervisorSpawn::Unconfirmed { reason })
         }

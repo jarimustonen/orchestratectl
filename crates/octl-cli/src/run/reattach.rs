@@ -122,7 +122,9 @@ pub fn spawn_supervisor(
     // past the stale-pid pre-check above, exactly one spawned supervisor
     // wins the flock-guarded claim and the loser exits.
     let log_path = paths.root.join("supervisor.stderr.log");
-    let mut cmd = supervisor_spawn::detached_supervise_command(run_id, &log_path)?;
+    // `run reattach` is lenient (no readiness-pipe confirmation): it reads the
+    // supervisor's own pid file directly, so no readiness fd is threaded in.
+    let mut cmd = supervisor_spawn::detached_supervise_command(run_id, &log_path, None)?;
     if once {
         cmd.arg("--once");
     }

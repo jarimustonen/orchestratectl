@@ -274,48 +274,63 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     // here returns `supervisor_already_running` and exits.
     pid_file::claim_pid_atomic(&paths, our_pid)?;
 
-    info!(
-        target: "orchestratectl::supervise",
-        run_id = %run_id,
-        pid = our_pid,
-        "supervisor started"
-    );
-    let _ = append_and_apply_event(
-        &paths,
-        "supervisor.started",
-        None,
-        None,
-        json!({"pid": our_pid}),
-    )
-    .map_err(from_core);
-
-    let state = state::load(&paths.root)?;
-    let own_tail = tail::EventTail::new(paths.events(), state.last_seq_own);
-    let mut child_tails: std::collections::BTreeMap<String, ChildTracking> =
-        std::collections::BTreeMap::new();
-    // Reseed child tails from the canonical node projections, NOT from
-    // the private `spawned_children` cache (§7.6: "for each child in the
-    // root node's children field, open a tail-follow loop"). The cache
-    // can be missing or stale after a crash; the projections are the
-    // truth. Each tail resumes from the durable report cursor
-    // (`last_processed_report_seq_by_child`) so an un-consumed report is
-    // re-tailed rather than skipped.
-    for (cid, parent_node_id) in discover_children(&paths) {
-        let child_paths = run_paths(&root, &cid)?;
-        let seq = state
-            .last_processed_report_seq_by_child
-            .get(&cid)
-            .copied()
-            .unwrap_or(0);
-        child_tails.insert(
-            cid.clone(),
-            ChildTracking {
-                parent_node_id,
-                tail: tail::EventTail::new(child_paths.events(), seq),
-                terminal: false,
-            },
+    // From here the pid file is OURS. If any later boot step fails, remove it
+    // before returning so a failed boot does not leave a stale pid record
+    // masquerading as a live supervisor (the next `claim` would rely on
+    // dead-pid detection to reclaim it). Assemble the rest under a closure so
+    // every early `?` funnels through the single cleanup below.
+    let assemble = || -> Result<(state::SupervisorState, tail::EventTail, _), CliError> {
+        info!(
+            target: "orchestratectl::supervise",
+            run_id = %run_id,
+            pid = our_pid,
+            "supervisor started"
         );
-    }
+        let _ = append_and_apply_event(
+            &paths,
+            "supervisor.started",
+            None,
+            None,
+            json!({"pid": our_pid}),
+        )
+        .map_err(from_core);
+
+        let state = state::load(&paths.root)?;
+        let own_tail = tail::EventTail::new(paths.events(), state.last_seq_own);
+        let mut child_tails: std::collections::BTreeMap<String, ChildTracking> =
+            std::collections::BTreeMap::new();
+        // Reseed child tails from the canonical node projections, NOT from
+        // the private `spawned_children` cache (§7.6: "for each child in the
+        // root node's children field, open a tail-follow loop"). The cache
+        // can be missing or stale after a crash; the projections are the
+        // truth. Each tail resumes from the durable report cursor
+        // (`last_processed_report_seq_by_child`) so an un-consumed report is
+        // re-tailed rather than skipped.
+        for (cid, parent_node_id) in discover_children(&paths) {
+            let child_paths = run_paths(&root, &cid)?;
+            let seq = state
+                .last_processed_report_seq_by_child
+                .get(&cid)
+                .copied()
+                .unwrap_or(0);
+            child_tails.insert(
+                cid.clone(),
+                ChildTracking {
+                    parent_node_id,
+                    tail: tail::EventTail::new(child_paths.events(), seq),
+                    terminal: false,
+                },
+            );
+        }
+        Ok((state, own_tail, child_tails))
+    };
+    let (state, own_tail, child_tails) = match assemble() {
+        Ok(v) => v,
+        Err(e) => {
+            pid_file::remove_if_owner(&pid_path, our_pid);
+            return Err(e);
+        }
+    };
 
     Ok(SupervisorBoot {
         root,
@@ -350,6 +365,24 @@ pub fn dispatch(
     // otherwise read as an unexplained death) and propagate.
     let boot = match boot_supervisor(&run_id) {
         Ok(b) => {
+            // A termination signal arriving during boot would set the flag but
+            // not stop init; the loop's first tick then exits immediately.
+            // Confirming boot in that window would tell the parent "running"
+            // about a supervisor already shutting down. Report it as a boot
+            // failure and release the pid file instead.
+            if SIGNAL_RECEIVED.load(Ordering::SeqCst) != 0 {
+                readiness.error(
+                    "terminated_during_boot",
+                    "termination signal received during supervisor boot",
+                );
+                pid_file::remove_if_owner(&b.pid_path, b.our_pid);
+                return Err(CliError::system(
+                    "terminated_during_boot",
+                    format!(
+                        "supervisor for run {run_id} received a termination signal during boot"
+                    ),
+                ));
+            }
             // Init complete and the pid file is claimed + durable. Confirm boot
             // to the parent BEFORE the (potentially long-blocking) loop.
             readiness.ready(b.our_pid);
@@ -1155,8 +1188,11 @@ fn spawn_child_supervisor(
     // corrupt the PID-staleness check). `RUST_LOG_NOSPAWN` is cleared because
     // it is reserved for tests.
     let stderr_path: PathBuf = child_dir.join("supervisor.stderr.log");
+    // Child-spawn is lenient: the parent supervisor reads the child's own pid
+    // file (non-blocking) rather than confirming over a readiness pipe, so no
+    // readiness fd is threaded in.
     let mut cmd =
-        crate::run::supervisor_spawn::detached_supervise_command(child_run_id, &stderr_path)?;
+        crate::run::supervisor_spawn::detached_supervise_command(child_run_id, &stderr_path, None)?;
     cmd.env_remove("RUST_LOG_NOSPAWN");
     crate::run::supervisor_spawn::spawn_and_reap(&mut cmd, child_run_id)?;
 

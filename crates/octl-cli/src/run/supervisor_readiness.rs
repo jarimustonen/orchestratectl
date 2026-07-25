@@ -10,41 +10,61 @@
 //!
 //! The fix is the classic UNIX readiness pipe threaded through the double-fork:
 //!
-//! 1. The parent ([`ReadinessPipe::new`]) creates a pipe. The **write** end is
-//!    left without `FD_CLOEXEC` so it survives `exec` into the grandchild; the
-//!    **read** end is `FD_CLOEXEC` (parent-only, must not leak into the child).
-//!    The parent passes the write-end fd number to the child via
-//!    `OCTL_READINESS_FD` in the child's environment.
+//! 1. The parent ([`ReadinessPipe::new`]) creates a pipe with `FD_CLOEXEC` on
+//!    **both** ends (so a concurrent `exec` on another thread cannot leak the
+//!    write end and suppress EOF). CLOEXEC on the write end is cleared only
+//!    inside the forked child's `pre_exec`, right before `exec`, so exactly the
+//!    intended grandchild inherits it. The parent passes the write-end fd number
+//!    to the child via `OCTL_READINESS_FD` in the child's environment.
 //! 2. The grandchild (the real supervisor) takes ownership of that inherited fd
-//!    ([`ReadinessReporter::from_env`]) and, **after** `claim_pid_atomic` +
-//!    boot init, writes a one-line readiness message and closes the fd
-//!    ([`ReadinessReporter::ready`] / [`ReadinessReporter::error`]).
+//!    ([`ReadinessReporter::from_env`], validating it is an open pipe above
+//!    stdio) and, **after** `claim_pid_atomic` + boot init, writes a one-line
+//!    readiness message and closes the fd ([`ReadinessReporter::ready`] /
+//!    [`ReadinessReporter::error`]).
 //! 3. The parent closes its own copy of the write end
-//!    ([`ReadinessPipe::close_write`]) — so it is not itself a writer — and
-//!    blocks in [`ReadinessPipe::await_ready`] reading to EOF:
+//!    ([`ReadinessPipe::close_write`]) — so it is not itself a writer — and reads
+//!    one framed line in [`ReadinessPipe::await_ready`], bounded by a generous
+//!    backstop deadline:
 //!    - a `ready` line → the supervisor confirmed boot (carries its pid);
 //!    - EOF with no message → every write-end copy closed without a signal, so
 //!      the supervisor **died during init** (fate-sharing);
 //!    - an `error` line → the supervisor articulated a real boot failure;
-//!    - a truncated/garbled message → treated as a boot failure, never a hang.
+//!    - a truncated/garbled message → treated as a boot failure, never a hang;
+//!    - the deadline elapses → the supervisor is **wedged** (alive, not
+//!      progressing) → [`Readiness::Timeout`].
 //!
-//! Fate-sharing is exact: `read()` returns EOF only once **all** write-end
-//! copies (parent, double-fork intermediate, grandchild) are closed. The parent
-//! must therefore [`close_write`](ReadinessPipe::close_write) before reading, and
-//! the grandchild closes its copy as soon as it has written (or when it exits
-//! without writing). There is no timeout: a slow boot simply keeps the pipe open
-//! until the supervisor signals, and a dead one closes it.
+//! Fate-sharing is exact: EOF arrives only once **all** write-end copies
+//! (parent, double-fork intermediate, grandchild) are closed. The parent must
+//! therefore [`close_write`](ReadinessPipe::close_write) before reading, and the
+//! grandchild closes its copy as soon as it has written (or when it exits
+//! without writing). Reading one newline-framed line — rather than to EOF — means
+//! a complete `ready` is honored even if some stray duplicate of the write end
+//! lingers open; confirmation never waits on every descriptor closing.
+//!
+//! # Why a generous backstop deadline (not the old 15s poll)
+//!
+//! EOF detects *death*, not a *wedge*. `claim_pid_atomic` takes the run flock
+//! with a **blocking** `flock` (octl-core `lock.rs`), so a supervisor stuck
+//! behind a dead lock-holder — or wedged on NFS/a failed mount during init —
+//! never writes AND never closes the write end, and a purely unbounded read
+//! would hang `run create` forever. [`await_ready`](ReadinessPipe::await_ready)
+//! therefore polls the read end with a **generous** deadline (default 120s,
+//! `OCTL_READY_WAIT_MS`) that acts as a wedge circuit-breaker, ~8× the old
+//! bounded poll so it never false-fails a merely slow-but-healthy boot. The
+//! confirmation itself is still edge-triggered (a byte or EOF, whichever comes
+//! first) — the deadline only bounds a genuine hang.
 //!
 //! # Wire format
 //!
-//! One line, tag byte first, so the parser is robust to a partial write (a
-//! writer killed mid-message yields a short read that still decodes or degrades
-//! to `Malformed` — never a hang):
+//! One newline-terminated line, tag byte first. The frame is **strict**: a
+//! ready signal is accepted only as `R<digits>\n` in full, so a write truncated
+//! by a crash (missing the terminator, or trailing garbage) is classified
+//! `Malformed` — never a false `Ready` carrying a truncated pid.
 //!   - ready:  `R<pid>\n`               (`pid` decimal, the supervisor's own pid)
 //!   - error:  `E<code>\t<message>\n`   (a structured boot-failure reason)
 
-use std::io::Read as _;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::time::{Duration, Instant};
 
 /// Environment variable carrying the inherited write-end fd number from the
 /// parent ([`ReadinessPipe`]) to the grandchild supervisor
@@ -74,36 +94,44 @@ pub enum Readiness {
     Died,
     /// The supervisor articulated a specific boot failure before exiting.
     Error { code: String, message: String },
-    /// A non-empty but undecodable message — e.g. a write truncated by a crash
-    /// mid-message. Surfaced as a boot failure, carrying the raw bytes (lossily)
-    /// for diagnostics.
+    /// A non-empty but undecodable message — a truncated write (no terminator),
+    /// trailing garbage, or a bogus tag. Surfaced as a boot failure, carrying the
+    /// raw bytes (lossily) for diagnostics.
     Malformed(String),
+    /// The backstop deadline elapsed with neither a complete frame nor EOF: the
+    /// supervisor is wedged during init (e.g. blocked on the run flock) — alive
+    /// but not making progress. Distinct from `Died` so the caller can say so.
+    Timeout,
 }
 
-/// Parse a readiness message. Pure and total so the three named cases
-/// (readiness success, init-failure EOF, partial write) are unit-testable
-/// without real pipes. Tolerant by construction: it never panics and always
-/// classifies.
+/// Parse a **complete** readiness frame (up to and including its terminating
+/// newline). Pure and total so the named cases (readiness success, init-failure
+/// EOF, truncated/partial write) are unit-testable without real pipes. Strict by
+/// construction: a `Ready` is accepted only for an exact `R<digits>\n` in a
+/// valid pid range, so a truncated or garbled ready never becomes a false
+/// success.
 pub fn parse_readiness(bytes: &[u8]) -> Readiness {
     if bytes.is_empty() {
         return Readiness::Died;
     }
-    // Strip a single trailing newline if present; tolerate its absence (a write
-    // truncated before the terminator).
-    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    // A complete frame is newline-terminated. Its absence means the write was
+    // truncated (crash mid-syscall) — never accept it as a ready signal.
+    let Some(body) = bytes.strip_suffix(b"\n") else {
+        return Readiness::Malformed(String::from_utf8_lossy(bytes).into_owned());
+    };
     match body.first().copied() {
         Some(TAG_READY) => {
-            let digits: Vec<u8> = body[1..]
-                .iter()
-                .copied()
-                .take_while(u8::is_ascii_digit)
-                .collect();
-            match std::str::from_utf8(&digits)
-                .ok()
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                Some(pid) if pid != 0 => Readiness::Ready { pid },
-                // Tag arrived but the pid did not (truncated write) or was 0.
+            let digits = &body[1..];
+            let pid = if !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) {
+                std::str::from_utf8(digits)
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+            } else {
+                // Empty pid, or trailing non-digit garbage before the newline.
+                None
+            };
+            match pid {
+                Some(pid) if pid != 0 && pid <= libc::pid_t::MAX as u32 => Readiness::Ready { pid },
                 _ => Readiness::Malformed(String::from_utf8_lossy(bytes).into_owned()),
             }
         }
@@ -120,6 +148,18 @@ pub fn parse_readiness(bytes: &[u8]) -> Readiness {
         }
         _ => Readiness::Malformed(String::from_utf8_lossy(bytes).into_owned()),
     }
+}
+
+/// True iff `fd` refers to an open pipe/FIFO — the shape of a readiness write
+/// end. Used to reject a stale or hand-set [`ENV_READINESS_FD`] pointing at an
+/// unrelated descriptor (a log file, socket, or stdio) before adopting it.
+fn is_writable_pipe(fd: RawFd) -> bool {
+    // SAFETY: `fstat` only reads metadata for `fd` into the zeroed struct.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, std::ptr::from_mut(&mut st)) } != 0 {
+        return false;
+    }
+    (st.st_mode & libc::S_IFMT) == libc::S_IFIFO
 }
 
 /// Set or clear `FD_CLOEXEC` on `fd`.
@@ -150,10 +190,14 @@ pub struct ReadinessPipe {
 }
 
 impl ReadinessPipe {
-    /// Create the pipe. macOS lacks `pipe2`, so we `pipe()` and set the flags
-    /// with `fcntl`: the read end is `FD_CLOEXEC` (never inherited by the child)
-    /// and the write end is left without it so it survives `exec` into the
-    /// grandchild.
+    /// Create the pipe with `FD_CLOEXEC` on **both** ends. The write end stays
+    /// CLOEXEC in the parent — a concurrent `exec` on another thread (the CLI
+    /// runs a `tracing_appender` worker) must not leak it, or the parent would
+    /// never see EOF. The write end's CLOEXEC is cleared only inside the forked
+    /// child's `pre_exec`, immediately before `exec`, so exactly the intended
+    /// grandchild inherits it. macOS lacks `pipe2`, so `pipe()` + `fcntl` leaves
+    /// a microscopic non-atomic window; the multi-millisecond creation→spawn
+    /// window that actually matters is closed.
     pub fn new() -> std::io::Result<Self> {
         let mut fds = [0 as RawFd; 2];
         // SAFETY: `pipe` writes exactly two fds into the provided array and
@@ -165,16 +209,16 @@ impl ReadinessPipe {
         let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
         let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
         set_cloexec(read.as_raw_fd(), true)?;
-        // The write end intentionally keeps CLOEXEC OFF so the grandchild
-        // inherits it across exec; `pipe()` fds default to CLOEXEC off.
+        set_cloexec(write.as_raw_fd(), true)?;
         Ok(Self {
             read,
             write: Some(write),
         })
     }
 
-    /// The write-end fd number to advertise to the child via
-    /// [`ENV_READINESS_FD`]. Valid until [`close_write`](Self::close_write).
+    /// The write-end fd number: advertised to the child via [`ENV_READINESS_FD`]
+    /// and handed to `pre_exec` (which clears its CLOEXEC before exec). Valid
+    /// until [`close_write`](Self::close_write).
     pub fn write_fd(&self) -> RawFd {
         self.write
             .as_ref()
@@ -190,19 +234,71 @@ impl ReadinessPipe {
         self.write = None;
     }
 
-    /// Block reading the read end to EOF and classify the message. Consumes the
-    /// pipe (the read end closes on return). No timeout: returns as soon as the
-    /// grandchild signals, or as soon as every write-end copy is closed.
-    pub fn await_ready(self) -> Readiness {
+    /// Poll the read end for one complete frame, bounded by `deadline`. Consumes
+    /// the pipe (the read end closes on return). Returns as soon as a
+    /// newline-terminated frame arrives, or on EOF (all write ends closed), or
+    /// when `deadline` elapses ([`Readiness::Timeout`]) — the wedge backstop.
+    ///
+    /// Reading one framed line (rather than to EOF) means a complete `R<pid>\n`
+    /// is honored even if some stray duplicate of the write end lingers open, so
+    /// confirmation never depends on every descriptor closing.
+    pub fn await_ready(self, deadline: Duration) -> Readiness {
         // The parent must have already closed its own write end.
         debug_assert!(self.write.is_none(), "close_write() before await_ready()");
-        let mut file = std::fs::File::from(self.read);
-        let mut buf = Vec::new();
-        // Bounded read: a healthy writer sends a short line then closes (EOF).
-        if let Err(e) = (&mut file).take(MAX_MSG as u64).read_to_end(&mut buf) {
-            return Readiness::Malformed(format!("readiness read failed: {e}"));
+        let fd = self.read.as_raw_fd();
+        let start = Instant::now();
+        let mut buf: Vec<u8> = Vec::with_capacity(64);
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= deadline {
+                return Readiness::Timeout;
+            }
+            let remaining_ms =
+                i32::try_from(deadline.saturating_sub(elapsed).as_millis()).unwrap_or(i32::MAX);
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: single valid pollfd; `poll` only reads `events` and writes
+            // `revents`.
+            let rc = unsafe { libc::poll(std::ptr::from_mut(&mut pfd), 1, remaining_ms) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Readiness::Malformed(format!("readiness poll failed: {err}"));
+            }
+            if rc == 0 {
+                return Readiness::Timeout;
+            }
+            let mut chunk = [0u8; 128];
+            // SAFETY: `read` writes at most `chunk.len()` bytes into `chunk`.
+            let n =
+                unsafe { libc::read(fd, chunk.as_mut_ptr().cast::<libc::c_void>(), chunk.len()) };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Readiness::Malformed(format!("readiness read failed: {err}"));
+            }
+            if n == 0 {
+                // EOF: every writer closed. Classify whatever partial bytes (if
+                // any) arrived — empty ⇒ Died, non-terminated ⇒ Malformed.
+                return parse_readiness(&buf);
+            }
+            buf.extend_from_slice(&chunk[..n as usize]);
+            if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                return parse_readiness(&buf[..=pos]);
+            }
+            if buf.len() > MAX_MSG {
+                return Readiness::Malformed(
+                    "readiness frame exceeded size limit before a newline".to_string(),
+                );
+            }
         }
-        parse_readiness(&buf)
     }
 }
 
@@ -216,15 +312,23 @@ pub struct ReadinessReporter {
 impl ReadinessReporter {
     /// Take ownership of the inherited write-end fd named by
     /// [`ENV_READINESS_FD`]. Returns a no-op reporter when the variable is unset
-    /// (the lenient spawn paths) or unparseable.
+    /// (the lenient spawn paths) or fails validation.
+    ///
+    /// Validated, not trusted: the fd must be above stdio (never adopt/close
+    /// stdin/out/err — `OCTL_READINESS_FD=1` must not steal stdout) and must be
+    /// an open pipe (`fstat` `S_IFIFO`), guarding against a stale/hand-set env
+    /// value pointing at an unrelated descriptor. On adoption we re-set
+    /// `FD_CLOEXEC` (the parent cleared it only for our one `exec`) so a
+    /// subprocess spawned during boot cannot inherit the readiness writer.
     pub fn from_env() -> Self {
         let fd = std::env::var(ENV_READINESS_FD)
             .ok()
             .and_then(|v| v.trim().parse::<RawFd>().ok())
-            .filter(|&fd| fd >= 0)
-            // SAFETY: the parent passed us this write-end fd, inherited across
-            // exec (CLOEXEC cleared). We take sole ownership so it is closed
-            // exactly once, on report or drop.
+            .filter(|&fd| fd > libc::STDERR_FILENO)
+            .filter(|&fd| is_writable_pipe(fd))
+            .filter(|&fd| set_cloexec(fd, true).is_ok())
+            // SAFETY: validated above as an open pipe fd the parent passed us. We
+            // take sole ownership so it is closed exactly once, on report or drop.
             .map(|raw| unsafe { OwnedFd::from_raw_fd(raw) });
         Self { fd }
     }
@@ -280,6 +384,10 @@ fn write_all(fd: RawFd, mut buf: &[u8]) {
 mod tests {
     use super::*;
 
+    /// Deadline for round-trip tests: long enough that a same-process write is
+    /// never a false timeout, short enough to keep the suite fast.
+    const TEST_DEADLINE: Duration = Duration::from_secs(5);
+
     #[test]
     fn parse_ready_line() {
         assert_eq!(
@@ -289,10 +397,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_ready_without_trailing_newline() {
-        // A write truncated before the terminator but with a full pid still
-        // decodes — the pid is valid.
-        assert_eq!(parse_readiness(b"R777"), Readiness::Ready { pid: 777 });
+    fn parse_ready_without_trailing_newline_is_malformed() {
+        // A truncated write (missing the terminator) must NOT be accepted as a
+        // ready signal — `R7777` truncated to `R777` would confirm a wrong pid.
+        match parse_readiness(b"R777") {
+            Readiness::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ready_trailing_garbage_is_malformed() {
+        // Digits followed by junk before the newline is a malformed frame, not
+        // `Ready { pid: 123 }` with the junk silently dropped.
+        match parse_readiness(b"R123xyz\n") {
+            Readiness::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ready_overflow_pid_is_malformed() {
+        // Above pid_t::MAX (and/or u32) → rejected, never truncated into range.
+        match parse_readiness(b"R99999999999\n") {
+            Readiness::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 
     #[test]
@@ -325,7 +455,7 @@ mod tests {
     #[test]
     fn parse_partial_ready_tag_only_is_malformed() {
         // Writer crashed after the tag byte but before any pid digit.
-        match parse_readiness(b"R") {
+        match parse_readiness(b"R\n") {
             Readiness::Malformed(_) => {}
             other => panic!("expected Malformed, got {other:?}"),
         }
@@ -341,7 +471,7 @@ mod tests {
 
     #[test]
     fn parse_garbage_is_malformed() {
-        match parse_readiness(b"xyzzy") {
+        match parse_readiness(b"xyzzy\n") {
             Readiness::Malformed(_) => {}
             other => panic!("expected Malformed, got {other:?}"),
         }
@@ -351,18 +481,13 @@ mod tests {
     #[test]
     fn pipe_roundtrip_ready() {
         let mut pipe = ReadinessPipe::new().unwrap();
-        let write_fd = pipe.write_fd();
-        // Simulate the grandchild taking ownership of the inherited write fd.
-        // SAFETY: we hand off the raw write fd exactly once; `pipe.close_write`
-        // below drops the parent's OwnedFd wrapper WITHOUT closing this fd
-        // number, since ownership has moved into the reporter.
-        let reporter_fd = unsafe { OwnedFd::from_raw_fd(dup(write_fd)) };
-        let mut reporter = ReadinessReporter {
-            fd: Some(reporter_fd),
-        };
+        let mut reporter = reporter_for(&pipe);
         pipe.close_write();
         reporter.ready(4242);
-        assert_eq!(pipe.await_ready(), Readiness::Ready { pid: 4242 });
+        assert_eq!(
+            pipe.await_ready(TEST_DEADLINE),
+            Readiness::Ready { pid: 4242 }
+        );
     }
 
     /// Round-trip: the reporter is dropped without reporting → the parent sees
@@ -370,31 +495,21 @@ mod tests {
     #[test]
     fn pipe_roundtrip_died_on_drop() {
         let mut pipe = ReadinessPipe::new().unwrap();
-        let write_fd = pipe.write_fd();
-        // SAFETY: as above — a single dup'd owned copy handed to the reporter.
-        let reporter_fd = unsafe { OwnedFd::from_raw_fd(dup(write_fd)) };
-        let reporter = ReadinessReporter {
-            fd: Some(reporter_fd),
-        };
+        let reporter = reporter_for(&pipe);
         pipe.close_write();
         drop(reporter); // dies without signalling
-        assert_eq!(pipe.await_ready(), Readiness::Died);
+        assert_eq!(pipe.await_ready(TEST_DEADLINE), Readiness::Died);
     }
 
     /// Round-trip: the reporter articulates a structured error.
     #[test]
     fn pipe_roundtrip_error() {
         let mut pipe = ReadinessPipe::new().unwrap();
-        let write_fd = pipe.write_fd();
-        // SAFETY: single dup'd owned copy handed to the reporter.
-        let reporter_fd = unsafe { OwnedFd::from_raw_fd(dup(write_fd)) };
-        let mut reporter = ReadinessReporter {
-            fd: Some(reporter_fd),
-        };
+        let mut reporter = reporter_for(&pipe);
         pipe.close_write();
         reporter.error("supervisor_already_running", "pid 9 is alive");
         assert_eq!(
-            pipe.await_ready(),
+            pipe.await_ready(TEST_DEADLINE),
             Readiness::Error {
                 code: "supervisor_already_running".into(),
                 message: "pid 9 is alive".into(),
@@ -402,24 +517,35 @@ mod tests {
         );
     }
 
-    /// The reporter closes the fd after `ready`, so the parent both reads the
-    /// message AND observes EOF — it never blocks waiting for more.
+    /// The reporter closes the fd after `ready`, so the parent returns as soon
+    /// as the framed line arrives — it never blocks waiting for more.
     #[test]
     fn reporter_closes_after_ready() {
         let mut pipe = ReadinessPipe::new().unwrap();
-        // SAFETY: single dup'd owned copy handed to the reporter.
-        let reporter_fd = unsafe { OwnedFd::from_raw_fd(dup(pipe.write_fd())) };
-        let mut reporter = ReadinessReporter {
-            fd: Some(reporter_fd),
-        };
+        let mut reporter = reporter_for(&pipe);
         pipe.close_write();
         reporter.ready(5);
         // Second call is a no-op (fd already taken); no panic, no double close.
         reporter.ready(6);
-        assert_eq!(pipe.await_ready(), Readiness::Ready { pid: 5 });
+        assert_eq!(pipe.await_ready(TEST_DEADLINE), Readiness::Ready { pid: 5 });
+    }
+
+    /// A wedged supervisor that holds the write end open without ever writing is
+    /// caught by the backstop deadline, not an infinite hang.
+    #[test]
+    fn pipe_roundtrip_timeout_on_wedge() {
+        let mut pipe = ReadinessPipe::new().unwrap();
+        // Keep the reporter (and thus the write end) alive for the whole read.
+        let _reporter = reporter_for(&pipe);
+        pipe.close_write();
+        assert_eq!(
+            pipe.await_ready(Duration::from_millis(150)),
+            Readiness::Timeout
+        );
     }
 
     #[test]
+    #[serial_test::serial(octl_readiness_env)]
     fn from_env_absent_is_noop() {
         // With the variable unset, the reporter holds no fd and reporting does
         // nothing (the lenient spawn paths rely on this).
@@ -430,11 +556,40 @@ mod tests {
         reporter.error("x", "y"); // must not panic
     }
 
-    /// `dup(2)` helper so a test can hand the reporter its own owned fd without
-    /// disturbing the pipe's bookkeeping.
-    fn dup(fd: RawFd) -> RawFd {
-        let d = unsafe { libc::dup(fd) };
+    #[test]
+    #[serial_test::serial(octl_readiness_env)]
+    fn from_env_rejects_stdio_fd() {
+        // A stale/hand-set fd pointing at stdout must never be adopted (adopting
+        // it would close stdout when the reporter drops).
+        std::env::set_var(ENV_READINESS_FD, "1");
+        let reporter = ReadinessReporter::from_env();
+        std::env::remove_var(ENV_READINESS_FD);
+        assert!(reporter.fd.is_none(), "must not adopt fd 1 (stdout)");
+    }
+
+    #[test]
+    #[serial_test::serial(octl_readiness_env)]
+    fn from_env_rejects_non_pipe_fd() {
+        // A high fd that is a regular file (a temp file here) is not a pipe and
+        // must be rejected by the fstat guard.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let raw = tmp.as_file().as_raw_fd();
+        std::env::set_var(ENV_READINESS_FD, raw.to_string());
+        let reporter = ReadinessReporter::from_env();
+        std::env::remove_var(ENV_READINESS_FD);
+        assert!(reporter.fd.is_none(), "must not adopt a non-pipe fd");
+    }
+
+    /// Build a reporter owning its own dup'd copy of the pipe's write end, so a
+    /// test can drive the grandchild side without disturbing the pipe's own
+    /// bookkeeping. `dup(2)` clears CLOEXEC on the new fd, matching what the
+    /// grandchild sees post-`exec`.
+    fn reporter_for(pipe: &ReadinessPipe) -> ReadinessReporter {
+        let d = unsafe { libc::dup(pipe.write_fd()) };
         assert!(d >= 0, "dup failed");
-        d
+        // SAFETY: `d` is a fresh owned fd from `dup`.
+        ReadinessReporter {
+            fd: Some(unsafe { OwnedFd::from_raw_fd(d) }),
+        }
     }
 }
