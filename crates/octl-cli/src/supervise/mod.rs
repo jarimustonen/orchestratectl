@@ -64,6 +64,30 @@ const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
 /// so a transient `stat` hiccup cannot kill a live supervisor.
 const SELF_TERMINATE_TICKS: u32 = 3;
 
+/// Consecutive ticks a supervised run may present the "no worker node and no
+/// children" state before we terminalize it as `failed`
+/// (`supervisor_spawn_failed` / `no-child-spawned`).
+///
+/// Every real run has ≥1 node by the time its supervisor boots: a top-level
+/// worker's `node.created` (n-0001) is emitted by `run create` *before* it
+/// forks the supervisor; a child worker's is emitted before the parent's
+/// `child.spawned`; the orchestrate/fan-out drivers carry their `n-0001` driver
+/// node. So a supervisor observing zero nodes AND zero tracked/forked children
+/// is watching a run whose worker was never created (the `run reattach` of a
+/// silent-spawn-failure run, or the reattached zombie that would otherwise poll
+/// forever / falsely report `work-complete` — issue
+/// `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5). It can
+/// never make progress on its own, so we fail it loudly instead of leaving it
+/// stuck `pending`. The short streak (like [`SELF_TERMINATE_TICKS`]) guards
+/// against a one-off unreadable-manifest read; it is not needed for our own
+/// already-durable node, but costs nothing.
+const NO_WORKER_TICKS: u32 = 3;
+
+/// Reason recorded on the synthesized terminal `run.status` when the no-worker
+/// guard fires. Distinct from a genuine agent failure so an operator can tell a
+/// never-spawned run from a spawned-then-died one.
+const NO_WORKER_REASON: &str = "no-child-spawned";
+
 /// Max attempts to fire the `--notify` completion hook before the supervisor
 /// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
 /// failure only when it cannot enter its lock critical section or the marker
@@ -265,6 +289,15 @@ pub fn dispatch(
     // to 0 on any tick where it exists; once it crosses
     // `SELF_TERMINATE_TICKS` we self-terminate (run dir vanished).
     let mut manifest_missing_streak: u32 = 0;
+
+    // Consecutive ticks the run has presented "no worker node and no children"
+    // while non-terminal. Once it crosses `NO_WORKER_TICKS` we terminalize the
+    // run as `failed` rather than poll forever (see `NO_WORKER_TICKS`). Reset
+    // to 0 on any tick where a node or child exists.
+    let mut no_worker_streak: u32 = 0;
+    // Set once the no-worker guard has terminalized the run, so the loop-exit
+    // reason reports the spawn failure honestly instead of `work-complete`.
+    let mut spawn_failed_terminal = false;
 
     // Whether terminal-transition cleanup (tmux window close + worktree
     // remove + branch delete, autonomous kinds only) has already run this
@@ -572,6 +605,61 @@ pub fn dispatch(
             );
         }
 
+        // Fail-loud guard: a non-terminal run with no worker node and no
+        // children can never make progress (see `NO_WORKER_TICKS`). Terminalize
+        // it as `failed` instead of polling forever or — for a reattached
+        // zombie whose manifest a `run cancel` later flips terminal — falsely
+        // exiting `work-complete` with zero children spawned (issue
+        // `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5).
+        if !spawn_failed_terminal {
+            match read_manifest_opt(&paths) {
+                Ok(Some(m))
+                    if !m.status.is_terminal()
+                        && m.node_count == 0
+                        && child_tails.is_empty()
+                        && state.spawned_children.is_empty() =>
+                {
+                    no_worker_streak += 1;
+                    if no_worker_streak >= NO_WORKER_TICKS {
+                        // Single-arbiter, same as the rollup below: append the
+                        // terminal `run.status` under a deterministic key so the
+                        // per-tick re-evaluation appends at most once and a
+                        // racing cancel is a clean no-op.
+                        let key = format!("supervisor-no-worker:{run_id}:run-status");
+                        match append_and_apply_event(
+                            &paths,
+                            "run.status",
+                            None,
+                            Some(&key),
+                            json!({ "status": "failed", "reason": NO_WORKER_REASON }),
+                        ) {
+                            Ok(_) => {
+                                warn!(
+                                    target: "orchestratectl::supervise",
+                                    run_id = %run_id,
+                                    reason = NO_WORKER_REASON,
+                                    "run has no worker node and no children after \
+                                     {NO_WORKER_TICKS} ticks; terminalizing as failed \
+                                     (supervisor_spawn_failed)"
+                                );
+                                spawn_failed_terminal = true;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    target: "orchestratectl::supervise",
+                                    error = %e,
+                                    "failed to record no-worker terminal run.status; will retry next tick"
+                                );
+                            }
+                        }
+                    }
+                }
+                // A node or child now exists (or the manifest is terminal /
+                // transiently unreadable): the run can make progress, so reset.
+                _ => no_worker_streak = 0,
+            }
+        }
+
         // Roll the run up to a terminal status once all of its own nodes —
         // and every tracked child — are terminal. The reducer terminalizes
         // nodes from `node.report` but never the run, so without this an
@@ -707,7 +795,13 @@ pub fn dispatch(
         // exits. `notify_attempts` bounds this, so a persistent failure still
         // lets us leave.
         if notified && all_work_done(&paths, &child_tails) {
-            break "work-complete";
+            // Report the spawn failure honestly rather than as `work-complete`
+            // when the no-worker guard is what terminalized the run.
+            break if spawn_failed_terminal {
+                "supervisor-spawn-failed"
+            } else {
+                "work-complete"
+            };
         }
 
         std::thread::sleep(if iter % 2 == 0 {

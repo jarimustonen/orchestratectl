@@ -54,9 +54,43 @@ use crate::supervise::pid_file;
 const PID_FILE_WAIT: Duration = Duration::from_secs(5);
 const POLL_TICK: Duration = Duration::from_millis(200);
 
-/// Outcome of a supervisor spawn: the PID we recorded on the run.
+/// How long [`await_recorded_pid`] waits for the supervisor's pid file.
+/// [`PID_FILE_WAIT`] in production; tests point `OCTL_PID_FILE_WAIT_MS` at a
+/// short value so the fail-loud confirmation path is exercisable in
+/// milliseconds. An unparseable value falls back to the production default.
+fn pid_file_wait() -> Duration {
+    std::env::var("OCTL_PID_FILE_WAIT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(PID_FILE_WAIT, Duration::from_millis)
+}
+
+/// The binary a detached supervisor is spawned from. Production always uses the
+/// current executable (`orchestratectl supervise <run-id>`); tests override via
+/// `OCTL_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
+/// silent-spawn-failure path can be tested deterministically. Mirrors the
+/// `OCTL_CREATE_SH` seam. Production callers never set it.
+fn supervise_bin() -> Result<std::path::PathBuf, CliError> {
+    if let Ok(v) = std::env::var("OCTL_SUPERVISE_BIN") {
+        return Ok(std::path::PathBuf::from(v));
+    }
+    std::env::current_exe().map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))
+}
+
+/// Outcome of a supervisor spawn.
 pub struct SupervisorSpawn {
+    /// The live, identity-verified PID the supervisor recorded for itself, or
+    /// `0` when no live pid file appeared before the deadline.
     pub pid: u32,
+    /// `true` iff the supervisor confirmed start — it wrote a live,
+    /// identity-verified `supervisor.pid` within [`PID_FILE_WAIT`]. When
+    /// `false`, `pid` is `0` and the supervisor failed to boot: `run create`
+    /// surfaces this as a loud `supervisor_spawn_failed` envelope rather than
+    /// recording a bogus `pid: 0` as success (issue
+    /// `supervisor-spawn-fails-silently-at-run-create`). Lenient callers
+    /// (`run reattach`, child-spawn) read the pid file directly and don't use
+    /// this field.
+    pub confirmed: bool,
 }
 
 /// Attach the detach hardening (`setsid` + double-fork) to `cmd`'s child via
@@ -99,8 +133,7 @@ pub fn detached_supervise_command(run_id: &str, log_path: &Path) -> Result<Comma
     let stderr_clone = stderr_file
         .try_clone()
         .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
-    let exe = std::env::current_exe()
-        .map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))?;
+    let exe = supervise_bin()?;
     let mut cmd = Command::new(exe);
     cmd.arg("supervise")
         .arg(run_id)
@@ -161,7 +194,7 @@ pub fn read_live_recorded_pid(paths: &RunPaths) -> Option<u32> {
 /// supervisor — hence `read_pid_record` + `pid_live_with_identity`, not a bare
 /// liveness probe.
 pub fn await_recorded_pid(paths: &RunPaths) -> Option<u32> {
-    let deadline = Instant::now() + PID_FILE_WAIT;
+    let deadline = Instant::now() + pid_file_wait();
     loop {
         if let Some(pid) = read_live_recorded_pid(paths) {
             return Some(pid);
@@ -173,18 +206,64 @@ pub fn await_recorded_pid(paths: &RunPaths) -> Option<u32> {
     }
 }
 
+/// Append a diagnostic line to the supervisor's stderr log so a spawn that
+/// never got far enough to boot the tracing subscriber still leaves a trace on
+/// disk (issue `supervisor-spawn-fails-silently-at-run-create`, suggested-fix
+/// #2 "always write supervisor.stderr.log … capture the fork/exec failure
+/// reason"). Best-effort: a log-write failure must never mask the spawn error
+/// the caller is already returning.
+fn append_spawn_diag(log_path: &Path, msg: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(f, "[orchestratectl run create] {msg}");
+    }
+}
+
 /// Fork+exec a fully-detached supervisor with stdout/stderr redirected to
-/// `<run-dir>/supervisor.stderr.log`, then wait up to 5s for the
+/// `<run-dir>/supervisor.stderr.log`, then wait up to [`PID_FILE_WAIT`] for the
 /// supervisor's own PID file to appear and be alive.
 ///
-/// Returns the PID the supervisor recorded for itself. On timeout (the
-/// supervisor did not write a live pid file) returns `pid: 0` — a sentinel
-/// the caller surfaces as "spawned but PID not yet confirmed"; the
-/// supervisor's own `supervisor.pid` remains the source of truth.
+/// The stderr log is opened (created, possibly empty) *before* the fork by
+/// [`detached_supervise_command`], so a trace file always exists on disk from
+/// the moment of spawn. A fork/exec failure, or a supervisor that never
+/// confirms start, is additionally recorded into that log via
+/// [`append_spawn_diag`] — otherwise a silent spawn failure leaves zero trace
+/// to diagnose from (the original bug signature).
+///
+/// Returns `confirmed: true` with the recorded PID on success. On timeout (the
+/// supervisor did not write a live pid file within the deadline) returns
+/// `confirmed: false, pid: 0`; `run create` turns that into a loud
+/// `supervisor_spawn_failed` error, while lenient callers ignore the flag.
 pub fn spawn_for_run(paths: &RunPaths, run_id: &str) -> Result<SupervisorSpawn, CliError> {
     let log_path = paths.root.join("supervisor.stderr.log");
     let mut cmd = detached_supervise_command(run_id, &log_path)?;
-    spawn_and_reap(&mut cmd, run_id)?;
-    let pid = await_recorded_pid(paths).unwrap_or(0);
-    Ok(SupervisorSpawn { pid })
+    if let Err(e) = spawn_and_reap(&mut cmd, run_id) {
+        append_spawn_diag(
+            &log_path,
+            &format!("fork/exec of supervisor failed: {}", e.message),
+        );
+        return Err(e);
+    }
+    if let Some(pid) = await_recorded_pid(paths) {
+        Ok(SupervisorSpawn {
+            pid,
+            confirmed: true,
+        })
+    } else {
+        append_spawn_diag(
+            &log_path,
+            &format!(
+                "supervisor did not confirm start: no live supervisor.pid appeared within {:?} of fork/exec",
+                pid_file_wait()
+            ),
+        );
+        Ok(SupervisorSpawn {
+            pid: 0,
+            confirmed: false,
+        })
+    }
 }

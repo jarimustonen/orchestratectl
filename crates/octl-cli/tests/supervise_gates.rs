@@ -172,6 +172,52 @@ fn log_contents(dir: &Path, log: &str) -> String {
     std::fs::read_to_string(dir.join(log)).unwrap_or_default()
 }
 
+/// A live `sleep` process forged as a run's worker agent; killed on drop so a
+/// panicking assertion never leaks it.
+struct AgentGuard {
+    child: std::process::Child,
+}
+impl Drop for AgentGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Forge a NON-terminal `node.created` whose `agent_pid` is a freshly spawned,
+/// live `sleep`, so the run is a normal single-worker run the supervisor keeps
+/// supervising (rather than a node-less run the no-worker guard would fail).
+/// Returns the guard that reaps the agent on drop.
+fn forge_live_worker_node(home: &TempDir, run_id: &str) -> AgentGuard {
+    let child = Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .expect("spawn agent");
+    let agent_pid = child.id();
+    let node = home.path().join(format!("node-live-{run_id}.json"));
+    std::fs::write(
+        &node,
+        format!(
+            r#"{{"kind":"spinoff","task":"x","worktree_path":"/fake/wt","branch":"wt/test-x","tmux_session":"octl","tmux_window_id":"@42","agent_pid":{agent_pid}}}"#
+        ),
+    )
+    .unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node.to_str().unwrap(),
+    ]));
+    AgentGuard { child }
+}
+
 /// Forge a `node.created` carrying the worktree/branch/tmux fields the cleanup
 /// path consumes, then a terminal `node.report` so the node is settled before
 /// the supervisor ticks (keeps the watchdog out of it).
@@ -1313,12 +1359,18 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
 
     let home = TestHome::new();
     let run_id = create_run(&home, "spinoff", "sighup-survive");
+    // Give the run a live worker node so the supervisor keeps supervising it —
+    // otherwise the no-worker guard terminalizes a node-less run within a few
+    // ticks (that guard is itself under test in
+    // `no_worker_node_run_terminalizes_failed`). This mirrors a real supervised
+    // run, which is what the SIGHUP-survival property is about.
+    let _agent = forge_live_worker_node(&home, &run_id);
 
     // The "spawner": a shell, made a process-group LEADER via setpgid(0,0),
     // that runs `run reattach` (which forks the detached supervisor) and then
     // sleeps to keep its process group alive until we signal it. A bare
     // (no `--once`) reattach yields a long-lived supervisor that loops idle
-    // over the node-less run, so it stays alive for us to signal.
+    // over the live-worker run, so it stays alive for us to signal.
     let bin_path = env!("CARGO_BIN_EXE_orchestratectl");
     let script =
         format!("{bin_path} --output json run reattach {run_id} >/dev/null 2>&1; sleep 30");
@@ -1327,6 +1379,9 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
     cmd.env("ORCHESTRATECTL_HOME", home.path());
     cmd.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     cmd.env("TMUX_BIN", "/usr/bin/true");
+    // Keep the watchdog from synthesizing an agent-death for the forged node
+    // during the test window, so the supervisor stays alive to receive SIGHUP.
+    cmd.env("OCTL_WATCHDOG_GRACE_SECS", "60");
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     // SAFETY: setpgid(0,0) is async-signal-safe; it makes the shell its own
@@ -1733,5 +1788,60 @@ fn self_terminate_when_whole_run_dir_removed() {
                 .collect::<Vec<_>>()
                 .join(", "))
             .unwrap_or_default()
+    );
+}
+
+/// supervisor-spawn-fails-silently-at-run-create (suggested-fix #5): a
+/// supervised run that never got a worker node (`node_count` 0) and has no
+/// children can never make progress. Rather than poll `pending` forever — or,
+/// for a reattached zombie, falsely exit `work-complete` with zero children —
+/// the supervisor must terminalize the run as `failed` with reason
+/// `no-child-spawned`.
+///
+/// A `--skip-materialize` spinoff `run create` produces exactly this shape:
+/// `run.created` only, no `node.created`, no supervisor. We then run the
+/// supervisor against it and assert it fails the run loudly.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn no_worker_node_run_terminalizes_failed() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "no-worker");
+    let rdir = run_dir(&home, &run_id);
+    let events = rdir.join("events.jsonl");
+
+    // Sanity: this really is a zero-node run before the supervisor ticks.
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(rdir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["node_count"], 0, "precondition: no worker node");
+
+    // Enough ticks (>= NO_WORKER_TICKS) for the guard to fire; the supervisor
+    // exits early via all_work_done once it terminalizes.
+    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--max-iter", "12"]));
+
+    // The run is now terminal `failed` — not stuck `pending`.
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(rdir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["status"], "failed",
+        "no-worker run must terminalize failed, not stay pending"
+    );
+    assert_eq!(latest_run_status(&events).as_deref(), Some("failed"));
+
+    // The synthesized run.status carries the diagnostic reason, and the
+    // supervisor exited reporting the spawn failure — never `work-complete`.
+    let events_v = read_events(&events);
+    let failed_reason = events_v
+        .iter()
+        .filter(|v| v["kind"] == "run.status" && v["data"]["status"] == "failed")
+        .find_map(|v| v["data"]["reason"].as_str());
+    assert_eq!(failed_reason, Some("no-child-spawned"));
+    let exit_reason = events_v
+        .iter()
+        .filter(|v| v["kind"] == "supervisor.exited")
+        .find_map(|v| v["data"]["reason"].as_str());
+    assert_eq!(
+        exit_reason,
+        Some("supervisor-spawn-failed"),
+        "must not exit work-complete with zero children"
     );
 }

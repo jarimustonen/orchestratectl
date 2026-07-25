@@ -459,7 +459,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             && !args.skip_materialize
             && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_err();
         let supervisor_pid = if spawn_driver_supervisor {
-            Some(supervisor_spawn::spawn_for_run(&paths, &run_id)?.pid)
+            Some(spawn_supervisor_or_fail(&paths, &run_id)?)
         } else {
             None
         };
@@ -520,7 +520,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let _ = std::fs::remove_dir_all(&child_dir);
         }
     };
-    let outcome = match spawn::run_create_sh(&spawn_req) {
+    let outcome = match spawn::run_create_sh_with_tmux_retry(&spawn_req) {
         Ok(o) => o,
         Err(e) => {
             cleanup_orphan_child();
@@ -603,7 +603,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let supervisor_pid = if is_child {
         None
     } else {
-        Some(supervisor_spawn::spawn_for_run(&paths, &run_id)?.pid)
+        Some(spawn_supervisor_or_fail(&paths, &run_id)?)
     };
 
     if let Some(key) = args.idempotency_key.as_deref() {
@@ -638,6 +638,37 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         spec: args.spec,
         warnings: args.warnings,
     })
+}
+
+/// Spawn the run's supervisor and require it to confirm start, turning a
+/// silent boot failure into a loud, actionable error.
+///
+/// [`supervisor_spawn::spawn_for_run`] returns `confirmed: false` (with
+/// `pid: 0`) when the detached supervisor never wrote a live `supervisor.pid`
+/// within the startup deadline — the run would otherwise be left in `pending`
+/// with a dead/absent supervisor and its envelope would misreport `pid: 0` as
+/// success (issue `supervisor-spawn-fails-silently-at-run-create`,
+/// suggested-fix #1). We instead return `supervisor_spawn_failed` carrying the
+/// run id, so the caller can inspect `supervisor.stderr.log`, `run reattach`,
+/// or `run cancel` rather than hang until its own timeout. The run.created /
+/// node.created events are already durable on disk, so the run is fully
+/// recoverable.
+fn spawn_supervisor_or_fail(paths: &octl_core::RunPaths, run_id: &str) -> Result<u32, CliError> {
+    let spawn = supervisor_spawn::spawn_for_run(paths, run_id)?;
+    if !spawn.confirmed {
+        return Err(CliError::system(
+            "supervisor_spawn_failed",
+            format!(
+                "supervisor for run {run_id} did not confirm start (no live supervisor.pid \
+                 within the startup deadline); the run is on disk in `pending`. Inspect \
+                 {}/supervisor.stderr.log, then `orchestratectl run reattach {run_id}` to \
+                 retry or `orchestratectl run cancel {run_id}` to tear it down",
+                paths.root.display()
+            ),
+        )
+        .with_invalid_value(run_id));
+    }
+    Ok(spawn.pid)
 }
 
 /// Default detached session name used when `--headless` is set without an
