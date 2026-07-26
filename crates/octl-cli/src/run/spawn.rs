@@ -393,15 +393,19 @@ pub fn verify_agent_pid(pid: i64) -> Result<(), CliError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
     // Tests mutate the OCTL_CREATE_SH env var; serialize them so a
     // parallel test runner doesn't see a stale fixture from another
-    // thread.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // thread. `pub(crate)` so the supervisor's in-process retry tests
+    // (`supervise::mod::tests`), which ALSO set `OCTL_CREATE_SH` to drive a
+    // stub `create.sh`, can hold the SAME lock — otherwise the two modules'
+    // separate locks would let their env mutations race
+    // (issue `autoretry-agent-died-worker`, from llm-review test-isolation).
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn fixture_script(dir: &Path, body: &str) -> PathBuf {
         let p = dir.join("fake-create.sh");

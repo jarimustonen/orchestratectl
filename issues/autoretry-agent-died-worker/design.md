@@ -60,24 +60,42 @@ node re-enters the same attempt on restart — never an over-count, never an unb
 ## Reconcile pass (`reconcile_agent_retries`)
 
 Runs each tick (inside `watchdog_tick`, after the candidate loop) for parked nodes whose
-`retry_at` has elapsed:
+`retry_at` has elapsed. **Spawn-before-teardown ordering** (revised per the /llm-review —
+see `history/review-autoretry-agent-died-worker.md`): the stale worktree is never destroyed
+until a replacement is durably attached.
 
-1. Re-read the node under the run lock. If it is now terminal or a real report landed →
-   drop the park (nothing to do).
-2. **Re-verify empty-handed** (`git_ahead_count == Some(0)`) under the lock. If commits
-   appeared (a late-committing agent) → drop the park and let the next watchdog tick
-   terminalize-with-recoverability. This is the retry⟂salvage race guard: a retry can
-   never clobber a branch that gained commits.
-3. Tear down the stale worktree + branch + tmux window (empty-handed → `git branch -d`
-   safe; guarded by the same source-relative unmerged check as `cleanup_node`, so a
-   non-empty branch is never deleted).
-4. `run::spawn::run_create_sh_with_tmux_retry` with a fresh branch name (`<base>-r<N>`),
-   `--base <source_branch>`, the run's original `prompt.md`, and (for headless runs) the
-   managed tmux session. Verify the new pid is alive.
-5. **Success** → emit `node.retry` (above). Drop the park.
-   **create.sh failure** → bump an in-memory spawn-failure counter and reschedule
-   `retry_at` with backoff; once the in-memory spawn-failure budget is exhausted →
-   synthesize the terminal `failed` report and drop the park (infra genuinely broken).
+1. Re-read the node under the run lock. If terminal, not retry-eligible, or no longer
+   positively empty-handed → drop the park. Capture the node + manifest; drop the lock.
+2. **Spawn the fresh worker FIRST** — `run::spawn::run_create_sh_with_tmux_retry` with a
+   fresh branch name (`<stem>-r<N>`), `--base <source_branch>`, cwd `<source_repo>`, the
+   run's `prompt.md`, and (headless) the managed tmux session; verify the new pid is alive.
+   On **create.sh failure** the stale worktree is untouched (so the empty-handed re-verify
+   still holds and the budget is real): bump the in-memory spawn-failure counter and
+   reschedule; once the budget is exhausted, `terminalize_respawn_failure` (which returns
+   `bool` — the park is removed ONLY once the terminal report is durably recorded, so a
+   lock/append failure re-fires instead of un-tracking a non-terminal node across a restart).
+3. Re-acquire the lock. **Re-verify the stale node is still non-terminal AND still
+   `node_is_empty_handed`.** A `run cancel` (terminal) or a late commit (salvage territory)
+   aborts the retry: the fresh spawn is torn down (`teardown_respawn_outcome`) and the stale
+   node is left for the terminal/salvage path. This is the retry⟂salvage guard — a retry can
+   never rewire away from, or clobber, a branch that gained committed work.
+4. Emit the durable `node.retry` event (rewires the node to the fresh agent, increments
+   `retry_attempts`). If the append fails or the lock can't be taken, tear down the fresh
+   spawn and leave the park to re-fire cleanly on the same `-rN` name.
+5. **Only now** tear down the stale worktree + branch + tmux window via `cleanup_node`
+   (whose own source-relative guard + `git branch -d` backstop PRESERVE rather than delete
+   if commits somehow appeared — never destroying committed work). Drop the park.
+
+`node_is_empty_handed` requires BOTH zero commits ahead of source AND a **clean worktree**
+(no staged/modified/untracked files), so a dead agent's uncommitted scratch is never
+force-removed by the retry — such a death falls through to the preserve-on-blocked terminal
+path. The park is only ever created for the strong `Liveness::Dead` verdict (the PID is
+provably gone), never the weaker `Recycled` / `TmuxGone` half-states where a still-live agent
+could be committing.
+
+`teardown_respawn_outcome` kills the new agent, removes its worktree, force-deletes its
+freshly-minted `-rN` branch, and closes its tmux window — so an unattached spawn never leaks
+a live token-burning agent and never poisons the branch name for the next attempt.
 
 ## Eligibility gate
 

@@ -129,7 +129,23 @@ const AGENT_RETRY_BACKOFF_ENV: &str = "OCTL_AGENT_RETRY_BACKOFF_SECS";
 /// the run is terminalized `failed`. Distinct from a dying agent (a broken spawn
 /// infrastructure, e.g. a missing `create.sh` or exhausted PTYs): bounded in
 /// memory so the reconcile can never loop forever on a host that cannot spawn.
+/// Overridable via [`AGENT_RESPAWN_MAX_FAILURES_ENV`].
 const AGENT_RESPAWN_MAX_FAILURES: u32 = 3;
+
+/// Env override for [`AGENT_RESPAWN_MAX_FAILURES`] (whole count; unparseable →
+/// default). Tests set a small value to reach the spawn-failure terminal path fast.
+const AGENT_RESPAWN_MAX_FAILURES_ENV: &str = "OCTL_AGENT_RESPAWN_MAX_FAILURES";
+
+/// The effective spawn-failure budget, honoring [`AGENT_RESPAWN_MAX_FAILURES_ENV`].
+fn agent_respawn_max_failures() -> u32 {
+    match std::env::var(AGENT_RESPAWN_MAX_FAILURES_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u32>()
+            .map_or(AGENT_RESPAWN_MAX_FAILURES, |n| n),
+        Err(_) => AGENT_RESPAWN_MAX_FAILURES,
+    }
+}
 
 /// The effective max retry attempts, honoring [`AGENT_RETRY_MAX_ATTEMPTS_ENV`].
 fn agent_retry_max_attempts() -> u32 {
@@ -147,15 +163,21 @@ fn agent_retry_max_attempts() -> u32 {
 /// clamped so the doubling can never overflow `Duration`. Honors
 /// [`AGENT_RETRY_BACKOFF_ENV`] (`0` → immediate, for tests).
 fn agent_retry_backoff(attempt: u32) -> Duration {
-    let base = match std::env::var(AGENT_RETRY_BACKOFF_ENV) {
+    let base_secs = match std::env::var(AGENT_RETRY_BACKOFF_ENV) {
         Ok(v) => v
             .trim()
             .parse::<u64>()
-            .map_or(AGENT_RETRY_BASE_BACKOFF, Duration::from_secs),
-        Err(_) => AGENT_RETRY_BASE_BACKOFF,
+            .unwrap_or_else(|_| AGENT_RETRY_BASE_BACKOFF.as_secs()),
+        Err(_) => AGENT_RETRY_BASE_BACKOFF.as_secs(),
     };
     let shift = attempt.saturating_sub(1).min(5);
-    (base * (1u32 << shift)).min(AGENT_RETRY_MAX_BACKOFF)
+    // Saturating arithmetic throughout so a large `OCTL_AGENT_RETRY_BACKOFF_SECS`
+    // can never overflow the multiply (a panic) or the later `now + backoff`
+    // `Instant` add — the `.min(cap)` bounds it to a small ceiling regardless.
+    let secs = base_secs
+        .saturating_mul(1u64 << shift)
+        .min(AGENT_RETRY_MAX_BACKOFF.as_secs());
+    Duration::from_secs(secs)
 }
 /// Consecutive missing-manifest polls (`WATCHDOG_TICK` apart, so ≈3s)
 /// before we self-terminate. Defends against orphaning: when a run dir is
@@ -2119,91 +2141,37 @@ fn reconcile_agent_retries(
             .get(&node_id)
             .map_or_else(|| "agent-died".to_string(), |p| p.reason.clone());
 
-        // (2) Tear down the stale, empty-handed worktree (tmux window + worktree +
-        // branch). `cleanup_node` re-checks the source-relative unmerged guard, so
-        // even a TOCTOU where commits appeared between our under-lock check and here
-        // PRESERVES rather than deletes — never destroying committed work.
-        cleanup::cleanup_node(paths, &node, &tmux, &git);
-
-        // (3) Spawn a clean worker at the run's source branch, from the source repo.
+        // (2) Spawn the fresh worker FIRST — BEFORE tearing down the stale one.
+        // Spawn-before-teardown is the crux of crash/failure safety:
+        //   - the stale empty-handed worktree survives a `create.sh` failure, so the
+        //     next tick can re-verify empty-handedness and the `spawn_failures`
+        //     budget is real (a teardown-first ordering deletes the branch the
+        //     re-verify depends on, silently collapsing the budget);
+        //   - the fresh worker uses a distinct `-rN` branch name, so it never
+        //     collides with the stale one still on disk.
         let outcome = respawn_agent(paths, &node, &manifest, attempt);
-
-        match outcome {
-            Ok(spawn) => {
-                let base_sha = crate::run::create::capture_base_sha(&spawn.worktree_path);
-                // Emit the durable `node.retry` audit + rewire event under the lock,
-                // but only if the node is still non-terminal (a `run cancel` may have
-                // landed during the spawn). Increments `Node.retry_attempts`.
-                let guard = match RunLock::acquire(&paths.lock()) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        warn!(
-                            target: "orchestratectl::supervise",
-                            node = %node_id, error = %e,
-                            "could not lock run to record node.retry; leaving park to re-fire"
-                        );
-                        continue;
-                    }
-                };
-                let still_live = read_node_opt(paths, &nid).ok().flatten().is_some_and(|n| {
-                    !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
-                });
-                if !still_live {
-                    warn!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id,
-                        "node went terminal during re-spawn; new worker is orphaned (dropping park)"
-                    );
-                    retry_states.remove(&node_id);
-                    drop(guard);
-                    continue;
-                }
-                let data = json!({
-                    "attempt": attempt,
-                    "reason": reason,
-                    "branch": spawn.branch,
-                    "base_sha": base_sha,
-                    "worktree_path": spawn.worktree_path,
-                    "tmux_window": spawn.tmux_window,
-                    "tmux_socket": spawn.tmux_socket,
-                    "tmux_session": spawn.tmux_session,
-                    "tmux_window_id": spawn.tmux_window_id,
-                    "agent_pid": spawn.agent_pid,
-                });
-                let lock = guard.witness();
-                if let Err(e) =
-                    append_and_apply_unlocked(&lock, paths, "node.retry", Some(&nid), None, data)
-                {
-                    warn!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id, error = %e,
-                        "record node.retry failed; leaving park to re-fire"
-                    );
-                    drop(guard);
-                    continue;
-                }
-                drop(guard);
-                info!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id, attempt, branch = %spawn.branch,
-                    "re-spawned empty-handed worker on fresh worktree at source branch"
-                );
-                retry_states.remove(&node_id);
-            }
+        let spawn = match outcome {
+            Ok(s) => s,
             Err(e) => {
-                // create.sh failed: a broken spawn infrastructure, NOT a dying agent.
-                // Bounded in memory so the reconcile cannot loop forever.
+                // create.sh failed: broken spawn infrastructure, NOT a dying agent.
+                // The stale worktree is untouched, so this is a clean retry. Bounded
+                // in memory so a host that cannot spawn cannot loop forever.
                 let failures = retry_states
                     .get(&node_id)
                     .map_or(1, |p| p.spawn_failures + 1);
-                if failures >= AGENT_RESPAWN_MAX_FAILURES {
+                if failures >= agent_respawn_max_failures() {
                     warn!(
                         target: "orchestratectl::supervise",
                         node = %node_id, error = %e.message, failures,
                         "re-spawn failed repeatedly; terminalizing run failed"
                     );
-                    terminalize_respawn_failure(paths, &nid, &node_id, attempt, &e.message);
-                    retry_states.remove(&node_id);
+                    // Remove the park ONLY once the terminal report is durably
+                    // recorded; otherwise keep it so a transient lock/append failure
+                    // re-fires terminalization instead of silently un-tracking the
+                    // node (which would let a restart re-park at spawn_failures=0).
+                    if terminalize_respawn_failure(paths, &nid, &node_id, attempt, &e.message) {
+                        retry_states.remove(&node_id);
+                    }
                 } else if let Some(park) = retry_states.get_mut(&node_id) {
                     warn!(
                         target: "orchestratectl::supervise",
@@ -2213,8 +2181,154 @@ fn reconcile_agent_retries(
                     park.spawn_failures = failures;
                     park.retry_at = now + agent_retry_backoff(attempt);
                 }
+                continue;
             }
+        };
+
+        // (3) The fresh worker exists. Under the lock, RE-VERIFY the stale node is
+        // still non-terminal AND still empty-handed, then rewire it to the new
+        // agent. Any abort here must tear down the fresh worker (kill + worktree +
+        // branch + window) — an unrewired spawn is an orphan that also poisons the
+        // `-rN` branch name for the next attempt.
+        let base_sha = crate::run::create::capture_base_sha(&spawn.worktree_path);
+        let guard = match RunLock::acquire(&paths.lock()) {
+            Ok(g) => g,
+            Err(e) => {
+                warn!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id, error = %e,
+                    "could not lock run to record node.retry; tearing down fresh spawn, will retry"
+                );
+                teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+                continue;
+            }
+        };
+        // Re-read against the SAME criteria as the pre-spawn check. A `run cancel`
+        // that raced the spawn (terminal), or a late commit on the stale branch
+        // (no longer empty-handed → salvage territory), aborts the retry: the
+        // stale node/branch is left intact for the terminal/salvage path, and the
+        // fresh spawn is torn down. This is the retry ⟂ salvage guard — a retry can
+        // never rewire away from, or clobber, a branch that gained committed work.
+        let recheck = read_node_opt(paths, &nid).ok().flatten();
+        let still_retryable = recheck.as_ref().is_some_and(|n| {
+            !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
+                && cleanup::node_is_empty_handed(paths, n, &git)
+        });
+        if !still_retryable {
+            let terminal = recheck.as_ref().is_some_and(|n| {
+                matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
+            });
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, terminal,
+                "node no longer retryable after re-spawn (terminal or committed work appeared); \
+                 tearing down fresh spawn, dropping park"
+            );
+            drop(guard);
+            teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+            retry_states.remove(&node_id);
+            continue;
         }
+        let data = json!({
+            "attempt": attempt,
+            "reason": reason,
+            "branch": spawn.branch,
+            "base_sha": base_sha,
+            "worktree_path": spawn.worktree_path,
+            "tmux_window": spawn.tmux_window,
+            "tmux_socket": spawn.tmux_socket,
+            "tmux_session": spawn.tmux_session,
+            "tmux_window_id": spawn.tmux_window_id,
+            "agent_pid": spawn.agent_pid,
+        });
+        let lock = guard.witness();
+        if let Err(e) =
+            append_and_apply_unlocked(&lock, paths, "node.retry", Some(&nid), None, data)
+        {
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, error = %e,
+                "record node.retry failed; tearing down fresh spawn, leaving park to re-fire"
+            );
+            drop(guard);
+            // Tear down the fresh spawn so the next re-fire spawns cleanly on the
+            // same `-rN` name (no orphan, no collision).
+            teardown_respawn_outcome(&spawn, manifest.source_repo.as_deref(), &tmux, &git);
+            continue;
+        }
+        drop(guard);
+
+        // (4) The node is durably rewired to the fresh worker. NOW tear down the
+        // stale worktree + branch + tmux window (still empty-handed, re-checked by
+        // `cleanup_node`'s own source-relative guard, which PRESERVES rather than
+        // deletes if commits somehow appeared — never destroying committed work).
+        cleanup::cleanup_node(paths, &node, &tmux, &git);
+        info!(
+            target: "orchestratectl::supervise",
+            node = %node_id, attempt, branch = %spawn.branch,
+            "re-spawned empty-handed worker on fresh worktree at source branch"
+        );
+        retry_states.remove(&node_id);
+    }
+}
+
+/// Best-effort teardown of a fresh re-spawn that could NOT be durably attached to
+/// its node (a `run cancel` raced it, a late commit turned the stale node into
+/// salvage territory, or the `node.retry` append failed). Kills the new agent,
+/// removes its worktree, deletes its `-rN` branch, and closes its tmux window — so
+/// an unattached spawn never leaks a live token-burning agent, and its branch name
+/// is freed for a clean re-fire (issue `autoretry-agent-died-worker`, from
+/// llm-review). Every step is independent and swallows its own errors; a partial
+/// teardown still makes progress.
+fn teardown_respawn_outcome(spawn: &RespawnOutcome, repo: Option<&str>, tmux: &str, git: &str) {
+    use std::process::{Command, Stdio};
+    // Kill the agent process first so it stops editing before its worktree is
+    // pulled. TERM (not KILL) lets it shut down its own child processes.
+    if spawn.agent_pid > 0 {
+        let _ = Command::new("kill")
+            .arg(spawn.agent_pid.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Close the tmux window (best-effort; a nonexistent window / unavailable tmux
+    // is a clean no-op).
+    if !spawn.tmux_window.is_empty() {
+        let _ = Command::new(tmux)
+            .args(["kill-window", "-t", &spawn.tmux_window])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Remove the worktree, then force-delete the branch, from the run's source repo
+    // (`git worktree remove` / `branch -D` operate on the main repo's worktree
+    // list, so `-C <repo>` is required — the detached supervisor's cwd is not the
+    // repo). The branch was just minted by THIS retry (an `-rN` name) and carries
+    // no work worth keeping, so a force delete is safe and intentional — it frees
+    // the name for a clean re-fire. Without a known repo we cannot safely target
+    // the worktree list, so skip (the next re-fire's create.sh will surface the
+    // collision as a spawn failure rather than us guessing a repo).
+    let Some(repo) = repo.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let _ = Command::new(git)
+        .args([
+            "-C",
+            repo,
+            "worktree",
+            "remove",
+            "--force",
+            &spawn.worktree_path,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !spawn.branch.is_empty() {
+        let _ = Command::new(git)
+            .args(["-C", repo, "branch", "-D", "--", &spawn.branch])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -2254,6 +2368,10 @@ fn respawn_agent(
             ),
         ));
     }
+    // Absolutize the prompt path: `respawn_agent` sets create.sh's cwd to the
+    // source repo, so a relative prompt path would otherwise resolve against the
+    // repo instead of the run dir. `canonicalize` is safe — the file exists.
+    let prompt_path = prompt_path.canonicalize().unwrap_or(prompt_path);
     let source_branch = manifest.source_branch.as_deref();
     let source_repo = manifest.source_repo.as_deref().map(std::path::Path::new);
     let branch = retry_branch_name(node.branch.as_deref(), attempt);
@@ -2313,14 +2431,22 @@ fn strip_retry_suffix(branch: &str) -> &str {
 
 /// Synthesize the terminal `failed` `node.report` when a re-spawn's spawn
 /// infrastructure is persistently broken (bounded by [`AGENT_RESPAWN_MAX_FAILURES`]).
-/// Idempotent-guarded: only writes if the node is still non-terminal.
+///
+/// Returns `true` when the node is durably terminal after this call — either this
+/// call appended the failed report, OR it was already terminal (a `run cancel`
+/// beat us). Returns `false` ONLY when the terminal outcome could NOT be recorded
+/// (lock unavailable, or the append failed): the caller then KEEPS the park so
+/// terminalization re-fires next tick, rather than un-tracking a still-non-terminal
+/// node — which would let a supervisor restart re-park it at `spawn_failures = 0`
+/// and re-enter the (broken) spawn loop (llm-review: bound-escape across restarts).
+#[must_use]
 fn terminalize_respawn_failure(
     paths: &RunPaths,
     nid: &NodeId,
     node_id: &str,
     attempt: u32,
     err: &str,
-) {
+) -> bool {
     let guard = match RunLock::acquire(&paths.lock()) {
         Ok(g) => g,
         Err(e) => {
@@ -2329,7 +2455,7 @@ fn terminalize_respawn_failure(
                 node = %node_id, error = %e,
                 "could not lock run to terminalize failed re-spawn; will retry next tick"
             );
-            return;
+            return false;
         }
     };
     let still_live = read_node_opt(paths, nid)
@@ -2337,8 +2463,10 @@ fn terminalize_respawn_failure(
         .flatten()
         .is_some_and(|n| !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled));
     if !still_live {
+        // Already terminal (or unreadable → treated as settled): nothing to record,
+        // and the park may be safely dropped.
         drop(guard);
-        return;
+        return true;
     }
     let data = json!({
         "success": false,
@@ -2354,14 +2482,19 @@ fn terminalize_respawn_failure(
         "retry_attempts": attempt.saturating_sub(1),
     });
     let lock = guard.witness();
-    if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
-        warn!(
-            target: "orchestratectl::supervise",
-            node = %node_id, error = %e,
-            "synthesize failed re-spawn report failed"
-        );
-    }
+    let ok = match append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
+        Ok(_) => true,
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, error = %e,
+                "synthesize failed re-spawn report failed; will retry next tick"
+            );
+            false
+        }
+    };
     drop(guard);
+    ok
 }
 
 fn watchdog_tick(
@@ -2573,12 +2706,16 @@ fn watchdog_tick(
             // Before terminalizing, decide whether this is a recoverable transient
             // death of an autonomous single-node worker that committed NOTHING —
             // if so, park it for a re-spawn instead of writing the failed report.
-            // Gated on ALL of: retry-eligible kind, POSITIVELY empty-handed
-            // (git-confirmed zero commits ahead of source — the retry ⟂ salvage
-            // split), and attempts remaining. An exhausted budget falls through to
-            // the failed report below (stamped with `retry_attempts`), so a
-            // persistently-dying agent still terminalizes bounded.
-            if !reconciled {
+            // Gated on ALL of: the strong `Dead` verdict (the PID is provably gone
+            // per the dual-poll protocol — NOT the weaker `Recycled` / `TmuxGone`
+            // half-states, where the real agent could still be alive and committing,
+            // making the destructive teardown-and-respawn unsafe), a retry-eligible
+            // kind, POSITIVELY empty-handed (git-confirmed zero commits ahead of
+            // source AND a clean worktree — the retry ⟂ salvage split), and attempts
+            // remaining. An exhausted budget (or a weaker death verdict) falls
+            // through to the failed report below (stamped with `retry_attempts`), so
+            // a persistently-dying agent still terminalizes bounded.
+            if !reconciled && matches!(v, watchdog::Liveness::Dead) {
                 if let Some(f) = fresh.as_ref() {
                     if retry_eligible_kind(f) && cleanup::node_is_empty_handed(paths, f, &git) {
                         let attempts = f.retry_attempts;
@@ -2915,12 +3052,26 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
     fn agent_retry_backoff_is_bounded_and_monotone() {
+        // Serialized against the retry integration tests (which set
+        // `OCTL_AGENT_RETRY_BACKOFF_SECS`) and defensively cleared, so this reads
+        // the compiled default rather than a value another test left set.
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os(AGENT_RETRY_BACKOFF_ENV);
+        std::env::remove_var(AGENT_RETRY_BACKOFF_ENV);
         assert_eq!(agent_retry_backoff(1), AGENT_RETRY_BASE_BACKOFF);
         assert!(agent_retry_backoff(2) >= agent_retry_backoff(1));
         assert_eq!(agent_retry_backoff(100), AGENT_RETRY_MAX_BACKOFF);
         for a in 1..50 {
             assert!(agent_retry_backoff(a) <= AGENT_RETRY_MAX_BACKOFF);
+        }
+        // A huge env override must clamp, not panic on overflow.
+        std::env::set_var(AGENT_RETRY_BACKOFF_ENV, u64::MAX.to_string());
+        assert_eq!(agent_retry_backoff(6), AGENT_RETRY_MAX_BACKOFF);
+        match prior {
+            Some(v) => std::env::set_var(AGENT_RETRY_BACKOFF_ENV, v),
+            None => std::env::remove_var(AGENT_RETRY_BACKOFF_ENV),
         }
     }
 
@@ -3601,6 +3752,9 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn empty_handed_death_retries_and_then_succeeds() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Share the create.sh env lock with `run::spawn::tests` so our global
+        // `OCTL_CREATE_SH` mutation cannot race their fixtures.
+        let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
         let _grace = GraceGuard::zero();
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
         let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
@@ -3781,5 +3935,118 @@ EOF
             "committed branch preserved"
         );
         assert!(wt.exists(), "committed worktree preserved");
+    }
+
+    /// A stub `create.sh` that ALWAYS fails (exit 1 + error envelope), for the
+    /// spawn-infrastructure-failure budget test.
+    fn write_failing_stub(scratch: &Path) -> PathBuf {
+        let p = scratch.join("failing-create.sh");
+        let body = "#!/bin/bash\n\
+             echo '{\"schema_version\":1,\"error\":{\"code\":\"stub-boom\",\"message\":\"stub always fails\"}}' >&2\n\
+             exit 1\n";
+        std::fs::write(&p, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&p, perms).unwrap();
+        p
+    }
+
+    /// Done-criterion: a broken spawn INFRASTRUCTURE (every `create.sh` fails) is
+    /// also bounded — after `AGENT_RESPAWN_MAX_FAILURES` consecutive failures the
+    /// run terminalizes `failed` (reason `agent-respawn-failed`), never looping
+    /// forever. The stale worktree survives each failed spawn (spawn-before-teardown),
+    /// so the empty-handed re-verify keeps holding and the budget is real.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn respawn_infrastructure_failure_terminalizes_after_budget() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
+        let _failures = EnvGuard::set(AGENT_RESPAWN_MAX_FAILURES_ENV, "2");
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let dead = PCommand::new("true").spawn().unwrap();
+        let dead_pid = dead.id() as i32;
+        let mut dead = dead;
+        dead.wait().unwrap();
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid);
+        std::fs::write(paths.root.join("prompt.md"), "do the thing").unwrap();
+        let stub = write_failing_stub(tmp.path());
+        let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
+
+        let mut streak = std::collections::BTreeMap::new();
+        let mut retries = std::collections::BTreeMap::new();
+
+        // Tick 1: death → park → reconcile → create.sh fails (failures=1 < 2). Node
+        // stays non-terminal, park retained; the stale branch survives.
+        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        assert!(
+            !n0001(&paths).status.is_terminal(),
+            "one failure is not terminal"
+        );
+        assert!(
+            retries.contains_key("n-0001"),
+            "park retained after 1 failure"
+        );
+        assert!(
+            tbranch_exists(&repo, "wt/foo"),
+            "stale branch survives a failed spawn"
+        );
+
+        // Tick 2: reconcile → create.sh fails again (failures=2 == budget) → terminalize.
+        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        let n = n0001(&paths);
+        let report = n.last_report.expect("terminal failed report after budget");
+        assert_eq!(report["success"], false);
+        assert_eq!(report["reason"], "agent-respawn-failed");
+        assert!(
+            n.status.is_terminal(),
+            "run terminalizes, never loops forever"
+        );
+        assert!(retries.is_empty(), "park dropped once terminalized");
+    }
+
+    /// retry ⟂ salvage / no-data-loss: a death whose worktree holds UNCOMMITTED
+    /// work (dirty tree, zero commits ahead) is NOT empty-handed, so it is never
+    /// retried — the destructive teardown-and-respawn can never discard that work.
+    /// It falls through to the terminal `agent-died` report (whose blocked-handoff
+    /// gate preserves the worktree).
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn dirty_worktree_death_is_not_retried() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        // Uncommitted (untracked) work in the worktree: 0 commits ahead, dirty tree.
+        std::fs::write(wt.join("scratch.rs"), "wip, not committed").unwrap();
+        let dead = PCommand::new("true").spawn().unwrap();
+        let dead_pid = dead.id() as i32;
+        let mut dead = dead;
+        dead.wait().unwrap();
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid);
+
+        let mut streak = std::collections::BTreeMap::new();
+        let mut retries = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+
+        assert!(
+            retries.is_empty(),
+            "a dirty worktree is NOT parked for retry"
+        );
+        let n = n0001(&paths);
+        let report = n.last_report.expect("terminal failed report");
+        assert_eq!(report["success"], false);
+        assert_eq!(report["reason"], "agent-died");
+        assert_eq!(n.retry_attempts, 0, "no retry attempted");
+        assert!(
+            wt.join("scratch.rs").exists(),
+            "uncommitted work not destroyed"
+        );
     }
 }

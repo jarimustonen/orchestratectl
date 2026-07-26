@@ -710,7 +710,17 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     n.started_at = Some(ev.ts);
     n.updated_at = ev.ts;
     n.last_report = None;
-    n.retry_attempts = n.retry_attempts.saturating_add(1);
+    // The event carries its ABSOLUTE attempt number (the supervisor set it to
+    // `retry_attempts + 1` at emit time). Assign it directly rather than a blind
+    // `+= 1`: this makes the projection a pure function of the event, so a
+    // full replay from seq 0, or a (guarded-against but defensive) double-apply,
+    // converges to the same `retry_attempts` the log declares — the audit count
+    // and the durable bound can never disagree. A legacy/malformed event with no
+    // parseable `attempt` falls back to the monotone increment.
+    n.retry_attempts = d
+        .get("attempt")
+        .and_then(Value::as_u64)
+        .map_or_else(|| n.retry_attempts.saturating_add(1), |a| a as u32);
     Ok(vec![ProjectionOp::Node(n)])
 }
 

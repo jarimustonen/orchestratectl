@@ -771,22 +771,29 @@ pub fn node_recoverability(paths: &RunPaths, n: &Node, git: &str) -> Option<Reco
 
 /// Whether a dead node is **positively empty-handed** — its branch carries ZERO
 /// commits ahead of the run's source branch (`git rev-list --count
-/// <source>..<branch> == 0`). This is the precondition for the bounded auto-retry
-/// (issue `autoretry-agent-died-worker`): only a worker that committed nothing may
-/// be re-spawned from a clean worktree at source, because a retry starts from base
-/// and would otherwise strand real work.
+/// <source>..<branch> == 0`) AND its worktree holds no uncommitted work. This is
+/// the precondition for the bounded auto-retry (issue `autoretry-agent-died-worker`):
+/// only a worker that produced NOTHING recoverable may be re-spawned from a clean
+/// worktree at source, because a retry starts from base and the stale worktree is
+/// torn down — so anything it left must be provably disposable.
 ///
-/// The dual of [`node_recoverability`]: that returns `Some` only when the branch is
-/// AHEAD (`> 0`, work to salvage); this returns `true` only when it is LEVEL
-/// (`== 0`, nothing to lose). The two are mutually exclusive, so a death routes to
-/// exactly one of retry (empty-handed) or salvage (committed work).
+/// Two conditions, BOTH required:
+/// 1. **No commits ahead of source** (`git rev-list --count source..branch == 0`) —
+///    the dual of [`node_recoverability`] (which fires only when AHEAD `> 0`). The
+///    two are mutually exclusive, so a death routes to exactly one of retry
+///    (empty-handed) or salvage (committed work).
+/// 2. **Clean worktree** ([`worktree_is_clean`]) — no staged, modified, or untracked
+///    files. A dead agent frequently leaves uncommitted scratch; requiring a clean
+///    tree means the retry's teardown never force-removes work a human might want.
+///    A death with a dirty tree is NOT retried — it falls through to the terminal
+///    `agent-died` report, whose blocked-handoff gate PRESERVES the worktree.
 ///
-/// Conservative on EVERY uncertainty: a git error, an unparseable count, or any
-/// missing input (`source_branch`, `branch`, a repo to probe in) yields `false` —
-/// never retry unless empty-handedness is positively proven. This is the
-/// retry ⟂ salvage safety: a transient git hiccup declines to fabricate a
-/// "safe to discard" verdict, so a branch that might hold work is never rebuilt
-/// from base.
+/// Conservative on EVERY uncertainty: a git error, an unparseable count, an
+/// unreadable worktree status, or any missing input (`source_branch`, `branch`, a
+/// repo to probe in) yields `false` — never retry unless empty-handedness is
+/// positively proven. This is the retry ⟂ salvage safety: a transient git hiccup
+/// declines to fabricate a "safe to discard" verdict, so a branch/worktree that
+/// might hold work is never rebuilt from base.
 pub fn node_is_empty_handed(paths: &RunPaths, n: &Node, git: &str) -> bool {
     let Some(branch) = n.branch.as_deref().filter(|s| !s.is_empty()) else {
         return false;
@@ -807,6 +814,7 @@ pub fn node_is_empty_handed(paths: &RunPaths, n: &Node, git: &str) -> bool {
         None => return false,
     };
     matches!(git_ahead_count(repo, source, branch, git), Some(0))
+        && worktree_is_clean(n.worktree_path.as_deref(), git)
 }
 
 /// Whether `branch` merges into `source` without conflict, WITHOUT mutating any
