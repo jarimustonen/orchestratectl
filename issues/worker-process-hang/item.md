@@ -31,3 +31,33 @@ The failed/agent-died status does not distinguish (a) worker died with no usable
 ## Related
 
 BUG-false-failed-despite-successful-merge (run status unreliable: settled != landed) — same theme of run status not reflecting git reality.
+
+## Corroboration (2026-07-26 stint, wave 2) — deterministic ~13-min death on a heavy-LLM task; NO diagnostic trace
+
+An autonomous `--kind spinoff` running the `pipeline-tiered-triage` task died via
+`agent-died` **twice in a row**, deterministically, ~13 min after supervisor start,
+having committed **nothing** (branch tip == base_sha both times; empty worktree
+preserved by the blocked-report gate). Runs `01kyea060t` (r1) and `01kyec2pne` (r2);
+r2 supervisor.stderr.log: `{"reason":"work-complete","iterations":676}` (676 polls
+≈ 12m56s: `supervisor.started` 04:49:11 → `node.report reason=agent-died` 05:02:07).
+
+Distinguishing facts vs the original report:
+- This is a **pre-merge** death with **no committed work** (not the salvageable
+  commit-then-hang case) — so it's not recoverable by `run merge --force-from-branch`;
+  the work simply never happened.
+- Confirmed **NOT** the watchdog false-positive: `agent-died-merge-no-teardown-interactive`
+  fixed the *interactive* liveness path (tmux-window authoritative) but left autonomous
+  **pid-authoritative** and correct — so for an autonomous run, `agent-died` means the
+  claude PID genuinely exited. The agent process really died.
+- Reproducible only on the **heavy-LLM** task (long spec/verify + `/llm-review`); the
+  mechanical Rust fixes in the same wave (`child-supervisor`, the watchdog fix itself)
+  survived fine. Suggests a duration/context/API-driven death specific to long agent runs.
+
+### Biggest blocker to diagnosis: autonomous agent output is not captured anywhere durable
+The agent's stdout/stderr goes only to its tmux pane, which the supervisor kills on
+cleanup — so a genuine death leaves **zero trace** of the cause (context exhaustion? an
+API error/cutoff? a crash?). The run dir has only `events.jsonl` / `manifest.json` /
+`supervisor.stderr.log`, none of which carry the agent's own output. **Fix direction:**
+capture the agent pane to a durable `<run-dir>/agent.log` (e.g. `tmux pipe-pane` set up
+by the supervisor right after spawn confirmation) so post-mortem diagnosis is possible.
+Until that exists, every autonomous worker death is uninvestigatable after teardown.
