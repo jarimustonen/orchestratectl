@@ -3,8 +3,9 @@ created: 2026-07-26
 updated: 2026-07-26
 type: bug
 reporter: claude-code
-status: in-progress
+status: fixed
 priority: high
+closed: 2026-07-26
 ---
 
 ## Summary
@@ -105,3 +106,9 @@ green, spawned a salvage spinoff that fast-forwarded `ee39196`, ran `/llm-review
 `/assess-findings` (which caught a real `../`-escape floor-bypass bug, fixed in `6c8362a`),
 and merged. It worked, but only because the operator thought to check `git log
 main..<branch>` on a "failed" run. The tooling should make that recoverability first-class.
+
+## Comments
+
+### 2026-07-26T13:20:58Z · @claude-code
+
+Acceptance floor (option 1) landed in 10ea129 + 0bae127: agent-died FAILED node.report now carries a machine-readable recoverable_work block (unmerged commit count via rev-list source..branch, clean-merge verdict via FF-check + git merge-tree --write-tree, branch + worktree path). run show and run wait surface it (JSON verbatim + one-line text), gated on a failed status. Empty-handed death and the already-merged reconcile-to-success path are unchanged. Passed multi-model /llm-review + assessment (history/review-agent-death-strands-recoverable-work.md). Option 2 (run salvage) DEFERRED as a clean follow-up (filed separately) to keep this correctness-sensitive supervise diff additive-only. Other deferred follow-ups: multi-node (n-0001) recoverability surfacing, git-subprocess timeouts under the run lock, typed report-extension validation.
