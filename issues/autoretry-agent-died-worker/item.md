@@ -3,8 +3,9 @@ created: 2026-07-26
 updated: 2026-07-26
 type: improvement
 reporter: jari
-status: in-progress
+status: done
 priority: normal
+closed: 2026-07-26
 ---
 
 # Bounded auto-retry on agent-died for autonomous single-node workers (intermittent deaths recover without a human)
