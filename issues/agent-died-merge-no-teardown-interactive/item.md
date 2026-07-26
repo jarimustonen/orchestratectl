@@ -79,3 +79,15 @@ The agent was demonstrably **alive** across seq 4: it continued the session and 
 1. Start an interactive `/worktree-code` run; keep it alive across a long/idle span (here ~1.5 days) until the watchdog misfires `agent-died` (seq 4) and the supervisor exits (seq 6).
 2. In the same still-alive agent, commit and run `orchestratectl run merge <run-id> --report-file …`.
 3. Observe: `merged:true` + `supervisor.state:"terminal"` returned, but the tmux window, worktree, and branch survive and `run show` reads `status: failed`.
+
+## Decisions
+
+### 2026-07-26T05:13:11Z · @claude-code
+
+Root cause (defect #1): the watchdog liveness poll for INTERACTIVE runs used the single agent_pid recorded at spawn (the claude/node process discovered by walking the tmux pane tree). Over a long interactive session the human can quit+restart claude (or it re-execs on update/context-compaction) while the tmux WINDOW — and their uncommitted work — persist. The recorded pid then points at an exited process → kill(pid,0)=ESRCH → Liveness::Dead → false agent-died, terminalizing a still-live node. Long-idle sibling of the already-fixed fresh-spawn misfire.
+
+Fix: check_liveness_for_lifecycle() makes the tmux WINDOW authoritative for interactive nodes (as it already was when the pid happened to be alive). Interactive + Dead/Recycled pid → re-base on window: present/inconclusive → Alive; definitively absent → TmuxGone (streak-gated). Autonomous unchanged (pid authoritative; git-reconcile rescues lost-but-merged branches). Regression tests added for the long-idle window.
+
+Defects #2/#3 CONFIRMED already resolved by reducer-adopt-explicit-merge: reducer adopts a late via:explicit-merge report against an already-terminal agent-died node and the supervisor tears down. Proven e2e by tests/e2e_spinoff.rs::swallowed_agent_died_then_merge_reattaches_and_tears_down. No remaining gap on this trace.
+
+Documented limitation (run cancel is the escape hatch): a genuinely-dead interactive agent whose window survives (remain-on-exit zombie, surviving pane shell, permanently-unreachable tmux server while supervisor ticks) is not auto-reaped. Rejected NonZero->Absent (breaks tri-state contract + e2e gate). Review: history/review-watchdog-interactive-liveness.md.
