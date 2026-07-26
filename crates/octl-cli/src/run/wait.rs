@@ -328,12 +328,19 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
     // Surface the supervisor's stranded-work signal verbatim (present only on an
     // `agent-died` failed report whose branch has unmerged commits ahead of
     // source). A caller reads `recoverable_work.recoverable` to decide whether to
-    // salvage; the block is otherwise absent.
-    let recoverable_work = report
-        .as_ref()
-        .and_then(|r| r.get("recoverable_work"))
-        .filter(|v| v.is_object())
-        .cloned();
+    // salvage; the block is otherwise absent. Gated on a `failed` status: the
+    // supervisor only ever stamps it on the failed-synthesis path, so a block on
+    // a `done`/`cancelled` report is stale or spoofed and must not be surfaced (a
+    // regular agent report can carry unknown fields — the validator permits them).
+    let recoverable_work = if matches!(status, Status::Failed) {
+        report
+            .as_ref()
+            .and_then(|r| r.get("recoverable_work"))
+            .filter(|v| v.is_object())
+            .cloned()
+    } else {
+        None
+    };
 
     Ok(RunOutcome {
         run_id: run_id.to_string(),
@@ -379,14 +386,20 @@ pub(crate) fn recoverable_summary(block: Option<&Value>) -> Option<String> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let branch = obj.get("branch").and_then(Value::as_str).unwrap_or("?");
-    let plural = if unmerged == 1 { "commit" } else { "commits" };
+    // Agree the noun AND the verb in number so "1 unmerged commit merges" reads
+    // correctly alongside "3 unmerged commits merge".
+    let (noun, merge_verb, not_merge_verb) = if unmerged == 1 {
+        ("commit", "merges", "does NOT merge")
+    } else {
+        ("commits", "merge", "do NOT merge")
+    };
     if recoverable {
         Some(format!(
-            "recoverable={unmerged} unmerged {plural} merge cleanly on {branch}"
+            "recoverable={unmerged} unmerged {noun} {merge_verb} cleanly on {branch}"
         ))
     } else {
         Some(format!(
-            "recoverable=false ({unmerged} unmerged {plural} on {branch} do NOT merge cleanly)"
+            "recoverable=false ({unmerged} unmerged {noun} on {branch} {not_merge_verb} cleanly)"
         ))
     }
 }
@@ -476,7 +489,7 @@ mod tests {
         });
         assert_eq!(
             recoverable_summary(Some(&clean)).as_deref(),
-            Some("recoverable=1 unmerged commit merge cleanly on wt/foo"),
+            Some("recoverable=1 unmerged commit merges cleanly on wt/foo"),
         );
 
         // Clean, plural.
@@ -495,6 +508,15 @@ mod tests {
         assert_eq!(
             recoverable_summary(Some(&dirty)).as_deref(),
             Some("recoverable=false (2 unmerged commits on wt/baz do NOT merge cleanly)"),
+        );
+
+        // Singular conflicting → the negative verb agrees in number too.
+        let dirty1 = serde_json::json!({
+            "recoverable": false, "unmerged_commits": 1, "merges_cleanly": false, "branch": "wt/q",
+        });
+        assert_eq!(
+            recoverable_summary(Some(&dirty1)).as_deref(),
+            Some("recoverable=false (1 unmerged commit on wt/q does NOT merge cleanly)"),
         );
     }
 }

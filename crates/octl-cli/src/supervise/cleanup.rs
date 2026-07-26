@@ -723,6 +723,15 @@ impl Recoverability {
 /// the branch to be an ANCESTOR of source; this one answers "unmerged but
 /// salvageable?" and requires the branch to be AHEAD of source — the strictly
 /// more common stranded case the reconcile path never covered.
+///
+/// KNOWN LIMITATION: `rev-list --count` is topological reachability, not a
+/// content diff. If the branch's changes already landed in source via a SQUASH
+/// or CHERRY-PICK (whose report was then lost), its commits are still unreachable
+/// from source, so the count is `> 0` and this reports "recoverable". That is not
+/// a regression — such a run reads as a bare `failed` today, so a `failed +
+/// recoverable` verdict is strictly more informative, and re-merging
+/// already-landed squashed work is a clean no-op. The signal is advisory; the
+/// operator reviews before merging.
 pub fn node_recoverability(paths: &RunPaths, n: &Node, git: &str) -> Option<Recoverability> {
     let branch = n.branch.as_deref().filter(|s| !s.is_empty())?;
     let manifest = read_manifest_opt(paths).ok().flatten()?;
@@ -770,10 +779,16 @@ pub fn node_recoverability(paths: &RunPaths, n: &Node, git: &str) -> Option<Reco
 ///    common case (source untouched since the agent forked).
 /// 2. **Three-way probe:** otherwise `git merge-tree --write-tree <source>
 ///    <branch>` performs the merge in the object store only (no worktree touched)
-///    and exits `0` iff it is conflict-free.
+///    and exits `0` on a conflict-free merge, `1` on conflicts, `≥2` on a git
+///    error (verified against git 2.50).
 ///
 /// Conservative throughout: any spawn failure or non-zero exit reads as "does
 /// not merge cleanly", so a transient git error never over-reports recoverability.
+///
+/// Rung 2 requires **git ≥ 2.38** (`--write-tree`, Oct 2022). On an older git the
+/// probe fails and reads as "not clean" — but rung 1 still covers the common case
+/// (source untouched since the fork), so only a source-that-advanced-into-a-
+/// three-way on a pre-2.38 git degrades to a conservative `merges_cleanly: false`.
 fn branch_merges_cleanly(repo: &str, source: &str, branch: &str, git: &str) -> bool {
     // (1) Fast-forward: source ⊆ branch ⇒ clean by construction.
     if git_is_ancestor(repo, source, branch, git) {
@@ -816,14 +831,18 @@ fn worktree_is_clean(worktree_path: Option<&str>, git: &str) -> bool {
     }
 }
 
-/// `git -C <repo> merge-base --is-ancestor <branch> <source>` — true when the
-/// command exits 0 (branch tip is reachable from source). A non-zero exit
-/// (not an ancestor, or exit 128 for an unknown ref) or a spawn failure → false.
-fn git_is_ancestor(repo: &str, branch: &str, source: &str, git: &str) -> bool {
+/// `git -C <repo> merge-base --is-ancestor <ancestor> <descendant>` — true when
+/// the command exits 0 (`ancestor` is reachable from `descendant`). A non-zero
+/// exit (not an ancestor, or exit 128 for an unknown ref) or a spawn failure →
+/// false. Parameters are named by their TOPOLOGICAL role, not domain concepts:
+/// the "merged into source?" check passes `(branch, source)` while the
+/// "fast-forwards?" check passes `(source, branch)` — the argument ORDER is what
+/// distinguishes them, so don't conflate order with the source/branch nouns.
+fn git_is_ancestor(repo: &str, ancestor: &str, descendant: &str, git: &str) -> bool {
     Command::new(git)
         .arg("-C")
         .arg(repo)
-        .args(["merge-base", "--is-ancestor", branch, source])
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

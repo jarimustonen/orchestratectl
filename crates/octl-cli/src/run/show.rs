@@ -3,7 +3,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock};
+use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -63,14 +63,21 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // Fold the default node's `recoverable_work` block (if any) in the SAME
         // shared-lock window as the manifest/counters, so a `failed` status and
         // the stranded-work signal that explains it are read as one consistent
-        // snapshot (state-integrity invariant 3). A run with no `n-0001` node
-        // (or no such block) simply yields `None`.
-        let node_id =
-            NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-        let recoverable_work = read_node_opt(&paths, &node_id)?
-            .and_then(|n| n.last_report)
-            .and_then(|r| r.get("recoverable_work").cloned())
-            .filter(Value::is_object);
+        // snapshot (state-integrity invariant 3). Gated on a `failed` status: the
+        // supervisor only stamps the block on the failed-synthesis path, so a
+        // block on a non-failed report is stale/spoofed (unknown report fields are
+        // permitted by the validator) and is not surfaced. A run with no `n-0001`
+        // node (or no such block) simply yields `None`.
+        let recoverable_work = if matches!(manifest.status, Status::Failed) {
+            let node_id =
+                NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+            read_node_opt(&paths, &node_id)?
+                .and_then(|n| n.last_report)
+                .and_then(|r| r.get("recoverable_work").cloned())
+                .filter(Value::is_object)
+        } else {
+            None
+        };
         Ok(Some((manifest, counts, supervisor, recoverable_work)))
     })
     .map_err(from_core)?;
