@@ -464,8 +464,17 @@ pub fn check_liveness(probe: &AgentProbe, tmux: &WatchdogTmuxSnapshot) -> Livene
 /// already is when the pid happens to be alive: a dead/recycled pid with the
 /// window still present (or an inconclusive probe) is NOT terminal — only a
 /// definitive window absence is (and that is still streak-gated by the caller,
-/// same as any [`Liveness::TmuxGone`]). This is correct regardless of how long
-/// the run has idled, because the window outlives every agent-process restart.
+/// same as any [`Liveness::TmuxGone`]). This holds regardless of how long the
+/// run has idled, because the window outlives every agent-process restart.
+///
+/// The deliberate cost of this bias: a genuinely-dead interactive agent whose
+/// WINDOW survives — a pane whose root shell outlives the crashed `claude`
+/// child, a `remain-on-exit` zombie pane, or a tmux server that is permanently
+/// unreachable while the supervisor keeps ticking — is NOT auto-reaped and its
+/// node stays non-terminal until the human finalizes it with `run merge` /
+/// `run cancel`. Preserving a human's uncommitted work is worth more than a
+/// prompt auto-teardown on a liveness guess; the false-positive this fixes was
+/// the destructive direction.
 ///
 /// When there is no window to probe at all (`skip_tmux_check`, or no identity /
 /// window name recorded) the interactive path has no better signal, so it falls
@@ -487,9 +496,25 @@ pub fn check_liveness_for_lifecycle(
             // Window really gone → the session ended; hand the caller the
             // streak-gated half-state (a transient false-`Absent` must not reap).
             Some(TmuxProbe::Absent) => Liveness::TmuxGone,
-            // Window present, inconclusive, or nothing to probe → the human's
-            // session lives on despite the stale pid.
-            _ => Liveness::Alive,
+            // Window present or the probe was inconclusive (server unreachable /
+            // tmux missing) → the human's session lives on despite the stale pid.
+            // Inconclusive deliberately errs toward Alive: a transient/operational
+            // tmux failure must never reap a live human session (matching the PID
+            // path's tri-state). The known cost is that a genuinely-dead
+            // interactive agent whose window persists — a surviving pane shell, a
+            // `remain-on-exit` zombie pane, or a permanently-unreachable tmux
+            // server while the supervisor keeps ticking — is NOT auto-reaped; the
+            // human finalizes it with `run merge` / `run cancel`. That is the
+            // intended bias for human-owned work (never destroy uncommitted work
+            // on a liveness guess).
+            Some(TmuxProbe::Present | TmuxProbe::Unknown) => Liveness::Alive,
+            // Nothing to probe (no identity AND no window name, yet the caller did
+            // not set `skip_tmux_check`): there is no window signal to re-base on,
+            // so keep the authoritative PID verdict rather than masking a dead pid
+            // as Alive. The production tick never builds this shape (it sets
+            // `skip_tmux_check` iff both are absent), but `check_liveness_for_lifecycle`
+            // is `pub` and must honor its own contract on any `AgentProbe`.
+            None => verdict,
         },
         // `Alive` and `TmuxGone` already reflect the window correctly.
         other => other,
@@ -993,6 +1018,61 @@ mod tests {
             check_liveness_for_lifecycle(&probe, &snap, true),
             Liveness::Dead,
             "interactive with no window to probe falls back to the PID verdict"
+        );
+    }
+
+    /// The pub-API footgun guard: an interactive probe with `skip_tmux_check ==
+    /// false` but NO identity and NO window name has nothing to re-base on, so a
+    /// dead pid must stay `Dead` — never be masked as `Alive`. The production
+    /// tick never builds this shape (it sets `skip_tmux_check` iff both are
+    /// absent), but the function is `pub` and must honor its own contract.
+    #[test]
+    fn interactive_dead_pid_no_window_signal_keeps_pid_verdict() {
+        let probe = AgentProbe {
+            pid: DEAD_PID,
+            start_time: None,
+            tmux_window: None,
+            tmux_identity: None,
+            // Deliberately inconsistent shape: says "check tmux" but gives nothing.
+            skip_tmux_check: false,
+        };
+        let snap = WatchdogTmuxSnapshot::default();
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Dead,
+            "no window signal to re-base on → keep the authoritative PID verdict, \
+             never mask a dead pid as Alive"
+        );
+    }
+
+    /// The `Recycled` verdict (pid alive but `start_time` disagrees — the recorded
+    /// agent exited and its pid was reused) re-bases on the window exactly like
+    /// `Dead`: a present window means the human's session lives on. Uses this
+    /// process's own live pid with a bogus recorded `start_time` to force
+    /// `Recycled` out of `check_liveness`.
+    #[test]
+    fn interactive_recycled_pid_with_live_window_is_alive() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
+        let probe = AgentProbe {
+            pid: std::process::id(),
+            start_time: Some(1), // 1970: cannot match a live process → Recycled
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(None, "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        let snap = snapshot(&[None]);
+        assert_eq!(check_liveness(&probe, &snap), Liveness::Recycled);
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Alive,
+            "interactive: a recycled pid with a live window must not terminalize"
+        );
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, false),
+            Liveness::Recycled,
+            "autonomous: a recycled pid is authoritative"
         );
     }
 
