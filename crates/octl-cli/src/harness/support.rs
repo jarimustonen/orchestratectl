@@ -194,6 +194,14 @@ pub(super) fn parse_json_usage(transcript: &str) -> Option<Usage> {
 /// carries no recognisable token/cost fields. Looks in a nested `usage` block
 /// first, then at the top level, so both `{"usage":{"input_tokens":…}}` and a
 /// flat `{"input_tokens":…}` shape are covered.
+///
+/// Handles the two field-naming conventions seen across the agent family:
+/// - **snake_case** — Claude Code's `usage.{input,output}_tokens`,
+///   `usage.total_tokens`, top-level `total_cost_usd`.
+/// - **pi 0.82's `--mode json`** — `usage.{input,output,totalTokens}` and a
+///   nested `usage.cost.total` object (an object, not a flat number). Before this
+///   was mapped, pi's cost surfaced as `None` and the bakeoff cost column showed
+///   `-` for pi (the cosmetic gap flagged by `bakeoff-aider-pi-live-fail`).
 fn usage_from_value(v: &serde_json::Value) -> Option<Usage> {
     let u = v.get("usage").unwrap_or(v);
     let get_u64 = |obj: &serde_json::Value, keys: &[&str]| {
@@ -204,19 +212,27 @@ fn usage_from_value(v: &serde_json::Value) -> Option<Usage> {
         keys.iter()
             .find_map(|k| obj.get(*k).and_then(serde_json::Value::as_f64))
     };
-    let input = get_u64(u, &["input_tokens", "prompt_tokens"]);
-    let output = get_u64(u, &["output_tokens", "completion_tokens"]);
+    // Cost lifted from a flat number key OR a nested `cost.total` object (pi's
+    // `usage.cost = {"total": …}` shape) on the same value.
+    let cost_from = |obj: &serde_json::Value| {
+        get_f64(obj, &["total_cost_usd", "cost_usd", "cost"]).or_else(|| {
+            obj.get("cost")
+                .and_then(|c| c.get("total"))
+                .and_then(serde_json::Value::as_f64)
+        })
+    };
+    let input = get_u64(u, &["input_tokens", "prompt_tokens", "input"]);
+    let output = get_u64(u, &["output_tokens", "completion_tokens", "output"]);
     // Cost may live at the top level (Claude's `total_cost_usd`) or in the usage
-    // block — check both, top level first.
-    let cost = get_f64(v, &["total_cost_usd", "cost_usd", "cost"])
-        .or_else(|| get_f64(u, &["total_cost_usd", "cost_usd", "cost"]));
+    // block (pi's `usage.cost.total`) — check both, top level first.
+    let cost = cost_from(v).or_else(|| cost_from(u));
 
     if input.is_none() && output.is_none() && cost.is_none() {
         return None;
     }
     // An explicit combined total wins; else sum the two, guarding against a
     // hostile/absurd JSON value overflowing (panics in debug, wraps in release).
-    let total = get_u64(u, &["total_tokens", "tokens"])
+    let total = get_u64(u, &["total_tokens", "tokens", "totalTokens"])
         .or_else(|| input.and_then(|i| output.and_then(|o| i.checked_add(o))));
 
     Some(Usage {
@@ -823,11 +839,28 @@ mod tests {
     #[test]
     fn parse_json_usage_reads_explicit_total_and_nested_cost_keys() {
         let t = "{\"usage\":{\"input\":80,\"output\":40,\"total_tokens\":120},\"cost_usd\":0.002}";
-        // Flat `input`/`output` are not recognised token keys, but an explicit
-        // total and a top-level cost are — so usage is still surfaced.
+        // `input`/`output` are recognised token keys (pi's spelling), and both an
+        // explicit total and a top-level cost are surfaced.
         let u = parse_json_usage(t).unwrap();
+        assert_eq!(u.input_tokens, Some(80));
+        assert_eq!(u.output_tokens, Some(40));
         assert_eq!(u.total_tokens, Some(120));
         assert_eq!(u.cost_usd, Some(0.002));
+    }
+
+    #[test]
+    fn parse_json_usage_maps_pi_082_json_shape() {
+        // pi 0.82 `--mode json` emits `usage.{input,output,totalTokens}` and a
+        // nested `usage.cost = {"total": …}` object — not the snake_case token keys
+        // nor a flat cost number. Before this mapping the bakeoff cost column showed
+        // `-` for pi (issue `bakeoff-aider-pi-live-fail`).
+        let t = "{\"type\":\"result\",\"usage\":{\"input\":1200,\"output\":340,\
+                 \"totalTokens\":1540,\"cost\":{\"total\":0.0173}}}";
+        let u = parse_json_usage(t).expect("pi 0.82 usage shape parses");
+        assert_eq!(u.input_tokens, Some(1200));
+        assert_eq!(u.output_tokens, Some(340));
+        assert_eq!(u.total_tokens, Some(1540));
+        assert_eq!(u.cost_usd, Some(0.0173));
     }
 
     #[test]
