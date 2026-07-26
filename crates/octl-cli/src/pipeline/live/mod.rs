@@ -40,13 +40,14 @@
 //! Tier promotion and the finer per-finding triage of design §8 (DISCUSS /
 //! SPIN_OFF / DROP) remain deferred to follow-ups.
 
+pub mod breakers;
 pub mod fixloop;
 pub mod git;
 pub mod providers;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use octl_core::plan::{self, Acceptance, Chunk, Plan, Tier};
 use serde::Serialize;
@@ -63,6 +64,7 @@ use crate::pipeline::{
     FindingVerdict, Severity,
 };
 
+use breakers::{failure_fingerprint, ResourceBudget, ResourceMeter};
 use fixloop::{next_tier, FixLoopConfig};
 use git::MergeOutcome;
 use providers::{
@@ -173,6 +175,11 @@ pub struct PipelineConfig {
     /// Circuit-breaker bounds for the verify→triage→fix loop (design §9). Use
     /// [`FixLoopConfig::OFF`] for the v1 "first failure is terminal" behaviour.
     pub fix_loop: FixLoopConfig,
+    /// Deterministic resource ceilings (design §9): cost/token, wall-time,
+    /// process-count, storage, and repeated-identical-failure. Force the loop to
+    /// abort regardless of convergence when crossed. Use
+    /// [`ResourceBudget::UNLIMITED`] to disable every resource breaker.
+    pub budget: ResourceBudget,
 }
 
 /// One chunk's outcome in the report.
@@ -274,6 +281,11 @@ pub struct PipelineReport {
     /// breaker rather than converging or hitting a plain terminal state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<String>,
+    /// The accumulated per-run resource tally (design §9 cost instrumentation):
+    /// total tokens/cost metered from the harness [`Usage`], agent-invocation
+    /// count, and peak scratch-storage bytes. Present on every run so the spend is
+    /// auditable whether or not a breaker tripped.
+    pub resources: ResourceMeter,
     /// A terminal failure reason, when the pipeline could not complete the loop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
@@ -614,6 +626,13 @@ struct Run<'a> {
     respec_count: u32,
     /// Set when a circuit-breaker stopped the loop (design §9).
     circuit_breaker: Option<String>,
+    /// Live per-run resource accounting (design §9): tokens/cost metered from the
+    /// harness [`Usage`], agent-invocation count, peak storage, and the
+    /// identical-failure fingerprints. The deterministic breakers read this.
+    meter: ResourceMeter,
+    /// Wall-clock start, for the wall-time breaker (design §9). Held here so the
+    /// breaker check is a pure function of a measured [`Duration`].
+    started: Instant,
     merged_to_source: bool,
 }
 
@@ -749,6 +768,8 @@ pub fn run_pipeline_tiered(
         promote_count: 0,
         respec_count: 0,
         circuit_breaker: None,
+        meter: ResourceMeter::new(),
+        started: Instant::now(),
         merged_to_source: false,
     };
 
@@ -758,6 +779,8 @@ pub fn run_pipeline_tiered(
 
     // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
     let mut plan = produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline(), 1, None)?;
+    // Count the spec agent invocation toward the process-count breaker (design §9).
+    run.meter.record_agent_run(None);
     // Discard any side effect the (headless, permission-skipped) spec stage left
     // in the worktree: spec is a planner, so chunks must fork from a pristine
     // fork commit, not from spec's stray edits.
@@ -793,6 +816,19 @@ pub fn run_pipeline_tiered(
     //          the deterministic circuit-breakers of §9. ---
     let mut fix_iter = 0u32;
     let outcome = loop {
+        // Deterministic resource breakers (design §9) at the round boundary, BEFORE
+        // spending another code/verify cycle: refresh the storage measurement, then
+        // trip on any crossed ceiling (cost/token/wall-time/process/storage).
+        // Supervisor-owned — the orchestrator is never consulted about a breaker.
+        refresh_storage(&mut run);
+        if let Some(msg) = resource_breach(&run) {
+            run.circuit_breaker = Some(msg);
+            break LoopExit::Terminal {
+                verify: None,
+                status: "circuit_breaker",
+            };
+        }
+
         // CODE STAGE over the Pending chunks, each with its own bounded RE_CODE
         // re-brief loop (design §8). Already-Merged chunks are skipped.
         run_code_stage(&mut run, &plan, harnesses, &baseline, &pending_findings)?;
@@ -1282,6 +1318,8 @@ fn trigger_re_spec(
         new_rev,
         Some((&old_raw, reason.as_str())),
     )?;
+    // Count the re-spec agent invocation toward the process-count breaker (§9).
+    run.meter.record_agent_run(None);
     git::restore_to(&run.integration_wt, &feat_tip)?;
 
     // DAG-diff old→new: which chunks revert to Pending vs. stay Done (design §7).
@@ -1528,6 +1566,25 @@ fn union_declared_files(plan: &Plan) -> Vec<PathBuf> {
 /// prior iteration or a re-spec's kept-done set) are skipped. On any block the
 /// stage stops (the floor is the hard gate); the caller inspects
 /// [`Run::circuit_breaker`] / [`Run::code_block_status`].
+/// The first resource ceiling crossed so far, if any (design §9), as the
+/// `circuit_breaker` message. Pure over the run's meter + measured wall-clock —
+/// supervisor-owned, never gated on the orchestrator. Storage uses the last value
+/// [`refresh_storage`] observed (refreshed at each round boundary).
+fn resource_breach(run: &Run) -> Option<String> {
+    run.meter.breach(&run.cfg.budget, run.started.elapsed())
+}
+
+/// Re-measure the scratch-workdir size into the meter (design §9 storage ceiling)
+/// so the next [`resource_breach`] sees the current disk footprint. Called at each
+/// round boundary — cheap enough there, too heavy to run per attempt. A no-op when
+/// the storage breaker is off.
+fn refresh_storage(run: &mut Run) {
+    if run.cfg.budget.max_storage_bytes.is_some() {
+        let bytes = breakers::dir_size_bytes(&run.cfg.workdir);
+        run.meter.observe_storage_bytes(bytes);
+    }
+}
+
 fn run_code_stage(
     run: &mut Run,
     plan: &Plan,
@@ -1600,6 +1657,14 @@ fn run_code_stage(
                     );
                     run.chunk_status
                         .insert(chunk.id.clone(), LiveChunkStatus::Merged);
+                    // A resource ceiling the merge's own spend crossed stops the
+                    // stage here (design §9); the merged chunk stays, nothing to
+                    // preserve. Round-boundary storage is refreshed by the caller.
+                    if let Some(msg) = resource_breach(run) {
+                        run.circuit_breaker = Some(msg);
+                        run.code_block_status = Some("circuit_breaker");
+                        return Ok(());
+                    }
                     break;
                 }
                 ChunkAttempt::Blocked {
@@ -1613,6 +1678,49 @@ fn run_code_stage(
                     wt,
                     branch,
                 } => {
+                    // Deterministic resource circuit-breakers (design §9), checked
+                    // BEFORE spending another attempt on this chunk — the whole point
+                    // of §9 (never gated on the model's judgment). (a) repeated-
+                    // identical-failure: the SAME block (chunk + status + findings)
+                    // recurring to the ceiling aborts instead of grinding the re-code
+                    // budget on an unchanging failure. (b) any resource ceiling the
+                    // attempt just metered crossed (cost/token/process/wall-time). On
+                    // either, preserve the attempt (state-integrity invariant 5) and
+                    // stop the stage at a `circuit_breaker` terminal.
+                    let fp = failure_fingerprint(&chunk.id, status, &attempt_findings);
+                    let recurrence = run.meter.record_failure(&fp);
+                    if let Some(msg) = run
+                        .cfg
+                        .budget
+                        .identical_failure_breach(recurrence)
+                        .or_else(|| resource_breach(run))
+                    {
+                        run.circuit_breaker = Some(msg.clone());
+                        run.code_block_status = Some("circuit_breaker");
+                        run.decisions.push(envelope(
+                            "supervisor",
+                            DecisionTier::Coordinator,
+                            format!(
+                                "chunk {} stopped by circuit-breaker — preserved, not merged ({msg})",
+                                chunk.id
+                            ),
+                            vec![format!("chunk:{}", chunk.id)],
+                            "supervisor",
+                            "v1",
+                        ));
+                        push_blocked_chunk(
+                            run,
+                            chunk,
+                            outcome,
+                            floor,
+                            floor_passed,
+                            reason,
+                            &wt,
+                            &branch,
+                        );
+                        return Ok(());
+                    }
+
                     // Re-code while the chunk is re-codable and its per-tier budget
                     // holds (design §8). `recode` is 1-based, so re-code N is allowed
                     // iff N ≤ max_recode_per_chunk.
@@ -1809,6 +1917,10 @@ fn attempt_chunk(
         .harness(current_tier)
         .run_chunk(&req, &cancel)
         .map_err(|e| PipelineError::Harness(e.to_string()))?;
+    // Meter this agent invocation into the per-run tally (design §9 cost
+    // instrumentation): fold in the harness-reported Usage and count the process.
+    // Done for EVERY outcome — a timeout/cancel/no-change still spent tokens.
+    run.meter.record_agent_run(result.usage.as_ref());
 
     // A harness failure (no change / failed / timeout / cancelled) is re-codable;
     // its reason is the sole re-brief finding.
@@ -2035,6 +2147,10 @@ fn run_verify_stage(
         worktree: &run.integration_wt,
         acceptance_results: &acceptance_results,
     })?;
+    // Count the verify agent invocation toward the process-count breaker (design
+    // §9). Verify does not surface Usage through its trait, so no tokens/cost are
+    // added — a documented follow-up (spec/verify token accounting).
+    run.meter.record_agent_run(None);
 
     run.decisions.push(envelope(
         "verify",
@@ -2243,6 +2359,7 @@ fn finalize(
         promote_count: run.promote_count,
         respec_count: run.respec_count,
         circuit_breaker: run.circuit_breaker.clone(),
+        resources: run.meter.clone(),
         failure,
     }
 }
@@ -2313,6 +2430,54 @@ pub struct PipelineRunConfig {
     /// Max `PROMOTE_TIER` promotions per chunk (design §3). `None` uses the live
     /// default; `0` disables adaptive promotion.
     pub max_promotions: Option<u32>,
+    /// Resource circuit-breaker: cost ceiling in USD (design §9). `None` uses the
+    /// live default; `0` disables the cost breaker.
+    pub max_cost_usd: Option<f64>,
+    /// Resource circuit-breaker: total-token ceiling (design §9). `None` uses the
+    /// live default; `0` disables it.
+    pub max_total_tokens: Option<u64>,
+    /// Resource circuit-breaker: wall-time ceiling in seconds (design §9). `None`
+    /// uses the live default; `0` disables it.
+    pub max_wall_time_secs: Option<u64>,
+    /// Resource circuit-breaker: max agent invocations (design §9). `None` uses the
+    /// live default; `0` disables it.
+    pub max_processes: Option<u32>,
+    /// Resource circuit-breaker: scratch-storage ceiling in MiB (design §9). `None`
+    /// uses the live default; `0` disables it.
+    pub max_storage_mb: Option<u64>,
+    /// Resource circuit-breaker: identical-failure recurrence ceiling (design §9).
+    /// `None` uses the live default; `0` disables it.
+    pub max_identical_failures: Option<u32>,
+}
+
+/// Resolve a `u64` resource ceiling from an optional CLI override: an explicit
+/// `0` disables the breaker (`None`), any other value overrides, and an absent
+/// flag falls back to `default` (design §9: `0` = off, uniform across breakers).
+fn resolve_u64_ceiling(user: Option<u64>, default: Option<u64>) -> Option<u64> {
+    match user {
+        Some(0) => None,
+        Some(v) => Some(v),
+        None => default,
+    }
+}
+
+/// [`resolve_u64_ceiling`] for a `u32` ceiling.
+fn resolve_u32_ceiling(user: Option<u32>, default: Option<u32>) -> Option<u32> {
+    match user {
+        Some(0) => None,
+        Some(v) => Some(v),
+        None => default,
+    }
+}
+
+/// [`resolve_u64_ceiling`] for a USD (`f64`) ceiling: a non-positive value
+/// disables the cost breaker.
+fn resolve_f64_ceiling(user: Option<f64>, default: Option<f64>) -> Option<f64> {
+    match user {
+        Some(v) if v <= 0.0 => None,
+        Some(v) => Some(v),
+        None => default,
+    }
 }
 
 /// `pipeline run` entry point: resolve config, wire the LIVE Claude/deepseek
@@ -2363,6 +2528,33 @@ pub fn cmd_run(
                 max_fix_iterations: cfg.max_fix_iterations.unwrap_or(d.max_fix_iterations),
                 max_respec: cfg.max_respec.unwrap_or(d.max_respec),
                 max_promotions: cfg.max_promotions.unwrap_or(d.max_promotions),
+            }
+        },
+        budget: {
+            // The deterministic resource breakers are ON by default for the live
+            // command (design §9), each ceiling individually overridable; a supplied
+            // `0` disables that one breaker (`None` in the resolved budget). Wall-time
+            // is expressed in seconds and storage in MiB on the CLI; both round-trip
+            // through the resolve helper in those units, then convert.
+            let d = ResourceBudget::live_default();
+            ResourceBudget {
+                max_cost_usd: resolve_f64_ceiling(cfg.max_cost_usd, d.max_cost_usd),
+                max_total_tokens: resolve_u64_ceiling(cfg.max_total_tokens, d.max_total_tokens),
+                max_wall_time: resolve_u64_ceiling(
+                    cfg.max_wall_time_secs,
+                    d.max_wall_time.map(|w| w.as_secs()),
+                )
+                .map(Duration::from_secs),
+                max_processes: resolve_u32_ceiling(cfg.max_processes, d.max_processes),
+                max_storage_bytes: resolve_u64_ceiling(
+                    cfg.max_storage_mb,
+                    d.max_storage_bytes.map(|b| b / (1024 * 1024)),
+                )
+                .map(|mb| mb.saturating_mul(1024 * 1024)),
+                max_identical_failures: resolve_u32_ceiling(
+                    cfg.max_identical_failures,
+                    d.max_identical_failures,
+                ),
             }
         },
     };
@@ -2446,6 +2638,13 @@ fn print_report(r: &PipelineReport) {
     match (&r.merged, &r.final_commit) {
         (true, Some(commit)) => println!("  merged → {} @ {}", r.source_branch, commit),
         _ => println!("  merged: no"),
+    }
+    {
+        let res = &r.resources;
+        println!(
+            "  resources: {} token(s), ${:.4}, {} agent invocation(s), {} storage byte(s)",
+            res.total_tokens, res.cost_usd, res.processes, res.storage_bytes
+        );
     }
     if let Some(cb) = &r.circuit_breaker {
         println!("  circuit-breaker: {}", output::escape_one_line(cb));

@@ -13,10 +13,11 @@ use std::process::Command;
 use serde_json::json;
 use tempfile::TempDir;
 
+use super::breakers::ResourceBudget;
 use super::providers::{ScriptedSpec, ScriptedVerify};
 use super::*;
 use crate::harness::{
-    CancelToken, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities, HarnessError,
+    CancelToken, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities, HarnessError, Usage,
 };
 use crate::pipeline::{Action, Decider, DeciderVerdict, DecisionContext};
 use octl_core::plan::Tier;
@@ -152,6 +153,9 @@ fn config(repo: &Path, workdir: &Path, plan_files: &[&str]) -> PipelineConfig {
         // Default the fix loop OFF so the pre-loop tests keep asserting the
         // first-failure-is-terminal behaviour; fix-loop tests opt in explicitly.
         fix_loop: super::fixloop::FixLoopConfig::OFF,
+        // Default every resource breaker OFF so the pre-breaker tests are unchanged;
+        // breaker tests opt in with a tight ceiling explicitly.
+        budget: super::breakers::ResourceBudget::UNLIMITED,
     }
 }
 
@@ -1583,4 +1587,250 @@ fn live_end_to_end_smoke() {
     if report.status == "merged" {
         assert!(report.merged && report.final_commit.is_some());
     }
+}
+
+// --- Resource circuit-breakers (design §9) ----------------------------------
+
+/// A [`CodeHarness`] that commits `files` in the chunk worktree AND reports a
+/// fixed [`Usage`], so the cost/token breakers have real spend to meter.
+struct MeteredFake {
+    files: Vec<(&'static str, &'static str)>,
+    usage: Usage,
+}
+impl CodeHarness for MeteredFake {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: true,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let wt = &req.worktree_path;
+        let mut changed = Vec::new();
+        for (rel, content) in &self.files {
+            std::fs::write(wt.join(rel), content).unwrap();
+            changed.push(PathBuf::from(*rel));
+        }
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        let mut res = ChunkResult::committed(git_out(wt, &["rev-parse", "HEAD"]), changed);
+        res.usage = Some(self.usage.clone());
+        Ok(res)
+    }
+}
+
+fn usage(tokens: u64, cost: f64) -> Usage {
+    Usage {
+        input_tokens: None,
+        output_tokens: None,
+        total_tokens: Some(tokens),
+        cost_usd: Some(cost),
+    }
+}
+
+#[test]
+fn cost_ceiling_breaker_aborts_regardless_of_convergence() {
+    // Design §9 cost ceiling + kill-switch: a chunk whose metered spend exceeds
+    // the ceiling aborts the run BEFORE it can merge the feature, even though the
+    // chunk itself floor-passed and verify would have converged.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_cost_usd: Some(1.0),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = MeteredFake {
+        files: vec![("feature.txt", "hi\n")],
+        usage: usage(15, 5.0), // $5 spend > $1 ceiling
+    };
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cost ceiling"),
+        "{report:#?}"
+    );
+    assert!(
+        !report.merged,
+        "the cost breaker aborts before the feature merges"
+    );
+    assert!(
+        report.resources.cost_usd >= 5.0,
+        "spend was metered from Usage"
+    );
+}
+
+#[test]
+fn token_ceiling_breaker_aborts() {
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_total_tokens: Some(1_000),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = MeteredFake {
+        files: vec![("feature.txt", "hi\n")],
+        usage: usage(5_000, 0.0), // 5000 tokens > 1000 ceiling
+    };
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("token ceiling"),
+        "{report:#?}"
+    );
+    assert!(report.resources.total_tokens >= 5_000);
+}
+
+#[test]
+fn wall_time_ceiling_breaker_aborts() {
+    // A 1ns ceiling is crossed by the time the loop is entered (spec already ran),
+    // so the wall-time breaker trips at the round boundary before any code stage.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_wall_time: Some(std::time::Duration::from_nanos(1)),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("wall-time"),
+        "{report:#?}"
+    );
+    assert!(!report.merged);
+}
+
+#[test]
+fn process_count_ceiling_breaker_aborts() {
+    // Ceiling 1: the spec invocation alone reaches it; the first chunk attempt
+    // crosses it, aborting before the feature merges.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_processes: Some(1),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("process-count"),
+        "{report:#?}"
+    );
+    assert!(report.resources.processes >= 2, "spec + chunk were counted");
+}
+
+#[test]
+fn storage_ceiling_breaker_aborts() {
+    // A 1-byte ceiling is crossed by the scratch workdir (which already holds the
+    // integration worktree), so the storage breaker trips at the round boundary.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_storage_bytes: Some(1),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("storage ceiling"),
+        "{report:#?}"
+    );
+    assert!(
+        report.resources.storage_bytes > 1,
+        "workdir size was measured"
+    );
+}
+
+#[test]
+fn repeated_identical_failure_breaker_aborts_before_exhausting_recode_budget() {
+    // Design §9 repeated-identical-failure: the SAME floor block recurring twice
+    // aborts even though the re-code budget (5) would otherwise keep grinding — the
+    // breaker is a tighter bound than the raw attempt count.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 5,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    cfg.budget = ResourceBudget {
+        max_identical_failures: Some(2),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let report = run_pipeline(&cfg, &spec, &AlwaysStray, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("repeated-identical-failure"),
+        "{report:#?}"
+    );
+    // Exactly one re-code happened before the breaker fired at the 2nd identical
+    // block — far short of the budget of 5.
+    assert_eq!(report.recode_count, 1, "{report:#?}");
+    assert!(!report.merged);
+}
+
+#[test]
+fn unlimited_budget_does_not_disturb_a_clean_merge() {
+    // The resource breakers are additive: with UNLIMITED (the test default) a
+    // normal run still merges, and the tally is surfaced on the report.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = MeteredFake {
+        files: vec![("feature.txt", "hi\n")],
+        usage: usage(42, 0.01),
+    };
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.circuit_breaker.is_none());
+    assert_eq!(
+        report.resources.total_tokens, 42,
+        "tally surfaced on the report"
+    );
+    assert!(
+        report.resources.processes >= 3,
+        "spec + chunk + verify counted"
+    );
 }

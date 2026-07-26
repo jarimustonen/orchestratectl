@@ -196,7 +196,7 @@ pub(super) fn parse_json_usage(transcript: &str) -> Option<Usage> {
 /// flat `{"input_tokens":…}` shape are covered.
 ///
 /// Handles the two field-naming conventions seen across the agent family:
-/// - **snake_case** — Claude Code's `usage.{input,output}_tokens`,
+/// - **`snake_case`** — Claude Code's `usage.{input,output}_tokens`,
 ///   `usage.total_tokens`, top-level `total_cost_usd`.
 /// - **pi 0.82's `--mode json`** — `usage.{input,output,totalTokens}` and a
 ///   nested `usage.cost.total` object (an object, not a flat number). Before this

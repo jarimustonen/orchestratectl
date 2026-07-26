@@ -173,6 +173,30 @@ struct PipelineRunArgs {
     /// breaker gives up. Omit for the default (1); 0 disables promotion.
     #[arg(long, value_name = "N")]
     max_promotions: Option<u32>,
+    /// Resource circuit-breaker: hard cost ceiling in USD, summed from harness
+    /// usage (design §9). Omit for the default ($10); 0 disables the cost breaker.
+    #[arg(long, value_name = "USD")]
+    max_cost_usd: Option<f64>,
+    /// Resource circuit-breaker: hard total-token ceiling (design §9). Omit for the
+    /// default (2,000,000); 0 disables the token breaker.
+    #[arg(long, value_name = "N")]
+    max_total_tokens: Option<u64>,
+    /// Resource circuit-breaker: hard wall-clock ceiling for the whole run, in
+    /// seconds (design §9). Omit for the default (3600); 0 disables it.
+    #[arg(long, value_name = "SECONDS")]
+    max_wall_time: Option<u64>,
+    /// Resource circuit-breaker: hard cap on agent invocations spawned across the
+    /// run (design §9). Omit for the default (50); 0 disables it.
+    #[arg(long, value_name = "N")]
+    max_processes: Option<u32>,
+    /// Resource circuit-breaker: hard cap on scratch-workdir size, in MiB (design
+    /// §9). Omit for the default (2048); 0 disables it.
+    #[arg(long, value_name = "MB")]
+    max_storage_mb: Option<u64>,
+    /// Resource circuit-breaker: abort when the SAME failure recurs this many times
+    /// (design §9). Omit for the default (3); 0 disables the repeated-failure breaker.
+    #[arg(long, value_name = "N")]
+    max_identical_failures: Option<u32>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -391,6 +415,12 @@ pub fn run() -> ExitCode {
                     max_fix_iterations: args.max_fix_iterations,
                     max_respec: args.max_respec,
                     max_promotions: args.max_promotions,
+                    max_cost_usd: args.max_cost_usd,
+                    max_total_tokens: args.max_total_tokens,
+                    max_wall_time_secs: args.max_wall_time,
+                    max_processes: args.max_processes,
+                    max_storage_mb: args.max_storage_mb,
+                    max_identical_failures: args.max_identical_failures,
                 };
                 crate::pipeline::live::cmd_run(&cfg, output, &logging_warnings)
             }
