@@ -203,7 +203,8 @@ pub(super) fn parse_json_usage(transcript: &str) -> Option<Usage> {
 ///   was mapped, pi's cost surfaced as `None` and the bakeoff cost column showed
 ///   `-` for pi (the cosmetic gap flagged by `bakeoff-aider-pi-live-fail`).
 fn usage_from_value(v: &serde_json::Value) -> Option<Usage> {
-    let u = v.get("usage").unwrap_or(v);
+    let nested = v.get("usage");
+    let u = nested.unwrap_or(v);
     let get_u64 = |obj: &serde_json::Value, keys: &[&str]| {
         keys.iter()
             .find_map(|k| obj.get(*k).and_then(serde_json::Value::as_u64))
@@ -212,28 +213,51 @@ fn usage_from_value(v: &serde_json::Value) -> Option<Usage> {
         keys.iter()
             .find_map(|k| obj.get(*k).and_then(serde_json::Value::as_f64))
     };
-    // Cost lifted from a flat number key OR a nested `cost.total` object (pi's
-    // `usage.cost = {"total": …}` shape) on the same value.
-    let cost_from = |obj: &serde_json::Value| {
-        get_f64(obj, &["total_cost_usd", "cost_usd", "cost"]).or_else(|| {
-            obj.get("cost")
-                .and_then(|c| c.get("total"))
-                .and_then(serde_json::Value::as_f64)
-        })
+    // pi 0.82 uses bare `input`/`output`/`totalTokens` keys, but ONLY inside a
+    // nested `usage` object. Restrict those bare spellings to the nested case so a
+    // stray top-level `input`/`output` number on an unrelated event object is never
+    // misread as token usage (the transcript scan reads arbitrary JSON lines and
+    // keeps the last usage-bearing object). The flat top-level shape keeps the
+    // conservative snake_case-only keys it had before.
+    let (input_keys, output_keys, total_keys): (&[&str], &[&str], &[&str]) = if nested.is_some() {
+        (
+            &["input_tokens", "prompt_tokens", "input"],
+            &["output_tokens", "completion_tokens", "output"],
+            &["total_tokens", "tokens", "totalTokens"],
+        )
+    } else {
+        (
+            &["input_tokens", "prompt_tokens"],
+            &["output_tokens", "completion_tokens"],
+            &["total_tokens", "tokens"],
+        )
     };
-    let input = get_u64(u, &["input_tokens", "prompt_tokens", "input"]);
-    let output = get_u64(u, &["output_tokens", "completion_tokens", "output"]);
-    // Cost may live at the top level (Claude's `total_cost_usd`) or in the usage
-    // block (pi's `usage.cost.total`) — check both, top level first.
-    let cost = cost_from(v).or_else(|| cost_from(u));
+    let input = get_u64(u, input_keys);
+    let output = get_u64(u, output_keys);
+    // Cost preference order (most specific first, so an unrelated top-level generic
+    // `cost` number can never shadow a real figure): the specific USD keys at the
+    // top level then in the usage block, then pi's nested `usage.cost.total`, and
+    // only last the bare generic `cost` number.
+    let nested_cost = u
+        .get("cost")
+        .and_then(|c| c.get("total"))
+        .and_then(serde_json::Value::as_f64);
+    let cost = get_f64(v, &["total_cost_usd", "cost_usd"])
+        .or_else(|| get_f64(u, &["total_cost_usd", "cost_usd"]))
+        .or(nested_cost)
+        .or_else(|| get_f64(v, &["cost"]))
+        .or_else(|| get_f64(u, &["cost"]));
 
-    if input.is_none() && output.is_none() && cost.is_none() {
-        return None;
-    }
     // An explicit combined total wins; else sum the two, guarding against a
     // hostile/absurd JSON value overflowing (panics in debug, wraps in release).
-    let total = get_u64(u, &["total_tokens", "tokens", "totalTokens"])
+    let total = get_u64(u, total_keys)
         .or_else(|| input.and_then(|i| output.and_then(|o| i.checked_add(o))));
+
+    // Nothing recognisable — not even a standalone total (a provider may report
+    // only a combined figure).
+    if input.is_none() && output.is_none() && total.is_none() && cost.is_none() {
+        return None;
+    }
 
     Some(Usage {
         input_tokens: input,
@@ -846,6 +870,37 @@ mod tests {
         assert_eq!(u.output_tokens, Some(40));
         assert_eq!(u.total_tokens, Some(120));
         assert_eq!(u.cost_usd, Some(0.002));
+    }
+
+    #[test]
+    fn parse_json_usage_claude_snake_case_still_parses() {
+        // Regression guard: the Claude Code result shape must keep parsing exactly
+        // after the pi-shape spellings were added.
+        let t = "{\"type\":\"result\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50},\
+                 \"total_cost_usd\":0.0125}";
+        let u = parse_json_usage(t).expect("claude usage parses");
+        assert_eq!(u.input_tokens, Some(100));
+        assert_eq!(u.output_tokens, Some(50));
+        assert_eq!(u.total_tokens, Some(150));
+        assert_eq!(u.cost_usd, Some(0.0125));
+    }
+
+    #[test]
+    fn parse_json_usage_surfaces_a_standalone_total() {
+        // A provider that reports only a combined total (no input/output/cost) must
+        // still surface usage — the token breaker depends on it.
+        let u = parse_json_usage("{\"usage\":{\"totalTokens\":1540}}").expect("total parses");
+        assert_eq!(u.total_tokens, Some(1540));
+        assert_eq!(u.input_tokens, None);
+        assert_eq!(u.output_tokens, None);
+    }
+
+    #[test]
+    fn parse_json_usage_ignores_bare_input_without_a_usage_block() {
+        // A top-level `input`/`output` on an unrelated event object (no `usage`
+        // field) must NOT be misread as token usage — the bare pi spellings only
+        // apply inside a nested `usage` object.
+        assert_eq!(parse_json_usage("{\"input\":999,\"output\":42}"), None);
     }
 
     #[test]

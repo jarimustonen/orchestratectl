@@ -2306,7 +2306,7 @@ expression: value
                 "long": "max-identical-failures",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Resource circuit-breaker: abort when the SAME failure recurs this many times (design §9). Omit for the default (3); 0 disables the repeated-failure breaker",
+                "help": "Resource circuit-breaker: abort when the SAME failure (same chunk, tier, and findings) is observed this many times (design §9). Omit for the default (3); 0 disables the repeated-failure breaker",
                 "value_names": [
                   "N"
                 ],

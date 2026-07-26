@@ -193,8 +193,9 @@ struct PipelineRunArgs {
     /// §9). Omit for the default (2048); 0 disables it.
     #[arg(long, value_name = "MB")]
     max_storage_mb: Option<u64>,
-    /// Resource circuit-breaker: abort when the SAME failure recurs this many times
-    /// (design §9). Omit for the default (3); 0 disables the repeated-failure breaker.
+    /// Resource circuit-breaker: abort when the SAME failure (same chunk, tier, and
+    /// findings) is observed this many times (design §9). Omit for the default (3);
+    /// 0 disables the repeated-failure breaker.
     #[arg(long, value_name = "N")]
     max_identical_failures: Option<u32>,
 }

@@ -15,9 +15,9 @@
 //! then asks [`ResourceMeter::breach`] whether any ceiling was crossed.
 //!
 //! The five breakers the issue calls for (all deterministic):
-//! - **cost / token** ceilings with a kill-switch — a per-run spend tally fed from
-//!   the harness [`Usage`]; on breach the loop stops before the next model call,
-//!   so no further spend accrues.
+//! - **cost / token** ceilings — a per-run spend tally fed from the harness
+//!   [`Usage`]; on breach the loop stops scheduling further model calls, so no
+//!   *additional* spend accrues.
 //! - **wall-time** ceiling — total elapsed since the run started.
 //! - **process-count** ceiling — how many agent invocations were spawned.
 //! - **storage** ceiling — bytes under the run's scratch workdir.
@@ -25,6 +25,18 @@
 //!   aborts instead of looping (design §9), keyed on a stable fingerprint so a
 //!   floor block that reproduces identically does not burn the whole re-code
 //!   budget re-generating the same failure.
+//!
+//! **Granularity (an honest limitation).** These are **post-attempt backstops**,
+//! not in-flight kill-switches. The meter is updated *after* each synchronous agent
+//! invocation / measured boundary and checked between them, so a breaker forces the
+//! abort *before the next* model call, chunk, or round — it cannot interrupt a call
+//! already running (a single call can overshoot a cost/token/wall-time ceiling
+//! before it returns). Wall-time in particular is sampled at attempt/round
+//! boundaries, so it bounds *scheduling*, not an individual hung subprocess (the
+//! per-chunk [`ChunkRequest::timeout`](crate::harness::ChunkRequest::timeout) bounds
+//! that). A true in-flight kill (deadline propagated into the subprocess cancel
+//! token, streaming-usage cancellation) is a documented follow-up; it does not
+//! change the deterministic, supervisor-owned nature of the abort.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -43,8 +55,8 @@ pub struct ResourceBudget {
     /// metered agent invocation. Uses the provider's combined total when reported,
     /// else input+output.
     pub max_total_tokens: Option<u64>,
-    /// Hard cap on total cost in USD (design §9 cost ceiling + kill-switch),
-    /// target ≤ ~2× an all-Opus run.
+    /// Cap on total cost in USD (design §9 cost ceiling), target ≤ ~2× an all-Opus
+    /// run. Enforced as a post-attempt backstop (see the module docs on granularity).
     pub max_cost_usd: Option<f64>,
     /// Hard cap on total wall-clock time since the run started (design §9
     /// wall-time ceiling).
@@ -64,21 +76,20 @@ pub struct ResourceBudget {
 impl ResourceBudget {
     /// Whether a just-incremented identical-failure `count` for a fingerprint has
     /// crossed the repeated-identical-failure ceiling (design §9). Returns the
-    /// `circuit_breaker` message on breach. `None`/`0` ceiling = off.
+    /// `circuit_breaker` message on breach. `None`/`0` ceiling = off. The ceiling
+    /// counts total observations of the fingerprint: `cap = 3` trips on the 3rd.
     #[must_use]
     pub fn identical_failure_breach(&self, count: u32) -> Option<String> {
         self.max_identical_failures.and_then(|cap| {
             (cap > 0 && count >= cap).then(|| {
                 format!(
-                    "repeated-identical-failure breaker: the same failure recurred {count} time(s) \
-                     (ceiling {cap})"
+                    "repeated-identical-failure breaker: the same failure was observed {count} \
+                     time(s) (ceiling {cap})"
                 )
             })
         })
     }
-}
 
-impl ResourceBudget {
     /// Every ceiling off — the pre-T6 behaviour (only the count-based
     /// [`FixLoopConfig`](super::fixloop::FixLoopConfig) bounds apply). Used as the
     /// default in tests that predate the resource breakers so they stay meaningful.
@@ -119,19 +130,65 @@ impl ResourceBudget {
 }
 
 /// A stable fingerprint for a blocked chunk attempt, used by the
-/// repeated-identical-failure breaker. Combines the chunk id, the block status,
-/// and the (order-insensitive) findings — the floor-violation lines that describe
-/// *what* failed — so an identical floor block reproduces the same key across
-/// re-code attempts. Volatile detail (commit oids in a harness reason) naturally
-/// varies the key, so those blocks fall to the re-code-budget bound instead, which
-/// is the intended behaviour (they are not "the same failure").
+/// repeated-identical-failure breaker. Combines the chunk id, the chunk's current
+/// **tier**, the block status, and the (order-insensitive, oid-normalized)
+/// findings, so an identical block reproduces the same key across re-code attempts
+/// at the same tier.
+///
+/// The `tier` is part of the key so a `PROMOTE_TIER` re-run (design §3) starts a
+/// *fresh* identical-failure count — otherwise the accumulated lower-tier count
+/// could trip the breaker on the promoted tier's very first attempt and starve the
+/// stronger model of its budget.
+///
+/// Findings are run through [`normalize_volatile`], which collapses hex-oid-like
+/// tokens (commit shas in a harness-failure reason such as "harness reported commit
+/// <oid> but worktree HEAD is <oid>") to a placeholder. Without this, a chunk stuck
+/// rewriting history would emit a *new* reason every attempt and evade the breaker —
+/// exactly the unchanging-failure loop it must catch. Floor-violation lines are
+/// already stable, so this only affects the volatile harness reasons.
 #[must_use]
-pub fn failure_fingerprint(chunk_id: &str, status: &str, findings: &[String]) -> String {
-    let mut parts: Vec<&str> = findings.iter().map(String::as_str).collect();
+pub fn failure_fingerprint(
+    chunk_id: &str,
+    tier: &str,
+    status: &str,
+    findings: &[String],
+) -> String {
+    let mut parts: Vec<String> = findings.iter().map(|f| normalize_volatile(f)).collect();
     parts.sort_unstable();
-    // `\u{1}` (SOH) is not a byte any of the components legitimately contain, so it
-    // is an unambiguous field separator.
-    format!("{chunk_id}\u{1}{status}\u{1}{}", parts.join("\u{1}"))
+    // `\u{1}` (SOH) is a control byte that does not appear in a chunk id / tier /
+    // status and is exceedingly unlikely in a normalized finding, so it is a safe
+    // field separator here.
+    format!(
+        "{chunk_id}\u{1}{tier}\u{1}{status}\u{1}{}",
+        parts.join("\u{1}")
+    )
+}
+
+/// Collapse hex-oid-like tokens (runs of ≥7 ASCII hex digits — git short/long
+/// object ids) in `s` to a fixed `<hex>` placeholder, so a finding that differs
+/// only by a commit sha fingerprints identically across attempts.
+#[must_use]
+fn normalize_volatile(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.len() >= 7 && run.chars().all(|c| c.is_ascii_hexdigit()) {
+            out.push_str("<hex>");
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for ch in s.chars() {
+        if ch.is_ascii_hexdigit() {
+            run.push(ch);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(ch);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 /// The live per-run resource accumulator (design §9 cost instrumentation). Fed by
@@ -169,24 +226,34 @@ impl ResourceMeter {
     pub fn record_agent_run(&mut self, usage: Option<&Usage>) {
         self.processes = self.processes.saturating_add(1);
         if let Some(u) = usage {
-            let tokens = u.total_tokens.unwrap_or_else(|| {
-                u.input_tokens
-                    .unwrap_or(0)
-                    .saturating_add(u.output_tokens.unwrap_or(0))
-            });
+            // Prefer the LARGER of the reported combined total and input+output: a
+            // malformed `{"total_tokens":0,"input_tokens":1000,…}` must not let a
+            // spurious zero total undercount a safety breaker.
+            let components = u
+                .input_tokens
+                .unwrap_or(0)
+                .saturating_add(u.output_tokens.unwrap_or(0));
+            let tokens = u.total_tokens.map_or(components, |t| t.max(components));
             self.total_tokens = self.total_tokens.saturating_add(tokens);
             if let Some(c) = u.cost_usd {
-                // Ignore a negative/NaN cost rather than corrupt the tally.
+                // Ignore a negative/NaN cost rather than corrupt the tally, and keep
+                // the running sum finite so an absurd accumulation can't reach ∞ and
+                // silently disable the `> cap` cost check.
                 if c.is_finite() && c > 0.0 {
-                    self.cost_usd += c;
+                    let next = self.cost_usd + c;
+                    if next.is_finite() {
+                        self.cost_usd = next;
+                    }
                 }
             }
         }
     }
 
-    /// Record the measured scratch-workdir size (design §9 storage), keeping the
-    /// high-water mark so a mid-run cleanup can't hide a peak that already
-    /// breached.
+    /// Record a measured scratch-workdir size (design §9 storage), keeping the
+    /// high-water mark across the measurements taken — so a shrink between two
+    /// samples can't hide a peak that a sample already observed. (It cannot see a
+    /// transient peak that rises and falls entirely between two samples; storage is
+    /// a coarse backstop, sampled at attempt/round boundaries.)
     pub fn observe_storage_bytes(&mut self, bytes: u64) {
         self.storage_bytes = self.storage_bytes.max(bytes);
     }
@@ -263,9 +330,14 @@ impl ResourceMeter {
 /// can't inflate the figure or loop. Returns `0` when `root` does not exist yet.
 #[must_use]
 pub fn dir_size_bytes(root: &std::path::Path) -> u64 {
-    fn walk(dir: &std::path::Path, acc: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+    // Iterative (explicit stack) rather than recursive, so a pathologically deep
+    // directory tree can never overflow the thread stack while the breaker is just
+    // trying to measure disk.
+    let mut acc: u64 = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
         };
         for entry in entries.flatten() {
             // `DirEntry::metadata` does NOT traverse a symlink (unlike `fs::metadata`)
@@ -274,14 +346,12 @@ pub fn dir_size_bytes(root: &std::path::Path) -> u64 {
                 continue;
             };
             if meta.is_dir() {
-                walk(&entry.path(), acc);
+                stack.push(entry.path());
             } else {
-                *acc = acc.saturating_add(meta.len());
+                acc = acc.saturating_add(meta.len());
             }
         }
     }
-    let mut acc = 0;
-    walk(root, &mut acc);
     acc
 }
 
@@ -445,7 +515,12 @@ mod tests {
             max_identical_failures: Some(3),
             ..ResourceBudget::UNLIMITED
         };
-        let fp = failure_fingerprint("c1", "chunk_floor_blocked", &["test regressed: t".into()]);
+        let fp = failure_fingerprint(
+            "c1",
+            "code",
+            "chunk_floor_blocked",
+            &["test regressed: t".into()],
+        );
         assert_eq!(m.record_failure(&fp), 1);
         assert_eq!(budget.identical_failure_breach(1), None);
         assert_eq!(m.record_failure(&fp), 2);
@@ -460,8 +535,18 @@ mod tests {
     #[test]
     fn distinct_failures_do_not_aggregate() {
         let mut m = ResourceMeter::new();
-        let a = failure_fingerprint("c1", "chunk_floor_blocked", &["test regressed: a".into()]);
-        let b = failure_fingerprint("c1", "chunk_floor_blocked", &["test regressed: b".into()]);
+        let a = failure_fingerprint(
+            "c1",
+            "code",
+            "chunk_floor_blocked",
+            &["test regressed: a".into()],
+        );
+        let b = failure_fingerprint(
+            "c1",
+            "code",
+            "chunk_floor_blocked",
+            &["test regressed: b".into()],
+        );
         assert_eq!(m.record_failure(&a), 1);
         assert_eq!(
             m.record_failure(&b),
@@ -472,8 +557,57 @@ mod tests {
 
     #[test]
     fn fingerprint_is_order_insensitive_over_findings() {
-        let a = failure_fingerprint("c1", "s", &["x".into(), "y".into()]);
-        let b = failure_fingerprint("c1", "s", &["y".into(), "x".into()]);
+        let a = failure_fingerprint("c1", "code", "s", &["x".into(), "y".into()]);
+        let b = failure_fingerprint("c1", "code", "s", &["y".into(), "x".into()]);
         assert_eq!(a, b, "reordered findings must fingerprint identically");
+    }
+
+    #[test]
+    fn fingerprint_is_tier_scoped_so_promotion_resets_the_count() {
+        // The same block at a different tier is a DIFFERENT key — a promoted re-run
+        // gets a fresh identical-failure count instead of inheriting the lower
+        // tier's accumulated count.
+        let f = &["test regressed: t".into()];
+        let code = failure_fingerprint("c1", "code", "chunk_floor_blocked", f);
+        let mid = failure_fingerprint("c1", "mid", "chunk_floor_blocked", f);
+        assert_ne!(code, mid, "tier is part of the key");
+    }
+
+    #[test]
+    fn fingerprint_normalizes_volatile_commit_oids() {
+        // Two harness-failure reasons that differ only by commit oids must
+        // fingerprint identically, so a chunk stuck rewriting history trips the
+        // breaker instead of evading it with an ever-changing reason.
+        let a = failure_fingerprint(
+            "c1",
+            "code",
+            "chunk_failed",
+            &[
+                "harness moved HEAD to a1b2c3d4e5f6a7b8, not a descendant of deadbeefcafe1234"
+                    .into(),
+            ],
+        );
+        let b = failure_fingerprint(
+            "c1",
+            "code",
+            "chunk_failed",
+            &[
+                "harness moved HEAD to 99887766554433aa, not a descendant of 0011223344556677"
+                    .into(),
+            ],
+        );
+        assert_eq!(a, b, "oid-only differences must normalize to the same key");
+    }
+
+    #[test]
+    fn normalize_volatile_leaves_short_numbers_alone() {
+        // A small count (e.g. "test count dropped: 8 → 5") is not oid-like and must
+        // survive verbatim so genuinely different failures stay distinct.
+        assert_eq!(normalize_volatile("count 8 to 5"), "count 8 to 5");
+        // A ≥7-char hex run collapses.
+        assert_eq!(
+            normalize_volatile("commit abcdef01 landed"),
+            "commit <hex> landed"
+        );
     }
 }

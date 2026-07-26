@@ -778,9 +778,9 @@ pub fn run_pipeline_tiered(
     let baseline = BaselineSnapshot::new(format!("{integration_branch}@fork"), baseline_snapshot);
 
     // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
-    let mut plan = produce_and_validate_plan(&run, spec, &baseline.to_plan_baseline(), 1, None)?;
-    // Count the spec agent invocation toward the process-count breaker (design §9).
-    run.meter.record_agent_run(None);
+    let mut plan =
+        produce_and_validate_plan(&mut run, spec, &baseline.to_plan_baseline(), 1, None)?;
+    // (spec invocations are metered inside produce_and_validate_plan.)
     // Discard any side effect the (headless, permission-skipped) spec stage left
     // in the worktree: spec is a planner, so chunks must fork from a pristine
     // fork commit, not from spec's stray edits.
@@ -860,6 +860,16 @@ pub fn run_pipeline_tiered(
         let feat_tip = git::head(&run.integration_wt)?;
         let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
         git::restore_to(&run.integration_wt, &feat_tip)?;
+        // The verify invocation spent process/wall-time budget — check the breakers
+        // BEFORE acting on its verdict, so a verify that crossed a ceiling aborts
+        // rather than converging-and-merging or launching a re-spec (design §9).
+        if let Some(msg) = resource_breach(&run) {
+            run.circuit_breaker = Some(msg);
+            break LoopExit::Terminal {
+                verify: Some(verify_report),
+                status: "circuit_breaker",
+            };
+        }
         if verify_report.passed {
             break LoopExit::Converged {
                 verify: verify_report,
@@ -1318,8 +1328,7 @@ fn trigger_re_spec(
         new_rev,
         Some((&old_raw, reason.as_str())),
     )?;
-    // Count the re-spec agent invocation toward the process-count breaker (§9).
-    run.meter.record_agent_run(None);
+    // (the re-spec invocation is metered inside produce_and_validate_plan.)
     git::restore_to(&run.integration_wt, &feat_tip)?;
 
     // DAG-diff old→new: which chunks revert to Pending vs. stay Done (design §7).
@@ -1419,7 +1428,7 @@ const INVALID_PLAN_FILE: &str = "plan.invalid.json";
 /// workdir ([`INVALID_PLAN_FILE`]) and the error surfaces the last validator
 /// message. Returns the validated [`Plan`].
 fn produce_and_validate_plan(
-    run: &Run,
+    run: &mut Run,
     spec: &dyn SpecProvider,
     baseline: &plan::Baseline,
     plan_rev: u32,
@@ -1457,6 +1466,11 @@ fn produce_and_validate_plan(
             // Unreachable: fall back to a fresh produce rather than panic.
             _ => spec.produce_plan(&ctx),
         };
+        // Count EVERY spec provider invocation toward the process-count breaker
+        // (design §9) — including each validator-repair re-prompt, and even a call
+        // that then errored. Metering here (rather than once at the call site) is
+        // why the two callers no longer meter the spec stage themselves.
+        run.meter.record_agent_run(None);
         let raw = match produced {
             Ok(raw) => raw,
             // The spec provider itself failed (spawn/timeout/parse). If a prior
@@ -1658,8 +1672,12 @@ fn run_code_stage(
                     run.chunk_status
                         .insert(chunk.id.clone(), LiveChunkStatus::Merged);
                     // A resource ceiling the merge's own spend crossed stops the
-                    // stage here (design §9); the merged chunk stays, nothing to
-                    // preserve. Round-boundary storage is refreshed by the caller.
+                    // stage here (design §9). This is a post-attempt backstop, not an
+                    // atomic gate: this chunk already landed on `feat/<slug>` (its
+                    // work is preserved there — the feature never reaches source, and
+                    // teardown keeps the integration branch), and further chunks/
+                    // rounds are what the breaker prevents.
+                    refresh_storage(run);
                     if let Some(msg) = resource_breach(run) {
                         run.circuit_breaker = Some(msg);
                         run.code_block_status = Some("circuit_breaker");
@@ -1687,8 +1705,17 @@ fn run_code_stage(
                     // attempt just metered crossed (cost/token/process/wall-time). On
                     // either, preserve the attempt (state-integrity invariant 5) and
                     // stop the stage at a `circuit_breaker` terminal.
-                    let fp = failure_fingerprint(&chunk.id, status, &attempt_findings);
+                    let fp = failure_fingerprint(
+                        &chunk.id,
+                        current_tier.wire_name(),
+                        status,
+                        &attempt_findings,
+                    );
                     let recurrence = run.meter.record_failure(&fp);
+                    // Refresh the storage measurement here too (not only at the round
+                    // boundary) so intra-code-stage disk growth can trip the breaker
+                    // before the next round; a no-op when the storage breaker is off.
+                    refresh_storage(run);
                     if let Some(msg) = run
                         .cfg
                         .budget
@@ -2470,12 +2497,15 @@ fn resolve_u32_ceiling(user: Option<u32>, default: Option<u32>) -> Option<u32> {
     }
 }
 
-/// [`resolve_u64_ceiling`] for a USD (`f64`) ceiling: a non-positive value
-/// disables the cost breaker.
+/// [`resolve_u64_ceiling`] for a USD (`f64`) ceiling: only a finite, positive value
+/// enables the cost breaker. A non-finite (`NaN`/`inf` — both of which `f64::parse`
+/// accepts) or non-positive value disables it (`None`), never leaves it enabled but
+/// impossible to trip. `PipelineRunConfig` is constructable from code, so this guard
+/// is the authoritative one even though the CLI could also validate.
 fn resolve_f64_ceiling(user: Option<f64>, default: Option<f64>) -> Option<f64> {
     match user {
-        Some(v) if v <= 0.0 => None,
-        Some(v) => Some(v),
+        Some(v) if v.is_finite() && v > 0.0 => Some(v),
+        Some(_) => None,
         None => default,
     }
 }
@@ -2597,6 +2627,23 @@ pub fn cmd_run(
     Ok(())
 }
 
+/// Render a byte count in the largest binary unit that keeps it ≥ 1 (e.g. `2.0
+/// GiB`, `512 B`), for the human-readable resource line.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = bytes as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[unit])
+    }
+}
+
 /// Render the human-readable pipeline summary (`--output text`).
 fn print_report(r: &PipelineReport) {
     println!("pipeline {} — {}", r.slug, r.status);
@@ -2642,8 +2689,11 @@ fn print_report(r: &PipelineReport) {
     {
         let res = &r.resources;
         println!(
-            "  resources: {} token(s), ${:.4}, {} agent invocation(s), {} storage byte(s)",
-            res.total_tokens, res.cost_usd, res.processes, res.storage_bytes
+            "  resources: {} token(s), ${:.4}, {} agent invocation(s), {} scratch storage",
+            res.total_tokens,
+            res.cost_usd,
+            res.processes,
+            human_bytes(res.storage_bytes)
         );
     }
     if let Some(cb) = &r.circuit_breaker {

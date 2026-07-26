@@ -1834,3 +1834,59 @@ fn unlimited_budget_does_not_disturb_a_clean_merge() {
         "spec + chunk + verify counted"
     );
 }
+
+#[test]
+fn resolve_ceilings_map_zero_to_disabled_and_reject_nonfinite() {
+    // u64/u32: Some(0) disables, other values override, None → default.
+    assert_eq!(super::resolve_u64_ceiling(Some(0), Some(99)), None);
+    assert_eq!(super::resolve_u64_ceiling(Some(5), Some(99)), Some(5));
+    assert_eq!(super::resolve_u64_ceiling(None, Some(99)), Some(99));
+    assert_eq!(super::resolve_u32_ceiling(Some(0), Some(3)), None);
+    assert_eq!(super::resolve_u32_ceiling(None, Some(3)), Some(3));
+
+    // f64: only a finite positive enables; NaN/Inf/0/negative all disable.
+    assert_eq!(
+        super::resolve_f64_ceiling(Some(10.0), Some(1.0)),
+        Some(10.0)
+    );
+    assert_eq!(super::resolve_f64_ceiling(Some(0.0), Some(1.0)), None);
+    assert_eq!(super::resolve_f64_ceiling(Some(-5.0), Some(1.0)), None);
+    assert_eq!(super::resolve_f64_ceiling(Some(f64::NAN), Some(1.0)), None);
+    assert_eq!(
+        super::resolve_f64_ceiling(Some(f64::INFINITY), Some(1.0)),
+        None
+    );
+    assert_eq!(super::resolve_f64_ceiling(None, Some(1.0)), Some(1.0));
+}
+
+#[test]
+fn verify_stage_breach_aborts_instead_of_merging() {
+    // Finding #8 from review: a verify invocation that crosses a ceiling must abort
+    // BEFORE the run merges. With max_processes = 2: spec(1) + one chunk(2) pass the
+    // post-merge check (2 is not > 2), but the verify call makes it 3 > 2, so the
+    // verify-stage breaker check fires and the feature does not merge.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.budget = ResourceBudget {
+        max_processes: Some(2),
+        ..ResourceBudget::UNLIMITED
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let report = run_pipeline(&cfg, &spec, &code, &ScriptedVerify::passing()).expect("runs");
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert!(
+        report
+            .circuit_breaker
+            .as_deref()
+            .unwrap_or_default()
+            .contains("process-count"),
+        "{report:#?}"
+    );
+    assert!(!report.merged, "verify crossed the ceiling → no merge");
+    assert!(
+        report.resources.processes >= 3,
+        "spec + chunk + verify counted"
+    );
+}
