@@ -55,6 +55,46 @@ const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 /// Max time we wait for a spawned child run's directory to appear
 /// (handoff D1).
 const CHILD_DIR_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a freshly-forked child supervisor may sit in `Starting` — forked,
+/// but its identity-verified `supervisor.pid` not yet readable — before the
+/// parent declares that boot attempt failed and schedules a retry. The child
+/// writes its pid file within milliseconds of `exec` under normal load; this
+/// bound is deliberately generous so a slow-but-healthy boot is never clipped
+/// (issue `child-supervisor-spawn-unconfirmed-no-retry`). Overridable via
+/// [`CHILD_SPAWN_DEADLINE_ENV`] so a test can drive the failure path fast.
+const CHILD_SPAWN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Env override for [`CHILD_SPAWN_DEADLINE`] (whole seconds; unparseable →
+/// default). Tests set a small value to reach the `Failed`/retry transition
+/// without a real 10s wait.
+const CHILD_SPAWN_DEADLINE_ENV: &str = "OCTL_CHILD_SPAWN_DEADLINE_SECS";
+
+/// Base backoff before re-forking a child supervisor whose previous attempt
+/// never confirmed a pid. Doubles per attempt, capped at
+/// [`CHILD_RETRY_MAX_BACKOFF`], so a transient boot failure is retried promptly
+/// while a persistently broken environment is not hammered.
+const CHILD_RETRY_BASE_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Ceiling for the [`CHILD_RETRY_BASE_BACKOFF`] exponential backoff.
+const CHILD_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Max child-supervisor boot attempts before the parent stops retrying a child
+/// that never confirms a pid. Bounded so a permanently broken environment
+/// cannot spin the fork path forever; every failed attempt leaves a
+/// `child.spawn_failed` event on the parent log for operators.
+const CHILD_SPAWN_MAX_ATTEMPTS: u32 = 5;
+
+/// The effective child-spawn deadline, honoring [`CHILD_SPAWN_DEADLINE_ENV`].
+fn child_spawn_deadline() -> Duration {
+    match std::env::var(CHILD_SPAWN_DEADLINE_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_or(CHILD_SPAWN_DEADLINE, Duration::from_secs),
+        Err(_) => CHILD_SPAWN_DEADLINE,
+    }
+}
 /// Consecutive missing-manifest polls (`WATCHDOG_TICK` apart, so ≈3s)
 /// before we self-terminate. Defends against orphaning: when a run dir is
 /// deleted out from under us (a test's `TempDir` on teardown, or an
@@ -411,6 +451,35 @@ pub fn dispatch(
     let mut half_state_streak: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
 
+    // Repair state written by the pre-state-machine version, which inserted
+    // unconfirmed children at pid 0 (the very bug this change fixes). Drop those
+    // sentinels so an already-affected run does not treat a never-started child
+    // as "confirmed running" forever — it re-enters the startup state machine
+    // via the reseed below and is retried (issue
+    // `child-supervisor-spawn-unconfirmed-no-retry`).
+    state.spawned_children.retain(|_, pid| *pid != 0);
+
+    // In-flight child-supervisor startup state machine
+    // (issue `child-supervisor-spawn-unconfirmed-no-retry`). A child is tracked
+    // here from the moment we fork it until its identity-verified pid confirms
+    // (then it graduates into the durable `spawned_children` set) or it exhausts
+    // its bounded retry budget. Held in memory only: a genuinely-running child
+    // keeps its own detached process across a parent restart, so the durable
+    // truth is the child's own pid file, not this map — which keeps it out of
+    // `SupervisorState` serialization.
+    //
+    // Seeded on boot from the reseeded tail set so a restart recovers startup
+    // tracking (`child.spawned` fires only once and the own tail resumes past
+    // it, so a forked-but-not-confirmed child would otherwise be orphaned — the
+    // original never-retried bug on the restart path). On a fresh run
+    // `child_tails` is empty here, so this is a no-op.
+    let mut child_spawns = reseed_child_spawns(
+        &root,
+        child_tails.keys().map(String::as_str),
+        &state,
+        Instant::now(),
+    );
+
     // Consecutive ticks our run's manifest.json has been missing. Reset
     // to 0 on any tick where it exists; once it crosses
     // `SELF_TERMINATE_TICKS` we self-terminate (run dir vanished).
@@ -561,25 +630,44 @@ pub fn dispatch(
                             terminal: false,
                         });
                     // Fork the child supervisor exactly once (the parent's
-                    // tracking set is the single arbiter, §7.2).
-                    if state.spawned_children.contains_key(&child_run_id) {
+                    // tracking sets are the single arbiter, §7.2): a child is
+                    // either confirmed-running (`spawned_children`) or in-flight
+                    // in the startup state machine (`child_spawns`). We NEVER
+                    // record a child as started at pid 0 — an unconfirmed boot
+                    // stays `Starting` and is promoted only on an
+                    // identity-verified pid, or retried under a bounded policy
+                    // (issue `child-supervisor-spawn-unconfirmed-no-retry`).
+                    if state.spawned_children.contains_key(&child_run_id)
+                        || child_spawns.contains_key(&child_run_id)
+                    {
                         continue;
                     }
-                    match spawn_child_supervisor(&root, &child_run_id, &paths) {
-                        Ok(child_pid) => {
-                            state
-                                .spawned_children
-                                .insert(child_run_id.clone(), child_pid);
+                    match fork_child_supervisor(&root, &child_run_id) {
+                        Ok(()) => {
+                            // Forked, not yet confirmed. The reconcile pass
+                            // polls the child's pid file on later ticks and
+                            // promotes it to `spawned_children` only on an
+                            // identity-verified pid.
+                            child_spawns.insert(
+                                child_run_id.clone(),
+                                ChildSpawn::Starting {
+                                    since: Instant::now(),
+                                    attempts: 1,
+                                },
+                            );
                         }
                         Err(e) => {
                             warn!(
                                 target: "orchestratectl::supervise",
                                 child = %child_run_id,
                                 error = %e.message,
-                                "child spawn failed (tail still open; reports will be consumed)"
+                                "child fork failed (tail still open; will retry under bounded policy)"
                             );
-                            // Record on parent log so a future
-                            // operator can see the failure (D1).
+                            // Record on parent log so a future operator can see
+                            // the failure (D1), then schedule a bounded retry
+                            // rather than dropping the child — a fork failing
+                            // (transient EAGAIN / PTY exhaustion) is exactly what
+                            // the retry policy exists to ride out.
                             let _ = append_and_apply_event(
                                 &paths,
                                 "child.spawn_failed",
@@ -588,7 +676,15 @@ pub fn dispatch(
                                 json!({
                                     "child_run_id": child_run_id,
                                     "reason": e.message,
+                                    "attempts": 1,
                                 }),
+                            );
+                            child_spawns.insert(
+                                child_run_id.clone(),
+                                ChildSpawn::Failed {
+                                    attempts: 1,
+                                    retry_at: Instant::now() + child_retry_backoff(1),
+                                },
                             );
                         }
                     }
@@ -613,6 +709,15 @@ pub fn dispatch(
         // If the own-run tail stopped at a corrupt line, heal (quarantine) or
         // skip past it so the tail keeps progressing.
         report_corrupt_line(&mut own_tail, &paths, &paths, quarantine, "own");
+
+        // Child-supervisor startup reconcile (issue
+        // `child-supervisor-spawn-unconfirmed-no-retry`). Each tracked child is
+        // in the `Starting`/`Failed` state machine until its identity-verified
+        // pid confirms (→ `spawned_children`, dropped from here) or its retry
+        // budget is exhausted. Runs every tick: the `child.spawned` event that
+        // seeded it fired only once, so promotion + bounded retry must live on
+        // the poll path, not the event path.
+        reconcile_child_spawns(&root, &paths, &mut child_spawns, &mut state, Instant::now());
 
         // Loop 2: child-run events.
         let child_ids: Vec<String> = child_tails.keys().cloned().collect();
@@ -1155,11 +1260,289 @@ struct ChildTracking {
     terminal: bool,
 }
 
-fn spawn_child_supervisor(
+/// Ephemeral startup state of a child supervisor this process forked. A child
+/// is tracked from the moment we fork it until its identity-verified pid
+/// confirms (→ graduates into the durable `spawned_children` set) or its
+/// bounded retry budget is exhausted. Held only in memory for the tick loop —
+/// see the `child_spawns` declaration for why it is never persisted.
+#[derive(Debug, Clone)]
+enum ChildSpawn {
+    /// Forked; polling the child's `supervisor.pid` for an identity-verified
+    /// pid. `since` anchors the [`CHILD_SPAWN_DEADLINE`]; `attempts` counts boot
+    /// attempts so far (the initial fork is attempt 1).
+    Starting { since: Instant, attempts: u32 },
+    /// The last attempt's deadline expired (or its fork failed) without a
+    /// confirmed pid. Waits until `retry_at` before re-forking, unless
+    /// `attempts` has reached [`CHILD_SPAWN_MAX_ATTEMPTS`].
+    Failed { attempts: u32, retry_at: Instant },
+}
+
+/// The action [`reconcile_child_spawns`] should take for one tracked child,
+/// given a fresh non-blocking read of its identity-verified pid. Pure decision
+/// — no I/O — so the startup state machine is unit-testable with an injected
+/// clock.
+#[derive(Debug, PartialEq, Eq)]
+enum SpawnAction {
+    /// An identity-verified pid is readable: record the attach and graduate the
+    /// child into the durable `spawned_children` set (never at pid 0).
+    Confirm(u32),
+    /// The `Starting` deadline expired without a pid: emit `child.spawn_failed`
+    /// and move to `Failed` with a backoff.
+    MarkFailed,
+    /// `Failed`, the backoff elapsed, and attempts remain: re-fork.
+    Retry,
+    /// Nothing to do this tick (still inside the deadline, backing off, or the
+    /// retry budget is exhausted).
+    Wait,
+}
+
+/// Decide what to do with a tracked child this tick. An identity-verified pid
+/// always wins — even a boot we had given up waiting for, finally coming up, is
+/// adopted rather than re-forked (a second live supervisor for one run is worse
+/// than a slow one). Crucially, the absence of a pid NEVER yields a "confirmed"
+/// verdict: an unconfirmed child is held (`Wait`) or retried, never recorded as
+/// started at pid 0 (issue `child-supervisor-spawn-unconfirmed-no-retry`).
+fn child_spawn_action(
+    st: &ChildSpawn,
+    confirmed_pid: Option<u32>,
+    now: Instant,
+    deadline: Duration,
+    max_attempts: u32,
+) -> SpawnAction {
+    if let Some(pid) = confirmed_pid {
+        return SpawnAction::Confirm(pid);
+    }
+    match st {
+        ChildSpawn::Starting { since, .. } => {
+            if now.saturating_duration_since(*since) >= deadline {
+                SpawnAction::MarkFailed
+            } else {
+                SpawnAction::Wait
+            }
+        }
+        ChildSpawn::Failed { attempts, retry_at } => {
+            if *attempts >= max_attempts {
+                SpawnAction::Wait
+            } else if now >= *retry_at {
+                SpawnAction::Retry
+            } else {
+                SpawnAction::Wait
+            }
+        }
+    }
+}
+
+/// Bounded exponential backoff before the retry that follows `attempts` failed
+/// boots (`attempts` ≥ 1): `BASE * 2^(attempts-1)`, capped at
+/// [`CHILD_RETRY_MAX_BACKOFF`]. The shift is clamped so the doubling can never
+/// overflow `Duration`.
+fn child_retry_backoff(attempts: u32) -> Duration {
+    let shift = attempts.saturating_sub(1).min(5);
+    (CHILD_RETRY_BASE_BACKOFF * (1u32 << shift)).min(CHILD_RETRY_MAX_BACKOFF)
+}
+
+/// The `attempts` value carried by either variant (used when logging / building
+/// the successor state without matching twice at the call site).
+fn child_spawn_attempts(st: &ChildSpawn) -> u32 {
+    match st {
+        ChildSpawn::Starting { attempts, .. } | ChildSpawn::Failed { attempts, .. } => *attempts,
+    }
+}
+
+/// Rebuild in-flight startup tracking after a restart. For each known child
+/// (`child_ids`, the reseeded tail set) that is neither confirmed-running in
+/// `state.spawned_children` nor already terminal, seed `Starting` so the next
+/// [`reconcile_child_spawns`] pass ADOPTS a survivor via its identity-verified
+/// pid (`Confirm`, no fork) and only re-forks a genuinely dead one — making this
+/// recovery double-fork-safe. A terminal child needs no supervisor, so it is
+/// skipped (never re-spawned). `now` is injected for testability.
+fn reseed_child_spawns<'a>(
     root: &Path,
-    child_run_id: &str,
+    child_ids: impl Iterator<Item = &'a str>,
+    state: &state::SupervisorState,
+    now: Instant,
+) -> std::collections::BTreeMap<String, ChildSpawn> {
+    let mut out = std::collections::BTreeMap::new();
+    for cid in child_ids {
+        if state.spawned_children.contains_key(cid) {
+            continue;
+        }
+        let child_terminal = run_paths(root, cid)
+            .ok()
+            .and_then(|cp| read_manifest_opt(&cp).ok().flatten())
+            .is_some_and(|m| m.status.is_terminal());
+        if child_terminal {
+            continue;
+        }
+        out.insert(
+            cid.to_string(),
+            ChildSpawn::Starting {
+                since: now,
+                attempts: 1,
+            },
+        );
+    }
+    out
+}
+
+/// Drive the child-supervisor startup state machine one tick. For each tracked
+/// child, take a SINGLE non-blocking, identity-verified pid read and apply the
+/// resulting [`SpawnAction`]:
+///   - `Confirm(pid)` — record the attach on both logs and graduate the child
+///     into the durable `spawned_children` set (never at pid 0), then drop it.
+///   - `MarkFailed` — the `Starting` deadline expired: emit `child.spawn_failed`
+///     and back off before the next attempt.
+///   - `Retry` — the backoff elapsed and attempts remain: re-fork.
+///   - `Wait` — still booting, backing off, or the budget is exhausted.
+///
+/// `now` is injected so the transitions are testable without real time.
+fn reconcile_child_spawns(
+    root: &Path,
     parent_paths: &RunPaths,
-) -> Result<u32, CliError> {
+    child_spawns: &mut std::collections::BTreeMap<String, ChildSpawn>,
+    state: &mut state::SupervisorState,
+    now: Instant,
+) {
+    let deadline = child_spawn_deadline();
+    // Snapshot the keys so the map can be mutated inside the loop.
+    let cids: Vec<String> = child_spawns.keys().cloned().collect();
+    for cid in cids {
+        // Non-blocking, identity-verified read of the child's own pid file.
+        // `None` (no file, or a recycled/mismatched pid) means "not confirmed"
+        // — never treated as a successful start.
+        let confirmed_pid = run_paths(root, &cid)
+            .ok()
+            .and_then(|cp| crate::run::supervisor_spawn::read_live_recorded_pid(&cp));
+        let attempts = child_spawn_attempts(&child_spawns[&cid]);
+        match child_spawn_action(
+            &child_spawns[&cid],
+            confirmed_pid,
+            now,
+            deadline,
+            CHILD_SPAWN_MAX_ATTEMPTS,
+        ) {
+            SpawnAction::Confirm(pid) => {
+                record_child_attached(root, &cid, parent_paths, pid);
+                state.spawned_children.insert(cid.clone(), pid);
+                child_spawns.remove(&cid);
+                info!(
+                    target: "orchestratectl::supervise",
+                    child = %cid,
+                    pid,
+                    attempts,
+                    "child supervisor confirmed running"
+                );
+            }
+            SpawnAction::MarkFailed => {
+                // This attempt timed out. If the budget is now spent, the
+                // successor `Failed` state will only ever return `Wait` — so
+                // this is the final, give-up failure, not a "scheduling retry"
+                // one. Report it honestly on both the log line and the durable
+                // event (the earlier "scheduling retry" wording lied on the last
+                // attempt).
+                let exhausted = attempts >= CHILD_SPAWN_MAX_ATTEMPTS;
+                if exhausted {
+                    warn!(
+                        target: "orchestratectl::supervise",
+                        child = %cid,
+                        attempts,
+                        "child supervisor never confirmed a pid; retry budget exhausted, giving up"
+                    );
+                } else {
+                    warn!(
+                        target: "orchestratectl::supervise",
+                        child = %cid,
+                        attempts,
+                        "child supervisor did not confirm a pid within the deadline; scheduling retry"
+                    );
+                }
+                let _ = append_and_apply_event(
+                    parent_paths,
+                    "child.spawn_failed",
+                    None,
+                    None,
+                    json!({
+                        "child_run_id": cid,
+                        "reason": "no identity-verified pid within CHILD_SPAWN_DEADLINE",
+                        "attempts": attempts,
+                        "final": exhausted,
+                    }),
+                );
+                child_spawns.insert(
+                    cid.clone(),
+                    ChildSpawn::Failed {
+                        attempts,
+                        retry_at: now + child_retry_backoff(attempts),
+                    },
+                );
+            }
+            SpawnAction::Retry => {
+                let next = attempts + 1;
+                match fork_child_supervisor(root, &cid) {
+                    Ok(()) => {
+                        info!(
+                            target: "orchestratectl::supervise",
+                            child = %cid,
+                            attempt = next,
+                            "re-forked child supervisor after a failed boot"
+                        );
+                        child_spawns.insert(
+                            cid.clone(),
+                            ChildSpawn::Starting {
+                                since: now,
+                                attempts: next,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "orchestratectl::supervise",
+                            child = %cid,
+                            attempt = next,
+                            error = %e.message,
+                            "child re-fork failed; backing off"
+                        );
+                        let _ = append_and_apply_event(
+                            parent_paths,
+                            "child.spawn_failed",
+                            None,
+                            None,
+                            json!({
+                                "child_run_id": cid,
+                                "reason": e.message,
+                                "attempts": next,
+                            }),
+                        );
+                        child_spawns.insert(
+                            cid.clone(),
+                            ChildSpawn::Failed {
+                                attempts: next,
+                                retry_at: now + child_retry_backoff(next),
+                            },
+                        );
+                    }
+                }
+            }
+            // Still inside the deadline, backing off, or the budget is
+            // exhausted. On exhaustion the child stays in `Failed` — its tail
+            // stays open so any late report is still consumed — but we stop
+            // hammering the fork path. No per-tick log here: the final
+            // `child.spawn_failed` (emitted at the last `MarkFailed`) already
+            // records the give-up, so logging every tick would only spam.
+            SpawnAction::Wait => {}
+        }
+    }
+}
+
+/// Fork+exec a fully-detached child supervisor (setsid + double-fork via
+/// `supervisor_spawn`). Returns once the grandchild is launched and the
+/// short-lived intermediate is reaped — it does NOT confirm the child's pid.
+/// Confirmation is the caller's job on later ticks
+/// ([`reconcile_child_spawns`]): the grandchild is reparented to init, so an
+/// exited child supervisor never becomes a zombie under this long-lived parent
+/// (and `kill(pid, 0)` never misreports a zombie as alive, which would corrupt
+/// the PID-staleness check).
+fn fork_child_supervisor(root: &Path, child_run_id: &str) -> Result<(), CliError> {
     // D1: tolerate the race window — wait up to CHILD_DIR_WAIT for the
     // child run dir to appear before deciding the spawn has failed.
     // `child_run_id` was validated by the caller; re-parse to feed run_dir a
@@ -1181,76 +1564,83 @@ fn spawn_child_supervisor(
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    // Fork+exec a fully-detached child supervisor (setsid + double-fork via
-    // `supervisor_spawn`). The grandchild is reparented to init, so an exited
-    // child supervisor never becomes a zombie under this long-lived parent
-    // (and `kill(pid, 0)` never misreports a zombie as alive, which would
-    // corrupt the PID-staleness check). `RUST_LOG_NOSPAWN` is cleared because
-    // it is reserved for tests.
+    // `RUST_LOG_NOSPAWN` is cleared because it is reserved for tests.
     let stderr_path: PathBuf = child_dir.join("supervisor.stderr.log");
     // Child-spawn is lenient: the parent supervisor reads the child's own pid
-    // file (non-blocking) rather than confirming over a readiness pipe, so no
-    // readiness fd is threaded in.
+    // file (non-blocking, on later ticks) rather than confirming over a
+    // readiness pipe, so no readiness fd is threaded in.
     let mut cmd =
         crate::run::supervisor_spawn::detached_supervise_command(child_run_id, &stderr_path, None)?;
     cmd.env_remove("RUST_LOG_NOSPAWN");
     crate::run::supervisor_spawn::spawn_and_reap(&mut cmd, child_run_id)?;
-
-    // The grandchild is launched and detached; that — not the pid file — is
-    // the success signal, so we never block the single-threaded parent tick
-    // waiting for it to boot. We do a SINGLE non-blocking, identity-verified
-    // read of the child's own `supervisor.pid` (the authoritative record the
-    // child writes under its run flock during `claim_pid_atomic`). It is
-    // usually not there yet — that is fine: the cosmetic `supervisor_pid`
-    // node record and the `child.supervisor_attached` event are only emitted
-    // once a real pid is readable; the durable truth is the child's pid file.
-    let child_paths = run_paths(root, child_run_id)?;
-    let pid = crate::run::supervisor_spawn::read_live_recorded_pid(&child_paths).unwrap_or(0);
-
-    if pid != 0 {
-        // Record `supervisor_pid` on the child's root node by appending a
-        // `supervisor.attached` event to the CHILD run's log, which the reducer
-        // folds onto `Node.supervisor_pid` — replacing the former direct
-        // `write_node` so a from-scratch projection rebuild reproduces the field
-        // (issue `supervisor-state-not-event-sourced`). `append_and_apply_event`
-        // takes the child run's flock itself (F11), so this read-modify-write no
-        // longer races the child supervisor's own boot writes. The child run's
-        // root node is always `n-0001` (a static, valid id).
-        let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
-        if let Err(e) = append_and_apply_event(
-            &child_paths,
-            "supervisor.attached",
-            Some(&root_node),
-            None,
-            json!({ "pid": pid }),
-        ) {
-            // Non-fatal: the `child.supervisor_attached` event below records the
-            // attach on the parent log, so the child projection update is a
-            // convenience the next reattach can re-derive.
-            warn!(
-                target: "orchestratectl::supervise",
-                child = %child_run_id,
-                error = %e,
-                "could not record supervisor.attached on child run"
-            );
-        }
-        // Record the attach on the parent log, but only with a real pid —
-        // never emit `supervisor_pid: 0`, which would be a false "attached".
-        let _ = append_and_apply_event(
-            parent_paths,
-            "child.supervisor_attached",
-            None,
-            None,
-            json!({"child_run_id": child_run_id, "supervisor_pid": pid}),
-        );
-    }
     info!(
         target: "orchestratectl::supervise",
         child = %child_run_id,
-        pid,
-        "spawned child supervisor"
+        "forked child supervisor (pid confirmation deferred to reconcile)"
     );
-    Ok(pid)
+    Ok(())
+}
+
+/// Record a confirmed child supervisor's identity-verified `pid` on BOTH logs:
+/// `supervisor.attached` on the CHILD run (folded onto its root node's
+/// `supervisor_pid`, so a from-scratch projection rebuild reproduces the field
+/// — issue `supervisor-state-not-event-sourced`) and `child.supervisor_attached`
+/// on the PARENT run. Called only with a real, live pid — never 0, which would
+/// be a false "attached". Best-effort: a projection/append hiccup is logged,
+/// not fatal (the durable truth is the child's own pid file).
+fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPaths, pid: u32) {
+    // Record `supervisor_pid` on the child's root node (best-effort). If the
+    // child paths cannot even be resolved, skip the child append but STILL emit
+    // the parent record below — the two are independent, and the parent event is
+    // the documented fallback (never short-circuit past it).
+    match run_paths(root, child_run_id) {
+        Ok(child_paths) => {
+            // `append_and_apply_event` takes the child run's flock itself (F11),
+            // so this read-modify-write no longer races the child supervisor's
+            // own boot writes. The child run's root node is always `n-0001` (a
+            // static, valid id).
+            let root_node = NodeId::parse_str("n-0001").expect("n-0001 is a valid node id");
+            if let Err(e) = append_and_apply_event(
+                &child_paths,
+                "supervisor.attached",
+                Some(&root_node),
+                None,
+                json!({ "pid": pid }),
+            ) {
+                // Non-fatal: the `child.supervisor_attached` event below records
+                // the attach on the parent log, so the child projection update
+                // is a convenience the next reattach can re-derive.
+                warn!(
+                    target: "orchestratectl::supervise",
+                    child = %child_run_id,
+                    error = %e,
+                    "could not record supervisor.attached on child run"
+                );
+            }
+        }
+        Err(e) => warn!(
+            target: "orchestratectl::supervise",
+            child = %child_run_id,
+            error = %e.message,
+            "could not resolve child run paths to record supervisor.attached (parent record still emitted)"
+        ),
+    }
+    // Record the attach on the parent log, but only with a real pid — never emit
+    // `supervisor_pid: 0`, which would be a false "attached".
+    if let Err(e) = append_and_apply_event(
+        parent_paths,
+        "child.supervisor_attached",
+        None,
+        None,
+        json!({"child_run_id": child_run_id, "supervisor_pid": pid}),
+    ) {
+        warn!(
+            target: "orchestratectl::supervise",
+            child = %child_run_id,
+            error = %e,
+            "could not record child.supervisor_attached on parent run"
+        );
+    }
 }
 
 /// Scan our own `nodes/` for every `child_run_id -> parent_node_id`
@@ -1852,6 +2242,294 @@ mod tests {
         // A zero grace disables suppression for any known-age node.
         let now = created + chrono::Duration::milliseconds(1);
         assert!(!within_spawn_grace(Some(created), now, Duration::ZERO));
+    }
+
+    /// The child-supervisor startup state machine
+    /// (issue `child-supervisor-spawn-unconfirmed-no-retry`). Injected clock so
+    /// every transition is asserted deterministically. The load-bearing
+    /// invariant: an absent pid NEVER yields `Confirm` — a child that never
+    /// wrote a pid is held or retried, never recorded as started at pid 0.
+    #[test]
+    fn child_spawn_action_state_machine() {
+        let t0 = Instant::now();
+        let deadline = Duration::from_secs(10);
+        let max = 3;
+
+        let starting = ChildSpawn::Starting {
+            since: t0,
+            attempts: 1,
+        };
+
+        // Starting, no pid, inside the deadline → Wait (NOT confirmed at 0).
+        assert_eq!(
+            child_spawn_action(&starting, None, t0 + Duration::from_secs(1), deadline, max),
+            SpawnAction::Wait
+        );
+        // Starting, no pid, deadline reached → MarkFailed.
+        assert_eq!(
+            child_spawn_action(&starting, None, t0 + deadline, deadline, max),
+            SpawnAction::MarkFailed
+        );
+        // Starting, an identity-verified pid appears → Confirm (that pid).
+        assert_eq!(
+            child_spawn_action(
+                &starting,
+                Some(4321),
+                t0 + Duration::from_secs(1),
+                deadline,
+                max
+            ),
+            SpawnAction::Confirm(4321)
+        );
+
+        let failed = ChildSpawn::Failed {
+            attempts: 1,
+            retry_at: t0 + Duration::from_secs(5),
+        };
+        // Failed, before retry_at → Wait.
+        assert_eq!(
+            child_spawn_action(&failed, None, t0 + Duration::from_secs(1), deadline, max),
+            SpawnAction::Wait
+        );
+        // Failed, retry_at reached, attempts remain → Retry.
+        assert_eq!(
+            child_spawn_action(&failed, None, t0 + Duration::from_secs(5), deadline, max),
+            SpawnAction::Retry
+        );
+        // Failed, a late pid finally shows up → adopt it (Confirm), don't re-fork.
+        assert_eq!(
+            child_spawn_action(
+                &failed,
+                Some(99),
+                t0 + Duration::from_secs(5),
+                deadline,
+                max
+            ),
+            SpawnAction::Confirm(99)
+        );
+
+        // Retry budget exhausted → Wait (bounded, never an unbounded loop).
+        let exhausted = ChildSpawn::Failed {
+            attempts: max,
+            retry_at: t0,
+        };
+        assert_eq!(
+            child_spawn_action(
+                &exhausted,
+                None,
+                t0 + Duration::from_secs(100),
+                deadline,
+                max
+            ),
+            SpawnAction::Wait
+        );
+        // …but even an exhausted child adopts a pid that finally appears.
+        assert_eq!(
+            child_spawn_action(
+                &exhausted,
+                Some(7),
+                t0 + Duration::from_secs(100),
+                deadline,
+                max
+            ),
+            SpawnAction::Confirm(7)
+        );
+    }
+
+    /// Backoff is bounded and non-decreasing, and never overflows for a large
+    /// attempt count.
+    #[test]
+    fn child_retry_backoff_is_bounded() {
+        assert_eq!(child_retry_backoff(1), CHILD_RETRY_BASE_BACKOFF);
+        assert!(child_retry_backoff(2) >= child_retry_backoff(1));
+        assert!(child_retry_backoff(3) >= child_retry_backoff(2));
+        assert_eq!(child_retry_backoff(100), CHILD_RETRY_MAX_BACKOFF);
+        // Every value stays within the ceiling.
+        for a in 1..50 {
+            assert!(child_retry_backoff(a) <= CHILD_RETRY_MAX_BACKOFF);
+        }
+    }
+
+    /// End-to-end reconcile of the failure path: a child forked long ago whose
+    /// identity-verified pid never appeared (no pid file on disk) must NOT be
+    /// recorded into `spawned_children` (the pid-0-as-success bug) and MUST be
+    /// scheduled for a bounded retry instead. Exercises the real
+    /// `reconcile_child_spawns` (including `read_live_recorded_pid` returning
+    /// `None`); no process is forked because this hits `MarkFailed`, not
+    /// `Retry`.
+    #[test]
+    fn reconcile_never_records_unconfirmed_child_and_schedules_retry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // A real parent run dir so the `child.spawn_failed` append lands.
+        let parent_id = "01jxsnap000000000000000000";
+        let parent_dir = root.join(parent_id);
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        let parent_paths = RunPaths::new(parent_dir, parent_id).unwrap();
+        append_and_apply_event(
+            &parent_paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+        )
+        .unwrap();
+
+        // A child that was forked but never wrote a pid file: its run dir does
+        // not even exist, so `read_live_recorded_pid` returns `None`.
+        let child_id = "01jxsnap000000000000000042".to_string();
+        let base = Instant::now();
+        let mut child_spawns = std::collections::BTreeMap::new();
+        child_spawns.insert(
+            child_id.clone(),
+            ChildSpawn::Starting {
+                since: base,
+                attempts: 1,
+            },
+        );
+        let mut state = state::SupervisorState::default();
+
+        // Tick with a clock well past the deadline.
+        let now = base + CHILD_SPAWN_DEADLINE + Duration::from_secs(1);
+        reconcile_child_spawns(&root, &parent_paths, &mut child_spawns, &mut state, now);
+
+        // THE bug guard: an unconfirmed child is never recorded as started.
+        assert!(
+            state.spawned_children.is_empty(),
+            "unconfirmed child (pid 0) must never enter spawned_children"
+        );
+        // It is scheduled for a bounded retry, not dropped.
+        assert!(
+            matches!(
+                child_spawns.get(&child_id),
+                Some(ChildSpawn::Failed { attempts: 1, .. })
+            ),
+            "expected Failed{{attempts:1}}, got {:?}",
+            child_spawns.get(&child_id)
+        );
+
+        // A `child.spawn_failed` audit record landed on the parent log.
+        let raw = std::fs::read_to_string(parent_paths.events()).unwrap();
+        assert!(
+            raw.contains("child.spawn_failed"),
+            "reconcile must record child.spawn_failed on the parent log"
+        );
+    }
+
+    /// Restart recovery: a forked-but-unconfirmed child must be re-seeded as
+    /// `Starting` on boot so the reconcile pass adopts or re-forks it — the
+    /// never-retried bug otherwise returns on the parent-restart path.
+    /// Confirmed-running children and terminal children are left alone.
+    #[test]
+    fn reseed_child_spawns_recovers_unconfirmed_children_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let now = Instant::now();
+
+        // Create a child run dir at the canonical `root/runs/<id>` layout that
+        // `run_paths` (and therefore `reseed_child_spawns`) resolves to, and
+        // return its `RunPaths` for appends.
+        let make_child = |id: &str| -> RunPaths {
+            let paths = run_paths(root, id).unwrap();
+            std::fs::create_dir_all(octl_core::run_dir(root, &parse_run_id(id).unwrap())).unwrap();
+            append_and_apply_event(
+                &paths,
+                "run.created",
+                None,
+                None,
+                json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": id }),
+            )
+            .unwrap();
+            paths
+        };
+
+        // A non-terminal child that was never confirmed → must be re-seeded.
+        let pending = "01jxsnap000000000000000001";
+        make_child(pending);
+
+        // A terminal child → needs no supervisor, must be skipped.
+        let done = "01jxsnap000000000000000002";
+        let done_paths = make_child(done);
+        append_and_apply_event(
+            &done_paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "done" }),
+        )
+        .unwrap();
+
+        // A child already recorded as confirmed-running → must be skipped.
+        let confirmed = "01jxsnap000000000000000003".to_string();
+        let mut state = state::SupervisorState::default();
+        state.spawned_children.insert(confirmed.clone(), 4242);
+
+        let ids = [pending, done, confirmed.as_str()];
+        let seeded = reseed_child_spawns(root, ids.iter().copied(), &state, now);
+
+        assert!(
+            matches!(
+                seeded.get(pending),
+                Some(ChildSpawn::Starting { attempts: 1, .. })
+            ),
+            "an unconfirmed non-terminal child must be re-seeded as Starting"
+        );
+        assert!(
+            !seeded.contains_key(done),
+            "a terminal child needs no supervisor and must not be re-seeded"
+        );
+        assert!(
+            !seeded.contains_key(&confirmed),
+            "a confirmed-running child must not be re-seeded (would double-track)"
+        );
+    }
+
+    /// The exhaustion path (`MarkFailed` when the budget is spent) records
+    /// `"final": true` on the `child.spawn_failed` event, and a mid-retry
+    /// failure records `"final": false` — so operators can tell "giving up" from
+    /// "will retry" (the log wording used to always say "scheduling retry").
+    #[test]
+    fn reconcile_marks_final_failure_on_budget_exhaustion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let parent_id = "01jxsnap000000000000000000";
+        let parent_dir = root.join(parent_id);
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        let parent_paths = RunPaths::new(parent_dir, parent_id).unwrap();
+        append_and_apply_event(
+            &parent_paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+        )
+        .unwrap();
+
+        let child_id = "01jxsnap000000000000000099".to_string();
+        let base = Instant::now();
+        let now = base + CHILD_SPAWN_DEADLINE + Duration::from_secs(1);
+
+        // Last attempt in flight: `Starting{attempts=max}`; deadline passed, no pid.
+        let mut child_spawns = std::collections::BTreeMap::new();
+        child_spawns.insert(
+            child_id.clone(),
+            ChildSpawn::Starting {
+                since: base,
+                attempts: CHILD_SPAWN_MAX_ATTEMPTS,
+            },
+        );
+        let mut state = state::SupervisorState::default();
+        reconcile_child_spawns(&root, &parent_paths, &mut child_spawns, &mut state, now);
+
+        // Never confirmed, and the last failure is flagged final.
+        assert!(state.spawned_children.is_empty());
+        let raw = std::fs::read_to_string(parent_paths.events()).unwrap();
+        assert!(
+            raw.contains("\"final\":true"),
+            "the exhausting failure must be recorded as final; log was: {raw}"
+        );
     }
 
     // --- Watchdog git-reconcile fallback (issues `false-failed-after-merge` /

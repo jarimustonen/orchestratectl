@@ -1,10 +1,11 @@
 ---
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-07-26
 type: bug
-status: open
+status: fixed
 priority: normal
 related: ['@supervisor-spawn-fails-silently-at-run-create']
+closed: 2026-07-26
 ---
 
 # Child-supervisor spawn records pid 0 as success and never retries a failed child boot
