@@ -2,9 +2,10 @@
 created: 2026-07-25
 updated: 2026-07-26
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@pipeline-walking-skeleton']
+closed: 2026-07-26
 ---
 
 # Pipeline circuit-breakers + cost/token metering (T6)
