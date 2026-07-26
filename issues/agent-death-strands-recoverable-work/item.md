@@ -3,7 +3,7 @@ created: 2026-07-26
 updated: 2026-07-26
 type: bug
 reporter: claude-code
-status: open
+status: in-progress
 priority: high
 ---
 

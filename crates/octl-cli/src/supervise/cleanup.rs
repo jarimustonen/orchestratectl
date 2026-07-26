@@ -657,6 +657,140 @@ fn git_ahead_count(repo: &str, base: &str, branch: &str, git: &str) -> Option<u6
         .ok()
 }
 
+/// A machine-readable recoverability signal for a dead agent's stranded work
+/// (issue `agent-death-strands-recoverable-work`). Computed when the supervisor
+/// synthesizes an `agent-died` FAILED `node.report`: the agent's process exited,
+/// but its branch may hold complete, mergeable commits ahead of the run's source
+/// that were never merged. Stamped into the failed report under the
+/// `recoverable_work` key so `run show` / `run wait` can surface "N unmerged
+/// commits recoverable on <branch>" instead of a bare failure — a caller can
+/// then salvage without hand-rolling `git log <source>..<branch>`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Recoverability {
+    /// Commits on the branch not reachable from the run's source branch
+    /// (`git rev-list --count <source>..<branch>`). Always `> 0` — a signal is
+    /// only produced when the branch carries unmerged work, so a genuine
+    /// empty-handed death emits no `recoverable_work` block at all.
+    pub unmerged_commits: u64,
+    /// Whether the branch merges into source without conflict (a trivial
+    /// fast-forward when source has not advanced, else a `git merge-tree` probe).
+    /// Conservatively `false` on any git error, so a transient hiccup never
+    /// green-lights an unclean salvage.
+    pub merges_cleanly: bool,
+    /// The preserved branch carrying the stranded commits.
+    pub branch: String,
+    /// The node's worktree path, if still recorded (the operator's salvage
+    /// starting point). `None` once the worktree has been forgotten.
+    pub worktree_path: Option<String>,
+}
+
+impl Recoverability {
+    /// `true` when the stranded work is cleanly salvageable — unmerged commits
+    /// exist AND they merge into source without conflict. The `unmerged_commits`
+    /// invariant (`> 0`) means this collapses to `merges_cleanly`, but the field
+    /// is spelled out for the wire so a consumer never has to re-derive it.
+    #[must_use]
+    pub fn recoverable(&self) -> bool {
+        self.unmerged_commits > 0 && self.merges_cleanly
+    }
+
+    /// The `recoverable_work` JSON block stamped into a synthesized failed
+    /// report (and surfaced verbatim by `run show` / `run wait`).
+    #[must_use]
+    pub fn to_report_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "recoverable": self.recoverable(),
+            "unmerged_commits": self.unmerged_commits,
+            "merges_cleanly": self.merges_cleanly,
+            "branch": self.branch,
+            "worktree_path": self.worktree_path,
+        })
+    }
+}
+
+/// Compute the [`Recoverability`] signal for a dead node, or `None` when there
+/// is nothing to recover (or nothing can be proven).
+///
+/// Returns `Some` **only** when the branch has at least one commit ahead of the
+/// run's source branch (`git rev-list --count <source>..<branch> > 0`). A branch
+/// level with source (a genuine empty-handed death) or any missing input
+/// (`source_branch`, `branch`, a repo to probe in) yields `None`, so the
+/// failed-report envelope is byte-for-byte unchanged in those cases — no
+/// spurious `recoverable_work` block.
+///
+/// This is intentionally decoupled from [`node_branch_merged_to_source`]: that
+/// helper answers "already merged?" (the reconcile-to-SUCCESS gate) and requires
+/// the branch to be an ANCESTOR of source; this one answers "unmerged but
+/// salvageable?" and requires the branch to be AHEAD of source — the strictly
+/// more common stranded case the reconcile path never covered.
+pub fn node_recoverability(paths: &RunPaths, n: &Node, git: &str) -> Option<Recoverability> {
+    let branch = n.branch.as_deref().filter(|s| !s.is_empty())?;
+    let manifest = read_manifest_opt(paths).ok().flatten()?;
+    let source = manifest
+        .source_branch
+        .as_deref()
+        .filter(|s| !s.is_empty())?;
+    // Prefer the recorded source repo (survives worktree removal); fall back to
+    // the node's own worktree while it still exists. Both refs resolve there.
+    let repo = manifest
+        .source_repo
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(n.worktree_path.as_deref())?;
+
+    // Only stranded work produces a signal: a branch level with (or behind)
+    // source has nothing unmerged to recover. A git error (`None`) declines
+    // rather than fabricate a signal.
+    let unmerged_commits = match git_ahead_count(repo, source, branch, git) {
+        Some(ahead) if ahead > 0 => ahead,
+        _ => return None,
+    };
+
+    let merges_cleanly = branch_merges_cleanly(repo, source, branch, git);
+
+    Some(Recoverability {
+        unmerged_commits,
+        merges_cleanly,
+        branch: branch.to_string(),
+        worktree_path: n
+            .worktree_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    })
+}
+
+/// Whether `branch` merges into `source` without conflict, WITHOUT mutating any
+/// working tree.
+///
+/// Two rungs, cheapest first:
+///
+/// 1. **Fast-forward:** if `source` is an ancestor of `branch` the merge is a
+///    trivial fast-forward — always clean, one cheap `merge-base` call, and the
+///    common case (source untouched since the agent forked).
+/// 2. **Three-way probe:** otherwise `git merge-tree --write-tree <source>
+///    <branch>` performs the merge in the object store only (no worktree touched)
+///    and exits `0` iff it is conflict-free.
+///
+/// Conservative throughout: any spawn failure or non-zero exit reads as "does
+/// not merge cleanly", so a transient git error never over-reports recoverability.
+fn branch_merges_cleanly(repo: &str, source: &str, branch: &str, git: &str) -> bool {
+    // (1) Fast-forward: source ⊆ branch ⇒ clean by construction.
+    if git_is_ancestor(repo, source, branch, git) {
+        return true;
+    }
+    // (2) In-memory three-way merge. `--write-tree` writes only to the object
+    // store (never a worktree); exit 0 = clean, 1 = conflicts, ≥2 = git error.
+    Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-tree", "--write-tree", source, branch])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// True when the node's worktree holds no unsaved work — `git -C <worktree>
 /// status --porcelain` produces no output (no tracked, staged, or untracked
 /// changes). A worktree path that is `None` or no longer exists on disk has
@@ -2558,5 +2692,179 @@ mod tests {
         assert!(wt.exists(), "its worktree must be preserved too");
         let evs = events_of_kind(&paths, "cleanup.branch_preserved");
         assert_eq!(evs.len(), 1, "the preservation must be recorded");
+    }
+
+    // --- Recoverability signal for a dead agent's stranded work
+    // (issue `agent-death-strands-recoverable-work`) -----------------------------
+
+    /// THE positive case: a dead agent committed real, unmerged work that would
+    /// fast-forward into source. `node_recoverability` reports it recoverable,
+    /// with the commit count, a clean-merge verdict, and the branch + worktree.
+    #[test]
+    fn stranded_unmerged_work_is_recoverable() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        // Committed but NEVER merged — exactly the stranded incident.
+        commit_in_worktree(&wt, "impl.rs", "green implementation");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        let r = node_recoverability(&paths, &n, &git_bin())
+            .expect("stranded unmerged work must produce a signal");
+        assert_eq!(r.unmerged_commits, 1);
+        assert!(
+            r.merges_cleanly,
+            "an untouched source fast-forwards cleanly"
+        );
+        assert!(r.recoverable());
+        assert_eq!(r.branch, "wt/foo");
+        assert_eq!(r.worktree_path.as_deref(), wt.to_str());
+    }
+
+    /// Recoverable even when source has ADVANCED since the fork, as long as the
+    /// branch still merges without conflict (a real three-way merge, not a
+    /// fast-forward). Disjoint files → clean.
+    #[test]
+    fn stranded_work_recoverable_when_source_advanced_but_no_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        // Agent commits its work on wt/foo (touches impl.rs).
+        commit_in_worktree(&wt, "impl.rs", "agent work");
+        // Meanwhile source advances on a DISJOINT file → no conflict on merge.
+        std::fs::write(repo.join("other.rs"), "unrelated").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "concurrent source work"]);
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        let r = node_recoverability(&paths, &n, &git_bin()).expect("unmerged work → signal");
+        assert_eq!(r.unmerged_commits, 1);
+        assert!(
+            r.merges_cleanly,
+            "disjoint concurrent edits merge cleanly via three-way merge-tree"
+        );
+        assert!(r.recoverable());
+    }
+
+    /// Unmerged work that CONFLICTS with source is still surfaced (a signal is
+    /// produced) but flagged `merges_cleanly: false` / `recoverable: false` — it
+    /// must never be auto-salvaged. Both sides edit the same file divergently.
+    #[test]
+    fn conflicting_unmerged_work_is_flagged_not_recoverable() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        // Both branches edit the SAME file (README exists from init) divergently
+        // → a modify/modify conflict on merge.
+        std::fs::write(wt.join("README"), "agent version\n").unwrap();
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["commit", "-qm", "agent edits README"]);
+        std::fs::write(repo.join("README"), "source version\n").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "source edits README"]);
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        let r = node_recoverability(&paths, &n, &git_bin())
+            .expect("conflicting-but-unmerged work is still surfaced");
+        assert_eq!(r.unmerged_commits, 1);
+        assert!(!r.merges_cleanly, "divergent edits to one file conflict");
+        assert!(
+            !r.recoverable(),
+            "a conflicting branch is not auto-recoverable"
+        );
+    }
+
+    /// A genuine empty-handed death — the branch never advanced past its fork
+    /// point — yields NO signal. The failed-report envelope is unchanged: no
+    /// spurious `recoverable_work` block claiming there is something to salvage.
+    #[test]
+    fn empty_handed_death_produces_no_signal() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let base = rev(&repo, "main");
+        bootstrap_with_source(&paths, &repo, "main");
+        // wt/foo == main: the agent committed nothing before dying.
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo", "base_sha": base }),
+        );
+
+        assert!(
+            node_recoverability(&paths, &n, &git_bin()).is_none(),
+            "no unmerged commits → no recoverability signal"
+        );
+    }
+
+    /// Without a recorded `source_branch` the helper cannot measure "ahead of
+    /// source" and declines (returns `None`) rather than guess — the same
+    /// missing-input conservatism the reconcile check applies.
+    #[test]
+    fn missing_source_branch_declines_signal() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // no source_repo / source_branch recorded
+        let (_repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "impl.rs", "work");
+
+        let n = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+
+        assert!(
+            node_recoverability(&paths, &n, &git_bin()).is_none(),
+            "no source_branch → cannot compute ahead-of-source → decline"
+        );
+    }
+
+    /// The stamped `recoverable_work` block mirrors the struct verbatim, so the
+    /// wire shape `run show` / `run wait` surface is pinned.
+    #[test]
+    fn recoverability_to_report_value_shape() {
+        let r = Recoverability {
+            unmerged_commits: 2,
+            merges_cleanly: true,
+            branch: "wt/foo".to_string(),
+            worktree_path: Some("/tmp/wt".to_string()),
+        };
+        assert_eq!(
+            r.to_report_value(),
+            json!({
+                "recoverable": true,
+                "unmerged_commits": 2,
+                "merges_cleanly": true,
+                "branch": "wt/foo",
+                "worktree_path": "/tmp/wt",
+            })
+        );
     }
 }

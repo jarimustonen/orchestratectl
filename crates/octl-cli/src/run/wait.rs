@@ -107,6 +107,13 @@ struct RunOutcome {
     summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// The `recoverable_work` block a supervisor stamps into an `agent-died`
+    /// FAILED report when the dead agent's branch has unmerged commits ahead of
+    /// source (issue `agent-death-strands-recoverable-work`). Surfaced verbatim
+    /// so a caller can detect stranded, salvageable work without hand-rolling
+    /// `git log <source>..<branch>`. Absent on any other outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recoverable_work: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -318,6 +325,15 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
     } else {
         None
     };
+    // Surface the supervisor's stranded-work signal verbatim (present only on an
+    // `agent-died` failed report whose branch has unmerged commits ahead of
+    // source). A caller reads `recoverable_work.recoverable` to decide whether to
+    // salvage; the block is otherwise absent.
+    let recoverable_work = report
+        .as_ref()
+        .and_then(|r| r.get("recoverable_work"))
+        .filter(|v| v.is_object())
+        .cloned();
 
     Ok(RunOutcome {
         run_id: run_id.to_string(),
@@ -325,6 +341,7 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
         merged,
         summary,
         error,
+        recoverable_work,
     })
 }
 
@@ -350,6 +367,30 @@ fn emit_progress(run_id: &str, status: Status) {
     }
 }
 
+/// Render a one-line human summary of a `recoverable_work` block for text
+/// output (`run wait`, `run show`). `None` when the block is absent or malformed
+/// (its presence is optional and best-effort). Shared so both surfaces phrase
+/// the stranded-work signal identically.
+pub(crate) fn recoverable_summary(block: Option<&Value>) -> Option<String> {
+    let obj = block?.as_object()?;
+    let unmerged = obj.get("unmerged_commits").and_then(Value::as_u64)?;
+    let recoverable = obj
+        .get("recoverable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let branch = obj.get("branch").and_then(Value::as_str).unwrap_or("?");
+    let plural = if unmerged == 1 { "commit" } else { "commits" };
+    if recoverable {
+        Some(format!(
+            "recoverable={unmerged} unmerged {plural} merge cleanly on {branch}"
+        ))
+    } else {
+        Some(format!(
+            "recoverable=false ({unmerged} unmerged {plural} on {branch} do NOT merge cleanly)"
+        ))
+    }
+}
+
 fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -365,6 +406,9 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 }
                 if let Some(e) = &r.error {
                     print!("  error={}", output::escape_one_line(e));
+                }
+                if let Some(line) = recoverable_summary(r.recoverable_work.as_ref()) {
+                    print!("  {line}");
                 }
                 println!();
             }
@@ -408,11 +452,49 @@ mod tests {
             merged: false,
             summary: None,
             error: None,
+            recoverable_work: None,
         };
         assert!(!any_settled_error(&[mk("done"), mk("done")]));
         assert!(any_settled_error(&[mk("done"), mk("failed")]));
         assert!(any_settled_error(&[mk("cancelled")]));
         // A still-running run under --any is not a settled error.
         assert!(!any_settled_error(&[mk("done"), mk("running")]));
+    }
+
+    #[test]
+    fn recoverable_summary_phrasing() {
+        // Absent / non-object → no line.
+        assert_eq!(recoverable_summary(None), None);
+        assert_eq!(recoverable_summary(Some(&serde_json::json!("x"))), None);
+
+        // Clean, singular.
+        let clean = serde_json::json!({
+            "recoverable": true,
+            "unmerged_commits": 1,
+            "merges_cleanly": true,
+            "branch": "wt/foo",
+        });
+        assert_eq!(
+            recoverable_summary(Some(&clean)).as_deref(),
+            Some("recoverable=1 unmerged commit merge cleanly on wt/foo"),
+        );
+
+        // Clean, plural.
+        let many = serde_json::json!({
+            "recoverable": true, "unmerged_commits": 3, "merges_cleanly": true, "branch": "wt/bar",
+        });
+        assert_eq!(
+            recoverable_summary(Some(&many)).as_deref(),
+            Some("recoverable=3 unmerged commits merge cleanly on wt/bar"),
+        );
+
+        // Unmerged but conflicting → flagged, not recoverable.
+        let dirty = serde_json::json!({
+            "recoverable": false, "unmerged_commits": 2, "merges_cleanly": false, "branch": "wt/baz",
+        });
+        assert_eq!(
+            recoverable_summary(Some(&dirty)).as_deref(),
+            Some("recoverable=false (2 unmerged commits on wt/baz do NOT merge cleanly)"),
+        );
     }
 }

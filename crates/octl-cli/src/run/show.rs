@@ -1,18 +1,31 @@
 //! `run show` — full manifest + counters for one run.
 
 use serde::Serialize;
+use serde_json::Value;
 
-use octl_core::{read_manifest_opt, RunLock};
+use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::{ManifestView, SupervisorView};
 use crate::run::{from_core, run_paths};
 
+/// The single reporting node of a single-worker worktree run (`n-0001`);
+/// mirrors `run merge` / `run wait`'s `DEFAULT_NODE_ID`. Its terminal report is
+/// where a supervisor stamps the `recoverable_work` stranded-work signal.
+const DEFAULT_NODE_ID: &str = "n-0001";
+
 #[derive(Serialize)]
 struct ShowPayload<'a> {
     manifest: ManifestView<'a>,
     counts: Counts,
+    /// The `recoverable_work` block from the default node's terminal report,
+    /// present only when a dead agent left unmerged commits ahead of source
+    /// (issue `agent-death-strands-recoverable-work`). Surfaced so a caller can
+    /// spot salvageable work on a `failed` run without inspecting the node
+    /// projection or running `git log <source>..<branch>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recoverable_work: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -47,10 +60,21 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // (the supervisor may roll status up and remove its pid file between the
         // two reads).
         let supervisor = SupervisorView::probe(&paths);
-        Ok(Some((manifest, counts, supervisor)))
+        // Fold the default node's `recoverable_work` block (if any) in the SAME
+        // shared-lock window as the manifest/counters, so a `failed` status and
+        // the stranded-work signal that explains it are read as one consistent
+        // snapshot (state-integrity invariant 3). A run with no `n-0001` node
+        // (or no such block) simply yields `None`.
+        let node_id =
+            NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+        let recoverable_work = read_node_opt(&paths, &node_id)?
+            .and_then(|n| n.last_report)
+            .and_then(|r| r.get("recoverable_work").cloned())
+            .filter(Value::is_object);
+        Ok(Some((manifest, counts, supervisor, recoverable_work)))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor) = match scanned {
+    let (manifest, counts, supervisor, recoverable_work) = match scanned {
         Some(v) => v,
         None => {
             return Err(
@@ -62,6 +86,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     let payload = ShowPayload {
         manifest: ManifestView::from(&manifest).with_supervisor(supervisor),
         counts,
+        recoverable_work,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -90,6 +115,11 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     payload.manifest.run_id
                 ),
                 None => println!("supervisor:    (none recorded)"),
+            }
+            if let Some(line) =
+                crate::run::wait::recoverable_summary(payload.recoverable_work.as_ref())
+            {
+                println!("recoverable:   {line}");
             }
             output::emit_text_warnings(warnings);
         }

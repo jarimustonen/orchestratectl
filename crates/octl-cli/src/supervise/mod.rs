@@ -2151,7 +2151,29 @@ fn watchdog_tick(
                     "wrap_up_recommendations": [],
                 })
             } else {
-                json!({
+                // The agent's process died before merging. Before recording the
+                // bare failure, ask git whether it left salvageable work: commits
+                // ahead of source that merge cleanly (issue
+                // `agent-death-strands-recoverable-work`). A `Some` signal is only
+                // produced when the branch carries unmerged commits, so a genuine
+                // empty-handed death leaves the failed envelope byte-for-byte
+                // unchanged. Computed against the SAME `fresh` projection the
+                // under-lock re-verify used, so the signal reflects git state as of
+                // the moment the report is committed.
+                let recoverability = fresh
+                    .as_ref()
+                    .and_then(|f| cleanup::node_recoverability(paths, f, &git));
+                if let Some(r) = &recoverability {
+                    info!(
+                        target: "orchestratectl::supervise",
+                        node = %node_id,
+                        branch = %r.branch,
+                        unmerged_commits = r.unmerged_commits,
+                        merges_cleanly = r.merges_cleanly,
+                        "agent died leaving unmerged commits; stamping recoverability signal into failed report"
+                    );
+                }
+                let mut data = json!({
                     "success": false,
                     "failed": true,
                     "cancelled": false,
@@ -2160,7 +2182,14 @@ fn watchdog_tick(
                     "discussion_items": [],
                     "spinoff_proposals": [],
                     "wrap_up_recommendations": [],
-                })
+                });
+                if let Some(r) = recoverability {
+                    // `data` is the object literal above, so this always inserts.
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert("recoverable_work".to_string(), r.to_report_value());
+                    }
+                }
+                data
             };
             // The `guard` above proves the exclusive lock is held; mint the
             // witness to thread into the unlocked append.
