@@ -424,6 +424,16 @@ fn envelope(
 pub trait TierHarness {
     /// The harness to run a chunk at `tier` on.
     fn harness(&self, tier: Tier) -> &dyn CodeHarness;
+
+    /// The next tier up the ladder from `tier` that this resolver actually has a
+    /// distinct harness for, or `None` at the ceiling — or when there is no ladder.
+    /// Promotion consults THIS, not the abstract [`Tier`] enum, so a single-harness
+    /// resolver never "promotes" a chunk onto the very same adapter (which would
+    /// burn budget and mislabel the reported tier for no behavioural change).
+    /// Defaults to the full `code → mid → high` ladder.
+    fn next_tier(&self, tier: Tier) -> Option<Tier> {
+        next_tier(tier)
+    }
 }
 
 /// A [`TierHarness`] that returns ONE harness for every tier — the behaviour when
@@ -438,6 +448,13 @@ pub struct SingleTierHarness<'a>(pub &'a dyn CodeHarness);
 impl TierHarness for SingleTierHarness<'_> {
     fn harness(&self, _tier: Tier) -> &dyn CodeHarness {
         self.0
+    }
+    /// One harness for every tier means there is nothing to promote *to*: a
+    /// single-harness resolver reports no higher tier, so `run_pipeline` (which
+    /// wraps its one injected harness here) never promotes regardless of
+    /// `max_promotions` — the pre-tiering behaviour is preserved exactly.
+    fn next_tier(&self, _tier: Tier) -> Option<Tier> {
+        None
     }
 }
 
@@ -887,7 +904,15 @@ pub fn run_pipeline_tiered(
                 // the decider, produce plan.v(N+1), DAG-diff which chunks revert to
                 // Pending, then loop back to the code stage. If the decider declined
                 // the re-spec (ESCALATE override) the loop hands up instead.
-                match trigger_re_spec(&mut run, spec, &plan, &reason, &chunk_ids, &baseline)? {
+                match trigger_re_spec(
+                    &mut run,
+                    spec,
+                    &plan,
+                    &reason,
+                    &chunk_ids,
+                    &verify_report.findings,
+                    &baseline,
+                )? {
                     ReSpecOutcome::Replanned(new_plan) => plan = *new_plan,
                     ReSpecOutcome::Escalated => {
                         break LoopExit::Terminal {
@@ -931,7 +956,16 @@ pub fn run_pipeline_tiered(
     // shared tiered routing defers it to the decider (design §0.2/§2). The decider
     // CONFIRMS — or overrides to ESCALATE (the seam the circuit-breaker layer
     // forces later): an escalation stops short of the merge.
-    let converge_ctx = live_decision_ctx(&run, &plan, DecisionTrigger::SpecReady);
+    // The trigger is the passed verify report (no outstanding findings) — the
+    // evidence the ship decision rests on.
+    let converge_ctx = live_decision_ctx(
+        &run,
+        &plan,
+        DecisionTrigger::VerifyReport {
+            report_id: format!("verify-plan-v{}", plan.plan_rev),
+            findings: Vec::new(),
+        },
+    );
     let (converge_action, converge_env) = route_proposal(
         run.coordinator,
         run.decider,
@@ -1115,20 +1149,29 @@ enum ReSpecOutcome {
     Escalated,
 }
 
-/// Whether a repeat-failing chunk may still be promoted (design §3): its
-/// promotion budget ([`FixLoopConfig::max_promotions`]) is not spent AND it is not
-/// already at the top of the tier ladder ([`Tier::High`]).
-fn promotion_available(run: &Run, chunk_id: &str, current_tier: Tier) -> bool {
+/// The tier a repeat-failing chunk should be promoted to (design §3), or `None`
+/// when it may not promote: its promotion budget ([`FixLoopConfig::max_promotions`])
+/// is spent, or the resolver has no higher tier to run it on. Consulting the
+/// resolver (not the abstract [`Tier`] enum) is what stops a single-harness
+/// resolver from "promoting" onto the same adapter.
+fn promotion_target(
+    run: &Run,
+    harnesses: &dyn TierHarness,
+    chunk_id: &str,
+    current_tier: Tier,
+) -> Option<Tier> {
     let used = run.chunk_promotions.get(chunk_id).copied().unwrap_or(0);
-    used < run.cfg.fix_loop.max_promotions && next_tier(current_tier).is_some()
+    if used >= run.cfg.fix_loop.max_promotions {
+        return None;
+    }
+    harnesses.next_tier(current_tier)
 }
 
-/// `PROMOTE_TIER` (design §3): bump a stuck chunk to the next model tier, record
-/// the routine decision through the shared tiered seam (routine → coordinator-tier,
-/// the decider is NOT consulted), and update the promotion bookkeeping. The caller
-/// has already verified [`promotion_available`], so `next_tier` is `Some`.
-fn promote_chunk(run: &mut Run, plan: &Plan, chunk_id: &str, current_tier: Tier) {
-    let promoted = next_tier(current_tier).expect("promotion_available guarantees a higher tier");
+/// `PROMOTE_TIER` (design §3): bump a stuck chunk to `promoted`, record the routine
+/// decision through the shared tiered seam (routine → coordinator-tier, the decider
+/// is NOT consulted), and update the promotion bookkeeping. `promoted` is the tier
+/// [`promotion_target`] returned.
+fn promote_chunk(run: &mut Run, plan: &Plan, chunk_id: &str, current_tier: Tier, promoted: Tier) {
     let ctx = live_decision_ctx(
         run,
         plan,
@@ -1155,9 +1198,11 @@ fn promote_chunk(run: &mut Run, plan: &Plan, chunk_id: &str, current_tier: Tier)
     );
     run.decisions.push(env);
     run.chunk_tier.insert(chunk_id.to_string(), promoted);
-    *run.chunk_promotions
+    let used = run
+        .chunk_promotions
         .entry(chunk_id.to_string())
-        .or_insert(0) += 1;
+        .or_insert(0);
+    *used = used.saturating_add(1);
     run.promote_count = run.promote_count.saturating_add(1);
 }
 
@@ -1171,6 +1216,7 @@ fn trigger_re_spec(
     old_plan: &Plan,
     reason: &str,
     forced: &[String],
+    findings: &[String],
     baseline: &BaselineSnapshot,
 ) -> Result<ReSpecOutcome, PipelineError> {
     let new_rev = old_plan.plan_rev.saturating_add(1);
@@ -1178,13 +1224,25 @@ fn trigger_re_spec(
     // Route the consequential TRIGGER_RE_SPEC through the shared tiered seam: it is
     // deferred to the decider (design §0.2/§2), whose verdict is recorded. A
     // confirming decider ratifies it (the Opus re-plan below is the authority); an
-    // ESCALATE override stops the re-spec before any new plan is produced.
+    // ESCALATE override stops the re-spec before any new plan is produced. The
+    // verify SPEC-FLAW findings are carried into the context as the evidence the
+    // decider rules on (so the seam is not blind).
+    let trigger_findings: Vec<Finding> = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| Finding {
+            id: format!("respec-f{i}"),
+            summary: f.clone(),
+            verdict: FindingVerdict::SpecFlaw,
+            severity: Severity::High,
+        })
+        .collect();
     let ctx = live_decision_ctx(
         run,
         old_plan,
         DecisionTrigger::VerifyReport {
             report_id: format!("respec-v{new_rev}"),
-            findings: Vec::new(),
+            findings: trigger_findings,
         },
     );
     let (action, env) = route_proposal(
@@ -1201,9 +1259,14 @@ fn trigger_re_spec(
         },
     );
     run.decisions.push(env);
-    if !matches!(action, Action::TriggerReSpec { .. }) {
-        return Ok(ReSpecOutcome::Escalated);
-    }
+    // Execute the decider's RECORDED verdict, not the original proposal: the decider
+    // may soften/retarget the re-spec (a different reason or forced-chunk set), and
+    // the pipeline must do what the audit trail says it did. A non-re-spec verdict
+    // (ESCALATE override) hands the feature up before any new plan is produced.
+    let (reason, forced): (String, Vec<String>) = match action {
+        Action::TriggerReSpec { reason, chunk_ids } => (reason, chunk_ids),
+        _ => return Ok(ReSpecOutcome::Escalated),
+    };
     run.respec_count = run.respec_count.saturating_add(1);
 
     // Produce plan.v(N+1). The spec stage runs headless in the integration
@@ -1217,7 +1280,7 @@ fn trigger_re_spec(
         spec,
         &baseline.to_plan_baseline(),
         new_rev,
-        Some((&old_raw, reason)),
+        Some((&old_raw, reason.as_str())),
     )?;
     git::restore_to(&run.integration_wt, &feat_tip)?;
 
@@ -1228,7 +1291,7 @@ fn trigger_re_spec(
         .filter(|(_, s)| **s == LiveChunkStatus::Merged)
         .map(|(id, _)| id.clone())
         .collect();
-    let diff = fixloop::dag_diff(old_plan, &new_plan, &merged, forced);
+    let diff = fixloop::dag_diff(old_plan, &new_plan, &merged, &forced);
 
     // Rebuild the chunk-status map for the NEW plan. Removed chunks drop out (with
     // their reports); kept-done chunks stay Merged; everything else is Pending.
@@ -1486,7 +1549,14 @@ fn run_code_stage(
         // at all), so the model never "forgets" the original fix on attempt 2.
         let verify_seed: Vec<String> = pending_findings.get(&chunk.id).cloned().unwrap_or_default();
         let mut findings: Vec<String> = verify_seed.clone();
-        let mut attempt = 1u32;
+        // Two counters (see design §3 + §8): `recode` is the per-tier re-code
+        // attempt (1-based) the re-code budget bounds — it RESETS to 1 on a
+        // promotion so each tier gets its own fresh budget. `seq` is a monotonic
+        // attempt id that NEVER resets; it names the attempt's worktree/branch, so
+        // a promoted re-run can never collide with a superseded lower-tier attempt's
+        // branch even if that attempt's cleanup failed (the names stay distinct).
+        let mut recode = 1u32;
+        let mut seq = 1u32;
         loop {
             let current_tier = run.chunk_tier.get(&chunk.id).copied().unwrap_or(chunk.tier);
             match attempt_chunk(
@@ -1496,7 +1566,7 @@ fn run_code_stage(
                 harnesses,
                 current_tier,
                 baseline,
-                attempt,
+                seq,
                 &findings,
             )? {
                 ChunkAttempt::Merged {
@@ -1543,10 +1613,10 @@ fn run_code_stage(
                     wt,
                     branch,
                 } => {
-                    // Re-code while the chunk is re-codable and its budget holds
-                    // (design §8). `attempt` is 1-based, so attempt N is allowed a
-                    // re-code iff N ≤ max_recode_per_chunk.
-                    if recodable && attempt <= run.cfg.fix_loop.max_recode_per_chunk {
+                    // Re-code while the chunk is re-codable and its per-tier budget
+                    // holds (design §8). `recode` is 1-based, so re-code N is allowed
+                    // iff N ≤ max_recode_per_chunk.
+                    if recodable && recode <= run.cfg.fix_loop.max_recode_per_chunk {
                         record_recode_decision(
                             run,
                             plan,
@@ -1567,20 +1637,25 @@ fn run_code_stage(
                             .cloned()
                             .chain(attempt_findings)
                             .collect();
-                        attempt += 1;
+                        recode += 1;
+                        seq += 1;
                         continue;
                     }
 
                     // Re-code budget exhausted at this tier. Before giving up,
                     // adaptive promotion (design §3): a repeat-failing chunk is
-                    // re-run at the NEXT model tier up. Bounded by `max_promotions`
-                    // and the top of the ladder; only a re-codable block promotes (a
-                    // merge conflict is not the model's fault).
-                    if recodable && promotion_available(run, &chunk.id, current_tier) {
-                        promote_chunk(run, plan, &chunk.id, current_tier);
-                        // The failed attempt at the old tier is superseded — drop it
-                        // so the promoted re-run (attempt 1, bare branch name) has a
-                        // clean slate.
+                    // re-run at the NEXT model tier the resolver offers. Bounded by
+                    // `max_promotions` and the top of the ladder; only a re-codable
+                    // block promotes (a merge conflict is not the model's fault).
+                    if let Some(promoted) = recodable
+                        .then(|| promotion_target(run, harnesses, &chunk.id, current_tier))
+                        .flatten()
+                    {
+                        promote_chunk(run, plan, &chunk.id, current_tier, promoted);
+                        // The failed attempt at the old tier is superseded — drop it.
+                        // The promoted re-run gets a fresh per-tier re-code budget
+                        // (`recode = 1`) but a NEW monotonic `seq`, so its
+                        // worktree/branch never collide with the just-dropped attempt.
                         let _ = git::worktree_remove(&run.repo, &wt);
                         let _ = git::delete_branch(&run.repo, &branch, true);
                         findings = verify_seed
@@ -1588,7 +1663,8 @@ fn run_code_stage(
                             .cloned()
                             .chain(attempt_findings)
                             .collect();
-                        attempt = 1;
+                        recode = 1;
+                        seq += 1;
                         continue;
                     }
 
@@ -1599,8 +1675,8 @@ fn run_code_stage(
                     let promotions = run.chunk_promotions.get(&chunk.id).copied().unwrap_or(0);
                     if recodable && (run.cfg.fix_loop.max_recode_per_chunk > 0 || promotions > 0) {
                         run.circuit_breaker = Some(format!(
-                            "chunk {} still blocked after {} re-code attempt(s) and {promotions} promotion(s): {reason}",
-                            chunk.id, run.cfg.fix_loop.max_recode_per_chunk
+                            "chunk {} still blocked after {} attempt(s) and {promotions} promotion(s): {reason}",
+                            chunk.id, seq
                         ));
                         run.code_block_status = Some("circuit_breaker");
                     } else {
@@ -1689,16 +1765,18 @@ fn attempt_chunk(
     harnesses: &dyn TierHarness,
     current_tier: Tier,
     baseline: &BaselineSnapshot,
-    attempt: u32,
+    seq: u32,
     findings: &[String],
 ) -> Result<ChunkAttempt, PipelineError> {
     let base_commit = git::head(&run.integration_wt)?;
-    // Attempt 1 keeps the bare chunk names; re-code attempts suffix `-a{n}` so a
-    // preserved prior attempt never collides.
-    let suffix = if attempt == 1 {
+    // The first attempt (seq 1) keeps the bare chunk name; every later attempt —
+    // re-code OR promotion — suffixes `-a{seq}` with the MONOTONIC sequence, so no
+    // two attempts (across any tier) ever share a worktree/branch name, even if a
+    // superseded attempt's cleanup failed.
+    let suffix = if seq == 1 {
         String::new()
     } else {
-        format!("-a{attempt}")
+        format!("-a{seq}")
     };
     let chunk_branch = format!("{}/chunk-{}{suffix}", run.slug, chunk.id);
     let chunk_wt = run.cfg.workdir.join(format!("chunk-{}{suffix}", chunk.id));
@@ -1714,7 +1792,7 @@ fn attempt_chunk(
     let req = ChunkRequest {
         run_id: format!("pipeline-{}", run.slug),
         chunk_id: chunk.id.clone(),
-        attempt_id: format!("a{attempt}"),
+        attempt_id: format!("a{seq}"),
         worktree_path: chunk_wt.clone(),
         base_commit: base_commit.clone(),
         plan_rev: plan.plan_rev.to_string(),
@@ -2135,7 +2213,7 @@ fn finalize(
         }
         "floor_blocked" => Some("the feature floor regressed at the tip; not merged".to_string()),
         "escalated" => Some(
-            "the decider declined to declare convergence (escalated up); not merged — see the decision log".to_string(),
+            "the decider escalated a consequential decision (declined to converge or re-spec) and handed the feature up; not merged — see the decision log for the reason".to_string(),
         ),
         "merge_conflict" => {
             Some("the feature floor was green but the source branch moved and the merge conflicted".to_string())

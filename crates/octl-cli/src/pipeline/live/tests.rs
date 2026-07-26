@@ -1160,9 +1160,9 @@ impl Decider for SpyDecider {
     }
 }
 
-/// A [`Decider`] that OVERRIDES a `DECLARE_CONVERGED` proposal with `ESCALATE` —
-/// the seam the circuit-breaker layer forces later (design §0.2/§2). Confirms
-/// anything else.
+/// A [`Decider`] that OVERRIDES **any** consequential proposal (`DECLARE_CONVERGED`
+/// or `TRIGGER_RE_SPEC`) with `ESCALATE` — the seam the circuit-breaker layer forces
+/// later (design §0.2/§2).
 struct EscalatingDecider;
 impl Decider for EscalatingDecider {
     fn decide_consequential(
@@ -1170,18 +1170,11 @@ impl Decider for EscalatingDecider {
         _ctx: &DecisionContext,
         proposed: &crate::pipeline::CoordinatorProposal,
     ) -> DeciderVerdict {
-        if matches!(proposed.action, Action::DeclareConverged) {
-            return DeciderVerdict {
-                action: Action::Escalate {
-                    reason: "decider withheld convergence".to_string(),
-                },
-                reason: "not actually done".to_string(),
-                input_artifacts: proposed.input_artifacts.clone(),
-            };
-        }
         DeciderVerdict {
-            action: proposed.action.clone(),
-            reason: proposed.reason.clone(),
+            action: Action::Escalate {
+                reason: "decider withheld the consequential decision".to_string(),
+            },
+            reason: "not actually done".to_string(),
             input_artifacts: proposed.input_artifacts.clone(),
         }
     }
@@ -1190,6 +1183,16 @@ impl Decider for EscalatingDecider {
     }
     fn prompt_version(&self) -> String {
         "v1".to_string()
+    }
+}
+
+/// A [`TierHarness`] that runs ONE (failing) harness at every tier but keeps the
+/// full `code → mid → high` promotion ladder — for exercising promotion all the way
+/// to the ceiling, where the repeated-failure breaker finally trips.
+struct FullLadder<'a>(&'a dyn CodeHarness);
+impl TierHarness for FullLadder<'_> {
+    fn harness(&self, _tier: Tier) -> &dyn CodeHarness {
+        self.0
     }
 }
 
@@ -1380,6 +1383,100 @@ fn decider_may_override_converge_with_escalate() {
         .find(|d| d.reason.contains("not actually done"))
         .expect("the decider's escalate verdict is recorded");
     assert_eq!(escalate.decision_tier, DecisionTier::Decider);
+    // The chunk work is NOT lost: the integration branch (with the merged chunk) is
+    // preserved for recovery (state-integrity invariant 5), since it holds commits
+    // ahead of source that never reached it.
+    assert!(
+        super::git::branch_exists(repo.path(), &report.integration_branch),
+        "escalated work must remain on the preserved integration branch"
+    );
+}
+
+#[test]
+fn promotion_climbs_the_whole_ladder_then_the_breaker_trips() {
+    // Design §3 + §9: a chunk that keeps failing is promoted up the FULL ladder
+    // (code → mid → high) and, once the ceiling is reached with no higher tier to
+    // try, the repeated-failure breaker finally trips. Here every tier runs the
+    // same persistently-failing harness, so no promotion can rescue it.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0, // straight to promotion on each failure
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 5, // more than the ladder height; the ladder is the real bound
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    let failing = AlwaysStray;
+    let harnesses = FullLadder(&failing);
+    let decider = crate::pipeline::ScriptedDecider::confirming();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    // code→mid and mid→high: exactly two promotions, then the ladder is exhausted.
+    assert_eq!(
+        report.promote_count, 2,
+        "promoted to the ceiling, no further"
+    );
+    assert!(!report.merged);
+}
+
+#[test]
+fn decider_may_override_respec_with_escalate() {
+    // The consequential seam guards TRIGGER_RE_SPEC too: a SPEC-FLAW verdict would
+    // normally re-plan, but a decider that escalates it stops the loop — no new plan
+    // revision is produced.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 1,
+        max_promotions: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "the plan cannot meet intent".to_string(),
+        findings: vec!["wrong approach".to_string()],
+        disposition: providers::VerifyDisposition::SpecFlaw {
+            reason: "the plan cannot meet intent".to_string(),
+            chunk_ids: vec!["c1".to_string()],
+        },
+    });
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let harnesses = SingleTierHarness(&code);
+
+    let report = run_pipeline_tiered(&cfg, &spec, &harnesses, &verify, &EscalatingDecider)
+        .expect("pipeline runs");
+
+    assert_eq!(report.status, "escalated", "{report:#?}");
+    assert!(!report.merged);
+    assert_eq!(
+        report.respec_count, 0,
+        "an escalated re-spec is not counted"
+    );
+    assert_eq!(report.plan_rev, 1, "no new plan revision was produced");
+    // The spec provider was never asked to re-plan.
+    assert!(spec.respec_calls().is_empty());
 }
 
 // --- unit tests for the pure helpers ---------------------------------------

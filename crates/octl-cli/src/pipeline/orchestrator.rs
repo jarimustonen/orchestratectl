@@ -230,6 +230,15 @@ pub fn route_proposal(
                 model: decider.model(),
                 prompt_version: decider.prompt_version(),
             };
+            // The decider may replace the action (e.g. DeclareConverged → Escalate);
+            // its verdict is stamped decider-tier, which satisfies the invariant for
+            // any action class. Assert it so a future routing change can't silently
+            // record a mis-tiered envelope (cheap — one build per consequential call).
+            debug_assert!(
+                envelope.validate_for(&verdict.action).is_ok(),
+                "route_proposal produced a tier-invariant violation for {}",
+                verdict.action.name()
+            );
             (verdict.action, envelope)
         }
     }
