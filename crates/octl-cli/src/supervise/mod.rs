@@ -2007,7 +2007,14 @@ fn watchdog_tick(
     let git = cleanup::git_bin();
 
     for (node_id, nid, n, probe) in candidates {
-        let v = watchdog::check_liveness(&probe, &tmux_snapshot);
+        // Lifecycle-aware liveness. For AUTONOMOUS nodes the recorded agent_pid is
+        // authoritative (a dead single fire-and-forget process is genuinely dead).
+        // For INTERACTIVE nodes a human may quit and restart the agent (or it
+        // re-execs on update/compaction) while the tmux window and their work live
+        // on, so a bare PID probe fires a false `agent-died`; there the window is
+        // the liveness signal (issue `agent-died-merge-no-teardown-interactive`).
+        let interactive = n.kind.lifecycle() == Lifecycle::Interactive;
+        let v = watchdog::check_liveness_for_lifecycle(&probe, &tmux_snapshot, interactive);
         // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
         // recycled is unambiguous), but require a short retry streak for
         // the `TmuxGone` half-state so a transient `tmux list-windows`

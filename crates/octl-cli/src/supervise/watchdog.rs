@@ -168,6 +168,29 @@ impl WatchdogTmuxSnapshot {
         }
     }
 
+    /// The tmux window verdict for `probe` — the same qualified-identity /
+    /// legacy-bare-name selection [`check_liveness`] uses, exposed so the
+    /// interactive liveness policy can consult the window *independently* of the
+    /// PID check (which short-circuits on a dead PID before ever probing tmux).
+    ///
+    /// Returns `None` when there is no tmux check to run at all — either
+    /// `skip_tmux_check` is set, or the node carries neither a qualified identity
+    /// nor a legacy window name. Unlike [`check_liveness`], this does NOT emit the
+    /// once-per-name legacy warning: that warning belongs to the primary liveness
+    /// path, and this accessor may be a second consult on the same tick.
+    pub fn probe_verdict(&self, probe: &AgentProbe) -> Option<TmuxProbe> {
+        if probe.skip_tmux_check {
+            return None;
+        }
+        match probe.tmux_identity.as_ref() {
+            Some(identity) => Some(self.lookup_qualified(identity)),
+            None => probe
+                .tmux_window
+                .as_deref()
+                .map(|name| self.lookup_by_name(name)),
+        }
+    }
+
     /// Legacy bare-name verdict on the default socket — the ambiguous match
     /// kept for nodes registered before create.sh emitted the qualified
     /// identity.
@@ -420,6 +443,57 @@ pub fn check_liveness(probe: &AgentProbe, tmux: &WatchdogTmuxSnapshot) -> Livene
         }
     }
     Liveness::Alive
+}
+
+/// Liveness for a node, accounting for how its agent process behaves over the
+/// run's lifetime.
+///
+/// AUTONOMOUS runs: the recorded `agent_pid` is a single fire-and-forget process
+/// that runs to completion and self-merges; its death is authoritative, so the
+/// PID governs and this defers straight to [`check_liveness`] (a lost-but-merged
+/// branch is separately rescued by the tick's git-reconcile probe).
+///
+/// INTERACTIVE runs: a human drives the tmux window and may quit and restart the
+/// agent process (claude) — or it re-execs itself on update / context compaction
+/// — while the window, and their uncommitted work, live on for hours or days.
+/// The recorded pid then goes stale and a bare PID probe fires a false
+/// `agent-died` on a still-live session (issue
+/// `agent-died-merge-no-teardown-interactive`: a ~1.5-day run whose agent issued
+/// `run merge` 18 min AFTER the watchdog declared it dead). So for an interactive
+/// node the tmux WINDOW is the authoritative liveness signal, exactly as it
+/// already is when the pid happens to be alive: a dead/recycled pid with the
+/// window still present (or an inconclusive probe) is NOT terminal — only a
+/// definitive window absence is (and that is still streak-gated by the caller,
+/// same as any [`Liveness::TmuxGone`]). This is correct regardless of how long
+/// the run has idled, because the window outlives every agent-process restart.
+///
+/// When there is no window to probe at all (`skip_tmux_check`, or no identity /
+/// window name recorded) the interactive path has no better signal, so it falls
+/// back to the PID verdict — the degenerate case, since interactive runs always
+/// own a window.
+pub fn check_liveness_for_lifecycle(
+    probe: &AgentProbe,
+    tmux: &WatchdogTmuxSnapshot,
+    interactive: bool,
+) -> Liveness {
+    let verdict = check_liveness(probe, tmux);
+    if !interactive || probe.skip_tmux_check {
+        return verdict;
+    }
+    match verdict {
+        // A stale/dead pid is EXPECTED across an interactive agent restart. Re-base
+        // the verdict on the window alone.
+        Liveness::Dead | Liveness::Recycled => match tmux.probe_verdict(probe) {
+            // Window really gone → the session ended; hand the caller the
+            // streak-gated half-state (a transient false-`Absent` must not reap).
+            Some(TmuxProbe::Absent) => Liveness::TmuxGone,
+            // Window present, inconclusive, or nothing to probe → the human's
+            // session lives on despite the stale pid.
+            _ => Liveness::Alive,
+        },
+        // `Alive` and `TmuxGone` already reflect the window correctly.
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -811,5 +885,135 @@ mod tests {
         };
         // Live PID + inconclusive (timed-out) tmux probe → stays Alive.
         assert_eq!(check_liveness(&probe, &snap), Liveness::Alive);
+    }
+
+    // ---- Lifecycle-aware liveness (interactive long-idle false positive) ----
+    // Regression suite for `agent-died-merge-no-teardown-interactive`: on a
+    // long-lived interactive run the recorded agent_pid goes stale (human quits
+    // and restarts claude / it re-execs) while the tmux window lives on. A bare
+    // PID probe fires a false `agent-died`; the window is the real liveness
+    // signal for interactive runs. PID 0 is a deterministically-dead pid.
+    const DEAD_PID: u32 = 0;
+
+    /// THE fix: interactive node, recorded pid is dead, but the tmux window is
+    /// still present → ALIVE, not the false `agent-died`. This is the exact
+    /// long-idle window from the filed trace.
+    #[test]
+    fn interactive_dead_pid_with_live_window_is_alive() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
+        let probe = AgentProbe {
+            pid: DEAD_PID,
+            start_time: None,
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(None, "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        let snap = snapshot(&[None]);
+        // The bare PID verdict IS `Dead` — the false positive we're curing.
+        assert_eq!(check_liveness(&probe, &snap), Liveness::Dead);
+        // Interactive re-bases on the (present) window → Alive.
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Alive,
+            "interactive: a stale pid with a live window must not read agent-died"
+        );
+        // Autonomous keeps the authoritative PID verdict → Dead.
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, false),
+            Liveness::Dead,
+            "autonomous: a dead fire-and-forget agent is genuinely dead"
+        );
+    }
+
+    /// Interactive node, dead pid AND the window is genuinely gone → the
+    /// streak-gated `TmuxGone` half-state (a truly-ended session still
+    /// terminalizes; the caller's streak guards a transient false-Absent).
+    #[test]
+    fn interactive_dead_pid_with_absent_window_is_tmux_gone() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        // Server answers but our @42 is not among its windows → definitive Absent.
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@99|other"], 0));
+        let probe = AgentProbe {
+            pid: DEAD_PID,
+            start_time: None,
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(None, "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        let snap = snapshot(&[None]);
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::TmuxGone,
+            "interactive: dead pid + genuinely-absent window terminalizes (streak-gated)"
+        );
+    }
+
+    /// Interactive node, dead pid, but the tmux probe is INCONCLUSIVE (server
+    /// unreachable). A transient/operational tmux hiccup must never reap a live
+    /// human session → stays Alive.
+    #[test]
+    fn interactive_dead_pid_with_unknown_window_stays_alive() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        // Non-zero exit → server unreachable → Unknown.
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server"], 1));
+        let probe = AgentProbe {
+            pid: DEAD_PID,
+            start_time: None,
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(Some("/tmp/dead-sock"), "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        let snap = snapshot(&[Some("/tmp/dead-sock")]);
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Alive,
+            "interactive: an inconclusive tmux probe must not reap a live session"
+        );
+    }
+
+    /// Degenerate interactive node with NO window to probe (`skip_tmux_check`):
+    /// no better signal exists, so the interactive path falls back to the PID
+    /// verdict (dead pid → Dead). Guards against a stuck non-terminal node when
+    /// there is genuinely nothing else to consult.
+    #[test]
+    fn interactive_without_window_falls_back_to_pid() {
+        let probe = AgentProbe {
+            pid: DEAD_PID,
+            start_time: None,
+            tmux_window: None,
+            tmux_identity: None,
+            skip_tmux_check: true,
+        };
+        let snap = WatchdogTmuxSnapshot::default();
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Dead,
+            "interactive with no window to probe falls back to the PID verdict"
+        );
+    }
+
+    /// A genuinely-alive interactive agent stays Alive on both paths — the fix
+    /// does not change the healthy case.
+    #[test]
+    fn interactive_live_pid_and_window_is_alive() {
+        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
+        let probe = AgentProbe {
+            pid: std::process::id(),
+            start_time: None,
+            tmux_window: Some("🚀 wt/x".to_string()),
+            tmux_identity: Some(id(None, "octl", "@42")),
+            skip_tmux_check: false,
+        };
+        let snap = snapshot(&[None]);
+        assert_eq!(
+            check_liveness_for_lifecycle(&probe, &snap, true),
+            Liveness::Alive
+        );
     }
 }

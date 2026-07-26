@@ -1,9 +1,9 @@
 ---
 created: 2026-07-20
-updated: 2026-07-20
+updated: 2026-07-26
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 related: ['@supervisor-dead-merge-no-teardown', '@false-failed-after-merge', '@supervisor-watchdog-misfire-on-fresh-spawn']
 ---
