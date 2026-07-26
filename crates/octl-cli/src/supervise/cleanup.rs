@@ -1643,6 +1643,52 @@ mod tests {
         assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
     }
 
+    /// The durable agent-pane capture (`<run-dir>/agent.log`, issue
+    /// `worker-process-hang`) must survive teardown — its whole purpose is
+    /// post-mortem readability after the tmux window + worktree are gone. Drives
+    /// the most destructive path (a confirmed explicit-merge, which force-removes
+    /// the worktree and `-D`'s the branch) and asserts the run-dir log is
+    /// untouched. A future change that adds run-dir cleanup to `cleanup_node`
+    /// would break this.
+    #[test]
+    fn agent_log_survives_teardown() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        commit_in_worktree(&wt, "feat.rs", "merged work");
+
+        // The capture the supervisor would have armed, with real pane output.
+        std::fs::write(paths.agent_log(), b"agent stdout line\napi error trace\n").unwrap();
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "via": "explicit-merge" }),
+        );
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        // Worktree + branch are torn down, but the run-dir capture persists.
+        assert!(!wt.exists(), "merge path must remove the worktree");
+        assert!(!branch_exists(&repo, "wt/foo"));
+        assert!(
+            paths.agent_log().exists(),
+            "agent.log must survive teardown"
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.agent_log()).unwrap(),
+            "agent stdout line\napi error trace\n",
+            "agent.log content must be intact"
+        );
+    }
+
     /// Defense-in-depth, `-d` FALLBACK arm (no recorded `source_branch`): a
     /// NON-merge report the primary blocked gate misses (here a bare
     /// `success: true` with no `via`) with no `manifest.source_branch` to run the

@@ -215,6 +215,15 @@ impl RunPaths {
     pub fn supervisor_pid(&self) -> PathBuf {
         self.root.join("supervisor.pid")
     }
+
+    /// Path to the durable capture of the agent's tmux pane
+    /// (`agent.log`). The supervisor tees the worker pane here via
+    /// `tmux pipe-pane` right after spawn confirmation so a post-mortem
+    /// survives teardown — the file lives in the run dir, NOT the worktree,
+    /// so it persists after the tmux window and worktree are removed.
+    pub fn agent_log(&self) -> PathBuf {
+        self.root.join("agent.log")
+    }
 }
 
 /// Compose the standard run directory under `<root>/runs/<run-id>`.

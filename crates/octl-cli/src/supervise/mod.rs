@@ -22,6 +22,7 @@
 //! event when the events log survives) rather than poll a deleted
 //! directory forever and keep forking children.
 
+pub mod capture;
 pub mod cleanup;
 pub mod notify;
 pub mod pid_file;
@@ -451,6 +452,14 @@ pub fn dispatch(
     let mut half_state_streak: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
 
+    // Per-node `pipe-pane` failure counter driving bounded capture retry
+    // (issue `capture-agent-output-to-run-dir`). In-memory only: a restart
+    // retries from scratch, which is fine. The DURABLE "already armed" set lives
+    // in `state.captured_armed` (persisted every tick like `spawned_children`),
+    // so a restart does not re-run `pipe-pane` on a still-live capture pipe.
+    let mut capture_attempts: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+
     // Repair state written by the pre-state-machine version, which inserted
     // unconfirmed children at pid 0 (the very bug this change fixes). Drop those
     // sentinels so an already-affected run does not treat a never-started child
@@ -823,6 +832,16 @@ pub fn dispatch(
             };
             report_corrupt_line(&mut entry.tail, &paths, owner, q, &cid);
         }
+
+        // Durable agent-pane capture. Arm `tmux pipe-pane` for any worker node
+        // whose `tmux_identity` we can now see, teeing its pane to
+        // `<run-dir>/agent.log` so a death remains diagnosable after the window
+        // is torn down (issue `worker-process-hang`). Best-effort and additive:
+        // runs BEFORE the watchdog so startup output is captured even inside the
+        // spawn-grace window, and never blocks liveness (every tmux call is
+        // time-bounded). The armed set is persisted in `state`; retries are
+        // in-memory.
+        capture::capture_tick(&paths, &mut state.captured_armed, &mut capture_attempts);
 
         // Loop 3: watchdog. We don't yet have a generalized agent
         // registry (that's `all-kinds-spawn`'s territory). The current

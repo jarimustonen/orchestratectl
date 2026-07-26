@@ -1,8 +1,8 @@
 ---
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-07-26
 type: bug
-status: open
+status: in-progress
 priority: normal
 ---
 

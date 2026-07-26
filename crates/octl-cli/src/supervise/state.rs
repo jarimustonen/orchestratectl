@@ -9,7 +9,7 @@
 //! event log and projections are the shared, lock-guarded store; this is
 //! just the owner's resume cursor.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,14 @@ pub struct SupervisorState {
     /// already forked a child supervisor process.
     #[serde(default)]
     pub spawned_children: BTreeMap<String, u32>,
+    /// Node ids whose tmux pane has been successfully armed for durable
+    /// capture to `<run-dir>/agent.log` (issue `capture-agent-output-to-run-dir`).
+    /// Persisted so a supervisor restart does NOT re-run `tmux pipe-pane`: the
+    /// capture pipe is a child of the tmux server and survives the restart, so
+    /// re-arming would only add a close/reopen transition gap. See
+    /// [`crate::supervise::capture`].
+    #[serde(default)]
+    pub captured_armed: BTreeSet<String>,
 }
 
 impl Default for SupervisorState {
@@ -49,6 +57,7 @@ impl Default for SupervisorState {
             last_seq_by_child: BTreeMap::new(),
             last_processed_report_seq_by_child: BTreeMap::new(),
             spawned_children: BTreeMap::new(),
+            captured_armed: BTreeSet::new(),
         }
     }
 }
@@ -106,6 +115,7 @@ mod tests {
         s.last_processed_report_seq_by_child
             .insert("child-1".to_string(), 7);
         s.spawned_children.insert("child-1".to_string(), 999);
+        s.captured_armed.insert("n-0001".to_string());
         save(dir.path(), &s).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.last_seq_own, 42);
@@ -114,5 +124,21 @@ mod tests {
             Some(&7)
         );
         assert_eq!(loaded.spawned_children.get("child-1"), Some(&999));
+        assert!(loaded.captured_armed.contains("n-0001"));
+    }
+
+    /// A state file written before `captured_armed` existed (no such key) still
+    /// loads — the `#[serde(default)]` fills an empty set.
+    #[test]
+    fn loads_legacy_state_without_captured_armed_field() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            state_path(dir.path()),
+            r#"{"schema_version":1,"last_seq_own":5}"#,
+        )
+        .unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.last_seq_own, 5);
+        assert!(loaded.captured_armed.is_empty());
     }
 }
