@@ -2,9 +2,10 @@
 created: 2026-07-26
 updated: 2026-07-26
 type: feature
-status: in-progress
+status: done
 priority: normal
 related: ['@worker-process-hang']
+closed: 2026-07-26
 ---
 
 # Capture autonomous agent pane output to durable `<run-dir>/agent.log`
