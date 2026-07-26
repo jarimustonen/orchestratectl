@@ -516,6 +516,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // orchestrate integration branch) rather than workmux's default base.
         // `None` for runs without --source-branch keeps the prior behaviour.
         source_branch: args.source_branch.as_deref(),
+        // `run create` inherits the caller's cwd (the user's repo); only the
+        // supervisor's retry re-spawn needs an explicit repo.
+        cwd: None,
     };
     // On any spawn failure for a child, drop the orphan run dir before
     // returning the error. Best-effort: a leftover dir is far less harmful
@@ -706,7 +709,7 @@ const DEFAULT_HEADLESS_SESSION: &str = "headless";
 /// output is not a clean SHA, in which case the supervisor's merge-reconcile
 /// fallback simply does not fire for this node. Honors the `GIT_BIN` override so
 /// tests can stub (or disable) git the same way the supervisor's teardown does.
-fn capture_base_sha(worktree_path: &str) -> Option<String> {
+pub(crate) fn capture_base_sha(worktree_path: &str) -> Option<String> {
     let git = std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string());
     let out = std::process::Command::new(git)
         .arg("-C")

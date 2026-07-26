@@ -137,6 +137,7 @@ mod tests {
             updated_at: ts(),
             last_report: None,
             last_processed_report_seq_by_child: Map::new(),
+            retry_attempts: 0,
         }
     }
 

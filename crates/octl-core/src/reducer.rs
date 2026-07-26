@@ -324,6 +324,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.created" => reduce_node_created(paths, ev),
         "node.status" => reduce_node_status(paths, ev),
         "node.report" => reduce_node_report(paths, ev),
+        "node.retry" => reduce_node_retry(paths, ev),
         "discussion.opened" => reduce_discussion_opened(paths, ev),
         "discussion.resolved" => reduce_discussion_resolved(paths, ev),
         "spinoff.proposed" => reduce_spinoff_proposed(paths, ev),
@@ -636,6 +637,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         updated_at: ev.ts,
         last_report: None,
         last_processed_report_seq_by_child: serde_json::Map::default(),
+        retry_attempts: 0,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -647,6 +649,69 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         ops.push(ProjectionOp::Manifest(m));
     }
     Ok(ops)
+}
+
+/// Rewire an existing node to a freshly re-spawned agent after an empty-handed
+/// `agent-died` bounded auto-retry (issue `autoretry-agent-died-worker`). The
+/// supervisor tore down the dead worker's stale worktree and `create.sh`'d a
+/// clean one at the run's source branch; this event carries the new spawn
+/// metadata (`branch`, `base_sha`, `worktree_path`, tmux identity, `agent_pid`)
+/// plus the audit fields (`attempt`, `reason`).
+///
+/// It updates the node in place: the new agent's coordinates replace the dead
+/// one's, `status` returns to `Pending`, `started_at` is re-stamped so the
+/// watchdog's spawn-grace window re-applies to the new agent, `last_report` is
+/// cleared, and `retry_attempts` is incremented — the DURABLE, restart-safe
+/// bound the watchdog checks before scheduling the next retry.
+///
+/// Guards, mirroring the other node reducers:
+/// - A missing node is a no-op (a retry event whose node was never created).
+/// - A TERMINAL node is never resurrected (a settled node is frozen): if a real
+///   `node.report` raced in and terminalized the node, the retry is a dead event.
+///   This keeps replay robust and preserves the terminal-state invariant.
+fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    // Terminal-state guard: a settled node is frozen. A late `node.report` that
+    // beat this retry to the lock wins; the retry must not resurrect it.
+    if n.status.is_terminal() {
+        tracing::debug!(
+            target: "octl_core::reducer",
+            seq = ev.seq, kind = %ev.kind, node_id = %node_id, current = ?n.status,
+            "no-op: node.retry against terminal node"
+        );
+        return Ok(vec![]);
+    }
+    let d = &ev.data;
+    // Rewire to the new agent. Each field mirrors `reduce_node_created`'s parsing
+    // so the projection shape is identical to a fresh spawn.
+    n.branch = d.get("branch").and_then(Value::as_str).map(str::to_string);
+    n.base_sha = d
+        .get("base_sha")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    n.worktree_path = d
+        .get("worktree_path")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    n.tmux_window = d
+        .get("tmux_window")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    n.tmux_identity = tmux_identity_from_data(d);
+    n.agent_pid = optional_i32(d, "agent_pid", &events_path, ev)?;
+    n.agent_pid_start_time = optional_ts(d, "agent_pid_start_time", &events_path, ev)?;
+    n.status = Status::Pending;
+    n.started_at = Some(ev.ts);
+    n.updated_at = ev.ts;
+    n.last_report = None;
+    n.retry_attempts = n.retry_attempts.saturating_add(1);
+    Ok(vec![ProjectionOp::Node(n)])
 }
 
 fn reduce_node_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
@@ -1234,6 +1299,121 @@ mod tests {
             "audit events must not mutate the manifest"
         );
         assert!(!paths.nodes_dir().exists(), "no node projection created");
+    }
+
+    /// Bootstrap a run manifest + one live `n-0001` spinoff node, returning its
+    /// paths. Used by the `node.retry` reducer tests.
+    fn bootstrap_retry_node(tmp: &TempDir, run_id: &str) -> RunPaths {
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data =
+            serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" });
+        apply_event(&paths, &created).expect("run.created applies");
+        let mut node = event(run_id);
+        node.seq = 2;
+        node.kind = "node.created".into();
+        node.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        node.data = serde_json::json!({
+            "kind": "spinoff",
+            "branch": "wt/foo",
+            "worktree_path": "/tmp/old-wt",
+            "agent_pid": 111,
+        });
+        apply_event(&paths, &node).expect("node.created applies");
+        paths
+    }
+
+    /// `node.retry` rewires the node to the freshly re-spawned agent, returns it to
+    /// `Pending`, re-stamps `started_at`, and increments the durable
+    /// `retry_attempts` bound (issue `autoretry-agent-died-worker`).
+    #[test]
+    fn node_retry_rewires_node_and_increments_attempts() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+
+        let mut retry = event(run_id);
+        retry.seq = 3;
+        retry.kind = "node.retry".into();
+        retry.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        retry.data = serde_json::json!({
+            "attempt": 1,
+            "reason": "agent-died",
+            "branch": "wt/foo-r1",
+            "base_sha": "a".repeat(40),
+            "worktree_path": "/tmp/new-wt",
+            "agent_pid": 222,
+            "tmux_session": "s",
+            "tmux_window_id": "@9",
+        });
+        apply_event(&paths, &retry).expect("node.retry applies");
+
+        let n = read_n0001(&paths);
+        assert_eq!(n.retry_attempts, 1, "attempt bound incremented");
+        assert_eq!(
+            n.branch.as_deref(),
+            Some("wt/foo-r1"),
+            "rewired to new branch"
+        );
+        assert_eq!(n.worktree_path.as_deref(), Some("/tmp/new-wt"));
+        assert_eq!(n.agent_pid, Some(222), "rewired to new agent pid");
+        assert_eq!(n.status, Status::Pending, "node returns to pending");
+        assert!(n.last_report.is_none());
+        assert_eq!(
+            n.tmux_identity.as_ref().map(|t| t.window_id.as_str()),
+            Some("@9"),
+            "rewired tmux identity"
+        );
+
+        // A second retry increments again — the bound is monotone.
+        let mut retry2 = event(run_id);
+        retry2.seq = 4;
+        retry2.kind = "node.retry".into();
+        retry2.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        retry2.data = serde_json::json!({
+            "attempt": 2, "reason": "agent-died", "branch": "wt/foo-r2",
+            "worktree_path": "/tmp/new-wt-2", "agent_pid": 333,
+        });
+        apply_event(&paths, &retry2).expect("node.retry applies");
+        assert_eq!(read_n0001(&paths).retry_attempts, 2);
+    }
+
+    /// A `node.retry` against an already-terminal node is a dead event: the
+    /// terminal-state invariant holds, so a late retry never resurrects a settled
+    /// node (a real report that raced in wins).
+    #[test]
+    fn node_retry_against_terminal_node_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+
+        // Terminalize the node via a success report.
+        let mut report = event(run_id);
+        report.seq = 3;
+        report.kind = "node.report".into();
+        report.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        report.data = serde_json::json!({ "success": true });
+        apply_event(&paths, &report).expect("node.report applies");
+        assert_eq!(read_n0001(&paths).status, Status::Done);
+
+        let mut retry = event(run_id);
+        retry.seq = 4;
+        retry.kind = "node.retry".into();
+        retry.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        retry.data = serde_json::json!({
+            "attempt": 1, "reason": "agent-died", "branch": "wt/foo-r1",
+            "worktree_path": "/tmp/new-wt", "agent_pid": 222,
+        });
+        apply_event(&paths, &retry).expect("node.retry applies as no-op");
+
+        let n = read_n0001(&paths);
+        assert_eq!(n.status, Status::Done, "terminal node not resurrected");
+        assert_eq!(n.retry_attempts, 0, "no increment against terminal node");
+        assert_eq!(n.agent_pid, Some(111), "not rewired");
     }
 
     #[test]

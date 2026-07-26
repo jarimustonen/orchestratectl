@@ -57,7 +57,7 @@ use tracing::{info, warn};
 
 /// The tmux binary, honoring the `TMUX_BIN` override (tests, non-default
 /// installs). Mirrors [`crate::supervise::watchdog`].
-fn tmux_bin() -> String {
+pub(crate) fn tmux_bin() -> String {
     std::env::var("TMUX_BIN").unwrap_or_else(|_| "tmux".to_string())
 }
 
@@ -427,7 +427,7 @@ fn record_session_retained(paths: &RunPaths, session: &str) {
 /// the main worktree *before* removing the linked worktree (a `git -C
 /// <removed-path>` would then fail), and kill the tmux window first so the
 /// agent's own Claude session ends before its worktree is pulled.
-fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
+pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     close_tmux_window(paths, n, tmux);
 
     let Some(worktree_path) = n.worktree_path.as_deref() else {
@@ -767,6 +767,46 @@ pub fn node_recoverability(paths: &RunPaths, n: &Node, git: &str) -> Option<Reco
             .filter(|s| !s.is_empty())
             .map(str::to_string),
     })
+}
+
+/// Whether a dead node is **positively empty-handed** — its branch carries ZERO
+/// commits ahead of the run's source branch (`git rev-list --count
+/// <source>..<branch> == 0`). This is the precondition for the bounded auto-retry
+/// (issue `autoretry-agent-died-worker`): only a worker that committed nothing may
+/// be re-spawned from a clean worktree at source, because a retry starts from base
+/// and would otherwise strand real work.
+///
+/// The dual of [`node_recoverability`]: that returns `Some` only when the branch is
+/// AHEAD (`> 0`, work to salvage); this returns `true` only when it is LEVEL
+/// (`== 0`, nothing to lose). The two are mutually exclusive, so a death routes to
+/// exactly one of retry (empty-handed) or salvage (committed work).
+///
+/// Conservative on EVERY uncertainty: a git error, an unparseable count, or any
+/// missing input (`source_branch`, `branch`, a repo to probe in) yields `false` —
+/// never retry unless empty-handedness is positively proven. This is the
+/// retry ⟂ salvage safety: a transient git hiccup declines to fabricate a
+/// "safe to discard" verdict, so a branch that might hold work is never rebuilt
+/// from base.
+pub fn node_is_empty_handed(paths: &RunPaths, n: &Node, git: &str) -> bool {
+    let Some(branch) = n.branch.as_deref().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let Some(manifest) = read_manifest_opt(paths).ok().flatten() else {
+        return false;
+    };
+    let Some(source) = manifest.source_branch.as_deref().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let repo = match manifest
+        .source_repo
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(n.worktree_path.as_deref())
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    matches!(git_ahead_count(repo, source, branch, git), Some(0))
 }
 
 /// Whether `branch` merges into `source` without conflict, WITHOUT mutating any

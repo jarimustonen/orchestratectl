@@ -123,6 +123,13 @@ pub struct SpawnRequest<'a> {
     /// children whose integration branch is NOT `main`. `None` keeps
     /// workmux's default (the current branch / configured `base_branch`).
     pub source_branch: Option<&'a str>,
+    /// Working directory to invoke create.sh from — the git repo whose worktree
+    /// it materializes. `None` inherits the caller's cwd (how `run create` works:
+    /// the user runs it from their repo). The supervisor's bounded-retry re-spawn
+    /// sets it EXPLICITLY to the run's recorded `source_repo`, so a re-spawn forks
+    /// from the right repo regardless of the detached supervisor's ambient cwd
+    /// (issue `autoretry-agent-died-worker`).
+    pub cwd: Option<&'a Path>,
 }
 
 /// Locate the create.sh binary. Tests override via `OCTL_CREATE_SH`
@@ -166,6 +173,9 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         ));
     }
     let mut cmd = Command::new(&script);
+    if let Some(cwd) = req.cwd {
+        cmd.current_dir(cwd);
+    }
     cmd.arg("--type").arg(req.kind);
     if let Some(layout) = req.layout {
         cmd.arg("--layout").arg(layout);
@@ -431,6 +441,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(out.branch, "wt/x");
@@ -464,6 +475,7 @@ exit 2
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap_err();
         assert_eq!(err.code, "create_sh_error_branch-exists");
@@ -496,6 +508,7 @@ exit 1
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap_err();
         assert!(matches!(err.kind, ExitKind::User));
@@ -545,6 +558,7 @@ exit 1
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         });
         std::env::remove_var("OCTL_CREATE_SH");
         out
@@ -634,6 +648,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: Some("headless"),
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(with.tmux_session.as_deref(), Some("headless"));
@@ -648,6 +663,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(without.tmux_session.as_deref(), Some("none"));
@@ -693,6 +709,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: Some("orchestrate/integration"),
+            cwd: None,
         })
         .unwrap();
         assert_eq!(
@@ -710,6 +727,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(without.tmux_session.as_deref(), Some("none"));
@@ -756,6 +774,7 @@ EOF
             agent_startup_timeout: 180,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(with.tmux_session.as_deref(), Some("180"));
@@ -771,6 +790,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         })
         .unwrap();
         assert_eq!(defaulted.tmux_session.as_deref(), Some("90"));
@@ -827,6 +847,7 @@ EOF
             agent_startup_timeout: 90,
             parent_session: None,
             source_branch: None,
+            cwd: None,
         });
         std::env::remove_var("OCTL_TMUX_RETRY_BACKOFF_MS");
         std::env::remove_var("OCTL_CREATE_SH");

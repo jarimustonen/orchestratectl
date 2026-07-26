@@ -396,6 +396,32 @@ impl Kind {
             | Kind::Bugfix => Lifecycle::Autonomous,
         }
     }
+
+    /// Whether this kind is a **top-level, single-node, autonomous worker** —
+    /// one detached agent that materializes its own worktree and self-merges,
+    /// with no children and no parent DAG driving it. These are exactly the
+    /// kinds eligible for the supervisor's bounded auto-retry on an empty-handed
+    /// `agent-died` (issue `autoretry-agent-died-worker`).
+    ///
+    /// Excludes:
+    /// - `Code` / `Orchestrate` (interactive — a human drives; never force-retry);
+    /// - `FanOut` (a multi-unit driver — its driver node has no agent of its own);
+    /// - `Orchestrated` (a DAG child — its PARENT supervisor owns its retry policy,
+    ///   so retrying it independently would desync the parent's child bookkeeping).
+    ///
+    /// The exhaustive `match` fails to compile when a new `Kind` is added, forcing
+    /// a deliberate eligibility decision rather than a silent default.
+    #[must_use]
+    pub fn is_autonomous_single_node_worker(self) -> bool {
+        match self {
+            Kind::Spinoff
+            | Kind::Research
+            | Kind::TechnicalDecision
+            | Kind::MakeSkill
+            | Kind::Bugfix => true,
+            Kind::Code | Kind::Orchestrate | Kind::FanOut | Kind::Orchestrated => false,
+        }
+    }
 }
 
 /// Lifecycle (design.md §1.2, §7.4).
@@ -630,6 +656,14 @@ pub struct Node {
     /// report processing across supervisor restarts.
     #[serde(default)]
     pub last_processed_report_seq_by_child: Map<String, Value>,
+    /// Number of times the supervisor has auto-retried this node after an
+    /// empty-handed `agent-died` (issue `autoretry-agent-died-worker`). The
+    /// DURABLE, restart-safe bound on the bounded-retry loop: each `node.retry`
+    /// event increments it, and the watchdog terminalizes the run `failed` once
+    /// it reaches `RETRY_MAX_ATTEMPTS`. `#[serde(default)]` keeps a node written
+    /// before this field existed readable (`0` — never retried).
+    #[serde(default)]
+    pub retry_attempts: u32,
 }
 
 /// A fully-qualified tmux window identity recorded at spawn time.
@@ -773,6 +807,37 @@ mod tests {
                 serde_json::to_value(kind).unwrap(),
                 Value::String(name.to_string()),
                 "serde round-trip diverged from wire_name for {name:?}",
+            );
+        }
+    }
+
+    /// The bounded auto-retry eligibility gate (issue `autoretry-agent-died-worker`)
+    /// must include exactly the autonomous single-node worker kinds and exclude
+    /// interactive kinds, the fan-out driver, and the DAG child.
+    #[test]
+    fn autonomous_single_node_worker_set_is_exact() {
+        for k in [
+            Kind::Spinoff,
+            Kind::Research,
+            Kind::TechnicalDecision,
+            Kind::MakeSkill,
+            Kind::Bugfix,
+        ] {
+            assert!(
+                k.is_autonomous_single_node_worker(),
+                "{k:?} should be retry-eligible"
+            );
+            assert_eq!(k.lifecycle(), Lifecycle::Autonomous);
+        }
+        for k in [
+            Kind::Code,         // interactive — a human drives
+            Kind::Orchestrate,  // interactive driver
+            Kind::FanOut,       // multi-unit driver
+            Kind::Orchestrated, // DAG child — parent owns its retry policy
+        ] {
+            assert!(
+                !k.is_autonomous_single_node_worker(),
+                "{k:?} must NOT be retry-eligible"
             );
         }
     }
