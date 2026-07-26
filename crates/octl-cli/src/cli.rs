@@ -168,6 +168,11 @@ struct PipelineRunArgs {
     /// Omit for the default (1); 0 disables re-spec.
     #[arg(long, value_name = "N")]
     max_respec: Option<u32>,
+    /// Adaptive promotion: max `PROMOTE_TIER` promotions per chunk on repeat-fail
+    /// (design §3) — a stuck chunk is re-run at the next model tier up before the
+    /// breaker gives up. Omit for the default (1); 0 disables promotion.
+    #[arg(long, value_name = "N")]
+    max_promotions: Option<u32>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -385,6 +390,7 @@ pub fn run() -> ExitCode {
                     max_recode_per_chunk: args.max_recode_per_chunk,
                     max_fix_iterations: args.max_fix_iterations,
                     max_respec: args.max_respec,
+                    max_promotions: args.max_promotions,
                 };
                 crate::pipeline::live::cmd_run(&cfg, output, &logging_warnings)
             }

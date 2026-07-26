@@ -61,6 +61,6 @@ pub use driver::{
 };
 pub use envelope::{DecisionEnvelope, DecisionTier, TierViolation};
 pub use orchestrator::{
-    Coordinator, CoordinatorProposal, Decider, DeciderVerdict, DecisionContext, DecisionTrigger,
-    Orchestrator, ScriptedCoordinator, ScriptedDecider, TieredOrchestrator,
+    route_proposal, Coordinator, CoordinatorProposal, Decider, DeciderVerdict, DecisionContext,
+    DecisionTrigger, Orchestrator, ScriptedCoordinator, ScriptedDecider, TieredOrchestrator,
 };

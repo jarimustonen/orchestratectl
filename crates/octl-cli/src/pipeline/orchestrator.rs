@@ -177,37 +177,61 @@ impl<C: Coordinator, D: Decider> TieredOrchestrator<C, D> {
 
 impl<C: Coordinator, D: Decider> Orchestrator for TieredOrchestrator<C, D> {
     fn decide(&self, ctx: &DecisionContext) -> Vec<(Action, DecisionEnvelope)> {
-        let mut out = Vec::new();
-        for proposal in self.coordinator.coordinate(ctx) {
-            match proposal.action.decision_class() {
-                DecisionClass::Routine => {
-                    // The fast tier is allowed to emit routine primitives directly.
-                    let envelope = DecisionEnvelope {
-                        actor: self.coordinator.actor(),
-                        input_artifacts: proposal.input_artifacts,
-                        reason: proposal.reason,
-                        decision_tier: DecisionTier::Coordinator,
-                        model: self.coordinator.model(),
-                        prompt_version: self.coordinator.prompt_version(),
-                    };
-                    out.push((proposal.action, envelope));
-                }
-                DecisionClass::Consequential => {
-                    // Defer to the expensive tier; its verdict is what we record.
-                    let verdict = self.decider.decide_consequential(ctx, &proposal);
-                    let envelope = DecisionEnvelope {
-                        actor: self.decider.actor(),
-                        input_artifacts: verdict.input_artifacts,
-                        reason: verdict.reason,
-                        decision_tier: DecisionTier::Decider,
-                        model: self.decider.model(),
-                        prompt_version: self.decider.prompt_version(),
-                    };
-                    out.push((verdict.action, envelope));
-                }
-            }
+        self.coordinator
+            .coordinate(ctx)
+            .into_iter()
+            .map(|proposal| route_proposal(&self.coordinator, &self.decider, ctx, proposal))
+            .collect()
+    }
+}
+
+/// Route ONE coordinator proposal to its recorded `(Action, DecisionEnvelope)`
+/// under the tier rule (design §0.2): a [`Routine`](DecisionClass::Routine)
+/// proposal is emitted directly, stamped [`Coordinator`](DecisionTier::Coordinator)
+/// (the fast tier never calls the decider); a
+/// [`Consequential`](DecisionClass::Consequential) one is deferred to `decider`,
+/// whose verdict is recorded, stamped [`Decider`](DecisionTier::Decider).
+///
+/// This is the **single** routing implementation:
+/// [`TieredOrchestrator::decide`] maps over it, and the live driver
+/// (`pipeline::live`) calls it at each decision point, so neither re-implements
+/// the coordinator/decider split (the issue's "do NOT invent a parallel
+/// mechanism"). The returned envelope satisfies
+/// [`DecisionEnvelope::validate_for`] by construction — the tier is derived from
+/// the action's own class, so a consequential action can never be stamped
+/// coordinator-tier here.
+pub fn route_proposal(
+    coordinator: &dyn Coordinator,
+    decider: &dyn Decider,
+    ctx: &DecisionContext,
+    proposal: CoordinatorProposal,
+) -> (Action, DecisionEnvelope) {
+    match proposal.action.decision_class() {
+        DecisionClass::Routine => {
+            // The fast tier is allowed to emit routine primitives directly.
+            let envelope = DecisionEnvelope {
+                actor: coordinator.actor(),
+                input_artifacts: proposal.input_artifacts,
+                reason: proposal.reason,
+                decision_tier: DecisionTier::Coordinator,
+                model: coordinator.model(),
+                prompt_version: coordinator.prompt_version(),
+            };
+            (proposal.action, envelope)
         }
-        out
+        DecisionClass::Consequential => {
+            // Defer to the expensive tier; its verdict is what we record.
+            let verdict = decider.decide_consequential(ctx, &proposal);
+            let envelope = DecisionEnvelope {
+                actor: decider.actor(),
+                input_artifacts: verdict.input_artifacts,
+                reason: verdict.reason,
+                decision_tier: DecisionTier::Decider,
+                model: decider.model(),
+                prompt_version: decider.prompt_version(),
+            };
+            (verdict.action, envelope)
+        }
     }
 }
 

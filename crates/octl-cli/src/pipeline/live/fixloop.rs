@@ -44,6 +44,13 @@ pub struct FixLoopConfig {
     /// Maximum `TRIGGER_RE_SPEC` events across the whole run. `0` = a SPEC-FLAW is
     /// terminal (no re-spec).
     pub max_respec: u32,
+    /// Maximum `PROMOTE_TIER` promotions for a *single* chunk (design §3 adaptive
+    /// promotion). When a chunk exhausts its per-tier re-code budget, it is re-run
+    /// at the next model tier up (`code → mid → high`) instead of immediately
+    /// tripping the repeated-failure breaker — up to this many times, and never
+    /// past the top of the ladder. `0` = no promotion (the pre-promotion
+    /// behaviour: re-code exhaustion trips the breaker straight away).
+    pub max_promotions: u32,
 }
 
 impl FixLoopConfig {
@@ -55,6 +62,7 @@ impl FixLoopConfig {
         max_recode_per_chunk: 0,
         max_fix_iterations: 0,
         max_respec: 0,
+        max_promotions: 0,
     };
 
     /// The bounds the live `pipeline run` command uses by default. Deliberately
@@ -66,7 +74,22 @@ impl FixLoopConfig {
             max_recode_per_chunk: 1,
             max_fix_iterations: 2,
             max_respec: 1,
+            max_promotions: 1,
         }
+    }
+}
+
+/// The next model tier up from `tier` on the promotion ladder (design §3:
+/// `code → mid → high`), or `None` at the ceiling ([`Tier::High`]). A repeat-failing
+/// chunk is re-run at [`next_tier`]; when there is no higher tier the loop stops
+/// promoting and the repeated-failure breaker takes over.
+#[must_use]
+pub fn next_tier(tier: octl_core::plan::Tier) -> Option<octl_core::plan::Tier> {
+    use octl_core::plan::Tier;
+    match tier {
+        Tier::Code => Some(Tier::Mid),
+        Tier::Mid => Some(Tier::High),
+        Tier::High => None,
     }
 }
 
@@ -357,6 +380,14 @@ mod tests {
             "files_touched": files, "deps": deps,
             "checks": [{"desc": "c", "run": check_run}],
         })
+    }
+
+    #[test]
+    fn next_tier_walks_the_ladder_and_stops_at_high() {
+        use octl_core::plan::Tier;
+        assert_eq!(next_tier(Tier::Code), Some(Tier::Mid));
+        assert_eq!(next_tier(Tier::Mid), Some(Tier::High));
+        assert_eq!(next_tier(Tier::High), None);
     }
 
     #[test]

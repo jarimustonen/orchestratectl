@@ -18,6 +18,8 @@ use super::*;
 use crate::harness::{
     CancelToken, ChunkRequest, ChunkResult, CodeHarness, HarnessCapabilities, HarnessError,
 };
+use crate::pipeline::{Action, Decider, DeciderVerdict, DecisionContext};
+use octl_core::plan::Tier;
 
 /// Run `git` in `dir`, asserting success.
 fn git(dir: &Path, args: &[&str]) {
@@ -777,6 +779,7 @@ fn floor_blocked_chunk_recodes_then_merges() {
         max_recode_per_chunk: 1,
         max_fix_iterations: 0,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(
         &["feature.txt"],
@@ -820,6 +823,7 @@ fn persistent_floor_failure_trips_the_circuit_breaker() {
         max_recode_per_chunk: 2,
         max_fix_iterations: 0,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
 
@@ -847,6 +851,7 @@ fn verify_failure_recodes_then_merges() {
         max_recode_per_chunk: 0,
         max_fix_iterations: 2,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
     let verify = ScriptedVerify::sequence(vec![
@@ -887,6 +892,7 @@ fn verify_fix_loop_exhaustion_trips_the_breaker() {
         max_recode_per_chunk: 0,
         max_fix_iterations: 1,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
     let verify = ScriptedVerify::new(providers::VerifyJudgment {
@@ -916,6 +922,7 @@ fn spec_flaw_triggers_respec_then_merges() {
         max_recode_per_chunk: 0,
         max_fix_iterations: 2,
         max_respec: 1,
+        max_promotions: 0,
     };
     // v1 then v2 (a materially-different brief so the plan revision is distinct).
     let v2 = json!({
@@ -988,6 +995,7 @@ fn verify_fix_with_only_unknown_chunk_ids_does_not_blast_all_chunks() {
         max_recode_per_chunk: 0,
         max_fix_iterations: 2,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
     let verify = ScriptedVerify::new(providers::VerifyJudgment {
@@ -1020,6 +1028,7 @@ fn acceptance_check_failure_recodes_with_the_check_as_a_finding() {
         max_recode_per_chunk: 0,
         max_fix_iterations: 2,
         max_respec: 0,
+        max_promotions: 0,
     };
     let spec = ScriptedSpec::new(one_chunk_plan(
         &["feature.txt", "marker.txt"],
@@ -1092,6 +1101,285 @@ fn main_has(repo: &TempDir, path: &str) -> bool {
         .status()
         .unwrap()
         .success()
+}
+
+// --- tiered triage: fast-coordinator seam + adaptive tier promotion (T6) ----
+
+/// A two-rung [`TierHarness`]: the base tier runs `base`, every higher tier runs
+/// `promoted` (and flips `promoted_ran`). Models the live ladder deterministically
+/// so a promotion actually swaps which "agent" codes the chunk.
+struct TwoTier<'a> {
+    base: &'a dyn CodeHarness,
+    promoted: &'a dyn CodeHarness,
+    promoted_ran: &'a std::sync::atomic::AtomicBool,
+}
+impl TierHarness for TwoTier<'_> {
+    fn harness(&self, tier: Tier) -> &dyn CodeHarness {
+        if tier == Tier::Code {
+            self.base
+        } else {
+            self.promoted_ran.store(true, Ordering::SeqCst);
+            self.promoted
+        }
+    }
+}
+
+/// A [`Decider`] spy: records the [`Action::name`] of every consequential proposal
+/// it is asked to rule on, and confirms it unchanged. Lets a test assert that
+/// **routine** decisions never reach the expensive tier.
+struct SpyDecider {
+    seen: std::cell::RefCell<Vec<String>>,
+}
+impl SpyDecider {
+    fn new() -> Self {
+        Self {
+            seen: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+impl Decider for SpyDecider {
+    fn decide_consequential(
+        &self,
+        _ctx: &DecisionContext,
+        proposed: &crate::pipeline::CoordinatorProposal,
+    ) -> DeciderVerdict {
+        self.seen
+            .borrow_mut()
+            .push(proposed.action.name().to_string());
+        DeciderVerdict {
+            action: proposed.action.clone(),
+            reason: proposed.reason.clone(),
+            input_artifacts: proposed.input_artifacts.clone(),
+        }
+    }
+    fn model(&self) -> String {
+        "spy-opus".to_string()
+    }
+    fn prompt_version(&self) -> String {
+        "v1".to_string()
+    }
+}
+
+/// A [`Decider`] that OVERRIDES a `DECLARE_CONVERGED` proposal with `ESCALATE` —
+/// the seam the circuit-breaker layer forces later (design §0.2/§2). Confirms
+/// anything else.
+struct EscalatingDecider;
+impl Decider for EscalatingDecider {
+    fn decide_consequential(
+        &self,
+        _ctx: &DecisionContext,
+        proposed: &crate::pipeline::CoordinatorProposal,
+    ) -> DeciderVerdict {
+        if matches!(proposed.action, Action::DeclareConverged) {
+            return DeciderVerdict {
+                action: Action::Escalate {
+                    reason: "decider withheld convergence".to_string(),
+                },
+                reason: "not actually done".to_string(),
+                input_artifacts: proposed.input_artifacts.clone(),
+            };
+        }
+        DeciderVerdict {
+            action: proposed.action.clone(),
+            reason: proposed.reason.clone(),
+            input_artifacts: proposed.input_artifacts.clone(),
+        }
+    }
+    fn model(&self) -> String {
+        "escalating-opus".to_string()
+    }
+    fn prompt_version(&self) -> String {
+        "v1".to_string()
+    }
+}
+
+#[test]
+fn repeat_fail_promotes_chunk_to_a_higher_tier() {
+    // Design §3 adaptive promotion: a chunk whose per-tier re-code budget is spent
+    // is re-run at the NEXT model tier up instead of tripping the breaker. The base
+    // tier here can never pass (it always writes an out-of-scope stray), so a merge
+    // is only reachable by promoting to a harness that stays in scope.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 1,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+
+    let base = AlwaysStray; // persistent floor failure at the base tier
+    let promoted = CommitFake::new(&[("feature.txt", "hi\n")]); // clean at the higher tier
+    let promoted_ran = std::sync::atomic::AtomicBool::new(false);
+    let harnesses = TwoTier {
+        base: &base,
+        promoted: &promoted,
+        promoted_ran: &promoted_ran,
+    };
+    let decider = crate::pipeline::ScriptedDecider::confirming();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert_eq!(report.promote_count, 1, "exactly one PROMOTE_TIER happened");
+    assert!(
+        promoted_ran.load(Ordering::SeqCst),
+        "the promoted (higher-tier) harness must have run"
+    );
+    // The report reflects the promoted tier the chunk finally merged at.
+    assert_eq!(report.chunks[0].tier, "mid");
+    // A PROMOTE_TIER decision was recorded (routine → coordinator-tier).
+    let promote = report
+        .decisions
+        .iter()
+        .find(|d| d.reason.contains("promote chunk"))
+        .expect("a promote decision is recorded");
+    assert_eq!(promote.decision_tier, DecisionTier::Coordinator);
+}
+
+#[test]
+fn promotion_is_bounded_by_max_promotions_then_the_breaker_trips() {
+    // With promotion budget 0 the pre-promotion behaviour is preserved: a
+    // persistently-failing chunk trips the repeated-failure breaker, never promotes.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    let promoted = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let promoted_ran = std::sync::atomic::AtomicBool::new(false);
+    let base = AlwaysStray;
+    let harnesses = TwoTier {
+        base: &base,
+        promoted: &promoted,
+        promoted_ran: &promoted_ran,
+    };
+    let decider = crate::pipeline::ScriptedDecider::confirming();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "circuit_breaker", "{report:#?}");
+    assert_eq!(report.promote_count, 0, "no promotion with budget 0");
+    assert!(
+        !promoted_ran.load(Ordering::SeqCst),
+        "the higher tier must never run when promotion is disabled"
+    );
+    assert!(!report.merged);
+}
+
+#[test]
+fn routine_decisions_never_reach_the_decider_only_converge_does() {
+    // Done criterion: a routine decision (RE_CODE_CHUNK, PROMOTE_TIER) is emitted
+    // by the fast coordinator directly and does NOT hit the Opus decider; only a
+    // consequential decision (DECLARE_CONVERGED) is deferred to it. The promotion
+    // scenario exercises a RE_CODE (routine) AND a PROMOTE_TIER (routine) before it
+    // converges — the spy decider must see exactly one call, for declare_converged.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 1,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    let base = AlwaysStray;
+    let promoted = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let promoted_ran = std::sync::atomic::AtomicBool::new(false);
+    let harnesses = TwoTier {
+        base: &base,
+        promoted: &promoted,
+        promoted_ran: &promoted_ran,
+    };
+    let decider = SpyDecider::new();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    // A routine RE_CODE and a routine PROMOTE both happened...
+    assert_eq!(report.recode_count, 1);
+    assert_eq!(report.promote_count, 1);
+    // ...yet the decider was consulted exactly once, and only for the ship decision.
+    let seen = decider.seen.into_inner();
+    assert_eq!(seen, vec!["declare_converged".to_string()], "{seen:?}");
+}
+
+#[test]
+fn decider_may_override_converge_with_escalate() {
+    // The consequential-decision seam is real both ways: a decider that overrides
+    // DECLARE_CONVERGED with ESCALATE stops the merge (design §0.2/§2) — the exact
+    // hook the circuit-breaker layer forces later.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    let code = CommitFake::new(&[("feature.txt", "hi\n")]);
+    let harnesses = SingleTierHarness(&code);
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &EscalatingDecider,
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "escalated", "{report:#?}");
+    assert!(!report.merged, "an escalated feature must not land");
+    assert!(!main_has(&repo, "feature.txt"));
+    // The recorded ship decision is the decider's ESCALATE, decider-tier.
+    let escalate = report
+        .decisions
+        .iter()
+        .find(|d| d.reason.contains("not actually done"))
+        .expect("the decider's escalate verdict is recorded");
+    assert_eq!(escalate.decision_tier, DecisionTier::Decider);
 }
 
 // --- unit tests for the pure helpers ---------------------------------------
@@ -1188,6 +1476,7 @@ fn live_end_to_end_smoke() {
             "chunk_merge_conflict",
             "verify_failed",
             "floor_blocked",
+            "escalated",
             "merge_conflict",
         ]
         .contains(&report.status.as_str()),
