@@ -96,25 +96,38 @@ only on the user's go.
    otherwise you orient off stale data). This is a stateful **merge**, not a rewrite:
    preserve the existing lane assignment, order, and `collision:` tags; only reconcile
    the *set* of issues.
-   - Fetch the **active set** = `issuectl ls --status open` **unioned with**
-     `issuectl ls --status in-progress` (`open` alone silently drops every live
-     worktree's issue). Add `--status testing` if the project uses it.
-   - **Drop** DAG lines whose slug is not in the active set (landed / renamed / closed).
-   - **Add** active issues missing from the DAG into their lane (by hot-file family;
-     `UNLANED` if none). Park `deferred`-labelled issues under *Adjacent backlog*, not a
-     lane. A fast scoped drift check:
+   - Fetch the **active set** = every issue whose `issuectl` status is **non-terminal**.
+     For the default schema that's `--status open` **unioned with** `--status in-progress`
+     (`open` alone silently drops every live worktree's issue); add `--status testing` or
+     any other non-terminal status the project's issue schema defines. Absence from the
+     active set means "not active", not proof of "done" — only a terminal status drops a
+     line.
+   - **Drop** DAG node lines whose slug is not in the active set (landed / renamed / closed).
+   - **Add** active issues missing from the DAG into their lane. Assign the lane by which
+     hot-file family the fix touches; if you **can't tell**, sequence it conservatively in
+     the most-likely lane — do **not** default to `UNLANED`, which asserts *touches no hot
+     file* (parallel-safe). Park `deferred`-labelled issues under `## Adjacent backlog`
+     **outside** the `<!-- execution-dag:end -->` delimiter, not in a lane. A fast scoped
+     drift check (extracts only the leading node slug per line, ignores prose/tags, and
+     drops deferred from the active side):
      ```bash
      comm -3 \
-       <( { issuectl --json ls --status open | jq -r '.[].slug'
-            issuectl --json ls --status in-progress | jq -r '.[].slug'; } | sort -u ) \
+       <( { issuectl --json ls --status open; issuectl --json ls --status in-progress; } \
+            | jq -r '.[] | select(.type != "epic" and (((.labels // []) | index("deferred")) | not)) | .slug' \
+            | sort -u ) \
        <( sed -n '/execution-dag:begin/,/execution-dag:end/p' TODO.md \
-            | grep -oE '[a-z0-9][a-z0-9-]+' | sort -u )
+            | sed -nE 's/^[[:space:]]+(▶[[:space:]]*)?([a-z0-9][a-z0-9-]*)([[:space:]].*)?$/\2/p' \
+            | sort -u )
      ```
+     (Epics and `deferred` issues aren't lane nodes, so they're excluded from the active
+     side. Left-only = active issues missing from a lane; right-only = stale DAG lines.)
    - **Validate:** every `after`/`blocked_by` target resolves to a real issue; no
-     self-dep; no cycle. Surface a dangling or cyclic edge to the user — don't render a
-     wrong head silently.
-   - **Recompute the head-of-line** (see *Execution DAG*) and **commit `TODO.md`** if it
-     changed (keep main clean).
+     self-dep; no cycle. A dangling or cyclic edge **invalidates the DAG** — surface it and
+     repair it before selecting or spawning any DAG-picked work; never render a wrong head
+     silently.
+   - **Recompute the head-of-line** (see *Execution DAG*) and **commit** the changed files
+     — `TODO.md` plus any issue files `issuectl` rewrote (`issuectl` does not auto-commit;
+     name the exact paths, not `git add -A`) — so main is clean before Phase 1.
 5. **Orient the user** in one tight message: where things stand, what the pull
    brought in, **the ready frontier from the DAG** (head-of-line per lane, and what's
    blocked), and what you propose to tackle this round (fold in the `$ARGUMENTS` focus
@@ -141,11 +154,17 @@ advances the presented bugs to `triaged`, and appends a machine-readable
     races with the worker (per `worktree-spinoff`'s "do not call `issuectl` from the
     caller" rule).
 
-  **Insert every fix-now bug into the execution DAG:** add one line to its lane (pick the
-  lane from the bug analysis' likely-touched files; `UNLANED` if unclear). If it depends
-  on another issue, record it additively — `issuectl apply` with `add_blocked_by` (never
-  `set`, which can replace the list) — and mirror it as `after <slug> (needs …)`. **Commit
-  the `TODO.md` edit** before moving on.
+  **Insert every fix-now bug into the execution DAG:** add one line to its lane. Pick the
+  lane from the bug's persisted analysis (the likely-touched files); if the analysis
+  doesn't name them, sequence conservatively in the most-likely lane — do **not** default
+  to `UNLANED` (that asserts *touches no hot file*). If it depends on another issue, record
+  it additively — `issuectl apply` with `add_blocked_by` (never `set`, which can replace
+  the list) — and mirror it as `after <slug> (needs …)`. **Only mutate frontmatter of an
+  issue that is not yet `in-progress`** — once a worktree owns it, its issue file is
+  worker-owned (calling `issuectl` on it races the worker per `worktree-spinoff`); note the
+  intended dep in the DAG and reconcile after it lands. **Commit** the changed files —
+  `TODO.md` plus any issue files `issuectl` rewrote (name the paths, not `git add -A`) —
+  before moving on.
 
 ### Phase 2 — Plan the round
 
@@ -160,10 +179,11 @@ named, and any `TODO.md` items the user wants pulled in. Then:
   sequence them** — a wrong guess causes merge conflicts.
 - **Update the DAG for the round.** File any planned unit that isn't yet an issue (per
   repo policy) and insert it into its lane. Record real logical deps additively
-  (`issuectl apply` → `add_blocked_by`) and mirror them as `after <slug> (needs …)`. Tag
-  a unit that also touches a *second* lane's hot file with `collision: <file>`. **Commit
-  the `TODO.md` + frontmatter edits before Phase 3 spawns anything** (so workers branch
-  off committed metadata).
+  (`issuectl apply` → `add_blocked_by`, only on issues not yet `in-progress`) and mirror
+  them as `after <slug> (needs …)`. Tag a unit that also touches a *second* lane's hot file
+  with `collision: <file>`. **Commit `TODO.md` plus every issue file `issuectl` rewrote
+  (name the paths, not `git add -A`) before Phase 3 spawns anything** — verify a clean tree
+  so workers branch off committed metadata.
 - **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
   big or genuinely ambiguous feature → design-first.
 - **Announce the plan** in one short message (which units, what's parallel vs
@@ -204,14 +224,21 @@ git** before counting it toward the deploy pile:
   git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
-- **Never write status into the DAG.** The worktree owns the issue lifecycle
-  (`triaged` → `in-progress` → `fixed`); if the DAG also wrote an in-progress flag it
-  would race those updates. Pick the next unit by **recomputing** the head-of-line from
-  live `issuectl` status (see *Execution DAG*), not by trusting the printed `▶`. A head
-  is **spawnable** only if none of its collision files (its lane's hot-file family + any
-  `collision:` tag) is held by an in-progress worktree. At most an advisory
-  `(spawned <run-id>)` breadcrumb next to a just-launched head — cleared at the next
-  Phase-0 merge, never treated as truth.
+- **Never write status into the DAG** — not even a spawn breadcrumb (that would leave
+  `TODO.md` dirty across the phase and pollute the drift check). The worktree owns the
+  issue lifecycle (`triaged` → `in-progress` → `fixed`); if the DAG also wrote status it
+  would race those updates. Track which units you've launched this round in **conductor
+  memory** (the recorded run ids), not in the file. Pick the next unit by **recomputing**
+  the head-of-line from live `issuectl` status (see *Execution DAG*), never from the
+  printed `▶`.
+- **Reserve collision files at launch, not at first commit.** A spawned worker does not
+  flip its issue to `in-progress` until its first commit, so keying spawn-eligibility off
+  `issuectl` status alone leaves a window where two heads sharing a hot file both look
+  free. Treat every **launched-but-unsettled run this round as already holding its
+  collision files** (its lane's hot-file family + any `collision:` tag) **and its issue**.
+  A head is spawnable only if its collision files intersect no unsettled run's and no
+  unsettled run already covers its issue — otherwise sequence it (this is why same-lane
+  units already go launch → `run wait` → verify → next).
 
 ### Phase 4 — Deploy (the conductor owns this — when the project permits)
 
@@ -299,8 +326,10 @@ would force re-deriving the hot-file collision matrix and risk hallucinating or 
 
 **Lanes = hot-file families.** Two issues whose fixes touch the same hot file share a lane
 and are sequenced (≤1 live worktree per lane at a time). Disjoint issues sit in different
-lanes and run in parallel. Issues touching no hot file go `UNLANED`. Deferred / not-in-plan
-issues live under `## Adjacent backlog`, **not** a lane.
+lanes and run in parallel. `UNLANED` means **confirmed to touch no hot file** (parallel-safe)
+— when in doubt, lane it, don't UNLANE it. Deferred / not-in-plan issues live under
+`## Adjacent backlog` placed **outside** the `<!-- execution-dag:end -->` delimiter, **not**
+a lane and **not** inside the fenced block (or the drift check flags them every merge).
 
 **Canonical block** (delimited so tooling and the `comm -3` check parse only the nodes):
 
@@ -322,25 +351,28 @@ LANE A — <hot-file family>
 LANE B — <hot-file family>
   ▶ <slug-b1>
     <slug-b5>   collision: <shared-hot-file>
-UNLANED — no shared hot files, run anytime:
-    <slug-x>, <slug-y>
+UNLANED — confirmed no shared hot files, run anytime (one slug per line):
+    <slug-x>
+    <slug-y>
 ```
 <!-- execution-dag:end -->
 ````
 
 **Head-of-line (compute on read, never trust the printed `▶`):**
 
-- An issue is **eligible** iff its `issuectl` status is `open`/`in-progress` (in the active
-  set), it is **not** `deferred`-labelled, it is **not already** `in-progress` (a live
-  worktree has it), and every `blocked_by` target is **delivered** — `status ∈ {fixed,
-  done}`. A target that is `wontfix` / `obsolete` / `cannot-reproduce` does **not** satisfy
-  the dependency (the code was never built) — the dependent stays blocked; flag it to the
-  user. Follow a `duplicate` to its canonical issue.
+- An issue is **eligible** iff it is in the active set, is **not** `deferred`-labelled, is
+  **not already** `in-progress` and has **no launched-but-unsettled run** this round (a
+  worktree already has it), and every `blocked_by` target is **delivered** — `status ∈
+  {fixed, done}`. Any **other** terminal status (`wontfix` / `obsolete` /
+  `cannot-reproduce` / `duplicate`) does **not** satisfy the dependency (the code was never
+  built) — the dependent stays blocked; flag it to the user.
 - `head(lane)` = the first eligible issue in that lane's order.
 - A head is **spawnable** iff none of its collision files (its lane's hot-file family + any
-  `collision:` tag) is held by an in-progress worktree.
+  `collision:` tag) is held by a live *or* launched-but-unsettled run (see Phase 3 —
+  reserve at launch, not at first commit).
 - `GLOBAL HEAD-OF-LINE` = pick among spawnable heads: an explicit handoff "start here"
-  first, else highest `issuectl` priority, else earliest in lane order, else slug order.
+  first, else highest `issuectl` priority, else the top-most lane in the file (then its
+  first eligible item), else slug order.
 
 **Slugs, not positional codes.** Reference issues by slug everywhere (no `A1`/`B5`);
 positional numbers churn on every insert. Lane letters are just coarse group labels.

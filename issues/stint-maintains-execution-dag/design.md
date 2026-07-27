@@ -433,6 +433,40 @@ a fully-automatic generator would be unreliable.
 
 ---
 
+## Post-skill-review refinements (2026-07-27) **[skill-review]**
+
+An `/llm-skill-review` pass (executor / trigger-fit / cross-skill / blast-radius /
+design-fidelity; the fidelity lens confirmed the skill faithfully implements this design)
+found real ambiguities in the *mechanics*. Folded into the skill (and reflected here):
+
+- **Reserve collision files at launch, not at first commit.** A spawned worker stays
+  `open` until its first commit, so keying spawn-eligibility purely on issuectl
+  `in-progress` leaves a window where two heads sharing a hot file both look free. Fix:
+  eligibility treats every **launched-but-unsettled run this round** as holding its
+  collision files *and* its issue (also closes duplicate-spawn). This tightens decision 5.
+- **No spawn breadcrumb in the DAG.** The optional `(spawned <run-id>)` note is dropped —
+  it left `TODO.md` dirty across a phase and polluted the drift grep. Launched run-ids live
+  in conductor memory. (Supersedes the "advisory breadcrumb" allowance in decision 4.)
+- **`UNLANED` = *confirmed* no hot file.** "Unclear" must be laned conservatively, never
+  defaulted to `UNLANED` (which asserts parallel-safe). Aligns Phase 1 with Phase 2.
+- **Commit names issue files too.** `issuectl` does not auto-commit; every phase commits
+  `TODO.md` **plus** the exact issue files `issuectl` rewrote (not `git add -A`).
+- **Don't mutate an in-progress issue's frontmatter** — worker-owned; record the dep in
+  the DAG and reconcile after landing (respects `worktree-spinoff`'s no-caller-issuectl rule).
+- **Validation halts scheduling.** A dangling/cyclic edge invalidates the DAG; repair
+  before spawning — not just "surface".
+- **Dep-satisfied = {fixed, done}; every other terminal (incl. `duplicate`) does not
+  satisfy → flag.** Dropped the unimplementable "follow the canonical duplicate" step.
+- **Drift check parses only node slugs** (leading-token `sed`, deferred + epics filtered);
+  **`UNLANED` is one slug per line**; **`## Adjacent backlog` lives outside the delimiters**.
+- **Active set = non-terminal statuses per the project's schema** (open ∪ in-progress ∪
+  any others the schema defines), not a hardcoded pair.
+
+Deferred as **spin-offs** (real but out of scope for the DAG convention): the
+`/triage-bugs`-vs-`/stint` disagreement over who sets `in-progress`; a clean-tree preflight
+before `git pull`; a durable landed-commit id so git-verify doesn't depend on a branch the
+supervisor may already have torn down; bounding `run wait` against the false-`pending` bug.
+
 ## Rejected / deferred (from the panel) **[panel]**
 
 - **Structured `execution:` frontmatter + an `issuectl execution render`

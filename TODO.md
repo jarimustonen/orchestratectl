@@ -96,10 +96,12 @@ LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, 
     run-wait-timeout-unit-required
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
-
-EPIC (not a spawnable unit): code-pipeline — parent of the Lane B pipeline-* work.
 ```
 <!-- execution-dag:end -->
+
+**Epic (not a lane node):** `code-pipeline` — parent of the Lane B `pipeline-*` work.
+**Adjacent backlog / deferred:** none currently parked; the full open list is
+`issuectl ls --status open`.
 
 **Parallelism rule of thumb:** ≤1 live worktree per lane. Cross-lane, several heads can run
 at once — e.g. Lane A + B + C heads — except a head carrying `collision: <file>` must not
