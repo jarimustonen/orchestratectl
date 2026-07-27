@@ -31,18 +31,59 @@ answer was resilience (auto-retry + salvage), NOT switching base agents — a Co
 was considered and **shelved** (revisit only if deaths become frequent). Heavy-LLM
 worker units legitimately take **54–96 min**; don't mistake a long run for a hang.
 
-**NEXT — pick one:**
-- **(a) Fix the diagnostic gap first (recommended, small).** `capture-agent-output-to-run-dir`
-  landed but the capture is a **no-op — `<run-dir>/agent.log` is 0 bytes** even for a
-  healthy 54-min run (pipe-pane hit the window, not the right pane). Its **pane-id
-  follow-up** is the fix. Until it works, worker deaths remain uninvestigatable
-  post-mortem. → `/worktree-spinoff` the pane-id capture fix.
-- **(b) Finish the pipeline tail.** Remaining pipeline backlog (all filed):
-  `pipeline-parallel-chunks`, `pipeline-run-create-wiring`, `pipeline-hardening`,
-  `pipeline-fix-loop-provenance`, plus deferred sub-features
-  `pipeline-tiered-triage` (verify self-disagreement trigger) and the circuit-breakers
-  in-flight/opus-metering follow-up. `floor-capture-trust-model` (high) still open.
-- **(c) Last reliability remainders** — see below.
+**NEXT — execute the DAG below.** The three earlier options (a diagnostic-gap fix,
+b pipeline tail, c reliability remainders) are resolved into the dependency DAG in
+the next section. Start at the roots; the current head-of-line task is **A1
+`capture-agent-pane-by-pane-id`** (in progress this stint).
+
+---
+
+## Execution DAG (2026-07-27)
+
+Edges are **file-collision** ordering (never parallelize two worktrees touching the
+same hot file) plus a few logical deps. Three lanes run **in parallel with each
+other**; within a lane tasks are **strictly sequenced** (they share a hot-file
+family). One cross-lane edge: `pipeline-run-create-wiring` (B5) must wait for A1
+because both edit `create.sh` / `run/spawn.rs`.
+
+```
+LANE A — supervise/* + reducer/schema (strict sequence; shared hot files)
+  A1 capture-agent-pane-by-pane-id            ← ROOT / head-of-line (schema + capture.rs + create.sh + spawn.rs)
+  A2 supervisor-spawn-fails-silently-at-run-create   (high)
+  A3 interactive-code-run-self-merged                (high)
+  A4 agent-skips-run-merge-idle-pending              (high; supervisor safety-net, reducer)
+  A5 child-supervisor-spawn-exhaustion-lifecycle
+  A6 run-create-back-to-back-no-supervisor
+  A7 reattach-does-not-bootstrap-crashed-at-creation-run
+  A8 autoretry-crash-consistency
+  A9 cancel-dead-supervisor-recovery
+  A10 legacy-pid-identity-check
+  A11 teardown-gate-trust-and-lifecycle
+  A12 no-completion-notification-to-parent
+  A13 notify-run-level-summary
+   └─ CLI-surface sub-lane (touch run/*, not supervise core — lower collision risk,
+      still sequence to be safe): idempotency-key-allowed-duplicate-run,
+      landing-signal-reliable-after-rebase, run-cancel-accept-unambiguous-prefix,
+      run-wait-timeout-unit-required, run-salvage-command,
+      orchestrate-integration-branch-no-worktree-merge-fails
+
+LANE B — pipeline/* + floor/* + harness/* (strict sequence; shared hot files)
+  B1 floor-capture-trust-model                (high; floor/, disjoint from A — safe to run alongside A1)
+  B2 pipeline-fix-loop-provenance
+  B3 pipeline-parallel-chunks                 (DAG scheduler)
+  B4 pipeline-hardening
+  B5 pipeline-run-create-wiring               ⚠ depends on A1 (shares create.sh / spawn.rs)
+  B6 pipeline-breaker-inflight-and-opus-metering
+  B7 pipeline-drop-primitive-underspecified
+  B8 pipeline-tiered-triage deferred self-disagreement trigger
+
+LANE C — workmux vendoring (fully independent; can run anytime)
+  C1 vendor-workmux-multiplexer  →  C2 workmux-extract-libs
+```
+
+**Parallelism rule of thumb:** at most one live worktree per lane at a time (each
+lane is a hot-file family). Cross-lane, up to three can run at once — e.g. A-head +
+B-head + C-head — except honor the A1→B5 edge.
 
 ### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
