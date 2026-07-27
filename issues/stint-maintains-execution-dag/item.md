@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: high
 related: ['@code-pipeline']
+commits:
+- hash: 645fa06
+  summary: implement DAG maintenance in stint skill
 ---
 
 # stint maintains an issue-derived execution DAG in TODO.md
