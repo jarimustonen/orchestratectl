@@ -2,7 +2,7 @@
 created: 2026-07-27
 updated: 2026-07-27
 type: improvement
-status: in-progress
+status: done
 priority: high
 related: ['@code-pipeline']
 commits:
@@ -10,6 +10,7 @@ commits:
   summary: implement DAG maintenance in stint skill
 - hash: 41dc10d
   summary: apply skill-review findings to DAG convention
+closed: 2026-07-27
 ---
 
 # stint maintains an issue-derived execution DAG in TODO.md
