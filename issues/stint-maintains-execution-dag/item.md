@@ -2,7 +2,7 @@
 created: 2026-07-27
 updated: 2026-07-27
 type: improvement
-status: open
+status: in-progress
 priority: high
 related: ['@code-pipeline']
 ---
