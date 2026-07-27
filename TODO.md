@@ -53,13 +53,11 @@ Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: capture-agent-pane-by-pane-id   ← start here on resume
+GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, high)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
-  ▶ capture-agent-pane-by-pane-id            (schema + capture.rs + create.sh + spawn.rs)
-    worker-process-hang [wip]                (diagnosis rides on capture)
-    agent-died-merge-no-teardown-interactive [wip]
-    supervisor-spawn-fails-silently-at-run-create   (high)
+    worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
+  ▶ supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — fails loudly now)
     interactive-code-run-self-merged                (high)
     agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer)
     child-supervisor-spawn-exhaustion-lifecycle
@@ -80,14 +78,14 @@ LANE B — pipeline/* + floor/* + harness/*
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
     pipeline-drop-primitive-underspecified
-    pipeline-tiered-triage [wip]             (deferred self-disagreement trigger)
+    pipeline-tiered-triage                   (in-progress; deferred self-disagreement trigger)
 
 LANE C — workmux vendoring (fully independent)
   ▶ vendor-workmux-multiplexer
     workmux-extract-libs   after vendor-workmux-multiplexer (needs vendored tree)
 
 LANE D — workflow/skill (skill prose, not product code)
-  ▶ stint-maintains-execution-dag [wip]      (this stint — design-first DAG maintenance)
+    (empty — stint-maintains-execution-dag landed 2026-07-27)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ idempotency-key-allowed-duplicate-run
@@ -106,9 +104,11 @@ LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, 
 **Parallelism rule of thumb:** ≤1 live worktree per lane. Cross-lane, several heads can run
 at once — e.g. Lane A + B + C heads — except a head carrying `collision: <file>` must not
 spawn while another worktree touching that file is live. **Migrated 2026-07-27** to the
-issue-derived DAG convention (slug identity, `collision:` tags, `[wip]` from issuectl —
-`agent-died-merge-no-teardown-interactive` was prose-marked ✅ landed but issuectl still
-shows it `in-progress`; reconcile on the next merge).
+issue-derived DAG convention (slug identity, `collision:` tags, `[wip]` from issuectl).
+**Reconciled 2026-07-27 (this stint):** dropped landed `capture-agent-pane-by-pane-id`
+(fixed) + `stint-maintains-execution-dag` (done); closed the stale-status
+`agent-died-merge-no-teardown-interactive` (git-verified landed, issuectl never closed)
+and dropped it; cleared dead `[wip]` tags (no live worktrees).
 
 ### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:

@@ -1,11 +1,12 @@
 ---
 created: 2026-07-20
-updated: 2026-07-26
+updated: 2026-07-27
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
 related: ['@supervisor-dead-merge-no-teardown', '@false-failed-after-merge', '@supervisor-watchdog-misfire-on-fresh-spawn']
+closed: 2026-07-27
 ---
 
 # run merge leaves tmux window + worktree after mid-session agent-died on a long-lived interactive run (0.1.0 regression)
