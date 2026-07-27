@@ -8,6 +8,8 @@ related: ['@code-pipeline']
 commits:
 - hash: 645fa06
   summary: implement DAG maintenance in stint skill
+- hash: 41dc10d
+  summary: apply skill-review findings to DAG convention
 ---
 
 # stint maintains an issue-derived execution DAG in TODO.md
