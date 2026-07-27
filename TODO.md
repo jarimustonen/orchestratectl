@@ -79,6 +79,9 @@ LANE B — pipeline/* + floor/* + harness/* (strict sequence; shared hot files)
 
 LANE C — workmux vendoring (fully independent; can run anytime)
   C1 vendor-workmux-multiplexer  →  C2 workmux-extract-libs
+
+LANE D — workflow/skill (independent of A/B/C code regions; touches skill prose, not product code)
+  D1 stint-maintains-execution-dag   (high; design-first — make DAG maintenance a standing part of /stint; in progress this stint)
 ```
 
 **Parallelism rule of thumb:** at most one live worktree per lane at a time (each
