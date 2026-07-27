@@ -582,6 +582,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "tmux_socket": outcome.tmux_socket,
         "tmux_session": outcome.tmux_session,
         "tmux_window_id": outcome.tmux_window_id,
+        "tmux_pane_id": outcome.tmux_pane_id,
         "agent_pid": outcome.agent_pid_hint,
         "task": args.task,
         "parent_node_id": parent_node_id,

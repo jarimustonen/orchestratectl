@@ -61,6 +61,12 @@ pub struct SpawnOutcome {
     /// create.sh predates the qualified-identity fields.
     #[serde(default)]
     pub tmux_window_id: Option<String>,
+    /// Stable `%NN` pane id (`#{pane_id}`) of the agent's own pane, captured at
+    /// spawn. `None` if the deployed create.sh predates the field; agent-log
+    /// capture then falls back to targeting the window's active pane. See
+    /// [`SpawnOutcome::tmux_identity`].
+    #[serde(default)]
+    pub tmux_pane_id: Option<String>,
 }
 
 impl SpawnOutcome {
@@ -84,6 +90,9 @@ impl SpawnOutcome {
             socket: nonempty(&self.tmux_socket),
             session,
             window_id,
+            // Optional: absent on a create.sh predating the field; capture
+            // falls back to the window's active pane.
+            pane_id: nonempty(&self.tmux_pane_id),
         })
     }
 }
@@ -578,7 +587,7 @@ exit 1
             &format!(
                 r#"#!/bin/bash
 cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":"/private/tmp/tmux-501/default","tmux_session":"octl","tmux_window_id":"@42"}}
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":"/private/tmp/tmux-501/default","tmux_session":"octl","tmux_window_id":"@42","tmux_pane_id":"%7"}}
 EOF
 "#
             ),
@@ -588,6 +597,36 @@ EOF
         assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
         assert_eq!(id.session, "octl");
         assert_eq!(id.window_id, "@42");
+        // create.sh emits `#{pane_id}` → parsed into the identity and used as
+        // the capture target.
+        assert_eq!(id.pane_id.as_deref(), Some("%7"));
+        assert_eq!(id.capture_target(), "%7");
+    }
+
+    #[test]
+    fn qualified_identity_omits_pane_id_on_legacy_create_sh() {
+        // A create.sh predating `#{pane_id}` emits no `tmux_pane_id`; the
+        // identity still resolves (session + window_id) with `pane_id: None`,
+        // so capture falls back to the window's active pane.
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        let out = run_fixture(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":null,"tmux_session":"octl","tmux_window_id":"@42"}}
+EOF
+"#
+            ),
+        )
+        .unwrap();
+        let id = out
+            .tmux_identity()
+            .expect("identity present without pane_id");
+        assert_eq!(id.pane_id, None);
+        assert_eq!(id.capture_target(), "@42");
     }
 
     #[test]

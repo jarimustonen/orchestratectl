@@ -43,12 +43,15 @@
 //! kills the tmux window, the pane's process exits, `head` sees EOF and flushes,
 //! and the run-dir `agent.log` holds the complete transcript up to death.
 //!
-//! **Pane targeting caveat.** `pipe-pane -t <window_id>` targets the window's
-//! *active* pane. For the autonomous headless path (this feature's priority) the
-//! window has exactly one pane = the agent, so this is correct. In an
-//! interactive session a user who splits the window could shift the active pane;
-//! capturing by a stable `pane_id` recorded at spawn is tracked separately
-//! (issue `capture-agent-pane-by-pane-id`).
+//! **Pane targeting.** We target [`TmuxIdentity::capture_target`]: the stable
+//! `pane_id` (`%NN`) recorded at spawn — the agent's OWN pane — when present,
+//! else the `window_id` (`pipe-pane -t <window_id>` resolves to the window's
+//! *active* pane). Targeting the pane id directly keeps capture pinned to the
+//! agent even in an interactive session where the user splits the window and
+//! shifts the active pane; without it `agent.log` could capture the user's own
+//! shell (issue `capture-agent-pane-by-pane-id`). A run spawned before create.sh
+//! emitted `#{pane_id}` has no `pane_id`, so it falls back to the `window_id`
+//! target — correct for the single-pane autonomous headless path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -187,7 +190,7 @@ fn capture_tick_with(
     }
 }
 
-/// Issue a single `tmux [-S <socket>] pipe-pane -O -t <window_id>
+/// Issue a single `tmux [-S <socket>] pipe-pane -O -t <pane_id|window_id>
 /// 'head -c <cap> >> <log>'` to tee the node's pane into `log_path`. Returns
 /// `true` iff tmux accepted the pipe. Lenient: logs and swallows a non-zero exit,
 /// spawn error, or timeout.
@@ -199,6 +202,7 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
                 target: "orchestratectl::supervise",
                 node = node_id,
                 window = %identity.window_id,
+                pane = %identity.capture_target(),
                 log = %log_path.display(),
                 "agent-log capture armed"
             );
@@ -209,6 +213,7 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
                 target: "orchestratectl::supervise",
                 node = node_id,
                 window = %identity.window_id,
+                pane = %identity.capture_target(),
                 detail = %detail,
                 "agent-log capture could not be set up (will retry; continuing without it)"
             );
@@ -217,9 +222,11 @@ fn setup_pipe_pane(tmux: &str, identity: &TmuxIdentity, log_path: &Path, node_id
     }
 }
 
-/// Build the `pipe-pane` command that tees the pane at `identity.window_id`
-/// (its active pane) into `log_path` with append + size-capped semantics. Pure
-/// so a test can assert the exact argv without a live tmux server.
+/// Build the `pipe-pane` command that tees the agent's pane
+/// ([`TmuxIdentity::capture_target`] — the recorded `pane_id`, else the
+/// `window_id`'s active pane) into `log_path` with append + size-capped
+/// semantics. Pure so a test can assert the exact argv without a live tmux
+/// server.
 fn pipe_pane_command(tmux: &str, identity: &TmuxIdentity, log_path: &Path) -> Command {
     let mut cmd = Command::new(tmux);
     if let Some(socket) = identity.socket.as_deref() {
@@ -230,9 +237,10 @@ fn pipe_pane_command(tmux: &str, identity: &TmuxIdentity, log_path: &Path) -> Co
     // persisted `armed` set gates that), so this is only ever a first-arm or a
     // retry of a previously-failed arm. `-O` makes the direction explicit
     // (pane output → command stdin) rather than relying on the version-sensitive
-    // implicit default, and avoids any `-I` input path. `-t <window_id>` targets
-    // the window's active pane (see the module-doc pane caveat).
-    cmd.args(["pipe-pane", "-O", "-t", &identity.window_id]);
+    // implicit default, and avoids any `-I` input path. `-t <target>` is the
+    // agent's stable `pane_id` when recorded (`%NN`) — pinned to the agent even
+    // if the user splits the window — else the `window_id` (its active pane).
+    cmd.args(["pipe-pane", "-O", "-t", identity.capture_target()]);
     // `head -c <cap>` bounds the file: once the cap is read `head` exits, tmux
     // closes the pipe on EOF, and capture stops — no unbounded `agent.log`.
     let shell = format!(
@@ -299,6 +307,15 @@ mod tests {
             socket: socket.map(str::to_string),
             session: "octl".to_string(),
             window_id: window_id.to_string(),
+            pane_id: None,
+        }
+    }
+
+    /// Like [`id`], but with a recorded `pane_id` — the agent's own pane.
+    fn id_with_pane(socket: Option<&str>, window_id: &str, pane_id: &str) -> TmuxIdentity {
+        TmuxIdentity {
+            pane_id: Some(pane_id.to_string()),
+            ..id(socket, window_id)
         }
     }
 
@@ -346,6 +363,40 @@ mod tests {
             args[4],
             format!("head -c {CAPTURE_MAX_BYTES} >> '/runs/z/agent.log'")
         );
+    }
+
+    #[test]
+    fn command_targets_recorded_pane_id_over_window_id() {
+        // With a recorded pane_id (`%NN`), `pipe-pane -t` targets the agent's
+        // OWN pane, not the window's active pane — so a user splitting the
+        // window can't shift capture onto their shell.
+        let identity = id_with_pane(None, "@42", "%7");
+        let log = PathBuf::from("/runs/z/agent.log");
+        let cmd = pipe_pane_command("tmux", &identity, &log);
+        let args = argv(&cmd);
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "%7", "targets pane_id, not window_id: {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "@42"),
+            "window_id must not appear as the target when a pane_id is recorded: {args:?}"
+        );
+    }
+
+    #[test]
+    fn command_falls_back_to_window_id_when_pane_id_absent() {
+        // A run spawned before create.sh emitted `#{pane_id}` has no pane_id;
+        // capture falls back to the window's active pane (`@NNNN`).
+        let identity = id(None, "@9");
+        let cmd = pipe_pane_command("tmux", &identity, &PathBuf::from("/runs/z/agent.log"));
+        let args = argv(&cmd);
+        assert_eq!(args[2], "-t");
+        assert_eq!(args[3], "@9", "falls back to window_id: {args:?}");
+    }
+
+    #[test]
+    fn capture_target_prefers_pane_id() {
+        assert_eq!(id_with_pane(None, "@42", "%7").capture_target(), "%7");
+        assert_eq!(id(None, "@42").capture_target(), "@42");
     }
 
     #[test]
@@ -453,6 +504,52 @@ mod tests {
             log2.lines().count(),
             invocations_before,
             "already-armed node must not be re-armed: {log2:?}"
+        );
+    }
+
+    /// A node whose `node.created` recorded a `tmux_pane_id` is captured by
+    /// targeting that pane id (`%NN`), not the window id — the whole point of
+    /// the fix. End-to-end through the reducer's identity reconstruction.
+    #[test]
+    fn capture_tick_targets_recorded_pane_id_end_to_end() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&NodeId::parse_str("n-0001").unwrap()),
+            None,
+            json!({
+                "kind": "spinoff",
+                "tmux_session": "headless",
+                "tmux_window_id": "@42",
+                "tmux_pane_id": "%7",
+            }),
+        )
+        .unwrap();
+
+        let tmux = fake_tmux(tmp.path());
+        let mut armed = BTreeSet::new();
+        let mut attempts = BTreeMap::new();
+        capture_tick_with(&paths, &mut armed, &mut attempts, &tmux);
+
+        assert!(armed.contains("n-0001"), "node marked armed");
+        let log = std::fs::read_to_string(tmp.path().join("tmux.log")).unwrap();
+        assert!(
+            log.contains("pipe-pane -O -t %7"),
+            "targets the recorded pane_id: {log:?}"
+        );
+        assert!(
+            !log.contains("-t @42"),
+            "window_id must not be the target when a pane_id was recorded: {log:?}"
         );
     }
 

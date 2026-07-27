@@ -674,6 +674,14 @@ pub struct Node {
 /// unique per server, `window_id` (the `@NNNN` form) survives renames, and
 /// `socket` disambiguates multiple tmux servers. The watchdog matches on this
 /// when present (design.md §8.1).
+///
+/// `pane_id` (the `%NN` form) pins the agent's *specific* pane within that
+/// window, recorded at spawn. Window-level operations (liveness probes,
+/// `kill-window` teardown) key off `window_id`; only per-pane operations that
+/// must not follow the window's *active* pane — chiefly `pipe-pane` agent-log
+/// capture — use `pane_id`. It is `None` for a run spawned before create.sh
+/// emitted the field; capture then falls back to `window_id` (issue
+/// `capture-agent-pane-by-pane-id`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TmuxIdentity {
     /// Server socket path (`#{socket_path}`). `None` if create.sh could not
@@ -685,6 +693,25 @@ pub struct TmuxIdentity {
     /// Stable window id in `@NNNN` form (`#{window_id}`). Survives renames and
     /// is unique within the server.
     pub window_id: String,
+    /// Stable pane id in `%NN` form (`#{pane_id}`), recorded at spawn — the
+    /// agent's own pane. `None` for a run whose create.sh predates the field
+    /// (back-compat: old state deserializes with `pane_id: None`). Prefer
+    /// [`TmuxIdentity::capture_target`] over reading this directly.
+    #[serde(default)]
+    pub pane_id: Option<String>,
+}
+
+impl TmuxIdentity {
+    /// The tmux target for a per-pane operation that must hit the agent's own
+    /// pane, not the window's *active* pane: the recorded `pane_id` when
+    /// present, else the `window_id` (which resolves to the active pane).
+    ///
+    /// Used by agent-log capture (`pipe-pane`). Window-level operations
+    /// (`kill-window`, liveness) must NOT use this — they key off `window_id`
+    /// directly so they act on the whole window.
+    pub fn capture_target(&self) -> &str {
+        self.pane_id.as_deref().unwrap_or(&self.window_id)
+    }
 }
 
 /// `discussions/<discussion-id>.json` (design.md §1.5).

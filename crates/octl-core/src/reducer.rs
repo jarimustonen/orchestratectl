@@ -566,7 +566,9 @@ fn reduce_run_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
 /// data. Returns `Some` only when both `tmux_session` and `tmux_window_id` are
 /// present and non-empty — the minimum needed to match a window. `tmux_socket`
 /// is optional (a default-socket spawn may emit null); an empty socket is
-/// normalized to `None` so the watchdog never invokes `tmux -S ""`. Legacy
+/// normalized to `None` so the watchdog never invokes `tmux -S ""`.
+/// `tmux_pane_id` is likewise optional (create.sh predating it emits nothing);
+/// agent-log capture falls back to the window's active pane when absent. Legacy
 /// events from a create.sh that predates the qualified fields (or that emit a
 /// partial/empty identity) yield `None`, so the node falls back to bare-name
 /// matching on `tmux_window`.
@@ -584,6 +586,9 @@ fn tmux_identity_from_data(d: &Value) -> Option<TmuxIdentity> {
         socket: nonempty("tmux_socket"),
         session,
         window_id,
+        // Optional: create.sh predating the field (or a failed pane query)
+        // emits no `tmux_pane_id`; capture then falls back to `window_id`.
+        pane_id: nonempty("tmux_pane_id"),
     })
 }
 
@@ -1457,6 +1462,8 @@ mod tests {
         assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
         assert_eq!(id.session, "octl");
         assert_eq!(id.window_id, "@42");
+        // No pane_id in this event → None (back-compat / older create.sh).
+        assert_eq!(id.pane_id, None);
 
         // Null socket is tolerated — session + window_id are the minimum.
         let d2 = serde_json::json!({
@@ -1467,6 +1474,16 @@ mod tests {
         let id2 = tmux_identity_from_data(&d2).expect("identity without socket");
         assert_eq!(id2.socket, None);
         assert_eq!(id2.window_id, "@7");
+
+        // A create.sh that emits `tmux_pane_id` is folded into the identity.
+        let d3 = serde_json::json!({
+            "tmux_session": "octl",
+            "tmux_window_id": "@42",
+            "tmux_pane_id": "%7",
+        });
+        let id3 = tmux_identity_from_data(&d3).expect("identity with pane");
+        assert_eq!(id3.pane_id.as_deref(), Some("%7"));
+        assert_eq!(id3.capture_target(), "%7");
     }
 
     #[test]

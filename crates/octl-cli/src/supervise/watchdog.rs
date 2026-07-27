@@ -672,6 +672,8 @@ mod tests {
             socket: socket.map(str::to_string),
             session: session.to_string(),
             window_id: window_id.to_string(),
+            // Watchdog liveness keys off session:window_id, not the pane.
+            pane_id: None,
         }
     }
 
