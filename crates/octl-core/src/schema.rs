@@ -676,12 +676,18 @@ pub struct Node {
 /// when present (design.md §8.1).
 ///
 /// `pane_id` (the `%NN` form) pins the agent's *specific* pane within that
-/// window, recorded at spawn. Window-level operations (liveness probes,
-/// `kill-window` teardown) key off `window_id`; only per-pane operations that
-/// must not follow the window's *active* pane — chiefly `pipe-pane` agent-log
-/// capture — use `pane_id`. It is `None` for a run spawned before create.sh
-/// emitted the field; capture then falls back to `window_id` (issue
-/// `capture-agent-pane-by-pane-id`).
+/// window, recorded at spawn. Window-owning operations (`kill-window` teardown —
+/// the supervisor owns the whole window per the cleanup invariants) key off
+/// `window_id`; only per-pane operations that must not follow the window's
+/// *active* pane — chiefly `pipe-pane` agent-log capture — use `pane_id`. It is
+/// `None` for a run spawned before create.sh emitted the field; capture then
+/// falls back to `window_id` (issue `capture-agent-pane-by-pane-id`).
+///
+/// The watchdog's liveness probe still keys off `window_id` (correct for the
+/// single-pane autonomous path). A pane-aware liveness probe — needed so a split
+/// interactive window whose agent pane dies while a user shell pane survives is
+/// still seen as dead — is a follow-up (`watchdog-pane-aware-liveness`), not this
+/// change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TmuxIdentity {
     /// Server socket path (`#{socket_path}`). `None` if create.sh could not
@@ -709,8 +715,15 @@ impl TmuxIdentity {
     /// Used by agent-log capture (`pipe-pane`). Window-level operations
     /// (`kill-window`, liveness) must NOT use this — they key off `window_id`
     /// directly so they act on the whole window.
+    ///
+    /// A recorded `pane_id` is preferred only when non-empty; an empty string
+    /// (a directly-deserialized/corrupt state that the reducer/spawn normalizers
+    /// never produce) is treated as absent so capture never targets `-t ""`.
     pub fn capture_target(&self) -> &str {
-        self.pane_id.as_deref().unwrap_or(&self.window_id)
+        self.pane_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&self.window_id)
     }
 }
 
@@ -867,6 +880,53 @@ mod tests {
                 "{k:?} must NOT be retry-eligible"
             );
         }
+    }
+
+    /// Back-compat acceptance criterion (issue `capture-agent-pane-by-pane-id`):
+    /// a `TmuxIdentity` persisted before `pane_id` existed — with the field
+    /// entirely absent, or written as an explicit `null` — must still
+    /// deserialize, yielding `pane_id: None` and a `window_id` capture target.
+    #[test]
+    fn tmux_identity_deserializes_legacy_state_without_pane_id() {
+        // Field entirely absent (a state file written by an older binary).
+        let absent: TmuxIdentity = serde_json::from_value(serde_json::json!({
+            "socket": null,
+            "session": "octl",
+            "window_id": "@42",
+        }))
+        .expect("legacy identity without pane_id must deserialize");
+        assert_eq!(absent.pane_id, None);
+        assert_eq!(absent.capture_target(), "@42");
+
+        // Field present but explicitly null.
+        let null: TmuxIdentity = serde_json::from_value(serde_json::json!({
+            "socket": null,
+            "session": "octl",
+            "window_id": "@42",
+            "pane_id": null,
+        }))
+        .expect("identity with explicit null pane_id must deserialize");
+        assert_eq!(null.pane_id, None);
+        assert_eq!(null.capture_target(), "@42");
+    }
+
+    /// `capture_target` prefers a recorded `pane_id` (`%NN`) over the window id,
+    /// but treats an empty `pane_id` as absent (never targets `-t ""`).
+    #[test]
+    fn capture_target_prefers_nonempty_pane_id() {
+        let with_pane = TmuxIdentity {
+            socket: None,
+            session: "octl".into(),
+            window_id: "@42".into(),
+            pane_id: Some("%7".into()),
+        };
+        assert_eq!(with_pane.capture_target(), "%7");
+
+        let empty_pane = TmuxIdentity {
+            pane_id: Some(String::new()),
+            ..with_pane.clone()
+        };
+        assert_eq!(empty_pane.capture_target(), "@42");
     }
 }
 

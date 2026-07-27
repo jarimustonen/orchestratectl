@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: normal
 related: ['@capture-agent-output-to-run-dir']
+commits:
+- hash: 45c23d5
+  summary: capture agent.log by stable pane_id, fall back to window_id
 ---
 
 Follow-up spun off from `capture-agent-output-to-run-dir`.

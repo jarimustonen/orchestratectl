@@ -1484,6 +1484,17 @@ mod tests {
         let id3 = tmux_identity_from_data(&d3).expect("identity with pane");
         assert_eq!(id3.pane_id.as_deref(), Some("%7"));
         assert_eq!(id3.capture_target(), "%7");
+
+        // Explicit `tmux_pane_id: null` (create.sh emits null when its pane
+        // query failed) must fold to None — never `Some("null")`.
+        let d4 = serde_json::json!({
+            "tmux_session": "octl",
+            "tmux_window_id": "@42",
+            "tmux_pane_id": null,
+        });
+        let id4 = tmux_identity_from_data(&d4).expect("identity with null pane");
+        assert_eq!(id4.pane_id, None);
+        assert_eq!(id4.capture_target(), "@42");
     }
 
     #[test]
