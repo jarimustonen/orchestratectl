@@ -34,6 +34,16 @@ spawn.
   main's current state. Never leave main modified-but-uncommitted across a phase, and
   **never commit a worker's in-progress work for it** — each worktree commits its own
   changes. If a worker didn't land, report it; do not rescue it by committing on main.
+- **Maintain the execution DAG in `TODO.md`.** `TODO.md` carries a lane-based
+  **execution DAG** — the *scheduling plan* over the repo's currently-active issues.
+  It is authoritative for the **plan** (which lane each issue is in, the order within a
+  lane, cross-lane file-collision tags) and it stores **no status**: status always lives
+  in `issuectl`, read through on demand. So the DAG can never drift out of sync with
+  status. You **merge** it (drop landed issues, add new ones, keep the existing plan) —
+  you never regenerate it from scratch. The head-of-line ("what's next") is **computed
+  on read** by joining the DAG's lane order with live `issuectl` status; the printed
+  `▶` marker is only a snapshot. Full convention in *Execution DAG* below. Editing the
+  DAG is orchestration, not product code — do it in this session.
 - **Autonomous spinoffs run headless.** Every self-merging spinoff you spawn directly
   (`/worktree-spinoff`) passes `--headless`, so the round's workers land in the detached
   `headless` tmux session instead of cluttering the user's window list; attach with
@@ -82,9 +92,33 @@ only on the user's go.
    what's deployed (use the project's live-version check)? Merged-but-undeployed
    work? Half-finished worktree branches? (`git log --oneline`, compare against the
    handoff's stated prod image/version.)
-4. **Orient the user** in one tight message: where things stand, what the pull
-   brought in, and what you propose to tackle this round (fold in the `$ARGUMENTS`
-   focus hint). Then proceed — don't wait for permission to *start*.
+4. **Merge the execution DAG against reality** (do this *first*, before orienting —
+   otherwise you orient off stale data). This is a stateful **merge**, not a rewrite:
+   preserve the existing lane assignment, order, and `collision:` tags; only reconcile
+   the *set* of issues.
+   - Fetch the **active set** = `issuectl ls --status open` **unioned with**
+     `issuectl ls --status in-progress` (`open` alone silently drops every live
+     worktree's issue). Add `--status testing` if the project uses it.
+   - **Drop** DAG lines whose slug is not in the active set (landed / renamed / closed).
+   - **Add** active issues missing from the DAG into their lane (by hot-file family;
+     `UNLANED` if none). Park `deferred`-labelled issues under *Adjacent backlog*, not a
+     lane. A fast scoped drift check:
+     ```bash
+     comm -3 \
+       <( { issuectl --json ls --status open | jq -r '.[].slug'
+            issuectl --json ls --status in-progress | jq -r '.[].slug'; } | sort -u ) \
+       <( sed -n '/execution-dag:begin/,/execution-dag:end/p' TODO.md \
+            | grep -oE '[a-z0-9][a-z0-9-]+' | sort -u )
+     ```
+   - **Validate:** every `after`/`blocked_by` target resolves to a real issue; no
+     self-dep; no cycle. Surface a dangling or cyclic edge to the user — don't render a
+     wrong head silently.
+   - **Recompute the head-of-line** (see *Execution DAG*) and **commit `TODO.md`** if it
+     changed (keep main clean).
+5. **Orient the user** in one tight message: where things stand, what the pull
+   brought in, **the ready frontier from the DAG** (head-of-line per lane, and what's
+   blocked), and what you propose to tackle this round (fold in the `$ARGUMENTS` focus
+   hint). Then proceed — don't wait for permission to *start*.
 
 ### Phase 1 — Bug intake & triage  → delegate to `/triage-bugs`
 
@@ -107,16 +141,29 @@ advances the presented bugs to `triaged`, and appends a machine-readable
     races with the worker (per `worktree-spinoff`'s "do not call `issuectl` from the
     caller" rule).
 
+  **Insert every fix-now bug into the execution DAG:** add one line to its lane (pick the
+  lane from the bug analysis' likely-touched files; `UNLANED` if unclear). If it depends
+  on another issue, record it additively — `issuectl apply` with `add_blocked_by` (never
+  `set`, which can replace the list) — and mirror it as `after <slug> (needs …)`. **Commit
+  the `TODO.md` edit** before moving on.
+
 ### Phase 2 — Plan the round
 
 Combine into a work-list: the **fix-now** bugs, any feature/backlog items the user
 named, and any `TODO.md` items the user wants pulled in. Then:
 
 - **Decompose** into independent worktree units.
-- **Resolve file collisions.** Units that touch the same hot file (per the repo's
-  AGENTS.md hot-file notes) must be **sequenced**, not run in parallel against that
-  file. Disjoint units run in parallel. **If you can't tell whether two units are
-  disjoint, sequence them** — a wrong guess causes merge conflicts.
+- **Resolve file collisions — this *is* the lane assignment.** Units that touch the
+  same hot file (per the repo's AGENTS.md hot-file notes) must be **sequenced**, not run
+  in parallel against that file — i.e. they share a **lane** in the DAG. Disjoint units
+  run in parallel (different lanes). **If you can't tell whether two units are disjoint,
+  sequence them** — a wrong guess causes merge conflicts.
+- **Update the DAG for the round.** File any planned unit that isn't yet an issue (per
+  repo policy) and insert it into its lane. Record real logical deps additively
+  (`issuectl apply` → `add_blocked_by`) and mirror them as `after <slug> (needs …)`. Tag
+  a unit that also touches a *second* lane's hot file with `collision: <file>`. **Commit
+  the `TODO.md` + frontmatter edits before Phase 3 spawns anything** (so workers branch
+  off committed metadata).
 - **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
   big or genuinely ambiguous feature → design-first.
 - **Announce the plan** in one short message (which units, what's parallel vs
@@ -157,6 +204,14 @@ git** before counting it toward the deploy pile:
   git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
+- **Never write status into the DAG.** The worktree owns the issue lifecycle
+  (`triaged` → `in-progress` → `fixed`); if the DAG also wrote an in-progress flag it
+  would race those updates. Pick the next unit by **recomputing** the head-of-line from
+  live `issuectl` status (see *Execution DAG*), not by trusting the printed `▶`. A head
+  is **spawnable** only if none of its collision files (its lane's hot-file family + any
+  `collision:` tag) is held by an in-progress worktree. At most an advisory
+  `(spawned <run-id>)` breadcrumb next to a just-launched head — cleared at the next
+  Phase-0 merge, never treated as truth.
 
 ### Phase 4 — Deploy (the conductor owns this — when the project permits)
 
@@ -201,6 +256,12 @@ decide what happens next.
   **documentation**, and **`TODO.md`** so nothing is lost — *then* continue to the
   handoff.
 
+**Keep the DAG current before any mini-round.** If feedback files new issues or changes a
+dependency, **insert them into the DAG and commit** (same edit as Phase 1/2) *before* a
+Phase-6 mini-round consults it — a mini-round that sequences against a stale DAG can
+mis-order or miss an issue. If you capture feedback durably without a mini-round, still do
+the insert so Phase 7 is already accurate.
+
 Once the feedback is absorbed (acted on via worktrees, or captured durably), move on.
 
 ### Phase 7 — Handoff / wrap-up (propose; run only on request)
@@ -210,8 +271,10 @@ A stint typically fills this session's context after ~one round. When you notice
 
 1. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so
    a fresh agent can resume from `jatketaan @TODO.md` — this is an inline stint action,
-   not a separate skill.
-2. **Commit the `TODO.md` handoff update immediately** — commit it on its own
+   not a separate skill. **In the same edit, merge the execution DAG one last time**
+   (Phase-0 merge: drop landed issues, add any still-open ones, refresh the date stamp,
+   set the `GLOBAL HEAD-OF-LINE`) so the next resume opens onto an accurate graph.
+2. **Commit the `TODO.md` handoff + DAG update immediately** — commit it on its own
    (`git add TODO.md && git commit`) *before* the next step, so it doesn't get folded
    into `/wrap-up`'s mixed commit or left dangling.
 3. `/wrap-up` — it will *present proposed* `AGENTS.md`/issue/preference changes and
@@ -220,6 +283,70 @@ A stint typically fills this session's context after ~one round. When you notice
    or remind the user.
 
 Do not auto-run these — propose and wait.
+
+## Execution DAG (the convention)
+
+The DAG is the round's **scheduling plan**, living in a delimited block in `TODO.md`. It
+is generic: this skill defines the *notation and rules*; the actual lanes and hot files
+are **project facts** in the repo's `AGENTS.md` / `TODO.md`, never hardcoded here.
+
+**What it owns vs. what it reads.** The DAG is authoritative for the *plan* — each issue's
+lane, the order within a lane, and cross-lane `collision:` tags. It stores **no status**;
+`issuectl` is authoritative for status, read on demand. No fact lives in both, so they
+cannot drift. You **merge** the DAG (Phase 0/7) — never regenerate it from scratch, which
+would force re-deriving the hot-file collision matrix and risk hallucinating or dropping a
+`collision:` edge.
+
+**Lanes = hot-file families.** Two issues whose fixes touch the same hot file share a lane
+and are sequenced (≤1 live worktree per lane at a time). Disjoint issues sit in different
+lanes and run in parallel. Issues touching no hot file go `UNLANED`. Deferred / not-in-plan
+issues live under `## Adjacent backlog`, **not** a lane.
+
+**Canonical block** (delimited so tooling and the `comm -3` check parse only the nodes):
+
+````markdown
+## Execution DAG (<YYYY-MM-DD>)
+
+Scheduling PLAN — source of truth for lane + order; issuectl is authoritative for STATUS
+(never copied here). Merge at Phase 0/7 (drop landed, add active, keep existing order).
+`▶` = head-of-line snapshot — RE-COMPUTE from issuectl at pick time.
+`after <slug> (needs …)` = logical blocked_by mirror. `collision: <file>` = touches a
+second lane's hot file (spawn-time exclusion).
+
+<!-- execution-dag:begin -->
+```
+GLOBAL HEAD-OF-LINE: <slug>   ← start here on resume
+LANE A — <hot-file family>
+  ▶ <slug-a1>
+    <slug-a2>   after <slug-b2> (needs its new API)
+LANE B — <hot-file family>
+  ▶ <slug-b1>
+    <slug-b5>   collision: <shared-hot-file>
+UNLANED — no shared hot files, run anytime:
+    <slug-x>, <slug-y>
+```
+<!-- execution-dag:end -->
+````
+
+**Head-of-line (compute on read, never trust the printed `▶`):**
+
+- An issue is **eligible** iff its `issuectl` status is `open`/`in-progress` (in the active
+  set), it is **not** `deferred`-labelled, it is **not already** `in-progress` (a live
+  worktree has it), and every `blocked_by` target is **delivered** — `status ∈ {fixed,
+  done}`. A target that is `wontfix` / `obsolete` / `cannot-reproduce` does **not** satisfy
+  the dependency (the code was never built) — the dependent stays blocked; flag it to the
+  user. Follow a `duplicate` to its canonical issue.
+- `head(lane)` = the first eligible issue in that lane's order.
+- A head is **spawnable** iff none of its collision files (its lane's hot-file family + any
+  `collision:` tag) is held by an in-progress worktree.
+- `GLOBAL HEAD-OF-LINE` = pick among spawnable heads: an explicit handoff "start here"
+  first, else highest `issuectl` priority, else earliest in lane order, else slug order.
+
+**Slugs, not positional codes.** Reference issues by slug everywhere (no `A1`/`B5`);
+positional numbers churn on every insert. Lane letters are just coarse group labels.
+
+Requires the repo to keep the delimited `## Execution DAG` section in `TODO.md` and a
+hot-file list in `AGENTS.md` (see *Project prerequisites*).
 
 ## Project prerequisites (what the repo's AGENTS.md should provide)
 
@@ -233,7 +360,11 @@ If any are missing, ask the user and offer to add them:
 - **Live-version check** — how to see what's currently deployed (health endpoint,
   image tag, etc.), so Phase 0 can compare against main.
 - **Green gate** — the typecheck/build/smoke commands that must pass before deploy.
-- **Hot files** — shared files that must be sequenced, not parallelised.
+- **Hot files** — shared files that must be sequenced, not parallelised. These define the
+  DAG's lanes (a lane = a hot-file family), so the list needs to be specific enough to map
+  an issue's likely-touched files to a lane.
+- **A delimited `## Execution DAG` section in `TODO.md`** — the `<!-- execution-dag:begin
+  -->` / `end` block the DAG convention maintains. If absent, create it on the first merge.
 - **Test-account reset preference** — if testing should start from a known state.
 
 ## Non-goals

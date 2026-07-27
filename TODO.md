@@ -33,60 +33,80 @@ worker units legitimately take **54–96 min**; don't mistake a long run for a h
 
 **NEXT — execute the DAG below.** The three earlier options (a diagnostic-gap fix,
 b pipeline tail, c reliability remainders) are resolved into the dependency DAG in
-the next section. Start at the roots; the current head-of-line task is **A1
-`capture-agent-pane-by-pane-id`** (in progress this stint).
+the next section. Start at the heads; the `GLOBAL HEAD-OF-LINE` is
+**`capture-agent-pane-by-pane-id`** (Lane A). Pick the next unit by recomputing the
+head-of-line from live `issuectl` status — the DAG stores the plan, not status.
 
 ---
 
 ## Execution DAG (2026-07-27)
 
-Edges are **file-collision** ordering (never parallelize two worktrees touching the
-same hot file) plus a few logical deps. Three lanes run **in parallel with each
-other**; within a lane tasks are **strictly sequenced** (they share a hot-file
-family). One cross-lane edge: `pipeline-run-create-wiring` (B5) must wait for A1
-because both edit `create.sh` / `run/spawn.rs`.
+Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
+STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
+a time, in the listed order; across lanes heads run in parallel unless they share a
+`collision:` file. **Merge** this at Phase 0/7 (drop landed, add active, keep existing
+order) — don't regenerate. `▶` = head-of-line snapshot — **re-compute from issuectl at
+pick time** (`open`/`in-progress`, not `deferred`, deps `fixed`/`done`). `after <slug>
+(needs …)` = logical `blocked_by` mirror. `collision: <file>` = touches another lane's hot
+file (spawn-time exclusion). `[wip]` = a worktree currently has it (don't spawn again).
+Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*.
 
+<!-- execution-dag:begin -->
 ```
-LANE A — supervise/* + reducer/schema (strict sequence; shared hot files)
-  A1 capture-agent-pane-by-pane-id            ← ROOT / head-of-line (schema + capture.rs + create.sh + spawn.rs)
-  A2 supervisor-spawn-fails-silently-at-run-create   (high)
-  A3 interactive-code-run-self-merged                (high)
-  A4 agent-skips-run-merge-idle-pending              (high; supervisor safety-net, reducer)
-  A5 child-supervisor-spawn-exhaustion-lifecycle
-  A6 run-create-back-to-back-no-supervisor
-  A7 reattach-does-not-bootstrap-crashed-at-creation-run
-  A8 autoretry-crash-consistency
-  A9 cancel-dead-supervisor-recovery
-  A10 legacy-pid-identity-check
-  A11 teardown-gate-trust-and-lifecycle
-  A12 no-completion-notification-to-parent
-  A13 notify-run-level-summary
-   └─ CLI-surface sub-lane (touch run/*, not supervise core — lower collision risk,
-      still sequence to be safe): idempotency-key-allowed-duplicate-run,
-      landing-signal-reliable-after-rebase, run-cancel-accept-unambiguous-prefix,
-      run-wait-timeout-unit-required, run-salvage-command,
-      orchestrate-integration-branch-no-worktree-merge-fails
+GLOBAL HEAD-OF-LINE: capture-agent-pane-by-pane-id   ← start here on resume
 
-LANE B — pipeline/* + floor/* + harness/* (strict sequence; shared hot files)
-  B1 floor-capture-trust-model                (high; floor/, disjoint from A — safe to run alongside A1)
-  B2 pipeline-fix-loop-provenance
-  B3 pipeline-parallel-chunks                 (DAG scheduler)
-  B4 pipeline-hardening
-  B5 pipeline-run-create-wiring               ⚠ depends on A1 (shares create.sh / spawn.rs)
-  B6 pipeline-breaker-inflight-and-opus-metering
-  B7 pipeline-drop-primitive-underspecified
-  B8 pipeline-tiered-triage deferred self-disagreement trigger
+LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
+  ▶ capture-agent-pane-by-pane-id            (schema + capture.rs + create.sh + spawn.rs)
+    worker-process-hang [wip]                (diagnosis rides on capture)
+    agent-died-merge-no-teardown-interactive [wip]
+    supervisor-spawn-fails-silently-at-run-create   (high)
+    interactive-code-run-self-merged                (high)
+    agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer)
+    child-supervisor-spawn-exhaustion-lifecycle
+    run-create-back-to-back-no-supervisor
+    reattach-does-not-bootstrap-crashed-at-creation-run
+    autoretry-crash-consistency
+    cancel-dead-supervisor-recovery
+    legacy-pid-identity-check
+    teardown-gate-trust-and-lifecycle
+    no-completion-notification-to-parent
+    notify-run-level-summary
 
-LANE C — workmux vendoring (fully independent; can run anytime)
-  C1 vendor-workmux-multiplexer  →  C2 workmux-extract-libs
+LANE B — pipeline/* + floor/* + harness/*
+  ▶ floor-capture-trust-model                (high; floor/, disjoint from A)
+    pipeline-fix-loop-provenance
+    pipeline-parallel-chunks                 (DAG scheduler)
+    pipeline-hardening
+    pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
+    pipeline-breaker-inflight-and-opus-metering
+    pipeline-drop-primitive-underspecified
+    pipeline-tiered-triage [wip]             (deferred self-disagreement trigger)
 
-LANE D — workflow/skill (independent of A/B/C code regions; touches skill prose, not product code)
-  D1 stint-maintains-execution-dag   (high; design-first — make DAG maintenance a standing part of /stint; in progress this stint)
+LANE C — workmux vendoring (fully independent)
+  ▶ vendor-workmux-multiplexer
+    workmux-extract-libs   after vendor-workmux-multiplexer (needs vendored tree)
+
+LANE D — workflow/skill (skill prose, not product code)
+  ▶ stint-maintains-execution-dag [wip]      (this stint — design-first DAG maintenance)
+
+LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
+  ▶ idempotency-key-allowed-duplicate-run
+    landing-signal-reliable-after-rebase
+    run-cancel-accept-unambiguous-prefix
+    run-wait-timeout-unit-required
+    run-salvage-command
+    orchestrate-integration-branch-no-worktree-merge-fails
+
+EPIC (not a spawnable unit): code-pipeline — parent of the Lane B pipeline-* work.
 ```
+<!-- execution-dag:end -->
 
-**Parallelism rule of thumb:** at most one live worktree per lane at a time (each
-lane is a hot-file family). Cross-lane, up to three can run at once — e.g. A-head +
-B-head + C-head — except honor the A1→B5 edge.
+**Parallelism rule of thumb:** ≤1 live worktree per lane. Cross-lane, several heads can run
+at once — e.g. Lane A + B + C heads — except a head carrying `collision: <file>` must not
+spawn while another worktree touching that file is live. **Migrated 2026-07-27** to the
+issue-derived DAG convention (slug identity, `collision:` tags, `[wip]` from issuectl —
+`agent-died-merge-no-teardown-interactive` was prose-marked ✅ landed but issuectl still
+shows it `in-progress`; reconcile on the next merge).
 
 ### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
