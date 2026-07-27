@@ -2,12 +2,15 @@
 created: 2026-07-26
 updated: 2026-07-27
 type: improvement
-status: in-progress
+status: fixed
 priority: normal
 related: ['@capture-agent-output-to-run-dir']
 commits:
 - hash: 45c23d5
   summary: capture agent.log by stable pane_id, fall back to window_id
+- hash: e153e28
+  summary: apply llm-review findings (agent-pane binding, back-compat tests, capture_target guard)
+closed: 2026-07-27
 ---
 
 Follow-up spun off from `capture-agent-output-to-run-dir`.
