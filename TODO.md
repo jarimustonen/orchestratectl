@@ -57,8 +57,8 @@ GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, high
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
-  ▶ supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — fails loudly now)
-    interactive-code-run-self-merged                (high)
+    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; stepped past for a cleaner repro-able high)
+  ▶ interactive-code-run-self-merged [wip]          (high; concrete repro — interactive run self-merged past the review gate)
     agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer)
     child-supervisor-spawn-exhaustion-lifecycle
     run-create-back-to-back-no-supervisor
@@ -71,7 +71,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ floor-capture-trust-model                (high; floor/, disjoint from A)
+  ▶ floor-capture-trust-model [wip]          (high; floor/, disjoint from A)
     pipeline-fix-loop-provenance
     pipeline-parallel-chunks                 (DAG scheduler)
     pipeline-hardening
