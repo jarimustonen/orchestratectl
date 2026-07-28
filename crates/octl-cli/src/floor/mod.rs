@@ -51,10 +51,12 @@
 //!   dropped), and an injected `test x ... ok` line is caught below.
 //! - **Fail-closed.** Every capture proves complete compilation + execution:
 //!   unparseable cargo JSON, a missing `build-finished`, an `error`-level
-//!   diagnostic, a libtest binary whose parsed counts disagree with its own
-//!   announced summary, or an exit code inconsistent with that summary all
-//!   reject with a [`FloorError`] — a compile failure or bad flag can never
-//!   yield an empty snapshot that passes gates vacuously.
+//!   diagnostic, a **non-zero process exit despite a `build-finished` record**
+//!   (a JSON-injection-then-SIGKILL), a libtest binary whose parsed counts
+//!   disagree with its own announced summary, a **non-zero `filtered out`**
+//!   count (a leaked test filter → subset capture), or an exit code inconsistent
+//!   with that summary all reject with a [`FloorError`] — a compile failure or
+//!   bad flag can never yield an empty snapshot that passes gates vacuously.
 //! - **Target-qualified identity.** [`snapshot::TestId`] is
 //!   `(package, target_kind, target, name)`, so a deleted test cannot be
 //!   replaced by a same-named no-op in another target.
@@ -68,20 +70,39 @@
 //!   baseline must match the live one. Assertion-count maps are read at a
 //!   resolved OID ([`runner::assertion_counts_at_ref`]).
 //!
-//! **Remaining (deferred to the follow-up issue), still not tamper-proof:**
+//! **Remaining (deferred to the follow-up issue), still not tamper-proof.**
+//! These share one root cause — cargo still reads repo-controlled configuration
+//! and the workspace layout — so they are grouped for a single `--config`/
+//! out-of-tree-invocation follow-up:
 //!
-//! - In-repo `.cargo/config.toml` / `rust-toolchain.toml` overrides
-//!   (`RUSTFLAGS`, aliases, lint levels) are **recorded as provenance**
-//!   ([`runner::rustc_version`]) but not fully neutralized — that needs
-//!   `--config`/out-of-tree invocation.
+//! - **In-repo `.cargo/config.toml` / `rust-toolchain.toml` / cargo aliases.**
+//!   `env_clear()` neutralizes inherited env, but cargo honours an in-repo
+//!   config regardless: a `test`/`clippy` alias can redirect the subcommand, a
+//!   `build.target-dir` can point both baseline and tip at one shared cache
+//!   (clippy on a warm cache re-emits **zero** warnings, defeating no-new-clippy
+//!   — `CARGO_INCREMENTAL=0` mitigates incremental skips but not a shared
+//!   target dir), and lint levels can be flipped. The toolchain is **recorded**
+//!   ([`runner::rustc_version`]); full neutralization is deferred.
+//! - **Empty / narrowed enumeration.** A `build-finished:true` run with **zero**
+//!   test binaries (a workspace-narrowing alias, `--exclude`, `harness = false`)
+//!   captures as an empty snapshot; if the same narrowing is present at the
+//!   fork, baseline and tip agree and the gate passes. The fix is to fingerprint
+//!   the enumerated `(package, target)` set into the baseline and require the
+//!   tip be a superset — deferred with the config work.
+//! - **Custom test harness (`harness = false`).** A hand-written `main()` can
+//!   print perfectly balanced forged libtest output; the announced-vs-parsed
+//!   reconcile cannot distinguish it from real libtest on stable. Locking down
+//!   `Cargo.toml` is part of the same follow-up.
+//! - **Doctests** (run by rustdoc, not a `compiler-artifact` binary) are not
+//!   captured/target-qualified — new failing doctests, or a test moved *into* a
+//!   doctest, are invisible. Capturing them needs a separate `--doc` pass (or
+//!   the nightly libtest JSON format).
 //! - Assertion density is still a **per-file, crude `assert*!` count**, not a
 //!   semantic per-`#[test]` (AST) measure; `assert!(true)` padding is not
 //!   detected.
 //! - File-scope is a lexical allow-list with no `forbidden-even-if-declared`
 //!   policy for validation-control files (`.cargo/config*`,
 //!   `rust-toolchain.toml`, build scripts, CI).
-//! - **Doctests** (run by rustdoc, not a `compiler-artifact` binary) are not
-//!   captured/target-qualified; that needs the nightly libtest JSON format.
 //! - Wall-clock timeouts / output caps / process-group termination for capture
 //!   subprocesses belong with the §9 circuit-breakers and are tracked there.
 //!

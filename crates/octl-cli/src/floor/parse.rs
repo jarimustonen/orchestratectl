@@ -319,6 +319,10 @@ pub struct LibtestSummary {
     pub failed: usize,
     /// Announced ignored count.
     pub ignored: usize,
+    /// Announced filtered-out count. The floor runs each binary directly with no
+    /// filter, so a non-zero value means a filter leaked in (env/config/wrapper)
+    /// and the capture is only a *subset* — reconciliation rejects it.
+    pub filtered_out: usize,
 }
 
 /// The parsed result of running **one** libtest binary: the per-test names by
@@ -398,6 +402,8 @@ fn parse_result_line(line: &str) -> Option<LibtestSummary> {
             "passed" => summary.passed = n,
             "failed" => summary.failed = n,
             "ignored" => summary.ignored = n,
+            // `filtered out` — the label after the count is `filtered`.
+            "filtered" => summary.filtered_out = n,
             _ => {}
         }
     }
@@ -425,6 +431,13 @@ pub enum LibtestDiscrepancy {
         /// `(passed, failed, ignored)` counted from the per-test lines.
         parsed: (usize, usize, usize),
     },
+    /// libtest reported a non-zero `filtered out` count — the run only observed
+    /// a subset of the binary's tests (a leaked filter), so it cannot be trusted
+    /// as the full picture.
+    Filtered {
+        /// How many tests were filtered out.
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for LibtestDiscrepancy {
@@ -439,6 +452,9 @@ impl std::fmt::Display for LibtestDiscrepancy {
                 "count mismatch: announced {}p/{}f/{}i, parsed {}p/{}f/{}i",
                 announced.passed, announced.failed, announced.ignored, parsed.0, parsed.1, parsed.2
             ),
+            LibtestDiscrepancy::Filtered { count } => {
+                write!(f, "{count} test(s) filtered out; capture is only a subset")
+            }
         }
     }
 }
@@ -455,6 +471,13 @@ pub fn reconcile_single_binary(
     match report.summaries.as_slice() {
         [] => Err(LibtestDiscrepancy::NoSummary),
         [summary] => {
+            // A leaked filter means we only saw a subset — reject before
+            // trusting the counts.
+            if summary.filtered_out > 0 {
+                return Err(LibtestDiscrepancy::Filtered {
+                    count: summary.filtered_out,
+                });
+            }
             let parsed = (
                 report.passed.len(),
                 report.failed.len(),
@@ -750,6 +773,24 @@ mod tests {
     }
 
     #[test]
+    fn real_cargo_reasons_including_build_script_parse_as_other() {
+        // Regression guard: a crate with a `build.rs` emits `build-script-executed`
+        // records. `#[serde(other)]` on the internally-tagged enum MUST accept
+        // them (as `Other`) — if it rejected them as unparseable, every
+        // build-script crate would fail closed. This is a real line from
+        // `cargo build --message-format=json`.
+        let stream = concat!(
+            r#"{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.186","linked_libs":[],"linked_paths":[],"cfgs":["freebsd12"],"env":[],"out_dir":"/x/out"}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+        );
+        let msgs = parse_cargo_stream(stream).expect("build-script-executed must not fail closed");
+        assert_eq!(msgs.len(), 2);
+        assert!(matches!(msgs[0], CargoMessage::Other));
+        assert_eq!(build_finished(&msgs), Some(true));
+    }
+
+    #[test]
     fn unparseable_line_fails_closed() {
         let stream = concat!(
             r#"{"reason":"build-finished","success":true}"#,
@@ -848,10 +889,28 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 announced: LibtestSummary {
                     passed: 1,
                     failed: 0,
-                    ignored: 0
+                    ignored: 0,
+                    filtered_out: 0,
                 },
                 parsed: (2, 0, 0),
             }
+        );
+    }
+
+    #[test]
+    fn filtered_out_run_fails_closed() {
+        // A leaked filter (`--skip`, an env/config filter) makes libtest run only
+        // a subset; the announced `filtered out` count is non-zero and the
+        // capture is rejected rather than trusted as the whole suite.
+        let out = "\
+running 1 test
+test kept::one ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out
+";
+        let report = parse_libtest_report(out);
+        assert_eq!(
+            reconcile_single_binary(&report).unwrap_err(),
+            LibtestDiscrepancy::Filtered { count: 5 }
         );
     }
 

@@ -12,9 +12,11 @@
 //! - **Fail-closed.** A capture that cannot prove complete compilation +
 //!   execution is a [`FloorError`], never a silently-empty snapshot that passes
 //!   gates vacuously: unparseable cargo JSON, a missing `build-finished`, an
-//!   `error`-level diagnostic, a libtest binary whose parsed counts disagree
-//!   with its announced summary, or an exit code inconsistent with that
-//!   summary all reject.
+//!   `error`-level diagnostic, a non-zero process exit *despite* a
+//!   `build-finished` record (JSON-injection-then-kill), a libtest binary whose
+//!   parsed counts disagree with its announced summary, a non-zero `filtered
+//!   out` count (a leaked filter → subset), or an exit code inconsistent with
+//!   that summary all reject.
 //! - **Execution isolation.** Capture subprocesses run under
 //!   [`isolated_command`] — `env_clear()` + a small allow-list — so an inherited
 //!   `RUSTFLAGS`/`RUSTDOCFLAGS`/`RUSTC_WRAPPER` cannot change the observed
@@ -57,11 +59,22 @@ const ENV_ALLOWLIST: &[&str] = &[
     "RUSTUP_TOOLCHAIN",
     "XDG_CACHE_HOME",
     "GIT_BIN",
+    // Dynamic-linker search paths, copied from the (trusted) parent env so a
+    // dynamically-linked test binary can still find its own dylibs; dropping
+    // them would fail-closed on a valid suite (a DoS), and they come from the
+    // orchestrator's env, not the repo under review.
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
 ];
 
 /// A [`Command`] for a capture subprocess with a cleared, allow-listed
 /// environment (see [`ENV_ALLOWLIST`]). `LC_ALL=C` stabilizes any message we
-/// must read; `CARGO_TERM_COLOR=never` keeps JSON clean of ANSI escapes.
+/// must read; `CARGO_TERM_COLOR=never` keeps JSON clean of ANSI escapes;
+/// `CARGO_INCREMENTAL=0` stops incremental compilation from skipping a fresh
+/// lint pass (a cached incremental unit can re-use a prior compile and NOT
+/// re-emit its warnings — see the shared-`target/` caching caveat in the module
+/// docs).
 fn isolated_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
@@ -72,6 +85,7 @@ fn isolated_command(program: &str) -> Command {
     }
     cmd.env("LC_ALL", "C");
     cmd.env("CARGO_TERM_COLOR", "never");
+    cmd.env("CARGO_INCREMENTAL", "0");
     cmd
 }
 
@@ -176,7 +190,7 @@ pub fn run_checks(checks: &[plan::Check], cwd: &Path) -> Vec<CheckRun> {
 /// captured here; qualifying them needs the nightly libtest JSON format and is
 /// deferred to the follow-up issue.
 pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot, FloorError> {
-    let enumerate_cmd = format!("{test_cmd} --no-run --message-format=json");
+    let enumerate_cmd = inject_cargo_flags(test_cmd, &["--no-run", "--message-format=json"]);
     let out = isolated_command("sh")
         .arg("-c")
         .arg(&enumerate_cmd)
@@ -221,6 +235,21 @@ pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot,
                 ),
             });
         }
+    }
+
+    // Even with a `build-finished:true` record, the process itself must have
+    // exited 0. A proc-macro/build script can inject `{"reason":"build-finished",
+    // "success":true}` on stdout and then SIGKILL cargo — the JSON would look
+    // complete while the build was actually truncated. A real `cargo test
+    // --no-run` that compiles cleanly exits 0, so this closes that hole.
+    if !out.status.success() {
+        return Err(FloorError::Capture {
+            what: "tests",
+            message: format!(
+                "`{enumerate_cmd}` exited {:?} despite a build-finished record (killed/truncated?); failing closed",
+                out.status.code()
+            ),
+        });
     }
 
     let binaries = parse::test_binaries(&messages);
@@ -294,17 +323,18 @@ fn run_one_test_binary(
 }
 
 /// Capture a structured [`ClippySnapshot`] from `cargo clippy`
-/// `--message-format=json` (any `--message-format=…` already in `clippy_cmd` is
-/// replaced with `json`). Warnings are read from the JSON records keyed by lint
-/// code — a `println!`/`build.rs` cannot fabricate one.
+/// `--message-format=json`. Warnings are read from the JSON records keyed by
+/// lint code — a `println!`/`build.rs` cannot fabricate one.
 ///
-/// Fail-closed: the stream must parse and carry a terminal `build-finished`, and
-/// must be free of `error`-level diagnostics (a build that does not compile
-/// cannot yield a trustworthy empty warning set). A `build-finished:false` with
-/// no compile error is the normal `-D warnings` case and is fine — the warnings
-/// are still collected.
+/// Fail-closed: the stream must parse, carry a terminal `build-finished`, be
+/// free of `error`-level diagnostics, and the process must have exited 0. A
+/// clippy run over compilable code exits 0 and emits its warnings at
+/// `level: "warning"`; a diagnostic promoted to `error` (a real compile error,
+/// or a `deny`-level lint from `[lints]`/`#![deny]`/`-D`) means the code is not
+/// in a clean, gateable state, so the capture is rejected rather than trusting a
+/// partial warning set.
 pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySnapshot, FloorError> {
-    let cmd = force_json_message_format(clippy_cmd);
+    let cmd = inject_cargo_flags(clippy_cmd, &["--message-format=json"]);
     let out = isolated_command("sh")
         .arg("-c")
         .arg(&cmd)
@@ -324,7 +354,8 @@ pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySna
     if parse::has_compile_error(&messages) {
         return Err(FloorError::Capture {
             what: "clippy",
-            message: "clippy reported a compile error; refusing a partial warning set".into(),
+            message: "clippy reported an error-level diagnostic; refusing a partial warning set"
+                .into(),
         });
     }
     if parse::build_finished(&messages).is_none() {
@@ -336,21 +367,49 @@ pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySna
             ),
         });
     }
+    // A clean clippy run over compilable code exits 0; a non-zero exit alongside
+    // a `build-finished` record means the process was killed after injecting the
+    // record, or the build genuinely failed — either way, fail closed.
+    if !out.status.success() {
+        return Err(FloorError::Capture {
+            what: "clippy",
+            message: format!(
+                "`{cmd}` exited {:?} despite a build-finished record (killed/failed?); failing closed",
+                out.status.code()
+            ),
+        });
+    }
 
     Ok(ClippySnapshot {
         warnings: parse::clippy_warnings(&messages),
     })
 }
 
-/// Rewrite a `cargo clippy` command so its message format is JSON: drop any
-/// existing `--message-format=<x>` / `--message-format <x>` token(s) and append
-/// `--message-format=json`. Token-based so it never mangles unrelated args.
-fn force_json_message_format(cmd: &str) -> String {
-    let mut kept: Vec<&str> = Vec::new();
+/// Rewrite a cargo command to carry the floor's required `flags`, robust to a
+/// `--` argument separator: any existing `--message-format[=x]` token is dropped
+/// (the floor always forces its own), and the injected flags are inserted
+/// **before** the first `--` (or appended if none). Blindly appending would put
+/// the flags after `--`, where cargo passes them to the *test binary* instead of
+/// to cargo — breaking `--no-run` and crashing the harness on an unknown flag.
+/// Token-based on whitespace: a base command with quoted, space-containing args
+/// is out of contract (the floor's own commands never have them).
+fn inject_cargo_flags(cmd: &str, flags: &[&str]) -> String {
+    let mut before: Vec<&str> = Vec::new();
+    let mut after: Vec<&str> = Vec::new();
+    let mut past_sep = false;
     let mut skip_next = false;
     for tok in cmd.split_whitespace() {
+        if past_sep {
+            after.push(tok);
+            continue;
+        }
         if skip_next {
             skip_next = false;
+            continue;
+        }
+        if tok == "--" {
+            past_sep = true;
+            after.push(tok);
             continue;
         }
         if tok == "--message-format" {
@@ -360,10 +419,11 @@ fn force_json_message_format(cmd: &str) -> String {
         if tok.starts_with("--message-format=") {
             continue;
         }
-        kept.push(tok);
+        before.push(tok);
     }
-    kept.push("--message-format=json");
-    kept.join(" ")
+    before.extend_from_slice(flags);
+    before.extend(after);
+    before.join(" ")
 }
 
 /// Concatenate two captured byte streams for line parsing, guaranteeing a
@@ -495,18 +555,43 @@ mod tests {
     }
 
     #[test]
-    fn force_json_message_format_replaces_existing() {
+    fn inject_cargo_flags_replaces_message_format() {
         assert_eq!(
-            force_json_message_format("cargo clippy --message-format=short"),
+            inject_cargo_flags(
+                "cargo clippy --message-format=short",
+                &["--message-format=json"]
+            ),
             "cargo clippy --message-format=json"
         );
         assert_eq!(
-            force_json_message_format("cargo clippy --message-format short --workspace"),
+            inject_cargo_flags(
+                "cargo clippy --message-format short --workspace",
+                &["--message-format=json"]
+            ),
             "cargo clippy --workspace --message-format=json"
         );
         assert_eq!(
-            force_json_message_format("cargo clippy"),
+            inject_cargo_flags("cargo clippy", &["--message-format=json"]),
             "cargo clippy --message-format=json"
+        );
+    }
+
+    #[test]
+    fn inject_cargo_flags_inserts_before_the_arg_separator() {
+        // Flags meant for cargo must land BEFORE `--`; everything after `--`
+        // belongs to the test binary. A naive append would break `--no-run`.
+        assert_eq!(
+            inject_cargo_flags(
+                "cargo test --workspace -- --ignored",
+                &["--no-run", "--message-format=json"]
+            ),
+            "cargo test --workspace --no-run --message-format=json -- --ignored"
+        );
+        // An existing --message-format after `--` (a driver flag) is left alone;
+        // only cargo-side ones are stripped.
+        assert_eq!(
+            inject_cargo_flags("cargo test -- --nocapture", &["--message-format=json"]),
+            "cargo test --message-format=json -- --nocapture"
         );
     }
 
@@ -550,7 +635,7 @@ mod tests {
             &format!("#!/bin/sh\nprintf '%s' '{json}'\nexit 101\n"),
         );
         let err = capture_clippy_snapshot(&script, dir.path()).unwrap_err();
-        assert!(format!("{err}").contains("compile error"), "{err}");
+        assert!(format!("{err}").contains("error-level diagnostic"), "{err}");
     }
 
     #[test]
@@ -615,6 +700,21 @@ mod tests {
         );
         let err = capture_test_snapshot(&cargo, dir.path()).unwrap_err();
         assert!(format!("{err}").contains("untrustworthy"), "{err}");
+    }
+
+    #[test]
+    fn test_capture_fails_closed_on_injected_build_finished_then_nonzero_exit() {
+        // Adversary injects a valid `build-finished:true` on stdout but the
+        // process is killed / exits non-zero (a truncated build masquerading as
+        // complete). The JSON looks fine, but the exit-status guard rejects it.
+        let dir = TempDir::new().unwrap();
+        let cargo = write_script(
+            dir.path(),
+            "fakecargo",
+            "#!/bin/sh\nprintf '%s\\n' '{\"reason\":\"build-finished\",\"success\":true}'\nexit 137\n",
+        );
+        let err = capture_test_snapshot(&cargo, dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("killed/truncated"), "{err}");
     }
 
     #[test]
