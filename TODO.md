@@ -53,13 +53,15 @@ Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, high)   ← start here on resume
+GLOBAL HEAD-OF-LINE: agent-skips-run-merge-idle-pending (Lane A, high, concrete)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
-    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; stepped past for a cleaner repro-able high)
-  ▶ interactive-code-run-self-merged [wip]          (high; concrete repro — interactive run self-merged past the review gate)
-    agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer)
+    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
+  ▶ agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer; concrete)
+    watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
+    code-run-inject-no-selfmerge                    (follow-up of interactive-code — code-inject the no-self-merge rule)
+    interactive-merge-audit-marker                  (follow-up of interactive-code — audit marker for human-confirmed merge)
     child-supervisor-spawn-exhaustion-lifecycle
     run-create-back-to-back-no-supervisor
     reattach-does-not-bootstrap-crashed-at-creation-run
@@ -71,7 +73,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ floor-capture-trust-model [wip]          (high; floor/, disjoint from A)
+  ▶ floor-capture-hardening-round-2          (high; floor/, 5 residual bypasses from floor-capture-trust-model; disjoint from A)
     pipeline-fix-loop-provenance
     pipeline-parallel-chunks                 (DAG scheduler)
     pipeline-hardening
@@ -85,7 +87,7 @@ LANE C — workmux vendoring (fully independent)
     workmux-extract-libs   after vendor-workmux-multiplexer (needs vendored tree)
 
 LANE D — workflow/skill (skill prose, not product code)
-    (empty — stint-maintains-execution-dag landed 2026-07-27)
+  ▶ triage-bugs-stint-inprogress-ownership-conflict   (stint/triage-bugs lifecycle-ownership fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ idempotency-key-allowed-duplicate-run
@@ -109,6 +111,11 @@ issue-derived DAG convention (slug identity, `collision:` tags, `[wip]` from iss
 (fixed) + `stint-maintains-execution-dag` (done); closed the stale-status
 `agent-died-merge-no-teardown-interactive` (git-verified landed, issuectl never closed)
 and dropped it; cleared dead `[wip]` tags (no live worktrees).
+**Reconciled again 2026-07-28:** dropped landed `interactive-code-run-self-merged` (fixed)
++ `floor-capture-trust-model` (done); inserted follow-ups filed by those workers —
+`floor-capture-hardening-round-2` (Lane B head), `code-run-inject-no-selfmerge` +
+`interactive-merge-audit-marker` + `watchdog-pane-aware-liveness` (Lane A),
+`triage-bugs-stint-inprogress-ownership-conflict` (Lane D head).
 
 ### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
