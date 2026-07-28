@@ -82,11 +82,15 @@
 //! - **Enumeration integrity (round 2, F7).** Each capture records the enumerated
 //!   `(package, target_kind, target)` test-target set
 //!   ([`snapshot::TestSnapshot::targets`]); [`gate_enumeration_superset`] fails
-//!   closed unless the tip's set is a **superset** of the baseline's. A narrowed
-//!   or empty test-binary set (a workspace-narrowing alias, `--exclude`,
-//!   `harness = false`, or a build that produced fewer harnesses) can no longer
-//!   capture a smaller snapshot that passes vacuously — the vanished harness's
-//!   tests would otherwise be invisible to every other gate.
+//!   closed unless the tip's set is a **superset** of the baseline's. A narrowing
+//!   *introduced by the feature* — a workspace-narrowing alias, `--exclude`,
+//!   `harness = false`, or a build that produced fewer harnesses than the fork —
+//!   drops a baseline target and fails closed, where the vanished harness's tests
+//!   would otherwise be invisible to every other gate. **This is baseline-relative**:
+//!   it cannot detect a narrowing that *predates the fork* (a baseline whose target
+//!   set is already empty/narrowed passes vacuously, since there is nothing to
+//!   shrink from). Detecting a compromised/empty baseline needs an independent
+//!   expected-target manifest (`cargo metadata`) — deferred to the spin-off.
 //! - **Cross-component provenance (round 2, item 5 / F10).** The plan baseline
 //!   carries `commit_oid` + `toolchain` + the enumerated-targets hash alongside
 //!   the two content hashes, and [`snapshot::BaselineSnapshot::verify_plan_baseline`]
@@ -99,11 +103,18 @@
 //! - **Residual repo-controlled config.** The `build.target-dir` vector is closed
 //!   (above), but cargo still honours other in-repo config: an `[alias]` that
 //!   redirects the external `clippy` subcommand to a benign zero-warning command
-//!   (the `test` subcommand is built-in and cannot be aliased), config
-//!   `rustflags` / lint-level flips, and a consistently-weakening
-//!   `rust-toolchain.toml` (the recorded toolchain catches baseline-vs-tip drift,
-//!   not an evil-but-consistent pin). Full neutralization wants a `--config`-lock
-//!   or out-of-tree invocation.
+//!   (the `test` subcommand is built-in and cannot be aliased), an
+//!   `[env] CARGO_TARGET_DIR = { value = "…", force = true }` that could re-point
+//!   the cache **iff** the `--target-dir` CLI flag were absent (it is always
+//!   emitted for a shell-safe temp path, which the system temp dir is; the flag
+//!   is cargo's highest-precedence target-dir mechanism and beats `[env]`),
+//!   `build.rustc` / `build.rustc-wrapper` (a compiler wrapper that suppresses
+//!   diagnostics), config `rustflags` / lint-level flips, and a
+//!   consistently-weakening `rust-toolchain.toml` (the recorded toolchain catches
+//!   baseline-vs-tip drift, not an evil-but-consistent pin). The robust fix is to
+//!   stop composing a repo-influenced shell command for floor-owned captures and
+//!   invoke a supervisor-resolved cargo directly (argv, not `sh -c`) against a
+//!   sanitized config — deferred to the spin-off.
 //! - **Custom test harness (`harness = false`).** A hand-written `main()` on a
 //!   *test-producing* target can print perfectly balanced forged libtest output;
 //!   the announced-vs-parsed reconcile cannot distinguish it from real libtest on

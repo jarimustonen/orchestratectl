@@ -1935,14 +1935,15 @@ fn capture_snapshot_allocates_a_fresh_target_dir_per_call() {
     let dirs: Vec<&str> = recorded.lines().collect();
     // Two captures × (test + clippy) = 4 lines.
     assert_eq!(dirs.len(), 4, "each capture runs test + clippy: {recorded}");
-    // Within one capture_snapshot, test and clippy share the dir…
-    assert_eq!(dirs[0], dirs[1], "test + clippy share the per-snapshot dir");
-    assert_eq!(dirs[2], dirs[3]);
-    // …but across the two calls the dirs differ (no cross-ref cache sharing).
-    assert_ne!(
-        dirs[0], dirs[2],
-        "baseline and tip captures shared a target dir"
+    // All four dirs are distinct: test and clippy get separate dirs within a
+    // snapshot (clippy can't reuse the test build's warm artifacts), and the two
+    // capture_snapshot calls never share (no cross-ref cache sharing).
+    let unique: std::collections::BTreeSet<&str> = dirs.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        4,
+        "every capture must get its own target dir: {recorded}"
     );
     // And each is non-empty (the floor really pinned one).
-    assert!(!dirs[0].is_empty() && !dirs[2].is_empty());
+    assert!(dirs.iter().all(|d| !d.is_empty()));
 }

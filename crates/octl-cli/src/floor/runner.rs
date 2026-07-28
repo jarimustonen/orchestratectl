@@ -491,13 +491,18 @@ fn inject_cargo_flags(cmd: &str, flags: &[&str]) -> String {
             after.push(tok);
             continue;
         }
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
+        // The `--` separator is checked BEFORE `skip_next`: a base command with a
+        // dangling value-flag right before `--` (e.g. `… --target-dir -- --nocapture`)
+        // must still terminate cargo's args at `--`, not swallow the separator as
+        // the flag's "value" — otherwise the test-binary args leak into cargo's
+        // argument list and the whole invocation is mangled.
         if tok == "--" {
             past_sep = true;
             after.push(tok);
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
             continue;
         }
         if DROP_WITH_VALUE.contains(&tok) {
@@ -932,6 +937,21 @@ printf '%s\n' '{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target"
                 &["--target-dir", "/floor/pinned"]
             ),
             "cargo test --target-dir /floor/pinned -- --nocapture"
+        );
+    }
+
+    #[test]
+    fn inject_cargo_flags_keeps_separator_after_dangling_value_flag() {
+        // A dangling value-flag immediately before `--` must not swallow the
+        // separator: `--target-dir` has no value, `--` still terminates cargo's
+        // args, and `--nocapture` stays a test-binary arg (after `--`). Regression
+        // guard for the skip_next-vs-`--` ordering.
+        assert_eq!(
+            inject_cargo_flags(
+                "cargo test --target-dir -- --nocapture",
+                &["--message-format=json"]
+            ),
+            "cargo test --message-format=json -- --nocapture"
         );
     }
 

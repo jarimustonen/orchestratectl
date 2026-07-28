@@ -307,6 +307,19 @@ fn default_baseline_schema_version() -> u32 {
 /// spec-node committed — returned by [`BaselineSnapshot::verify_plan_baseline`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BaselineMismatch {
+    /// A provenance component (`commit_oid` / `toolchain` /
+    /// `enumerated_targets_hash`) is empty on the plan or the live snapshot — the
+    /// baseline carries no provenance to bind to, so the floor fails closed rather
+    /// than treating "no evidence" as "a match" (`floor-capture-hardening-round-2`
+    /// item 5). A pre-round-2 plan with no provenance is rejected here and must be
+    /// recaptured; the security gate never certifies a baseline it cannot prove
+    /// the provenance of.
+    MissingProvenance {
+        /// Which provenance field was empty.
+        field: &'static str,
+        /// `"plan"` or `"live"` — which side lacked it.
+        side: &'static str,
+    },
     /// The plan's baseline ref does not match the live snapshot's ref.
     Ref {
         /// Ref recorded in the plan.
@@ -345,6 +358,9 @@ pub enum BaselineMismatch {
 impl fmt::Display for BaselineMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BaselineMismatch::MissingProvenance { field, side } => {
+                write!(f, "baseline provenance field {field:?} is empty on the {side} side; failing closed")
+            }
             BaselineMismatch::Ref { plan, live } => {
                 write!(f, "baseline ref mismatch: plan={plan:?} live={live:?}")
             }
@@ -431,8 +447,37 @@ impl BaselineSnapshot {
     /// `commit_oid` is checked in addition to the mutable `ref`, so a force-push
     /// to the ref cannot re-point what "baseline" means.
     ///
+    /// **Missing provenance fails closed.** An empty `commit_oid` / `toolchain` on
+    /// either side is rejected as [`BaselineMismatch::MissingProvenance`], never
+    /// treated as "a match". A pre-round-2 plan that carries no provenance is
+    /// therefore rejected (recapture required) rather than silently certified — a
+    /// security gate does not accept "no evidence" as proof. (The live side is
+    /// always populated by the supervisor's [`BaselineSnapshot::new`]; the guard
+    /// exists so a hand-crafted all-empty plan cannot slip through.)
+    ///
     /// [`to_plan_baseline`]: BaselineSnapshot::to_plan_baseline
     pub fn verify_plan_baseline(&self, plan: &plan::Baseline) -> Result<(), BaselineMismatch> {
+        // Fail closed on absent provenance before comparing — "unknown" is never a
+        // pass. `enumerated_targets_hash` is a hash of a (possibly empty) set, so
+        // it is never empty on a real capture; the content-hash comparison below
+        // covers it.
+        for (field, plan_val, live_val) in [
+            ("commit_oid", &plan.commit_oid, &self.commit_oid),
+            ("toolchain", &plan.toolchain, &self.toolchain),
+        ] {
+            if plan_val.is_empty() {
+                return Err(BaselineMismatch::MissingProvenance {
+                    field,
+                    side: "plan",
+                });
+            }
+            if live_val.is_empty() {
+                return Err(BaselineMismatch::MissingProvenance {
+                    field,
+                    side: "live",
+                });
+            }
+        }
         if plan.r#ref != self.r#ref {
             return Err(BaselineMismatch::Ref {
                 plan: plan.r#ref.clone(),
@@ -686,6 +731,36 @@ mod tests {
         assert!(matches!(
             base.verify_plan_baseline(&bad_tc),
             Err(BaselineMismatch::Toolchain { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_plan_baseline_fails_closed_on_missing_provenance() {
+        // A security gate never treats "no provenance" as a match. A pre-round-2
+        // plan (empty commit_oid/toolchain) is rejected against a populated live
+        // snapshot, and an all-empty live snapshot cannot rubber-stamp such a plan
+        // either.
+        let live = BaselineSnapshot::new(
+            "feat/x@fork",
+            "deadbeef",
+            "rustc 1.97.1",
+            RunSnapshot::default(),
+        );
+        let mut legacy = live.to_plan_baseline();
+        legacy.commit_oid = String::new();
+        legacy.toolchain = String::new();
+        assert_eq!(
+            live.verify_plan_baseline(&legacy),
+            Err(BaselineMismatch::MissingProvenance {
+                field: "commit_oid",
+                side: "plan"
+            })
+        );
+        // Even if BOTH sides are empty, it fails closed (no vacuous all-empty pass).
+        let empty_live = BaselineSnapshot::new("feat/x@fork", "", "", RunSnapshot::default());
+        assert!(matches!(
+            empty_live.verify_plan_baseline(&empty_live.to_plan_baseline()),
+            Err(BaselineMismatch::MissingProvenance { .. })
         ));
     }
 

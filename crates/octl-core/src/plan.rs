@@ -200,9 +200,11 @@ pub struct Feature {
 /// baseline captured at a different commit, under a different toolchain, or over
 /// a narrowed target set than the one the supervisor gates against. All three
 /// are additive-optional (`#[serde(default)]`) so an older plan without them
-/// still deserializes; the evaluator enforces equality on whatever the live
-/// snapshot projects (an empty field on both sides is still a match, which is the
-/// pre-provenance behaviour until the supervisor starts populating them).
+/// still *deserializes*, but the evaluator (`verify_plan_baseline`) **fails
+/// closed** on an empty `commit_oid` / `toolchain`: a plan that carries no
+/// provenance is rejected and must be recaptured, never silently certified. The
+/// serde defaults are for wire compatibility, not for weakening the gate — a
+/// security oracle does not treat "no evidence" as a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
     /// Git ref the snapshot was taken at (e.g. `feat/<slug>@fork`) — mutable,
