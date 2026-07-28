@@ -3,11 +3,14 @@ created: 2026-07-25
 updated: 2026-07-28
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: high
 commits:
 - hash: 8002b9b
   summary: gate interactive run merge behind --confirm-interactive
+- hash: 280a84b
+  summary: apply /llm-review findings (narrow to Kind::Code, dry-run exempt, hide flag, honest tripwire framing)
+closed: 2026-07-28
 ---
 
 # Interactive 'code' run self-merged to done without user's /worktree-merge
