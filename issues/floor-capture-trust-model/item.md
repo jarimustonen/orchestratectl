@@ -2,13 +2,14 @@
 created: 2026-07-22
 updated: 2026-07-28
 type: task
-status: in-progress
+status: done
 priority: high
 epic: code-pipeline
 related: ['@deterministic-floor', '@plan-check-run-contract']
 commits:
 - hash: 66eb5332f0322bbbc42e30eb97c8e0cb98a0c6b9
   summary: injection-resistant provenance-bound floor capture
+closed: 2026-07-28
 ---
 
 # Floor capture trust-model: injection-resistant, provenance-bound evidence for the deterministic floor
