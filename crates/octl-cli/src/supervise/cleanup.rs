@@ -881,20 +881,25 @@ fn agent_log_mtime(paths: &RunPaths) -> Option<i64> {
 /// git error or a still-fresh activity clock yields `None` (leave the live node
 /// alone), so the verdict is conservative on uncertainty.
 ///
-/// Conditions, in cheapest-git-first order:
-/// 1. **Cleanly-recoverable unmerged work** — [`node_recoverability`] returns
-///    `Some` with `recoverable()` true (≥1 commit ahead of source AND it merges
-///    without conflict). A branch level-with-source, or one whose commits conflict,
-///    is not this case.
-/// 2. **Clean worktree** — no uncommitted work ([`worktree_is_clean`]). A dirty
-///    tree means the agent is mid-edit, not done; never terminalize that.
-/// 3. **Quiet past the threshold** — `now - max(tip_commit_time, agent_log_mtime)
+/// Conditions, ordered cheapest-first so the common case (a healthy, still-active
+/// agent) bails after the two cheapest probes — this runs every `WATCHDOG_TICK`
+/// (≈1s) for every live autonomous node, so the expensive merge probe must NOT
+/// run on every tick of an agent's whole lifetime:
+/// 1. **Quiet past the threshold** — `now - max(tip_commit_time, agent_log_mtime)
 ///    ≥ idle_threshold_secs`. Taking the MAX of the two clocks means the net fires
 ///    only when BOTH the branch tip has stopped advancing AND the pane has stopped
 ///    emitting output for the whole window: a long-running agent that is still
 ///    committing OR still printing is never tripped (the guard the issue demands
 ///    against 54–96 min heavy-LLM units). If NEITHER clock is available (no commit
 ///    time readable and no `agent.log`), `last_activity` is unknown and we decline.
+///    Cheap: one `git log -1` plus one `stat`.
+/// 2. **Clean worktree** — no uncommitted work ([`worktree_is_clean`]). A dirty
+///    tree means the agent is mid-edit, not done; never terminalize that.
+/// 3. **Cleanly-recoverable unmerged work** — [`node_recoverability`] returns
+///    `Some` with `recoverable()` true (≥1 commit ahead of source AND it merges
+///    without conflict). A branch level-with-source, or one whose commits conflict,
+///    is not this case. This is the expensive probe (`rev-list` + `merge-tree`),
+///    deliberately LAST so it only runs once an agent has actually gone quiet.
 ///
 /// The caller is responsible for the lifecycle gate (autonomous only; interactive
 /// `code`/`orchestrate` are exempt) and the liveness gate (Alive only — a DEAD
@@ -907,17 +912,10 @@ pub fn node_idle_unmerged(
     now_unix: i64,
     idle_threshold_secs: i64,
 ) -> Option<IdleUnmerged> {
-    // (1) Must have cleanly-mergeable unmerged commits to be worth salvaging.
-    let recoverability = node_recoverability(paths, n, git)?;
-    if !recoverability.recoverable() {
-        return None;
-    }
-    // (2) A clean worktree — a dirty tree is a mid-edit agent, not a done one.
-    if !worktree_is_clean(n.worktree_path.as_deref(), git) {
-        return None;
-    }
-    // (3) Both activity clocks quiet past the threshold. Resolve repo/branch the
-    // same way `node_recoverability` did (it already proved they are present).
+    // (1) Both activity clocks quiet past the threshold. Cheapest probe first
+    // (one `git log` + one `stat`), so a still-active agent bails here without
+    // paying for the merge probe below on every one of its ~1s ticks. Resolve
+    // repo/branch the same way `node_recoverability` will below.
     let branch = n.branch.as_deref().filter(|s| !s.is_empty())?;
     let manifest = read_manifest_opt(paths).ok().flatten()?;
     let repo = manifest
@@ -931,6 +929,18 @@ pub fn node_idle_unmerged(
     let last_activity = tip.into_iter().chain(log_mtime).max()?;
     let idle_secs = now_unix.saturating_sub(last_activity);
     if idle_secs < idle_threshold_secs {
+        return None;
+    }
+    // (2) A clean worktree — a dirty tree is a mid-edit agent, not a done one.
+    if !worktree_is_clean(n.worktree_path.as_deref(), git) {
+        return None;
+    }
+    // (3) Must have cleanly-mergeable unmerged commits to be worth salvaging.
+    // Expensive (`rev-list` + `merge-tree`) — reached only after the node has
+    // been confirmed quiet AND clean, so it runs at most once per idle node
+    // rather than every tick of a healthy agent.
+    let recoverability = node_recoverability(paths, n, git)?;
+    if !recoverability.recoverable() {
         return None;
     }
     Some(IdleUnmerged {
