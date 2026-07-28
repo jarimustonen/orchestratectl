@@ -85,6 +85,14 @@ pub struct Args<'a> {
     /// that merges. When absent, a minimal `{success, summary, via}` report
     /// is submitted (enough for a simple spinoff).
     pub report_file: Option<PathBuf>,
+    /// Human confirmation that an INTERACTIVE (`code`) run may be merged.
+    /// Interactive runs are human-reviewed: only the reviewer merges them
+    /// (via `/worktree-merge`), never the coding agent. There is no
+    /// process-level way to tell the agent's `run merge` from the human's —
+    /// both run inside the same claude session — so intent is carried
+    /// explicitly here (issue `interactive-code-run-self-merged`). Ignored
+    /// for autonomous kinds, which self-merge.
+    pub confirm_interactive: bool,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
     pub warnings: &'a [String],
@@ -180,6 +188,38 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         )
         .with_invalid_value(node_id.as_str())
     })?;
+
+    // Interactive-run merge gate (issue `interactive-code-run-self-merged`).
+    //
+    // An interactive (`code`) run exists precisely for the human review gate:
+    // the agent works autonomously up to `/wrap-up`, then STOPS and idles while
+    // the human reviews, and the human — not the agent — lands the branch via
+    // `/worktree-merge`. A real bug had an interactive run reach `done` and merge
+    // its 5 commits to `main` with no human `/worktree-merge` and no review pause,
+    // because the agent ran `run merge` on itself as its natural end-of-work step
+    // (the report carried the same `via: "explicit-merge"` stamp the human's merge
+    // produces — the supervisor/reducer cannot tell them apart, and neither can
+    // this verb by process identity: agent and human share one claude session).
+    //
+    // So the human's intent is carried explicitly: `/worktree-merge` passes
+    // `--confirm-interactive`; a bare `run merge` (the agent's natural step) is
+    // refused. The gate is scoped to interactive lifecycle only — autonomous kinds
+    // (spinoff/research/…) self-merge as before and never see this. The refusal is
+    // worded to steer a coding agent to STOP, not to hand it a flag to bypass its
+    // own review gate.
+    if manifest.lifecycle == octl_core::Lifecycle::Interactive && !args.confirm_interactive {
+        return Err(CliError::user(
+            "interactive_merge_requires_confirmation",
+            format!(
+                "run {run_id} is an interactive ({}) run — its branch is merged by the human \
+                 reviewer with `/worktree-merge` after review, not by the agent. If you are the \
+                 coding agent: STOP — do not merge your own interactive run. Finish with \
+                 `/wrap-up` and idle; the human owns the merge.",
+                manifest.kind.wire_name()
+            ),
+        )
+        .with_invalid_value(&run_id));
+    }
 
     // Resolve the merge target: explicit `--source` wins, else the
     // manifest's source_branch (the integration branch for an orchestrated

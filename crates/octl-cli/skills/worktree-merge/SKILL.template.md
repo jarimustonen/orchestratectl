@@ -109,11 +109,20 @@ JSON
 
 ```bash
 orchestratectl run merge "$run_id" \
+  --confirm-interactive \
   [--source <branch>] \
   [--report-file /tmp/node-report-${run_id}.json]
 ```
 
 Flag rules:
+
+- `--confirm-interactive` — **always pass it in this skill.** An interactive
+  (`code`) run is human-reviewed: `run merge` refuses to land it without this
+  flag, because a bare `run merge` is how the coding agent would self-merge and
+  skip the review gate (issue `interactive-code-run-self-merged`). `/worktree-merge`
+  is the human's sanctioned merge path, so it carries the confirmation. For an
+  autonomous kind (spinoff/research/…) the flag is a harmless no-op — the gate is
+  scoped to interactive lifecycle — so passing it unconditionally is always safe.
 
 - `--source <branch>` — the merge target. Omit it and `run merge` uses the
   run's recorded `source_branch` (the branch the worktree was spawned
@@ -193,6 +202,12 @@ Likely codes:
   `report_file_too_large` — the `--report-file` payload is malformed.
   This is caught BEFORE the merge runs, so nothing happened — fix the file
   and re-run.
+- `interactive_merge_requires_confirmation` — the run is an interactive
+  (`code`) run and the merge did not carry `--confirm-interactive`. Add the
+  flag (step 3 shows it) and re-run. If you are the CODING AGENT inside a
+  `/worktree-code` worktree, this is a STOP signal, not a flag to add: an
+  interactive run is landed by the human reviewer, not by you — finish with
+  `/wrap-up` and idle.
 
 ## Following up
 

@@ -88,9 +88,25 @@ re-ask the user about the original brief. The prompt should include:
    now" rows, decides autonomously whether a second review round is
    needed, and finally runs `/wrap-up` (which IS user-interactive — it
    waits for the user to confirm before saving session context). After
-   `/wrap-up`, the user runs `/worktree-merge` themselves. That single
-   command merges the branch, submits the terminal `node report`, and
-   tears the worktree down — see "Closing out" below.
+   `/wrap-up`, the agent **STOPS and idles** — it does NOT merge.
+   The **user** runs `/worktree-merge` themselves. That single command
+   merges the branch, submits the terminal `node report`, and tears the
+   worktree down — see "Closing out" below.
+
+   **The brief MUST forbid self-merge.** An interactive run's whole reason
+   to exist is the human review gate before the branch lands, so the agent
+   must never merge itself. Put an explicit, prominent prohibition in the
+   brief you build — e.g.:
+
+   > This is an INTERACTIVE worktree. Do NOT run `orchestratectl run merge`,
+   > `/worktree-merge`, or otherwise merge/land this branch yourself. After
+   > `/wrap-up`, STOP and idle — the human reviews your work and runs the
+   > merge. Self-merging silently breaks the review gate.
+
+   This is load-bearing: `run merge` on a `code` run is refused unless it
+   carries `--confirm-interactive` (which only `/worktree-merge` supplies),
+   but the brief must still tell the agent not to try — a self-merge attempt
+   should never happen, not merely fail (issue `interactive-code-run-self-merged`).
 
 For long or special-character-heavy prompts, write them to a temp file
 (`mktemp -t worktree-code-prompt-XXXXXX.md`) and pass `--prompt-file
@@ -198,7 +214,14 @@ Crucially this fires **only when the human runs the merge** — never
 mid-session. At spawn time the user owns the review window; the explicit
 `/worktree-merge` is the signal that it may close. So do NOT submit a
 terminal `node report` during the agent's working session (it would try
-to close the window the user is still in).
+to close the window the user is still in), and the coding agent must NOT
+run `orchestratectl run merge` / `/worktree-merge` on itself. `run merge`
+enforces this: on a `code` (interactive) run it refuses with
+`interactive_merge_requires_confirmation` unless `--confirm-interactive` is
+passed — and only `/worktree-merge` (the human's path) passes it. A prior
+bug had a `code` run self-merge to `done` and tear its worktree down with
+no human review (`interactive-code-run-self-merged`); the guard + the brief
+prohibition in step 2 close that.
 
 If the work produced decisions worth recording, follow-up work worth
 spawning, or wrap-up advice, write a §7.3 payload to a temp file and the
