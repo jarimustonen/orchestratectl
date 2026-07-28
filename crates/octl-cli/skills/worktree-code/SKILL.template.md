@@ -93,20 +93,26 @@ re-ask the user about the original brief. The prompt should include:
    merges the branch, submits the terminal `node report`, and tears the
    worktree down — see "Closing out" below.
 
-   **The brief MUST forbid self-merge.** An interactive run's whole reason
-   to exist is the human review gate before the branch lands, so the agent
-   must never merge itself. Put an explicit, prominent prohibition in the
-   brief you build — e.g.:
+   **The brief MUST forbid self-merge — this prohibition is the actual
+   safeguard.** An interactive run's whole reason to exist is the human
+   review gate before the branch lands, so the agent must never land it
+   itself. Put an explicit, prominent prohibition in the brief you build —
+   e.g.:
 
-   > This is an INTERACTIVE worktree. Do NOT run `orchestratectl run merge`,
-   > `/worktree-merge`, or otherwise merge/land this branch yourself. After
-   > `/wrap-up`, STOP and idle — the human reviews your work and runs the
-   > merge. Self-merging silently breaks the review gate.
+   > This is an INTERACTIVE worktree. Do NOT land this branch yourself by ANY
+   > means: no `orchestratectl run merge`, no `/worktree-merge`, no `workmux
+   > merge`, no direct git merge/rebase/push into the source branch, no
+   > terminal `node report`. After `/wrap-up`, STOP and idle — the human
+   > reviews your work and runs the merge. Self-merging silently breaks the
+   > review gate.
 
-   This is load-bearing: `run merge` on a `code` run is refused unless it
-   carries `--confirm-interactive` (which only `/worktree-merge` supplies),
-   but the brief must still tell the agent not to try — a self-merge attempt
-   should never happen, not merely fail (issue `interactive-code-run-self-merged`).
+   `run merge` on a `code` run also refuses a bare invocation
+   (`interactive_merge_requires_confirmation`), but treat that only as a
+   backstop, not the guarantee: any caller that can run `run merge` can also
+   pass the confirmation flag, so the CLI gate is a tripwire that turns an
+   accidental self-merge into a hard STOP — it cannot enforce the gate on its
+   own. The brief prohibition is what actually keeps a self-merge attempt from
+   happening (issue `interactive-code-run-self-merged`).
 
 For long or special-character-heavy prompts, write them to a temp file
 (`mktemp -t worktree-code-prompt-XXXXXX.md`) and pass `--prompt-file
@@ -216,12 +222,12 @@ mid-session. At spawn time the user owns the review window; the explicit
 terminal `node report` during the agent's working session (it would try
 to close the window the user is still in), and the coding agent must NOT
 run `orchestratectl run merge` / `/worktree-merge` on itself. `run merge`
-enforces this: on a `code` (interactive) run it refuses with
-`interactive_merge_requires_confirmation` unless `--confirm-interactive` is
-passed — and only `/worktree-merge` (the human's path) passes it. A prior
-bug had a `code` run self-merge to `done` and tear its worktree down with
-no human review (`interactive-code-run-self-merged`); the guard + the brief
-prohibition in step 2 close that.
+backstops this: on a `code` run it refuses a bare invocation with
+`interactive_merge_requires_confirmation`, turning an accidental self-merge
+into a hard STOP — but it is a tripwire, not the guarantee (the actual
+safeguard is the brief prohibition from step 2). A prior bug had a `code`
+run self-merge to `done` and tear its worktree down with no human review
+(`interactive-code-run-self-merged`).
 
 If the work produced decisions worth recording, follow-up work worth
 spawning, or wrap-up advice, write a §7.3 payload to a temp file and the

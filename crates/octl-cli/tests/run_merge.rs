@@ -327,7 +327,10 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
 }
 
 /// `--dry-run` resolves inputs and reports the planned merge without invoking
-/// the backend or appending any event.
+/// the backend or appending any event. It is a read-only preview with no merge
+/// and no report, so the `code`-run confirmation gate does NOT apply: a bare
+/// `--dry-run` on a `code` run succeeds WITHOUT `--confirm-interactive` (the gate
+/// only guards a real merge — issue `interactive-code-run-self-merged`).
 #[test]
 fn dry_run_resolves_without_side_effects() {
     let home = TestHome::new();
@@ -337,13 +340,13 @@ fn dry_run_resolves_without_side_effects() {
     forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "should never run");
+    // No `--confirm-interactive`: a dry-run of a `code` run must not require it.
     let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
         "run",
         "merge",
         &run_id,
-        "--confirm-interactive",
         "--dry-run",
     ]));
     assert_eq!(v["data"]["dry_run"], true);
@@ -699,7 +702,7 @@ fn interactive_run_merge_with_confirmation_proceeds() {
 }
 
 /// Autonomous kinds are unaffected: a `spinoff` self-merges with NO
-/// confirmation flag (the gate is scoped to interactive lifecycle only).
+/// confirmation flag (the gate is scoped to `Kind::Code` only).
 #[test]
 fn autonomous_run_merge_needs_no_confirmation() {
     let home = TestHome::new();
@@ -718,4 +721,54 @@ fn autonomous_run_merge_needs_no_confirmation() {
     );
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(node_reports(&events).len(), 1);
+}
+
+/// `--confirm-interactive` is an inert no-op on an autonomous kind: passing it to
+/// a `spinoff` merge behaves identically to omitting it (merges, one report). The
+/// `worktree-merge` skill passes the flag unconditionally, so this pins that the
+/// flag never perturbs an autonomous self-merge.
+#[test]
+fn autonomous_run_merge_accepts_confirmation_flag_as_noop() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "auto-merge-flag");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output",
+        "json",
+        "run",
+        "merge",
+        &run_id,
+        "--source",
+        "main",
+        "--confirm-interactive",
+    ]));
+    assert_eq!(
+        v["data"]["merged"], true,
+        "an autonomous kind merges the same whether or not the flag is present"
+    );
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    let reports = node_reports(&events);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
+}
+
+/// The human's sanctioned merge path — the bundled `worktree-merge` skill — MUST
+/// pass `--confirm-interactive`, or a `code`-run merge driven through it would
+/// hit the gate and fail. Cheap regression insurance against silently dropping
+/// the flag from the skill template.
+#[test]
+fn worktree_merge_skill_passes_confirm_interactive() {
+    let template = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("skills/worktree-merge/SKILL.template.md");
+    let body = std::fs::read_to_string(&template)
+        .unwrap_or_else(|e| panic!("read {}: {e}", template.display()));
+    assert!(
+        body.contains("--confirm-interactive"),
+        "worktree-merge SKILL must pass --confirm-interactive so the human's \
+         `code`-run merge clears the interactive gate"
+    );
 }

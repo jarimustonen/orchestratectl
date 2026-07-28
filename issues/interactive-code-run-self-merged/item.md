@@ -5,6 +5,9 @@ type: bug
 reporter: jari
 status: in-progress
 priority: high
+commits:
+- hash: 8002b9b
+  summary: gate interactive run merge behind --confirm-interactive
 ---
 
 # Interactive 'code' run self-merged to done without user's /worktree-merge

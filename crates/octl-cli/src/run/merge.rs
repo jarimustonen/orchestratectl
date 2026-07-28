@@ -85,13 +85,14 @@ pub struct Args<'a> {
     /// that merges. When absent, a minimal `{success, summary, via}` report
     /// is submitted (enough for a simple spinoff).
     pub report_file: Option<PathBuf>,
-    /// Human confirmation that an INTERACTIVE (`code`) run may be merged.
-    /// Interactive runs are human-reviewed: only the reviewer merges them
-    /// (via `/worktree-merge`), never the coding agent. There is no
-    /// process-level way to tell the agent's `run merge` from the human's —
-    /// both run inside the same claude session — so intent is carried
-    /// explicitly here (issue `interactive-code-run-self-merged`). Ignored
-    /// for autonomous kinds, which self-merge.
+    /// Human-reviewer acknowledgement that a `code` run may be merged. A `code`
+    /// run is human-reviewed: the reviewer lands the branch after review, never
+    /// the coding agent. There is no process-level way to tell the agent's `run
+    /// merge` from the human's (both run inside the same claude session), so this
+    /// flag is a TRIPWIRE, not proof of a human: it turns the agent's natural
+    /// end-of-work `run merge` into a hard STOP rather than a silent self-merge
+    /// (issue `interactive-code-run-self-merged`). A no-op for every other kind
+    /// (not read, not persisted, not emitted) and skipped on `--dry-run`.
     pub confirm_interactive: bool,
     pub dry_run: bool,
     pub spec: &'a OutputSpec,
@@ -189,32 +190,38 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .with_invalid_value(node_id.as_str())
     })?;
 
-    // Interactive-run merge gate (issue `interactive-code-run-self-merged`).
+    // `code`-run merge gate (issue `interactive-code-run-self-merged`).
     //
-    // An interactive (`code`) run exists precisely for the human review gate:
-    // the agent works autonomously up to `/wrap-up`, then STOPS and idles while
-    // the human reviews, and the human — not the agent — lands the branch via
-    // `/worktree-merge`. A real bug had an interactive run reach `done` and merge
-    // its 5 commits to `main` with no human `/worktree-merge` and no review pause,
-    // because the agent ran `run merge` on itself as its natural end-of-work step
-    // (the report carried the same `via: "explicit-merge"` stamp the human's merge
-    // produces — the supervisor/reducer cannot tell them apart, and neither can
-    // this verb by process identity: agent and human share one claude session).
+    // A `code` run exists precisely for the human review gate: the agent works
+    // autonomously up to `/wrap-up`, then STOPS and idles while the human reviews,
+    // and the human — not the agent — lands the branch. A real bug had a `code`
+    // run reach `done` and merge its 5 commits to `main` with no human merge and
+    // no review pause, because the agent ran `run merge` on itself as its natural
+    // end-of-work step (the report carried the same `via: "explicit-merge"` stamp
+    // the human's merge produces — the supervisor/reducer cannot tell them apart,
+    // and neither can this verb by process identity: agent and human share one
+    // claude session in the same pane).
     //
-    // So the human's intent is carried explicitly: `/worktree-merge` passes
-    // `--confirm-interactive`; a bare `run merge` (the agent's natural step) is
-    // refused. The gate is scoped to interactive lifecycle only — autonomous kinds
-    // (spinoff/research/…) self-merge as before and never see this. The refusal is
-    // worded to steer a coding agent to STOP, not to hand it a flag to bypass its
-    // own review gate.
-    if manifest.lifecycle == octl_core::Lifecycle::Interactive && !args.confirm_interactive {
+    // This gate is a TRIPWIRE, not an authorization boundary: any caller that can
+    // run `run merge` can also pass `--confirm-interactive`, so it cannot stop a
+    // determined agent — the actual safeguard is the brief prohibition injected by
+    // the `worktree-code` skill (see its SKILL.template.md). What the gate buys is
+    // turning the observed failure — an obedient agent whose natural last step is a
+    // bare `run merge` — into a hard STOP with a distinct error code, instead of a
+    // silent self-merge. So the refusal is worded to stop a coding agent, and it
+    // deliberately does NOT spell out the flag or name the human's merge command:
+    // teaching the escape hatch in the very error that blocks it would defeat the
+    // tripwire. Scoped to `Kind::Code` (the only kind with this human-review
+    // protocol; `orchestrate`'s driver has no worktree to self-merge). Autonomous
+    // kinds self-merge as before. `--dry-run` is a read-only preview with no merge
+    // and no report, so it is exempt — there is nothing to gate.
+    if manifest.kind == octl_core::Kind::Code && !args.confirm_interactive && !args.dry_run {
         return Err(CliError::user(
             "interactive_merge_requires_confirmation",
             format!(
-                "run {run_id} is an interactive ({}) run — its branch is merged by the human \
-                 reviewer with `/worktree-merge` after review, not by the agent. If you are the \
-                 coding agent: STOP — do not merge your own interactive run. Finish with \
-                 `/wrap-up` and idle; the human owns the merge.",
+                "run {run_id} is a human-reviewed `{}` run — this branch is landed by the human \
+                 reviewer after review, never by the agent. If you are the coding agent: STOP. \
+                 Do not merge your own run; finish with `/wrap-up` and idle for the human.",
                 manifest.kind.wire_name()
             ),
         )

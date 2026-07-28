@@ -168,15 +168,14 @@ pub enum RunAction {
         /// a minimal `{success, summary}` report.
         #[arg(long)]
         report_file: Option<std::path::PathBuf>,
-        /// Confirm an INTERACTIVE (`code`) run's merge. Interactive runs are
-        /// human-reviewed: the branch is landed by the reviewer via
-        /// `/worktree-merge`, not by the coding agent. This flag is that human
-        /// confirmation — the `/worktree-merge` skill supplies it. Required to
-        /// merge a `code` run; ignored for autonomous kinds
-        /// (spinoff/research/…), which self-merge. A coding agent must NOT set
-        /// this to bypass the review gate on its own interactive run (issue
-        /// `interactive-code-run-self-merged`).
-        #[arg(long)]
+        /// Human-reviewer acknowledgement, required to merge a `code` run (the
+        /// `/worktree-merge` workflow supplies it). No-op for other kinds.
+        ///
+        /// Hidden from `--help`: a `code` run's whole purpose is the human review
+        /// gate before landing, so the coding agent must NOT discover and pass
+        /// this to self-merge (issue `interactive-code-run-self-merged`). The
+        /// human's path documents it in the `worktree-merge` skill.
+        #[arg(long, hide = true)]
         confirm_interactive: bool,
         /// Resolve inputs and report the planned merge without running it
         /// or appending any event.

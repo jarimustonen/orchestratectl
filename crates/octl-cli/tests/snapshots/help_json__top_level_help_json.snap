@@ -3626,13 +3626,13 @@ expression: value
                 "long": "confirm-interactive",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Confirm an INTERACTIVE (`code`) run's merge. Interactive runs are human-reviewed: the branch is landed by the reviewer via `/worktree-merge`, not by the coding agent. This flag is that human confirmation — the `/worktree-merge` skill supplies it. Required to merge a `code` run; ignored for autonomous kinds (spinoff/research/…), which self-merge. A coding agent must NOT set this to bypass the review gate on its own interactive run (issue `interactive-code-run-self-merged`)",
+                "help": "Human-reviewer acknowledgement, required to merge a `code` run (the `/worktree-merge` workflow supplies it). No-op for other kinds",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
                 "required": false,
                 "is_global": false,
-                "hidden": false,
+                "hidden": true,
                 "deprecated": false,
                 "defaults": [
                   "false"

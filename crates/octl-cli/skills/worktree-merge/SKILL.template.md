@@ -116,13 +116,11 @@ orchestratectl run merge "$run_id" \
 
 Flag rules:
 
-- `--confirm-interactive` — **always pass it in this skill.** An interactive
-  (`code`) run is human-reviewed: `run merge` refuses to land it without this
-  flag, because a bare `run merge` is how the coding agent would self-merge and
-  skip the review gate (issue `interactive-code-run-self-merged`). `/worktree-merge`
-  is the human's sanctioned merge path, so it carries the confirmation. For an
-  autonomous kind (spinoff/research/…) the flag is a harmless no-op — the gate is
-  scoped to interactive lifecycle — so passing it unconditionally is always safe.
+- `--confirm-interactive` — **always pass it in this skill.** It is the human
+  reviewer's acknowledgement that a `code` run may land; `run merge` requires it
+  for a `code` run and treats it as a no-op for every other kind, so passing it
+  unconditionally is always safe. `/worktree-merge` is the human-driven merge
+  path, which is why it carries the acknowledgement.
 
 - `--source <branch>` — the merge target. Omit it and `run merge` uses the
   run's recorded `source_branch` (the branch the worktree was spawned
