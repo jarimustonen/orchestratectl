@@ -53,12 +53,13 @@ Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: agent-skips-run-merge-idle-pending (Lane A, high, concrete)   ← start here on resume
+GLOBAL HEAD-OF-LINE: floor-capture-hardening-round-3 (Lane B, high — Lane A's remaining are investigative/normal)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
-  ▶ agent-skips-run-merge-idle-pending [wip]        (high; supervisor safety-net + reducer; RETRY — 1st attempt agent-died after a 523-line first cut on wt/01kym6a7bz…, preserved+recoverable; retry harvests it)
+    idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
+    watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
     code-run-inject-no-selfmerge                    (follow-up of interactive-code — code-inject the no-self-merge rule)
     interactive-merge-audit-marker                  (follow-up of interactive-code — audit marker for human-confirmed merge)
@@ -116,6 +117,14 @@ and dropped it; cleared dead `[wip]` tags (no live worktrees).
 `floor-capture-hardening-round-2` (Lane B head), `code-run-inject-no-selfmerge` +
 `interactive-merge-audit-marker` + `watchdog-pane-aware-liveness` (Lane A),
 `triage-bugs-stint-inprogress-ownership-conflict` (Lane D head).
+**Wave 3 reconcile 2026-07-28:** landed `floor-capture-hardening-round-2` (→ round-3 filed,
+Lane B head) + `agent-skips-run-merge-idle-pending` (fixed; 1st attempt agent-died, retry
+harvested the recoverable first cut and landed it). New Lane A follow-ups filed by the retry:
+`idle-empty-handed-alive-agent-hangs`, `watchdog-tick-verdict-refactor`.
+⚠ **ORPHAN to clean:** dead worktree/branch `wt/01kym6a7bz-idle-pending-safetynet`
+(commit `b076815`) is preserved-by-policy but now SUPERSEDED (its work was harvested +
+landed via the retry). Safe to remove: `git worktree remove --force <path>` +
+`git branch -D wt/01kym6a7bz-idle-pending-safetynet`. Left for human oversight.
 
 ### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
