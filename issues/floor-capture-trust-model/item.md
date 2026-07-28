@@ -1,8 +1,8 @@
 ---
 created: 2026-07-22
-updated: 2026-07-22
+updated: 2026-07-28
 type: task
-status: open
+status: in-progress
 priority: high
 epic: code-pipeline
 related: ['@deterministic-floor', '@plan-check-run-contract']
