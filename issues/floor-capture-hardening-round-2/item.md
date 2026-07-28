@@ -2,7 +2,7 @@
 created: 2026-07-28
 updated: 2026-07-28
 type: improvement
-status: open
+status: in-progress
 priority: high
 epic: code-pipeline
 related: ['@floor-capture-trust-model']

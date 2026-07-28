@@ -47,8 +47,11 @@
       "required": ["ref", "test_passlist_hash", "clippy_warnings_hash"],
       "properties": {
         "ref": { "type": "string", "minLength": 1 },
+        "commit_oid": { "type": "string", "description": "Ref resolved to an immutable commit OID at capture time (floor provenance; additive-optional)." },
+        "toolchain": { "type": "string", "description": "rustc -V fingerprint the snapshot was captured with (floor provenance; additive-optional)." },
         "test_passlist_hash": { "type": "string", "minLength": 1 },
-        "clippy_warnings_hash": { "type": "string", "minLength": 1 }
+        "clippy_warnings_hash": { "type": "string", "minLength": 1 },
+        "enumerated_targets_hash": { "type": "string", "description": "Hash of the enumerated (package, target_kind, target) test-target set (floor F7 superset check; additive-optional)." }
       }
     },
     "acceptance": {

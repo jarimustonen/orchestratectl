@@ -189,15 +189,43 @@ pub struct Feature {
 }
 
 /// Baseline snapshot captured at the `feat/<slug>` fork (owner: supervisor).
+///
+/// # Provenance fields (`floor-capture-hardening-round-2` item 5 / F10)
+///
+/// `r#ref` is a **mutable** ref string (`feat/<slug>@fork`) — a force-push can
+/// re-point it. The floor therefore also records the pinned `commit_oid` the ref
+/// resolved to at capture time, the `toolchain` fingerprint the snapshot was
+/// captured with, and `enumerated_targets_hash` (F7). The evaluator compares all
+/// of these — not just the two content hashes — so a spec-node cannot smuggle a
+/// baseline captured at a different commit, under a different toolchain, or over
+/// a narrowed target set than the one the supervisor gates against. All three
+/// are additive-optional (`#[serde(default)]`) so an older plan without them
+/// still deserializes; the evaluator enforces equality on whatever the live
+/// snapshot projects (an empty field on both sides is still a match, which is the
+/// pre-provenance behaviour until the supervisor starts populating them).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
-    /// Git ref the snapshot was taken at (e.g. `feat/<slug>@fork`).
+    /// Git ref the snapshot was taken at (e.g. `feat/<slug>@fork`) — mutable,
+    /// display/audit only; `commit_oid` is the authoritative binding.
     pub r#ref: String,
+    /// The ref resolved to an immutable commit OID at capture time (provenance).
+    /// Additive-optional: absent on a pre-round-2 plan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub commit_oid: String,
+    /// `rustc -V` fingerprint the snapshot was captured with (provenance).
+    /// Additive-optional: absent on a pre-round-2 plan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub toolchain: String,
     /// Hash of the passing-test list at baseline (floor: no baseline pass may
     /// regress).
     pub test_passlist_hash: String,
     /// Hash of the clippy-warning list at baseline (floor: no new warnings).
     pub clippy_warnings_hash: String,
+    /// Hash of the enumerated `(package, target_kind, target)` test-target set at
+    /// baseline (floor F7: the tip's set must be a superset — a shrink fails
+    /// closed). Additive-optional: absent on a pre-round-2 plan.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub enumerated_targets_hash: String,
     /// Unrecognized keys, captured for the compatibility check.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

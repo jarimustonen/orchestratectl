@@ -175,6 +175,9 @@ fn violation_line(v: &Violation) -> String {
         Violation::OutOfScopeFile { file } => {
             format!("out-of-scope file changed: {}", file.display())
         }
+        Violation::EnumerationShrank { target } => {
+            format!("enumerated test target vanished vs baseline: {target}")
+        }
     }
 }
 

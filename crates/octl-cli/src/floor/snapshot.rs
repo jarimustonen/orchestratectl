@@ -104,6 +104,17 @@ pub struct TestSnapshot {
     pub failed: BTreeSet<TestId>,
     /// Tests that were `#[ignore]`d / skipped.
     pub ignored: BTreeSet<TestId>,
+    /// The enumerated test **targets** — one canonical `package/target_kind/target`
+    /// per test-harness binary cargo built, independent of how many tests each
+    /// runs (`floor-capture-hardening-round-2` item 2 / F7). A `harness = false`,
+    /// `--exclude`, workspace-narrowing alias, or an empty build produces a
+    /// *smaller* set than the fork's; the enumeration-integrity gate requires the
+    /// tip's set to be a **superset** of the baseline's, so a narrowed/empty
+    /// test-binary set fails closed instead of passing vacuously. Additive:
+    /// `#[serde(default)]` so a pre-round-2 persisted snapshot (no targets) still
+    /// deserializes.
+    #[serde(default)]
+    pub targets: BTreeSet<String>,
 }
 
 impl TestSnapshot {
@@ -303,10 +314,32 @@ pub enum BaselineMismatch {
         /// Ref the live snapshot was captured at.
         live: String,
     },
+    /// The plan's pinned commit OID does not match the live snapshot's — a
+    /// baseline captured at a different commit than the one being gated
+    /// (`floor-capture-hardening-round-2` item 5 / F10). Checked against the
+    /// immutable OID, not the mutable `ref`, so a force-push cannot launder it.
+    CommitOid {
+        /// OID recorded in the plan.
+        plan: String,
+        /// OID the live snapshot was captured at.
+        live: String,
+    },
+    /// The plan's toolchain fingerprint does not match the live snapshot's — a
+    /// baseline captured under a different `rustc` than the one being gated.
+    Toolchain {
+        /// Toolchain recorded in the plan.
+        plan: String,
+        /// Toolchain the live snapshot was captured with.
+        live: String,
+    },
     /// The plan's test-pass-list hash disagrees with the live snapshot.
     TestPasslistHash,
     /// The plan's clippy-warning-list hash disagrees with the live snapshot.
     ClippyWarningsHash,
+    /// The plan's enumerated-target-set hash disagrees with the live snapshot
+    /// (F7): the plan was projected from a different enumeration than the one
+    /// being gated.
+    EnumeratedTargetsHash,
 }
 
 impl fmt::Display for BaselineMismatch {
@@ -315,11 +348,26 @@ impl fmt::Display for BaselineMismatch {
             BaselineMismatch::Ref { plan, live } => {
                 write!(f, "baseline ref mismatch: plan={plan:?} live={live:?}")
             }
+            BaselineMismatch::CommitOid { plan, live } => {
+                write!(
+                    f,
+                    "baseline commit-oid mismatch: plan={plan:?} live={live:?}"
+                )
+            }
+            BaselineMismatch::Toolchain { plan, live } => {
+                write!(
+                    f,
+                    "baseline toolchain mismatch: plan={plan:?} live={live:?}"
+                )
+            }
             BaselineMismatch::TestPasslistHash => {
                 f.write_str("baseline test-passlist hash mismatch")
             }
             BaselineMismatch::ClippyWarningsHash => {
                 f.write_str("baseline clippy-warnings hash mismatch")
+            }
+            BaselineMismatch::EnumeratedTargetsHash => {
+                f.write_str("baseline enumerated-targets hash mismatch")
             }
         }
     }
@@ -354,8 +402,11 @@ impl BaselineSnapshot {
     pub fn to_plan_baseline(&self) -> plan::Baseline {
         plan::Baseline {
             r#ref: self.r#ref.clone(),
+            commit_oid: self.commit_oid.clone(),
+            toolchain: self.toolchain.clone(),
             test_passlist_hash: hash_sorted(&self.snapshot.tests.passed_canonical()),
             clippy_warnings_hash: hash_sorted(&self.snapshot.clippy.canonical()),
+            enumerated_targets_hash: hash_sorted(&self.snapshot.tests.targets),
             extra: serde_json::Map::new(),
         }
     }
@@ -366,11 +417,38 @@ impl BaselineSnapshot {
     /// smuggle a baseline captured at a different commit / by a different
     /// algorithm than the one the supervisor gates against
     /// (`floor-capture-trust-model` item 5). Returns the first mismatch found.
+    ///
+    /// # Cross-component provenance (`floor-capture-hardening-round-2` item 5)
+    ///
+    /// Every component of the plan's baseline — the pinned `commit_oid`, the
+    /// `toolchain`, and all three content hashes (test-passlist, clippy-warnings,
+    /// enumerated-targets) — is required to equal the live snapshot's projection.
+    /// Because the live side is a *single* [`to_plan_baseline`] of one
+    /// [`RunSnapshot`], demanding equality on every field forces the plan's
+    /// components to share one provenance: a plan that mixed a test hash from one
+    /// capture with a clippy hash from another, or pinned a different OID /
+    /// toolchain than the enumeration it hashed, cannot pass. The immutable
+    /// `commit_oid` is checked in addition to the mutable `ref`, so a force-push
+    /// to the ref cannot re-point what "baseline" means.
+    ///
+    /// [`to_plan_baseline`]: BaselineSnapshot::to_plan_baseline
     pub fn verify_plan_baseline(&self, plan: &plan::Baseline) -> Result<(), BaselineMismatch> {
         if plan.r#ref != self.r#ref {
             return Err(BaselineMismatch::Ref {
                 plan: plan.r#ref.clone(),
                 live: self.r#ref.clone(),
+            });
+        }
+        if plan.commit_oid != self.commit_oid {
+            return Err(BaselineMismatch::CommitOid {
+                plan: plan.commit_oid.clone(),
+                live: self.commit_oid.clone(),
+            });
+        }
+        if plan.toolchain != self.toolchain {
+            return Err(BaselineMismatch::Toolchain {
+                plan: plan.toolchain.clone(),
+                live: self.toolchain.clone(),
             });
         }
         let live = self.to_plan_baseline();
@@ -379,6 +457,9 @@ impl BaselineSnapshot {
         }
         if plan.clippy_warnings_hash != live.clippy_warnings_hash {
             return Err(BaselineMismatch::ClippyWarningsHash);
+        }
+        if plan.enumerated_targets_hash != live.enumerated_targets_hash {
+            return Err(BaselineMismatch::EnumeratedTargetsHash);
         }
         Ok(())
     }
@@ -457,6 +538,7 @@ mod tests {
             passed: tset(&[tid("lib", "pkg", "a"), tid("lib", "pkg", "b")]),
             failed: tset(&[tid("lib", "pkg", "c")]),
             ignored: tset(&[tid("lib", "pkg", "d")]),
+            ..Default::default()
         };
         assert_eq!(ts.total(), 4);
         assert_eq!(ts.all_ids().len(), 4);
@@ -587,6 +669,81 @@ mod tests {
             base.verify_plan_baseline(&bad_ref),
             Err(BaselineMismatch::Ref { .. })
         ));
+
+        // Provenance (`floor-capture-hardening-round-2` item 5): a baseline
+        // captured at a different commit OID / toolchain is rejected even when
+        // the two content hashes agree — the OID/toolchain are checked, not just
+        // the mutable ref + hashes.
+        let mut bad_oid = base.to_plan_baseline();
+        bad_oid.commit_oid = "cafef00d".into();
+        assert!(matches!(
+            base.verify_plan_baseline(&bad_oid),
+            Err(BaselineMismatch::CommitOid { .. })
+        ));
+
+        let mut bad_tc = base.to_plan_baseline();
+        bad_tc.toolchain = "rustc 1.0.0".into();
+        assert!(matches!(
+            base.verify_plan_baseline(&bad_tc),
+            Err(BaselineMismatch::Toolchain { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_plan_baseline_rejects_enumerated_targets_drift() {
+        // F7 provenance: the enumerated-target-set hash is a snapshot component
+        // like the two content hashes — a plan projected from a different
+        // enumeration (a narrowed target set) than the live one is rejected, so
+        // the components must share one provenance.
+        let base = BaselineSnapshot::new(
+            "feat/x@fork",
+            "deadbeef",
+            "rustc 1.97.1",
+            RunSnapshot {
+                tests: TestSnapshot {
+                    passed: tset(&[tid("lib", "pkg", "t::a")]),
+                    targets: ["pkg/lib/pkg".to_string(), "pkg/test/e2e".to_string()]
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        // Its own projection verifies (all components share provenance).
+        assert!(base.verify_plan_baseline(&base.to_plan_baseline()).is_ok());
+        // A tampered enumerated-targets hash is rejected.
+        let mut bad = base.to_plan_baseline();
+        assert!(!bad.enumerated_targets_hash.is_empty());
+        bad.enumerated_targets_hash = "sha256:0".into();
+        assert_eq!(
+            base.verify_plan_baseline(&bad),
+            Err(BaselineMismatch::EnumeratedTargetsHash)
+        );
+    }
+
+    #[test]
+    fn to_plan_baseline_carries_provenance_fields() {
+        let base = BaselineSnapshot::new(
+            "feat/x@fork",
+            "deadbeefoid",
+            "rustc 1.97.1 (abc 2026-06-01)",
+            RunSnapshot {
+                tests: TestSnapshot {
+                    targets: ["pkg/lib/pkg".to_string()].into_iter().collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let pb = base.to_plan_baseline();
+        assert_eq!(pb.commit_oid, "deadbeefoid");
+        assert_eq!(pb.toolchain, "rustc 1.97.1 (abc 2026-06-01)");
+        assert_eq!(
+            pb.enumerated_targets_hash,
+            hash_sorted(&["pkg/lib/pkg".to_string()].into_iter().collect())
+        );
+        assert!(pb.enumerated_targets_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -633,6 +790,7 @@ mod tests {
                 passed: tset(&[tid("lib", "pkg", "a")]),
                 failed: tset(&[tid("lib", "pkg", "b")]),
                 ignored: tset(&[tid("lib", "pkg", "c")]),
+                targets: ["pkg/lib/pkg".to_string()].into_iter().collect(),
             },
             clippy: ClippySnapshot {
                 warnings: [ClippyWarning {

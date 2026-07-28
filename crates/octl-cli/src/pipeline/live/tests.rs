@@ -1898,3 +1898,51 @@ fn verify_stage_breach_aborts_instead_of_merging() {
         "spec + chunk + verify counted"
     );
 }
+
+#[test]
+fn capture_snapshot_allocates_a_fresh_target_dir_per_call() {
+    // done-criteria (c), end to end: every `capture_snapshot` call must get its
+    // OWN `CARGO_TARGET_DIR` so baseline and tip never share a warm clippy cache
+    // (a shared cache re-emits zero warnings → no-new-clippy passes vacuously).
+    // A fake test/clippy command appends the CARGO_TARGET_DIR it saw to a log;
+    // two capture_snapshot calls must record two different dirs.
+    use std::os::unix::fs::PermissionsExt;
+
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let log = workdir.path().join("seen-target-dirs.log");
+    let script = workdir.path().join("record.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$CARGO_TARGET_DIR\" >> '{}'\nprintf '{{\"reason\":\"build-finished\",\"success\":true}}\\n'\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.test_cmd = script.to_string_lossy().into_owned();
+    cfg.clippy_cmd = script.to_string_lossy().into_owned();
+
+    super::capture_snapshot(&cfg, repo.path()).unwrap();
+    super::capture_snapshot(&cfg, repo.path()).unwrap();
+
+    let recorded = std::fs::read_to_string(&log).unwrap();
+    let dirs: Vec<&str> = recorded.lines().collect();
+    // Two captures × (test + clippy) = 4 lines.
+    assert_eq!(dirs.len(), 4, "each capture runs test + clippy: {recorded}");
+    // Within one capture_snapshot, test and clippy share the dir…
+    assert_eq!(dirs[0], dirs[1], "test + clippy share the per-snapshot dir");
+    assert_eq!(dirs[2], dirs[3]);
+    // …but across the two calls the dirs differ (no cross-ref cache sharing).
+    assert_ne!(
+        dirs[0], dirs[2],
+        "baseline and tip captures shared a target dir"
+    );
+    // And each is non-empty (the floor really pinned one).
+    assert!(!dirs[0].is_empty() && !dirs[2].is_empty());
+}

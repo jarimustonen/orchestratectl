@@ -13,7 +13,9 @@
 //! 3. no new clippy warnings vs baseline;
 //! 4. the test suite was not gamed (count didn't drop, none newly
 //!    `#[ignore]`d, none renamed-to-no-op/removed, assertion density held);
-//! 5. changed files stay within the chunk's declared `files_touched[]` scope
+//! 5. the enumerated test-target set did not shrink vs baseline (a
+//!    narrowed/empty test-binary set fails closed, not vacuously green);
+//! 6. changed files stay within the chunk's declared `files_touched[]` scope
 //!    (+ a configurable slack).
 //!
 //! # Layout
@@ -69,34 +71,50 @@
 //!   [`snapshot::BaselineSnapshot::verify_plan_baseline`] so a spec-node's plan
 //!   baseline must match the live one. Assertion-count maps are read at a
 //!   resolved OID ([`runner::assertion_counts_at_ref`]).
+//! - **Floor-pinned target dir (round 2, F4).** Every cargo capture runs with a
+//!   fresh, per-snapshot `CARGO_TARGET_DIR` (set on the process env — which beats
+//!   an in-repo `build.target-dir` — plus an explicit `--target-dir` flag). The
+//!   pipeline allocates a distinct dir for the fork baseline, each chunk tip, and
+//!   the feature tip, so baseline and tip **never share a warm cache**: the
+//!   bypass where `cargo clippy` on a cache the baseline warmed re-emits zero
+//!   warnings and `gate_no_new_clippy` passes vacuously is closed
+//!   ([`runner::capture_test_snapshot`] / the pipeline's `capture_snapshot`).
+//! - **Enumeration integrity (round 2, F7).** Each capture records the enumerated
+//!   `(package, target_kind, target)` test-target set
+//!   ([`snapshot::TestSnapshot::targets`]); [`gate_enumeration_superset`] fails
+//!   closed unless the tip's set is a **superset** of the baseline's. A narrowed
+//!   or empty test-binary set (a workspace-narrowing alias, `--exclude`,
+//!   `harness = false`, or a build that produced fewer harnesses) can no longer
+//!   capture a smaller snapshot that passes vacuously — the vanished harness's
+//!   tests would otherwise be invisible to every other gate.
+//! - **Cross-component provenance (round 2, item 5 / F10).** The plan baseline
+//!   carries `commit_oid` + `toolchain` + the enumerated-targets hash alongside
+//!   the two content hashes, and [`snapshot::BaselineSnapshot::verify_plan_baseline`]
+//!   requires **all** of them to equal one live-snapshot projection — so a plan
+//!   cannot mix components captured at different commits/toolchains/enumerations.
+//!   (Wired into the evaluator at T5; the pure check + projection land here.)
 //!
-//! **Remaining (deferred to the follow-up issue), still not tamper-proof.**
-//! These share one root cause — cargo still reads repo-controlled configuration
-//! and the workspace layout — so they are grouped for a single `--config`/
-//! out-of-tree-invocation follow-up:
+//! **Remaining (deferred to a follow-up spin-off), still not tamper-proof:**
 //!
-//! - **In-repo `.cargo/config.toml` / `rust-toolchain.toml` / cargo aliases.**
-//!   `env_clear()` neutralizes inherited env, but cargo honours an in-repo
-//!   config regardless: a `test`/`clippy` alias can redirect the subcommand, a
-//!   `build.target-dir` can point both baseline and tip at one shared cache
-//!   (clippy on a warm cache re-emits **zero** warnings, defeating no-new-clippy
-//!   — `CARGO_INCREMENTAL=0` mitigates incremental skips but not a shared
-//!   target dir), and lint levels can be flipped. The toolchain is **recorded**
-//!   ([`runner::rustc_version`]); full neutralization is deferred.
-//! - **Empty / narrowed enumeration.** A `build-finished:true` run with **zero**
-//!   test binaries (a workspace-narrowing alias, `--exclude`, `harness = false`)
-//!   captures as an empty snapshot; if the same narrowing is present at the
-//!   fork, baseline and tip agree and the gate passes. The fix is to fingerprint
-//!   the enumerated `(package, target)` set into the baseline and require the
-//!   tip be a superset — deferred with the config work.
-//! - **Custom test harness (`harness = false`).** A hand-written `main()` can
-//!   print perfectly balanced forged libtest output; the announced-vs-parsed
-//!   reconcile cannot distinguish it from real libtest on stable. Locking down
-//!   `Cargo.toml` is part of the same follow-up.
+//! - **Residual repo-controlled config.** The `build.target-dir` vector is closed
+//!   (above), but cargo still honours other in-repo config: an `[alias]` that
+//!   redirects the external `clippy` subcommand to a benign zero-warning command
+//!   (the `test` subcommand is built-in and cannot be aliased), config
+//!   `rustflags` / lint-level flips, and a consistently-weakening
+//!   `rust-toolchain.toml` (the recorded toolchain catches baseline-vs-tip drift,
+//!   not an evil-but-consistent pin). Full neutralization wants a `--config`-lock
+//!   or out-of-tree invocation.
+//! - **Custom test harness (`harness = false`).** A hand-written `main()` on a
+//!   *test-producing* target can print perfectly balanced forged libtest output;
+//!   the announced-vs-parsed reconcile cannot distinguish it from real libtest on
+//!   stable. (A `harness = false` **bench** is legitimate and common — criterion
+//!   — so a blanket reject is wrong; the fix must distinguish target kinds.)
+//!   Deferred to the spin-off.
 //! - **Doctests** (run by rustdoc, not a `compiler-artifact` binary) are not
 //!   captured/target-qualified — new failing doctests, or a test moved *into* a
-//!   doctest, are invisible. Capturing them needs a separate `--doc` pass (or
-//!   the nightly libtest JSON format).
+//!   doctest, are invisible. Capture is symmetric across baseline/tip so this is
+//!   a gaming hole, not a crash; capturing them needs a separate `--doc` pass (or
+//!   the nightly libtest JSON format). Deferred to the spin-off.
 //! - Assertion density is still a **per-file, crude `assert*!` count**, not a
 //!   semantic per-`#[test]` (AST) measure; `assert!(true)` padding is not
 //!   detected.
@@ -122,8 +140,9 @@ pub mod runner;
 pub mod snapshot;
 
 pub use gates::{
-    evaluate_floor, gate_checks_pass, gate_file_scope, gate_no_new_clippy, gate_no_regression,
-    gate_no_test_gaming, FloorInputs, FloorVerdict, GateKind, GateOutcome, Violation,
+    evaluate_floor, gate_checks_pass, gate_enumeration_superset, gate_file_scope,
+    gate_no_new_clippy, gate_no_regression, gate_no_test_gaming, FloorInputs, FloorVerdict,
+    GateKind, GateOutcome, Violation,
 };
 pub use snapshot::{
     hash_sorted, BaselineMismatch, BaselineSnapshot, CheckRun, ClippySnapshot, ClippyWarning,

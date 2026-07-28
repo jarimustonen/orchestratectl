@@ -15,9 +15,12 @@
 //! 4. [`gate_no_test_gaming`] — test count didn't drop; none newly ignored;
 //!    no baseline test vanished (rename-to-no-op); assertion density didn't
 //!    regress in touched files.
-//! 5. [`gate_file_scope`] — changed files stay within `files_touched[]` + slack.
+//! 5. [`gate_enumeration_superset`] — the enumerated test-*target* set did not
+//!    shrink vs baseline (`floor-capture-hardening-round-2` F7): a
+//!    narrowed/empty test-binary set fails closed instead of passing vacuously.
+//! 6. [`gate_file_scope`] — changed files stay within `files_touched[]` + slack.
 //!
-//! [`evaluate_floor`] runs all five over a [`FloorInputs`] and returns a
+//! [`evaluate_floor`] runs all six over a [`FloorInputs`] and returns a
 //! [`FloorVerdict`] the supervisor (at T5) will branch on.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,6 +47,8 @@ pub enum GateKind {
     NoNewClippy,
     /// The test suite was not gamed (count/ignore/rename/assertion-density).
     NoTestGaming,
+    /// The enumerated test-target set did not shrink vs baseline (F7).
+    EnumerationIntegrity,
     /// Changed files stay within declared scope + slack.
     FileScope,
 }
@@ -57,6 +62,7 @@ impl GateKind {
             GateKind::NoRegression => "no-regression",
             GateKind::NoNewClippy => "no-new-clippy",
             GateKind::NoTestGaming => "no-test-gaming",
+            GateKind::EnumerationIntegrity => "enumeration-integrity",
             GateKind::FileScope => "file-scope",
         }
     }
@@ -122,6 +128,16 @@ pub enum Violation {
     OutOfScopeFile {
         /// The out-of-scope path.
         file: PathBuf,
+    },
+    /// A test **target** enumerated at baseline is absent from the tip's
+    /// enumeration (F7) — a narrowed/empty test-binary set (a workspace-narrowing
+    /// alias, `--exclude`, `harness = false`, or a build that produced fewer test
+    /// harnesses) that would otherwise capture a smaller snapshot and pass
+    /// vacuously.
+    EnumerationShrank {
+        /// The canonical `package/target_kind/target` that vanished from the
+        /// enumeration.
+        target: String,
     },
 }
 
@@ -222,6 +238,7 @@ pub fn evaluate_floor(inputs: &FloorInputs) -> FloorVerdict {
                 inputs.baseline_assertions,
                 inputs.current_assertions,
             ),
+            gate_enumeration_superset(&inputs.baseline.tests, &inputs.current.tests),
             gate_file_scope(
                 inputs.declared_files,
                 inputs.changed_files,
@@ -370,7 +387,50 @@ pub fn gate_no_test_gaming(
     }
 }
 
-/// Gate 5 — file-scope (design.md §4: "File-scope is a merge-time
+/// Gate 5 — enumeration integrity (`floor-capture-hardening-round-2` item 2 /
+/// F7). The set of enumerated test **targets** at the tip must be a **superset**
+/// of the baseline's: every `(package, target_kind, target)` that produced a test
+/// harness at the fork must still produce one now. A *shrink* — a target that
+/// vanished — is a fail-closed violation, because a narrowed or empty test-binary
+/// set (a workspace-narrowing alias, `--exclude`, an undeclared `harness = false`,
+/// or a build that simply produced fewer harnesses) otherwise captures a smaller
+/// snapshot whose missing tests can never regress, count-drop, or vanish in the
+/// other gates — the whole point of those gates is defeated when the tests are
+/// not enumerated at all. New targets are fine (superset holds); only a
+/// disappearance blocks.
+///
+/// This complements [`gate_no_test_gaming`]'s per-*test* signals with a
+/// per-*target* one: the former catches a single test deleted from a still-built
+/// harness; this catches the whole harness disappearing (where the former's
+/// baseline-test-ids also vanish, but this names the structural cause).
+#[must_use]
+pub fn gate_enumeration_superset(baseline: &TestSnapshot, current: &TestSnapshot) -> GateOutcome {
+    let missing: Vec<Violation> = baseline
+        .targets
+        .difference(&current.targets)
+        .map(|t| Violation::EnumerationShrank { target: t.clone() })
+        .collect();
+    if missing.is_empty() {
+        GateOutcome::pass(
+            GateKind::EnumerationIntegrity,
+            format!(
+                "enumerated target set held ({} target(s), tip ⊇ baseline)",
+                current.targets.len()
+            ),
+        )
+    } else {
+        GateOutcome::fail(
+            GateKind::EnumerationIntegrity,
+            format!(
+                "{} enumerated test target(s) vanished vs baseline",
+                missing.len()
+            ),
+            missing,
+        )
+    }
+}
+
+/// Gate 6 — file-scope (design.md §4: "File-scope is a merge-time
 /// constraint"). Any changed file not in `declared` is out of scope; the gate
 /// fails when the out-of-scope count exceeds `slack`. Out-of-scope files are
 /// reported as violations only when the gate fails (within-slack drift is noted
@@ -761,6 +821,74 @@ mod tests {
         assert!(g.violations.is_empty());
     }
 
+    // --- gate 5: enumeration integrity (F7) ---
+
+    /// A `TestSnapshot` carrying only an enumerated-target set (canonical
+    /// `package/target_kind/target` strings), no per-test outcomes.
+    fn tsnap_targets(items: &[&str]) -> TestSnapshot {
+        TestSnapshot {
+            targets: items.iter().map(ToString::to_string).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn enumeration_superset_passes_when_targets_held_or_grew() {
+        let base = tsnap_targets(&["p/lib/p", "p/test/e2e"]);
+        // Same set → superset (equal) holds.
+        assert!(gate_enumeration_superset(&base, &base).passed);
+        // A new target added at the tip is fine (superset still holds).
+        let grew = tsnap_targets(&["p/lib/p", "p/test/e2e", "p/test/new"]);
+        let g = gate_enumeration_superset(&base, &grew);
+        assert!(g.passed, "{g:#?}");
+        assert!(g.violations.is_empty());
+    }
+
+    #[test]
+    fn enumeration_shrink_fails_closed() {
+        // The fork enumerated two harnesses; the tip enumerates only one — the
+        // integration-test binary vanished (a narrowing alias / --exclude /
+        // harness=false / empty build). That must fail closed: the missing
+        // target's tests can no longer regress or count-drop, so the other gates
+        // are blind to them.
+        let base = tsnap_targets(&["p/lib/p", "p/test/e2e"]);
+        let tip = tsnap_targets(&["p/lib/p"]);
+        let g = gate_enumeration_superset(&base, &tip);
+        assert!(!g.passed);
+        assert_eq!(
+            g.violations,
+            vec![Violation::EnumerationShrank {
+                target: "p/test/e2e".to_string()
+            }]
+        );
+        // And it fails the aggregate floor even when every other gate is green.
+        let base_run = RunSnapshot {
+            tests: base,
+            ..Default::default()
+        };
+        let tip_run = RunSnapshot {
+            tests: tip,
+            ..Default::default()
+        };
+        let declared = paths(&["src/a.rs"]);
+        let assertions = BTreeMap::new();
+        let inputs = FloorInputs {
+            baseline: &base_run,
+            current: &tip_run,
+            check_results: &[check("c", "cargo test", true, Some(0))],
+            declared_files: &declared,
+            changed_files: &declared,
+            baseline_assertions: &assertions,
+            current_assertions: &assertions,
+            file_scope_slack: 0,
+        };
+        let verdict = evaluate_floor(&inputs);
+        assert!(!verdict.passed());
+        assert!(verdict
+            .failed_gates()
+            .any(|g| g.gate == GateKind::EnumerationIntegrity));
+    }
+
     // --- aggregate ---
 
     #[test]
@@ -791,7 +919,7 @@ mod tests {
         };
         let verdict = evaluate_floor(&inputs);
         assert!(verdict.passed(), "{verdict:#?}");
-        assert_eq!(verdict.gates.len(), 5);
+        assert_eq!(verdict.gates.len(), 6);
         assert_eq!(verdict.violations().count(), 0);
     }
 

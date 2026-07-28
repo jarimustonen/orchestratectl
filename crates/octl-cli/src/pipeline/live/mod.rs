@@ -401,9 +401,24 @@ fn to_harness_check(i: usize, c: &plan::Check) -> HarnessCheck {
 
 /// Capture a [`RunSnapshot`] (tests + clippy) in `dir` using the configured
 /// commands.
+///
+/// A **fresh** `CARGO_TARGET_DIR` is allocated per capture
+/// (`floor-capture-hardening-round-2` item 1 / F4) and shared by the test and
+/// clippy passes of *this* snapshot only. Because every `capture_snapshot` call
+/// (fork baseline, each chunk tip, the feature tip) gets its own dir, baseline
+/// and tip never share a warm cache — closing the shared-`target/` clippy bypass
+/// where a warm cache re-emits zero warnings. The dir lives in the system temp
+/// area (outside the worktree, so it never perturbs the file-scope diff) and is
+/// removed when the returned guard drops at the end of this function.
 fn capture_snapshot(cfg: &PipelineConfig, dir: &Path) -> Result<RunSnapshot, PipelineError> {
-    let tests = floor::runner::capture_test_snapshot(&cfg.test_cmd, dir)?;
-    let clippy = floor::runner::capture_clippy_snapshot(&cfg.clippy_cmd, dir)?;
+    let target_dir = tempfile::TempDir::new().map_err(|e| {
+        PipelineError::from(floor::FloorError::Capture {
+            what: "tests",
+            message: format!("could not allocate a floor target dir: {e}"),
+        })
+    })?;
+    let tests = floor::runner::capture_test_snapshot(&cfg.test_cmd, dir, target_dir.path())?;
+    let clippy = floor::runner::capture_clippy_snapshot(&cfg.clippy_cmd, dir, target_dir.path())?;
     Ok(RunSnapshot {
         tests,
         clippy,

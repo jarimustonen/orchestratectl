@@ -22,11 +22,22 @@
 //!   `RUSTFLAGS`/`RUSTDOCFLAGS`/`RUSTC_WRAPPER` cannot change the observed
 //!   warning/test set. (Plan-declared `checks` in [`run_check`] are *not*
 //!   isolated — they are the caller's own contract, run verbatim.)
+//! - **Floor-pinned target dir (`floor-capture-hardening-round-2` F4).** Every
+//!   cargo capture runs with `CARGO_TARGET_DIR` set to a fresh, per-snapshot dir
+//!   (env, which beats an in-repo `build.target-dir`; plus a `--target-dir` flag
+//!   for an explicit, highest-precedence override — see [`target_dir_flags`]).
+//!   Baseline and tip therefore never share a warm cache, so `cargo clippy`
+//!   cannot re-emit **zero** warnings off a cache the baseline warmed and pass
+//!   `gate_no_new_clippy` vacuously.
 //!
-//! In-repo `.cargo/config.toml` / `rust-toolchain.toml` overrides are not fully
-//! neutralized here (that needs `--config`/out-of-tree invocation); the
-//! toolchain actually used is recorded via [`rustc_version`] as provenance on
-//! the baseline, and full neutralization is deferred to the follow-up issue.
+//! In-repo `.cargo/config.toml` `build.target-dir` is now overridden (above), and
+//! a *narrowed* test enumeration (a `test`/`clippy` alias, `--exclude`,
+//! `harness = false`, or workspace-narrowing) is caught fail-closed by the F7
+//! enumeration-superset gate rather than passing vacuously. The toolchain used is
+//! recorded via [`rustc_version`] as baseline provenance. Residual config vectors
+//! — an `[alias]` redirect of the `clippy` subcommand to a benign command, config
+//! `rustflags` lint-level flips, and a consistently-weakening `rust-toolchain.toml`
+//! — are documented in the module docs and deferred to a spin-off.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,9 +84,20 @@ const ENV_ALLOWLIST: &[&str] = &[
 /// must read; `CARGO_TERM_COLOR=never` keeps JSON clean of ANSI escapes;
 /// `CARGO_INCREMENTAL=0` stops incremental compilation from skipping a fresh
 /// lint pass (a cached incremental unit can re-use a prior compile and NOT
-/// re-emit its warnings — see the shared-`target/` caching caveat in the module
-/// docs).
-fn isolated_command(program: &str) -> Command {
+/// re-emit its warnings).
+///
+/// When `target_dir` is `Some`, `CARGO_TARGET_DIR` is pinned to it
+/// (`floor-capture-hardening-round-2` item 1 / F4). The env var takes precedence
+/// over an in-repo `build.target-dir` in `.cargo/config.toml` (cargo precedence:
+/// CLI flag > env > config), so a committed config cannot re-point baseline and
+/// tip at one shared warm cache — the bypass where `cargo clippy` on a warm cache
+/// re-emits **zero** warnings and `gate_no_new_clippy` passes vacuously. The
+/// capture layer passes a *fresh* dir per snapshot (see `capture_snapshot` in
+/// the pipeline), so baseline and tip never share a target dir. `env_clear()`
+/// already dropped any inherited `CARGO_TARGET_DIR`, so `None` means "cargo's
+/// default (`<cwd>/target`, or the repo's `build.target-dir`)" — used only for
+/// non-build probes like [`rustc_version`].
+fn isolated_command(program: &str, target_dir: Option<&Path>) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
     for key in ENV_ALLOWLIST {
@@ -86,7 +108,37 @@ fn isolated_command(program: &str) -> Command {
     cmd.env("LC_ALL", "C");
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_INCREMENTAL", "0");
+    if let Some(dir) = target_dir {
+        cmd.env("CARGO_TARGET_DIR", dir);
+    }
     cmd
+}
+
+/// Build the cargo flags that pin the target dir on the command line, as a
+/// belt-and-suspenders complement to the `CARGO_TARGET_DIR` env
+/// ([`isolated_command`]). `--target-dir <path>` is cargo's highest-precedence
+/// target-dir mechanism (above env and above an in-repo `build.target-dir`), so
+/// it makes the override explicit in the invocation the audit log records.
+///
+/// The composed command is later run through `sh -c`, so a path containing
+/// whitespace (or a shell metacharacter) would be mis-split into multiple tokens.
+/// The env var is the *robust* mechanism (set directly on the process, never
+/// shell-parsed); this flag is only added when the path is a single safe shell
+/// word. When it is omitted the env still enforces the dir — worst case is a
+/// less-explicit invocation, never a lost override. A pathological path that did
+/// slip a bad flag through would make cargo error out → the capture fails closed,
+/// never silently passes.
+fn target_dir_flags(target_dir: &Path) -> Vec<String> {
+    let path = target_dir.to_string_lossy();
+    let shell_safe = !path.is_empty()
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
+    if shell_safe {
+        vec!["--target-dir".to_string(), path.into_owned()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// The active `rustc -V` string (isolated), or `"unknown"` if it cannot be
@@ -94,7 +146,7 @@ fn isolated_command(program: &str) -> Command {
 /// different toolchain than the tip is detectable.
 #[must_use]
 pub fn rustc_version(cwd: &Path) -> String {
-    isolated_command("rustc")
+    isolated_command("rustc", None)
         .arg("-V")
         .current_dir(cwd)
         .output()
@@ -186,12 +238,25 @@ pub fn run_checks(checks: &[plan::Check], cwd: &Path) -> Vec<CheckRun> {
 ///    run, or an exit code inconsistent with the summary rejects the whole
 ///    capture. Surviving names become target-qualified [`TestId`]s.
 ///
+/// `target_dir` is the floor-controlled `CARGO_TARGET_DIR` for this capture
+/// (`floor-capture-hardening-round-2` item 1 / F4): a fresh, per-snapshot dir the
+/// caller pins so baseline and tip never share a warm cache (see
+/// [`isolated_command`] / [`target_dir_flags`]).
+///
 /// Doctests (run by rustdoc, not a `compiler-artifact` binary) are **not**
-/// captured here; qualifying them needs the nightly libtest JSON format and is
-/// deferred to the follow-up issue.
-pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot, FloorError> {
-    let enumerate_cmd = inject_cargo_flags(test_cmd, &["--no-run", "--message-format=json"]);
-    let out = isolated_command("sh")
+/// captured here; qualifying them needs a separate `--doc` pass (or the nightly
+/// libtest JSON format) and is deferred to the follow-up issue.
+pub fn capture_test_snapshot(
+    test_cmd: &str,
+    cwd: &Path,
+    target_dir: &Path,
+) -> Result<TestSnapshot, FloorError> {
+    let mut flags = target_dir_flags(target_dir);
+    flags.push("--no-run".to_string());
+    flags.push("--message-format=json".to_string());
+    let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let enumerate_cmd = inject_cargo_flags(test_cmd, &flag_refs);
+    let out = isolated_command("sh", Some(target_dir))
         .arg("-c")
         .arg(&enumerate_cmd)
         .current_dir(cwd)
@@ -253,9 +318,19 @@ pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot,
     }
 
     let binaries = parse::test_binaries(&messages);
-    let mut snap = TestSnapshot::default();
+    // Record the enumerated target set (F7): the superset gate must see every
+    // harness cargo built, independent of how many tests each runs (a target with
+    // zero tests still counts — its disappearance at the tip is the shrink we fail
+    // closed on).
+    let mut snap = TestSnapshot {
+        targets: binaries
+            .iter()
+            .map(|b| format!("{}/{}/{}", b.package, b.target_kind, b.target))
+            .collect(),
+        ..Default::default()
+    };
     for bin in &binaries {
-        run_one_test_binary(bin, cwd, &mut snap)?;
+        run_one_test_binary(bin, cwd, target_dir, &mut snap)?;
     }
     Ok(snap)
 }
@@ -265,9 +340,10 @@ pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot,
 fn run_one_test_binary(
     bin: &parse::TestBinary,
     cwd: &Path,
+    target_dir: &Path,
     snap: &mut TestSnapshot,
 ) -> Result<(), FloorError> {
-    let out = isolated_command(&bin.executable)
+    let out = isolated_command(&bin.executable, Some(target_dir))
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
@@ -333,9 +409,16 @@ fn run_one_test_binary(
 /// or a `deny`-level lint from `[lints]`/`#![deny]`/`-D`) means the code is not
 /// in a clean, gateable state, so the capture is rejected rather than trusting a
 /// partial warning set.
-pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySnapshot, FloorError> {
-    let cmd = inject_cargo_flags(clippy_cmd, &["--message-format=json"]);
-    let out = isolated_command("sh")
+pub fn capture_clippy_snapshot(
+    clippy_cmd: &str,
+    cwd: &Path,
+    target_dir: &Path,
+) -> Result<ClippySnapshot, FloorError> {
+    let mut flags = target_dir_flags(target_dir);
+    flags.push("--message-format=json".to_string());
+    let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
+    let cmd = inject_cargo_flags(clippy_cmd, &flag_refs);
+    let out = isolated_command("sh", Some(target_dir))
         .arg("-c")
         .arg(&cmd)
         .current_dir(cwd)
@@ -386,14 +469,19 @@ pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySna
 }
 
 /// Rewrite a cargo command to carry the floor's required `flags`, robust to a
-/// `--` argument separator: any existing `--message-format[=x]` token is dropped
-/// (the floor always forces its own), and the injected flags are inserted
-/// **before** the first `--` (or appended if none). Blindly appending would put
-/// the flags after `--`, where cargo passes them to the *test binary* instead of
-/// to cargo — breaking `--no-run` and crashing the harness on an unknown flag.
-/// Token-based on whitespace: a base command with quoted, space-containing args
-/// is out of contract (the floor's own commands never have them).
+/// `--` argument separator: any existing `--message-format[=x]` or
+/// `--target-dir[=x]` token is dropped (the floor always forces its own — the
+/// target dir so an in-command dir cannot re-point the floor's pinned cache), and
+/// the injected flags are inserted **before** the first `--` (or appended if
+/// none). Blindly appending would put the flags after `--`, where cargo passes
+/// them to the *test binary* instead of to cargo — breaking `--no-run` and
+/// crashing the harness on an unknown flag. Token-based on whitespace: a base
+/// command with quoted, space-containing args is out of contract (the floor's own
+/// commands never have them).
 fn inject_cargo_flags(cmd: &str, flags: &[&str]) -> String {
+    // cargo flags that take a following value token; an occurrence before `--`
+    // is dropped along with its value so the floor's injected copy is the only one.
+    const DROP_WITH_VALUE: &[&str] = &["--message-format", "--target-dir"];
     let mut before: Vec<&str> = Vec::new();
     let mut after: Vec<&str> = Vec::new();
     let mut past_sep = false;
@@ -412,11 +500,14 @@ fn inject_cargo_flags(cmd: &str, flags: &[&str]) -> String {
             after.push(tok);
             continue;
         }
-        if tok == "--message-format" {
+        if DROP_WITH_VALUE.contains(&tok) {
             skip_next = true; // drop the following value token too
             continue;
         }
-        if tok.starts_with("--message-format=") {
+        if DROP_WITH_VALUE.iter().any(|f| {
+            tok.strip_prefix(f)
+                .is_some_and(|rest| rest.starts_with('='))
+        }) {
             continue;
         }
         before.push(tok);
@@ -542,7 +633,7 @@ mod tests {
         // is still findable.
         std::env::set_var("RUSTFLAGS", "--cfg poisoned");
         let dir = TempDir::new().unwrap();
-        let out = isolated_command("sh")
+        let out = isolated_command("sh", None)
             .arg("-c")
             .arg("echo \"RUSTFLAGS=[${RUSTFLAGS:-}] PATH_SET=${PATH:+yes}\"")
             .current_dir(dir.path())
@@ -611,7 +702,7 @@ mod tests {
             "fakeclippy",
             &format!("#!/bin/sh\nprintf '%s' '{json}'\n"),
         );
-        let snap = capture_clippy_snapshot(&script, dir.path()).unwrap();
+        let snap = capture_clippy_snapshot(&script, dir.path(), dir.path()).unwrap();
         assert_eq!(snap.warnings.len(), 1);
         let w = snap.warnings.iter().next().unwrap();
         assert_eq!(w.lint, "unused_variables");
@@ -634,7 +725,7 @@ mod tests {
             "fakeclippy",
             &format!("#!/bin/sh\nprintf '%s' '{json}'\nexit 101\n"),
         );
-        let err = capture_clippy_snapshot(&script, dir.path()).unwrap_err();
+        let err = capture_clippy_snapshot(&script, dir.path(), dir.path()).unwrap_err();
         assert!(format!("{err}").contains("error-level diagnostic"), "{err}");
     }
 
@@ -647,7 +738,7 @@ mod tests {
             "fakeclippy",
             "#!/bin/sh\necho 'error: unknown flag'\n",
         );
-        assert!(capture_clippy_snapshot(&script, dir.path()).is_err());
+        assert!(capture_clippy_snapshot(&script, dir.path(), dir.path()).is_err());
     }
 
     #[test]
@@ -670,12 +761,18 @@ mod tests {
             "fakecargo",
             &format!("#!/bin/sh\nprintf '%s' '{stream}'\n"),
         );
-        let snap = capture_test_snapshot(&cargo, dir.path()).unwrap();
+        let snap = capture_test_snapshot(&cargo, dir.path(), dir.path()).unwrap();
         assert_eq!(snap.passed.len(), 1);
         let id = snap.passed.iter().next().unwrap();
         assert_eq!(id.package, "octl-cli");
         assert_eq!(id.target_kind, "lib");
         assert_eq!(id.name, "mymod::works");
+        // F7: the enumerated target set is recorded (one canonical key per built
+        // harness), independent of how many tests it ran.
+        assert_eq!(
+            snap.targets.iter().cloned().collect::<Vec<_>>(),
+            vec!["octl-cli/lib/octl-cli".to_string()]
+        );
     }
 
     #[test]
@@ -698,7 +795,7 @@ mod tests {
             "fakecargo",
             &format!("#!/bin/sh\nprintf '%s' '{stream}'\n"),
         );
-        let err = capture_test_snapshot(&cargo, dir.path()).unwrap_err();
+        let err = capture_test_snapshot(&cargo, dir.path(), dir.path()).unwrap_err();
         assert!(format!("{err}").contains("untrustworthy"), "{err}");
     }
 
@@ -713,7 +810,7 @@ mod tests {
             "fakecargo",
             "#!/bin/sh\nprintf '%s\\n' '{\"reason\":\"build-finished\",\"success\":true}'\nexit 137\n",
         );
-        let err = capture_test_snapshot(&cargo, dir.path()).unwrap_err();
+        let err = capture_test_snapshot(&cargo, dir.path(), dir.path()).unwrap_err();
         assert!(format!("{err}").contains("killed/truncated"), "{err}");
     }
 
@@ -732,7 +829,7 @@ mod tests {
             "fakecargo",
             &format!("#!/bin/sh\nprintf '%s' '{stream}'\nexit 101\n"),
         );
-        assert!(capture_test_snapshot(&cargo, dir.path()).is_err());
+        assert!(capture_test_snapshot(&cargo, dir.path(), dir.path()).is_err());
     }
 
     #[test]
@@ -746,7 +843,7 @@ mod tests {
 printf '%s\n' '{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target":{"name":"pkg","kind":["lib"]},"profile":{"test":false},"executable":null}'
 "#,
         );
-        assert!(capture_test_snapshot(&cargo, dir.path()).is_err());
+        assert!(capture_test_snapshot(&cargo, dir.path(), dir.path()).is_err());
     }
 
     #[test]
@@ -759,5 +856,98 @@ printf '%s\n' '{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target"
         );
         assert_eq!(counts[&PathBuf::from("a.rs")], 2);
         assert_eq!(counts[&PathBuf::from("missing.rs")], 0);
+    }
+
+    // --- F4: floor-controlled CARGO_TARGET_DIR ---
+
+    #[test]
+    fn capture_pins_caller_target_dir_via_env() {
+        // The floor pins CARGO_TARGET_DIR to the dir it chose, so an in-repo
+        // `build.target-dir` cannot re-point the cache (env beats config). A fake
+        // clippy records the CARGO_TARGET_DIR it actually saw; assert it is the
+        // dir the floor passed, not the (unset/default) one.
+        let dir = TempDir::new().unwrap();
+        let td = dir.path().join("floor-target");
+        std::fs::create_dir_all(&td).unwrap();
+        let sentinel = dir.path().join("seen-target-dir");
+        let script = write_script(
+            dir.path(),
+            "fakeclippy",
+            &format!(
+                "#!/bin/sh\nprintf '%s' \"$CARGO_TARGET_DIR\" > '{}'\nprintf '{{\"reason\":\"build-finished\",\"success\":true}}\\n'\n",
+                sentinel.display()
+            ),
+        );
+        let snap = capture_clippy_snapshot(&script, dir.path(), &td).unwrap();
+        assert!(snap.warnings.is_empty());
+        let seen = std::fs::read_to_string(&sentinel).unwrap();
+        assert_eq!(
+            seen,
+            td.to_string_lossy(),
+            "capture must pin CARGO_TARGET_DIR to the floor's dir"
+        );
+    }
+
+    #[test]
+    fn distinct_target_dirs_defeat_warm_cache_sharing() {
+        // done-criteria (c): baseline and tip must NOT share a warm cache, or a
+        // warm `cargo clippy` re-emits zero warnings and no-new-clippy passes
+        // vacuously. The pipeline gives each capture a fresh dir; here we prove
+        // the capture faithfully uses whichever dir it is handed, so two
+        // different dirs yield two different recorded target dirs (no sharing).
+        let dir = TempDir::new().unwrap();
+        let sentinel = dir.path().join("targets.log");
+        let script = write_script(
+            dir.path(),
+            "fakeclippy",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$CARGO_TARGET_DIR\" >> '{}'\nprintf '{{\"reason\":\"build-finished\",\"success\":true}}\\n'\n",
+                sentinel.display()
+            ),
+        );
+        let base_td = dir.path().join("base-target");
+        let tip_td = dir.path().join("tip-target");
+        capture_clippy_snapshot(&script, dir.path(), &base_td).unwrap();
+        capture_clippy_snapshot(&script, dir.path(), &tip_td).unwrap();
+        let log = std::fs::read_to_string(&sentinel).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_ne!(lines[0], lines[1], "baseline and tip shared a target dir");
+    }
+
+    #[test]
+    fn inject_cargo_flags_drops_existing_target_dir() {
+        // An in-command `--target-dir` (space or `=` form) is stripped so only the
+        // floor's injected copy survives — a base cmd cannot re-point the cache.
+        assert_eq!(
+            inject_cargo_flags(
+                "cargo clippy --target-dir /evil/shared",
+                &["--target-dir", "/floor/pinned", "--message-format=json"]
+            ),
+            "cargo clippy --target-dir /floor/pinned --message-format=json"
+        );
+        assert_eq!(
+            inject_cargo_flags(
+                "cargo test --target-dir=/evil -- --nocapture",
+                &["--target-dir", "/floor/pinned"]
+            ),
+            "cargo test --target-dir /floor/pinned -- --nocapture"
+        );
+    }
+
+    #[test]
+    fn target_dir_flags_skips_shell_unsafe_paths() {
+        use std::path::Path;
+        // A safe path yields the explicit flag.
+        assert_eq!(
+            target_dir_flags(Path::new("/tmp/floor-target_1.2")),
+            vec![
+                "--target-dir".to_string(),
+                "/tmp/floor-target_1.2".to_string()
+            ]
+        );
+        // A path with whitespace is omitted (env var still enforces it); never
+        // emitted as a token that `sh -c` would mis-split.
+        assert!(target_dir_flags(Path::new("/tmp/has space")).is_empty());
     }
 }
