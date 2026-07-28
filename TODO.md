@@ -58,7 +58,7 @@ GLOBAL HEAD-OF-LINE: agent-skips-run-merge-idle-pending (Lane A, high, concrete)
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
-  ▶ agent-skips-run-merge-idle-pending              (high; supervisor safety-net + reducer; concrete)
+  ▶ agent-skips-run-merge-idle-pending [wip]        (high; supervisor safety-net + reducer; concrete)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
     code-run-inject-no-selfmerge                    (follow-up of interactive-code — code-inject the no-self-merge rule)
     interactive-merge-audit-marker                  (follow-up of interactive-code — audit marker for human-confirmed merge)
@@ -73,7 +73,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ floor-capture-hardening-round-2          (high; floor/, 5 residual bypasses from floor-capture-trust-model; disjoint from A)
+  ▶ floor-capture-hardening-round-2 [wip]    (high; floor/, 5 residual bypasses from floor-capture-trust-model; disjoint from A)
     pipeline-fix-loop-provenance
     pipeline-parallel-chunks                 (DAG scheduler)
     pipeline-hardening
