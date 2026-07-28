@@ -2,13 +2,16 @@
 created: 2026-07-28
 updated: 2026-07-28
 type: improvement
-status: in-progress
+status: done
 priority: high
 epic: code-pipeline
 related: ['@floor-capture-trust-model']
 commits:
 - hash: d36457b
   summary: round-2 floor hardening (F4 target-dir, F7 enumeration, provenance)
+- hash: 76d2a72
+  summary: apply /llm-review findings (provenance fail-closed, separator bug, split target dirs)
+closed: 2026-07-28
 ---
 
 # Floor capture hardening round 2: repo-controlled cargo config, enumeration integrity, doctests, provenance enforcement
