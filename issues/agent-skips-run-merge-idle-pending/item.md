@@ -6,6 +6,9 @@ reporter: jari
 status: in-progress
 priority: high
 related: ['@supervisor-stuck-pending-after-self-merge', '@spinoff-must-submit-node-report']
+commits:
+- hash: b2cfe3e
+  summary: idle-unmerged safety net + tests
 ---
 
 _Source: orchestratectl technical-decision run (agent closing contract)_
