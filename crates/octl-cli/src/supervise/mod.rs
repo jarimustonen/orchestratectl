@@ -237,6 +237,47 @@ fn no_worker_grace() -> Duration {
 /// never-created worker from a spawned-then-died one.
 const NO_WORKER_REASON: &str = "no-worker-node";
 
+/// How long an alive-but-idle autonomous agent may sit on committed, cleanly-
+/// mergeable work WITHOUT calling `run merge` before the idle-unmerged safety net
+/// terminalizes the run (issue `agent-skips-run-merge-idle-pending`).
+///
+/// The observed failure: an autonomous agent finished its work (clean commits,
+/// clean worktree) but skipped its mandatory `run merge` close and dropped to an
+/// idle shell — so the PID stays Alive, no terminal report ever lands, and the
+/// run hangs `pending` forever. This threshold is the bounded quiet-period after
+/// which the supervisor stops waiting and terminalizes the run to a recoverable
+/// failed state a conductor can salvage.
+///
+/// Chosen generously (30 min) and measured from the LATER of the branch-tip
+/// commit time and the pane-transcript mtime (see
+/// [`cleanup::node_idle_unmerged`]), so a legitimately long-running agent — heavy
+/// `/llm-review` units run 54–96 min — is never tripped as long as it is still
+/// committing OR still emitting pane output. Overridable via
+/// [`IDLE_UNMERGED_ENV`]; tests set `0` to fire on the first quiet tick.
+const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(1800);
+
+/// Env override for [`IDLE_UNMERGED_THRESHOLD`] (whole seconds; unparseable →
+/// default).
+const IDLE_UNMERGED_ENV: &str = "OCTL_IDLE_UNMERGED_SECS";
+
+/// Reason recorded on the synthesized failed `node.report` when the idle-unmerged
+/// safety net fires. Distinct from `agent-died` (the process is still Alive) and
+/// from a blocked handoff (this is complete-but-unlanded work) so `run show` /
+/// `run wait` can tell "agent skipped its close" from a genuine failure or a
+/// human-needed tie.
+const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
+
+/// The effective idle-unmerged threshold, honoring [`IDLE_UNMERGED_ENV`].
+fn idle_unmerged_threshold() -> Duration {
+    match std::env::var(IDLE_UNMERGED_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_or(IDLE_UNMERGED_THRESHOLD, Duration::from_secs),
+        Err(_) => IDLE_UNMERGED_THRESHOLD,
+    }
+}
+
 /// Max attempts to fire the `--notify` completion hook before the supervisor
 /// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
 /// failure only when it cannot enter its lock critical section or the marker
@@ -2845,6 +2886,113 @@ fn watchdog_tick(
             }
             drop(guard);
         }
+
+        // ---- Idle-unmerged safety net (issue `agent-skips-run-merge-idle-pending`) ----
+        // The reconcile path above rescues an ALREADY-MERGED branch whose report
+        // was lost; the death path rescues a DEAD agent's stranded work. Neither
+        // covers the third gap: an autonomous agent that committed cleanly-mergeable
+        // work, left a clean worktree, then skipped its mandatory `run merge` and
+        // dropped to an idle shell. Its PID stays Alive and no terminal report ever
+        // lands, so `rollup_status` returns `None` forever and the run hangs
+        // `pending` (a live supervisor + tmux window + worktree leaked per
+        // occurrence). Detect it and terminalize to a RECOVERABLE failed state a
+        // conductor can salvage with `run merge` — the same manual recovery the
+        // issue describes, now bounded instead of infinite.
+        //
+        // Gated on ALL of: liveness ALIVE (a DEAD agent's committed work is already
+        // salvaged by the death path above — never double-handle), NOT already
+        // merged (the reconcile path owns that), no terminal report yet, and an
+        // AUTONOMOUS lifecycle. Interactive `code`/`orchestrate` runs are EXEMPT — a
+        // human owns their merge (`interactive-code-run-self-merged`); they keep
+        // idling for `/worktree-merge`. The idle + clean-worktree + cleanly-mergeable
+        // checks (and the long-working-agent guard) live in
+        // `cleanup::node_idle_unmerged`.
+        if matches!(v, watchdog::Liveness::Alive)
+            && !reconcile_probe
+            && n.last_report.is_none()
+            && n.kind.lifecycle() == Lifecycle::Autonomous
+        {
+            let threshold = idle_unmerged_threshold().as_secs() as i64;
+            // Cheap outside-lock probe (git only): gate the exclusive lock so we do
+            // not contend with the reducer every tick for every live autonomous node.
+            if cleanup::node_idle_unmerged(paths, &n, &git, now.timestamp(), threshold).is_some() {
+                // The probe ran OUTSIDE the run lock. Acquire the flock, re-read the
+                // node under it, and re-verify BOTH that it is still non-terminal &
+                // unreported AND that the idle-unmerged verdict still holds against
+                // the fresh projection + current git state — so a report that landed
+                // in the window, or an agent that resumed and moved its branch /
+                // dirtied its tree, aborts the synthesis. Mirrors the reconcile
+                // path's TOCTOU close.
+                let guard = match RunLock::acquire(&paths.lock()) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        warn!(
+                            target: "orchestratectl::supervise",
+                            node = %node_id,
+                            error = %e,
+                            "watchdog could not lock run to synthesize idle-unmerged report"
+                        );
+                        continue;
+                    }
+                };
+                let fresh = read_node_opt(paths, &nid).ok().flatten();
+                let still_unreported = fresh.as_ref().is_some_and(|f| {
+                    f.last_report.is_none()
+                        && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
+                });
+                let idle = fresh.as_ref().filter(|_| still_unreported).and_then(|f| {
+                    cleanup::node_idle_unmerged(paths, f, &git, now.timestamp(), threshold)
+                });
+                let Some(idle) = idle else {
+                    tracing::debug!(
+                        target: "orchestratectl::supervise",
+                        node = %node_id,
+                        "idle-unmerged no longer holds under lock; leaving live node alone"
+                    );
+                    drop(guard);
+                    continue;
+                };
+                info!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id,
+                    branch = %idle.recoverability.branch,
+                    unmerged_commits = idle.recoverability.unmerged_commits,
+                    idle_secs = idle.idle_secs,
+                    "autonomous agent committed but never merged and has gone idle; terminalizing run to recoverable failed"
+                );
+                let mut data = json!({
+                    "success": false,
+                    "failed": true,
+                    "cancelled": false,
+                    "reason": IDLE_UNMERGED_REASON,
+                    "summary": format!(
+                        "Agent for node {} committed cleanly-mergeable work but never called `run merge` and has been idle {}s; supervisor terminalized the run recoverable (land it with `run merge`).",
+                        node_id, idle.idle_secs
+                    ),
+                    "discussion_items": [],
+                    "spinoff_proposals": [],
+                    "wrap_up_recommendations": [],
+                });
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert(
+                        "recoverable_work".to_string(),
+                        idle.recoverability.to_report_value(),
+                    );
+                }
+                let lock = guard.witness();
+                if let Err(e) =
+                    append_and_apply_unlocked(&lock, paths, "node.report", Some(&nid), None, data)
+                {
+                    warn!(
+                        target: "orchestratectl::supervise",
+                        node = %node_id,
+                        error = %e,
+                        "synthesize idle-unmerged node.report failed"
+                    );
+                }
+                drop(guard);
+            }
+        }
     }
     // Drive the bounded auto-retry state machine: for every parked node whose
     // backoff has elapsed, re-spawn a clean worker at the run's source branch (or
@@ -3592,6 +3740,254 @@ mod tests {
         );
         assert!(!n.status.is_terminal(), "node stays live");
         assert!(wt.exists(), "the worktree with live work is untouched");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    // --- Idle-unmerged safety net (issue `agent-skips-run-merge-idle-pending`) ---
+    //
+    // The complement of the reconcile tests above: the branch is committed and
+    // cleanly mergeable but NOT merged, the agent is ALIVE (idle shell), and no
+    // terminal report ever landed. The safety net must terminalize an AUTONOMOUS
+    // run to a recoverable failed state, EXEMPT an interactive one, and NOT trip a
+    // still-working agent. They serialize on `octl_watchdog_grace` (grace 0) and
+    // set the process-global `OCTL_IDLE_UNMERGED_SECS`.
+
+    /// Init a repo on `main`, fork `wt/foo`, commit work in it, but DO NOT merge
+    /// into `main` — the committed-but-unmerged state. `commit_date`, when given,
+    /// backdates the commit (an `RFC3339`/`git`-parseable date) so its tip time is
+    /// stale; `None` commits at wall-clock now. Returns `(repo, worktree, base)`.
+    fn init_unmerged_repo_at(
+        tmp: &tempfile::TempDir,
+        commit_date: Option<&str>,
+    ) -> (PathBuf, PathBuf, String) {
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        tgit(&repo, &["init", "-q", "-b", "main"]);
+        tgit(&repo, &["config", "user.email", "t@example.com"]);
+        tgit(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README"), "x").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "init"]);
+        let base = trev(&repo, "main");
+        let wt = tmp.path().join("wt");
+        tgit(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "wt/foo",
+                wt.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(wt.join("fix.rs"), "work").unwrap();
+        tgit(&wt, &["add", "-A"]);
+        let mut commit = PCommand::new("git");
+        commit
+            .current_dir(&wt)
+            .args(["commit", "-qm", "agent work"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(d) = commit_date {
+            commit
+                .env("GIT_AUTHOR_DATE", d)
+                .env("GIT_COMMITTER_DATE", d);
+        }
+        assert!(commit.status().unwrap().success(), "commit failed");
+        // NB: no `git merge` — the work is left UNMERGED on the branch.
+        (repo, wt, base)
+    }
+
+    fn init_unmerged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
+        init_unmerged_repo_at(tmp, None)
+    }
+
+    /// A run dir + manifest (of `kind`/`lifecycle`) + one worker node pointing at
+    /// the unmerged worktree, with a live `agent_pid`.
+    fn setup_unmerged_run(
+        tmp: &tempfile::TempDir,
+        repo: &Path,
+        wt: &Path,
+        base: &str,
+        agent_pid: i32,
+        kind: &str,
+        lifecycle: &str,
+    ) -> RunPaths {
+        let run_id = "01jxwd0000000000000000000w";
+        let dir = tmp.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": kind,
+                "lifecycle": lifecycle,
+                "title": "t",
+                "source_repo": repo.to_str().unwrap(),
+                "source_branch": "main",
+            }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&NodeId::parse_str("n-0001").unwrap()),
+            None,
+            json!({
+                "kind": kind,
+                "branch": "wt/foo",
+                "base_sha": base,
+                "worktree_path": wt.to_str().unwrap(),
+                "agent_pid": agent_pid,
+            }),
+        )
+        .unwrap();
+        paths
+    }
+
+    /// Done-criterion: an AUTONOMOUS agent that committed cleanly-mergeable work,
+    /// left a clean worktree, but never merged and has gone idle must be
+    /// terminalized to a RECOVERABLE failed state (distinct `agent-idle-unmerged`
+    /// reason + `recoverable_work`) — never left `pending` forever.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_terminalizes_idle_unmerged_autonomous_as_recoverable() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        // Fire on the first quiet tick (any idle ≥ 0s counts).
+        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_unmerged_repo(&tmp);
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
+        assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        let report = n
+            .last_report
+            .expect("idle-unmerged autonomous run must be terminalized, not left pending");
+        assert_eq!(
+            report["success"], false,
+            "complete-but-unlanded is a failure"
+        );
+        assert_eq!(
+            report["reason"], "agent-idle-unmerged",
+            "reason distinguishes this from agent-died and blocked handoffs"
+        );
+        // The stranded work is surfaced so a conductor can `run merge` it.
+        let rec = &report["recoverable_work"];
+        assert_eq!(rec["recoverable"], true);
+        assert_eq!(rec["unmerged_commits"], 1);
+        assert_eq!(rec["merges_cleanly"], true);
+        assert_eq!(rec["branch"], "wt/foo");
+        assert!(n.status.is_terminal(), "run no longer strands at pending");
+        // No `via` marker → the cleanup gate PRESERVES the branch/worktree for
+        // salvage (invariant #5), rather than force-deleting it.
+        assert!(report.get("via").is_none(), "recoverable, not a merge");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// An INTERACTIVE (`code`) run is EXEMPT: even committed + idle + unmerged, the
+    /// human owns the merge (`interactive-code-run-self-merged`). The safety net
+    /// must synthesize NO report and leave the node live for `/worktree-merge`.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_exempts_interactive_idle_unmerged() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_unmerged_repo(&tmp);
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "code", "interactive");
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            n.last_report.is_none(),
+            "an interactive run must keep idling for the human merge, not be terminalized"
+        );
+        assert!(!n.status.is_terminal(), "node stays live");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// A legitimately long-running agent must NOT be tripped. Here the branch tip
+    /// is FRESH (just committed) and the threshold is large: `now - last_activity`
+    /// is far below it, so no report is synthesized. Guards the "heavy-LLM units
+    /// run 54–96 min — do not terminalize those" requirement.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_does_not_trip_long_working_agent_with_fresh_commit() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        // A generous threshold; the fresh commit is well within it.
+        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_unmerged_repo(&tmp);
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            n.last_report.is_none(),
+            "a still-working agent (fresh commit) must NOT be terminalized"
+        );
+        assert!(!n.status.is_terminal(), "node stays live");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// The activity signal takes the MAX of the branch-tip commit time and the
+    /// pane-transcript (`agent.log`) mtime. A stale commit alone would trip the
+    /// net, but a FRESH `agent.log` (the agent is still emitting pane output — a
+    /// long `/llm-review` between commits) must hold it off. Directly exercises the
+    /// commit-vs-pane composition that keeps a working-but-not-committing agent safe.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_does_not_trip_when_pane_active_despite_stale_commit() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Commit is ancient → its tip time alone would read as long-idle.
+        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
+        // But the pane is still active NOW: a fresh agent.log mtime.
+        std::fs::write(paths.agent_log(), b"...streaming model output...").unwrap();
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            n.last_report.is_none(),
+            "a fresh pane transcript must hold off the net despite a stale commit"
+        );
+        assert!(!n.status.is_terminal(), "node stays live");
 
         let _ = alive.kill();
         let _ = alive.wait();

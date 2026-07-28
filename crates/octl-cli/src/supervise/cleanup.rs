@@ -817,6 +817,128 @@ pub fn node_is_empty_handed(paths: &RunPaths, n: &Node, git: &str) -> bool {
         && worktree_is_clean(n.worktree_path.as_deref(), git)
 }
 
+/// The idle-unmerged safety-net verdict (issue `agent-skips-run-merge-idle-pending`):
+/// an autonomous agent that committed cleanly-mergeable work, left a clean
+/// worktree, but never called `run merge` and has since gone quiet. Returned by
+/// [`node_idle_unmerged`] and stamped into the synthesized failed `node.report`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdleUnmerged {
+    /// The salvageable work sitting on the branch (unmerged commits + clean-merge
+    /// flag + branch/worktree pointers), stamped into the report so a conductor
+    /// can land it with `run merge` — the same manual recovery the issue describes.
+    pub recoverability: Recoverability,
+    /// Seconds since the last observed activity (`now - last_activity`). Recorded
+    /// on the report for auditability ("idle N s past the threshold").
+    pub idle_secs: i64,
+}
+
+/// The Unix committer time of `branch`'s tip commit (`git -C <repo> log -1
+/// --format=%ct <branch>`), or `None` on any git error / unparseable output.
+///
+/// This is one of the two activity clocks the idle-unmerged safety net consults:
+/// while an agent keeps committing, the tip advances and this stays fresh, so a
+/// still-working agent is never judged idle on this signal.
+fn branch_tip_committer_time(repo: &str, branch: &str, git: &str) -> Option<i64> {
+    let out = Command::new(git)
+        .arg("-C")
+        .arg(repo)
+        .args(["log", "-1", "--format=%ct", branch])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<i64>()
+        .ok()
+}
+
+/// The Unix mtime of the run's durable pane transcript (`<run-dir>/agent.log`),
+/// or `None` if it does not exist / cannot be stat'd or the mtime predates the
+/// epoch.
+///
+/// This is the second, stronger activity clock: [`capture`](super::capture) tees
+/// the agent's tmux pane here, so ANY pane output (a long `/llm-review`, a
+/// build, streamed model tokens) bumps its mtime even between commits. An agent
+/// that is genuinely idle at a shell prompt emits nothing, so the mtime freezes.
+/// Absent when capture never armed (no tmux, tests) — the caller then falls back
+/// to the commit clock alone.
+fn agent_log_mtime(paths: &RunPaths) -> Option<i64> {
+    let meta = std::fs::metadata(paths.agent_log()).ok()?;
+    let mtime = meta.modified().ok()?;
+    mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+/// Decide whether a still-ALIVE autonomous node has become the idle-unmerged case
+/// (issue `agent-skips-run-merge-idle-pending`): its agent committed cleanly-
+/// mergeable work, left a clean worktree, but never merged and has now been quiet
+/// past `idle_threshold_secs`. Returns `Some` only when EVERY condition holds; any
+/// git error or a still-fresh activity clock yields `None` (leave the live node
+/// alone), so the verdict is conservative on uncertainty.
+///
+/// Conditions, in cheapest-git-first order:
+/// 1. **Cleanly-recoverable unmerged work** — [`node_recoverability`] returns
+///    `Some` with `recoverable()` true (≥1 commit ahead of source AND it merges
+///    without conflict). A branch level-with-source, or one whose commits conflict,
+///    is not this case.
+/// 2. **Clean worktree** — no uncommitted work ([`worktree_is_clean`]). A dirty
+///    tree means the agent is mid-edit, not done; never terminalize that.
+/// 3. **Quiet past the threshold** — `now - max(tip_commit_time, agent_log_mtime)
+///    ≥ idle_threshold_secs`. Taking the MAX of the two clocks means the net fires
+///    only when BOTH the branch tip has stopped advancing AND the pane has stopped
+///    emitting output for the whole window: a long-running agent that is still
+///    committing OR still printing is never tripped (the guard the issue demands
+///    against 54–96 min heavy-LLM units). If NEITHER clock is available (no commit
+///    time readable and no `agent.log`), `last_activity` is unknown and we decline.
+///
+/// The caller is responsible for the lifecycle gate (autonomous only; interactive
+/// `code`/`orchestrate` are exempt) and the liveness gate (Alive only — a DEAD
+/// agent's stranded work is already salvaged by the `agent-died` path via
+/// [`node_recoverability`]).
+pub fn node_idle_unmerged(
+    paths: &RunPaths,
+    n: &Node,
+    git: &str,
+    now_unix: i64,
+    idle_threshold_secs: i64,
+) -> Option<IdleUnmerged> {
+    // (1) Must have cleanly-mergeable unmerged commits to be worth salvaging.
+    let recoverability = node_recoverability(paths, n, git)?;
+    if !recoverability.recoverable() {
+        return None;
+    }
+    // (2) A clean worktree — a dirty tree is a mid-edit agent, not a done one.
+    if !worktree_is_clean(n.worktree_path.as_deref(), git) {
+        return None;
+    }
+    // (3) Both activity clocks quiet past the threshold. Resolve repo/branch the
+    // same way `node_recoverability` did (it already proved they are present).
+    let branch = n.branch.as_deref().filter(|s| !s.is_empty())?;
+    let manifest = read_manifest_opt(paths).ok().flatten()?;
+    let repo = manifest
+        .source_repo
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(n.worktree_path.as_deref())?;
+    let tip = branch_tip_committer_time(repo, branch, git);
+    let log_mtime = agent_log_mtime(paths);
+    // Newest of whichever clocks are available; `None` if neither is (decline).
+    let last_activity = tip.into_iter().chain(log_mtime).max()?;
+    let idle_secs = now_unix.saturating_sub(last_activity);
+    if idle_secs < idle_threshold_secs {
+        return None;
+    }
+    Some(IdleUnmerged {
+        recoverability,
+        idle_secs,
+    })
+}
+
 /// Whether `branch` merges into `source` without conflict, WITHOUT mutating any
 /// working tree.
 ///

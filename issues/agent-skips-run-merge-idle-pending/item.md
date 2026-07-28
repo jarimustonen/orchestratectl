@@ -1,9 +1,9 @@
 ---
 created: 2026-07-26
-updated: 2026-07-26
+updated: 2026-07-28
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: high
 related: ['@supervisor-stuck-pending-after-self-merge', '@spinoff-must-submit-node-report']
 ---
