@@ -278,6 +278,37 @@ fn idle_unmerged_threshold() -> Duration {
     }
 }
 
+/// The idle-unmerged safety net's third activity clock (issue
+/// `agent-skips-run-merge-idle-pending`): the Unix time at which `node_id`'s
+/// agent process was last seen to have advanced its cumulative CPU time.
+///
+/// `cpu_now` is the current cumulative CPU time (centiseconds, from
+/// [`watchdog::pid_cpu_time_centis`]); `map` remembers `(last observed CPU,
+/// Unix time of the last change)` per node across ticks. On the first
+/// observation the baseline is seeded to `now_unix` (assume active), so a
+/// just-observed node is never immediately judged idle. On later ticks the
+/// stored change-time only advances when the CPU total moves — so an agent
+/// busy but silent (CPU climbing, no commits, no pane output) keeps a fresh
+/// clock and is never tripped, while a genuinely idle agent (CPU flat) lets the
+/// clock go stale and the net eventually fire.
+///
+/// Returns `None` when `cpu_now` is `None` (CPU unreadable) so the caller simply
+/// omits this clock and falls back to the commit + pane clocks — never firing on
+/// the *absence* of a CPU reading.
+fn cpu_activity_clock(
+    map: &mut std::collections::BTreeMap<String, (u64, i64)>,
+    node_id: &str,
+    cpu_now: Option<u64>,
+    now_unix: i64,
+) -> Option<i64> {
+    let cpu = cpu_now?;
+    let entry = map.entry(node_id.to_string()).or_insert((cpu, now_unix));
+    if entry.0 != cpu {
+        *entry = (cpu, now_unix);
+    }
+    Some(entry.1)
+}
+
 /// Max attempts to fire the `--notify` completion hook before the supervisor
 /// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
 /// failure only when it cannot enter its lock critical section or the marker
@@ -581,6 +612,16 @@ pub fn dispatch(
     // backoff elapses; the DURABLE bound is `Node.retry_attempts`, so this map is
     // in-memory only and a restart re-derives parks from the persisted count.
     let mut retry_states: std::collections::BTreeMap<String, RetryPark> =
+        std::collections::BTreeMap::new();
+
+    // Per-node cumulative-CPU-time tracker for the idle-unmerged safety net's
+    // third activity clock (issue `agent-skips-run-merge-idle-pending`). Maps a
+    // node id to `(last observed CPU centiseconds, Unix time of the last change)`
+    // so `cpu_activity_clock` can tell a busy-but-silent agent (CPU advancing)
+    // from a genuinely idle one (CPU flat). In-memory only: on a restart the
+    // baseline re-seeds to "active now", conservatively delaying the net by at
+    // most one idle window rather than mis-firing.
+    let mut cpu_activity: std::collections::BTreeMap<String, (u64, i64)> =
         std::collections::BTreeMap::new();
 
     // Per-node `pipe-pane` failure counter driving bounded capture retry
@@ -978,7 +1019,12 @@ pub fn dispatch(
         // registry (that's `all-kinds-spawn`'s territory). The current
         // surface exercises liveness for any node that carries an
         // `agent_pid` recorded by `create.sh` integration.
-        if let Err(e) = watchdog_tick(&paths, &mut half_state_streak, &mut retry_states) {
+        if let Err(e) = watchdog_tick(
+            &paths,
+            &mut half_state_streak,
+            &mut retry_states,
+            &mut cpu_activity,
+        ) {
             warn!(
                 target: "orchestratectl::supervise",
                 error = %e.message,
@@ -2542,6 +2588,7 @@ fn watchdog_tick(
     paths: &RunPaths,
     half_state_streak: &mut std::collections::BTreeMap<String, u32>,
     retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
+    cpu_activity: &mut std::collections::BTreeMap<String, (u64, i64)>,
 ) -> Result<(), CliError> {
     let now = Utc::now();
     let now_instant = Instant::now();
@@ -2641,6 +2688,11 @@ fn watchdog_tick(
 
     // The git binary the reconcile probes shell out to (honors `GIT_BIN`).
     let git = cleanup::git_bin();
+
+    // Node ids scanned this tick — used to prune the CPU-activity tracker below
+    // so it cannot outlive the nodes it tracks.
+    let scanned_ids: std::collections::BTreeSet<String> =
+        candidates.iter().map(|(id, ..)| id.clone()).collect();
 
     for (node_id, nid, n, probe) in candidates {
         // Lifecycle-aware liveness. For AUTONOMOUS nodes the recorded agent_pid is
@@ -2904,18 +2956,33 @@ fn watchdog_tick(
         // merged (the reconcile path owns that), no terminal report yet, and an
         // AUTONOMOUS lifecycle. Interactive `code`/`orchestrate` runs are EXEMPT — a
         // human owns their merge (`interactive-code-run-self-merged`); they keep
-        // idling for `/worktree-merge`. The idle + clean-worktree + cleanly-mergeable
+        // idling for `/worktree-merge`. The idle + clean-worktree + committed-work
         // checks (and the long-working-agent guard) live in
-        // `cleanup::node_idle_unmerged`.
+        // `cleanup::node_idle_unmerged`; the third (CPU) activity clock is sampled
+        // here since it needs cross-tick state.
         if matches!(v, watchdog::Liveness::Alive)
             && !reconcile_probe
             && n.last_report.is_none()
             && n.kind.lifecycle() == Lifecycle::Autonomous
         {
             let threshold = idle_unmerged_threshold().as_secs() as i64;
+            // Third activity clock: sample the agent's cumulative CPU time and
+            // fold the last-change timestamp into the idle verdict, so an agent
+            // that is busy but SILENT (no commits, no pane output) is not judged
+            // idle. Sampled every tick this node reaches here so cross-tick deltas
+            // are observed. A missing PID / unreadable CPU yields `None` → the
+            // clock is simply omitted (commit + pane clocks still apply).
+            let cpu_now = n.agent_pid.and_then(|p| {
+                u32::try_from(p)
+                    .ok()
+                    .and_then(watchdog::pid_cpu_time_centis)
+            });
+            let cpu_clock = cpu_activity_clock(cpu_activity, &node_id, cpu_now, now.timestamp());
             // Cheap outside-lock probe (git only): gate the exclusive lock so we do
             // not contend with the reducer every tick for every live autonomous node.
-            if cleanup::node_idle_unmerged(paths, &n, &git, now.timestamp(), threshold).is_some() {
+            if cleanup::node_idle_unmerged(paths, &n, &git, now.timestamp(), threshold, cpu_clock)
+                .is_some()
+            {
                 // The probe ran OUTSIDE the run lock. Acquire the flock, re-read the
                 // node under it, and re-verify BOTH that it is still non-terminal &
                 // unreported AND that the idle-unmerged verdict still holds against
@@ -2940,8 +3007,18 @@ fn watchdog_tick(
                     f.last_report.is_none()
                         && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
                 });
+                // Reuse the CPU clock sampled above (do not re-sample: a second
+                // read with the same `now` would be a redundant map update); the
+                // git + fs clocks and the merge probe are re-run under the lock.
                 let idle = fresh.as_ref().filter(|_| still_unreported).and_then(|f| {
-                    cleanup::node_idle_unmerged(paths, f, &git, now.timestamp(), threshold)
+                    cleanup::node_idle_unmerged(
+                        paths,
+                        f,
+                        &git,
+                        now.timestamp(),
+                        threshold,
+                        cpu_clock,
+                    )
                 });
                 let Some(idle) = idle else {
                     tracing::debug!(
@@ -2957,17 +3034,27 @@ fn watchdog_tick(
                     node = %node_id,
                     branch = %idle.recoverability.branch,
                     unmerged_commits = idle.recoverability.unmerged_commits,
+                    merges_cleanly = idle.recoverability.merges_cleanly,
                     idle_secs = idle.idle_secs,
                     "autonomous agent committed but never merged and has gone idle; terminalizing run to recoverable failed"
                 );
+                // The salvage hint depends on whether the branch still merges
+                // cleanly: a conflicting branch (main advanced under the idle
+                // agent) is terminalized too, but needs a conflict resolution
+                // first — say so instead of implying a plain `run merge` works.
+                let salvage = if idle.recoverability.merges_cleanly {
+                    "land it with `run merge`"
+                } else {
+                    "resolve conflicts against source, then `run merge` (see recoverable_work)"
+                };
                 let mut data = json!({
                     "success": false,
                     "failed": true,
                     "cancelled": false,
                     "reason": IDLE_UNMERGED_REASON,
                     "summary": format!(
-                        "Agent for node {} committed cleanly-mergeable work but never called `run merge` and has been idle {}s; supervisor terminalized the run recoverable (land it with `run merge`).",
-                        node_id, idle.idle_secs
+                        "Agent for node {} committed work but never called `run merge` and has been idle {}s; supervisor terminalized the run recoverable ({}).",
+                        node_id, idle.idle_secs, salvage
                     ),
                     "discussion_items": [],
                     "spinoff_proposals": [],
@@ -3005,6 +3092,10 @@ fn watchdog_tick(
     // tick (committed, recovered, terminal, or no longer scanned) so the
     // count is strictly consecutive and the map cannot grow unbounded.
     half_state_streak.retain(|k, _| tmux_gone_this_tick.contains(k));
+    // Prune the CPU-activity tracker to nodes still scanned this tick, so a
+    // terminalized / removed node's entry cannot linger (bounded like the
+    // streak map above).
+    cpu_activity.retain(|k, _| scanned_ids.contains(k));
     Ok(())
 }
 
@@ -3631,7 +3722,13 @@ mod tests {
         let paths = setup_merged_run(&tmp, &repo, &wt, &base, dead_pid);
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         let report = n
@@ -3698,7 +3795,13 @@ mod tests {
         assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         let report = n
@@ -3731,7 +3834,13 @@ mod tests {
         let paths = setup_merged_run(&tmp, &repo, &wt, &base, alive_pid);
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -3805,6 +3914,18 @@ mod tests {
         init_unmerged_repo_at(tmp, None)
     }
 
+    /// Like `init_unmerged_repo`, but ALSO advances `main` with a commit that
+    /// adds the SAME file (`fix.rs`) with different content — so `wt/foo` and
+    /// `main` both introduce `fix.rs` divergently (an add/add conflict) and the
+    /// branch no longer merges cleanly into source.
+    fn init_conflicting_unmerged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
+        let (repo, wt, base) = init_unmerged_repo(tmp);
+        std::fs::write(repo.join("fix.rs"), "different").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "conflicting main change"]);
+        (repo, wt, base)
+    }
+
     /// A run dir + manifest (of `kind`/`lifecycle`) + one worker node pointing at
     /// the unmerged worktree, with a live `agent_pid`.
     fn setup_unmerged_run(
@@ -3870,7 +3991,13 @@ mod tests {
         assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         let report = n
@@ -3915,7 +4042,13 @@ mod tests {
         let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "code", "interactive");
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -3946,7 +4079,13 @@ mod tests {
         let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -3980,7 +4119,13 @@ mod tests {
         std::fs::write(paths.agent_log(), b"...streaming model output...").unwrap();
 
         let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut std::collections::BTreeMap::new()).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -3991,6 +4136,104 @@ mod tests {
 
         let _ = alive.kill();
         let _ = alive.wait();
+    }
+
+    /// Regression for the `/llm-review` finding "conflicting branch still hangs":
+    /// a committed-but-CONFLICTING idle branch (main advanced under the idle
+    /// agent) must STILL be terminalized — with `recoverable: false` /
+    /// `merges_cleanly: false` surfaced — so the run cannot hang `pending`
+    /// forever merely because of a conflict. The blocked-report path still
+    /// preserves the branch/worktree for manual conflict resolution.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn watchdog_terminalizes_idle_unmerged_conflicting_as_recoverable_false() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _grace = GraceGuard::zero();
+        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_conflicting_unmerged_repo(&tmp);
+        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
+        let alive_pid = alive.id() as i32;
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
+
+        let mut streak = std::collections::BTreeMap::new();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+
+        let n = n0001(&paths);
+        let report = n
+            .last_report
+            .expect("a conflicting idle-unmerged run must still be terminalized, not left pending");
+        assert_eq!(report["success"], false);
+        assert_eq!(report["reason"], "agent-idle-unmerged");
+        let rec = &report["recoverable_work"];
+        assert_eq!(
+            rec["recoverable"], false,
+            "a conflicting branch is not cleanly recoverable"
+        );
+        assert_eq!(rec["merges_cleanly"], false);
+        assert_eq!(rec["unmerged_commits"], 1);
+        assert!(n.status.is_terminal(), "run no longer strands at pending");
+        assert!(
+            report.get("via").is_none(),
+            "recoverable, not a merge → cleanup preserves the branch for resolution"
+        );
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// The CPU-activity clock (third signal) vetoes the net for a busy-but-silent
+    /// agent. With a stale commit and no pane transcript, the git+fs clocks alone
+    /// would trip the net; a FRESH `extra_activity_unix` (CPU still advancing)
+    /// must hold it off. Regression for the `/llm-review` "silent long-running
+    /// subprocess false-positive" finding — the guard the done-criteria demands.
+    #[test]
+    fn node_idle_unmerged_cpu_clock_vetoes_busy_but_silent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Ancient commit; no `agent.log` → only the commit clock is available.
+        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, 1, "spinoff", "autonomous");
+        let n = n0001(&paths);
+        let git = cleanup::git_bin();
+        // Far-future "now" so the ancient commit reads as long-idle.
+        let now = 4_000_000_000i64;
+        // Without a CPU clock, the stale commit alone trips the net.
+        assert!(
+            cleanup::node_idle_unmerged(&paths, &n, &git, now, 1800, None).is_some(),
+            "stale commit alone should trip the net"
+        );
+        // With a FRESH CPU clock (busy but silent), the net must NOT fire.
+        assert!(
+            cleanup::node_idle_unmerged(&paths, &n, &git, now, 1800, Some(now)).is_none(),
+            "a fresh CPU-activity clock must veto the idle verdict"
+        );
+        let _ = repo;
+        let _ = wt;
+    }
+
+    /// `cpu_activity_clock`: first observation seeds "active now"; a changed CPU
+    /// total advances the change-time; a flat total keeps the old change-time (so
+    /// the clock ages and eventually lets the net fire); an unreadable CPU
+    /// (`None`) contributes no clock at all.
+    #[test]
+    fn cpu_activity_clock_tracks_changes() {
+        let mut map = std::collections::BTreeMap::new();
+        // First observation at t=100 → seeded to now (assume active).
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 100), Some(100));
+        // Same CPU total at t=200 → change-time stays 100 (idle since 100).
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 200), Some(100));
+        // CPU advanced at t=300 → change-time jumps to 300 (active).
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(60), 300), Some(300));
+        // Flat again at t=400 → stays 300.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(60), 400), Some(300));
+        // Unreadable CPU → no clock contributed (fall back to other clocks).
+        assert_eq!(cpu_activity_clock(&mut map, "n", None, 500), None);
     }
 
     // --- Bounded auto-retry on empty-handed agent-died (issue
@@ -4172,7 +4415,13 @@ EOF
         let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
         // One tick with backoff 0: detect death → park → reconcile → re-spawn.
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -4212,7 +4461,13 @@ EOF
         tgit(&new_wt, &["commit", "-qm", "retried work"]);
         tgit(&repo, &["merge", "--ff-only", "wt/foo-r1"]);
 
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
         let n2 = n0001(&paths);
         let report = n2.last_report.expect("terminal report after merge");
         assert_eq!(
@@ -4266,7 +4521,13 @@ EOF
 
         let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let n = n0001(&paths);
         let report = n.last_report.expect("terminal failed report");
@@ -4307,7 +4568,13 @@ EOF
 
         let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         assert!(
             retries.is_empty(),
@@ -4378,7 +4645,13 @@ EOF
 
         // Tick 1: death → park → reconcile → create.sh fails (failures=1 < 2). Node
         // stays non-terminal, park retained; the stale branch survives.
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
         assert!(
             !n0001(&paths).status.is_terminal(),
             "one failure is not terminal"
@@ -4393,7 +4666,13 @@ EOF
         );
 
         // Tick 2: reconcile → create.sh fails again (failures=2 == budget) → terminalize.
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
         let n = n0001(&paths);
         let report = n.last_report.expect("terminal failed report after budget");
         assert_eq!(report["success"], false);
@@ -4429,7 +4708,13 @@ EOF
 
         let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(&paths, &mut streak, &mut retries).unwrap();
+        watchdog_tick(
+            &paths,
+            &mut streak,
+            &mut retries,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         assert!(
             retries.is_empty(),

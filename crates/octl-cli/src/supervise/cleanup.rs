@@ -842,7 +842,11 @@ fn branch_tip_committer_time(repo: &str, branch: &str, git: &str) -> Option<i64>
     let out = Command::new(git)
         .arg("-C")
         .arg(repo)
-        .args(["log", "-1", "--format=%ct", branch])
+        // `--end-of-options` (NOT `--`, which for `git log` starts a PATHSPEC and
+        // would make `branch` be read as a file path) so a branch whose name
+        // begins with `-` is never parsed as a flag; a misparse would silently
+        // return the wrong / no commit time and skew the idle clock.
+        .args(["log", "-1", "--format=%ct", "--end-of-options", branch])
         .stderr(Stdio::null())
         .output()
         .ok()?;
@@ -882,24 +886,38 @@ fn agent_log_mtime(paths: &RunPaths) -> Option<i64> {
 /// alone), so the verdict is conservative on uncertainty.
 ///
 /// Conditions, ordered cheapest-first so the common case (a healthy, still-active
-/// agent) bails after the two cheapest probes — this runs every `WATCHDOG_TICK`
+/// agent) bails after the cheapest probe — this runs every `WATCHDOG_TICK`
 /// (≈1s) for every live autonomous node, so the expensive merge probe must NOT
 /// run on every tick of an agent's whole lifetime:
-/// 1. **Quiet past the threshold** — `now - max(tip_commit_time, agent_log_mtime)
-///    ≥ idle_threshold_secs`. Taking the MAX of the two clocks means the net fires
-///    only when BOTH the branch tip has stopped advancing AND the pane has stopped
-///    emitting output for the whole window: a long-running agent that is still
-///    committing OR still printing is never tripped (the guard the issue demands
-///    against 54–96 min heavy-LLM units). If NEITHER clock is available (no commit
-///    time readable and no `agent.log`), `last_activity` is unknown and we decline.
-///    Cheap: one `git log -1` plus one `stat`.
+/// 1. **Quiet past the threshold** — `now - max(tip_commit_time, agent_log_mtime,
+///    extra_activity_unix) ≥ idle_threshold_secs`. Taking the MAX over ALL
+///    available activity clocks means the net fires only when EVERY signal has
+///    gone quiet for the whole window; any single fresh clock holds it off. The
+///    three clocks: (a) branch-tip commit time — a still-committing agent stays
+///    fresh; (b) pane-transcript mtime ([`agent_log_mtime`]) — a still-printing
+///    agent (a long `/llm-review`, a build streaming to the pane) stays fresh;
+///    (c) `extra_activity_unix` — an out-of-band clock the caller threads in (the
+///    cumulative-CPU-time signal, see `watchdog::pid_cpu_time_centis` and
+///    `cpu_activity_clock`), which stays fresh for an agent that is busy but
+///    SILENT and not committing (a long CPU-bound subprocess emitting nothing to
+///    the pane). Clock (c) closes the false-positive hole the commit + pane
+///    clocks alone leave open, and is why a genuinely long-running working agent
+///    is never tripped; pass `None` to omit it. If NO clock is available (no
+///    commit time, no `agent.log`, no extra clock), `last_activity` is unknown
+///    and we decline. Cheap: one `git log -1` plus one `stat`, plus whatever the
+///    caller spent on `extra_activity_unix`.
 /// 2. **Clean worktree** — no uncommitted work ([`worktree_is_clean`]). A dirty
 ///    tree means the agent is mid-edit, not done; never terminalize that.
-/// 3. **Cleanly-recoverable unmerged work** — [`node_recoverability`] returns
-///    `Some` with `recoverable()` true (≥1 commit ahead of source AND it merges
-///    without conflict). A branch level-with-source, or one whose commits conflict,
-///    is not this case. This is the expensive probe (`rev-list` + `merge-tree`),
-///    deliberately LAST so it only runs once an agent has actually gone quiet.
+/// 3. **Committed unmerged work exists** — [`node_recoverability`] returns `Some`
+///    (≥1 commit ahead of source). Crucially this does NOT require the branch to
+///    merge cleanly: a branch that conflicts with source (main advanced under an
+///    idle agent) is STILL terminalized, with `recoverable: false` surfaced in the
+///    report, so the run cannot hang `pending` forever merely because of a
+///    conflict — the very stall this safety net exists to end. `node_recoverability`
+///    returns `None` (→ we decline) only for an empty-handed branch (0 commits,
+///    a distinct failure mode) or a git error. This is the expensive probe
+///    (`rev-list` + `merge-tree`), deliberately LAST so it runs at most once per
+///    idle node rather than every tick of a healthy agent.
 ///
 /// The caller is responsible for the lifecycle gate (autonomous only; interactive
 /// `code`/`orchestrate` are exempt) and the liveness gate (Alive only — a DEAD
@@ -911,11 +929,12 @@ pub fn node_idle_unmerged(
     git: &str,
     now_unix: i64,
     idle_threshold_secs: i64,
+    extra_activity_unix: Option<i64>,
 ) -> Option<IdleUnmerged> {
-    // (1) Both activity clocks quiet past the threshold. Cheapest probe first
-    // (one `git log` + one `stat`), so a still-active agent bails here without
-    // paying for the merge probe below on every one of its ~1s ticks. Resolve
-    // repo/branch the same way `node_recoverability` will below.
+    // (1) Every available activity clock quiet past the threshold. Cheapest
+    // probe first (one `git log` + one `stat`), so a still-active agent bails
+    // here without paying for the merge probe below on every one of its ~1s
+    // ticks. Resolve repo/branch the same way `node_recoverability` will below.
     let branch = n.branch.as_deref().filter(|s| !s.is_empty())?;
     let manifest = read_manifest_opt(paths).ok().flatten()?;
     let repo = manifest
@@ -925,8 +944,12 @@ pub fn node_idle_unmerged(
         .or(n.worktree_path.as_deref())?;
     let tip = branch_tip_committer_time(repo, branch, git);
     let log_mtime = agent_log_mtime(paths);
-    // Newest of whichever clocks are available; `None` if neither is (decline).
-    let last_activity = tip.into_iter().chain(log_mtime).max()?;
+    // Newest of whichever clocks are available; `None` if none is (decline).
+    let last_activity = tip
+        .into_iter()
+        .chain(log_mtime)
+        .chain(extra_activity_unix)
+        .max()?;
     let idle_secs = now_unix.saturating_sub(last_activity);
     if idle_secs < idle_threshold_secs {
         return None;
@@ -935,14 +958,13 @@ pub fn node_idle_unmerged(
     if !worktree_is_clean(n.worktree_path.as_deref(), git) {
         return None;
     }
-    // (3) Must have cleanly-mergeable unmerged commits to be worth salvaging.
-    // Expensive (`rev-list` + `merge-tree`) — reached only after the node has
-    // been confirmed quiet AND clean, so it runs at most once per idle node
-    // rather than every tick of a healthy agent.
+    // (3) Must have COMMITTED work to salvage — but it need NOT merge cleanly.
+    // A conflicting branch is still terminalized so the run stops hanging; the
+    // report's `recoverable_work` block carries `recoverable`/`merges_cleanly`
+    // so a conductor knows whether to plain-merge or resolve-then-merge.
+    // Expensive (`rev-list` + `merge-tree`) — reached only after the node is
+    // confirmed quiet AND clean, so it runs at most once per idle node.
     let recoverability = node_recoverability(paths, n, git)?;
-    if !recoverability.recoverable() {
-        return None;
-    }
     Some(IdleUnmerged {
         recoverability,
         idle_secs,
