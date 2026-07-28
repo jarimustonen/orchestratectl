@@ -1,6 +1,6 @@
 ---
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-07-28
 type: bug
 status: open
 priority: normal
@@ -46,3 +46,8 @@ Left OPEN: no reproducible code race was isolated, so there is nothing more to f
 without a live repro. If it recurs, capture whether the two `run create` processes were
 backgrounded in one shell (`create A & create B &`) vs. run sequentially — the former is
 the suspected cause and is a shell-usage issue, not an octl race.
+
+### 2026-07-28T08:57:27Z · @jari
+
+Confirmed again 2026-07-28 (3dbear-monorepo /stint, orchestratectl 0.1.0). Three back-to-back 'run create --kind spinoff --headless' in a single Bash loop: only the FIRST printed its envelope before the shell 2-minute timeout fired (Exit 143). The second appeared in run list as pending, node_count 0, supervisor pid null — same supervisor-less zombie. Cancelled with 'run cancel' (clean, worktree_root null so no git state), re-spawned individually with explicit 240s timeout — worked every time. Reliable workaround: one 'run create' per Bash call (not a loop), each with its own generous timeout.
+
