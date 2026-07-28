@@ -158,11 +158,12 @@ pub struct PipelineConfig {
     pub files: Vec<PathBuf>,
     /// Optional slug override (else derived from the intent).
     pub slug: Option<String>,
-    /// Shell command that captures the test pass-list for the floor baseline +
-    /// current snapshots (default `cargo test`).
+    /// Base `cargo test` invocation the floor enumerates + runs per-binary for
+    /// its structured, target-qualified test snapshot (default `cargo test`).
     pub test_cmd: String,
-    /// Shell command that captures the clippy warning-list (default
-    /// `cargo clippy --message-format=short`).
+    /// Base `cargo clippy` invocation the floor captures via
+    /// `--message-format=json` (any `--message-format` is forced to `json`;
+    /// default `cargo clippy`).
     pub clippy_cmd: String,
     /// Scratch root for worktrees + artifacts (intent.md, plan.json, transcripts).
     pub workdir: PathBuf,
@@ -775,7 +776,15 @@ pub fn run_pipeline_tiered(
 
     git::worktree_add(&repo, &integration_wt, &integration_branch)?;
     let baseline_snapshot = capture_snapshot(cfg, &integration_wt)?;
-    let baseline = BaselineSnapshot::new(format!("{integration_branch}@fork"), baseline_snapshot);
+    // Pin the baseline to the immutable fork OID (not the mutable `feat/<slug>`
+    // ref) and fingerprint the toolchain it was captured with
+    // (`floor-capture-trust-model` item 5).
+    let baseline = BaselineSnapshot::new(
+        format!("{integration_branch}@fork"),
+        run.fork_commit.clone(),
+        floor::runner::rustc_version(&integration_wt),
+        baseline_snapshot,
+    );
 
     // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
     let mut plan =
@@ -2543,7 +2552,7 @@ pub fn cmd_run(
         clippy_cmd: cfg
             .clippy_cmd
             .clone()
-            .unwrap_or_else(|| "cargo clippy --message-format=short".to_string()),
+            .unwrap_or_else(|| "cargo clippy".to_string()),
         workdir,
         file_scope_slack: cfg.file_scope_slack,
         keep: cfg.keep,

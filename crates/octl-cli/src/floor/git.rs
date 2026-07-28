@@ -26,6 +26,37 @@ fn git_at(repo: &Path) -> Command {
     cmd
 }
 
+/// Resolve `r#ref` to an immutable commit OID (`git rev-parse --verify
+/// <ref>^{commit}`). The floor pins its baseline to this OID rather than the
+/// mutable ref string, so a later force-push to the ref cannot silently
+/// re-point what "baseline" means (`floor-capture-trust-model` item 5). A ref
+/// that does not resolve to a commit is a hard [`FloorError`], never a silent
+/// empty OID.
+pub fn resolve_commit(repo: &Path, r#ref: &str) -> Result<String, FloorError> {
+    let rev = format!("{ref}^{{commit}}", r#ref = r#ref);
+    let out = git_at(repo)
+        .args(["rev-parse", "--verify", "--quiet", &rev])
+        .output()
+        .map_err(|e| FloorError::Git {
+            message: format!("could not run git rev-parse in {}: {e}", repo.display()),
+        })?;
+    if !out.status.success() {
+        return Err(FloorError::Git {
+            message: format!("ref {ref:?} does not resolve to a commit", r#ref = r#ref),
+        });
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if oid.is_empty() {
+        return Err(FloorError::Git {
+            message: format!(
+                "git rev-parse returned an empty oid for ref {ref:?}",
+                r#ref = r#ref
+            ),
+        });
+    }
+    Ok(oid)
+}
+
 /// Files changed between `base` and `tip` (`git diff --name-only`). Uses `-z`
 /// (NUL-delimited) so paths with spaces/tabs/newlines survive intact — the same
 /// discipline the harness adapter uses. A git failure is propagated, never
@@ -198,6 +229,33 @@ mod tests {
         // A path that never existed at the ref is `None`, not an error.
         let absent = file_at_ref(p, "HEAD", &PathBuf::from("nope.rs")).unwrap();
         assert!(absent.is_none());
+    }
+
+    #[test]
+    fn resolve_commit_pins_ref_to_oid_and_rejects_bad_ref() {
+        let repo = init_repo();
+        let p = repo.path();
+        fs::write(p.join("a.rs"), "x\n").unwrap();
+        git_in(p, &["add", "."]);
+        git_in(p, &["commit", "-qm", "base"]);
+
+        let head = String::from_utf8_lossy(
+            &Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+
+        let oid = resolve_commit(p, "HEAD").unwrap();
+        assert_eq!(oid, head);
+        assert_eq!(oid.len(), 40, "a full oid");
+        // A ref that does not resolve is a hard error, never an empty oid.
+        assert!(resolve_commit(p, "no-such-ref").is_err());
     }
 
     #[test]

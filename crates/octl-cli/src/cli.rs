@@ -132,12 +132,12 @@ struct PipelineRunArgs {
     /// Repository to operate on (default: current directory).
     #[arg(long, value_name = "PATH")]
     repo: Option<PathBuf>,
-    /// Shell command that captures the test pass-list for the floor
-    /// baseline + current snapshots (default `cargo test`).
+    /// Base `cargo test` invocation the floor enumerates + runs per-binary for
+    /// its structured, target-qualified test snapshot (default `cargo test`).
     #[arg(long, value_name = "CMD")]
     test_cmd: Option<String>,
-    /// Shell command that captures the clippy warning-list (default
-    /// `cargo clippy --message-format=short`).
+    /// Base `cargo clippy` invocation the floor captures via
+    /// `--message-format=json` (default `cargo clippy`).
     #[arg(long, value_name = "CMD")]
     clippy_cmd: Option<String>,
     /// Scratch directory for worktrees + artifacts (default: a temp dir

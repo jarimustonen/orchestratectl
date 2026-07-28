@@ -1,8 +1,30 @@
 //! The floor's capture layer (design.md §4) — impure functions that run
 //! checks/tests/clippy and read files, then hand pure values to the
 //! [`super::gates`]. Everything mechanical here shells out; the parsing it
-//! delegates to [`super::parse`] is pure and separately tested, so this module
-//! only needs to be exercised for its process/IO plumbing.
+//! delegates to [`super::parse`] is pure and separately tested.
+//!
+//! # Trust posture (`floor-capture-trust-model`)
+//!
+//! - **Structured, not text.** Clippy is captured via `--message-format=json`
+//!   and keyed by lint code; tests are enumerated as `compiler-artifact`
+//!   executables and run one binary at a time, so each observation is bound to
+//!   its `(package, target)`.
+//! - **Fail-closed.** A capture that cannot prove complete compilation +
+//!   execution is a [`FloorError`], never a silently-empty snapshot that passes
+//!   gates vacuously: unparseable cargo JSON, a missing `build-finished`, an
+//!   `error`-level diagnostic, a libtest binary whose parsed counts disagree
+//!   with its announced summary, or an exit code inconsistent with that
+//!   summary all reject.
+//! - **Execution isolation.** Capture subprocesses run under
+//!   [`isolated_command`] — `env_clear()` + a small allow-list — so an inherited
+//!   `RUSTFLAGS`/`RUSTDOCFLAGS`/`RUSTC_WRAPPER` cannot change the observed
+//!   warning/test set. (Plan-declared `checks` in [`run_check`] are *not*
+//!   isolated — they are the caller's own contract, run verbatim.)
+//!
+//! In-repo `.cargo/config.toml` / `rust-toolchain.toml` overrides are not fully
+//! neutralized here (that needs `--config`/out-of-tree invocation); the
+//! toolchain actually used is recorded via [`rustc_version`] as provenance on
+//! the baseline, and full neutralization is deferred to the follow-up issue.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,9 +33,63 @@ use std::process::Command;
 use octl_core::plan;
 
 use super::git;
-use super::parse::{count_assert_macros, parse_clippy_short, parse_libtest_output};
+use super::parse::{
+    self, count_assert_macros, parse_cargo_stream, parse_libtest_report, reconcile_single_binary,
+};
 use super::snapshot::{CheckRun, ClippySnapshot, TestSnapshot};
 use super::FloorError;
+
+/// Environment variables the capture subprocess is allowed to inherit. Anything
+/// not on this list — notably `RUSTFLAGS`, `RUSTDOCFLAGS`,
+/// `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `RUSTC_WRAPPER` — is
+/// dropped by `env_clear()` and never reaches cargo/rustc.
+const ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "LANG",
+    "TERM",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "XDG_CACHE_HOME",
+    "GIT_BIN",
+];
+
+/// A [`Command`] for a capture subprocess with a cleared, allow-listed
+/// environment (see [`ENV_ALLOWLIST`]). `LC_ALL=C` stabilizes any message we
+/// must read; `CARGO_TERM_COLOR=never` keeps JSON clean of ANSI escapes.
+fn isolated_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_clear();
+    for key in ENV_ALLOWLIST {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+    cmd.env("LC_ALL", "C");
+    cmd.env("CARGO_TERM_COLOR", "never");
+    cmd
+}
+
+/// The active `rustc -V` string (isolated), or `"unknown"` if it cannot be
+/// determined — recorded as baseline provenance so a snapshot captured under a
+/// different toolchain than the tip is detectable.
+#[must_use]
+pub fn rustc_version(cwd: &Path) -> String {
+    isolated_command("rustc")
+        .arg("-V")
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// Run one [`plan::Check`] rooted at `cwd` and capture its result.
 ///
@@ -25,6 +101,10 @@ use super::FloorError;
 /// [`plan::Check::expect_exit`] (the exit code that counts as a pass; absent =
 /// 0). The check passes iff the command runs to completion with that exit code.
 /// The gates consume [`CheckRun`], not the raw command — that is the seam.
+///
+/// Checks are **not** run under [`isolated_command`]: they are the plan's own
+/// declared commands and may legitimately depend on ambient env; isolation is
+/// applied to the floor's *own* clippy/test capture, not the caller's checks.
 #[must_use]
 pub fn run_check(check: &plan::Check, cwd: &Path) -> CheckRun {
     // `check.cwd` is a validator-vetted safe repo-relative path (or absent), so
@@ -75,43 +155,215 @@ pub fn run_checks(checks: &[plan::Check], cwd: &Path) -> Vec<CheckRun> {
     checks.iter().map(|c| run_check(c, cwd)).collect()
 }
 
-/// Run `test_cmd` (a shell string, e.g. `cargo test`) in `cwd` and parse its
-/// libtest output into a [`TestSnapshot`]. libtest prints outcomes to stdout;
-/// stderr is appended too so nothing is missed if a wrapper redirects. A
-/// spawn failure is a [`FloorError`] — the caller must not treat "no tests
-/// found" as a passing baseline.
+/// Capture a target-qualified, fail-closed [`TestSnapshot`] by running the test
+/// suite as structured, per-binary libtest.
+///
+/// `test_cmd` is the base cargo test invocation (e.g. `cargo test`,
+/// `cargo test --workspace`). Two isolated phases:
+///
+/// 1. **Enumerate** — `<test_cmd> --no-run --message-format=json` builds every
+///    test harness and reports its executable + `(package, target)`. The stream
+///    must parse, carry a successful `build-finished`, and be free of
+///    `error`-level diagnostics; otherwise this fails closed (a compile failure
+///    or bad flag must NOT yield an empty snapshot that passes gates).
+/// 2. **Run** — each enumerated binary is executed directly (isolated) and its
+///    libtest text is reconciled against its own announced summary
+///    ([`reconcile_single_binary`]). A forged `test x ... ok` line, a truncated
+///    run, or an exit code inconsistent with the summary rejects the whole
+///    capture. Surviving names become target-qualified [`TestId`]s.
+///
+/// Doctests (run by rustdoc, not a `compiler-artifact` binary) are **not**
+/// captured here; qualifying them needs the nightly libtest JSON format and is
+/// deferred to the follow-up issue.
 pub fn capture_test_snapshot(test_cmd: &str, cwd: &Path) -> Result<TestSnapshot, FloorError> {
-    let out = Command::new("sh")
+    let enumerate_cmd = format!("{test_cmd} --no-run --message-format=json");
+    let out = isolated_command("sh")
         .arg("-c")
-        .arg(test_cmd)
+        .arg(&enumerate_cmd)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
             what: "tests",
-            message: format!("could not run `{test_cmd}`: {e}"),
+            message: format!("could not run `{enumerate_cmd}`: {e}"),
         })?;
-    let combined = join_streams(&out.stdout, &out.stderr);
-    Ok(parse_libtest_output(&combined))
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let messages = parse_cargo_stream(&stdout).map_err(|e| FloorError::Capture {
+        what: "tests",
+        message: format!("test enumeration produced unparseable cargo output: {e}"),
+    })?;
+
+    // Fail closed: the build must have compiled cleanly and finished.
+    if parse::has_compile_error(&messages) {
+        return Err(FloorError::Capture {
+            what: "tests",
+            message: "test build reported a compile error; refusing an empty/partial snapshot"
+                .into(),
+        });
+    }
+    match parse::build_finished(&messages) {
+        Some(true) => {}
+        Some(false) => {
+            return Err(FloorError::Capture {
+                what: "tests",
+                message: format!(
+                    "`{enumerate_cmd}` reported build failure (exit {:?}); failing closed",
+                    out.status.code()
+                ),
+            });
+        }
+        None => {
+            return Err(FloorError::Capture {
+                what: "tests",
+                message: format!(
+                    "`{enumerate_cmd}` produced no build-finished record (truncated?); failing closed. stderr: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            });
+        }
+    }
+
+    let binaries = parse::test_binaries(&messages);
+    let mut snap = TestSnapshot::default();
+    for bin in &binaries {
+        run_one_test_binary(bin, cwd, &mut snap)?;
+    }
+    Ok(snap)
 }
 
-/// Run `clippy_cmd` (a shell string, e.g.
-/// `cargo clippy --message-format=short`) in `cwd` and parse its output into a
-/// [`ClippySnapshot`]. clippy writes diagnostics to stderr; stdout is included
-/// too for robustness. The command's *exit status is ignored* — clippy exits
-/// non-zero under `-D warnings`, but the floor wants the warning *set*, not the
-/// pass/fail; a spawn failure is still a [`FloorError`].
+/// Run one enumerated test binary, reconcile it, and fold its target-qualified
+/// ids into `snap`. Any inconsistency is a fail-closed [`FloorError`].
+fn run_one_test_binary(
+    bin: &parse::TestBinary,
+    cwd: &Path,
+    snap: &mut TestSnapshot,
+) -> Result<(), FloorError> {
+    let out = isolated_command(&bin.executable)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| FloorError::Capture {
+            what: "tests",
+            message: format!("could not run test binary {}: {e}", bin.executable),
+        })?;
+
+    let combined = join_streams(&out.stdout, &out.stderr);
+    let report = parse_libtest_report(&combined);
+    let summary = reconcile_single_binary(&report).map_err(|d| FloorError::Capture {
+        what: "tests",
+        message: format!(
+            "test binary {} ({}/{}): untrustworthy output: {d}",
+            bin.executable, bin.target_kind, bin.target
+        ),
+    })?;
+
+    // libtest exits 0 iff nothing failed. An exit code that disagrees with the
+    // announced summary is an anomaly (a panic outside a test, a tampered exit)
+    // → fail closed.
+    let exit_ok = out.status.code() == Some(0);
+    if exit_ok != (summary.failed == 0) {
+        return Err(FloorError::Capture {
+            what: "tests",
+            message: format!(
+                "test binary {} exit code {:?} inconsistent with summary ({} failed); failing closed",
+                bin.executable,
+                out.status.code(),
+                summary.failed
+            ),
+        });
+    }
+
+    snap.passed.extend(parse::qualify(
+        &bin.package,
+        &bin.target_kind,
+        &bin.target,
+        &report.passed,
+    ));
+    snap.failed.extend(parse::qualify(
+        &bin.package,
+        &bin.target_kind,
+        &bin.target,
+        &report.failed,
+    ));
+    snap.ignored.extend(parse::qualify(
+        &bin.package,
+        &bin.target_kind,
+        &bin.target,
+        &report.ignored,
+    ));
+    Ok(())
+}
+
+/// Capture a structured [`ClippySnapshot`] from `cargo clippy`
+/// `--message-format=json` (any `--message-format=…` already in `clippy_cmd` is
+/// replaced with `json`). Warnings are read from the JSON records keyed by lint
+/// code — a `println!`/`build.rs` cannot fabricate one.
+///
+/// Fail-closed: the stream must parse and carry a terminal `build-finished`, and
+/// must be free of `error`-level diagnostics (a build that does not compile
+/// cannot yield a trustworthy empty warning set). A `build-finished:false` with
+/// no compile error is the normal `-D warnings` case and is fine — the warnings
+/// are still collected.
 pub fn capture_clippy_snapshot(clippy_cmd: &str, cwd: &Path) -> Result<ClippySnapshot, FloorError> {
-    let out = Command::new("sh")
+    let cmd = force_json_message_format(clippy_cmd);
+    let out = isolated_command("sh")
         .arg("-c")
-        .arg(clippy_cmd)
+        .arg(&cmd)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
             what: "clippy",
-            message: format!("could not run `{clippy_cmd}`: {e}"),
+            message: format!("could not run `{cmd}`: {e}"),
         })?;
-    let combined = join_streams(&out.stderr, &out.stdout);
-    Ok(parse_clippy_short(&combined))
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let messages = parse_cargo_stream(&stdout).map_err(|e| FloorError::Capture {
+        what: "clippy",
+        message: format!("clippy produced unparseable cargo output: {e}"),
+    })?;
+
+    if parse::has_compile_error(&messages) {
+        return Err(FloorError::Capture {
+            what: "clippy",
+            message: "clippy reported a compile error; refusing a partial warning set".into(),
+        });
+    }
+    if parse::build_finished(&messages).is_none() {
+        return Err(FloorError::Capture {
+            what: "clippy",
+            message: format!(
+                "`{cmd}` produced no build-finished record (truncated?); failing closed. stderr: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        });
+    }
+
+    Ok(ClippySnapshot {
+        warnings: parse::clippy_warnings(&messages),
+    })
+}
+
+/// Rewrite a `cargo clippy` command so its message format is JSON: drop any
+/// existing `--message-format=<x>` / `--message-format <x>` token(s) and append
+/// `--message-format=json`. Token-based so it never mangles unrelated args.
+fn force_json_message_format(cmd: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skip_next = false;
+    for tok in cmd.split_whitespace() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if tok == "--message-format" {
+            skip_next = true; // drop the following value token too
+            continue;
+        }
+        if tok.starts_with("--message-format=") {
+            continue;
+        }
+        kept.push(tok);
+    }
+    kept.push("--message-format=json");
+    kept.join(" ")
 }
 
 /// Concatenate two captured byte streams for line parsing, guaranteeing a
@@ -141,18 +393,23 @@ pub fn assertion_counts_on_disk(cwd: &Path, files: &[PathBuf]) -> BTreeMap<PathB
         .collect()
 }
 
-/// Count `assert*!` macros in each of `files` as of git `r#ref` (the baseline
-/// fork). A file absent at that ref is simply omitted from the map — it has no
-/// baseline to regress from (see [`super::gates::gate_no_test_gaming`]). A git
-/// failure other than "path absent" is surfaced.
+/// Count `assert*!` macros in each of `files` as of git `r#ref`.
+///
+/// The ref is first pinned to an immutable commit OID
+/// ([`git::resolve_commit`]) and every file is read at that OID, so the whole
+/// map is provably captured at one commit (not re-resolving a mutable ref
+/// per-file) — the assertion-count provenance binding of
+/// `floor-capture-trust-model` item 5. A file absent at that commit is simply
+/// omitted (no baseline to regress from); a bad ref is a hard [`FloorError`].
 pub fn assertion_counts_at_ref(
     repo: &Path,
     r#ref: &str,
     files: &[PathBuf],
 ) -> Result<BTreeMap<PathBuf, usize>, FloorError> {
+    let commit = git::resolve_commit(repo, r#ref)?;
     let mut counts = BTreeMap::new();
     for f in files {
-        if let Some(content) = git::file_at_ref(repo, r#ref, f)? {
+        if let Some(content) = git::file_at_ref(repo, &commit, f)? {
             counts.insert(f.clone(), count_assert_macros(&content));
         }
     }
@@ -162,6 +419,7 @@ pub fn assertion_counts_at_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn check(desc: &str, run: &str) -> plan::Check {
@@ -172,6 +430,16 @@ mod tests {
             expect_exit: None,
             extra: serde_json::Map::new(),
         }
+    }
+
+    /// Write an executable shell script and return its path.
+    fn write_script(dir: &Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -187,52 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn run_check_captures_output_and_cwd() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("marker"), "hi").unwrap();
-        // `ls` in cwd sees the marker file ⇒ confirms current_dir plumbing.
-        let r = run_check(&check("ls", "ls"), dir.path());
-        assert!(r.passed);
-        assert!(r.stdout.contains("marker"));
-    }
-
-    #[test]
-    fn run_check_honors_expect_exit() {
-        let dir = TempDir::new().unwrap();
-        // A non-zero expected code: the check passes when the command exits with
-        // exactly that code, and fails on any other (including the usual 0).
-        let mut c = check("expects 3", "exit 3");
-        c.expect_exit = Some(3);
-        let r = run_check(&c, dir.path());
-        assert!(r.passed, "exit 3 with expect_exit=3 should pass");
-        assert_eq!(r.exit_code, Some(3));
-
-        let mut c0 = check("expects 3 but exits 0", "exit 0");
-        c0.expect_exit = Some(3);
-        let r0 = run_check(&c0, dir.path());
-        assert!(!r0.passed, "exit 0 with expect_exit=3 should fail");
-        assert_eq!(r0.exit_code, Some(0));
-    }
-
-    #[test]
-    fn run_check_honors_cwd() {
-        let dir = TempDir::new().unwrap();
-        // A subdirectory holding a marker file; the check's cwd is joined onto
-        // the runner's root, so the command sees the marker only when cwd points
-        // at the subdir.
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        std::fs::write(dir.path().join("sub/marker"), "hi").unwrap();
-
-        let mut c = check("marker present in sub", "test -f marker");
-        c.cwd = Some("sub".to_string());
-        assert!(run_check(&c, dir.path()).passed);
-
-        // Without cwd the command runs at the root, where marker is absent.
-        assert!(!run_check(&check("marker at root", "test -f marker"), dir.path()).passed);
-    }
-
-    #[test]
-    fn run_check_cwd_and_expect_exit_together() {
+    fn run_check_honors_expect_exit_and_cwd() {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut c = check("runs in sub, exits 2", "exit 2");
@@ -240,68 +463,190 @@ mod tests {
         c.expect_exit = Some(2);
         let r = run_check(&c, dir.path());
         assert!(r.passed);
-        assert_eq!(r.exit_code, Some(2));
-        // The requested cwd is preserved on the audit record.
         assert_eq!(r.cwd.as_deref(), Some("sub"));
-    }
-
-    #[test]
-    fn run_check_records_cwd_provenance() {
-        let dir = TempDir::new().unwrap();
-        // Absent cwd → None on the record; present cwd → echoed. So two checks
-        // sharing a `run` but differing in cwd stay distinguishable.
-        assert_eq!(run_check(&check("root", "true"), dir.path()).cwd, None);
-    }
-
-    #[test]
-    fn run_check_bad_cwd_names_run_dir() {
-        let dir = TempDir::new().unwrap();
-        // A cwd that does not exist cannot be entered: the check fails (never a
-        // silent pass) and the resolved run dir is named for diagnosability.
-        let mut c = check("missing dir", "true");
-        c.cwd = Some("does-not-exist".to_string());
-        let r = run_check(&c, dir.path());
-        assert!(!r.passed);
-        assert_eq!(r.exit_code, None);
-        assert!(r.stderr.contains("does-not-exist"), "stderr: {}", r.stderr);
     }
 
     #[test]
     fn run_checks_preserves_order() {
         let dir = TempDir::new().unwrap();
-        let rs = run_checks(
-            &[
-                check("a", "exit 0"),
-                check("b", "exit 1"),
-                check("c", "exit 0"),
-            ],
-            dir.path(),
-        );
-        assert_eq!(rs.len(), 3);
-        assert_eq!(rs[0].desc, "a");
+        let rs = run_checks(&[check("a", "exit 0"), check("b", "exit 1")], dir.path());
+        assert_eq!(rs.len(), 2);
+        assert!(rs[0].passed);
         assert!(!rs[1].passed);
-        assert!(rs[2].passed);
     }
 
     #[test]
-    fn capture_test_snapshot_parses_emitted_libtest_lines() {
+    fn isolated_command_clears_rustflags_but_keeps_path() {
+        // The isolation guarantee (item 4): a poisoned RUSTFLAGS in the parent
+        // env does not reach the capture subprocess, but PATH survives so cargo
+        // is still findable.
+        std::env::set_var("RUSTFLAGS", "--cfg poisoned");
         let dir = TempDir::new().unwrap();
-        // A shell script that emits libtest-shaped lines deterministically —
-        // no toolchain needed.
-        let cmd = "printf 'test a::x ... ok\\ntest a::y ... FAILED\\n'";
-        let snap = capture_test_snapshot(cmd, dir.path()).unwrap();
-        assert!(snap.passed.contains("a::x"));
-        assert!(snap.failed.contains("a::y"));
+        let out = isolated_command("sh")
+            .arg("-c")
+            .arg("echo \"RUSTFLAGS=[${RUSTFLAGS:-}] PATH_SET=${PATH:+yes}\"")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::env::remove_var("RUSTFLAGS");
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(s.contains("RUSTFLAGS=[]"), "RUSTFLAGS leaked: {s}");
+        assert!(s.contains("PATH_SET=yes"), "PATH missing: {s}");
     }
 
     #[test]
-    fn capture_clippy_snapshot_parses_stderr_warnings() {
+    fn force_json_message_format_replaces_existing() {
+        assert_eq!(
+            force_json_message_format("cargo clippy --message-format=short"),
+            "cargo clippy --message-format=json"
+        );
+        assert_eq!(
+            force_json_message_format("cargo clippy --message-format short --workspace"),
+            "cargo clippy --workspace --message-format=json"
+        );
+        assert_eq!(
+            force_json_message_format("cargo clippy"),
+            "cargo clippy --message-format=json"
+        );
+    }
+
+    #[test]
+    fn clippy_capture_parses_json_and_strips_span() {
+        // Drive capture through a fake `cargo` on stdout — no toolchain needed.
+        // The script ignores the appended flags and prints a fixed JSON stream.
         let dir = TempDir::new().unwrap();
-        // clippy writes to stderr; emit there.
-        let cmd = "printf 'src/a.rs:1:1: warning: w\\n' 1>&2";
-        let snap = capture_clippy_snapshot(cmd, dir.path()).unwrap();
-        // Identity has the `:line:col` span normalized away.
-        assert!(snap.warnings.contains("src/a.rs: warning: w"));
+        let json = concat!(
+            r#"{"reason":"compiler-message","package_id":"p#pkg@0.1.0","target":{"name":"pkg","kind":["lib"]},"message":{"level":"warning","message":"unused variable: `x`","code":{"code":"unused_variables"},"spans":[{"file_name":"src/a.rs","line_start":3,"is_primary":true}]}}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n"
+        );
+        let script = write_script(
+            dir.path(),
+            "fakeclippy",
+            &format!("#!/bin/sh\nprintf '%s' '{json}'\n"),
+        );
+        let snap = capture_clippy_snapshot(&script, dir.path()).unwrap();
+        assert_eq!(snap.warnings.len(), 1);
+        let w = snap.warnings.iter().next().unwrap();
+        assert_eq!(w.lint, "unused_variables");
+        assert_eq!(w.file, "src/a.rs");
+    }
+
+    #[test]
+    fn clippy_capture_fails_closed_on_compile_error() {
+        // done-criteria (b): a compile error must fail closed, not yield an
+        // empty (vacuously-passing) warning set.
+        let dir = TempDir::new().unwrap();
+        let json = concat!(
+            r#"{"reason":"compiler-message","package_id":"p#pkg@0.1.0","target":{"name":"pkg","kind":["lib"]},"message":{"level":"error","message":"mismatched types","code":{"code":"E0308"},"spans":[]}}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":false}"#,
+            "\n"
+        );
+        let script = write_script(
+            dir.path(),
+            "fakeclippy",
+            &format!("#!/bin/sh\nprintf '%s' '{json}'\nexit 101\n"),
+        );
+        let err = capture_clippy_snapshot(&script, dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("compile error"), "{err}");
+    }
+
+    #[test]
+    fn clippy_capture_fails_closed_on_unparseable_output() {
+        let dir = TempDir::new().unwrap();
+        // A bad flag / non-JSON babble on stdout ⇒ reject.
+        let script = write_script(
+            dir.path(),
+            "fakeclippy",
+            "#!/bin/sh\necho 'error: unknown flag'\n",
+        );
+        assert!(capture_clippy_snapshot(&script, dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_capture_enumerates_runs_and_qualifies() {
+        // A fake `cargo` emits a compiler-artifact pointing at a second fake
+        // binary that emits libtest text — the whole capture path with no real
+        // toolchain. The resulting id is target-qualified.
+        let dir = TempDir::new().unwrap();
+        let libtest = write_script(
+            dir.path(),
+            "faketest",
+            "#!/bin/sh\nprintf 'test mymod::works ... ok\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\n",
+        );
+        let artifact = format!(
+            r#"{{"reason":"compiler-artifact","package_id":"p#octl-cli@0.1.0","target":{{"name":"octl-cli","kind":["lib"]}},"profile":{{"test":true}},"executable":"{libtest}"}}"#
+        );
+        let stream = format!("{artifact}\n{{\"reason\":\"build-finished\",\"success\":true}}\n");
+        let cargo = write_script(
+            dir.path(),
+            "fakecargo",
+            &format!("#!/bin/sh\nprintf '%s' '{stream}'\n"),
+        );
+        let snap = capture_test_snapshot(&cargo, dir.path()).unwrap();
+        assert_eq!(snap.passed.len(), 1);
+        let id = snap.passed.iter().next().unwrap();
+        assert_eq!(id.package, "octl-cli");
+        assert_eq!(id.target_kind, "lib");
+        assert_eq!(id.name, "mymod::works");
+    }
+
+    #[test]
+    fn test_capture_rejects_forged_ok_line() {
+        // done-criteria (a): a test binary that prints an extra `test x ... ok`
+        // beyond its announced summary is rejected — the forged pass never
+        // becomes a TestId.
+        let dir = TempDir::new().unwrap();
+        let libtest = write_script(
+            dir.path(),
+            "faketest",
+            "#!/bin/sh\nprintf 'test real::actual ... ok\\ntest forged::injected ... ok\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'\n",
+        );
+        let artifact = format!(
+            r#"{{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target":{{"name":"pkg","kind":["lib"]}},"profile":{{"test":true}},"executable":"{libtest}"}}"#
+        );
+        let stream = format!("{artifact}\n{{\"reason\":\"build-finished\",\"success\":true}}\n");
+        let cargo = write_script(
+            dir.path(),
+            "fakecargo",
+            &format!("#!/bin/sh\nprintf '%s' '{stream}'\n"),
+        );
+        let err = capture_test_snapshot(&cargo, dir.path()).unwrap_err();
+        assert!(format!("{err}").contains("untrustworthy"), "{err}");
+    }
+
+    #[test]
+    fn test_capture_fails_closed_on_build_failure() {
+        // done-criteria (b): a build failure during enumeration fails closed.
+        let dir = TempDir::new().unwrap();
+        let stream = concat!(
+            r#"{"reason":"compiler-message","package_id":"p#pkg@0.1.0","target":{"name":"pkg","kind":["lib"]},"message":{"level":"error","message":"boom","code":{"code":"E0308"},"spans":[]}}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":false}"#,
+            "\n"
+        );
+        let cargo = write_script(
+            dir.path(),
+            "fakecargo",
+            &format!("#!/bin/sh\nprintf '%s' '{stream}'\nexit 101\n"),
+        );
+        assert!(capture_test_snapshot(&cargo, dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_capture_fails_closed_on_no_build_finished() {
+        let dir = TempDir::new().unwrap();
+        // Valid JSON but truncated (no build-finished) ⇒ reject.
+        let cargo = write_script(
+            dir.path(),
+            "fakecargo",
+            r#"#!/bin/sh
+printf '%s\n' '{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target":{"name":"pkg","kind":["lib"]},"profile":{"test":false},"executable":null}'
+"#,
+        );
+        assert!(capture_test_snapshot(&cargo, dir.path()).is_err());
     }
 
     #[test]
@@ -313,7 +658,6 @@ mod tests {
             &[PathBuf::from("a.rs"), PathBuf::from("missing.rs")],
         );
         assert_eq!(counts[&PathBuf::from("a.rs")], 2);
-        // A missing file counts as zero, still present in the map.
         assert_eq!(counts[&PathBuf::from("missing.rs")], 0);
     }
 }

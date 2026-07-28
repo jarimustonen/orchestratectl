@@ -2073,7 +2073,7 @@ expression: value
                 "long": "clippy-cmd",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Shell command that captures the clippy warning-list (default `cargo clippy --message-format=short`)",
+                "help": "Base `cargo clippy` invocation the floor captures via `--message-format=json` (default `cargo clippy`)",
                 "value_names": [
                   "CMD"
                 ],
@@ -2660,7 +2660,7 @@ expression: value
                 "long": "test-cmd",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Shell command that captures the test pass-list for the floor baseline + current snapshots (default `cargo test`)",
+                "help": "Base `cargo test` invocation the floor enumerates + runs per-binary for its structured, target-qualified test snapshot (default `cargo test`)",
                 "value_names": [
                   "CMD"
                 ],

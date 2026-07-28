@@ -21,25 +21,15 @@
 //! - [`snapshot`] — the pure value model ([`BaselineSnapshot`], [`RunSnapshot`],
 //!   [`TestSnapshot`], [`ClippySnapshot`], [`CheckRun`]) + `sha256` hashing that
 //!   projects down to the `plan.json` [`octl_core::plan::Baseline`] shape.
-//! - [`parse`] — pure parsers (libtest text, clippy short-format, `assert*!`
-//!   counting), exhaustively fixture-tested with no I/O.
+//! - [`parse`] — pure parsers (cargo `--message-format=json`, libtest text +
+//!   announced-vs-parsed reconcile, `assert*!` counting), exhaustively
+//!   fixture-tested with no I/O.
 //! - [`gates`] — the five pure gate functions + [`gates::evaluate_floor`] and
 //!   the structured [`FloorVerdict`] / [`Violation`].
 //! - [`runner`] — the impure capture layer (run checks/tests/clippy, count
 //!   assertions on disk / at a git ref).
 //! - [`git`] — the minimal git shell-outs capture needs (`diff --name-only`,
 //!   `show <ref>:<path>`).
-//!
-//! # Behind the seam (design.md §14 staged rollout)
-//!
-//! **Not wired into any live path.** Nothing in `run create` / the supervisor /
-//! `run merge` constructs or calls the floor yet; this lands as
-//! unused-by-default scaffolding + tests. T5 plugs [`gates::evaluate_floor`] into
-//! the supervisor's chunk-/feature-merge gate. It touches **no** event-append,
-//! reducer, or lock path (the five state-integrity invariants): it only reads
-//! git and runs commands, and writes nothing to the run projection set. The
-//! `#[allow(dead_code)]` on the `mod floor;` declaration covers the subtree
-//! until T5 consumes it.
 //!
 //! # Purity boundary
 //!
@@ -49,24 +39,60 @@
 //! from fixtures (including adversarial ones — comment/string assertion padding,
 //! line-shifted clippy warnings, was-failing-now-ignored tests).
 //!
-//! # Trust model (important limitation)
+//! # Trust model — what is enforced, what remains
 //!
-//! The gates are deterministic, but their **inputs are captured by parsing
-//! uncontrolled process text** (libtest / clippy stdout+stderr) produced by a
-//! toolchain running inside a repository the agent-under-review controls. A
-//! `println!`, a `build.rs`, a `.cargo/config.toml` alias, or an `#![allow]`
-//! can therefore forge or suppress what the parser sees, and the current text
-//! parsers are lenient (an unrecognized line is skipped, not fail-closed). This
-//! module raises the bar against *casual* gaming (padding assertion counts in
-//! comments/strings no longer works; line-shifting no longer flips a clippy
-//! warning to "new") but is **not** an injection-proof oracle on its own.
+//! `floor-capture-trust-model` closed the central injection surface: the floor
+//! no longer trusts uncontrolled process *text*. **Enforced now:**
 //!
-//! Closing that gap — structured `--message-format=json` capture, target-
-//! qualified test identities, exit-code fail-closed captures, execution
-//! isolation (`env_clear`, timeouts, output caps), and baseline ref→OID pinning
-//! with provenance-bound assertion counts — is design work T5 owns before live
-//! wiring; it is captured in issue `floor-capture-trust-model`. Do not describe
-//! this module as tamper-proof until that lands.
+//! - **Structured capture.** Clippy is read from cargo `--message-format=json`
+//!   records keyed by lint code; tests are enumerated as `compiler-artifact`
+//!   executables and run one binary at a time. A `println!`/`build.rs` cannot
+//!   fabricate a clippy JSON record (a code-less build-script warning is
+//!   dropped), and an injected `test x ... ok` line is caught below.
+//! - **Fail-closed.** Every capture proves complete compilation + execution:
+//!   unparseable cargo JSON, a missing `build-finished`, an `error`-level
+//!   diagnostic, a libtest binary whose parsed counts disagree with its own
+//!   announced summary, or an exit code inconsistent with that summary all
+//!   reject with a [`FloorError`] — a compile failure or bad flag can never
+//!   yield an empty snapshot that passes gates vacuously.
+//! - **Target-qualified identity.** [`snapshot::TestId`] is
+//!   `(package, target_kind, target, name)`, so a deleted test cannot be
+//!   replaced by a same-named no-op in another target.
+//! - **Execution isolation.** Capture subprocesses run under `env_clear()` + a
+//!   small allow-list, so an inherited `RUSTFLAGS`/`RUSTDOCFLAGS`/`RUSTC_WRAPPER`
+//!   cannot change the observed set.
+//! - **Provenance-bound baseline.** [`snapshot::BaselineSnapshot`] pins the ref
+//!   to an immutable commit OID (not a mutable ref string), records the
+//!   `rustc -V` fingerprint + schema version, and exposes
+//!   [`snapshot::BaselineSnapshot::verify_plan_baseline`] so a spec-node's plan
+//!   baseline must match the live one. Assertion-count maps are read at a
+//!   resolved OID ([`runner::assertion_counts_at_ref`]).
+//!
+//! **Remaining (deferred to the follow-up issue), still not tamper-proof:**
+//!
+//! - In-repo `.cargo/config.toml` / `rust-toolchain.toml` overrides
+//!   (`RUSTFLAGS`, aliases, lint levels) are **recorded as provenance**
+//!   ([`runner::rustc_version`]) but not fully neutralized — that needs
+//!   `--config`/out-of-tree invocation.
+//! - Assertion density is still a **per-file, crude `assert*!` count**, not a
+//!   semantic per-`#[test]` (AST) measure; `assert!(true)` padding is not
+//!   detected.
+//! - File-scope is a lexical allow-list with no `forbidden-even-if-declared`
+//!   policy for validation-control files (`.cargo/config*`,
+//!   `rust-toolchain.toml`, build scripts, CI).
+//! - **Doctests** (run by rustdoc, not a `compiler-artifact` binary) are not
+//!   captured/target-qualified; that needs the nightly libtest JSON format.
+//! - Wall-clock timeouts / output caps / process-group termination for capture
+//!   subprocesses belong with the §9 circuit-breakers and are tracked there.
+//!
+//! # Wiring status
+//!
+//! The floor is consumed by the experimental code pipeline
+//! (`crate::pipeline::live`), which runs [`evaluate_floor`] at each chunk /
+//! feature merge boundary. It touches **no** event-append, reducer, or lock
+//! path (the five state-integrity invariants): it only reads git and runs
+//! commands, and writes nothing to the run projection set. T5 wires it into the
+//! supervisor's own merge gate.
 
 pub mod gates;
 pub mod git;
@@ -79,7 +105,8 @@ pub use gates::{
     gate_no_test_gaming, FloorInputs, FloorVerdict, GateKind, GateOutcome, Violation,
 };
 pub use snapshot::{
-    hash_sorted, BaselineSnapshot, CheckRun, ClippySnapshot, Coverage, RunSnapshot, TestSnapshot,
+    hash_sorted, BaselineMismatch, BaselineSnapshot, CheckRun, ClippySnapshot, ClippyWarning,
+    Coverage, RunSnapshot, TestId, TestSnapshot, BASELINE_SCHEMA_VERSION,
 };
 
 /// A failure in the floor's **impure capture layer** — running a command, or a
@@ -117,10 +144,20 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use std::collections::BTreeSet;
+
     use super::runner::{assertion_counts_at_ref, assertion_counts_on_disk};
     use super::{
-        evaluate_floor, git::changed_files, CheckRun, FloorInputs, RunSnapshot, TestSnapshot,
+        evaluate_floor, git::changed_files, CheckRun, FloorInputs, RunSnapshot, TestId,
+        TestSnapshot,
     };
+
+    /// The single baseline test `t`, target-qualified.
+    fn passed_t() -> BTreeSet<TestId> {
+        [TestId::new("pkg", "lib", "pkg", "t")]
+            .into_iter()
+            .collect()
+    }
 
     fn git_in(dir: &Path, args: &[&str]) {
         let ok = Command::new("git")
@@ -210,7 +247,7 @@ mod tests {
 
         let baseline = RunSnapshot {
             tests: TestSnapshot {
-                passed: ["t"].iter().map(ToString::to_string).collect(),
+                passed: passed_t(),
                 ..Default::default()
             },
             ..Default::default()
@@ -250,7 +287,7 @@ mod tests {
 
         let snap = RunSnapshot {
             tests: TestSnapshot {
-                passed: ["t"].iter().map(ToString::to_string).collect(),
+                passed: passed_t(),
                 ..Default::default()
             },
             ..Default::default()

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::snapshot::{CheckRun, ClippySnapshot, RunSnapshot, TestSnapshot};
+use super::snapshot::{CheckRun, ClippySnapshot, ClippyWarning, RunSnapshot, TestId, TestSnapshot};
 
 /// Which floor gate a [`GateOutcome`] / [`Violation`] belongs to.
 ///
@@ -83,13 +83,13 @@ pub enum Violation {
     },
     /// A test that passed at baseline now fails.
     TestRegressed {
-        /// The regressed test id.
-        test: String,
+        /// The regressed, target-qualified test id.
+        test: TestId,
     },
     /// A clippy warning present now but not at baseline.
     NewClippyWarning {
-        /// The new warning's normalized identity line.
-        warning: String,
+        /// The new warning's structured identity (lint + package + file + message).
+        warning: ClippyWarning,
     },
     /// The total test count dropped vs baseline.
     TestCountDropped {
@@ -100,14 +100,14 @@ pub enum Violation {
     },
     /// A test that passed at baseline is now `#[ignore]`d/skipped.
     NewlyIgnoredTest {
-        /// The now-ignored test id.
-        test: String,
+        /// The now-ignored, target-qualified test id.
+        test: TestId,
     },
     /// A test present at baseline is entirely absent now (deleted or
     /// renamed-to-no-op) — the crude rename/removal signal.
     MissingBaselineTest {
-        /// The vanished test id.
-        test: String,
+        /// The vanished, target-qualified test id.
+        test: TestId,
     },
     /// Assertion density in a touched file dropped vs baseline.
     AssertionDensityRegressed {
@@ -328,7 +328,7 @@ pub fn gate_no_test_gaming(
     // skipping a failing test hides an unresolved failure. A test already
     // ignored at baseline, and a brand-new test that happens to be ignored, are
     // both fine — only a *newly* ignored, previously-run test is flagged.
-    let baseline_run: BTreeSet<&String> = baseline.passed.union(&baseline.failed).collect();
+    let baseline_run: BTreeSet<&TestId> = baseline.passed.union(&baseline.failed).collect();
     for test in current.ignored.difference(&baseline.ignored) {
         if baseline_run.contains(test) {
             violations.push(Violation::NewlyIgnoredTest { test: test.clone() });
@@ -421,8 +421,28 @@ pub fn gate_file_scope(declared: &[PathBuf], changed: &[PathBuf], slack: usize) 
 mod tests {
     use super::*;
 
-    fn tset(items: &[&str]) -> BTreeSet<String> {
-        items.iter().map(ToString::to_string).collect()
+    /// Target-qualified test set from bare names (all in one synthetic target),
+    /// so the existing gate-logic tests read the same as before.
+    fn tset(items: &[&str]) -> BTreeSet<TestId> {
+        items.iter().map(|n| tid(n)).collect()
+    }
+
+    fn tid(name: &str) -> TestId {
+        TestId::new("pkg", "lib", "pkg", name)
+    }
+
+    /// Clippy warning set from bare identity strings (lint code = the string).
+    fn cset(items: &[&str]) -> BTreeSet<ClippyWarning> {
+        items.iter().map(|s| cw(s)).collect()
+    }
+
+    fn cw(lint: &str) -> ClippyWarning {
+        ClippyWarning {
+            lint: lint.to_string(),
+            package: "pkg".into(),
+            file: "src/a.rs".into(),
+            message: "m".into(),
+        }
     }
 
     fn check(desc: &str, run: &str, passed: bool, exit: Option<i32>) -> CheckRun {
@@ -508,7 +528,7 @@ mod tests {
         assert!(!g.passed);
         assert_eq!(
             g.violations,
-            vec![Violation::TestRegressed { test: "b".into() }]
+            vec![Violation::TestRegressed { test: tid("b") }]
         );
     }
 
@@ -532,10 +552,10 @@ mod tests {
     #[test]
     fn no_new_clippy_when_subset() {
         let base = ClippySnapshot {
-            warnings: tset(&["w1", "w2"]),
+            warnings: cset(&["w1", "w2"]),
         };
         let cur = ClippySnapshot {
-            warnings: tset(&["w1"]), // fixed one, added none
+            warnings: cset(&["w1"]), // fixed one, added none
         };
         assert!(gate_no_new_clippy(&base, &cur).passed);
     }
@@ -543,18 +563,16 @@ mod tests {
     #[test]
     fn new_clippy_warning_fails() {
         let base = ClippySnapshot {
-            warnings: tset(&["w1"]),
+            warnings: cset(&["w1"]),
         };
         let cur = ClippySnapshot {
-            warnings: tset(&["w1", "w2"]),
+            warnings: cset(&["w1", "w2"]),
         };
         let g = gate_no_new_clippy(&base, &cur);
         assert!(!g.passed);
         assert_eq!(
             g.violations,
-            vec![Violation::NewClippyWarning {
-                warning: "w2".into()
-            }]
+            vec![Violation::NewClippyWarning { warning: cw("w2") }]
         );
     }
 
@@ -594,7 +612,7 @@ mod tests {
         }));
         assert!(g
             .violations
-            .contains(&Violation::MissingBaselineTest { test: "b".into() }));
+            .contains(&Violation::MissingBaselineTest { test: tid("b") }));
     }
 
     #[test]
@@ -612,7 +630,7 @@ mod tests {
         assert!(!g.passed);
         assert!(g
             .violations
-            .contains(&Violation::NewlyIgnoredTest { test: "b".into() }));
+            .contains(&Violation::NewlyIgnoredTest { test: tid("b") }));
         // Count did not drop (b still counted, just ignored), and b is still
         // present, so neither of those signals fire.
         assert!(!g
@@ -638,9 +656,9 @@ mod tests {
             ..Default::default()
         };
         let g = gate_no_test_gaming(&base, &cur, &BTreeMap::new(), &BTreeMap::new());
-        assert!(g.violations.contains(&Violation::NewlyIgnoredTest {
-            test: "flaky".into()
-        }));
+        assert!(g
+            .violations
+            .contains(&Violation::NewlyIgnoredTest { test: tid("flaky") }));
     }
 
     #[test]
@@ -753,7 +771,7 @@ mod tests {
                 ..Default::default()
             },
             clippy: ClippySnapshot {
-                warnings: tset(&["w1"]),
+                warnings: cset(&["w1"]),
             },
             coverage: None,
         };
@@ -794,7 +812,7 @@ mod tests {
                 ..Default::default()
             },
             clippy: ClippySnapshot {
-                warnings: tset(&["new-warn"]), // new clippy
+                warnings: cset(&["new-warn"]), // new clippy
             },
             coverage: None,
         };

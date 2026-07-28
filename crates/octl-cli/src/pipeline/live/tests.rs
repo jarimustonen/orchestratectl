@@ -144,8 +144,16 @@ fn config(repo: &Path, workdir: &Path, plan_files: &[&str]) -> PipelineConfig {
         source_branch: "main".to_string(),
         files: plan_files.iter().map(PathBuf::from).collect(),
         slug: Some("demo".to_string()),
-        test_cmd: "true".to_string(),
-        clippy_cmd: "true".to_string(),
+        // The floor's structured capture is fail-closed: it requires a valid
+        // cargo `--message-format=json` stream ending in `build-finished`. These
+        // stubs emit a minimal empty-but-valid stream (no artifacts ⇒ zero test
+        // binaries; no diagnostics ⇒ zero warnings), so both baseline and tip
+        // capture as empty and the floor's test/clippy gates pass — the flow
+        // tests exercise file-scope / check / breaker behaviour, not lint
+        // content. Extra appended flags (`--no-run`, `--message-format=json`)
+        // are ignored by `printf`.
+        test_cmd: r#"printf '{"reason":"build-finished","success":true}\n'"#.to_string(),
+        clippy_cmd: r#"printf '{"reason":"build-finished","success":true}\n'"#.to_string(),
         workdir: workdir.to_path_buf(),
         file_scope_slack: 0,
         keep: false,
