@@ -6,6 +6,9 @@ status: in-progress
 priority: high
 epic: code-pipeline
 related: ['@floor-capture-trust-model']
+commits:
+- hash: d36457b
+  summary: round-2 floor hardening (F4 target-dir, F7 enumeration, provenance)
 ---
 
 # Floor capture hardening round 2: repo-controlled cargo config, enumeration integrity, doctests, provenance enforcement
