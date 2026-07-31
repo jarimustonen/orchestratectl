@@ -361,6 +361,67 @@ fn concurrent_same_idempotency_key_creates_one_run() {
     );
 }
 
+/// Regression for the reservation-leak the review caught: an error AFTER the
+/// idempotency key is reserved but BEFORE the run is durable must free the key
+/// (via the drop-guard), so a later retry with the same key re-spawns cleanly
+/// instead of replaying a phantom run that was never materialized. Here the
+/// early error is a child spawn against a non-existent parent (`parent_not_found`
+/// fires after `reserve`); the retry is a valid top-level create with the same
+/// key, which must mint a NEW run, not `idempotent_replay` the leaked one.
+#[test]
+fn early_failure_after_reserve_frees_the_key() {
+    let home = TestHome::new();
+    let key = "leak-key";
+
+    // A child create against a parent that does not exist: reserve succeeds,
+    // then the parent-existence check fails. The guard must release the key.
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "orphan",
+        "--parent-run-id",
+        "01000000000000000000000000",
+        "--parent-node-id",
+        "n-0001",
+        "--idempotency-key",
+        key,
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "parent_not_found");
+    // No run materialized, and the key file was released (not left behind).
+    let runs = home.path().join("runs");
+    let count = std::fs::read_dir(&runs).map_or(0, Iterator::count);
+    assert_eq!(count, 0, "no run should have materialized");
+
+    // Retry with the SAME key as a normal top-level create: because the key was
+    // freed, this is a fresh creation — not an idempotent replay of a phantom.
+    let v2 = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "retry",
+        "--idempotency-key",
+        key,
+    ]));
+    assert_ne!(
+        v2["data"]["idempotent_replay"],
+        Value::Bool(true),
+        "a freed key must not replay: {v2}"
+    );
+    assert!(v2["data"]["run_id"].is_string());
+    let count = std::fs::read_dir(&runs).unwrap().count();
+    assert_eq!(count, 1, "exactly the retry's run exists");
+}
+
 #[test]
 fn create_rejects_empty_title() {
     let home = TestHome::new();

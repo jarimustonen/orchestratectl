@@ -31,6 +31,46 @@ use crate::run::{
     require_nonempty, run_paths, spawn, supervisor_spawn,
 };
 
+/// Drop-releases an idempotency reservation unless disarmed.
+///
+/// Armed the moment `reserve` wins the key; disarmed once the run is durable
+/// enough that a keyed retry should REPLAY it rather than re-spawn. So any `?`
+/// early-return between `reserve` and that commit point frees the key on unwind
+/// — otherwise an error before the run materialized would strand the key on a
+/// phantom run forever (the reservation-leak the review caught). Disarm points:
+/// top-level after `run.created` is durable (a recoverable pending run — keep
+/// the key so a retry short-circuits to it); a child only on full success after
+/// `child.spawned` (a child failure discards the run dir, so its key must be
+/// freed). Release is ownership-checked, so this never clobbers another run's
+/// key. NOTE: `Drop` does not run on a hard process kill — see the module doc
+/// for that documented crash-window limitation.
+struct ReservationGuard {
+    repo: Option<String>,
+    branch: Option<String>,
+    key: String,
+    run_id: String,
+    armed: bool,
+}
+
+impl ReservationGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = idempotency::release(
+                self.repo.as_deref(),
+                self.branch.as_deref(),
+                &self.key,
+                &self.run_id,
+            );
+        }
+    }
+}
+
 /// A flat 1:1 mirror of `run create`'s clap flags (skip-materialize,
 /// no-hooks, headless, dry-run), so the pedantic `struct_excessive_bools`
 /// lint is allowed here — same allowance as the help-module arg bags.
@@ -294,40 +334,47 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // exactly one concurrent caller wins and materializes; the losers observe
     // the reservation and replay the winner's run instead of spawning a
     // duplicate. Skipped on dry-run (handled above — dry-run persists nothing).
-    let reserved_key = if let Some(key) = args.idempotency_key.as_deref() {
-        match idempotency::reserve(
-            args.source_repo.as_deref(),
-            args.source_branch.as_deref(),
-            key,
-            &run_id,
-        )? {
-            idempotency::Reservation::Reserved => true,
-            idempotency::Reservation::AlreadyReserved(existing) => {
-                // A concurrent same-key call won the race between our `lookup`
-                // and this `reserve`. Replay ITS run, exactly as the top-of-
-                // function fast path would have.
-                let existing_rid = parse_run_id(&existing)?;
-                let dir = octl_core::run_dir(&root, &existing_rid);
-                return emit(EmitInput {
-                    run_id: &existing,
-                    dir: dir.display().to_string(),
-                    kind: args.kind,
-                    lifecycle,
-                    parent_run_id: parent_run_id.as_deref(),
-                    parent_node_id: parent_node_id.as_deref(),
-                    node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
-                    spawn: None,
-                    supervisor_pid: None,
-                    idempotent_replay: Some(true),
-                    dry_run: None,
-                    spec: args.spec,
-                    warnings: args.warnings,
-                });
+    let mut reservation: Option<ReservationGuard> =
+        if let Some(key) = args.idempotency_key.as_deref() {
+            match idempotency::reserve(
+                args.source_repo.as_deref(),
+                args.source_branch.as_deref(),
+                key,
+                &run_id,
+            )? {
+                idempotency::Reservation::Reserved => Some(ReservationGuard {
+                    repo: args.source_repo.clone(),
+                    branch: args.source_branch.clone(),
+                    key: key.to_string(),
+                    run_id: run_id.clone(),
+                    armed: true,
+                }),
+                idempotency::Reservation::AlreadyReserved(existing) => {
+                    // A concurrent same-key call won the race between our `lookup`
+                    // and this `reserve`. Replay ITS run, exactly as the top-of-
+                    // function fast path would have.
+                    let existing_rid = parse_run_id(&existing)?;
+                    let dir = octl_core::run_dir(&root, &existing_rid);
+                    return emit(EmitInput {
+                        run_id: &existing,
+                        dir: dir.display().to_string(),
+                        kind: args.kind,
+                        lifecycle,
+                        parent_run_id: parent_run_id.as_deref(),
+                        parent_node_id: parent_node_id.as_deref(),
+                        node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
+                        spawn: None,
+                        supervisor_pid: None,
+                        idempotent_replay: Some(true),
+                        dry_run: None,
+                        spec: args.spec,
+                        warnings: args.warnings,
+                    });
+                }
             }
-        }
-    } else {
-        false
-    };
+        } else {
+            None
+        };
 
     ensure_root(&root).map_err(from_core)?;
 
@@ -414,6 +461,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     octl_core::append_and_apply_event(&paths, "run.created", None, None, Value::Object(data))
         .map_err(from_core)?;
 
+    // Commit point for a TOP-LEVEL run: `run.created` is durable, so the run is
+    // a recoverable `pending` run on disk. Disarm the reservation guard — a
+    // later create.sh / supervisor failure must now KEEP the key so a keyed
+    // retry short-circuits to this run rather than minting a duplicate. A CHILD
+    // stays armed until full success (its run dir is discarded on failure).
+    if !is_child {
+        if let Some(g) = reservation.as_mut() {
+            g.disarm();
+        }
+    }
+
     // Orchestrate driver: synthesize the `n-0001` driver node. The
     // orchestrator agent runs in the user's main conversation (no worktree
     // to materialize), but children spawned via `--kind orchestrated` REQUIRE
@@ -484,6 +542,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `child.spawned` here. The idempotency key was already reserved before
         // materialization (see `reserve` above), same as the materialized path.
         emit_child_spawned()?;
+        // Commit point for a CHILD: run dir + `child.spawned` are durable, so a
+        // keyed retry must replay rather than re-spawn. Disarm the guard (no-op
+        // for a top-level orchestrate driver, already disarmed after run.created).
+        if is_child {
+            if let Some(g) = reservation.as_mut() {
+                g.disarm();
+            }
+        }
         // The orchestrate DRIVER has no worktree to materialize, but it STILL
         // needs a supervisor: its `--kind orchestrated` children are
         // parent-pointed and delegate child-supervisor creation to the parent
@@ -562,22 +628,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let cleanup_orphan_child = || {
         if is_child {
             let _ = std::fs::remove_dir_all(&child_dir);
-            // The reserved key points at a run dir we are about to discard.
-            // Release it so a later keyed retry re-spawns cleanly instead of
-            // replaying a run that no longer exists on disk. (Top-level spawn
+            // The child's idempotency key (if any) is freed by the still-armed
+            // `ReservationGuard` on this function's error unwind — a child is
+            // only disarmed on full success — so a keyed retry re-spawns cleanly
+            // instead of replaying a run dir we just discarded. (Top-level spawn
             // failures deliberately KEEP the reservation: the run stays on disk
-            // in `pending`, and a keyed retry short-circuits to it — see the
-            // top-level failure comment above.) Best-effort, like the dir
-            // removal: a leftover key is less harmful than a panic mid-cleanup.
-            if reserved_key {
-                if let Some(key) = args.idempotency_key.as_deref() {
-                    let _ = idempotency::release(
-                        args.source_repo.as_deref(),
-                        args.source_branch.as_deref(),
-                        key,
-                    );
-                }
-            }
+            // in `pending` and a retry short-circuits to it — top-level is
+            // disarmed right after `run.created`.)
         }
     };
     let outcome = match spawn::run_create_sh_with_tmux_retry(&spawn_req) {
@@ -653,14 +710,19 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // (rather than before the spawn) makes the parent's DAG bookkeeping
     // transactional — a failed spawn leaves no parent event and no child run
     // dir, so the parent supervisor never tracks a phantom 0-node child. (On
-    // that failure the child's idempotency reservation is released too — see
-    // `cleanup_orphan_child` — so a keyed retry re-spawns cleanly.)
+    // that failure the child's still-armed reservation guard releases the key on
+    // unwind — so a keyed retry re-spawns cleanly.)
     emit_child_spawned()?;
 
-    // The idempotency key was reserved before materialization began (see
-    // `reserve` above); the run is durably keyed by the time we reach here, so
-    // if the supervisor fails to confirm (`supervisor_spawn_failed`) a keyed
-    // retry replays THIS run rather than minting a duplicate.
+    // Commit point for a CHILD (materialized path): the run is materialized and
+    // `child.spawned` is durable, so disarm — a keyed retry must now replay.
+    // Top-level was already disarmed after `run.created`; its supervisor failure
+    // below therefore KEEPS the key so a retry replays this recoverable run.
+    if is_child {
+        if let Some(g) = reservation.as_mut() {
+            g.disarm();
+        }
+    }
 
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent

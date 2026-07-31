@@ -16,7 +16,32 @@
 //! that essentially impossible on a single workstation. The components
 //! are length-prefixed before hashing to avoid the canonical FNV
 //! ambiguity (`a||bc` vs. `ab||c`).
+//!
+//! ## Reservation lifecycle and its limits
+//!
+//! [`reserve`] is the authoritative check-and-set: it publishes the key
+//! atomically (via `hard_link` of a fully-written temp file) BEFORE the
+//! run materializes, so a concurrent second call with the same key
+//! observes it and replays instead of spawning a duplicate. The caller
+//! wraps the reservation in a drop-guard that [`release`]s it on any
+//! error before the run is durable, so an early `?` return does not
+//! strand the key. Release is ownership-checked (only unlinks a key that
+//! still points at this run's id), so a stale release cannot clobber a
+//! newer owner's reservation.
+//!
+//! Known limit (documented, not solved here): a hard process kill
+//! (SIGKILL / OOM / power loss) BETWEEN a successful `reserve` and the
+//! first durable run artifact leaves a key pointing at a run that was
+//! never materialized — the drop-guard cannot run. A later keyed retry
+//! then replays that phantom via [`lookup`]. Recovery today is deleting
+//! the key file; a full fix needs a PID/timestamp lease or a per-key
+//! `flock` two-phase (reserved → committed) protocol, which is a larger
+//! redesign than this duplicate-create bug warranted. The `hard_link`
+//! primitive also requires a filesystem that supports hard links (every
+//! realistic `~/.orchestratectl` target — ext4/btrfs/xfs/apfs/tmpfs —
+//! does; FAT/exFAT and some network mounts do not).
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::CliError;
@@ -88,12 +113,32 @@ fn lookup_in(
 }
 
 /// Outcome of an atomic [`reserve`].
+#[must_use = "a Reservation must be inspected: ignoring AlreadyReserved would duplicate the run"]
 pub enum Reservation {
     /// This caller won the key: it now owns `run_id` and must materialize it.
     Reserved,
     /// The key was already reserved by an earlier (possibly still in-flight)
     /// call; the wrapped run-id is the one to replay.
     AlreadyReserved(String),
+}
+
+/// Drop-removes a temp file on every exit path from [`reserve_in`], so a read
+/// error (or any early return) after the temp is written never leaks it.
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// fsync a directory so a newly-created (or removed) entry within it survives a
+/// crash. Best-effort: platforms that reject `fsync` on a directory handle
+/// (some non-Unix filesystems) simply skip it — the reservation stays correct
+/// for the in-process concurrency case, which needs visibility, not durability.
+fn fsync_dir(dir: &Path) {
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
 }
 
 /// Atomically reserve `key` for `run_id`, closing the two-near-simultaneous
@@ -130,46 +175,94 @@ fn reserve_in(
     key: &str,
     run_id: &str,
 ) -> Result<Reservation, CliError> {
-    let p = file_path_in(root, repo, branch, key);
-    let parent = p
-        .parent()
-        .expect("idempotency path always has a parent dir");
-    std::fs::create_dir_all(parent)
+    let parent = root.join("idempotency");
+    let p = parent.join(key_hash(repo, branch, key));
+    std::fs::create_dir_all(&parent)
         .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", parent.display(), e)))?;
-    // Temp name is disambiguated by run_id, which is globally unique, so
-    // concurrent reservers never collide on the temp file itself.
+    // Write the run-id to a temp file, fully and fsynced, before linking it into
+    // place. Temp name is disambiguated by run_id (globally unique), so
+    // concurrent reservers never collide on the temp file itself; the guard
+    // removes it on every exit path.
     let tmp = parent.join(format!(".tmp-{run_id}"));
-    std::fs::write(&tmp, run_id)
-        .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
-    let result = match std::fs::hard_link(&tmp, &p) {
-        Ok(()) => Reservation::Reserved,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = std::fs::read_to_string(&p).map_err(|e| {
-                CliError::system("io_error", format!("read {}: {}", p.display(), e))
-            })?;
-            Reservation::AlreadyReserved(existing.trim().to_string())
+    let _tmp_guard = TempFileGuard(tmp.clone());
+    {
+        let mut f = std::fs::File::create(&tmp).map_err(|e| {
+            CliError::system("io_error", format!("create {}: {}", tmp.display(), e))
+        })?;
+        f.write_all(run_id.as_bytes())
+            .map_err(|e| CliError::system("io_error", format!("write {}: {}", tmp.display(), e)))?;
+        // Durability: the reserved key must survive a crash so a post-crash
+        // retry replays rather than duplicating. (Visibility to a concurrent
+        // in-process caller does not need this — the link is visible at once —
+        // but crash-consistency does.)
+        f.sync_all()
+            .map_err(|e| CliError::system("io_error", format!("fsync {}: {}", tmp.display(), e)))?;
+    }
+    // Retry loop: the AlreadyExists → read window can observe a concurrent
+    // `release` (owner failed and unlinked the key between our failed link and
+    // our read). A NotFound there means the key is free again — loop and
+    // re-attempt the link rather than surfacing a spurious error. Bounded so a
+    // pathological churn cannot spin forever.
+    for _ in 0..64 {
+        match std::fs::hard_link(&tmp, &p) {
+            Ok(()) => {
+                // fsync the directory so the new link entry is durable.
+                fsync_dir(&parent);
+                return Ok(Reservation::Reserved);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                match std::fs::read_to_string(&p) {
+                    Ok(existing) => {
+                        return Ok(Reservation::AlreadyReserved(existing.trim().to_string()));
+                    }
+                    // The owner released the key before we could read it — loop
+                    // back and re-attempt the link (the key is free again).
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(CliError::system(
+                            "io_error",
+                            format!("read {}: {}", p.display(), e),
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(CliError::system(
+                    "io_error",
+                    format!("link {} -> {}: {}", tmp.display(), p.display(), e),
+                ));
+            }
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(CliError::system(
-                "io_error",
-                format!("link {} -> {}: {}", tmp.display(), p.display(), e),
-            ));
-        }
-    };
-    // The link (or the loser's read) is done; the temp file is no longer
-    // needed. Best-effort: a leftover temp file is harmless (unique name).
-    let _ = std::fs::remove_file(&tmp);
-    Ok(result)
+    }
+    Err(CliError::system(
+        "io_error",
+        format!(
+            "reserve {}: contended past retry budget (repeated create/release churn)",
+            p.display()
+        ),
+    ))
 }
 
-/// Release a reservation made by [`reserve`]. Used only when a reserved run
-/// fails to materialize and its on-disk run dir is discarded (a child-spawn
-/// failure), so a later keyed retry re-spawns cleanly rather than replaying a
-/// run that no longer exists. A missing file is not an error (already gone).
-pub fn release(repo: Option<&str>, branch: Option<&str>, key: &str) -> Result<(), CliError> {
+/// Release a reservation made by [`reserve`], but ONLY if it still points at
+/// `run_id`. Used when a reserved run fails to materialize and its on-disk run
+/// dir is discarded (a child-spawn failure, or any error before the run is
+/// durable), so a later keyed retry re-spawns cleanly rather than replaying a
+/// run that no longer exists.
+///
+/// The ownership check makes release race-safe: it never clobbers a DIFFERENT
+/// run's reservation. Once a key holds some other run's id, only that run can
+/// have written it (re-reservation requires the file to be absent first, and a
+/// run only ever releases its OWN id), so a stale/late release is a no-op
+/// rather than an ABA that would re-open the duplicate-create window. A missing
+/// or already-reassigned file is not an error.
+pub fn release(
+    repo: Option<&str>,
+    branch: Option<&str>,
+    key: &str,
+    run_id: &str,
+) -> Result<(), CliError> {
     let root = home::root_dir()?;
-    release_in(&root, repo, branch, key)
+    release_in(&root, repo, branch, key, run_id)
 }
 
 fn release_in(
@@ -177,14 +270,28 @@ fn release_in(
     repo: Option<&str>,
     branch: Option<&str>,
     key: &str,
+    run_id: &str,
 ) -> Result<(), CliError> {
     let p = file_path_in(root, repo, branch, key);
-    match std::fs::remove_file(&p) {
-        Ok(()) => Ok(()),
+    match std::fs::read_to_string(&p) {
+        // Only OUR reservation may be removed. A non-match means the key was
+        // already released and re-reserved by another run — leave it.
+        Ok(s) if s.trim() == run_id => match std::fs::remove_file(&p) {
+            Ok(()) => {
+                fsync_dir(p.parent().unwrap_or(root));
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CliError::system(
+                "io_error",
+                format!("remove {}: {}", p.display(), e),
+            )),
+        },
+        Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(CliError::system(
             "io_error",
-            format!("remove {}: {}", p.display(), e),
+            format!("read {}: {}", p.display(), e),
         )),
     }
 }
@@ -295,24 +402,55 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         let key = "release-key";
+        let a = "01runaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let b = "01runbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let c = "01runccccccccccccccccccccccccc";
 
         // Releasing an unreserved key is fine.
-        release_in(root, None, None, key).unwrap();
+        release_in(root, None, None, key, a).unwrap();
 
         assert!(matches!(
-            reserve_in(root, None, None, key, "01runaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            reserve_in(root, None, None, key, a).unwrap(),
             Reservation::Reserved
         ));
         // Now reserved: a second reserve loses.
         assert!(matches!(
-            reserve_in(root, None, None, key, "01runbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap(),
+            reserve_in(root, None, None, key, b).unwrap(),
             Reservation::AlreadyReserved(_)
         ));
-        // Release, then a fresh reserve wins again.
-        release_in(root, None, None, key).unwrap();
+        // Release by the owner, then a fresh reserve wins again.
+        release_in(root, None, None, key, a).unwrap();
         assert!(matches!(
-            reserve_in(root, None, None, key, "01runccccccccccccccccccccccccc").unwrap(),
+            reserve_in(root, None, None, key, c).unwrap(),
             Reservation::Reserved
+        ));
+    }
+
+    /// Ownership-checked release: a stale release from a run that no longer
+    /// owns the key must NOT clobber the current owner's reservation (else the
+    /// duplicate-create window re-opens).
+    #[test]
+    fn release_is_ownership_checked() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let key = "cas-key";
+        let owner = "01runaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let stale = "01runbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        assert!(matches!(
+            reserve_in(root, None, None, key, owner).unwrap(),
+            Reservation::Reserved
+        ));
+        // A release naming a DIFFERENT run is a no-op — the owner's key survives.
+        release_in(root, None, None, key, stale).unwrap();
+        assert_eq!(
+            lookup_in(root, None, None, key).unwrap().as_deref(),
+            Some(owner)
+        );
+        // A concurrent reserve still loses (key intact).
+        assert!(matches!(
+            reserve_in(root, None, None, key, stale).unwrap(),
+            Reservation::AlreadyReserved(_)
         ));
     }
 }
