@@ -25,7 +25,7 @@
 //! - **Floor-pinned target dir (`floor-capture-hardening-round-2` F4).** Every
 //!   cargo capture runs with `CARGO_TARGET_DIR` set to a fresh, per-snapshot dir
 //!   (env, which beats an in-repo `build.target-dir`; plus a `--target-dir` flag
-//!   for an explicit, highest-precedence override — see [`target_dir_flags`]).
+//!   for an explicit, highest-precedence override — see [`build_cargo_invocation`]).
 //!   Baseline and tip therefore never share a warm cache, so `cargo clippy`
 //!   cannot re-emit **zero** warnings off a cache the baseline warmed and pass
 //!   `gate_no_new_clippy` vacuously.
@@ -34,10 +34,25 @@
 //! a *narrowed* test enumeration (a `test`/`clippy` alias, `--exclude`,
 //! `harness = false`, or workspace-narrowing) is caught fail-closed by the F7
 //! enumeration-superset gate rather than passing vacuously. The toolchain used is
-//! recorded via [`rustc_version`] as baseline provenance. Residual config vectors
-//! — an `[alias]` redirect of the `clippy` subcommand to a benign command, config
-//! `rustflags` lint-level flips, and a consistently-weakening `rust-toolchain.toml`
-//! — are documented in the module docs and deferred to a spin-off.
+//! recorded via [`rustc_version`] as baseline provenance.
+//!
+//! - **Structured argv, sanitized config (`floor-capture-hardening-round-3`
+//!   item 1).** The floor no longer composes a repo-influenced `sh -c` string. It
+//!   invokes a supervisor-resolved cargo ([`cargo_bin`]) via **argv**
+//!   ([`build_cargo_invocation`]) with the sanitizing `--config` overrides of
+//!   [`SANITIZING_CONFIG`] (cargo's highest-precedence config layer): repo
+//!   `build.rustflags` / `build.rustdocflags` lint-level flips and a
+//!   `build.rustc-wrapper` diagnostic-suppressing wrapper are neutralized, and a
+//!   repo `[alias] clippy = …` redirect is bypassed by invoking the external
+//!   `cargo-clippy` binary directly (`test` is built-in and cannot be aliased).
+//!   The old `inject_cargo_flags` whitelist bit-rot and the whitespace/quoting
+//!   fragility are gone. A consistently-weakening `rust-toolchain.toml` (an
+//!   evil-but-consistent pin) is still only caught as baseline-vs-tip *drift* by
+//!   the recorded toolchain, and a repo `[env]`-table `force = true` override of a
+//!   compiler env var is not individually rewritten — a fully repo-config-proof
+//!   invocation (copy sources into a supervisor-owned tree with a sanitized
+//!   `.cargo/config.toml`) is the remaining belt-and-suspenders extreme, tracked
+//!   as future work.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -65,6 +80,7 @@ const ENV_ALLOWLIST: &[&str] = &[
     "TMPDIR",
     "LANG",
     "TERM",
+    "CARGO",
     "CARGO_HOME",
     "RUSTUP_HOME",
     "RUSTUP_TOOLCHAIN",
@@ -114,31 +130,178 @@ fn isolated_command(program: &str, target_dir: Option<&Path>) -> Command {
     cmd
 }
 
-/// Build the cargo flags that pin the target dir on the command line, as a
-/// belt-and-suspenders complement to the `CARGO_TARGET_DIR` env
-/// ([`isolated_command`]). `--target-dir <path>` is cargo's highest-precedence
-/// target-dir mechanism (above env and above an in-repo `build.target-dir`), so
-/// it makes the override explicit in the invocation the audit log records.
+/// The supervisor-resolved cargo binary the floor's own captures invoke
+/// (`floor-capture-hardening-round-3` item 1). Prefers the `CARGO` env — set by
+/// the toolchain/rustup that launched the supervisor, so it points at the same
+/// cargo the orchestrator trusts — and falls back to `cargo` on `PATH`. This is
+/// resolved in the *floor* process (trusted parent env), never from the repo
+/// under review, so a repo cannot substitute the cargo binary itself. A base
+/// command whose first token is literally `cargo` is rewritten to this path; any
+/// other first token (a test fixture's fake-cargo script, or an explicit cargo
+/// path) is honoured verbatim.
+fn cargo_bin() -> String {
+    std::env::var("CARGO")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "cargo".to_string())
+}
+
+/// cargo's highest-precedence config overrides (`--config KEY=VALUE`, above env
+/// and above an in-tree `.cargo/config.toml`) that neutralize the repo-controlled
+/// vectors documented in the module trust model
+/// (`floor-capture-hardening-round-3` item 1):
 ///
-/// The composed command is later run through `sh -c`, so a path containing
-/// whitespace (or a shell metacharacter) would be mis-split into multiple tokens.
-/// The env var is the *robust* mechanism (set directly on the process, never
-/// shell-parsed); this flag is only added when the path is a single safe shell
-/// word. When it is omitted the env still enforces the dir — worst case is a
-/// less-explicit invocation, never a lost override. A pathological path that did
-/// slip a bad flag through would make cargo error out → the capture fails closed,
-/// never silently passes.
-fn target_dir_flags(target_dir: &Path) -> Vec<String> {
-    let path = target_dir.to_string_lossy();
-    let shell_safe = !path.is_empty()
-        && path
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
-    if shell_safe {
-        vec!["--target-dir".to_string(), path.into_owned()]
-    } else {
-        Vec::new()
+/// - `build.rustflags` / `build.rustdocflags` are forced empty, so a committed
+///   lint-level flip (`-A warnings`, `--cap-lints allow`) or an extra `--cfg`
+///   cannot suppress or steer the diagnostics the floor reads.
+/// - `build.rustc-wrapper` / `build.rustc-workspace-wrapper` are forced empty
+///   (cargo treats an empty wrapper as "none"), so a compiler wrapper that
+///   filters or fabricates diagnostics cannot sit between cargo and rustc.
+///
+/// These are emitted as argv tokens (`--config`, `KEY=VALUE`) on the real cargo
+/// invocation; because the invocation is built as argv and executed directly
+/// (never through `sh -c`), the values are passed byte-for-byte with no shell
+/// re-splitting. `build.rustc` itself is left to the toolchain default — the
+/// floor cannot know the true rustc path, and `env_clear()` already drops any
+/// inherited `RUSTC`; a repo `build.rustc` redirect that pointed at a fake
+/// compiler would fail to actually build the crate, so the capture fails closed
+/// rather than passing vacuously.
+const SANITIZING_CONFIG: &[&str] = &[
+    "build.rustflags=[]",
+    "build.rustdocflags=[]",
+    r#"build.rustc-wrapper="""#,
+    r#"build.rustc-workspace-wrapper="""#,
+];
+
+/// Expand [`SANITIZING_CONFIG`] into the flat `--config KEY=VALUE …` argv the
+/// real cargo invocation carries as **global** flags (before the subcommand).
+fn sanitizing_config_args() -> Vec<String> {
+    SANITIZING_CONFIG
+        .iter()
+        .flat_map(|kv| ["--config".to_string(), (*kv).to_string()])
+        .collect()
+}
+
+/// A floor cargo invocation built as **argv** — the supervisor-resolved program
+/// plus its already-split arguments — never a shell string
+/// (`floor-capture-hardening-round-3` item 1). Executed via
+/// [`isolated_command`]`.args(&inv.args)`, so no `sh -c` re-splits, re-quotes, or
+/// expands any token.
+struct CargoInvocation {
+    /// The resolved program to exec (cargo, cargo-clippy, or a fixture script).
+    program: String,
+    /// The full argument vector, in order.
+    args: Vec<String>,
+}
+
+impl CargoInvocation {
+    /// A shell-ish rendering (`program arg arg …`) for diagnostics only — never
+    /// re-parsed or executed. The actual invocation is argv, so this string's
+    /// quoting is immaterial.
+    fn display(&self) -> String {
+        let mut s = self.program.clone();
+        for a in &self.args {
+            s.push(' ');
+            s.push_str(a);
+        }
+        s
     }
+}
+
+/// Build a floor cargo invocation as argv from a base command string, the
+/// floor-pinned `target_dir`, and the floor's own `floor_flags`
+/// (`--no-run`/`--message-format=json`/`--doc`, …).
+///
+/// The base command is tokenized on whitespace (the floor's own commands never
+/// carry quoted, space-containing args — that is the capture contract). The
+/// pipeline is:
+///
+/// 1. **Resolve the program.** A leading `cargo` token becomes [`cargo_bin`]
+///    (supervisor-resolved); any other leading token (a fixture script / explicit
+///    path) is kept verbatim.
+/// 2. **Bypass a `clippy` alias.** When the resolved program is real cargo and
+///    the first subcommand token is `clippy`, the invocation is rewritten to the
+///    external `cargo-clippy` binary with the `clippy` token dropped, so a repo
+///    `[alias] clippy = …` redirect (which shadows the *subcommand*, not the
+///    external binary) cannot steer the floor's clippy capture to a benign
+///    zero-warning command. `test` is a built-in subcommand and cannot be
+///    aliased, so it needs no such rewrite.
+/// 3. **Strip repo-supplied target-dir / message-format** from the cargo-side
+///    tokens (before any `--`), so only the floor's forced copies survive — an
+///    in-command `--target-dir` cannot re-point the floor's pinned cache.
+/// 4. **Assemble** the argv in order: `program`, then the sanitizing `--config`
+///    globals, then the cargo-side tokens, then `--target-dir <dir>`, then the
+///    floor flags, then any `--` and test-binary tokens. The `--target-dir` is
+///    always emitted (argv needs no shell-safety dance — the round-2
+///    `target_dir_flags` whitespace hack is gone), belt-and-suspenders with the
+///    `CARGO_TARGET_DIR` env [`isolated_command`] also sets.
+fn build_cargo_invocation(
+    base_cmd: &str,
+    target_dir: &Path,
+    floor_flags: &[&str],
+) -> CargoInvocation {
+    // cargo flags that take a following value token; an occurrence before `--` is
+    // dropped along with its value so only the floor's injected copy survives.
+    const DROP_WITH_VALUE: &[&str] = &["--message-format", "--target-dir"];
+
+    let mut tokens = base_cmd.split_whitespace();
+    let first = tokens.next().unwrap_or("cargo");
+    let mut program = if first == "cargo" {
+        cargo_bin()
+    } else {
+        first.to_string()
+    };
+
+    // Partition the remaining tokens at the `--` separator.
+    let rest: Vec<&str> = tokens.collect();
+    let sep = rest.iter().position(|t| *t == "--");
+    let (cargo_side_raw, after_sep): (&[&str], &[&str]) = match sep {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (&rest[..], &[]),
+    };
+
+    // Bypass a `clippy` alias: rewrite `cargo clippy …` → `cargo-clippy …`. Only
+    // when the program is real cargo (a fixture/explicit path is left alone).
+    let program_is_cargo = program == cargo_bin();
+    let mut cargo_side: Vec<&str> = cargo_side_raw.to_vec();
+    if program_is_cargo && cargo_side.first() == Some(&"clippy") {
+        program = "cargo-clippy".to_string();
+        cargo_side.remove(0);
+    }
+
+    // Strip any repo-supplied target-dir / message-format from the cargo side.
+    let mut kept: Vec<String> = Vec::new();
+    let mut skip_next = false;
+    for tok in cargo_side {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if DROP_WITH_VALUE.contains(&tok) {
+            skip_next = true;
+            continue;
+        }
+        if DROP_WITH_VALUE
+            .iter()
+            .any(|f| tok.strip_prefix(f).is_some_and(|r| r.starts_with('=')))
+        {
+            continue;
+        }
+        kept.push(tok.to_string());
+    }
+
+    // Assemble: [subcommand …] must precede the floor's cargo-side flags, and the
+    // sanitizing `--config` globals precede the subcommand. cargo-clippy forwards
+    // globals to `cargo check`, so the same layout is valid there.
+    let mut args: Vec<String> = Vec::new();
+    args.extend(sanitizing_config_args());
+    args.extend(kept);
+    args.push("--target-dir".to_string());
+    args.push(target_dir.to_string_lossy().into_owned());
+    args.extend(floor_flags.iter().map(ToString::to_string));
+    args.extend(after_sep.iter().map(ToString::to_string));
+
+    CargoInvocation { program, args }
 }
 
 /// The active `rustc -V` string (isolated), or `"unknown"` if it cannot be
@@ -241,24 +404,26 @@ pub fn run_checks(checks: &[plan::Check], cwd: &Path) -> Vec<CheckRun> {
 /// `target_dir` is the floor-controlled `CARGO_TARGET_DIR` for this capture
 /// (`floor-capture-hardening-round-2` item 1 / F4): a fresh, per-snapshot dir the
 /// caller pins so baseline and tip never share a warm cache (see
-/// [`isolated_command`] / [`target_dir_flags`]).
+/// [`isolated_command`] / [`build_cargo_invocation`]).
 ///
-/// Doctests (run by rustdoc, not a `compiler-artifact` binary) are **not**
-/// captured here; qualifying them needs a separate `--doc` pass (or the nightly
-/// libtest JSON format) and is deferred to the follow-up issue.
+/// The invocation is built as **argv** and executed directly
+/// (`floor-capture-hardening-round-3` item 1): a supervisor-resolved cargo, a
+/// `clippy`-alias bypass (n/a for `test`, which is built-in), and the sanitizing
+/// `--config` overrides that neutralize repo `rustflags` / `rustc-wrapper`
+/// vectors — never a `sh -c` string.
+///
+/// Doctests (run by rustdoc, not a `compiler-artifact` binary) are captured in a
+/// separate `--doc` pass; this function covers only the `compiler-artifact` test
+/// harnesses.
 pub fn capture_test_snapshot(
     test_cmd: &str,
     cwd: &Path,
     target_dir: &Path,
 ) -> Result<TestSnapshot, FloorError> {
-    let mut flags = target_dir_flags(target_dir);
-    flags.push("--no-run".to_string());
-    flags.push("--message-format=json".to_string());
-    let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
-    let enumerate_cmd = inject_cargo_flags(test_cmd, &flag_refs);
-    let out = isolated_command("sh", Some(target_dir))
-        .arg("-c")
-        .arg(&enumerate_cmd)
+    let inv = build_cargo_invocation(test_cmd, target_dir, &["--no-run", "--message-format=json"]);
+    let enumerate_cmd = inv.display();
+    let out = isolated_command(&inv.program, Some(target_dir))
+        .args(&inv.args)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
@@ -402,6 +567,13 @@ fn run_one_test_binary(
 /// `--message-format=json`. Warnings are read from the JSON records keyed by
 /// lint code — a `println!`/`build.rs` cannot fabricate one.
 ///
+/// The invocation is built as **argv** and executed directly
+/// (`floor-capture-hardening-round-3` item 1): a supervisor-resolved cargo, a
+/// `clippy`-alias bypass (`cargo clippy` → the external `cargo-clippy` binary, so
+/// a repo `[alias] clippy = …` redirect cannot steer the capture), and the
+/// sanitizing `--config` overrides that neutralize repo `rustflags` /
+/// `rustc-wrapper` vectors — never a `sh -c` string.
+///
 /// Fail-closed: the stream must parse, carry a terminal `build-finished`, be
 /// free of `error`-level diagnostics, and the process must have exited 0. A
 /// clippy run over compilable code exits 0 and emits its warnings at
@@ -414,13 +586,10 @@ pub fn capture_clippy_snapshot(
     cwd: &Path,
     target_dir: &Path,
 ) -> Result<ClippySnapshot, FloorError> {
-    let mut flags = target_dir_flags(target_dir);
-    flags.push("--message-format=json".to_string());
-    let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
-    let cmd = inject_cargo_flags(clippy_cmd, &flag_refs);
-    let out = isolated_command("sh", Some(target_dir))
-        .arg("-c")
-        .arg(&cmd)
+    let inv = build_cargo_invocation(clippy_cmd, target_dir, &["--message-format=json"]);
+    let cmd = inv.display();
+    let out = isolated_command(&inv.program, Some(target_dir))
+        .args(&inv.args)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
@@ -466,60 +635,6 @@ pub fn capture_clippy_snapshot(
     Ok(ClippySnapshot {
         warnings: parse::clippy_warnings(&messages),
     })
-}
-
-/// Rewrite a cargo command to carry the floor's required `flags`, robust to a
-/// `--` argument separator: any existing `--message-format[=x]` or
-/// `--target-dir[=x]` token is dropped (the floor always forces its own — the
-/// target dir so an in-command dir cannot re-point the floor's pinned cache), and
-/// the injected flags are inserted **before** the first `--` (or appended if
-/// none). Blindly appending would put the flags after `--`, where cargo passes
-/// them to the *test binary* instead of to cargo — breaking `--no-run` and
-/// crashing the harness on an unknown flag. Token-based on whitespace: a base
-/// command with quoted, space-containing args is out of contract (the floor's own
-/// commands never have them).
-fn inject_cargo_flags(cmd: &str, flags: &[&str]) -> String {
-    // cargo flags that take a following value token; an occurrence before `--`
-    // is dropped along with its value so the floor's injected copy is the only one.
-    const DROP_WITH_VALUE: &[&str] = &["--message-format", "--target-dir"];
-    let mut before: Vec<&str> = Vec::new();
-    let mut after: Vec<&str> = Vec::new();
-    let mut past_sep = false;
-    let mut skip_next = false;
-    for tok in cmd.split_whitespace() {
-        if past_sep {
-            after.push(tok);
-            continue;
-        }
-        // The `--` separator is checked BEFORE `skip_next`: a base command with a
-        // dangling value-flag right before `--` (e.g. `… --target-dir -- --nocapture`)
-        // must still terminate cargo's args at `--`, not swallow the separator as
-        // the flag's "value" — otherwise the test-binary args leak into cargo's
-        // argument list and the whole invocation is mangled.
-        if tok == "--" {
-            past_sep = true;
-            after.push(tok);
-            continue;
-        }
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if DROP_WITH_VALUE.contains(&tok) {
-            skip_next = true; // drop the following value token too
-            continue;
-        }
-        if DROP_WITH_VALUE.iter().any(|f| {
-            tok.strip_prefix(f)
-                .is_some_and(|rest| rest.starts_with('='))
-        }) {
-            continue;
-        }
-        before.push(tok);
-    }
-    before.extend_from_slice(flags);
-    before.extend(after);
-    before.join(" ")
 }
 
 /// Concatenate two captured byte streams for line parsing, guaranteeing a
@@ -651,44 +766,94 @@ mod tests {
     }
 
     #[test]
-    fn inject_cargo_flags_replaces_message_format() {
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo clippy --message-format=short",
-                &["--message-format=json"]
-            ),
-            "cargo clippy --message-format=json"
+    fn build_cargo_invocation_resolves_cargo_and_injects_sanitizing_config() {
+        // A leading `cargo` token resolves to the supervisor cargo, the sanitizing
+        // `--config` globals precede the subcommand, and the floor's flags follow
+        // the subcommand + forced `--target-dir` (item 1).
+        let inv = build_cargo_invocation(
+            "cargo test --workspace",
+            Path::new("/tmp/floor-td"),
+            &["--no-run", "--message-format=json"],
         );
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo clippy --message-format short --workspace",
-                &["--message-format=json"]
-            ),
-            "cargo clippy --workspace --message-format=json"
-        );
-        assert_eq!(
-            inject_cargo_flags("cargo clippy", &["--message-format=json"]),
-            "cargo clippy --message-format=json"
-        );
+        assert_eq!(inv.program, cargo_bin());
+        // Sanitizing config is present, and every SANITIZING_CONFIG key appears.
+        for kv in SANITIZING_CONFIG {
+            let i = inv
+                .args
+                .iter()
+                .position(|a| a == kv)
+                .expect("config present");
+            assert_eq!(inv.args[i - 1], "--config");
+        }
+        // Subcommand precedes the floor's cargo-side flags.
+        let sub = inv.args.iter().position(|a| a == "test").unwrap();
+        let td = inv.args.iter().position(|a| a == "--target-dir").unwrap();
+        let ws = inv.args.iter().position(|a| a == "--workspace").unwrap();
+        assert!(sub < ws && ws < td, "{:?}", inv.args);
+        assert_eq!(inv.args[td + 1], "/tmp/floor-td");
+        assert!(inv
+            .args
+            .ends_with(&["--no-run".to_string(), "--message-format=json".to_string()]));
     }
 
     #[test]
-    fn inject_cargo_flags_inserts_before_the_arg_separator() {
-        // Flags meant for cargo must land BEFORE `--`; everything after `--`
-        // belongs to the test binary. A naive append would break `--no-run`.
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo test --workspace -- --ignored",
-                &["--no-run", "--message-format=json"]
-            ),
-            "cargo test --workspace --no-run --message-format=json -- --ignored"
+    fn build_cargo_invocation_bypasses_clippy_alias() {
+        // `cargo clippy` is rewritten to the external `cargo-clippy` binary and the
+        // `clippy` token dropped, so a repo `[alias] clippy = …` redirect (which
+        // shadows the subcommand, not the external binary) cannot steer the capture.
+        let inv = build_cargo_invocation(
+            "cargo clippy --workspace",
+            Path::new("/tmp/td"),
+            &["--message-format=json"],
         );
-        // An existing --message-format after `--` (a driver flag) is left alone;
-        // only cargo-side ones are stripped.
-        assert_eq!(
-            inject_cargo_flags("cargo test -- --nocapture", &["--message-format=json"]),
-            "cargo test --message-format=json -- --nocapture"
+        assert_eq!(inv.program, "cargo-clippy");
+        assert!(!inv.args.iter().any(|a| a == "clippy"), "{:?}", inv.args);
+        assert!(inv.args.iter().any(|a| a == "--workspace"));
+        assert!(inv.args.iter().any(|a| a == "build.rustflags=[]"));
+    }
+
+    #[test]
+    fn build_cargo_invocation_strips_repo_target_dir_and_message_format() {
+        // An in-command `--target-dir` / `--message-format` (space or `=` form) is
+        // dropped so only the floor's forced copies survive; args after `--` are
+        // preserved for the test binary.
+        let inv = build_cargo_invocation(
+            "cargo test --target-dir /evil --message-format=short --workspace -- --nocapture",
+            Path::new("/tmp/floor-td"),
+            &["--no-run", "--message-format=json"],
         );
+        assert!(!inv.args.iter().any(|a| a == "/evil"), "{:?}", inv.args);
+        assert!(!inv.args.iter().any(|a| a == "--message-format=short"));
+        // Exactly one --target-dir, pointing at the floor's dir.
+        let tds: Vec<usize> = inv
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--target-dir")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(tds.len(), 1);
+        assert_eq!(inv.args[tds[0] + 1], "/tmp/floor-td");
+        // Everything after `--` is preserved, after the floor flags.
+        assert!(inv
+            .args
+            .ends_with(&["--".to_string(), "--nocapture".to_string()]));
+        let sep = inv.args.iter().position(|a| a == "--").unwrap();
+        let nr = inv.args.iter().position(|a| a == "--no-run").unwrap();
+        assert!(nr < sep, "floor flags must precede `--`: {:?}", inv.args);
+    }
+
+    #[test]
+    fn build_cargo_invocation_honours_non_cargo_program_verbatim() {
+        // A fixture script / explicit path (not the literal `cargo` token) is kept
+        // as-is and never rewritten — even when its first arg is `clippy`.
+        let inv = build_cargo_invocation(
+            "/tmp/fake-cargo clippy",
+            Path::new("/tmp/td"),
+            &["--message-format=json"],
+        );
+        assert_eq!(inv.program, "/tmp/fake-cargo");
+        assert!(inv.args.iter().any(|a| a == "clippy"), "{:?}", inv.args);
     }
 
     #[test]
@@ -921,53 +1086,16 @@ printf '%s\n' '{"reason":"compiler-artifact","package_id":"p#pkg@0.1.0","target"
     }
 
     #[test]
-    fn inject_cargo_flags_drops_existing_target_dir() {
-        // An in-command `--target-dir` (space or `=` form) is stripped so only the
-        // floor's injected copy survives — a base cmd cannot re-point the cache.
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo clippy --target-dir /evil/shared",
-                &["--target-dir", "/floor/pinned", "--message-format=json"]
-            ),
-            "cargo clippy --target-dir /floor/pinned --message-format=json"
+    fn build_cargo_invocation_emits_whitespace_target_dir_verbatim() {
+        // argv carries the path as ONE token regardless of whitespace/metachars —
+        // the round-2 `sh -c` shell-safety dance (which *dropped* the flag on an
+        // unsafe path) is gone. A path with a space is a single, exact arg.
+        let inv = build_cargo_invocation(
+            "cargo test",
+            Path::new("/tmp/has space/floor-td"),
+            &["--no-run"],
         );
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo test --target-dir=/evil -- --nocapture",
-                &["--target-dir", "/floor/pinned"]
-            ),
-            "cargo test --target-dir /floor/pinned -- --nocapture"
-        );
-    }
-
-    #[test]
-    fn inject_cargo_flags_keeps_separator_after_dangling_value_flag() {
-        // A dangling value-flag immediately before `--` must not swallow the
-        // separator: `--target-dir` has no value, `--` still terminates cargo's
-        // args, and `--nocapture` stays a test-binary arg (after `--`). Regression
-        // guard for the skip_next-vs-`--` ordering.
-        assert_eq!(
-            inject_cargo_flags(
-                "cargo test --target-dir -- --nocapture",
-                &["--message-format=json"]
-            ),
-            "cargo test --message-format=json -- --nocapture"
-        );
-    }
-
-    #[test]
-    fn target_dir_flags_skips_shell_unsafe_paths() {
-        use std::path::Path;
-        // A safe path yields the explicit flag.
-        assert_eq!(
-            target_dir_flags(Path::new("/tmp/floor-target_1.2")),
-            vec![
-                "--target-dir".to_string(),
-                "/tmp/floor-target_1.2".to_string()
-            ]
-        );
-        // A path with whitespace is omitted (env var still enforces it); never
-        // emitted as a token that `sh -c` would mis-split.
-        assert!(target_dir_flags(Path::new("/tmp/has space")).is_empty());
+        let td = inv.args.iter().position(|a| a == "--target-dir").unwrap();
+        assert_eq!(inv.args[td + 1], "/tmp/has space/floor-td");
     }
 }
