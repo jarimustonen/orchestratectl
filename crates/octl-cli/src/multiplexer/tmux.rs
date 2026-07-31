@@ -73,6 +73,10 @@ pub enum TmuxError {
         code: Option<i32>,
         stderr: String,
     },
+    /// tmux exited zero but printed no value where one was required (e.g. an
+    /// empty pane id from `new-session`).
+    #[error("tmux {op} produced no output")]
+    EmptyOutput { op: &'static str },
 }
 
 /// Typed tmux backend. Construct with [`Tmux::new`] (honors `TMUX_BIN`) or
@@ -259,19 +263,31 @@ impl Tmux {
             });
         }
         let pane_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // A zero-exit `new-session` that printed no pane id would leave every
+        // downstream target (`-t ""`) ambiguous, so treat empty output as a
+        // protocol failure rather than returning `Ok("")`.
+        if pane_id.is_empty() {
+            return Err(TmuxError::EmptyOutput { op: "new-session" });
+        }
 
         // Keep a named initial window from being auto-renamed by shell activity.
+        // Best-effort and silent (matches upstream): this runs on the spawn path,
+        // not teardown, so it must not emit the cleanup-flavored audit line, and a
+        // failure only means the name may drift — not a spawn failure.
         if params.window_name.is_some() {
-            let mut rename_off = self.base(params.socket);
-            rename_off.args([
-                "set-window-option",
-                "-w",
-                "-t",
-                &pane_id,
-                "automatic-rename",
-                "off",
-            ]);
-            let _ = run_lenient(rename_off, "tmux set-window-option automatic-rename off");
+            let _ = self
+                .base(params.socket)
+                .args([
+                    "set-window-option",
+                    "-w",
+                    "-t",
+                    &pane_id,
+                    "automatic-rename",
+                    "off",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
 
         Ok(pane_id)
@@ -476,7 +492,49 @@ mod tests {
             .unwrap_err();
         match err {
             TmuxError::NonZero { stderr, .. } => assert_eq!(stderr, "boom"),
-            TmuxError::Spawn { op, .. } => panic!("expected NonZero, got Spawn({op})"),
+            other => panic!("expected NonZero, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn new_session_without_window_name_skips_rename_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmux = Tmux::with_bin(fake_tmux(
+            tmp.path(),
+            r#"case "$*" in *new-session*) echo '%1';; esac"#,
+        ));
+        let pane = tmux
+            .new_session(&NewSession {
+                session: "headless",
+                cwd: "/tmp",
+                window_name: None,
+                socket: None,
+            })
+            .unwrap();
+        assert_eq!(pane, "%1");
+        assert!(
+            !log_of(tmp.path()).contains("set-window-option"),
+            "no window name means no automatic-rename toggle"
+        );
+    }
+
+    #[test]
+    fn new_session_empty_pane_id_is_a_protocol_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Zero exit, no stdout — must not return Ok("").
+        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), ""));
+        let err = tmux
+            .new_session(&NewSession {
+                session: "headless",
+                cwd: "/tmp",
+                window_name: Some("wt/x"),
+                socket: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, TmuxError::EmptyOutput { .. }), "{err:?}");
+        assert!(
+            !log_of(tmp.path()).contains("set-window-option"),
+            "must not target an empty pane id"
+        );
     }
 }
