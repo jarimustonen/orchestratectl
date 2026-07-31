@@ -1,10 +1,11 @@
 ---
 created: 2026-07-27
-updated: 2026-07-27
+updated: 2026-07-31
 type: bug
-status: open
+status: fixed
 priority: normal
 related: ['@stint-maintains-execution-dag']
+closed: 2026-07-31
 ---
 
 # triage-bugs and stint disagree on who sets a fix-now issue to in-progress
@@ -48,3 +49,9 @@ owns the `→ in-progress` transition.
 
 - `/triage-bugs` is bundled under `crates/octl-cli/skills/triage-bugs/` — a bundled-skill
   change ⇒ redeploy + insta snapshot loop.
+
+## Decisions
+
+### 2026-07-31T19:54:09Z · @claude
+
+Fixed in homebase, not orchestratectl. The issue assumed /triage-bugs is bundled under crates/octl-cli/skills/triage-bugs/ (insta snapshot + redeploy). It is not: commit 009459a deliberately kept triage-bugs (and worktree-model-eval-spinoff) in homebase. Real file: homebase dotfiles/src/.claude/skills/triage-bugs/SKILL.md. Fix landed there as commit c301e39: removed the '--status in-progress' step from the fix-now disposition; corrected the lifecycle diagram + decision prose so the worker owns open->in-progress->fixed and the caller only drops the triaged label + spawns the worker. No orchestratectl code change; no snapshot/redeploy applicable.
