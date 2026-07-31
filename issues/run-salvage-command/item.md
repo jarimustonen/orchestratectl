@@ -1,6 +1,6 @@
 ---
 created: 2026-07-26
-updated: 2026-07-26
+updated: 2026-07-31
 type: feature
 reporter: claude-code
 status: open
@@ -28,3 +28,9 @@ Add `orchestratectl run salvage <run-id>` that takes the preserved branch of a f
 - Multi-node surfacing: `run show`/`run wait` only read n-0001; extend recoverability to fan-out/orchestrate child nodes.
 - Hard timeouts on supervise git subprocesses run under the run lock (pre-existing; the reconcile probe + new recoverability probe both shell out under the exclusive lock).
 - Typed report-extension validation / provenance marker for `recoverable_work` instead of raw-Value passthrough.
+
+## Decisions
+
+### 2026-07-31T18:06:58Z · @claude
+
+Orphan-reconcile gap (observed 2026-07-31 stint): a recoverable branch preserved by the teardown gate becomes a lifecycle-less ORPHAN once its work lands via a different run (e.g. a retry-with-harvest). No auto-reconcile — the superseded worktree/branch lingers until a human removes it. run salvage should cover this: detect a preserved recoverable branch whose commits are now reachable from / superseded by the source branch and offer or auto cleanup. Relates to @stint-recoverable-death-retry-harvest.

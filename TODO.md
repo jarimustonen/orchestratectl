@@ -97,6 +97,7 @@ LANE C — workmux vendoring (fully independent)
 
 LANE D — workflow/skill (skill prose, not product code)
   ▶ triage-bugs-stint-inprogress-ownership-conflict   (stint/triage-bugs lifecycle-ownership fix)
+    stint-recoverable-death-retry-harvest             (encode retry-with-harvest conductor tactic into /stint skill)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ idempotency-key-allowed-duplicate-run
