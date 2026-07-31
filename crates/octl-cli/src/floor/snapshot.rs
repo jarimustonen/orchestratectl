@@ -320,6 +320,25 @@ pub enum BaselineMismatch {
         /// `"plan"` or `"live"` — which side lacked it.
         side: &'static str,
     },
+    /// `commit_oid` is not a full-length git object id (40 hex for SHA-1, 64 for
+    /// SHA-256) on the plan or live side (`floor-capture-hardening-round-3`
+    /// item 5). An abbreviated / non-hex OID is rejected: only a full OID
+    /// unambiguously pins the commit, and a short prefix could collide or be
+    /// forged.
+    MalformedCommitOid {
+        /// `"plan"` or `"live"`.
+        side: &'static str,
+        /// The offending value.
+        value: String,
+    },
+    /// The toolchain fingerprint is the sentinel `"unknown"` on the plan or live
+    /// side (`floor-capture-hardening-round-3` item 5) — [`super::runner::rustc_version`]
+    /// could not determine `rustc -V`, so the capture's toolchain is unproven and
+    /// the floor fails closed rather than certifying an unknown toolchain.
+    UnknownToolchain {
+        /// `"plan"` or `"live"`.
+        side: &'static str,
+    },
     /// The plan's baseline ref does not match the live snapshot's ref.
     Ref {
         /// Ref recorded in the plan.
@@ -337,8 +356,15 @@ pub enum BaselineMismatch {
         /// OID the live snapshot was captured at.
         live: String,
     },
-    /// The plan's toolchain fingerprint does not match the live snapshot's — a
-    /// baseline captured under a different `rustc` than the one being gated.
+    /// The plan's toolchain is **incompatible** with the live snapshot's — a
+    /// baseline captured under a materially different `rustc`
+    /// (`floor-capture-hardening-round-3` item 5). The comparison is
+    /// semver-tolerant ([`toolchains_compatible`]): a patch bump or a nightly-date
+    /// change is accepted (it would otherwise false-block a routine toolchain
+    /// refresh), but a differing `major.minor` — or two unparseable strings that
+    /// are not byte-equal — is rejected.
+    ///
+    /// [`toolchains_compatible`]: fn@toolchains_compatible
     Toolchain {
         /// Toolchain recorded in the plan.
         plan: String,
@@ -360,6 +386,18 @@ impl fmt::Display for BaselineMismatch {
         match self {
             BaselineMismatch::MissingProvenance { field, side } => {
                 write!(f, "baseline provenance field {field:?} is empty on the {side} side; failing closed")
+            }
+            BaselineMismatch::MalformedCommitOid { side, value } => {
+                write!(
+                    f,
+                    "baseline commit_oid on the {side} side is not a full-length git OID: {value:?}; failing closed"
+                )
+            }
+            BaselineMismatch::UnknownToolchain { side } => {
+                write!(
+                    f,
+                    "baseline toolchain on the {side} side is \"unknown\"; failing closed"
+                )
             }
             BaselineMismatch::Ref { plan, live } => {
                 write!(f, "baseline ref mismatch: plan={plan:?} live={live:?}")
@@ -390,6 +428,42 @@ impl fmt::Display for BaselineMismatch {
 }
 
 impl std::error::Error for BaselineMismatch {}
+
+/// True when `s` is a full-length git object id — 40 hex digits (SHA-1) or 64
+/// (SHA-256). An abbreviated prefix or non-hex string is rejected: only a full
+/// OID unambiguously pins a commit (`floor-capture-hardening-round-3` item 5).
+#[must_use]
+pub fn is_full_git_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Whether two `rustc -V` fingerprints are compatible for baseline binding
+/// (`floor-capture-hardening-round-3` item 5). The exact string false-blocks on a
+/// routine patch bump or a nightly-date change, so the comparison is
+/// semver-tolerant: the `major.minor` of the parsed version must match. When
+/// either string cannot be parsed as `rustc <semver> …`, it falls back to exact
+/// byte equality (conservative — an unrecognized format is only "compatible" with
+/// an identical one).
+#[must_use]
+pub fn toolchains_compatible(plan: &str, live: &str) -> bool {
+    match (parse_rustc_version(plan), parse_rustc_version(live)) {
+        (Some(a), Some(b)) => a.major == b.major && a.minor == b.minor,
+        _ => plan == live,
+    }
+}
+
+/// Extract the semver from a `rustc -V` string (`rustc 1.97.1 (abc 2026-06-01)`
+/// → `1.97.1`). Returns `None` for any other shape.
+fn parse_rustc_version(s: &str) -> Option<semver::Version> {
+    let mut it = s.split_whitespace();
+    if it.next()? != "rustc" {
+        return None;
+    }
+    let ver = it.next()?;
+    // Strip a `-nightly`/`-beta` pre-release suffix's date/hash cruft is handled
+    // by semver's own parsing; a bare `1.97.1` parses directly.
+    semver::Version::parse(ver).ok()
+}
 
 impl BaselineSnapshot {
     /// Build a baseline from a ref, its resolved commit OID, a toolchain
@@ -478,6 +552,28 @@ impl BaselineSnapshot {
                 });
             }
         }
+        // The toolchain sentinel `"unknown"` (rustc probe failed) is unproven
+        // provenance — reject it explicitly (item 5), before the semver compare.
+        if self.toolchain == "unknown" {
+            return Err(BaselineMismatch::UnknownToolchain { side: "live" });
+        }
+        if plan.toolchain == "unknown" {
+            return Err(BaselineMismatch::UnknownToolchain { side: "plan" });
+        }
+        // Both commit OIDs must be full-length git object ids (item 5): only a
+        // full OID unambiguously pins the commit.
+        if !is_full_git_oid(&self.commit_oid) {
+            return Err(BaselineMismatch::MalformedCommitOid {
+                side: "live",
+                value: self.commit_oid.clone(),
+            });
+        }
+        if !is_full_git_oid(&plan.commit_oid) {
+            return Err(BaselineMismatch::MalformedCommitOid {
+                side: "plan",
+                value: plan.commit_oid.clone(),
+            });
+        }
         if plan.r#ref != self.r#ref {
             return Err(BaselineMismatch::Ref {
                 plan: plan.r#ref.clone(),
@@ -490,7 +586,9 @@ impl BaselineSnapshot {
                 live: self.commit_oid.clone(),
             });
         }
-        if plan.toolchain != self.toolchain {
+        // Semver-tolerant toolchain comparison (item 5): a patch/nightly-date bump
+        // is accepted; a differing major.minor is rejected.
+        if !toolchains_compatible(&plan.toolchain, &self.toolchain) {
             return Err(BaselineMismatch::Toolchain {
                 plan: plan.toolchain.clone(),
                 live: self.toolchain.clone(),
@@ -564,6 +662,11 @@ pub struct CheckRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Full-length (40-hex) git OIDs for provenance tests — a short OID is now
+    /// rejected as malformed (`floor-capture-hardening-round-3` item 5).
+    const OID: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OID2: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(ToString::to_string).collect()
@@ -686,7 +789,7 @@ mod tests {
     fn verify_plan_baseline_accepts_matching_and_rejects_drift() {
         let base = BaselineSnapshot::new(
             "feat/x@fork",
-            "deadbeef",
+            OID,
             "rustc 1.97.1",
             RunSnapshot {
                 tests: TestSnapshot {
@@ -716,22 +819,80 @@ mod tests {
         ));
 
         // Provenance (`floor-capture-hardening-round-2` item 5): a baseline
-        // captured at a different commit OID / toolchain is rejected even when
-        // the two content hashes agree — the OID/toolchain are checked, not just
-        // the mutable ref + hashes.
+        // captured at a different (full-length) commit OID is rejected even when
+        // the two content hashes agree — the OID is checked, not just the mutable
+        // ref + hashes.
         let mut bad_oid = base.to_plan_baseline();
-        bad_oid.commit_oid = "cafef00d".into();
+        bad_oid.commit_oid = OID2.into();
         assert!(matches!(
             base.verify_plan_baseline(&bad_oid),
             Err(BaselineMismatch::CommitOid { .. })
         ));
 
+        // An incompatible major.minor toolchain is rejected...
         let mut bad_tc = base.to_plan_baseline();
         bad_tc.toolchain = "rustc 1.0.0".into();
         assert!(matches!(
             base.verify_plan_baseline(&bad_tc),
             Err(BaselineMismatch::Toolchain { .. })
         ));
+        // ...but a patch/nightly-date bump within the same major.minor is
+        // accepted (item 5: semver-tolerant, no false-block on a routine refresh).
+        let mut patch_bump = base.to_plan_baseline();
+        patch_bump.toolchain = "rustc 1.97.9 (abcdef0 2026-09-01)".into();
+        assert!(base.verify_plan_baseline(&patch_bump).is_ok());
+    }
+
+    #[test]
+    fn verify_plan_baseline_rejects_malformed_oid_and_unknown_toolchain() {
+        // A short/non-hex commit OID is malformed → rejected (item 5).
+        let short = BaselineSnapshot::new(
+            "feat/x@fork",
+            "deadbeef",
+            "rustc 1.97.1",
+            RunSnapshot::default(),
+        );
+        assert!(matches!(
+            short.verify_plan_baseline(&short.to_plan_baseline()),
+            Err(BaselineMismatch::MalformedCommitOid { side: "live", .. })
+        ));
+        // A live "unknown" toolchain (rustc probe failed) is rejected.
+        let unknown = BaselineSnapshot::new("feat/x@fork", OID, "unknown", RunSnapshot::default());
+        assert!(matches!(
+            unknown.verify_plan_baseline(&unknown.to_plan_baseline()),
+            Err(BaselineMismatch::UnknownToolchain { side: "live" })
+        ));
+        // A well-formed live snapshot but a plan carrying a malformed OID is caught
+        // on the plan side.
+        let live =
+            BaselineSnapshot::new("feat/x@fork", OID, "rustc 1.97.1", RunSnapshot::default());
+        let mut plan = live.to_plan_baseline();
+        plan.commit_oid = "xyz".into();
+        assert!(matches!(
+            live.verify_plan_baseline(&plan),
+            Err(BaselineMismatch::MalformedCommitOid { side: "plan", .. })
+        ));
+    }
+
+    #[test]
+    fn is_full_git_oid_accepts_sha1_and_sha256_only() {
+        assert!(is_full_git_oid(OID));
+        assert!(is_full_git_oid(&"a".repeat(64)));
+        assert!(!is_full_git_oid("deadbeef"));
+        assert!(!is_full_git_oid(&"a".repeat(41)));
+        assert!(!is_full_git_oid(&"g".repeat(40)));
+    }
+
+    #[test]
+    fn toolchains_compatible_tolerates_patch_but_not_minor() {
+        assert!(toolchains_compatible(
+            "rustc 1.97.1 (a 2026-01-01)",
+            "rustc 1.97.9 (b 2026-09-09)"
+        ));
+        assert!(!toolchains_compatible("rustc 1.97.1", "rustc 1.98.0"));
+        // Unparseable strings fall back to exact equality.
+        assert!(toolchains_compatible("weird", "weird"));
+        assert!(!toolchains_compatible("weird", "different"));
     }
 
     #[test]
@@ -772,7 +933,7 @@ mod tests {
         // the components must share one provenance.
         let base = BaselineSnapshot::new(
             "feat/x@fork",
-            "deadbeef",
+            OID,
             "rustc 1.97.1",
             RunSnapshot {
                 tests: TestSnapshot {

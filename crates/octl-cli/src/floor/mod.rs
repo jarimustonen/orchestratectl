@@ -87,45 +87,47 @@
 //!   `harness = false`, or a build that produced fewer harnesses than the fork —
 //!   drops a baseline target and fails closed, where the vanished harness's tests
 //!   would otherwise be invisible to every other gate. **This is baseline-relative**:
-//!   it cannot detect a narrowing that *predates the fork* (a baseline whose target
-//!   set is already empty/narrowed passes vacuously, since there is nothing to
-//!   shrink from). Detecting a compromised/empty baseline needs an independent
-//!   expected-target manifest (`cargo metadata`) — deferred to the spin-off.
-//! - **Cross-component provenance (round 2, item 5 / F10).** The plan baseline
-//!   carries `commit_oid` + `toolchain` + the enumerated-targets hash alongside
-//!   the two content hashes, and [`snapshot::BaselineSnapshot::verify_plan_baseline`]
-//!   requires **all** of them to equal one live-snapshot projection — so a plan
-//!   cannot mix components captured at different commits/toolchains/enumerations.
-//!   (Wired into the evaluator at T5; the pure check + projection land here.)
+//!   it cannot detect a narrowing that *predates the fork*. That absolute gap is
+//!   now closed by the round-3 expected-target manifest (below).
+//! - **Independent expected-target manifest (round 3, item 2).**
+//!   [`metadata::verify_enumeration`] derives the confident test-target universe
+//!   from trusted `cargo metadata` + each `Cargo.toml` and fails the capture
+//!   closed unless the enumeration covers it — and on an **empty** enumeration
+//!   when metadata says test targets exist. This is *absolute*, so a compromised
+//!   or already-empty baseline no longer passes vacuously (the round-2 gap above).
+//! - **Custom-harness forge rejection (round 3, item 3 / F5).**
+//!   [`metadata::reject_forged_harness`] fails the capture closed on a
+//!   `harness = false` on a *test-producing* target (`[lib]`/`[[bin]]`/`[[test]]`),
+//!   which could otherwise print perfectly balanced forged libtest output, while
+//!   allowing a legitimate `[[bench]] harness = false` (criterion).
+//! - **Doctest capture (round 3, item 4 / F6).** [`runner::capture_doctests`]
+//!   runs a per-package `cargo test --doc` pass, reconciled and target-qualified
+//!   (`target_kind = "doctest"`), so a new failing doctest — or a test moved
+//!   *into* a doctest — is observed by the regression/gaming/enumeration gates.
+//! - **Structured argv + sanitized config (round 3, item 1).** Floor-owned
+//!   captures invoke a supervisor-resolved cargo via argv (never `sh -c`) with
+//!   sanitizing `--config` overrides and a `clippy`-alias bypass — see
+//!   [`runner`]'s trust posture. This closes the `[alias] clippy` redirect,
+//!   `build.rustflags`/lint-flip, and `build.rustc-wrapper` vectors.
+//! - **Cross-component provenance (round 2, item 5 / F10; wired round 3).** The
+//!   plan baseline carries `commit_oid` + `toolchain` + the enumerated-targets
+//!   hash alongside the two content hashes, and
+//!   [`snapshot::BaselineSnapshot::verify_plan_baseline`] requires **all** of them
+//!   to equal one live-snapshot projection — so a plan cannot mix components
+//!   captured at different commits/toolchains/enumerations. Wired into the
+//!   evaluator (T5) by round 3 (item 5), which also validates the OID shape, makes
+//!   the toolchain check semver-tolerant, and proves `HEAD == commit_oid` on a
+//!   clean worktree before capture.
 //!
 //! **Remaining (deferred to a follow-up spin-off), still not tamper-proof:**
 //!
-//! - **Residual repo-controlled config.** The `build.target-dir` vector is closed
-//!   (above), but cargo still honours other in-repo config: an `[alias]` that
-//!   redirects the external `clippy` subcommand to a benign zero-warning command
-//!   (the `test` subcommand is built-in and cannot be aliased), an
-//!   `[env] CARGO_TARGET_DIR = { value = "…", force = true }` that could re-point
-//!   the cache **iff** the `--target-dir` CLI flag were absent (it is always
-//!   emitted for a shell-safe temp path, which the system temp dir is; the flag
-//!   is cargo's highest-precedence target-dir mechanism and beats `[env]`),
-//!   `build.rustc` / `build.rustc-wrapper` (a compiler wrapper that suppresses
-//!   diagnostics), config `rustflags` / lint-level flips, and a
+//! - **Residual repo-controlled config.** The high-leverage vectors are closed
+//!   (argv + sanitizing `--config` + `build.target-dir` override, above), but a
 //!   consistently-weakening `rust-toolchain.toml` (the recorded toolchain catches
-//!   baseline-vs-tip drift, not an evil-but-consistent pin). The robust fix is to
-//!   stop composing a repo-influenced shell command for floor-owned captures and
-//!   invoke a supervisor-resolved cargo directly (argv, not `sh -c`) against a
-//!   sanitized config — deferred to the spin-off.
-//! - **Custom test harness (`harness = false`).** A hand-written `main()` on a
-//!   *test-producing* target can print perfectly balanced forged libtest output;
-//!   the announced-vs-parsed reconcile cannot distinguish it from real libtest on
-//!   stable. (A `harness = false` **bench** is legitimate and common — criterion
-//!   — so a blanket reject is wrong; the fix must distinguish target kinds.)
-//!   Deferred to the spin-off.
-//! - **Doctests** (run by rustdoc, not a `compiler-artifact` binary) are not
-//!   captured/target-qualified — new failing doctests, or a test moved *into* a
-//!   doctest, are invisible. Capture is symmetric across baseline/tip so this is
-//!   a gaming hole, not a crash; capturing them needs a separate `--doc` pass (or
-//!   the nightly libtest JSON format). Deferred to the spin-off.
+//!   baseline-vs-tip *drift*, not an evil-but-consistent pin) and a repo
+//!   `[env]`-table `force = true` override of a compiler env var are not
+//!   individually rewritten; the belt-and-suspenders extreme (copy sources into a
+//!   supervisor-owned tree with a sanitized `.cargo/config.toml`) is deferred.
 //! - Assertion density is still a **per-file, crude `assert*!` count**, not a
 //!   semantic per-`#[test]` (AST) measure; `assert!(true)` padding is not
 //!   detected.

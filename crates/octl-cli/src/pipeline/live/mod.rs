@@ -833,6 +833,12 @@ pub fn run_pipeline_tiered(
     };
 
     git::worktree_add(&repo, &integration_wt, &integration_branch)?;
+    // Prove the worktree really is at the fork OID and clean *before* capture
+    // (`floor-capture-hardening-round-3` item 5): a matching OID recorded on the
+    // baseline does not by itself prove the captured files were that OID, so
+    // verify `HEAD == fork_commit` on a clean tree first — else the baseline's
+    // provenance would be a claim, not a fact.
+    verify_capture_ref(&integration_wt, &run.fork_commit)?;
     let baseline_snapshot = capture_snapshot(cfg, &integration_wt)?;
     // Pin the baseline to the immutable fork OID (not the mutable `feat/<slug>`
     // ref) and fingerprint the toolchain it was captured with
@@ -847,6 +853,9 @@ pub fn run_pipeline_tiered(
     // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
     let mut plan =
         produce_and_validate_plan(&mut run, spec, &baseline.to_plan_baseline(), 1, None)?;
+    // T5 evaluator gate: the plan's baseline must match the live one (and the live
+    // baseline's own provenance must be well-formed) — item 5.
+    gate_plan_baseline(&baseline, &plan)?;
     // (spec invocations are metered inside produce_and_validate_plan.)
     // Discard any side effect the (headless, permission-skipped) spec stage left
     // in the worktree: spec is a planner, so chunks must fork from a pristine
@@ -1395,6 +1404,8 @@ fn trigger_re_spec(
         new_rev,
         Some((&old_raw, reason.as_str())),
     )?;
+    // T5 evaluator gate on the re-spec'd plan too (item 5).
+    gate_plan_baseline(baseline, &new_plan)?;
     // (the re-spec invocation is metered inside produce_and_validate_plan.)
     git::restore_to(&run.integration_wt, &feat_tip)?;
 
@@ -1567,6 +1578,45 @@ fn produce_and_validate_plan(
     )))
 }
 
+/// The T5 evaluator's baseline gate (`floor-capture-hardening-round-3` item 5):
+/// require the plan's persisted `baseline` to match the live supervisor baseline
+/// via [`BaselineSnapshot::verify_plan_baseline`]. This is the first (and only)
+/// caller of `verify_plan_baseline`, which was groundwork until now. Beyond
+/// catching a plan whose baseline was captured at a different commit / toolchain /
+/// enumeration, it fails the run closed when the live baseline's own provenance is
+/// unprovable — a malformed `commit_oid` or an `"unknown"` toolchain (rustc probe
+/// failed) — rather than proceeding to gate merges against a baseline it cannot
+/// vouch for.
+fn gate_plan_baseline(live: &BaselineSnapshot, plan: &Plan) -> Result<(), PipelineError> {
+    live.verify_plan_baseline(&plan.baseline).map_err(|e| {
+        PipelineError::PlanInvalid(format!(
+            "plan baseline does not match the live baseline: {e}"
+        ))
+    })
+}
+
+/// Prove a worktree is at `expected_oid` on a clean tree before a provenance
+/// capture (`floor-capture-hardening-round-3` item 5). A `BaselineSnapshot`
+/// records the OID it *claims* to have captured; this makes that claim a fact by
+/// checking `HEAD == expected_oid` and that there are no uncommitted changes, so a
+/// dirty or detached-elsewhere worktree cannot be captured under a pinned OID that
+/// does not describe its files.
+fn verify_capture_ref(worktree: &Path, expected_oid: &str) -> Result<(), PipelineError> {
+    let head = git::head(worktree)?;
+    if head != expected_oid {
+        return Err(PipelineError::Setup(format!(
+            "capture worktree HEAD {head} != expected fork OID {expected_oid}; refusing to capture a baseline under an unverified OID"
+        )));
+    }
+    if !git::is_clean(worktree)? {
+        return Err(PipelineError::Setup(format!(
+            "capture worktree {} has uncommitted changes; refusing to capture a baseline whose files are not the pinned OID {expected_oid}",
+            worktree.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Best-effort write of the last invalid plan to `<workdir>/plan.invalid.json`
 /// and return a suffix naming the file for the error message (or a note that it
 /// could not be persisted). Never fails the run — the primary error is the
@@ -1613,12 +1663,21 @@ fn normalize_plan(
             "integration_branch": run.integration_branch,
         }),
     );
+    // Inject the FULL supervisor-owned baseline, including the provenance fields
+    // (`commit_oid` / `toolchain` / `enumerated_targets_hash`) — not just the ref
+    // and two content hashes (`floor-capture-hardening-round-3` item 5). The
+    // persisted `plan.json` therefore carries the provenance the T5 evaluator
+    // (`gate_plan_baseline`) re-verifies; omitting them would make a persisted plan
+    // fail `verify_plan_baseline`'s fail-closed-on-empty-provenance guard.
     obj.insert(
         "baseline".to_string(),
         json!({
             "ref": baseline.r#ref,
+            "commit_oid": baseline.commit_oid,
+            "toolchain": baseline.toolchain,
             "test_passlist_hash": baseline.test_passlist_hash,
             "clippy_warnings_hash": baseline.clippy_warnings_hash,
+            "enumerated_targets_hash": baseline.enumerated_targets_hash,
         }),
     );
     serde_json::Value::Object(obj)
