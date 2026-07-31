@@ -38,12 +38,10 @@ the DAG stores the plan + lane/collision ordering, NOT status. Merge the DAG at 
 (drop landed, add active, keep order) per the convention in
 `crates/octl-cli/skills/stint/SKILL.template.md`.
 
-**⚠ One cleanup carried over:** the dead worktree/branch
-`wt/01kym6a7bz-idle-pending-safetynet` (commit `b076815`) is preserved-by-policy but now
-SUPERSEDED (its work was harvested + landed via the retry). Safe to remove —
-`git worktree remove --force /Users/jari/Sources/orchestratectl__worktrees/wt-01kym6a7bz-idle-pending-safetynet`
-then `git branch -D wt/01kym6a7bz-idle-pending-safetynet`. Left for human oversight.
-`main` is ~65 commits ahead of `origin` (human pushes).
+The superseded orphan worktree/branch `wt/01kym6a7bz-idle-pending-safetynet` from the
+`agent-skips-run-merge-idle-pending` death has been **removed** (2026-07-31; its work was
+harvested + landed via the retry, and its uncommitted test fragment was verified subsumed by
+main's more comprehensive coverage). No worktrees remain. `main` was pushed to `origin`.
 
 ---
 
@@ -130,10 +128,9 @@ and dropped it; cleared dead `[wip]` tags (no live worktrees).
 Lane B head) + `agent-skips-run-merge-idle-pending` (fixed; 1st attempt agent-died, retry
 harvested the recoverable first cut and landed it). New Lane A follow-ups filed by the retry:
 `idle-empty-handed-alive-agent-hangs`, `watchdog-tick-verdict-refactor`.
-⚠ **ORPHAN to clean:** dead worktree/branch `wt/01kym6a7bz-idle-pending-safetynet`
-(commit `b076815`) is preserved-by-policy but now SUPERSEDED (its work was harvested +
-landed via the retry). Safe to remove: `git worktree remove --force <path>` +
-`git branch -D wt/01kym6a7bz-idle-pending-safetynet`. Left for human oversight.
+**Orphan cleaned 2026-07-31:** the superseded dead worktree/branch
+`wt/01kym6a7bz-idle-pending-safetynet` was removed (work landed via the retry; uncommitted
+test fragment verified subsumed by main's coverage). No worktrees remain.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
