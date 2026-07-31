@@ -2,11 +2,12 @@
 created: 2026-07-28
 updated: 2026-07-31
 type: improvement
-status: in-progress
+status: done
 priority: high
 epic: code-pipeline
 related: ['@floor-capture-hardening-round-2']
 blocked_by: ['@floor-capture-hardening-round-2']
+closed: 2026-07-31
 ---
 
 # Floor capture hardening round 3: structured cargo invocation, expected-target manifest, doctests/custom-harness, provenance enforcement wiring
