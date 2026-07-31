@@ -680,12 +680,17 @@ mod tests {
     }
 
     // ---- Qualified-identity tmux matching --------------------------------
-    // These tests mock `tmux` via TMUX_BIN. The var is process-global, so
-    // serialize them behind a lock against a stale fixture from another thread.
+    // These tests mock `tmux` via TMUX_BIN. `std::env::set_var` is process-global
+    // and unsafe to call concurrently with ANY other env access, so serialize
+    // them behind the crate-wide env lock — the SAME lock the harness adapter
+    // tests use (aider/pi set DEEPSEEK_API_KEY/GIT_BIN). A watchdog-local lock
+    // would only exclude other watchdog tests, letting a concurrent harness test
+    // corrupt the environ block mid-tick (issue
+    // `idempotency-key-allowed-duplicate-run` surfaced this). The shared lock is
+    // poison-tolerant, so one test's panic doesn't cascade into `PoisonError`s.
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
-    static TMUX_BIN_LOCK: Mutex<()> = Mutex::new(());
+    use crate::harness::support::test_env;
 
     /// RAII guard for a process-global env var: restores the prior value (or
     /// unsets) on drop, so a panicking assertion cannot leak `TMUX_BIN` into
@@ -782,7 +787,7 @@ mod tests {
 
     #[test]
     fn snapshot_parses_list_windows_fixture() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // A realistic `list-windows -a -F '#{window_id}|#{window_name}'` dump:
         // ids in column one, names (which may themselves contain `|`, and a
@@ -829,7 +834,7 @@ mod tests {
 
     #[test]
     fn snapshot_passes_socket_when_recorded() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|win"], 0));
         let snap = snapshot(&[Some("/tmp/sock")]);
@@ -848,7 +853,7 @@ mod tests {
 
     #[test]
     fn snapshot_no_socket_flag_for_default() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@7|a", "@99|b"], 0));
         let snap = snapshot(&[None]);
@@ -865,7 +870,7 @@ mod tests {
 
     #[test]
     fn snapshot_unreachable_when_server_down() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Non-zero exit == "no server running on <socket>" / error → not a
         // verdict; every lookup on this socket is Unknown.
@@ -879,7 +884,7 @@ mod tests {
 
     #[test]
     fn check_liveness_uses_qualified_identity_for_tmux_gone() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Live PID (self) + start_time skipped, so the verdict turns purely on
         // the tmux probe. The fake server lists @99, not our @42 → TmuxGone.
@@ -897,7 +902,7 @@ mod tests {
 
     #[test]
     fn check_liveness_alive_when_qualified_window_present() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
@@ -913,7 +918,7 @@ mod tests {
 
     #[test]
     fn check_liveness_stays_alive_when_probe_unknown() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Recorded socket's server is down (non-zero exit). The agent PID (self)
         // is alive, so an inconclusive tmux probe must NOT reap it — this is the
@@ -932,7 +937,7 @@ mod tests {
 
     #[test]
     fn check_liveness_falls_back_to_bare_name_without_identity() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Legacy node: no identity. The fallback matches by window NAME on the
         // default socket.
@@ -950,7 +955,7 @@ mod tests {
 
     #[test]
     fn snapshot_is_one_invocation_per_socket_regardless_of_node_count() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Five nodes all live on the same (default) socket.
         let _e = EnvGuard::set(
@@ -981,7 +986,7 @@ mod tests {
 
     #[test]
     fn probe_timeout_yields_unreachable_and_pid_only_liveness() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // A wedged server: the fake sleeps far past the deadline. The probe must
         // be killed and the socket treated as Unreachable (→ Unknown lookups),
@@ -1023,7 +1028,7 @@ mod tests {
     /// long-idle window from the filed trace.
     #[test]
     fn interactive_dead_pid_with_live_window_is_alive() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
@@ -1055,7 +1060,7 @@ mod tests {
     /// terminalizes; the caller's streak guards a transient false-Absent).
     #[test]
     fn interactive_dead_pid_with_absent_window_is_tmux_gone() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Server answers but our @42 is not among its windows → definitive Absent.
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@99|other"], 0));
@@ -1079,7 +1084,7 @@ mod tests {
     /// human session → stays Alive.
     #[test]
     fn interactive_dead_pid_with_unknown_window_stays_alive() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         // Non-zero exit → server unreachable → Unknown.
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["no server"], 1));
@@ -1150,7 +1155,7 @@ mod tests {
     /// `Recycled` out of `check_liveness`.
     #[test]
     fn interactive_recycled_pid_with_live_window_is_alive() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {
@@ -1178,7 +1183,7 @@ mod tests {
     /// does not change the healthy case.
     #[test]
     fn interactive_live_pid_and_window_is_alive() {
-        let _g = TMUX_BIN_LOCK.lock().unwrap();
+        let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
         let _e = EnvGuard::set("TMUX_BIN", fake_tmux(dir.path(), &["@42|🚀 wt/x"], 0));
         let probe = AgentProbe {

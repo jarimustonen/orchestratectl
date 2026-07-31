@@ -281,6 +281,86 @@ fn create_with_idempotency_key_returns_same_run_id() {
     assert_eq!(count, 1);
 }
 
+/// Regression for `idempotency-key-allowed-duplicate-run`: firing N `run
+/// create` calls with the SAME `--idempotency-key` concurrently must yield
+/// exactly ONE run, not one per call. Before the fix the key was persisted only
+/// after a run fully materialized, so near-simultaneous calls all missed the
+/// pre-create lookup and each spawned a distinct run. The atomic reservation
+/// closes that window: exactly one caller materializes, the rest replay.
+#[test]
+fn concurrent_same_idempotency_key_creates_one_run() {
+    let home = TestHome::new();
+    const N: usize = 8;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+
+    let handles: Vec<_> = (0..N)
+        .map(|_| {
+            let path = home.path().to_path_buf();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+                cmd.env("ORCHESTRATECTL_HOME", &path)
+                    .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+                    .args([
+                        "--output",
+                        "json",
+                        "run",
+                        "create",
+                        "--kind",
+                        "spinoff",
+                        "--title",
+                        "race",
+                        "--idempotency-key",
+                        "same-key",
+                    ]);
+                // Release all processes as close together as possible.
+                barrier.wait();
+                let out = cmd.output().expect("spawn");
+                assert!(
+                    out.status.success(),
+                    "exit={:?} stderr={}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+                (
+                    v["data"]["run_id"].as_str().unwrap().to_string(),
+                    v["data"]["idempotent_replay"] == Value::Bool(true),
+                )
+            })
+        })
+        .collect();
+
+    let results: Vec<(String, bool)> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Exactly one run materialized on disk.
+    let count = std::fs::read_dir(home.path().join("runs")).unwrap().count();
+    assert_eq!(count, 1, "expected exactly one run dir, got {count}");
+
+    // Every call resolved to the same run-id (the single materialized run).
+    let materialized = std::fs::read_dir(home.path().join("runs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name()
+        .into_string()
+        .unwrap();
+    assert!(
+        results.iter().all(|(id, _)| *id == materialized),
+        "all callers must return the one materialized run-id {materialized}; got {results:?}"
+    );
+
+    // Exactly one caller was the creator (no replay); the other N-1 replayed.
+    let replays = results.iter().filter(|(_, r)| *r).count();
+    assert_eq!(
+        replays,
+        N - 1,
+        "exactly one creator + {} replays expected; got {replays} replays",
+        N - 1
+    );
+}
+
 #[test]
 fn create_rejects_empty_title() {
     let home = TestHome::new();

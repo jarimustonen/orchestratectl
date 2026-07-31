@@ -793,19 +793,23 @@ pub(super) fn run_chunk(
 }
 
 #[cfg(test)]
-pub(super) mod test_env {
-    //! One process-wide lock for the git-inspecting adapters' env-mutating tests.
+pub(crate) mod test_env {
+    //! One process-wide lock for every env-mutating test in the crate.
     //!
     //! aider/claude/pi tests all set the same ambient env vars (`DEEPSEEK_API_KEY`,
-    //! `GIT_BIN`, `OCTL_*_BIN`). A per-module lock only serialises within one
-    //! module — cross-module tests still race in the shared test binary and leak a
-    //! key/binary override into another module's assertion. A single shared lock
-    //! (poison-tolerant, so one test's panic doesn't cascade) serialises them all.
+    //! `GIT_BIN`, `OCTL_*_BIN`); the watchdog tests set `TMUX_BIN`. `std::env::set_var`
+    //! is process-global and unsafe to call concurrently with ANY other env access,
+    //! so a per-module lock is not enough: two modules' locks don't mutually exclude,
+    //! and their tests still race in the shared test binary — corrupting the environ
+    //! block and leaking a key/binary override into another module's assertion
+    //! (issue `idempotency-key-allowed-duplicate-run` surfaced this via the watchdog
+    //! snapshot tests). A single shared lock (poison-tolerant, so one test's panic
+    //! doesn't cascade into spurious `PoisonError`s) serialises them all.
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    pub(in crate::harness) fn lock() -> MutexGuard<'static, ()> {
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }

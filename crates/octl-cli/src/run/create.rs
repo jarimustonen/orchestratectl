@@ -284,6 +284,51 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         });
     }
 
+    // Atomically reserve the idempotency key BEFORE materializing the run.
+    // The top-of-function `lookup` is only a fast path; THIS reservation is the
+    // authoritative check-and-set that closes the duplicate-create race. The
+    // key file becomes visible to other callers only here — the old code stored
+    // it after full materialization (seconds later, once create.sh had spawned
+    // the whole worktree), so two near-simultaneous same-key calls both missed
+    // the lookup and both spawned. `reserve` is an atomic filesystem operation:
+    // exactly one concurrent caller wins and materializes; the losers observe
+    // the reservation and replay the winner's run instead of spawning a
+    // duplicate. Skipped on dry-run (handled above — dry-run persists nothing).
+    let reserved_key = if let Some(key) = args.idempotency_key.as_deref() {
+        match idempotency::reserve(
+            args.source_repo.as_deref(),
+            args.source_branch.as_deref(),
+            key,
+            &run_id,
+        )? {
+            idempotency::Reservation::Reserved => true,
+            idempotency::Reservation::AlreadyReserved(existing) => {
+                // A concurrent same-key call won the race between our `lookup`
+                // and this `reserve`. Replay ITS run, exactly as the top-of-
+                // function fast path would have.
+                let existing_rid = parse_run_id(&existing)?;
+                let dir = octl_core::run_dir(&root, &existing_rid);
+                return emit(EmitInput {
+                    run_id: &existing,
+                    dir: dir.display().to_string(),
+                    kind: args.kind,
+                    lifecycle,
+                    parent_run_id: parent_run_id.as_deref(),
+                    parent_node_id: parent_node_id.as_deref(),
+                    node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
+                    spawn: None,
+                    supervisor_pid: None,
+                    idempotent_replay: Some(true),
+                    dry_run: None,
+                    spec: args.spec,
+                    warnings: args.warnings,
+                });
+            }
+        }
+    } else {
+        false
+    };
+
     ensure_root(&root).map_err(from_core)?;
 
     if is_child {
@@ -364,8 +409,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         );
     }
     // As with `child.spawned` above, `run create` dedups via the CLI-level
-    // `idempotency::store` (below), not the folded event-log scan — so the
-    // append carries no idempotency key.
+    // idempotency reservation (`reserve`, above), not the folded event-log
+    // scan — so the append carries no idempotency key.
     octl_core::append_and_apply_event(&paths, "run.created", None, None, Value::Object(data))
         .map_err(from_core)?;
 
@@ -415,12 +460,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "child_title": title,
         });
         // No idempotency key on the parent's `child.spawned`: `run create`'s
-        // own dedup is the CLI-level `idempotency::store` (key -> run_id) that
-        // short-circuits a retry *before* this point. Passing the key here
+        // own dedup is the CLI-level idempotency reservation (key -> run_id)
+        // that short-circuits a retry *before* this point. Passing the key here
         // would instead make `append_and_apply_event` scan the parent log and,
-        // on a retry that slipped past the store (e.g. a crash before
-        // `idempotency::store`), return an idempotent replay of the *first*
-        // child — silently orphaning the freshly generated `run_id`.
+        // on a retry that slipped past the reservation, return an idempotent
+        // replay of the *first* child — silently orphaning the freshly
+        // generated `run_id`.
         octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
@@ -436,8 +481,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // tests that need a run dir without booting a real worktree/agent.
     if skip_materialize {
         // The skeleton child is live as soon as its run dir exists — emit
-        // `child.spawned` before storing the idempotency key (same ordering
-        // rationale as the materialized path).
+        // `child.spawned` here. The idempotency key was already reserved before
+        // materialization (see `reserve` above), same as the materialized path.
         emit_child_spawned()?;
         // The orchestrate DRIVER has no worktree to materialize, but it STILL
         // needs a supervisor: its `--kind orchestrated` children are
@@ -458,19 +503,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             && !is_child
             && !args.skip_materialize
             && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_err();
-        // Store the idempotency key BEFORE spawning the supervisor: the run is
-        // already durable on disk (run.created + any driver node), so if the
-        // supervisor fails to confirm, a keyed retry must replay THIS run rather
-        // than create a duplicate. Ordering the store after the spawn would
-        // orphan the run without a key on a `supervisor_spawn_failed`.
-        if let Some(key) = args.idempotency_key.as_deref() {
-            idempotency::store(
-                args.source_repo.as_deref(),
-                args.source_branch.as_deref(),
-                key,
-                &run_id,
-            )?;
-        }
+        // The idempotency key was already reserved before materialization
+        // began (see `reserve` above), so the run is durably keyed here: if the
+        // supervisor fails to confirm, a keyed retry replays THIS run rather
+        // than minting a duplicate.
         let supervisor_pid = if spawn_driver_supervisor {
             Some(spawn_supervisor_or_fail(&paths, &run_id)?)
         } else {
@@ -526,6 +562,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let cleanup_orphan_child = || {
         if is_child {
             let _ = std::fs::remove_dir_all(&child_dir);
+            // The reserved key points at a run dir we are about to discard.
+            // Release it so a later keyed retry re-spawns cleanly instead of
+            // replaying a run that no longer exists on disk. (Top-level spawn
+            // failures deliberately KEEP the reservation: the run stays on disk
+            // in `pending`, and a keyed retry short-circuits to it — see the
+            // top-level failure comment above.) Best-effort, like the dir
+            // removal: a leftover key is less harmful than a panic mid-cleanup.
+            if reserved_key {
+                if let Some(key) = args.idempotency_key.as_deref() {
+                    let _ = idempotency::release(
+                        args.source_repo.as_deref(),
+                        args.source_branch.as_deref(),
+                        key,
+                    );
+                }
+            }
         }
     };
     let outcome = match spawn::run_create_sh_with_tmux_retry(&spawn_req) {
@@ -600,27 +652,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // child does the parent learn about it. Emitting `child.spawned` here
     // (rather than before the spawn) makes the parent's DAG bookkeeping
     // transactional — a failed spawn leaves no parent event and no child run
-    // dir, so the parent supervisor never tracks a phantom 0-node child.
-    // Emitted before `idempotency::store` below so a crash in between can only
-    // lose the key (a retry re-spawns cleanly), never replay a stored key while
-    // the parent is missing its `child.spawned`.
+    // dir, so the parent supervisor never tracks a phantom 0-node child. (On
+    // that failure the child's idempotency reservation is released too — see
+    // `cleanup_orphan_child` — so a keyed retry re-spawns cleanly.)
     emit_child_spawned()?;
 
-    // Store the idempotency key BEFORE spawning the supervisor. The run is
-    // durable on disk now (run.created + node.created), so if the supervisor
-    // fails to confirm (`supervisor_spawn_failed`), a keyed retry must replay
-    // THIS run rather than mint a duplicate. Still emitted AFTER
-    // `emit_child_spawned` so the child.spawned-before-store ordering above
-    // holds: a crash between them can only lose the key (a retry re-spawns
-    // cleanly), never replay a stored key while the parent lacks child.spawned.
-    if let Some(key) = args.idempotency_key.as_deref() {
-        idempotency::store(
-            args.source_repo.as_deref(),
-            args.source_branch.as_deref(),
-            key,
-            &run_id,
-        )?;
-    }
+    // The idempotency key was reserved before materialization began (see
+    // `reserve` above); the run is durably keyed by the time we reach here, so
+    // if the supervisor fails to confirm (`supervisor_spawn_failed`) a keyed
+    // retry replays THIS run rather than minting a duplicate.
 
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent
@@ -669,9 +709,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// We instead return `supervisor_spawn_failed` carrying the run id, so the
 /// caller can inspect `supervisor.stderr.log`, `run reattach`, or `run cancel`
 /// rather than hang until its own timeout. The run.created / node.created
-/// events are already durable on disk (and the idempotency key, if any, is
-/// stored before this call), so the run is fully recoverable and a keyed retry
-/// replays it rather than duplicating it.
+/// events are already durable on disk (and the idempotency key, if any, was
+/// reserved before this call), so the run is fully recoverable and a keyed
+/// retry replays it rather than duplicating it.
 fn spawn_supervisor_or_fail(paths: &octl_core::RunPaths, run_id: &str) -> Result<u32, CliError> {
     match supervisor_spawn::spawn_for_run(paths, run_id)? {
         supervisor_spawn::SupervisorSpawn::Confirmed { pid } => Ok(pid),
