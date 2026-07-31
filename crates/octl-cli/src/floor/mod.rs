@@ -146,6 +146,7 @@
 
 pub mod gates;
 pub mod git;
+pub mod metadata;
 pub mod parse;
 pub mod runner;
 pub mod snapshot;
@@ -376,5 +377,96 @@ mod tests {
         let err =
             assertion_counts_at_ref(dir.path(), "deadbeefdeadbeef", &[PathBuf::from("src/a.rs")]);
         assert!(err.is_err());
+    }
+
+    /// End-to-end against a **real** cargo crate (no toolchain-faking): trusted
+    /// metadata, the expected-target check, and doctest capture on real rustdoc
+    /// output. Exercises the round-3 items 2/3/4 capture paths cargo-for-real,
+    /// where the fixture-script tests cannot reach cargo's actual behaviour.
+    #[test]
+    fn end_to_end_real_cargo_captures_metadata_expected_targets_and_doctests() {
+        use super::metadata;
+        use super::runner::{capture_doctests, capture_test_snapshot};
+
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        fs::write(
+            p.join("Cargo.toml"),
+            "[package]\nname = \"floortest\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(p.join("src")).unwrap();
+        fs::write(
+            p.join("src/lib.rs"),
+            "//! ```\n//! assert_eq!(floortest::add(2, 2), 4);\n//! ```\n\
+             pub fn add(a: i32, b: i32) -> i32 { a + b }\n\
+             #[cfg(test)]\nmod tests { #[test] fn works() { assert_eq!(super::add(1, 1), 2); } }\n",
+        )
+        .unwrap();
+
+        // Metadata is loadable, has no forged harness, and expects the lib target.
+        let meta = metadata::load(p).unwrap();
+        metadata::reject_forged_harness(&meta).unwrap();
+        assert!(metadata::expected_test_targets(&meta).contains("floortest/lib/floortest"));
+
+        // Enumerate + run the unit tests; the enumeration covers the expected set.
+        let td = TempDir::new().unwrap();
+        let mut snap = capture_test_snapshot("cargo test", p, td.path()).unwrap();
+        metadata::verify_enumeration(&meta, &snap.targets).unwrap();
+        assert!(
+            snap.targets.contains("floortest/lib/floortest"),
+            "{:?}",
+            snap.targets
+        );
+        assert!(
+            snap.passed.iter().any(|t| t.target_kind == "lib"),
+            "unit test captured: {:?}",
+            snap.passed
+        );
+
+        // Doctests are captured into the same snapshot with a doctest target.
+        capture_doctests(p, td.path(), &meta, &mut snap).unwrap();
+        assert!(
+            snap.targets.contains("floortest/doctest/floortest"),
+            "{:?}",
+            snap.targets
+        );
+        assert!(
+            snap.passed.iter().any(|t| t.target_kind == "doctest"),
+            "doctest captured: {:?}",
+            snap.passed
+        );
+    }
+
+    /// A forged custom harness on a test-producing target (`[[test]] harness =
+    /// false`) is rejected against real metadata, while the crate's legitimate
+    /// `[[bench]] harness = false` is allowed (item 3 / F5).
+    #[test]
+    fn real_cargo_rejects_forged_test_harness_but_allows_bench() {
+        use super::metadata;
+
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        fs::write(
+            p.join("Cargo.toml"),
+            "[package]\nname = \"forge\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+             [[bench]]\nname = \"crit\"\npath = \"benches/crit.rs\"\nharness = false\n\n\
+             [[test]]\nname = \"e2e\"\npath = \"tests/e2e.rs\"\nharness = false\n",
+        )
+        .unwrap();
+        fs::create_dir_all(p.join("src")).unwrap();
+        fs::write(p.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+        fs::create_dir_all(p.join("benches")).unwrap();
+        fs::write(p.join("benches/crit.rs"), "fn main() {}\n").unwrap();
+        fs::create_dir_all(p.join("tests")).unwrap();
+        fs::write(p.join("tests/e2e.rs"), "fn main() {}\n").unwrap();
+
+        let meta = metadata::load(p).unwrap();
+        let err = metadata::reject_forged_harness(&meta).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("forged custom test harness"), "{msg}");
+        assert!(msg.contains("[test]") && msg.contains("e2e"), "{msg}");
+        // The bench must NOT be reported as forged.
+        assert!(!msg.contains("crit"), "bench wrongly flagged: {msg}");
     }
 }

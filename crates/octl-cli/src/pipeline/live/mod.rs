@@ -414,6 +414,17 @@ fn to_harness_check(i: usize, c: &plan::Check) -> HarnessCheck {
 /// the system temp area (outside the worktree, so they never perturb the
 /// file-scope diff) and are removed when the guards drop at the end of this
 /// function.
+///
+/// When `dir` is a cargo workspace (a `Cargo.toml` is present), the capture is
+/// additionally judged against **independent** trusted metadata
+/// (`floor-capture-hardening-round-3` items 2–4): a forged custom harness
+/// (`harness = false` on a test-producing target) is rejected before anything
+/// runs (item 3), the captured enumeration must cover the metadata-expected
+/// test-target set and be non-empty when tests exist (item 2), and doctests are
+/// captured in a `--doc` pass and folded in (item 4). A non-cargo `dir` (only
+/// reachable from unit-test fixtures — a real pipeline `dir` is always a cargo
+/// workspace, and if its `Cargo.toml` vanished `cargo test` would itself fail
+/// closed) skips these metadata steps.
 fn capture_snapshot(cfg: &PipelineConfig, dir: &Path) -> Result<RunSnapshot, PipelineError> {
     let alloc = |what| {
         tempfile::TempDir::new().map_err(move |e| {
@@ -425,7 +436,30 @@ fn capture_snapshot(cfg: &PipelineConfig, dir: &Path) -> Result<RunSnapshot, Pip
     };
     let test_target_dir = alloc("tests")?;
     let clippy_target_dir = alloc("clippy")?;
-    let tests = floor::runner::capture_test_snapshot(&cfg.test_cmd, dir, test_target_dir.path())?;
+
+    // Trusted, independent metadata (only when `dir` is a real cargo workspace).
+    let meta = if dir.join("Cargo.toml").exists() {
+        let m = floor::metadata::load(dir)?;
+        // Item 3: reject a forged custom harness before trusting any capture.
+        floor::metadata::reject_forged_harness(&m)?;
+        Some(m)
+    } else {
+        None
+    };
+
+    let mut tests =
+        floor::runner::capture_test_snapshot(&cfg.test_cmd, dir, test_target_dir.path())?;
+
+    if let Some(meta) = &meta {
+        // Item 2: the captured enumeration must cover the metadata-expected set
+        // (absolute, so a compromised/empty baseline is caught — not just a
+        // baseline-relative narrowing).
+        floor::metadata::verify_enumeration(meta, &tests.targets)?;
+        // Item 4: capture doctests into the same snapshot (reuses the test target
+        // dir — same ref, so warming is fine and never crosses baseline/tip).
+        floor::runner::capture_doctests(dir, test_target_dir.path(), meta, &mut tests)?;
+    }
+
     let clippy =
         floor::runner::capture_clippy_snapshot(&cfg.clippy_cmd, dir, clippy_target_dir.path())?;
     Ok(RunSnapshot {

@@ -113,7 +113,7 @@ const ENV_ALLOWLIST: &[&str] = &[
 /// already dropped any inherited `CARGO_TARGET_DIR`, so `None` means "cargo's
 /// default (`<cwd>/target`, or the repo's `build.target-dir`)" — used only for
 /// non-build probes like [`rustc_version`].
-fn isolated_command(program: &str, target_dir: Option<&Path>) -> Command {
+pub(crate) fn isolated_command(program: &str, target_dir: Option<&Path>) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear();
     for key in ENV_ALLOWLIST {
@@ -139,7 +139,7 @@ fn isolated_command(program: &str, target_dir: Option<&Path>) -> Command {
 /// command whose first token is literally `cargo` is rewritten to this path; any
 /// other first token (a test fixture's fake-cargo script, or an explicit cargo
 /// path) is honoured verbatim.
-fn cargo_bin() -> String {
+pub(crate) fn cargo_bin() -> String {
     std::env::var("CARGO")
         .ok()
         .filter(|s| !s.is_empty())
@@ -208,6 +208,63 @@ impl CargoInvocation {
     }
 }
 
+/// How the floor executes one capture command.
+///
+/// The floor's own production captures are always `cargo …`, and those take the
+/// [`CaptureExec::Cargo`] path: **argv**, supervisor-resolved, sanitized (item 1).
+/// A base command whose first token is not literally `cargo` (a unit-test fixture
+/// script or an explicit non-cargo `--test-cmd` / `--clippy-cmd` override) falls
+/// back to [`CaptureExec::Shell`] — the composed string run via `sh -c` — because
+/// such commands may rely on shell quoting/expansion and the floor cannot
+/// meaningfully sanitize cargo config for a non-cargo program anyway.
+enum CaptureExec {
+    /// Real cargo, run as sanitized argv.
+    Cargo(CargoInvocation),
+    /// A non-cargo fixture/override, run via `sh -c` (no cargo sanitization).
+    Shell(String),
+}
+
+impl CaptureExec {
+    /// A rendering of the command for diagnostics only.
+    fn display(&self) -> String {
+        match self {
+            CaptureExec::Cargo(inv) => inv.display(),
+            CaptureExec::Shell(s) => s.clone(),
+        }
+    }
+
+    /// The isolated [`Command`] to run (`target_dir` pins `CARGO_TARGET_DIR`).
+    fn command(&self, target_dir: &Path) -> Command {
+        match self {
+            CaptureExec::Cargo(inv) => {
+                let mut cmd = isolated_command(&inv.program, Some(target_dir));
+                cmd.args(&inv.args);
+                cmd
+            }
+            CaptureExec::Shell(s) => {
+                let mut cmd = isolated_command("sh", Some(target_dir));
+                cmd.arg("-c").arg(s);
+                cmd
+            }
+        }
+    }
+}
+
+/// Choose the execution strategy for a capture command (see [`CaptureExec`]).
+/// Real cargo (`cargo …`) is built as sanitized argv; anything else is composed
+/// into an `sh -c` string with the floor's `floor_flags` appended (the
+/// `CARGO_TARGET_DIR` env still pins the target dir for it via
+/// [`isolated_command`]).
+fn build_capture_exec(base_cmd: &str, target_dir: &Path, floor_flags: &[&str]) -> CaptureExec {
+    if base_cmd.split_whitespace().next() == Some("cargo") {
+        CaptureExec::Cargo(build_cargo_invocation(base_cmd, target_dir, floor_flags))
+    } else {
+        let mut parts = vec![base_cmd.to_string()];
+        parts.extend(floor_flags.iter().map(ToString::to_string));
+        CaptureExec::Shell(parts.join(" "))
+    }
+}
+
 /// Build a floor cargo invocation as argv from a base command string, the
 /// floor-pinned `target_dir`, and the floor's own `floor_flags`
 /// (`--no-run`/`--message-format=json`/`--doc`, …).
@@ -246,7 +303,13 @@ fn build_cargo_invocation(
 
     let mut tokens = base_cmd.split_whitespace();
     let first = tokens.next().unwrap_or("cargo");
-    let mut program = if first == "cargo" {
+    // A leading literal `cargo` token means the floor drives real cargo: resolve
+    // the supervisor cargo and apply the cargo-specific sanitization (alias bypass
+    // + `--config` overrides). Any other leading token is a fixture script or an
+    // explicit non-cargo program, honoured verbatim with no cargo rewriting (its
+    // args must not be prefixed with cargo globals it would reject).
+    let is_real_cargo = first == "cargo";
+    let mut program = if is_real_cargo {
         cargo_bin()
     } else {
         first.to_string()
@@ -262,9 +325,8 @@ fn build_cargo_invocation(
 
     // Bypass a `clippy` alias: rewrite `cargo clippy …` → `cargo-clippy …`. Only
     // when the program is real cargo (a fixture/explicit path is left alone).
-    let program_is_cargo = program == cargo_bin();
     let mut cargo_side: Vec<&str> = cargo_side_raw.to_vec();
-    if program_is_cargo && cargo_side.first() == Some(&"clippy") {
+    if is_real_cargo && cargo_side.first() == Some(&"clippy") {
         program = "cargo-clippy".to_string();
         cargo_side.remove(0);
     }
@@ -292,9 +354,14 @@ fn build_cargo_invocation(
 
     // Assemble: [subcommand …] must precede the floor's cargo-side flags, and the
     // sanitizing `--config` globals precede the subcommand. cargo-clippy forwards
-    // globals to `cargo check`, so the same layout is valid there.
+    // globals to `cargo check`, so the same layout is valid there. The `--config`
+    // globals are cargo-only: a non-cargo fixture would reject a leading `--config`
+    // as an unknown option, so they are omitted there (the invocation is not a real
+    // cargo capture anyway).
     let mut args: Vec<String> = Vec::new();
-    args.extend(sanitizing_config_args());
+    if is_real_cargo {
+        args.extend(sanitizing_config_args());
+    }
     args.extend(kept);
     args.push("--target-dir".to_string());
     args.push(target_dir.to_string_lossy().into_owned());
@@ -420,10 +487,10 @@ pub fn capture_test_snapshot(
     cwd: &Path,
     target_dir: &Path,
 ) -> Result<TestSnapshot, FloorError> {
-    let inv = build_cargo_invocation(test_cmd, target_dir, &["--no-run", "--message-format=json"]);
-    let enumerate_cmd = inv.display();
-    let out = isolated_command(&inv.program, Some(target_dir))
-        .args(&inv.args)
+    let exec = build_capture_exec(test_cmd, target_dir, &["--no-run", "--message-format=json"]);
+    let enumerate_cmd = exec.display();
+    let out = exec
+        .command(target_dir)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
@@ -563,6 +630,91 @@ fn run_one_test_binary(
     Ok(())
 }
 
+/// Capture doctests into `snap` — a separate `cargo test -p <pkg> --doc` pass per
+/// package with a library target (`floor-capture-hardening-round-3` item 4 / F6).
+///
+/// Doctests run via rustdoc, not a `compiler-artifact` binary, so they are
+/// invisible to [`capture_test_snapshot`]: a new failing doctest, or a test moved
+/// *into* a doctest, would otherwise never be observed. Each doctest becomes a
+/// `target_kind = "doctest"` [`super::snapshot::TestId`] and each package's lib
+/// contributes a `<pkg>/doctest/<lib>` entry to
+/// [`super::snapshot::TestSnapshot::targets`], so the existing regression /
+/// gaming / enumeration-superset gates cover doctests too. The pass is symmetric
+/// across baseline and tip, so it closes a gaming hole rather than adding a
+/// crash surface.
+///
+/// Stable rustdoc emits doctest results as libtest **text** (not JSON), so the
+/// output is parsed and reconciled with the same [`reconcile_single_binary`]
+/// discipline as a per-binary run: exactly one summary, parsed counts matching
+/// the announced summary, and an exit code consistent with it. A compile error in
+/// a doctest prints no summary → fail closed. Runs with default features (a
+/// documented limitation: a feature-gated doctest may be uncaptured, but the pass
+/// is symmetric so it is not a gaming hole for the captured set).
+pub fn capture_doctests(
+    cwd: &Path,
+    target_dir: &Path,
+    meta: &super::metadata::WorkspaceMetadata,
+    snap: &mut TestSnapshot,
+) -> Result<(), FloorError> {
+    for pkg in &meta.packages {
+        let Some(lib) = super::metadata::lib_target_name(pkg) else {
+            continue; // no library target → rustdoc has no doctests to run.
+        };
+        let exec = build_capture_exec(
+            &format!("cargo test -p {} --doc", pkg.name),
+            target_dir,
+            &[],
+        );
+        let cmd = exec.display();
+        let out = exec
+            .command(target_dir)
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| FloorError::Capture {
+                what: "tests",
+                message: format!("could not run doctests via `{cmd}`: {e}"),
+            })?;
+
+        let combined = join_streams(&out.stdout, &out.stderr);
+        let report = parse_libtest_report(&combined);
+        let summary = reconcile_single_binary(&report).map_err(|d| FloorError::Capture {
+            what: "tests",
+            message: format!(
+                "doctests for package {} ({}): untrustworthy output: {d}. stderr: {}",
+                pkg.name,
+                lib,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        })?;
+
+        // rustdoc/libtest exits 0 iff nothing failed; a disagreeing exit code is
+        // an anomaly (a doctest compile error, a tampered exit) → fail closed.
+        let exit_ok = out.status.code() == Some(0);
+        if exit_ok != (summary.failed == 0) {
+            return Err(FloorError::Capture {
+                what: "tests",
+                message: format!(
+                    "doctests for package {} exit code {:?} inconsistent with summary ({} failed); failing closed",
+                    pkg.name,
+                    out.status.code(),
+                    summary.failed
+                ),
+            });
+        }
+
+        // Every package with a lib contributes a doctest target, even at zero
+        // doctests, so its disappearance at the tip is caught by the superset gate.
+        snap.targets.insert(format!("{}/doctest/{}", pkg.name, lib));
+        snap.passed
+            .extend(parse::qualify(&pkg.name, "doctest", &lib, &report.passed));
+        snap.failed
+            .extend(parse::qualify(&pkg.name, "doctest", &lib, &report.failed));
+        snap.ignored
+            .extend(parse::qualify(&pkg.name, "doctest", &lib, &report.ignored));
+    }
+    Ok(())
+}
+
 /// Capture a structured [`ClippySnapshot`] from `cargo clippy`
 /// `--message-format=json`. Warnings are read from the JSON records keyed by
 /// lint code — a `println!`/`build.rs` cannot fabricate one.
@@ -586,10 +738,10 @@ pub fn capture_clippy_snapshot(
     cwd: &Path,
     target_dir: &Path,
 ) -> Result<ClippySnapshot, FloorError> {
-    let inv = build_cargo_invocation(clippy_cmd, target_dir, &["--message-format=json"]);
-    let cmd = inv.display();
-    let out = isolated_command(&inv.program, Some(target_dir))
-        .args(&inv.args)
+    let exec = build_capture_exec(clippy_cmd, target_dir, &["--message-format=json"]);
+    let cmd = exec.display();
+    let out = exec
+        .command(target_dir)
         .current_dir(cwd)
         .output()
         .map_err(|e| FloorError::Capture {
