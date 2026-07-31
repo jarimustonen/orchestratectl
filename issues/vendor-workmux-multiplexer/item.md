@@ -2,9 +2,10 @@
 created: 2026-07-13
 updated: 2026-07-31
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@workmux-extract-libs']
+closed: 2026-07-31
 ---
 
 # Vendor workmux's tmux multiplexer code into orchestratectl (raine declined the crate split)
