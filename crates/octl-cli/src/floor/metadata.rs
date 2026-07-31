@@ -57,6 +57,13 @@ pub struct TargetMeta {
     /// Target kinds (`["lib"]`, `["test"]`, `["bin"]`, `["bench"]`, …).
     #[serde(default)]
     pub kind: Vec<String>,
+    /// Cargo features this target requires to be built (`required-features` in the
+    /// manifest). A default-feature `cargo test` does **not** build a target with
+    /// unmet required-features, so such a target must be excluded from the expected
+    /// set to avoid a false-block (`floor-capture-hardening-round-3` item 2, review
+    /// follow-up).
+    #[serde(default, rename = "required-features")]
+    pub required_features: Vec<String>,
 }
 
 impl TargetMeta {
@@ -299,6 +306,13 @@ where
             if kind != "lib" && kind != "test" {
                 continue;
             }
+            // A target gated behind required-features is not built by a
+            // default-feature `cargo test`, so requiring it would false-block
+            // (review follow-up). Exclude it — the confident set stays a lower
+            // bound on what the default build must enumerate.
+            if !t.required_features.is_empty() {
+                continue;
+            }
             let mkind = if kind == "lib" {
                 ManifestKind::Lib
             } else {
@@ -353,8 +367,42 @@ pub fn has_test_targets(meta: &WorkspaceMetadata) -> bool {
 /// custom harness (item 3 / F5). A test-producing target with `harness = false`
 /// can print perfectly balanced forged libtest output, so the floor refuses to
 /// trust the whole capture rather than let one target launder arbitrary passes.
+///
+/// A manifest that reads but **does not parse** as TOML also fails closed (review
+/// follow-up): `cargo metadata` proved the package exists, so an unparseable
+/// `Cargo.toml` is anomalous — and letting it through would let an adversary hide
+/// a `harness = false` behind TOML the floor's parser chokes on but cargo accepts.
+/// A manifest that cannot be *read* is skipped (its absence is caught by the
+/// enumeration checks — cargo cannot build a target whose manifest is gone).
 pub fn reject_forged_harness(meta: &WorkspaceMetadata) -> Result<(), FloorError> {
-    let forged = forged_harness_targets(meta);
+    let mut forged = Vec::new();
+    for pkg in &meta.packages {
+        let Ok(manifest) = std::fs::read_to_string(&pkg.manifest_path) else {
+            continue;
+        };
+        if toml::from_str::<RawManifest>(&manifest).is_err() {
+            return Err(FloorError::Capture {
+                what: "tests",
+                message: format!(
+                    "package {}'s Cargo.toml at {} is unparseable; refusing to certify a capture \
+                     whose custom-harness declarations cannot be verified (failing closed)",
+                    pkg.name,
+                    pkg.manifest_path.display()
+                ),
+            });
+        }
+        for t in forged_harness_in_manifest(&manifest) {
+            let kind = match t.kind {
+                ManifestKind::Lib => "lib",
+                ManifestKind::Bin => "bin",
+                ManifestKind::Test => "test",
+                ManifestKind::Bench => "bench",
+                ManifestKind::Example => "example",
+            };
+            let name = t.name.as_deref().unwrap_or("<default>");
+            forged.push(format!("{} [{kind}] {name}", pkg.name));
+        }
+    }
     if forged.is_empty() {
         Ok(())
     } else {
@@ -581,6 +629,43 @@ mod tests {
             r#"{"packages":[{"name":"p","manifest_path":"/no/such/Cargo.toml","targets":[]}]}"#,
         );
         assert!(reject_forged_harness(&meta).is_ok());
+    }
+
+    #[test]
+    fn reject_forged_harness_fails_closed_on_unparseable_manifest() {
+        // A readable but unparseable Cargo.toml fails closed (review follow-up):
+        // an adversary could otherwise hide `harness = false` behind TOML the
+        // floor's parser rejects but cargo accepts.
+        let dir = tempfile::TempDir::new().unwrap();
+        let manifest = dir.path().join("Cargo.toml");
+        std::fs::write(&manifest, "this is [not valid toml == ").unwrap();
+        let meta = meta_from(&format!(
+            r#"{{"packages":[{{"name":"p","manifest_path":"{}","targets":[]}}]}}"#,
+            manifest.display()
+        ));
+        let err = reject_forged_harness(&meta).unwrap_err();
+        assert!(format!("{err}").contains("unparseable"), "{err}");
+    }
+
+    #[test]
+    fn expected_targets_excludes_required_features_targets() {
+        // A target gated behind required-features is not built by a default-feature
+        // `cargo test`, so it must not be required (else false-block).
+        let meta = meta_from(
+            r#"{"packages":[
+              {"name":"p","manifest_path":"/p/Cargo.toml","targets":[
+                 {"name":"p","kind":["lib"]},
+                 {"name":"gpu","kind":["test"],"required-features":["gpu"]}
+              ]}
+            ]}"#,
+        );
+        let expected =
+            expected_test_targets_with(&meta, |_| Some("[package]\nname = \"p\"".to_string()));
+        assert!(expected.contains("p/lib/p"));
+        assert!(
+            !expected.contains("p/test/gpu"),
+            "required-features excluded"
+        );
     }
 
     #[test]

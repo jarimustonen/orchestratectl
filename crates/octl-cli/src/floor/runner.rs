@@ -39,20 +39,24 @@
 //! - **Structured argv, sanitized config (`floor-capture-hardening-round-3`
 //!   item 1).** The floor no longer composes a repo-influenced `sh -c` string. It
 //!   invokes a supervisor-resolved cargo ([`cargo_bin`]) via **argv**
-//!   ([`build_cargo_invocation`]) with the sanitizing `--config` overrides of
-//!   [`SANITIZING_CONFIG`] (cargo's highest-precedence config layer): repo
-//!   `build.rustflags` / `build.rustdocflags` lint-level flips and a
-//!   `build.rustc-wrapper` diagnostic-suppressing wrapper are neutralized, and a
-//!   repo `[alias] clippy = …` redirect is bypassed by invoking the external
-//!   `cargo-clippy` binary directly (`test` is built-in and cannot be aliased).
-//!   The old `inject_cargo_flags` whitelist bit-rot and the whitespace/quoting
-//!   fragility are gone. A consistently-weakening `rust-toolchain.toml` (an
+//!   ([`build_cargo_invocation`]). Repo `rustflags` lint-level flips
+//!   (`-A warnings`, `--cap-lints allow`) and a diagnostic-suppressing/forging
+//!   compiler wrapper are neutralized at cargo's **highest-precedence** layer —
+//!   the `RUSTFLAGS`/`RUSTDOCFLAGS`/`RUSTC_WRAPPER`/`RUSTC_WORKSPACE_WRAPPER` env
+//!   vars pinned empty in [`isolated_command`], which beat *every* config file
+//!   including `[target.'cfg(all())'].rustflags` and an `[env]`-table override
+//!   that a `--config build.*` override cannot reach ([`SANITIZING_CONFIG`] is a
+//!   second config-layer line of defense). A repo `[alias] clippy = …` redirect
+//!   is bypassed by invoking the external `cargo-clippy` binary directly (resolved
+//!   as a sibling of the supervisor cargo; `test` is built-in and cannot be
+//!   aliased). Repo-supplied `--config` / `--manifest-path` / target-dir /
+//!   message-format tokens are stripped from the base command. The old
+//!   `inject_cargo_flags` whitelist bit-rot and the whitespace/quoting fragility
+//!   are gone. A consistently-weakening `rust-toolchain.toml` (an
 //!   evil-but-consistent pin) is still only caught as baseline-vs-tip *drift* by
-//!   the recorded toolchain, and a repo `[env]`-table `force = true` override of a
-//!   compiler env var is not individually rewritten — a fully repo-config-proof
-//!   invocation (copy sources into a supervisor-owned tree with a sanitized
-//!   `.cargo/config.toml`) is the remaining belt-and-suspenders extreme, tracked
-//!   as future work.
+//!   the recorded toolchain — a fully repo-config-proof invocation (copy sources
+//!   into a supervisor-owned tree with a sanitized `.cargo/config.toml`) is the
+//!   remaining belt-and-suspenders extreme, tracked as future work.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -124,6 +128,24 @@ pub(crate) fn isolated_command(program: &str, target_dir: Option<&Path>) -> Comm
     cmd.env("LC_ALL", "C");
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_INCREMENTAL", "0");
+    // Neutralize the repo-config rustflags / compiler-wrapper vectors at cargo's
+    // **highest-precedence** layer (`floor-capture-hardening-round-3` item 1,
+    // review follow-up). A `--config build.rustflags=[]` override only clears
+    // `[build]` — it does NOT beat a repo `[target.'cfg(all())'].rustflags`, a
+    // `[env]`-table `force = true` override, or a `build.rustc-wrapper`. The
+    // RUSTFLAGS/RUSTDOCFLAGS/RUSTC_WRAPPER env vars sit above every config file in
+    // cargo's precedence, so forcing them empty here defeats a lint-level flip
+    // (`--cap-lints allow`, `-A warnings`) and a diagnostic-suppressing/forging
+    // compiler wrapper regardless of what the repo's config declares. `env_clear`
+    // already dropped any inherited copies; this pins them to a known-empty value
+    // rather than merely absent, so repo config cannot re-supply them. (An empty
+    // wrapper is cargo's documented "no wrapper".) The floor enforces a vanilla
+    // compilation standard — a repo that genuinely needs rustflags to compile is
+    // out of the floor's model and fails closed, never silently steers it.
+    cmd.env("RUSTFLAGS", "");
+    cmd.env("RUSTDOCFLAGS", "");
+    cmd.env("RUSTC_WRAPPER", "");
+    cmd.env("RUSTC_WORKSPACE_WRAPPER", "");
     if let Some(dir) = target_dir {
         cmd.env("CARGO_TARGET_DIR", dir);
     }
@@ -146,32 +168,31 @@ pub(crate) fn cargo_bin() -> String {
         .unwrap_or_else(|| "cargo".to_string())
 }
 
-/// cargo's highest-precedence config overrides (`--config KEY=VALUE`, above env
-/// and above an in-tree `.cargo/config.toml`) that neutralize the repo-controlled
-/// vectors documented in the module trust model
-/// (`floor-capture-hardening-round-3` item 1):
-///
-/// - `build.rustflags` / `build.rustdocflags` are forced empty, so a committed
-///   lint-level flip (`-A warnings`, `--cap-lints allow`) or an extra `--cfg`
-///   cannot suppress or steer the diagnostics the floor reads.
-/// - `build.rustc-wrapper` / `build.rustc-workspace-wrapper` are forced empty
-///   (cargo treats an empty wrapper as "none"), so a compiler wrapper that
-///   filters or fabricates diagnostics cannot sit between cargo and rustc.
-///
-/// These are emitted as argv tokens (`--config`, `KEY=VALUE`) on the real cargo
-/// invocation; because the invocation is built as argv and executed directly
-/// (never through `sh -c`), the values are passed byte-for-byte with no shell
-/// re-splitting. `build.rustc` itself is left to the toolchain default — the
-/// floor cannot know the true rustc path, and `env_clear()` already drops any
-/// inherited `RUSTC`; a repo `build.rustc` redirect that pointed at a fake
-/// compiler would fail to actually build the crate, so the capture fails closed
-/// rather than passing vacuously.
-const SANITIZING_CONFIG: &[&str] = &[
-    "build.rustflags=[]",
-    "build.rustdocflags=[]",
-    r#"build.rustc-wrapper="""#,
-    r#"build.rustc-workspace-wrapper="""#,
-];
+/// Whether a base-command's first token names real cargo — the literal `cargo`
+/// or a path whose file name is `cargo` (`floor-capture-hardening-round-3` item 1,
+/// review follow-up). An explicit `/usr/bin/cargo` therefore still takes the
+/// sanitized argv path instead of silently falling through to the unsanitized
+/// shell fallback. A fixture script (`printf`, `…/fakecargo`) is not cargo.
+fn is_cargo_token(first: &str) -> bool {
+    first == "cargo"
+        || Path::new(first)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == "cargo")
+}
+
+/// Belt-and-suspenders cargo `--config` overrides on the real cargo invocation
+/// (`floor-capture-hardening-round-3` item 1). These clear the `[build]` rustflags
+/// section at cargo's config layer; the **authoritative** neutralization of
+/// rustflags / compiler-wrapper vectors (which also covers `[target.*].rustflags`
+/// and `[env]` overrides that `--config build.*` cannot) is the env pinning in
+/// [`isolated_command`]. Kept as a second, explicit line of defense that shows up
+/// in the audit log. `build.rustc` is left to the toolchain default — the floor
+/// cannot know the true rustc path, and `env_clear()` already drops any inherited
+/// `RUSTC`; a repo `build.rustc` redirect that pointed at a fake compiler would
+/// fail to actually build the crate, so the capture fails closed rather than
+/// passing vacuously. Emitted as argv tokens (never shell-split).
+const SANITIZING_CONFIG: &[&str] = &["build.rustflags=[]", "build.rustdocflags=[]"];
 
 /// Expand [`SANITIZING_CONFIG`] into the flat `--config KEY=VALUE …` argv the
 /// real cargo invocation carries as **global** flags (before the subcommand).
@@ -256,7 +277,11 @@ impl CaptureExec {
 /// `CARGO_TARGET_DIR` env still pins the target dir for it via
 /// [`isolated_command`]).
 fn build_capture_exec(base_cmd: &str, target_dir: &Path, floor_flags: &[&str]) -> CaptureExec {
-    if base_cmd.split_whitespace().next() == Some("cargo") {
+    if base_cmd
+        .split_whitespace()
+        .next()
+        .is_some_and(is_cargo_token)
+    {
         CaptureExec::Cargo(build_cargo_invocation(base_cmd, target_dir, floor_flags))
     } else {
         let mut parts = vec![base_cmd.to_string()];
@@ -273,19 +298,23 @@ fn build_capture_exec(base_cmd: &str, target_dir: &Path, floor_flags: &[&str]) -
 /// carry quoted, space-containing args — that is the capture contract). The
 /// pipeline is:
 ///
-/// 1. **Resolve the program.** A leading `cargo` token becomes [`cargo_bin`]
-///    (supervisor-resolved); any other leading token (a fixture script / explicit
-///    path) is kept verbatim.
+/// 1. **Resolve the program.** A leading `cargo` token (or a path whose file name
+///    is `cargo`) becomes [`cargo_bin`] (supervisor-resolved); any other leading
+///    token (a fixture script / explicit non-cargo path) is kept verbatim.
 /// 2. **Bypass a `clippy` alias.** When the resolved program is real cargo and
 ///    the first subcommand token is `clippy`, the invocation is rewritten to the
-///    external `cargo-clippy` binary with the `clippy` token dropped, so a repo
-///    `[alias] clippy = …` redirect (which shadows the *subcommand*, not the
-///    external binary) cannot steer the floor's clippy capture to a benign
-///    zero-warning command. `test` is a built-in subcommand and cannot be
-///    aliased, so it needs no such rewrite.
-/// 3. **Strip repo-supplied target-dir / message-format** from the cargo-side
-///    tokens (before any `--`), so only the floor's forced copies survive — an
-///    in-command `--target-dir` cannot re-point the floor's pinned cache.
+///    external `cargo-clippy` binary — resolved as a **sibling of the supervisor
+///    cargo** so a toolchain-specific cargo path keeps its toolchain — with the
+///    `clippy` token dropped, so a repo `[alias] clippy = …` redirect (which
+///    shadows the *subcommand*, not the external binary) cannot steer the floor's
+///    clippy capture to a benign zero-warning command. `test` is a built-in
+///    subcommand and cannot be aliased, so it needs no such rewrite.
+/// 3. **Strip repo-supplied target-dir / message-format / config / manifest-path**
+///    from the cargo-side tokens (before any `--`), so only the floor's forced
+///    copies survive: an in-command `--target-dir` cannot re-point the floor's
+///    pinned cache, a `--config` cannot last-wins-override the floor's sanitizing
+///    config, and a `--manifest-path` cannot redirect the capture to a different
+///    (clean) workspace.
 /// 4. **Assemble** the argv in order: `program`, then the sanitizing `--config`
 ///    globals, then the cargo-side tokens, then `--target-dir <dir>`, then the
 ///    floor flags, then any `--` and test-binary tokens. The `--target-dir` is
@@ -299,16 +328,25 @@ fn build_cargo_invocation(
 ) -> CargoInvocation {
     // cargo flags that take a following value token; an occurrence before `--` is
     // dropped along with its value so only the floor's injected copy survives.
-    const DROP_WITH_VALUE: &[&str] = &["--message-format", "--target-dir"];
+    // `--config` and `--manifest-path` are stripped too (review follow-up): a
+    // repo-influenced base command must not last-wins-override the sanitizing
+    // config or redirect the capture to a different manifest.
+    const DROP_WITH_VALUE: &[&str] = &[
+        "--message-format",
+        "--target-dir",
+        "--config",
+        "--manifest-path",
+    ];
 
     let mut tokens = base_cmd.split_whitespace();
     let first = tokens.next().unwrap_or("cargo");
-    // A leading literal `cargo` token means the floor drives real cargo: resolve
-    // the supervisor cargo and apply the cargo-specific sanitization (alias bypass
-    // + `--config` overrides). Any other leading token is a fixture script or an
-    // explicit non-cargo program, honoured verbatim with no cargo rewriting (its
-    // args must not be prefixed with cargo globals it would reject).
-    let is_real_cargo = first == "cargo";
+    // A leading `cargo` token (or a path whose file name is `cargo`) means the
+    // floor drives real cargo: resolve the supervisor cargo and apply the
+    // cargo-specific sanitization (alias bypass + `--config` overrides). Any other
+    // leading token is a fixture script or an explicit non-cargo program, honoured
+    // verbatim with no cargo rewriting (its args must not be prefixed with cargo
+    // globals it would reject).
+    let is_real_cargo = is_cargo_token(first);
     let mut program = if is_real_cargo {
         cargo_bin()
     } else {
@@ -327,7 +365,15 @@ fn build_cargo_invocation(
     // when the program is real cargo (a fixture/explicit path is left alone).
     let mut cargo_side: Vec<&str> = cargo_side_raw.to_vec();
     if is_real_cargo && cargo_side.first() == Some(&"clippy") {
-        program = "cargo-clippy".to_string();
+        // Resolve `cargo-clippy` as a sibling of the supervisor cargo so a
+        // toolchain-specific `cargo` path (e.g. `CARGO=/opt/rust/bin/cargo`) keeps
+        // its toolchain instead of falling back to a `$PATH` lookup that could hit
+        // a different one. `with_file_name` on a bare `cargo` yields `cargo-clippy`
+        // (still a `$PATH` lookup), matching the previous behaviour.
+        program = Path::new(&program)
+            .with_file_name("cargo-clippy")
+            .to_string_lossy()
+            .into_owned();
         cargo_side.remove(0);
     }
 
@@ -953,15 +999,76 @@ mod tests {
         // `cargo clippy` is rewritten to the external `cargo-clippy` binary and the
         // `clippy` token dropped, so a repo `[alias] clippy = …` redirect (which
         // shadows the subcommand, not the external binary) cannot steer the capture.
+        // The program is resolved as a sibling of the supervisor cargo, so assert on
+        // its file name (an absolute CARGO path keeps its dir).
         let inv = build_cargo_invocation(
             "cargo clippy --workspace",
             Path::new("/tmp/td"),
             &["--message-format=json"],
         );
-        assert_eq!(inv.program, "cargo-clippy");
+        assert_eq!(
+            Path::new(&inv.program)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "cargo-clippy"
+        );
         assert!(!inv.args.iter().any(|a| a == "clippy"), "{:?}", inv.args);
         assert!(inv.args.iter().any(|a| a == "--workspace"));
         assert!(inv.args.iter().any(|a| a == "build.rustflags=[]"));
+    }
+
+    #[test]
+    fn build_cargo_invocation_strips_repo_config_and_manifest_path() {
+        // A repo-influenced base cmd must not last-wins-override the floor's
+        // sanitizing --config, nor redirect the capture to a different manifest
+        // (review follow-up). Both are dropped with their values.
+        let inv = build_cargo_invocation(
+            "cargo test --config build.rustflags=[\"-Awarnings\"] --manifest-path /evil/Cargo.toml --workspace",
+            Path::new("/tmp/td"),
+            &["--no-run"],
+        );
+        // No repo --manifest-path / its value survives.
+        assert!(
+            !inv.args.iter().any(|a| a == "/evil/Cargo.toml"),
+            "{:?}",
+            inv.args
+        );
+        // The only --config values present are the floor's sanitizers.
+        for (i, a) in inv.args.iter().enumerate() {
+            if a == "--config" {
+                assert!(
+                    SANITIZING_CONFIG.contains(&inv.args[i + 1].as_str()),
+                    "unexpected --config {}",
+                    inv.args[i + 1]
+                );
+            }
+        }
+        assert!(inv.args.iter().any(|a| a == "--workspace"));
+    }
+
+    #[test]
+    fn build_cargo_invocation_dangling_value_flag_before_separator() {
+        // A value-flag with no value immediately before `--` must not eat the
+        // separator: the partition-at-`--` happens first, so the strip loop only
+        // ever sees pre-`--` tokens and the `--`/test-binary args are preserved.
+        let inv = build_cargo_invocation(
+            "cargo test --message-format -- --nocapture",
+            Path::new("/tmp/td"),
+            &["--no-run"],
+        );
+        assert!(inv
+            .args
+            .ends_with(&["--".to_string(), "--nocapture".to_string()]));
+    }
+
+    #[test]
+    fn is_cargo_token_matches_bare_and_pathed_cargo() {
+        assert!(is_cargo_token("cargo"));
+        assert!(is_cargo_token("/usr/bin/cargo"));
+        assert!(!is_cargo_token("printf"));
+        assert!(!is_cargo_token("/tmp/x/fakecargo"));
     }
 
     #[test]
