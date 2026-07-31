@@ -52,6 +52,8 @@ use octl_core::{
     append_and_apply_event, read_manifest_opt, read_node_opt, Node, NodeId, RunPaths, Status,
     VIA_EXPLICIT_MERGE,
 };
+
+use crate::multiplexer::tmux::Tmux;
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -255,7 +257,8 @@ fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
         return;
     };
     let socket = managed_session_socket(paths, &session);
-    let Some((attached, names)) = list_session_windows(tmux, socket.as_deref(), &session) else {
+    let mux = Tmux::with_bin(tmux);
+    let Some((attached, names)) = mux.list_session_windows(socket.as_deref(), &session) else {
         // The session is already gone (its last window was the agent's, with no
         // surviving bootstrap shell) or tmux is unavailable — nothing to do.
         return;
@@ -271,7 +274,7 @@ fn cleanup_managed_session_with(paths: &RunPaths, tmux: &str) {
         // the session is still in use; the last run to finish will kill it.
         return;
     }
-    if tmux_kill_session(tmux, socket.as_deref(), &session) {
+    if mux.kill_session(socket.as_deref(), &session) {
         record_session_killed(paths, &session);
     }
 }
@@ -317,62 +320,6 @@ fn is_synthetic_default_window(name: &str) -> bool {
         name.trim(),
         "zsh" | "bash" | "sh" | "fish" | "-zsh" | "-bash" | "-sh"
     )
-}
-
-/// List a session's windows as `(any_attached, window_names)` via a single
-/// `tmux list-windows -t <session> -F '#{session_attached}\t#{window_name}'`.
-/// `None` when the session is gone (non-zero exit) or tmux could not run, so the
-/// caller treats an already-torn-down session as a clean no-op. `any_attached`
-/// is true when ANY line reports a non-zero `#{session_attached}` (a human is in
-/// the session).
-fn list_session_windows(
-    tmux: &str,
-    socket: Option<&str>,
-    session: &str,
-) -> Option<(bool, Vec<String>)> {
-    let mut cmd = Command::new(tmux);
-    if let Some(s) = socket {
-        cmd.args(["-S", s]);
-    }
-    cmd.args([
-        "list-windows",
-        "-t",
-        session,
-        "-F",
-        "#{session_attached}\t#{window_name}",
-    ]);
-    cmd.stderr(Stdio::null());
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let mut attached = false;
-    let mut names = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((att, name)) = line.split_once('\t') else {
-            continue;
-        };
-        if att.trim() != "0" {
-            attached = true;
-        }
-        let name = name.trim_end();
-        if !name.is_empty() {
-            names.push(name.to_string());
-        }
-    }
-    Some((attached, names))
-}
-
-/// Issue `tmux [-S <socket>] kill-session -t <session>` leniently; returns
-/// `true` when tmux reported success. A non-zero exit (the session vanished in a
-/// race) returns `false` so no audit event is recorded for a no-op.
-fn tmux_kill_session(tmux: &str, socket: Option<&str>, session: &str) -> bool {
-    let mut cmd = Command::new(tmux);
-    if let Some(s) = socket {
-        cmd.args(["-S", s]);
-    }
-    cmd.args(["kill-session", "-t", session]);
-    run_lenient(cmd, &format!("tmux kill-session -t {session}"))
 }
 
 /// Append a non-fatal `cleanup.session_killed` audit event when the managed
@@ -1108,8 +1055,9 @@ fn close_tmux_window(paths: &RunPaths, n: &Node, tmux: &str) {
         },
     };
 
+    let mux = Tmux::with_bin(tmux);
     // Always attempt the kill against the recorded target first.
-    if tmux_kill_window(tmux, socket, &target) {
+    if mux.kill_window(socket, &target) {
         return;
     }
 
@@ -1131,8 +1079,8 @@ fn close_tmux_window(paths: &RunPaths, n: &Node, tmux: &str) {
         .map(|id| id.session.as_str())
         .filter(|s| !s.is_empty());
     if let Some(worktree) = n.worktree_path.as_deref() {
-        if let Some(recovered) = find_window_by_path(tmux, socket, session, worktree) {
-            if recovered != target && tmux_kill_window(tmux, socket, &recovered) {
+        if let Some(recovered) = mux.find_window_by_path(socket, session, worktree) {
+            if recovered != target && mux.kill_window(socket, &recovered) {
                 info!(
                     target: "orchestratectl::supervise",
                     node = %n.node_id,
@@ -1152,67 +1100,6 @@ fn close_tmux_window(paths: &RunPaths, n: &Node, tmux: &str) {
     // already gone (a benign race with merge.sh's own cleanup) or genuinely
     // orphaned. Record it, non-fatally, so a recurrence is auditable.
     record_window_missing(paths, n, &target);
-}
-
-/// Issue `tmux [-S <socket>] kill-window -t <target>` leniently; returns `true`
-/// when tmux reported success (window found and killed). A non-zero exit
-/// (typically "can't find window") returns `false` so the caller can fall back.
-fn tmux_kill_window(tmux: &str, socket: Option<&str>, target: &str) -> bool {
-    let mut cmd = Command::new(tmux);
-    if let Some(s) = socket {
-        cmd.args(["-S", s]);
-    }
-    cmd.args(["kill-window", "-t", target]);
-    run_lenient(cmd, &format!("tmux kill-window -t {target}"))
-}
-
-/// Find the `window_id` of a tmux window whose active pane's cwd is **exactly**
-/// `worktree_path`, scoped to a single session when possible.
-///
-/// This is the rename-proof handle the orphan-recovery path keys off — a
-/// manually-resolved rebase mutates the branch/window name but not the pane's
-/// cwd. Two safety constraints (issue `find-window-by-path-cross-session-kill`):
-///
-/// 1. **Session-scoped.** When `session` is `Some`, query `tmux list-windows -t
-///    <session>`; otherwise fall back to `-a` (the supervisor lacks a session
-///    record — pre-qualified-identity nodes). Without this scope, an unrelated
-///    pane in a different session that happened to cd into the worktree would
-///    match and get killed.
-/// 2. **Exact-match cwd.** Match only `path == worktree_path`; never a
-///    sub-path. A sibling pane that cd'd one level deeper into the worktree
-///    (`worktree/src/foo`) would otherwise match and die.
-///
-/// `None` if tmux is unavailable, the server errors, or no pane matches.
-fn find_window_by_path(
-    tmux: &str,
-    socket: Option<&str>,
-    session: Option<&str>,
-    worktree_path: &str,
-) -> Option<String> {
-    let mut cmd = Command::new(tmux);
-    if let Some(s) = socket {
-        cmd.args(["-S", s]);
-    }
-    match session {
-        Some(name) => cmd.args(["list-windows", "-t", name]),
-        None => cmd.args(["list-windows", "-a"]),
-    };
-    cmd.args(["-F", "#{window_id}\t#{pane_current_path}"]);
-    cmd.stderr(Stdio::null());
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|line| {
-            let (wid, path) = line.split_once('\t')?;
-            if path.trim_end() != worktree_path {
-                return None;
-            }
-            let wid = wid.trim();
-            (!wid.is_empty()).then(|| wid.to_string())
-        })
 }
 
 /// Append a non-fatal `cleanup.window_missing` audit event when a node's tmux

@@ -23,6 +23,7 @@ mod harness;
 mod help;
 mod home;
 mod idempotency;
+mod multiplexer;
 mod node;
 mod output;
 // Behind-the-seam inverted control loop (design.md §2 + §0.2, breakdown T4). The

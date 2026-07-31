@@ -2379,13 +2379,11 @@ fn teardown_respawn_outcome(spawn: &RespawnOutcome, repo: Option<&str>, tmux: &s
             .status();
     }
     // Close the tmux window (best-effort; a nonexistent window / unavailable tmux
-    // is a clean no-op).
+    // is a clean no-op). 1:1 swap of the former raw `tmux kill-window` for the
+    // typed multiplexer call; the socket omission is preserved from prior
+    // behavior (this retry-teardown targeted the default server).
     if !spawn.tmux_window.is_empty() {
-        let _ = Command::new(tmux)
-            .args(["kill-window", "-t", &spawn.tmux_window])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        crate::multiplexer::tmux::Tmux::with_bin(tmux).kill_window(None, &spawn.tmux_window);
     }
     // Remove the worktree, then force-delete the branch, from the run's source repo
     // (`git worktree remove` / `branch -D` operate on the main repo's worktree

@@ -1,8 +1,8 @@
 ---
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-31
 type: task
-status: open
+status: in-progress
 priority: normal
 related: ['@workmux-extract-libs']
 ---
