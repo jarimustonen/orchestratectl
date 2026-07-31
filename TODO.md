@@ -6,36 +6,44 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-07-27 (after the T6 + resilience waves)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-07-31 (DAG-driven stint; 6 units landed)
 
-**One-paragraph state.** Four `/stint` waves this session took the **code-pipeline
-through the full T6 layer** (fix-loop + tiered-triage + circuit-breakers all LIVE)
-AND built an **agent-agnostic worker-resilience layer**. The pipeline now: recovers on
-floor/verify failure (`RE_CODE_CHUNK` + `TRIGGER_RE_SPEC`, bounded), routes decisions
-through a fast coordinator with only consequential ones hitting the Opus decider +
-adaptive `PROMOTE_TIER`, and is bounded by deterministic supervisor-owned
-circuit-breakers (cost/token tally, wall-time, process-count, storage,
-repeated-failure). On the reliability side the whole creation→run→merge→teardown path
-is hardened (readiness-pipe spawn confirmation, child-supervisor state machine +
-bounded retry, reducer adopts late explicit-merge, interactive watchdog false-positive
-fixed) and — the headline — **intermittent worker deaths now self-recover**: an
-empty-handed `agent-died` **auto-retries** (bounded), a death that committed clean work
-is **flagged recoverable**. All green, rebuilt locally, `doctor` 0 fail / 0 warn. v0.1.0
-publish still **deferred**.
+**One-paragraph state.** This `/stint` session made the **execution DAG a first-class,
+self-maintaining artifact** and then drained three waves through it — **6 units landed on
+`main`, all green, integrated-gate verified, `doctor` 0/0**: `capture-agent-pane-by-pane-id`
+(agent.log now captured by stable `pane_id`), **`stint-maintains-execution-dag`** (the DAG
+convention itself — `/stint` now maintains an issue-derived DAG in this file: DAG owns the
+plan, issuectl owns status, stateful-merge self-heal across phases; design in
+`issues/stint-maintains-execution-dag/design.md`), `interactive-code-run-self-merged`
+(interactive `code` runs gated behind `--confirm-interactive`, can no longer self-merge past
+the human review gate), `floor-capture-trust-model` + `floor-capture-hardening-round-2`
+(floor evidence capture is now structured-JSON, injection-resistant, fail-closed,
+target-qualified, OID-provenance-bound + repo-config-neutralized), and
+`agent-skips-run-merge-idle-pending` (supervisor safety-net: an autonomous run that committed
+but skipped `run merge` and went idle now terminalizes to recoverable-failed within a bounded
+time; interactive exempt). v0.1.0 publish still **deferred**.
 
-**KEY LEARNING — worker deaths are TRANSIENT, not deterministic.** The
-`pipeline-tiered-triage` agent died `agent-died` at ~13 min twice, then a third
-identical spawn ran ~54 min and landed. Autonomous `agent-died` = a GENUINE claude-pid
-exit (not a watchdog false-positive; autonomous is correctly pid-authoritative). The
-answer was resilience (auto-retry + salvage), NOT switching base agents — a Codex ADR
-was considered and **shelved** (revisit only if deaths become frequent). Heavy-LLM
-worker units legitimately take **54–96 min**; don't mistake a long run for a hang.
+**KEY LEARNING (reaffirmed live this session) — worker deaths are TRANSIENT.** The
+`agent-skips-run-merge-idle-pending` worker died `agent-died` after committing a 523-line
+first cut; the recoverability signal preserved the branch, and a **retry that harvested the
+first cut** reviewed + completed + landed it. Retry (with harvest), NOT hand-merge of
+unreviewed work, NOT base-agent swap. Heavy-LLM units legitimately take **54–96 min**; don't
+mistake a long run for a hang. (Earlier precedent: `pipeline-tiered-triage` died twice at
+~13 min, third spawn ran ~54 min and landed.)
 
-**NEXT — execute the DAG below.** The three earlier options (a diagnostic-gap fix,
-b pipeline tail, c reliability remainders) are resolved into the dependency DAG in
-the next section. Start at the heads; the `GLOBAL HEAD-OF-LINE` is
-**`capture-agent-pane-by-pane-id`** (Lane A). Pick the next unit by recomputing the
-head-of-line from live `issuectl` status — the DAG stores the plan, not status.
+**NEXT — execute the DAG below.** `GLOBAL HEAD-OF-LINE` is **`floor-capture-hardening-round-3`**
+(Lane B, high — Lane A's remaining heads are investigative/normal). Recompute the actual
+head at pick time from live `issuectl` status (`open`/`in-progress`, deps `fixed`/`done`) —
+the DAG stores the plan + lane/collision ordering, NOT status. Merge the DAG at Phase 0/7
+(drop landed, add active, keep order) per the convention in
+`crates/octl-cli/skills/stint/SKILL.template.md`.
+
+**⚠ One cleanup carried over:** the dead worktree/branch
+`wt/01kym6a7bz-idle-pending-safetynet` (commit `b076815`) is preserved-by-policy but now
+SUPERSEDED (its work was harvested + landed via the retry). Safe to remove —
+`git worktree remove --force /Users/jari/Sources/orchestratectl__worktrees/wt-01kym6a7bz-idle-pending-safetynet`
+then `git branch -D wt/01kym6a7bz-idle-pending-safetynet`. Left for human oversight.
+`main` is ~65 commits ahead of `origin` (human pushes).
 
 ---
 
@@ -126,7 +134,7 @@ harvested the recoverable first cut and landed it). New Lane A follow-ups filed 
 landed via the retry). Safe to remove: `git worktree remove --force <path>` +
 `git branch -D wt/01kym6a7bz-idle-pending-safetynet`. Left for human oversight.
 
-### What landed this session (all on `main`, green, deployed — `doctor` 0/0)
+### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
   one deferred trigger), `pipeline-circuit-breakers` ✅ (+ pi 0.82 `--mode json` cost-column
   fix folded in).
