@@ -3,8 +3,9 @@ created: 2026-07-25
 updated: 2026-07-31
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-07-31
 ---
 
 # idempotency-key did not prevent duplicate run create
