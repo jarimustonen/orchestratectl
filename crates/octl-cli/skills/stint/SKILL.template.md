@@ -224,6 +224,32 @@ git** before counting it toward the deploy pile:
   git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
+- **Recoverable worker death → retry-with-harvest, never hand-merge.** A worker can die
+  (`run wait` / `run show` report an `agent-died` **failed** run) after it committed clean,
+  mergeable work but before it called `run merge`. The supervisor preserves that branch and
+  stamps a `recoverable_work` block onto the failed report, which `run wait` surfaces per
+  run (`recoverable=<n> unmerged commit(s) merge cleanly on <branch>` when
+  `recoverable: true`, `merges_cleanly: true`, `unmerged_commits > 0`). When you see that:
+  - **Do NOT hand-merge the preserved branch from this session.** Those commits are
+    *unreviewed* — no green gate, no `/llm-review` — and merging them yourself both breaks
+    "never commit a worker's work for it" and lands unvetted code. Cherry-picking or
+    `git merge`-ing it here is the wrong move.
+  - **Re-spawn a fresh worktree pointed at the preserved branch** — a `/worktree-spinoff
+    --headless` for the *same issue* whose brief names the preserved branch and instructs
+    it to: review the stranded commits, **adopt** them (cherry-pick / re-apply onto a fresh
+    branch off current main), complete the green gate, run `/llm-review` (+
+    `/assess-findings`) for production code, and merge. This is **retry-with-harvest**: a
+    fresh reviewing agent finishes the dead worker's work — **not** a hand-merge, and
+    **not** a base-agent swap (the model/harness is fine; the process just died).
+  - **Deaths are transient — the retry usually lands.** Don't infer a systemic problem from
+    one `agent-died`; re-spawn and let it run. And a **long** run is not a hang:
+    heavy-LLM units (design-first, multi-round review) legitimately run **54–96 min**, so
+    keep waiting on `run wait` rather than assuming a second death.
+  - **After the harvest lands, the superseded preserved branch/worktree is an orphan.**
+    Once the retry has git-verified-merged the same work, the original dead worker's branch
+    and worktree are safe to remove — but that removal is a **deliberate, human-overseen
+    cleanup**, not an automatic conductor action (the intended `run salvage` command will
+    fold this in; until it ships, retry-with-harvest is the manual stand-in).
 - **Never write status into the DAG** — not even a spawn breadcrumb (that would leave
   `TODO.md` dirty across the phase and pollute the drift check). The worktree owns the
   issue lifecycle (`triaged` → `in-progress` → `fixed`); if the DAG also wrote status it
