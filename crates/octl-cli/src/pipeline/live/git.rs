@@ -190,6 +190,79 @@ pub fn restore_to(worktree: &Path, rev: &str) -> Result<(), PipelineError> {
     Ok(())
 }
 
+/// The unified diff of `base..tip` in `worktree` (`git diff base tip`). Used to
+/// carry a failed re-code attempt's diff into the next re-brief so the model does
+/// not lose the failing work when its worktree is torn down (re-code amnesia fix).
+/// The output is capped at [`DIFF_CAP_BYTES`]; an over-cap diff is truncated with a
+/// trailing marker so a pathological diff cannot bloat the re-brief prompt.
+pub fn diff(worktree: &Path, base: &str, tip: &str) -> Result<String, PipelineError> {
+    let out = git(worktree, &["diff", base, tip])?;
+    if out.len() > DIFF_CAP_BYTES {
+        // Truncate on a char boundary so the (UTF-8) string stays valid.
+        let mut end = DIFF_CAP_BYTES;
+        while end > 0 && !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(format!(
+            "{}\n… [diff truncated at {DIFF_CAP_BYTES} bytes]",
+            &out[..end]
+        ))
+    } else {
+        Ok(out)
+    }
+}
+
+/// Cap on the failing-diff snippet folded into a re-brief (item 3). Big enough to
+/// carry a real chunk's diff, small enough that an adversarial/huge diff cannot
+/// blow up the re-code prompt.
+const DIFF_CAP_BYTES: usize = 16 * 1024;
+
+/// Replay the commits in `base..tip` onto the branch checked out in `worktree`
+/// with `git cherry-pick` (a 3-way apply, so an independent chunk lands cleanly on
+/// a rebuilt integration branch). Used by the provenance-aware rollback (item 1):
+/// after resetting `feat/<slug>` to the fork, each kept-done chunk's own commits
+/// are cherry-picked back in original order. On a conflict the cherry-pick is
+/// aborted so the worktree is left clean, and [`MergeOutcome::Conflict`] is
+/// returned rather than an error — the caller decides how to surface it.
+pub fn cherry_pick(worktree: &Path, base: &str, tip: &str) -> Result<MergeOutcome, PipelineError> {
+    let out = git_at(worktree)
+        .args(["cherry-pick", &format!("{base}..{tip}")])
+        .output()
+        .map_err(|e| {
+            PipelineError::Git(format!(
+                "could not run git cherry-pick in {}: {e}",
+                worktree.display()
+            ))
+        })?;
+    if out.status.success() {
+        return Ok(MergeOutcome::Merged {
+            commit: head(worktree)?,
+        });
+    }
+    let details = format!(
+        "{} {}",
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    )
+    .trim()
+    .to_string();
+    // A cherry-pick that stopped mid-sequence leaves CHERRY_PICK_HEAD; abort it so
+    // the worktree is not left in a conflicted state (best-effort cleanup).
+    let in_pick = git_at(worktree)
+        .args(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if in_pick {
+        let _ = git(worktree, &["cherry-pick", "--abort"]);
+        Ok(MergeOutcome::Conflict { details })
+    } else {
+        Err(PipelineError::Git(format!(
+            "git cherry-pick failed in {} (not a content conflict): {details}",
+            worktree.display()
+        )))
+    }
+}
+
 /// The outcome of a merge attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeOutcome {

@@ -1104,6 +1104,286 @@ fn acceptance_check_failure_recodes_with_the_check_as_a_finding() {
     assert!(main_has(&repo, "marker.txt"));
 }
 
+#[test]
+fn recode_rebrief_carries_the_prior_failing_diff() {
+    // Item 3 (re-code amnesia): the failed attempt's worktree is torn down before
+    // the retry, but its committed diff is serialized into the re-brief so the model
+    // does not lose the failing work it just produced.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+
+    // Records the brief handed to each attempt; the first attempt strays (floor
+    // block), the re-code stays in scope and merges.
+    struct BriefRecorder {
+        briefs: std::sync::Mutex<Vec<String>>,
+    }
+    impl CodeHarness for BriefRecorder {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            self.briefs.lock().unwrap().push(req.brief.clone());
+            let wt = &req.worktree_path;
+            std::fs::write(wt.join("feature.txt"), "FAILING_CONTENT_MARKER\n").unwrap();
+            let mut changed = vec![PathBuf::from("feature.txt")];
+            if req.attempt_id == "a1" {
+                std::fs::write(wt.join("stray.txt"), "leak\n").unwrap();
+                changed.push(PathBuf::from("stray.txt"));
+            }
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "edit"]);
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                changed,
+            ))
+        }
+    }
+
+    let harness = BriefRecorder {
+        briefs: std::sync::Mutex::new(Vec::new()),
+    };
+    let report =
+        run_pipeline(&cfg, &spec, &harness, &ScriptedVerify::passing()).expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    let briefs = harness.briefs.into_inner().unwrap();
+    assert_eq!(briefs.len(), 2, "one initial attempt + one re-code");
+    // The initial brief is the bare chunk brief — no prior-attempt section.
+    assert!(
+        !briefs[0].contains("previous attempt's diff"),
+        "{}",
+        briefs[0]
+    );
+    // The re-code brief carries the failing attempt's diff as fenced DATA.
+    assert!(
+        briefs[1].contains("previous attempt's diff"),
+        "re-brief missing the diff section: {}",
+        briefs[1]
+    );
+    assert!(briefs[1].contains("```diff"), "{}", briefs[1]);
+    // The exact content the failed attempt committed is present in the carried diff.
+    assert!(
+        briefs[1].contains("FAILING_CONTENT_MARKER"),
+        "re-brief lost the failing diff content: {}",
+        briefs[1]
+    );
+    // And the out-of-scope stray that caused the block is visible in the diff too.
+    assert!(briefs[1].contains("stray.txt"), "{}", briefs[1]);
+}
+
+/// A harness whose per-call floor outcome is scripted: on the `fail_on` (0-based)
+/// calls it also writes an out-of-scope `stray.txt` (floor block); otherwise it
+/// stays in scope. Every call writes a UNIQUE `feature.txt` content so a re-code
+/// forking off an already-populated tip still produces a non-empty diff.
+struct ScriptedFloor {
+    calls: AtomicU32,
+    fail_on: Vec<u32>,
+}
+impl CodeHarness for ScriptedFloor {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let wt = &req.worktree_path;
+        std::fs::write(wt.join("feature.txt"), format!("version {n}\n")).unwrap();
+        let mut changed = vec![PathBuf::from("feature.txt")];
+        if self.fail_on.contains(&n) {
+            std::fs::write(wt.join("stray.txt"), format!("leak {n}\n")).unwrap();
+            changed.push(PathBuf::from("stray.txt"));
+        }
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            changed,
+        ))
+    }
+}
+
+#[test]
+fn cumulative_recode_budget_caps_across_verify_iterations() {
+    // Item 2: `max_recode_per_chunk` must bound a chunk's TOTAL floor re-codes
+    // across code-stage visits within one plan revision, not reset each visit.
+    // Visit 1 spends the chunk's single floor re-code (call 0 strays → re-code →
+    // call 1 clean → merge). Verify then fails once (FIX), reverting the chunk for a
+    // second code-stage visit whose first attempt (call 2) strays again. With a
+    // per-visit reset the chunk would get a fresh re-code and eventually merge; with
+    // the cumulative budget the floor re-code is DENIED and the run trips the
+    // breaker — the nominal bound of 1 is respected across the two visits.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    // Verify fails once (FIX) to force a second code-stage visit, then would pass.
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "not yet".to_string(),
+            findings: vec!["needs work".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c1".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+    let harness = ScriptedFloor {
+        calls: AtomicU32::new(0),
+        fail_on: vec![0, 2], // stray on visit-1 attempt-1 and visit-2 attempt-1
+    };
+
+    let report = run_pipeline(&cfg, &spec, &harness, &verify).expect("pipeline runs");
+
+    assert_eq!(
+        report.status, "circuit_breaker",
+        "cumulative re-code budget must deny the second visit's floor re-code: {report:#?}"
+    );
+    assert!(!report.merged);
+    // Exactly the visit-1 floor re-code plus the one verify-FIX re-brief happened;
+    // the visit-2 floor re-code was denied by the cumulative budget (no 3rd re-code).
+    assert_eq!(
+        report.recode_count, 2,
+        "the cumulative budget capped the floor re-codes across visits"
+    );
+}
+
+#[test]
+fn respec_that_removes_a_chunk_rolls_its_code_off_feat() {
+    // Item 1 (provenance-aware rollback): a re-spec that DROPS a chunk rebuilds the
+    // integration branch from the fork replaying only the kept chunks, so the
+    // removed chunk's code is gone from feat instead of stranded there. Without the
+    // rollback the removed b.txt would linger and even trip the feature floor as an
+    // out-of-scope file; with it, only the kept a.txt reaches source.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 1,
+        max_promotions: 0,
+    };
+    // v1 has c1 (a.txt) + c2 (b.txt); v2 drops c2, keeping only c1.
+    let v1 = json!({
+        "acceptance": [{"kind": "check", "desc": "a", "run": "test -f a.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make a",
+             "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "make b", "deps": ["c1"],
+             "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let v2 = json!({
+        "acceptance": [{"kind": "check", "desc": "a", "run": "test -f a.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make a",
+             "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+        ],
+    });
+    let spec = ScriptedSpec::sequence(vec![v1, v2]);
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "c2 is wrong; drop it".to_string(),
+            findings: vec!["remove b".to_string()],
+            disposition: providers::VerifyDisposition::SpecFlaw {
+                reason: "c2 is wrong; drop it".to_string(),
+                chunk_ids: vec!["c2".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "now matches".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    struct PerChunk;
+    impl CodeHarness for PerChunk {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _cancel: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            let file = if req.chunk_id == "c1" {
+                "a.txt"
+            } else {
+                "b.txt"
+            };
+            std::fs::write(req.worktree_path.join(file), "x\n").unwrap();
+            git(&req.worktree_path, &["add", "-A"]);
+            git(&req.worktree_path, &["commit", "-qm", "edit"]);
+            let head = git_out(&req.worktree_path, &["rev-parse", "HEAD"]);
+            Ok(ChunkResult::committed(head, vec![PathBuf::from(file)]))
+        }
+    }
+
+    let report = run_pipeline(&cfg, &spec, &PerChunk, &verify).expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert_eq!(report.plan_rev, 2, "plan advanced to v2");
+    assert_eq!(report.respec_count, 1, "one re-spec happened");
+    // The kept chunk's code is on main; the removed chunk's code was rolled back.
+    assert!(
+        main_has(&repo, "a.txt"),
+        "kept chunk c1's file must reach main"
+    );
+    assert!(
+        !main_has(&repo, "b.txt"),
+        "removed chunk c2's code must be rolled off feat, not stranded on it"
+    );
+}
+
 /// Whether `path` exists on `main` (a committed blob).
 fn main_has(repo: &TempDir, path: &str) -> bool {
     Command::new("git")

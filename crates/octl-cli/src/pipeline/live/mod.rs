@@ -675,6 +675,20 @@ struct Run<'a> {
     /// How many times each chunk has already been promoted (design §3), bounded by
     /// [`FixLoopConfig::max_promotions`].
     chunk_promotions: BTreeMap<String, u32>,
+    /// Per-chunk merge provenance for the currently-merged chunks (item 1):
+    /// enough to replay each kept-done chunk's own commits onto a rebuilt
+    /// integration branch. Recorded when a chunk merges, dropped when it is
+    /// reverted / removed, and updated in place by a provenance rebuild.
+    chunk_provenance: BTreeMap<String, ChunkProvenance>,
+    /// Monotonic merge-order counter stamped onto each [`ChunkProvenance`] so a
+    /// rollback replays kept chunks in their original stacking order.
+    merge_seq: u64,
+    /// Cumulative `RE_CODE_CHUNK` floor re-codes per `(plan_rev, chunk_id)` (item
+    /// 2). Unlike the per-code-stage-visit counter (which resets every time the
+    /// chunk re-enters the code stage from a verify iteration / re-spec), this
+    /// bounds the TOTAL floor re-codes a chunk may spend within one plan revision,
+    /// so the nominal `max_recode_per_chunk` cannot be exceeded across visits.
+    chunk_recode_total: BTreeMap<(u32, String), u32>,
     /// Chunk (worktree, branch) pairs preserved because they were not merged.
     preserved: Vec<(PathBuf, String)>,
     /// Total `RE_CODE_CHUNK` re-briefs (design §8), for the report + breaker audit.
@@ -693,6 +707,24 @@ struct Run<'a> {
     /// breaker check is a pure function of a measured [`Duration`].
     started: Instant,
     merged_to_source: bool,
+}
+
+/// Enough provenance about a merged chunk to replay its content onto a rebuilt
+/// integration branch (item 1: provenance-aware rollback). A chunk's own commits
+/// live in the range `base..commit`; cherry-picking that range replays exactly the
+/// chunk's change (not its ancestry), so a rollback that resets `feat/<slug>` to
+/// the fork and replays only the kept-done chunks drops the reverted/removed
+/// chunks' code instead of leaving it stranded on the branch.
+#[derive(Debug, Clone)]
+struct ChunkProvenance {
+    /// The integration tip the chunk forked from (exclusive lower bound of the
+    /// replay range).
+    base: String,
+    /// The chunk's own floor-gated tip commit (inclusive upper bound).
+    commit: String,
+    /// Original merge order, so a rollback replays kept chunks in the order they
+    /// were first stacked onto the integration branch.
+    order: u64,
 }
 
 /// A chunk's lifecycle in the live fix loop (a coarse projection of design §7's
@@ -822,6 +854,9 @@ pub fn run_pipeline_tiered(
         chunk_status: BTreeMap::new(),
         chunk_tier: BTreeMap::new(),
         chunk_promotions: BTreeMap::new(),
+        chunk_provenance: BTreeMap::new(),
+        merge_seq: 0,
+        chunk_recode_total: BTreeMap::new(),
         preserved: Vec::new(),
         recode_count: 0,
         promote_count: 0,
@@ -975,12 +1010,6 @@ pub fn run_pipeline_tiered(
 
         match disposition {
             VerifyDisposition::Fix | VerifyDisposition::FixChunks { .. } => {
-                // v1 limitation (design §7 "RE_CODE re-commits on feat"): a
-                // re-coded chunk forks off the current feat tip and commits a NEW
-                // fix ON TOP of its prior merged work — the old commit is not
-                // reverted first. The re-brief carries the findings, so an additive
-                // fix converges; a fix that must *replace* prior output is not
-                // fully modelled yet (a per-chunk revert is a follow-up).
                 let targets = resolve_fix_targets(&disposition, &plan, &run);
                 if targets.is_empty() {
                     // No chunk to re-code (e.g. nothing merged yet) — cannot make
@@ -990,6 +1019,21 @@ pub fn run_pipeline_tiered(
                         status: "verify_failed",
                     };
                 }
+                // Provenance-aware rollback (item 1): rebuild the integration branch
+                // keeping every merged chunk EXCEPT the re-code targets, so each
+                // target's prior merged commit is dropped rather than committed over.
+                // The re-run then produces a clean replacement instead of stacking a
+                // fix on top of superseded work (design §7).
+                let target_set: BTreeSet<String> = targets.iter().cloned().collect();
+                let keep: BTreeSet<String> = run
+                    .chunk_status
+                    .iter()
+                    .filter(|(id, s)| {
+                        **s == LiveChunkStatus::Merged && !target_set.contains(id.as_str())
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                rebuild_integration(&mut run, &keep)?;
                 for id in &targets {
                     record_recode_decision(
                         &mut run,
@@ -1452,6 +1496,12 @@ fn trigger_re_spec(
     // re-coded (reverted) — the re-run upserts a fresh report for the latter.
     run.chunk_reports.retain(|r| keep.contains(r.id.as_str()));
 
+    // Provenance-aware rollback (item 1): rebuild the integration branch from the
+    // fork replaying ONLY the kept-done chunks, so a reverted chunk's stale code and
+    // a removed chunk's code are both dropped instead of stranded on `feat/<slug>`.
+    let kept_ids: BTreeSet<String> = diff.kept_done.iter().cloned().collect();
+    rebuild_integration(run, &kept_ids)?;
+
     write_plan(run, &new_plan)?;
     run.decisions.push(envelope(
         "spec",
@@ -1725,6 +1775,73 @@ fn refresh_storage(run: &mut Run) {
     }
 }
 
+/// Provenance-aware rollback (item 1, design §7): rebuild the integration branch
+/// from the fork, replaying ONLY the kept-done chunks' commits. Every merged chunk
+/// NOT in `keep` (a re-code target, a re-spec-reverted chunk, or a re-spec-removed
+/// chunk) has its content dropped, so a re-code no longer stacks on top of stale
+/// work and a removed chunk's code no longer lingers on `feat/<slug>`.
+///
+/// Mechanics: hard-reset the integration worktree to the immutable fork commit,
+/// then cherry-pick each kept chunk's own commit range (`base..commit`) back in
+/// original merge order. Cherry-picking the RANGE replays exactly that chunk's
+/// change (not its ancestry), so omitting a chunk drops precisely its content. The
+/// kept chunks' provenance and their merged-chunk reports are updated to the
+/// replayed oids; a replayed chunk is a linear commit, so its `commit` and
+/// `merge_commit` coincide (no separate no-ff merge commit on a rebuild).
+///
+/// A cherry-pick conflict (a kept chunk that no longer applies onto the rebuilt
+/// tip) is a hard [`PipelineError::Git`]: the loop cannot safely proceed on a
+/// half-rebuilt branch, so the run aborts with the integration branch preserved.
+fn rebuild_integration(run: &mut Run, keep: &BTreeSet<String>) -> Result<(), PipelineError> {
+    // The kept chunks' provenance, in the order they were originally stacked.
+    let mut kept: Vec<(String, ChunkProvenance)> = run
+        .chunk_provenance
+        .iter()
+        .filter(|(id, _)| keep.contains(id.as_str()))
+        .map(|(id, p)| (id.clone(), p.clone()))
+        .collect();
+    kept.sort_by_key(|(_, p)| p.order);
+
+    // Reset to the fork, discarding every merged chunk's commits (kept ones are
+    // replayed below). `restore_to` hard-resets AND cleans untracked files.
+    git::restore_to(&run.integration_wt, &run.fork_commit)?;
+
+    let mut new_prov: BTreeMap<String, ChunkProvenance> = BTreeMap::new();
+    for (id, prov) in kept {
+        // The tip this chunk replays onto (its new provenance base).
+        let base = git::head(&run.integration_wt)?;
+        match git::cherry_pick(&run.integration_wt, &prov.base, &prov.commit)? {
+            MergeOutcome::Merged { commit } => {
+                // Update the kept chunk's report to the replayed oids so the final
+                // report's provenance points at commits that are actually on the
+                // rebuilt branch (a linear replay → commit == merge_commit).
+                for r in &mut run.chunk_reports {
+                    if r.id == id {
+                        r.commit = Some(commit.clone());
+                        r.merge_commit = Some(commit.clone());
+                    }
+                }
+                new_prov.insert(
+                    id,
+                    ChunkProvenance {
+                        base,
+                        commit,
+                        order: prov.order,
+                    },
+                );
+            }
+            MergeOutcome::Conflict { details } => {
+                return Err(PipelineError::Git(format!(
+                    "provenance rollback could not cleanly replay kept chunk {id}: {details}"
+                )));
+            }
+        }
+    }
+    // Only the replayed (kept) chunks retain provenance; dropped chunks are gone.
+    run.chunk_provenance = new_prov;
+    Ok(())
+}
+
 fn run_code_stage(
     run: &mut Run,
     plan: &Plan,
@@ -1746,6 +1863,9 @@ fn run_code_stage(
         // at all), so the model never "forgets" the original fix on attempt 2.
         let verify_seed: Vec<String> = pending_findings.get(&chunk.id).cloned().unwrap_or_default();
         let mut findings: Vec<String> = verify_seed.clone();
+        // The prior failed attempt's diff, carried into the next re-brief so a
+        // torn-down retry does not lose the failing work (item 3: re-code amnesia).
+        let mut prior_diff: Option<String> = None;
         // Two counters (see design §3 + §8): `recode` is the per-tier re-code
         // attempt (1-based) the re-code budget bounds — it RESETS to 1 on a
         // promotion so each tier gets its own fresh budget. `seq` is a monotonic
@@ -1765,9 +1885,11 @@ fn run_code_stage(
                 baseline,
                 seq,
                 &findings,
+                prior_diff.as_deref(),
             )? {
                 ChunkAttempt::Merged {
                     verdict,
+                    base,
                     commit,
                     merge_commit,
                 } => {
@@ -1779,6 +1901,17 @@ fn run_code_stage(
                         "supervisor",
                         "v1",
                     ));
+                    // Record merge provenance BEFORE moving `commit`/`base` into the
+                    // report, so a later rollback can replay this chunk (item 1).
+                    run.merge_seq += 1;
+                    run.chunk_provenance.insert(
+                        chunk.id.clone(),
+                        ChunkProvenance {
+                            base,
+                            commit: commit.clone(),
+                            order: run.merge_seq,
+                        },
+                    );
                     upsert_chunk_report(
                         run,
                         ChunkReport {
@@ -1813,6 +1946,7 @@ fn run_code_stage(
                 }
                 ChunkAttempt::Blocked {
                     outcome,
+                    diff: attempt_diff,
                     status,
                     reason,
                     findings: attempt_findings,
@@ -1874,10 +2008,25 @@ fn run_code_stage(
                         return Ok(());
                     }
 
-                    // Re-code while the chunk is re-codable and its per-tier budget
-                    // holds (design §8). `recode` is 1-based, so re-code N is allowed
-                    // iff N ≤ max_recode_per_chunk.
-                    if recodable && recode <= run.cfg.fix_loop.max_recode_per_chunk {
+                    // Re-code while the chunk is re-codable and BOTH budgets hold
+                    // (design §8): the per-tier `recode` counter (1-based; re-code N
+                    // is allowed iff N ≤ max_recode_per_chunk), AND the cumulative
+                    // per-`(plan_rev, chunk)` budget (item 2). The cumulative counter
+                    // does NOT reset when the chunk re-enters the code stage from a
+                    // later verify iteration / re-spec, so a chunk cannot be floor
+                    // re-coded past the nominal bound across visits within one plan
+                    // revision. (A re-spec bumps `plan_rev` → a genuinely new budget;
+                    // a promotion is bounded separately by `max_promotions`.)
+                    let recode_key = (plan.plan_rev, chunk.id.clone());
+                    let recode_total = run
+                        .chunk_recode_total
+                        .get(&recode_key)
+                        .copied()
+                        .unwrap_or(0);
+                    if recodable
+                        && recode <= run.cfg.fix_loop.max_recode_per_chunk
+                        && recode_total < run.cfg.fix_loop.max_recode_per_chunk
+                    {
                         record_recode_decision(
                             run,
                             plan,
@@ -1885,12 +2034,15 @@ fn run_code_stage(
                             &attempt_findings,
                             "floor re-code",
                         );
+                        *run.chunk_recode_total.entry(recode_key).or_insert(0) += 1;
                         // The floor-failed attempt is superseded — drop its
                         // worktree + branch to make room for the re-brief (it is
                         // not mergeable work; the final failed attempt, if the
-                        // budget runs out, IS preserved below).
+                        // budget runs out, IS preserved below). Carry its diff into
+                        // the next re-brief before the worktree is gone (item 3).
                         let _ = git::worktree_remove(&run.repo, &wt);
                         let _ = git::delete_branch(&run.repo, &branch, true);
+                        prior_diff = attempt_diff;
                         // Persist the verify seed, append this attempt's floor
                         // findings (see `verify_seed` above).
                         findings = verify_seed
@@ -1919,6 +2071,7 @@ fn run_code_stage(
                         // worktree/branch never collide with the just-dropped attempt.
                         let _ = git::worktree_remove(&run.repo, &wt);
                         let _ = git::delete_branch(&run.repo, &branch, true);
+                        prior_diff = attempt_diff;
                         findings = verify_seed
                             .iter()
                             .cloned()
@@ -1980,6 +2133,8 @@ enum ChunkAttempt {
     Merged {
         /// The floor verdict at the gated commit.
         verdict: FloorVerdict,
+        /// The integration tip the chunk forked from (its provenance replay base).
+        base: String,
         /// The chunk's own resulting commit oid.
         commit: String,
         /// The integration-branch merge commit.
@@ -1990,6 +2145,11 @@ enum ChunkAttempt {
     Blocked {
         /// Report `outcome` label (`committed`/`no_change`/`failed`/…).
         outcome: &'static str,
+        /// The failed attempt's committed diff (`base..head`), when it committed —
+        /// carried into the next re-brief so a torn-down retry keeps the failing
+        /// work (item 3: re-code amnesia). `None` when the attempt never committed
+        /// (a harness no-change / failure / timeout).
+        diff: Option<String>,
         /// Terminal status if this is the final attempt and re-code is off.
         status: &'static str,
         /// Human-readable block reason.
@@ -2028,6 +2188,7 @@ fn attempt_chunk(
     baseline: &BaselineSnapshot,
     seq: u32,
     findings: &[String],
+    prior_diff: Option<&str>,
 ) -> Result<ChunkAttempt, PipelineError> {
     let base_commit = git::head(&run.integration_wt)?;
     // The first attempt (seq 1) keeps the bare chunk name; every later attempt —
@@ -2057,7 +2218,7 @@ fn attempt_chunk(
         worktree_path: chunk_wt.clone(),
         base_commit: base_commit.clone(),
         plan_rev: plan.plan_rev.to_string(),
-        brief: fixloop::rebrief(&chunk.brief, findings),
+        brief: fixloop::rebrief(&chunk.brief, findings, prior_diff),
         checks,
         files: chunk.files_touched.iter().map(PathBuf::from).collect(),
         timeout: run.cfg.chunk_timeout,
@@ -2079,6 +2240,8 @@ fn attempt_chunk(
     // its reason is the sole re-brief finding.
     let harness_block = |outcome: &'static str, reason: String| ChunkAttempt::Blocked {
         outcome,
+        // A harness that never produced a commit has no diff to carry forward.
+        diff: None,
         status: "chunk_failed",
         findings: vec![reason.clone()],
         reason,
@@ -2148,8 +2311,14 @@ fn attempt_chunk(
     let verdict = gate_chunk(run, chunk, &chunk_wt, &base_commit, &changed, baseline)?;
     if !verdict.passed() {
         // Floor blocked → re-codable, with the floor violations as findings.
+        // Capture the failing diff now, BEFORE the worktree is torn down for the
+        // retry, so the re-brief carries the code this attempt actually produced
+        // (item 3: re-code amnesia). Best-effort — a diff failure must not mask the
+        // floor block, so it degrades to no carried diff.
+        let diff = git::diff(&chunk_wt, &base_commit, &head).ok();
         return Ok(ChunkAttempt::Blocked {
             outcome: "committed",
+            diff,
             status: "chunk_floor_blocked",
             reason: "floor gate failed".to_string(),
             findings: fixloop::floor_findings(&verdict),
@@ -2181,12 +2350,15 @@ fn attempt_chunk(
             let _ = git::delete_branch(&run.repo, &chunk_branch, true);
             Ok(ChunkAttempt::Merged {
                 verdict,
+                base: base_commit,
                 commit: head,
                 merge_commit,
             })
         }
         MergeOutcome::Conflict { details } => Ok(ChunkAttempt::Blocked {
             outcome: "committed",
+            // A merge conflict is not re-codable, so its diff is never re-briefed.
+            diff: None,
             status: "chunk_merge_conflict",
             reason: format!("chunk merge conflict: {details}"),
             findings: vec![format!("chunk merge conflict: {details}")],
