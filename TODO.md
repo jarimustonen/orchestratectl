@@ -45,7 +45,7 @@ main's more comprehensive coverage). No worktrees remain. `main` was pushed to `
 
 ---
 
-## Execution DAG (2026-07-27)
+## Execution DAG (2026-08-01)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -59,7 +59,7 @@ Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: floor-capture-hardening-round-3 (Lane B, high — Lane A's remaining are investigative/normal)   ← start here on resume
+GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, only remaining high — but investigative/no-repro; practical actionable heads are Lane B/C/D/E below)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
@@ -80,8 +80,8 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ floor-capture-hardening-round-3          (high; floor/, follow-up of round-2 — structured cargo…; disjoint from A)
-    pipeline-fix-loop-provenance
+  ▶ pipeline-fix-loop-provenance
+    plan-schema-v3-provenance-required       (floor round-3 item-5 follow-up: make baseline provenance structurally required in plan schema)
     pipeline-parallel-chunks                 (DAG scheduler)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
@@ -90,15 +90,14 @@ LANE B — pipeline/* + floor/* + harness/*
     pipeline-tiered-triage                   (in-progress; deferred self-disagreement trigger)
 
 LANE C — workmux vendoring (fully independent)
-  ▶ vendor-workmux-multiplexer
-    workmux-extract-libs   after vendor-workmux-multiplexer (needs vendored tree)
+  ▶ workmux-extract-libs   (now unblocked — vendored tree landed via vendor-workmux-multiplexer)
 
 LANE D — workflow/skill (skill prose, not product code)
-  ▶ triage-bugs-stint-inprogress-ownership-conflict   (stint/triage-bugs lifecycle-ownership fix)
-    stint-recoverable-death-retry-harvest             (encode retry-with-harvest conductor tactic into /stint skill)
+  ▶ stint-recoverable-death-retry-harvest             (encode retry-with-harvest conductor tactic into /stint skill)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ idempotency-key-allowed-duplicate-run
+  ▶ concurrent-self-merge-race             collision: run/merge.rs  (concurrency bug — parallel self-merges race on target cleanliness)
+    merge-terminal-misleading              collision: run/merge.rs  (run merge on terminal run → misleading merge_spawn_failed; share merge.rs w/ above → sequence)
     landing-signal-reliable-after-rebase
     run-cancel-accept-unambiguous-prefix
     run-wait-timeout-unit-required
