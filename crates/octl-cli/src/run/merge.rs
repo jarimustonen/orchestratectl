@@ -71,6 +71,15 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 /// Cap on `--report-file` size, mirroring `node report`'s 1 MiB bound.
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 
+/// The exit status `merge.sh` reserves for "could not acquire the merge lock in
+/// time" — another self-merge into the SAME target branch held the serializing
+/// lock past the timeout (issue `concurrent-self-merge-race`). It is the sole
+/// producer of this status in the script (`flock`'s own timeout returns 1, and
+/// the `workmux` invocation normalizes its exit), so mapping it to a distinct,
+/// retryable `merge_in_progress` code is unambiguous. Value is `EX_TEMPFAIL`
+/// (75) from sysexits(3): "temporary failure, the user is invited to retry".
+const MERGE_SH_LOCK_TIMEOUT_EXIT: i32 = 75;
+
 pub struct Args<'a> {
     pub run_id: String,
     /// Override the merge target branch. Falls back to the manifest's
@@ -666,14 +675,14 @@ fn run_merge_sh(worktree_path: &Path, branch: &str, source: Option<&str>) -> Res
             detail
         };
         let exit_code = output.status.code().unwrap_or(-1);
-        // Exit 75 (EX_TEMPFAIL) is merge.sh's distinct signal for "could not
-        // acquire the merge lock in time" — another self-merge into the SAME
-        // target branch is in progress and held the serializing lock longer
-        // than the timeout (issue concurrent-self-merge-race). Surface it under
-        // a distinct `merge_in_progress` code so a caller can tell a transient
-        // serialization conflict (retry) apart from a genuine dirty tree /
-        // conflict (commit / resolve). It is retryable, not a hard failure.
-        let code = if exit_code == 75 {
+        // merge.sh reserves EX_TEMPFAIL for "could not acquire the merge lock in
+        // time" — a concurrent self-merge into the SAME target branch held the
+        // serializing lock past the timeout (issue concurrent-self-merge-race).
+        // Surface it under a distinct `merge_in_progress` code so a caller can
+        // tell a transient serialization conflict (retry) apart from a genuine
+        // dirty tree / conflict (commit / resolve). It is retryable, not a hard
+        // failure. See MERGE_SH_LOCK_TIMEOUT_EXIT for why 75 is unambiguous.
+        let code = if exit_code == MERGE_SH_LOCK_TIMEOUT_EXIT {
             "merge_in_progress"
         } else {
             "merge_failed"

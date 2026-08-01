@@ -784,19 +784,75 @@ fn real_merge_sh(dir: &Path) -> std::path::PathBuf {
     dst
 }
 
+/// Kills and reaps a spawned child on drop — panic-safe cleanup for the
+/// background merge-lock holder, so a failing assertion can't leave a `flock`
+/// process (and its lock) alive for the rest of its sleep.
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Spawn a background holder of the repo's merge lock — `flock`ing exactly the
 /// path merge.sh derives (`<git-common-dir>/worktree-merge.lock`) — that touches
-/// `ready` once it holds the lock, then sleeps. Returns the child so the caller
-/// can kill it; the flock releases the moment the process dies.
-fn hold_merge_lock(repo: &Path, ready: &Path) -> std::process::Child {
+/// `ready` once it holds the lock, then holds it. The returned guard releases
+/// the lock (kills the holder) on drop.
+fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
     let lock = repo.join(".git").join("worktree-merge.lock");
-    Command::new("flock")
+    let child = Command::new("flock")
         .arg("-x")
         .arg(&lock)
         .arg("-c")
         .arg(format!("touch '{}'; sleep 30", ready.display()))
         .spawn()
-        .expect("spawn flock holder")
+        .expect("spawn flock holder");
+    ChildGuard(child)
+}
+
+/// Spawn a holder that mimics a concurrent merge's full life: acquire the lock,
+/// transiently dirty the target (`dirty`), signal `ready`, hold briefly, then
+/// clean the target and release. A merge that blocks on the lock during the
+/// dirty window must NOT observe the dirt — it acquires only after the clean.
+fn hold_lock_dirty_then_clean(repo: &Path, dirty: &Path, ready: &Path) -> ChildGuard {
+    let lock = repo.join(".git").join("worktree-merge.lock");
+    let child = Command::new("flock")
+        .arg("-x")
+        .arg(&lock)
+        .arg("-c")
+        .arg(format!(
+            "touch '{dirty}'; touch '{ready}'; sleep 2; rm -f '{dirty}'",
+            dirty = dirty.display(),
+            ready = ready.display(),
+        ))
+        .spawn()
+        .expect("spawn flock holder");
+    ChildGuard(child)
+}
+
+/// Create a dir holding a fake `workmux` that exits `code`, to prepend to PATH so
+/// the real merge.sh can reach (and get past) the merge step without a real
+/// workmux/tmux. Returns the dir to prepend.
+fn fake_workmux_dir(dir: &Path, code: i32) -> std::path::PathBuf {
+    let bindir = dir.join("fakebin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let p = bindir.join("workmux");
+    std::fs::write(&p, format!("#!/bin/bash\nexit {code}\n")).unwrap();
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    bindir
+}
+
+/// `PATH` with `prepend` in front of the inherited one.
+fn path_with(prepend: &Path) -> String {
+    format!(
+        "{}:{}",
+        prepend.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 /// Poll for a path to appear, up to `secs`. Panics if it never does.
@@ -832,7 +888,7 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
 
     // Another merge holds the serializing lock for the whole test.
     let ready = gitroot.path().join("lock-ready");
-    let mut holder = hold_merge_lock(&repo, &ready);
+    let _holder = hold_merge_lock(&repo, &ready);
     wait_for(&ready, 5);
 
     // Our merge waits on the lock, then times out (1s) — a serialization
@@ -845,9 +901,6 @@ fn concurrent_self_merge_serializes_instead_of_false_dirty() {
         ])
         .output()
         .expect("spawn");
-
-    let _ = holder.kill();
-    let _ = holder.wait();
 
     assert!(
         !out.status.success(),
@@ -919,6 +972,92 @@ fn genuine_dirty_target_still_blocks() {
     );
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(node_reports(&events).len(), 0);
+}
+
+/// The PRIMARY behavior the fix enables: a merge that starts while a concurrent
+/// merge holds the lock AND has the target transiently dirty must SERIALIZE —
+/// block on the lock, and only proceed once the peer releases and the target is
+/// clean again — then SUCCEED. Pre-fix, the pre-lock dirty check made it fail
+/// spuriously; post-fix, the check is behind the lock, so the transient dirt is
+/// never observed and the merge lands. A fake `workmux` (exit 0) lets the real
+/// merge.sh reach and pass the merge step without a real workmux/tmux.
+#[test]
+fn concurrent_self_merge_waits_then_succeeds() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "spinoff", "race-success");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    let fakebin = fake_workmux_dir(gitroot.path(), 0);
+
+    // A peer holds the lock, dirties the target for ~2s, then cleans + releases.
+    let dirty = repo.join("PEER-INFLIGHT.txt");
+    let ready = gitroot.path().join("lock-ready");
+    let _holder = hold_lock_dirty_then_clean(&repo, &dirty, &ready);
+    wait_for(&ready, 5); // peer now holds the lock with the target dirty
+
+    // Launch our merge WHILE the peer holds the lock + target is dirty. It must
+    // block on the lock (never seeing the dirt), then land once the peer frees.
+    let v = run_ok(
+        bin(&home)
+            .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+            .env("PATH", path_with(&fakebin))
+            .env("MERGE_LOCK_TIMEOUT", "30")
+            .args([
+                "--output", "json", "run", "merge", &run_id, "--source", "main",
+            ]),
+    );
+
+    assert_eq!(
+        v["data"]["merged"], true,
+        "a merge that serialized behind a concurrent one must still land: {}",
+        v["data"]
+    );
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    let reports = node_reports(&events);
+    assert_eq!(reports.len(), 1, "the serialized merge submits one report");
+    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
+}
+
+/// A downstream command exiting 75 must NOT masquerade as the lock-timeout
+/// `merge_in_progress`. merge.sh reserves exit 75 for the lock-timeout branch
+/// and normalizes `workmux`'s exit, so a `workmux` that exits 75 (with the lock
+/// free and the target clean) surfaces as a plain `merge_failed`.
+#[test]
+fn downstream_exit_75_is_not_merge_in_progress() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (_repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "spinoff", "exit75");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    // No lock holder, target clean — the merge reaches workmux, which exits 75.
+    let fakebin = fake_workmux_dir(gitroot.path(), 75);
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .env("PATH", path_with(&fakebin))
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+
+    assert!(
+        !out.status.success(),
+        "a workmux failure must fail the merge"
+    );
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(
+        err["error"]["code"], "merge_failed",
+        "a downstream exit 75 must not be misread as a lock-timeout retry: {err}"
+    );
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        node_reports(&events).len(),
+        0,
+        "a failed merge writes no report"
+    );
 }
 
 /// The human's sanctioned merge path — the bundled `worktree-merge` skill — MUST

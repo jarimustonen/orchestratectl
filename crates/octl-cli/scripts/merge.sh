@@ -87,7 +87,16 @@ echo ""
 # Check for uncommitted changes in OUR OWN worktree. This is safe to test
 # before taking the merge lock: it is the agent's own source worktree, not the
 # shared target, so it is never touched by a concurrent merge.
-if [[ -n "$(git status --porcelain)" ]]; then
+#
+# Capture the status into a variable rather than testing $(...) inline: a
+# `git status` FAILURE (e.g. the worktree vanished) inside `[[ -n "$(...)" ]]`
+# yields an empty string and would be silently read as "clean" — `set -e` does
+# not fire on a substitution nested in a test. Fail loud instead.
+if ! SOURCE_STATUS=$(git status --porcelain); then
+    echo "Error: could not inspect worktree status" >&2
+    exit 1
+fi
+if [[ -n "$SOURCE_STATUS" ]]; then
     echo "Error: Uncommitted changes in worktree" >&2
     echo "Please commit first using /git-commit" >&2
     exit 1
@@ -111,22 +120,44 @@ echo ""
 GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 LOCK_FILE="$GIT_COMMON_DIR/worktree-merge.lock"
 LOCK_TIMEOUT="${MERGE_LOCK_TIMEOUT:-600}"
-exec 9>"$LOCK_FILE"
+# Validate the timeout: flock treats a non-numeric / non-positive `-w` as an
+# error, which would look like a lock-contention failure and be misreported as
+# `merge_in_progress`. Reject a bad value up front with a plain error instead.
+if ! [[ "$LOCK_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$LOCK_TIMEOUT" -lt 1 ]]; then
+    echo "Error: MERGE_LOCK_TIMEOUT must be a positive integer (got '$LOCK_TIMEOUT')" >&2
+    exit 1
+fi
+# `>>` (not `>`): open the lock file without truncating it — the advisory lock
+# is on the inode and survives truncation, but truncating a file another merge
+# is actively using is a needless surprise when inspecting it.
+exec 9>>"$LOCK_FILE"
+# Exit 75 (EX_TEMPFAIL) is RESERVED for the lock-timeout case below and mapped
+# to `merge_in_progress` by `run merge`. `flock`'s own timeout returns 1, so it
+# never collides; the `exit 75` here is the sole producer of that status (the
+# workmux invocation later normalizes its exit so a downstream 75 can't leak).
 if ! flock -w "$LOCK_TIMEOUT" 9; then
     # A concurrent merge into this target held the lock longer than we waited.
-    # This is a serialization timeout, NOT a dirty tree: exit 75 (EX_TEMPFAIL)
-    # so `run merge` surfaces a distinct `merge_in_progress` error rather than
-    # the misleading dirty-target failure this race used to produce.
+    # This is a serialization timeout, NOT a dirty tree: exit 75 so `run merge`
+    # surfaces a distinct, retryable `merge_in_progress` error rather than the
+    # misleading dirty-target failure this race used to produce.
     echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_FILE within ${LOCK_TIMEOUT}s" >&2
     exit 75
 fi
 echo "Acquired merge lock"
 echo ""
 
-# Now that we hold the lock, no other merge is touching the target, so a dirty
-# target here is genuine uncommitted user work — the real safety check (it
-# replaces the racy pre-lock one that produced the false positive above).
-if [[ -n "$(git -C "$TARGET_PATH" status --porcelain)" ]]; then
+# Now that we hold the lock, no COOPERATING merge (one that also takes this lock)
+# is touching the target, so the transient mid-rebase dirt of a concurrent
+# self-merge can no longer be observed here. A dirty target at this point is
+# therefore genuine uncommitted work — whether a human's edit or a non-merge
+# writer — and must still block (this is the real safety check, replacing the
+# racy pre-lock one that produced the false positive). As above, capture the
+# status so a `git status` failure can't be misread as "clean".
+if ! TARGET_STATUS=$(git -C "$TARGET_PATH" status --porcelain); then
+    echo "Error: could not inspect target worktree status ($TARGET_PATH)" >&2
+    exit 1
+fi
+if [[ -n "$TARGET_STATUS" ]]; then
     echo "Error: Uncommitted changes in target worktree ($TARGET_PATH)" >&2
     echo "Please commit or stash changes in the target before merging" >&2
     exit 1
@@ -145,12 +176,25 @@ echo ""
 
 echo "Running workmux merge --rebase --into $TARGET_BRANCH..."
 
-# Get worktree path before merge for cleanup
-WORKTREE_PATH=$(pwd)
-
 # Use --keep so workmux doesn't try (and fail) to kill our own window.
 # --into pins the merge target (defaults to config main_branch when omitted).
-workmux merge --rebase --keep --into "$TARGET_BRANCH"
+#
+# `9>&-` closes the lock fd for the child: bash fds are not close-on-exec, so
+# workmux (and anything it spawns, e.g. a tmux server) would otherwise inherit
+# fd 9 and — if a descendant outlived this script — hold the advisory lock
+# forever, deadlocking every future merge. We still hold fd 9 in this shell, so
+# the critical section is unaffected.
+#
+# Capture the status instead of letting `set -e` propagate it: a downstream exit
+# 75 (from workmux or git) would otherwise leak out as the script's status and
+# be misclassified as the lock-timeout `merge_in_progress`. Any workmux failure
+# is a genuine merge failure — normalize it to exit 1 (`merge_failed`).
+merge_rc=0
+workmux merge --rebase --keep --into "$TARGET_BRANCH" 9>&- || merge_rc=$?
+if [[ "$merge_rc" -ne 0 ]]; then
+    echo "Error: workmux merge failed (exit $merge_rc)" >&2
+    exit 1
+fi
 
 echo ""
 echo "Merge complete!"
