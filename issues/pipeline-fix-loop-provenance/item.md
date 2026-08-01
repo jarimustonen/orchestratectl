@@ -2,9 +2,10 @@
 created: 2026-07-25
 updated: 2026-08-01
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@pipeline-fix-loop']
+closed: 2026-08-01
 ---
 
 # Pipeline fix loop: provenance-aware chunk rollback + cumulative re-code budget
