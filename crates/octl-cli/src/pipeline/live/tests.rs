@@ -1384,6 +1384,146 @@ fn respec_that_removes_a_chunk_rolls_its_code_off_feat() {
     );
 }
 
+/// A per-chunk harness for the two-chunk rollback tests: `c1` writes `shared.txt`
+/// = "base\n"; `c2` writes "base\nextra\n" (a modification of c1's content, so
+/// replaying c2 onto a tree WITHOUT c1's `shared.txt` conflicts). Deterministic and
+/// stateless — each call rewrites its chunk's whole file, so a re-run is clean.
+struct SharedFileChunks;
+impl CodeHarness for SharedFileChunks {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let wt = &req.worktree_path;
+        let content = if req.chunk_id == "c1" {
+            "base\n"
+        } else {
+            "base\nextra\n"
+        };
+        std::fs::write(wt.join("shared.txt"), content).unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            vec![PathBuf::from("shared.txt")],
+        ))
+    }
+}
+
+#[test]
+fn verify_fix_rollback_reverts_transitive_dependents() {
+    // Review fix (dependency-aware rollback): when verify-FIX targets c1 and c2
+    // depends on c1 (and modifies the same file), the rollback must revert BOTH —
+    // keeping c2 while dropping c1 would replay c2 onto a tree missing c1's content
+    // and conflict. With the dependent closure, both revert, both re-run, and the
+    // feature converges.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make base",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "append", "deps": ["c1"],
+             "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c1".to_string(),
+            findings: vec!["c1 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c1".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &SharedFileChunks, &verify)
+        .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.merged);
+    // Only c1 was a re-code target; c2 was reverted as a dependent (no re-code
+    // decision of its own), so exactly one RE_CODE was recorded.
+    assert_eq!(report.recode_count, 1);
+    // The reconverged feature is on main with c2's final content.
+    assert_eq!(
+        git_out(repo.path(), &["show", "main:shared.txt"]),
+        "base\nextra"
+    );
+}
+
+#[test]
+fn rollback_conflict_restores_the_intact_branch() {
+    // Review fix (transactional rollback): if a kept chunk cannot be replayed onto
+    // the rebuilt fork (here c2 modifies c1's file but does NOT declare the
+    // dependency, so the closure can't catch it), the rollback must restore the
+    // integration branch to its intact pre-rollback tip and abort — never leave a
+    // half-rebuilt branch, so invariant-5 preservation keeps the REAL work.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    // c2 modifies shared.txt but declares NO dep on c1 — the closure keeps c2 while
+    // c1 is dropped, and the replay of c2 onto the fork conflicts.
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make base",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "append",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "fix c1".to_string(),
+        findings: vec!["c1 wrong".to_string()],
+        disposition: providers::VerifyDisposition::FixChunks {
+            chunk_ids: vec!["c1".to_string()],
+        },
+    });
+
+    let err = run_pipeline(&cfg, &ScriptedSpec::new(plan), &SharedFileChunks, &verify)
+        .expect_err("a replay conflict aborts the run");
+    assert!(
+        format!("{err:?}").contains("rollback"),
+        "unexpected error: {err:?}"
+    );
+    // The integration branch was restored intact (both chunks' work is still on it),
+    // NOT left reset to the fork — proving the rebuild rolled back its own damage.
+    assert!(super::git::branch_exists(repo.path(), "feat/demo"));
+    assert_eq!(
+        git_out(repo.path(), &["show", "feat/demo:shared.txt"]),
+        "base\nextra",
+        "feat must hold the intact pre-rollback content, not be reset to fork"
+    );
+}
+
 /// Whether `path` exists on `main` (a committed blob).
 fn main_has(repo: &TempDir, path: &str) -> bool {
     Command::new("git")

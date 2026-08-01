@@ -198,13 +198,19 @@ pub fn restore_to(worktree: &Path, rev: &str) -> Result<(), PipelineError> {
 pub fn diff(worktree: &Path, base: &str, tip: &str) -> Result<String, PipelineError> {
     let out = git(worktree, &["diff", base, tip])?;
     if out.len() > DIFF_CAP_BYTES {
-        // Truncate on a char boundary so the (UTF-8) string stays valid.
-        let mut end = DIFF_CAP_BYTES;
+        // Truncate at the last newline at or before the cap, so a hunk is never cut
+        // mid-line (a partial `-`/`+` line could read as a spurious edit). Fall back
+        // to a char boundary if there is no newline in range (keeps the String
+        // valid). Only the retained prefix — not the marker — is bounded by the cap.
+        let mut end = DIFF_CAP_BYTES.min(out.len());
         while end > 0 && !out.is_char_boundary(end) {
             end -= 1;
         }
+        if let Some(nl) = out[..end].rfind('\n') {
+            end = nl;
+        }
         Ok(format!(
-            "{}\n… [diff truncated at {DIFF_CAP_BYTES} bytes]",
+            "{}\n… [diff truncated at ~{DIFF_CAP_BYTES} bytes]",
             &out[..end]
         ))
     } else {
