@@ -1,8 +1,8 @@
 ---
 created: 2026-07-25
-updated: 2026-07-25
+updated: 2026-08-01
 type: task
-status: open
+status: in-progress
 priority: normal
 related: ['@pipeline-fix-loop']
 ---
