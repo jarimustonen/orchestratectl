@@ -1,10 +1,11 @@
 ---
 created: 2026-07-31
-updated: 2026-07-31
+updated: 2026-08-01
 type: improvement
-status: open
+status: done
 priority: normal
 related: ['@stint-maintains-execution-dag', '@run-salvage-command', '@agent-death-strands-recoverable-work']
+closed: 2026-08-01
 ---
 
 # Encode recoverable-worker-death → retry-with-harvest into the /stint skill
