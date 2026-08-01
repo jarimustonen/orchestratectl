@@ -665,13 +665,23 @@ fn run_merge_sh(worktree_path: &Path, branch: &str, source: Option<&str>) -> Res
         } else {
             detail
         };
+        let exit_code = output.status.code().unwrap_or(-1);
+        // Exit 75 (EX_TEMPFAIL) is merge.sh's distinct signal for "could not
+        // acquire the merge lock in time" — another self-merge into the SAME
+        // target branch is in progress and held the serializing lock longer
+        // than the timeout (issue concurrent-self-merge-race). Surface it under
+        // a distinct `merge_in_progress` code so a caller can tell a transient
+        // serialization conflict (retry) apart from a genuine dirty tree /
+        // conflict (commit / resolve). It is retryable, not a hard failure.
+        let code = if exit_code == 75 {
+            "merge_in_progress"
+        } else {
+            "merge_failed"
+        };
         return Err(CliError {
             kind: ExitKind::User,
-            code: "merge_failed".to_string(),
-            message: format!(
-                "merge.sh exited {} merging {branch}: {detail}",
-                output.status.code().unwrap_or(-1)
-            ),
+            code: code.to_string(),
+            message: format!("merge.sh exited {exit_code} merging {branch}: {detail}"),
             invalid_value: Some(branch.to_string()),
             expected: None,
         });

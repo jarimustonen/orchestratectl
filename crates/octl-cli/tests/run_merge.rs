@@ -756,6 +756,171 @@ fn autonomous_run_merge_accepts_confirmation_flag_as_noop() {
     assert_eq!(reports[0]["data"]["via"], "explicit-merge");
 }
 
+// --- Concurrent self-merge race (issue `concurrent-self-merge-race`) ---
+//
+// Several independent spinoffs that self-merge into the SAME source branch within
+// seconds must serialize on the merge lock, never observe each other's mid-merge
+// (transient-dirty) target state. The bug: merge.sh checked the target worktree
+// for cleanliness BEFORE taking the serializing flock, so a concurrent merge that
+// was mid-rebase made the checker fail with a spurious "uncommitted changes in
+// target". The fix moves that check inside the lock; a lock-acquisition timeout is
+// surfaced as a distinct, retryable `merge_in_progress` error. These two tests
+// drive the REAL bundled `scripts/merge.sh` (via `OCTL_MERGE_SH`) against a real
+// git repo + linked worktree; both exercised paths return before `workmux`, so
+// they need neither `workmux` nor a live tmux.
+
+/// Materialize the real bundled merge backend (not the stub) into `dir` with the
+/// exec bit set, so these tests exercise the actual locking + cleanliness logic.
+/// The checked-in `scripts/merge.sh` is not tracked executable, so it must be
+/// copied + chmod'd (mirroring how `run merge` materializes the embedded copy).
+fn real_merge_sh(dir: &Path) -> std::path::PathBuf {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/merge.sh");
+    let body = std::fs::read(&src).expect("read scripts/merge.sh");
+    let dst = dir.join("merge.sh");
+    std::fs::write(&dst, body).unwrap();
+    let mut perms = std::fs::metadata(&dst).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&dst, perms).unwrap();
+    dst
+}
+
+/// Spawn a background holder of the repo's merge lock — `flock`ing exactly the
+/// path merge.sh derives (`<git-common-dir>/worktree-merge.lock`) — that touches
+/// `ready` once it holds the lock, then sleeps. Returns the child so the caller
+/// can kill it; the flock releases the moment the process dies.
+fn hold_merge_lock(repo: &Path, ready: &Path) -> std::process::Child {
+    let lock = repo.join(".git").join("worktree-merge.lock");
+    Command::new("flock")
+        .arg("-x")
+        .arg(&lock)
+        .arg("-c")
+        .arg(format!("touch '{}'; sleep 30", ready.display()))
+        .spawn()
+        .expect("spawn flock holder")
+}
+
+/// Poll for a path to appear, up to `secs`. Panics if it never does.
+fn wait_for(path: &Path, secs: u64) {
+    for _ in 0..(secs * 50) {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+/// THE regression for the race: another merge holds the lock AND the target
+/// worktree is (transiently) dirty. Pre-fix, merge.sh checked the target BEFORE
+/// the lock and failed immediately with the spurious "uncommitted changes in
+/// target" (`merge_failed`). Post-fix, the checker lives inside the lock, so this
+/// merge serializes: it blocks on the held lock and, when the hold outlasts the
+/// timeout, surfaces the DISTINCT, retryable `merge_in_progress` — never the false
+/// dirty-target failure. No terminal report is written (the merge never ran).
+#[test]
+fn concurrent_self_merge_serializes_instead_of_false_dirty() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "spinoff", "race-merge");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    // Simulate another merge's mid-rebase transient state: the target worktree is
+    // dirty. Pre-fix this alone (checked before the lock) produced the false
+    // positive; post-fix it is only inspected once we hold the lock.
+    std::fs::write(repo.join("RACE.txt"), "in-flight merge state").unwrap();
+
+    // Another merge holds the serializing lock for the whole test.
+    let ready = gitroot.path().join("lock-ready");
+    let mut holder = hold_merge_lock(&repo, &ready);
+    wait_for(&ready, 5);
+
+    // Our merge waits on the lock, then times out (1s) — a serialization
+    // conflict, surfaced as the distinct retryable code, NOT a dirty-tree error.
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .env("MERGE_LOCK_TIMEOUT", "1")
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+
+    let _ = holder.kill();
+    let _ = holder.wait();
+
+    assert!(
+        !out.status.success(),
+        "a merge blocked by a concurrent one must not succeed"
+    );
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(
+        err["error"]["code"], "merge_in_progress",
+        "a lock-held concurrent merge must surface the distinct serialization code, \
+         not a dirty-tree failure: {err}"
+    );
+    let msg = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("another merge is holding"),
+        "the error must name the serialization conflict, not the transient dirt: {msg}"
+    );
+    assert!(
+        !msg.to_lowercase().contains("uncommitted changes in target"),
+        "the false-positive dirty-target error must be gone: {msg}"
+    );
+
+    // The merge never ran, so no terminal report was appended.
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        node_reports(&events).len(),
+        0,
+        "a serialized-out merge must not submit a terminal report"
+    );
+}
+
+/// The genuine dirty-target safety check is preserved: with NO concurrent merge
+/// (the lock is free) but the target worktree carrying real uncommitted user
+/// work, merge.sh acquires the lock, finds the target dirty, and blocks with its
+/// existing dirty-target message (`merge_failed`). Guards against the fix
+/// weakening the real safety check while removing the racy pre-lock one.
+#[test]
+fn genuine_dirty_target_still_blocks() {
+    let home = TestHome::new();
+    let gitroot = TempDir::new().unwrap();
+    let (repo, wt) = init_repo_with_worktree(gitroot.path());
+    let run_id = create_run(&home, "spinoff", "dirty-target");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
+
+    // Real uncommitted user work in the target, and NO lock holder — the merge
+    // will acquire the lock and must still refuse a dirty target.
+    std::fs::write(repo.join("USER-WORK.txt"), "human's uncommitted edit").unwrap();
+
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", real_merge_sh(gitroot.path()))
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+
+    assert!(
+        !out.status.success(),
+        "a genuinely dirty target must still block the merge"
+    );
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(
+        err["error"]["code"], "merge_failed",
+        "a genuine dirty target is a hard merge failure, not a serialization retry: {err}"
+    );
+    let msg = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.to_lowercase().contains("uncommitted changes in target"),
+        "the genuine dirty-target message must survive: {msg}"
+    );
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(node_reports(&events).len(), 0);
+}
+
 /// The human's sanctioned merge path — the bundled `worktree-merge` skill — MUST
 /// pass `--confirm-interactive`, or a `code`-run merge driven through it would
 /// hit the gate and fail. Cheap regression insurance against silently dropping

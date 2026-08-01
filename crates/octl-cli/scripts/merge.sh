@@ -84,44 +84,56 @@ fi
 echo "Merge target: $TARGET_BRANCH ($TARGET_PATH)"
 echo ""
 
-# Check for uncommitted changes in worktree
+# Check for uncommitted changes in OUR OWN worktree. This is safe to test
+# before taking the merge lock: it is the agent's own source worktree, not the
+# shared target, so it is never touched by a concurrent merge.
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "Error: Uncommitted changes in worktree" >&2
     echo "Please commit first using /git-commit" >&2
     exit 1
 fi
 
-# Check the target worktree is clean
+echo "Worktree status: clean"
+echo ""
+
+# Serialize concurrent merge runs against the same repo BEFORE inspecting the
+# target worktree — the target-cleanliness check MUST live inside this critical
+# section. While another merge holds this lock it is mid-rebase and the target
+# worktree is transiently dirty; checking BEFORE the lock let a concurrent merge
+# observe that in-flight state and fail with a spurious "uncommitted changes in
+# target" (issue concurrent-self-merge-race). Inside the lock the only merge
+# touching the target is ours, so a dirty target there is genuine user work that
+# must still block.
+#
+# Without the lock, two parallel rebases would also race on the FF step and one
+# would fail. Use the shared common git dir so the lock works from linked
+# worktrees too (a linked worktree's .git is a file, not a directory).
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+LOCK_FILE="$GIT_COMMON_DIR/worktree-merge.lock"
+LOCK_TIMEOUT="${MERGE_LOCK_TIMEOUT:-600}"
+exec 9>"$LOCK_FILE"
+if ! flock -w "$LOCK_TIMEOUT" 9; then
+    # A concurrent merge into this target held the lock longer than we waited.
+    # This is a serialization timeout, NOT a dirty tree: exit 75 (EX_TEMPFAIL)
+    # so `run merge` surfaces a distinct `merge_in_progress` error rather than
+    # the misleading dirty-target failure this race used to produce.
+    echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_FILE within ${LOCK_TIMEOUT}s" >&2
+    exit 75
+fi
+echo "Acquired merge lock"
+echo ""
+
+# Now that we hold the lock, no other merge is touching the target, so a dirty
+# target here is genuine uncommitted user work — the real safety check (it
+# replaces the racy pre-lock one that produced the false positive above).
 if [[ -n "$(git -C "$TARGET_PATH" status --porcelain)" ]]; then
     echo "Error: Uncommitted changes in target worktree ($TARGET_PATH)" >&2
     echo "Please commit or stash changes in the target before merging" >&2
     exit 1
 fi
 
-echo "Worktree status: clean"
 echo "Target status: clean"
 echo ""
-
-# Serialize concurrent merge runs against the same repo.
-# Without this, two parallel rebases race on the FF step and one fails.
-# Use the shared common git dir so the lock works from linked worktrees too
-# (a linked worktree's .git is a file, not a directory).
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-LOCK_FILE="$GIT_COMMON_DIR/worktree-merge.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -w 600 9; then
-    echo "Error: Could not acquire merge lock at $LOCK_FILE within 600s" >&2
-    exit 1
-fi
-echo "Acquired merge lock"
-echo ""
-
-# Re-check the target is still clean now that we hold the lock — another merge
-# may have just finished and left it in an unexpected state.
-if [[ -n "$(git -C "$TARGET_PATH" status --porcelain)" ]]; then
-    echo "Error: Target worktree became dirty while waiting for lock" >&2
-    exit 1
-fi
 
 # Gather commits
 COMMITS=$(git log --oneline "${TARGET_BRANCH}..HEAD")
