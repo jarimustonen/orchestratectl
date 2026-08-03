@@ -3,8 +3,9 @@ created: 2026-08-01
 updated: 2026-08-03
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-03
 ---
 
 # run merge on terminal run fails with misleading merge_spawn_failed
