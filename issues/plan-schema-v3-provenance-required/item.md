@@ -2,9 +2,10 @@
 created: 2026-07-31
 updated: 2026-08-03
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: code-pipeline
+closed: 2026-08-03
 ---
 
 ## Description
