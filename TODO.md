@@ -80,8 +80,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ plan-schema-v3-provenance-required       (floor round-3 item-5 follow-up: make baseline provenance structurally required in plan schema)
-    pipeline-fix-loop-rollback-hardening     (fix-loop-provenance follow-up: transactional/audit hardening of the deferred review items)
+  ▶ pipeline-fix-loop-rollback-hardening     (fix-loop-provenance follow-up: transactional/audit hardening of the deferred review items)
     pipeline-parallel-chunks                 (DAG scheduler)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
@@ -95,8 +94,7 @@ LANE C — workmux vendoring (fully independent)
 LANE D — workflow/skill (skill prose, not product code) — DRAINED this session (triage-ownership + retry-harvest both landed); refile here if new skill-prose work appears
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ merge-terminal-misleading              (run merge on terminal run → misleading merge_spawn_failed; wants run_already_terminal error)
-    landing-signal-reliable-after-rebase
+  ▶ landing-signal-reliable-after-rebase
     run-cancel-accept-unambiguous-prefix
     run-wait-timeout-unit-required
     run-salvage-command
