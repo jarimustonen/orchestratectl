@@ -361,6 +361,244 @@ fn dry_run_resolves_without_side_effects() {
     assert_eq!(node_reports(&events).len(), 0);
 }
 
+/// Roll the run's manifest to a terminal `status` by appending a `run.status`
+/// event — the supervisor's own rollup, driven directly so a test needn't spawn
+/// a real supervisor.
+fn set_run_status(home: &TempDir, run_id: &str, scratch: &Path, status: &str) {
+    let f = scratch.join(format!("run-status-{status}.json"));
+    std::fs::write(&f, format!(r#"{{"status":"{status}"}}"#)).unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "run.status",
+        "--from-file",
+        f.to_str().unwrap(),
+    ]));
+}
+
+/// Assert `run merge` fails with `run_already_terminal` and never spawned the
+/// merge backend a second time. `expected_backend_lines` is how many argv lines
+/// the shared `merge.log` should hold (the count from any earlier merges).
+fn assert_refused_terminal(
+    out: std::process::Output,
+    scratch: &Path,
+    expected_backend_lines: usize,
+) {
+    assert!(!out.status.success(), "the merge must be refused");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(
+        err["error"]["code"], "run_already_terminal",
+        "a terminal run must surface run_already_terminal, not merge_spawn_failed: {err}"
+    );
+    let log = scratch.join("merge.log");
+    let lines = std::fs::read_to_string(&log).map_or(0, |s| s.lines().count());
+    assert_eq!(
+        lines, expected_backend_lines,
+        "the refused merge must NOT invoke the merge backend"
+    );
+}
+
+/// Re-merging an already-finished run fails with the clear `run_already_terminal`
+/// error, NOT the misleading `merge_spawn_failed` (issue
+/// `merge-terminal-misleading`). Repro: a spinoff self-merges; the supervisor
+/// then rolls the manifest to `done` AND tears the worktree down (invariant #5);
+/// a second `run merge` on the same id must refuse up front — no merge.sh spawn.
+#[test]
+fn second_merge_on_terminal_run_is_run_already_terminal() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "double-merge");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    // First merge: succeeds and appends the explicit-merge report.
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
+    assert_eq!(v["data"]["merged"], true);
+
+    // Reproduce the real post-teardown state the supervisor leaves: the run
+    // rolled up terminal and its worktree was removed.
+    set_run_status(&home, &run_id, scratch.path(), "done");
+    std::fs::remove_dir_all(worktree.path()).unwrap();
+
+    // Second merge: refused up front with the clear terminal error, no spawn.
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    let msg = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("no worktree left to merge"),
+        "the message must explain there is nothing to merge: {msg}"
+    );
+    // merge.log holds exactly the ONE line from the first merge.
+    assert_refused_terminal(out, scratch.path(), 1);
+}
+
+/// A `cancelled` run is refused regardless of its worktree: cancellation is a
+/// deliberate teardown the reducer never adopts a merge against, so `run merge`
+/// must never spawn the backend for it. Here the worktree still EXISTS, proving
+/// the refusal is on status alone (issue `merge-terminal-misleading`).
+#[test]
+fn merge_on_cancelled_run_is_refused() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "cancelled-merge");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    set_run_status(&home, &run_id, scratch.path(), "cancelled");
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cancelled"),
+        "the message must name the cancellation: {err}"
+    );
+    assert_refused_terminal(out, scratch.path(), 0);
+}
+
+/// A terminal run torn down WITHOUT ever being explicitly merged — a genuine
+/// autonomous `failed` whose worktree the supervisor removed — also refuses with
+/// the clear terminal error, not `merge_spawn_failed`. This is the case a
+/// marker-only guard would have missed (it has no explicit-merge report).
+#[test]
+fn terminal_failed_torn_down_is_run_already_terminal() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "failed-torn-down");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    set_run_status(&home, &run_id, scratch.path(), "failed");
+    std::fs::remove_dir_all(worktree.path()).unwrap();
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+    assert_refused_terminal(out, scratch.path(), 0);
+}
+
+/// A NON-terminal run whose worktree has vanished surfaces the distinct
+/// `worktree_missing` error (not `run_already_terminal`, not the misleading
+/// `merge_spawn_failed`) — the worktree was removed out from under a live run.
+#[test]
+fn nonterminal_missing_worktree_is_worktree_missing() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "live-no-worktree");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+    // No terminal status — the run is still live; just remove its worktree.
+    std::fs::remove_dir_all(worktree.path()).unwrap();
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", &merge_sh)
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(err["error"]["code"], "worktree_missing", "{err}");
+    assert!(
+        !scratch.path().join("merge.log").exists(),
+        "the merge backend must not run when the worktree is missing"
+    );
+}
+
+/// A `NotFound` from the merge-backend spawn is only re-attributed to a missing
+/// worktree when the worktree is ACTUALLY gone. With a present worktree but a
+/// bad `OCTL_MERGE_SH` override (nonexistent backend), the error must remain the
+/// generic `merge_spawn_failed` — not a spurious `worktree_missing` (round-2
+/// review: the `NotFound` remap must not misattribute a missing backend).
+#[test]
+fn missing_backend_with_live_worktree_is_merge_spawn_failed() {
+    let home = TestHome::new();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "bad-backend");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    // Worktree present, but the backend path does not exist.
+    let out = bin(&home)
+        .env("OCTL_MERGE_SH", "/no/such/merge-backend.sh")
+        .args([
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
+    assert_eq!(
+        err["error"]["code"], "merge_spawn_failed",
+        "a missing backend (worktree present) must not be misread as worktree_missing: {err}"
+    );
+}
+
+/// The guard does NOT block a terminal run whose worktree still EXISTS. This is
+/// the load-bearing crash-safety / adoption path (issues
+/// `reducer-adopt-explicit-merge`, `merge-skips-teardown`): a watchdog
+/// `agent-died` false positive terminalizes the run to `failed` while the
+/// still-alive agent's worktree survives (a blocked handoff preserves it), and
+/// a merge that appended its report then crashed before teardown also leaves the
+/// worktree in place. Either way `run merge` must fall through and complete —
+/// worktree existence, not the merge marker, is the discriminator.
+#[test]
+fn terminal_but_unmerged_run_still_merges() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "swallowed-then-merge");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    // Watchdog false positive: the node is terminalized as agent-died, and the
+    // run is rolled up to `failed` — but the worktree still exists.
+    append_node_report(
+        &home,
+        &run_id,
+        scratch.path(),
+        r#"{"success": false, "failed": true, "reason": "agent-died"}"#,
+    );
+    set_run_status(&home, &run_id, scratch.path(), "failed");
+
+    // The still-alive agent's `run merge` must PROCEED (worktree exists → the
+    // guard falls through, so the reducer can adopt the merge).
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
+    ]));
+    assert_eq!(
+        v["data"]["merged"], true,
+        "a terminal run with a surviving worktree must still accept run merge: {}",
+        v["data"]
+    );
+}
+
 /// A run id that names no run surfaces `run_not_found` (not a backend spawn).
 #[test]
 fn missing_run_is_run_not_found() {

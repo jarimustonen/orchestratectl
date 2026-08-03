@@ -199,6 +199,106 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .with_invalid_value(node_id.as_str())
     })?;
 
+    // Terminal-state / torn-down-worktree guard (issue `merge-terminal-misleading`).
+    //
+    // A run that is already done merges its worktree away: the supervisor tears
+    // the worktree down and exits when the run rolls up terminal (invariant #5).
+    // A later `run merge` would then materialize merge.sh and `cd` into a
+    // directory that no longer exists, failing with a misleading
+    // `merge_spawn_failed: … No such file or directory` that fingers the temp
+    // script instead of the real cause (the run is already finished). Refuse up
+    // front with a clear code and NO spawn attempt.
+    //
+    // The discriminator is deliberately worktree EXISTENCE, not "was there an
+    // explicit-merge report" — the latter would (a) wrongly refuse the ONE
+    // legitimate merge against a terminal run: the watchdog `agent-died`
+    // false-positive path (issue `reducer-adopt-explicit-merge`), where the run
+    // is terminal (`Failed`) but the still-alive agent's worktree survives (a
+    // blocked handoff PRESERVES it) and its `run merge` must proceed and be
+    // adopted; and (b) break the documented crash-safe idempotent retry — if a
+    // merge appended its report then crashed before `ensure_report_consumer`,
+    // the worktree still exists, so this falls through to the idempotent
+    // re-merge + reattach path that completes teardown. Worktree existence
+    // cleanly separates both survivors (worktree present → fall through) from
+    // the genuinely-finished run (worktree gone → refuse), and it also catches
+    // a terminal run torn down WITHOUT an explicit merge (a genuine autonomous
+    // failure), which the marker check would have missed. Branch on
+    // `manifest.status` (invariant #4), never `lifecycle`.
+    //
+    // A `Cancelled` run is refused regardless of its worktree, and even under
+    // `--dry-run` (so a preview never claims a merge is planned for a run that
+    // would hard-fail). The load-bearing reason is the reducer's adoption
+    // whitelist — a late `explicit-merge` report is adopted only against a
+    // `Failed | Done` node (see `reduce_node_report` / `reducer-adopt-explicit-merge`),
+    // never `Cancelled` — so merging a cancelled run would land git state the
+    // run state can never reflect, then strand teardown. Refuse instead.
+    if manifest.status == octl_core::Status::Cancelled {
+        return Err(CliError::user(
+            "run_already_terminal",
+            format!(
+                "run {run_id} is cancelled — merging is not permitted; a cancelled run \
+                 never adopts a merge, so `run merge` would do nothing."
+            ),
+        )
+        .with_invalid_value(&run_id));
+    }
+
+    // `--dry-run` is a read-only preview that never spawns merge.sh, so it is
+    // exempt from the remaining worktree-existence checks.
+    if !args.dry_run {
+        // try_exists returns Ok(false) only for a definitely-absent path; an
+        // Err (e.g. a permission error mid-path) is "cannot tell", and
+        // `unwrap_or(true)` treats that as present so we fall through to a real
+        // merge attempt (which surfaces the true error) rather than a false
+        // "already terminal".
+        let worktree_gone = !Path::new(worktree_path).try_exists().unwrap_or(true);
+        if worktree_gone {
+            // The top-of-function manifest read is unlocked and may predate a
+            // supervisor rollup that removed this very worktree. Re-read the
+            // status fresh under the shared lock so the terminal-vs-live
+            // classification (and thus the error) is correct even under that
+            // race (invariant #3 for the read).
+            let status = RunLock::with_shared_lock(&paths.lock(), || {
+                Ok(read_manifest_opt(&paths)?.map(|m| m.status))
+            })
+            .map_err(from_core)?
+            .unwrap_or(manifest.status);
+
+            if status.is_terminal() {
+                let verb = if status == octl_core::Status::Done {
+                    "already done"
+                } else {
+                    "failed"
+                };
+                return Err(CliError::user(
+                    "run_already_terminal",
+                    format!(
+                        "run {run_id} is {verb} and its worktree has been torn down — there is \
+                         no worktree left to merge. If teardown looks incomplete (tmux window \
+                         still open, branch still present), run `orchestratectl run reattach \
+                         {run_id}` to finish it."
+                    ),
+                )
+                .with_invalid_value(&run_id));
+            }
+            // A still-live run whose worktree has vanished is a distinct,
+            // actionable state — surface it plainly instead of the misleading
+            // merge.sh spawn failure. If the run actually finished but its
+            // supervisor has not rolled the manifest up yet, `run reattach`
+            // completes the transition.
+            return Err(CliError::user(
+                "worktree_missing",
+                format!(
+                    "worktree {worktree_path} does not exist — cannot merge. If the run has \
+                     finished, its supervisor may not have rolled up yet; run \
+                     `orchestratectl run reattach {run_id}`. Otherwise the worktree was \
+                     removed out from under a live run."
+                ),
+            )
+            .with_invalid_value(&run_id));
+        }
+    }
+
     // `code`-run merge gate (issue `interactive-code-run-self-merged`).
     //
     // A `code` run exists precisely for the human review gate: the agent works
@@ -655,10 +755,30 @@ fn run_merge_sh(worktree_path: &Path, branch: &str, source: Option<&str>) -> Res
     cmd.arg(branch);
 
     let output = cmd.output().map_err(|e| {
-        CliError::system(
-            "merge_spawn_failed",
-            format!("invoke merge.sh ({}): {}", script.path().display(), e),
-        )
+        // The pre-flight guard in `run` refuses a torn-down worktree up front,
+        // but the worktree can still vanish in the TOCTOU window between that
+        // check and this spawn (the supervisor tearing a just-terminalized run
+        // down). A `NotFound` here can be the missing `current_dir` OR a missing
+        // executable (e.g. an `OCTL_MERGE_SH` override pointing nowhere, or a
+        // missing shebang interpreter), so disambiguate by stat-ing the worktree
+        // instead of blindly blaming either one.
+        if e.kind() == std::io::ErrorKind::NotFound
+            && worktree_path.try_exists().is_ok_and(|exists| !exists)
+        {
+            CliError::user(
+                "worktree_missing",
+                format!(
+                    "worktree {} no longer exists — it was likely torn down as the run \
+                     finished; no merge is needed",
+                    worktree_path.display()
+                ),
+            )
+        } else {
+            CliError::system(
+                "merge_spawn_failed",
+                format!("invoke merge.sh ({}): {}", script.path().display(), e),
+            )
+        }
     })?;
 
     if !output.status.success() {
