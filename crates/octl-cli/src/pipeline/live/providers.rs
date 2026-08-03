@@ -3,7 +3,7 @@
 //! (no network), and the live path shells out to real `claude` (Opus, ambient
 //! login) per design.md §3 (spec/verify = Opus decider tier).
 //!
-//! - [`SpecProvider`] turns the intent + repo context into a `plan.json` v2
+//! - [`SpecProvider`] turns the intent + repo context into a `plan.json` v3
 //!   (design §6 VAIHE 1). The driver validates its output with the T2 validator.
 //! - [`VerifyProvider`] judges the finished feature branch against the intent
 //!   (design §6 VAIHE 3), on top of the deterministic floor + executable
@@ -46,7 +46,7 @@ pub struct SpecContext<'a> {
     pub baseline: &'a Baseline,
 }
 
-/// The **spec** stage: produce a `plan.json` v2 (as a raw JSON value the driver
+/// The **spec** stage: produce a `plan.json` v3 (as a raw JSON value the driver
 /// then validates + normalizes). Opus-tier in the live path.
 pub trait SpecProvider {
     /// Produce a candidate plan document.
@@ -383,7 +383,7 @@ fn extract_json_object(text: &str) -> Option<&str> {
 }
 
 /// Live spec provider: asks `claude` (Opus, ambient login) to emit a `plan.json`
-/// v2 for the intent. Credentials are never read here (ambient login).
+/// v3 for the intent. Credentials are never read here (ambient login).
 pub struct ClaudeSpecProvider;
 
 impl SpecProvider for ClaudeSpecProvider {
@@ -426,7 +426,7 @@ fn run_spec_claude(ctx: &SpecContext, prompt: String) -> Result<Value, PipelineE
 }
 
 /// The spec prompt: given the intent + feature identity, produce a `plan.json`
-/// v2 (design §6 VAIHE 1 + `plan-schema.md`). The driver overwrites the
+/// v3 (design §6 VAIHE 1 + `plan-schema.md`). The driver overwrites the
 /// authoritative `feature`/`baseline`/version fields afterward, so the model
 /// only needs to get the chunk DAG + turnkey briefs + executable checks right.
 fn build_spec_prompt(ctx: &SpecContext) -> String {
@@ -452,7 +452,7 @@ fn build_spec_prompt(ctx: &SpecContext) -> String {
         let _ = writeln!(p, "Caller-suggested file scope: {}\n", list.join(", "));
     }
     p.push_str(
-        "## Task\n\nProduce a `plan.json` v2 document: a DAG of implementation \
+        "## Task\n\nProduce a `plan.json` v3 document: a DAG of implementation \
          chunks, each with a turnkey, self-contained `brief` a cheap model can \
          implement without architectural reasoning, an explicit `files_touched` \
          scope, and at least one EXECUTABLE `check` (a `desc` + a shell `run` \
@@ -470,7 +470,7 @@ fn build_spec_prompt(ctx: &SpecContext) -> String {
          Here is a COMPLETE, VALID example with every required field filled in — \
          match this shape exactly:\n",
     );
-    p.push_str(octl_core::plan::plan_v2_json_schema_example());
+    p.push_str(octl_core::plan::plan_v3_json_schema_example());
     p
 }
 
@@ -479,10 +479,10 @@ fn build_spec_prompt(ctx: &SpecContext) -> String {
 /// left to infer them from an example alone — the observed live failure was a
 /// plan that omitted the required `acceptance` array entirely).
 ///
-/// This prose mirrors `plan-schema.md` v2 / the [`octl_core::plan`] validator but
+/// This prose mirrors `plan-schema.md` v3 / the [`octl_core::plan`] validator but
 /// is hand-authored, so it must be kept in step with the validator by hand. The
 /// machine-guaranteed half is the filled example the caller appends
-/// ([`octl_core::plan::plan_v2_json_schema_example`]), which a drift-guard test
+/// ([`octl_core::plan::plan_v3_json_schema_example`]), which a drift-guard test
 /// (`plan::tests::checked_in_example_is_valid`) keeps valid against the types.
 fn plan_schema_requirements() -> String {
     let mut p = String::new();

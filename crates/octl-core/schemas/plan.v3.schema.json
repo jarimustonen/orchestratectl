@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://orchestratectl.dev/schemas/plan.v2.schema.json",
-  "title": "orchestratectl plan.json (v2)",
-  "description": "The interface contract the spec-node writes and the supervisor + orchestrator read. Immutable per revision, versioned, provenance-bearing. See issues/code-pipeline/plan-schema.md and design.md §4/§7/§13. This schema is the checked-in machine-readable artifact; the operative source of truth for readers/writers is the octl_core::plan Rust validator, and a drift-guard test keeps the two in agreement.",
+  "$id": "https://orchestratectl.dev/schemas/plan.v3.schema.json",
+  "title": "orchestratectl plan.json (v3)",
+  "description": "The interface contract the spec-node writes and the supervisor + orchestrator read. Immutable per revision, versioned, provenance-bearing. See issues/code-pipeline/plan-schema.md and design.md §4/§7/§13. v3 makes the baseline provenance fields (commit_oid, toolchain, enumerated_targets_hash) structurally REQUIRED — a plan missing them is rejected, not silently defaulted. This schema is the checked-in machine-readable artifact; the operative source of truth for readers/writers is the octl_core::plan Rust validator, and a drift-guard test keeps the two in agreement.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,7 @@
     "schema_version": {
       "description": "Major schema version. Readers reject unsupported majors (do NOT silently ignore).",
       "type": "integer",
-      "const": 2
+      "const": 3
     },
     "plan_rev": {
       "description": "Immutable revision of this plan. A fix or re-spec writes plan.v(N+1).json; each chunk attempt records the plan_rev it consumed.",
@@ -44,14 +44,14 @@
       "description": "Snapshot at feat/<slug> fork; verify + the deterministic floor diff against it. Supervisor-owned.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["ref", "test_passlist_hash", "clippy_warnings_hash"],
+      "required": ["ref", "commit_oid", "toolchain", "test_passlist_hash", "clippy_warnings_hash", "enumerated_targets_hash"],
       "properties": {
         "ref": { "type": "string", "minLength": 1 },
-        "commit_oid": { "type": "string", "description": "Ref resolved to an immutable commit OID at capture time (floor provenance; additive-optional)." },
-        "toolchain": { "type": "string", "description": "rustc -V fingerprint the snapshot was captured with (floor provenance; additive-optional)." },
+        "commit_oid": { "type": "string", "minLength": 1, "description": "Ref resolved to an immutable commit OID at capture time (floor provenance; required as of v3)." },
+        "toolchain": { "type": "string", "minLength": 1, "description": "rustc -V fingerprint the snapshot was captured with (floor provenance; required as of v3)." },
         "test_passlist_hash": { "type": "string", "minLength": 1 },
         "clippy_warnings_hash": { "type": "string", "minLength": 1 },
-        "enumerated_targets_hash": { "type": "string", "description": "Hash of the enumerated (package, target_kind, target) test-target set (floor F7 superset check; additive-optional)." }
+        "enumerated_targets_hash": { "type": "string", "minLength": 1, "description": "Hash of the enumerated (package, target_kind, target) test-target set (floor F7 superset check; required as of v3)." }
       }
     },
     "acceptance": {

@@ -1946,9 +1946,9 @@ fn resolve_intent_reads_file_or_literal() {
 #[test]
 fn topo_order_respects_deps() {
     let plan = plan::parse_and_validate_plan(&json!({
-        "schema_version": 2, "plan_rev": 1, "intent_rev": 1,
+        "schema_version": 3, "plan_rev": 1, "intent_rev": 1,
         "feature": {"slug": "f", "source_branch": "main", "integration_branch": "feat/f"},
-        "baseline": {"ref": "feat/f@fork", "test_passlist_hash": "h", "clippy_warnings_hash": "h"},
+        "baseline": {"ref": "feat/f@fork", "commit_oid": "0123456789abcdef0123456789abcdef01234567", "toolchain": "rustc 1.97.1", "test_passlist_hash": "h", "clippy_warnings_hash": "h", "enumerated_targets_hash": "h"},
         "acceptance": [{"kind": "check", "desc": "e2e", "run": "true"}],
         "chunks": [
             {"id": "c2", "title": "t", "tier": "code", "brief": "b", "deps": ["c1"],

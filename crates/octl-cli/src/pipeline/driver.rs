@@ -540,9 +540,9 @@ mod tests {
     /// A two-chunk plan (`c1`, then `c2` depending on `c1`).
     fn plan() -> Plan {
         let v = json!({
-            "schema_version": 2, "plan_rev": 1, "intent_rev": 1,
+            "schema_version": 3, "plan_rev": 1, "intent_rev": 1,
             "feature": {"slug": "f", "source_branch": "main", "integration_branch": "feat/f"},
-            "baseline": {"ref": "feat/f@fork", "test_passlist_hash": "h", "clippy_warnings_hash": "h"},
+            "baseline": {"ref": "feat/f@fork", "commit_oid": "0123456789abcdef0123456789abcdef01234567", "toolchain": "rustc 1.97.1", "test_passlist_hash": "h", "clippy_warnings_hash": "h", "enumerated_targets_hash": "h"},
             "acceptance": [{"kind": "check", "desc": "e2e", "run": "cargo test"}],
             "chunks": [
                 {"id": "c1", "title": "t", "tier": "code", "brief": "b", "files_touched": ["a.rs"], "checks": [{"desc": "d", "run": "r"}]},

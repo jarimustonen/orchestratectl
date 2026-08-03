@@ -47,9 +47,9 @@ pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};
 pub use paths::{nofollow, run_dir, validate_run_id, RunPaths};
 pub use plan::{
-    parse_and_validate_plan, plan_v2_json_schema, validate_plan, Acceptance, Baseline, Check,
-    Chunk, Feature, Plan, PlanValidationError, Tier, PLAN_SCHEMA_VERSION, PLAN_V2_JSON_SCHEMA,
-    SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
+    parse_and_validate_plan, plan_v3_json_schema, validate_plan, Acceptance, Baseline, Check,
+    Chunk, Feature, Plan, PlanValidationError, Tier, PLAN_SCHEMA_VERSION, PLAN_V3_JSON_SCHEMA,
+    PROVENANCE_REQUIRED_SCHEMA, SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
 };
 pub use projections::{
     read_discussion, read_discussion_opt, read_manifest, read_manifest_opt, read_node,

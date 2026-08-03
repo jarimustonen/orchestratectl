@@ -1,17 +1,28 @@
-//! `plan.json` v2 — serde types + structural validator (design.md §4, §7, §13).
+//! `plan.json` v3 — serde types + structural validator (design.md §4, §7, §13).
 //!
 //! `plan.json` is the **interface contract** the spec-node writes and the
 //! supervisor + orchestrator read. It is immutable per revision, versioned, and
 //! provenance-bearing. This module provides:
 //!
-//! - The serde [`Plan`] type (and its parts) mirroring `plan-schema.md` v2.
+//! - The serde [`Plan`] type (and its parts) mirroring `plan-schema.md` v3.
 //! - A structural [`validate_plan`] / [`parse_and_validate_plan`] pass that
 //!   rejects a bad plan with a domain-typed [`PlanValidationError`] (the CLI
 //!   maps these to its `schema_violation` envelope at the boundary, exactly as
 //!   it does for [`crate::report::ReportValidationError`]).
-//! - [`PLAN_V2_JSON_SCHEMA`], the checked-in JSON Schema artifact, so external
+//! - [`PLAN_V3_JSON_SCHEMA`], the checked-in JSON Schema artifact, so external
 //!   readers/writers validate against a single source of truth. A drift-guard
 //!   test keeps the Rust types and the JSON Schema in agreement.
+//!
+//! # v3: baseline provenance is structurally required
+//!
+//! v3 promotes the three baseline provenance fields — `commit_oid`,
+//! `toolchain`, and `enumerated_targets_hash` — from additive-optional
+//! (`#[serde(default)]` in v2) to **required**. A v3 plan missing any of them is
+//! rejected at [`validate_plan`] ([`PROVENANCE_REQUIRED_SCHEMA`]) rather than
+//! silently defaulted to an empty string, so a plan that carries no provenance
+//! can never be certified. This complements the runtime fail-closed gate
+//! (`verify_plan_baseline` / `gate_plan_baseline` in the CLI): the schema makes
+//! the evidence structurally mandatory, the evaluator makes it *match*.
 //!
 //! # Compatibility semantics (design.md §13, `plan-schema.md` "Principles")
 //!
@@ -19,15 +30,15 @@
 //! is not "ignore everything unknown":
 //!
 //! - Readers **reject unsupported major versions** ([`SUPPORTED_PLAN_SCHEMAS`]).
-//! - Readers **reject undeclared fields** — any key not in the v2 shape is a
+//! - Readers **reject undeclared fields** — any key not in the v3 shape is a
 //!   rejection. On the map-like objects (plan, `feature`, `baseline`,
 //!   `chunks[]`, `chunks[].checks[]`) this is [`PlanValidationError::UnknownField`],
 //!   gated by a **per-object-shape** allowlist ([`tolerated_fields`]): a field
 //!   ratified as additive on one shape is tolerated there and nowhere else. On
 //!   `acceptance[]` items (a tagged enum) it is a `deny_unknown_fields`
 //!   deserialization error ([`PlanValidationError::Malformed`]) — the same
-//!   stance the JSON Schema takes, with no additive seam in v2. The allowlists
-//!   are empty in v2, so every unknown key is currently rejected; a future minor
+//!   stance the JSON Schema takes, with no additive seam in v3. The allowlists
+//!   are empty in v3, so every unknown key is currently rejected; a future minor
 //!   registers an additive optional field against its shape (and in the JSON
 //!   Schema) so older readers tolerate it, and only then. Schema growth
 //!   otherwise goes gap-event → reviewed proposal → versioned schema.
@@ -43,14 +54,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The current `plan.json` schema major version this crate writes.
-pub const PLAN_SCHEMA_VERSION: u32 = 2;
+pub const PLAN_SCHEMA_VERSION: u32 = 3;
 
 /// All `plan.json` schema major versions this crate can read. A file whose
 /// `schema_version` is not listed here is rejected outright
 /// ([`PlanValidationError::UnsupportedSchemaVersion`]) — tolerant reading is
 /// limited to additive optional fields *within* a supported major, never to a
 /// whole unknown major.
-pub const SUPPORTED_PLAN_SCHEMAS: &[u32] = &[2];
+///
+/// v2 is intentionally dropped: a v2 plan carries optional-by-default provenance
+/// and so cannot satisfy the v3 structural requirement. Rather than admit it and
+/// then fail it on the provenance gate, a v2 document is rejected up front as an
+/// unsupported major (the runtime already fails closed on missing provenance).
+pub const SUPPORTED_PLAN_SCHEMAS: &[u32] = &[3];
+
+/// The first schema major at which baseline provenance (`commit_oid`,
+/// `toolchain`, `enumerated_targets_hash`) is **structurally required** at
+/// [`validate_plan`] rather than additive-optional. A plan whose
+/// `schema_version` is `>=` this value must carry all three as non-empty
+/// strings; below it (a hypothetical future re-admittance of an older major)
+/// the fields are tolerated absent. Today only v3 is supported, so the gate is
+/// always active — the threshold is written explicitly so the requirement
+/// survives a later widening of [`SUPPORTED_PLAN_SCHEMAS`].
+pub const PROVENANCE_REQUIRED_SCHEMA: u32 = 3;
 
 /// Field names tolerated when they appear as unknown keys in an otherwise-valid
 /// plan — the governed-evolution seam (design.md §13). Empty in v2: no additive
@@ -115,7 +141,7 @@ const fn tolerated_fields(shape: ObjectShape) -> &'static [&'static str] {
     }
 }
 
-/// The checked-in JSON Schema (Draft 2020-12) describing `plan.json` v2.
+/// The checked-in JSON Schema (Draft 2020-12) describing `plan.json` v3.
 ///
 /// This is the machine-readable artifact external readers/writers validate
 /// against. The operative source of truth for the supervisor/spec-node is the
@@ -123,22 +149,22 @@ const fn tolerated_fields(shape: ObjectShape) -> &'static [&'static str] {
 /// (`json_schema_matches_rust_types`) asserts the two never diverge on the
 /// version constant, the required top-level fields, the [`Tier`] enum, and the
 /// acceptance `kind` discriminants.
-pub const PLAN_V2_JSON_SCHEMA: &str = include_str!("../schemas/plan.v2.schema.json");
+pub const PLAN_V3_JSON_SCHEMA: &str = include_str!("../schemas/plan.v3.schema.json");
 
-/// Return the checked-in JSON Schema source for `plan.json` v2.
+/// Return the checked-in JSON Schema source for `plan.json` v3.
 #[must_use]
-pub fn plan_v2_json_schema() -> &'static str {
-    PLAN_V2_JSON_SCHEMA
+pub fn plan_v3_json_schema() -> &'static str {
+    PLAN_V3_JSON_SCHEMA
 }
 
-/// The checked-in canonical `plan.json` v2 example (`plan-schema.md` sample),
+/// The checked-in canonical `plan.json` v3 example (`plan-schema.md` sample),
 /// exposed so a spec-node prompt can show the model the exact target shape.
-pub const PLAN_V2_EXAMPLE: &str = include_str!("../schemas/plan.v2.example.json");
+pub const PLAN_V3_EXAMPLE: &str = include_str!("../schemas/plan.v3.example.json");
 
-/// Return the canonical `plan.json` v2 example document.
+/// Return the canonical `plan.json` v3 example document.
 #[must_use]
-pub fn plan_v2_json_schema_example() -> &'static str {
-    PLAN_V2_EXAMPLE
+pub fn plan_v3_json_schema_example() -> &'static str {
+    PLAN_V3_EXAMPLE
 }
 
 /// A `plan.json` v2 document (design.md §4, §7; `plan-schema.md`).
@@ -198,25 +224,28 @@ pub struct Feature {
 /// captured with, and `enumerated_targets_hash` (F7). The evaluator compares all
 /// of these — not just the two content hashes — so a spec-node cannot smuggle a
 /// baseline captured at a different commit, under a different toolchain, or over
-/// a narrowed target set than the one the supervisor gates against. All three
-/// are additive-optional (`#[serde(default)]`) so an older plan without them
-/// still *deserializes*, but the evaluator (`verify_plan_baseline`) **fails
-/// closed** on an empty `commit_oid` / `toolchain`: a plan that carries no
-/// provenance is rejected and must be recaptured, never silently certified. The
-/// serde defaults are for wire compatibility, not for weakening the gate — a
-/// security oracle does not treat "no evidence" as a match.
+/// a narrowed target set than the one the supervisor gates against.
+///
+/// As of schema v3 ([`PROVENANCE_REQUIRED_SCHEMA`]) all three are **required**:
+/// they carry no `#[serde(default)]`, so a document missing one fails to
+/// deserialize ([`PlanValidationError::Malformed`]), and [`validate_plan`]
+/// additionally rejects an empty / whitespace-only value
+/// ([`PlanValidationError::EmptyString`]) — the same two-layer treatment the
+/// other required baseline strings (`ref`, the two content hashes) get. This is
+/// the structural half of the fail-closed provenance guard; the evaluator
+/// (`verify_plan_baseline`) is the runtime half that additionally checks the
+/// values *match* the live snapshot. A security oracle treats "no evidence" as
+/// a rejection, not a match — so the plan may not even omit the evidence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Baseline {
     /// Git ref the snapshot was taken at (e.g. `feat/<slug>@fork`) — mutable,
     /// display/audit only; `commit_oid` is the authoritative binding.
     pub r#ref: String,
     /// The ref resolved to an immutable commit OID at capture time (provenance).
-    /// Additive-optional: absent on a pre-round-2 plan.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// Required as of v3.
     pub commit_oid: String,
     /// `rustc -V` fingerprint the snapshot was captured with (provenance).
-    /// Additive-optional: absent on a pre-round-2 plan.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// Required as of v3.
     pub toolchain: String,
     /// Hash of the passing-test list at baseline (floor: no baseline pass may
     /// regress).
@@ -225,8 +254,7 @@ pub struct Baseline {
     pub clippy_warnings_hash: String,
     /// Hash of the enumerated `(package, target_kind, target)` test-target set at
     /// baseline (floor F7: the tip's set must be a superset — a shrink fails
-    /// closed). Additive-optional: absent on a pre-round-2 plan.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// closed). Required as of v3.
     pub enumerated_targets_hash: String,
     /// Unrecognized keys, captured for the compatibility check.
     #[serde(flatten)]
@@ -609,7 +637,7 @@ pub fn validate_plan(plan: &Plan) -> Result<(), PlanValidationError> {
     // Re-gate the version: `validate_plan` is a public entry point, and a `Plan`
     // built directly or deserialized without the raw gate could carry an
     // unsupported major. Without this, a caller re-checking a typed plan (as the
-    // doc invites) could admit `schema_version: 3`.
+    // doc invites) could admit an unsupported `schema_version` (e.g. `4`).
     check_supported_version(u64::from(plan.schema_version))?;
 
     // --- undeclared-field rejection (compatibility semantics) ---
@@ -633,6 +661,21 @@ pub fn validate_plan(plan: &Plan) -> Result<(), PlanValidationError> {
         &plan.baseline.clippy_warnings_hash,
         "baseline.clippy_warnings_hash",
     )?;
+
+    // --- baseline provenance required (v3 / PROVENANCE_REQUIRED_SCHEMA) ---
+    // At v3 and above the three provenance fields are structurally required.
+    // A missing field already failed deserialization (they carry no serde
+    // default); this rejects an empty / whitespace-only value with a per-field
+    // error, closing the "present but blank" hole a security oracle must not
+    // treat as evidence.
+    if plan.schema_version >= PROVENANCE_REQUIRED_SCHEMA {
+        non_empty(&plan.baseline.commit_oid, "baseline.commit_oid")?;
+        non_empty(&plan.baseline.toolchain, "baseline.toolchain")?;
+        non_empty(
+            &plan.baseline.enumerated_targets_hash,
+            "baseline.enumerated_targets_hash",
+        )?;
+    }
 
     // --- acceptance: non-empty, ≥1 executable check ---
     if plan.acceptance.is_empty() {
@@ -966,10 +1009,10 @@ mod tests {
     use serde_json::json;
 
     /// The canonical valid plan — the `plan-schema.md` example, kept in sync
-    /// with the checked-in `schemas/plan.v2.example.json` by
+    /// with the checked-in `schemas/plan.v3.example.json` by
     /// `checked_in_example_is_valid`.
     fn valid_plan() -> Value {
-        serde_json::from_str(include_str!("../schemas/plan.v2.example.json")).unwrap()
+        serde_json::from_str(include_str!("../schemas/plan.v3.example.json")).unwrap()
     }
 
     // --- valid ---
@@ -986,20 +1029,33 @@ mod tests {
     #[test]
     fn checked_in_example_is_valid() {
         // The example artifact and the doc example are one and the same; if the
-        // artifact drifts out of the v2 shape this fails.
-        let raw: Value = serde_json::from_str(PLAN_V2_EXAMPLE).unwrap();
+        // artifact drifts out of the v3 shape this fails.
+        let raw: Value = serde_json::from_str(PLAN_V3_EXAMPLE).unwrap();
         assert!(parse_and_validate_plan(&raw).is_ok());
     }
-    const PLAN_V2_EXAMPLE: &str = include_str!("../schemas/plan.v2.example.json");
+
+    /// A minimal but complete v3 baseline block — all required strings present
+    /// and non-empty, including the three provenance fields. Shared by the
+    /// inline-fixture tests that don't start from [`valid_plan`].
+    fn minimal_baseline() -> Value {
+        json!({
+            "ref": "feat/f@fork",
+            "commit_oid": "0123456789abcdef0123456789abcdef01234567",
+            "toolchain": "rustc 1.97.1 (abcdef012 2026-06-01)",
+            "test_passlist_hash": "sha256:a",
+            "clippy_warnings_hash": "sha256:b",
+            "enumerated_targets_hash": "sha256:c"
+        })
+    }
 
     #[test]
     fn minimal_valid_plan() {
         let v = json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "plan_rev": 1,
             "intent_rev": 1,
             "feature": {"slug": "f", "source_branch": "main", "integration_branch": "feat/f"},
-            "baseline": {"ref": "feat/f@fork", "test_passlist_hash": "sha256:a", "clippy_warnings_hash": "sha256:b"},
+            "baseline": minimal_baseline(),
             "acceptance": [{"kind": "check", "desc": "e2e", "run": "cargo test"}],
             "chunks": [{
                 "id": "c1", "title": "t", "tier": "code", "brief": "b",
@@ -1023,16 +1079,29 @@ mod tests {
     #[test]
     fn unsupported_major_rejected() {
         let mut v = valid_plan();
-        v["schema_version"] = json!(3);
+        v["schema_version"] = json!(4);
         let err = parse_and_validate_plan(&v).unwrap_err();
         assert!(matches!(
             err,
-            PlanValidationError::UnsupportedSchemaVersion { found: 3, .. }
+            PlanValidationError::UnsupportedSchemaVersion { found: 4, .. }
         ));
         assert_eq!(
             err.expected(),
-            Some(json!({"field": "schema_version", "supported": [2]}))
+            Some(json!({"field": "schema_version", "supported": [3]}))
         );
+    }
+
+    #[test]
+    fn v2_major_now_unsupported() {
+        // v2 is deliberately dropped from SUPPORTED_PLAN_SCHEMAS: a v2 plan
+        // carries optional-by-default provenance and cannot satisfy the v3
+        // requirement, so it is rejected up front as an unsupported major.
+        let mut v = valid_plan();
+        v["schema_version"] = json!(2);
+        assert!(matches!(
+            parse_and_validate_plan(&v).unwrap_err(),
+            PlanValidationError::UnsupportedSchemaVersion { found: 2, .. }
+        ));
     }
 
     #[test]
@@ -1061,10 +1130,10 @@ mod tests {
         // after deserialization) must still be rejected by `validate_plan` —
         // otherwise the "re-check a typed plan" path admits an unsupported major.
         let mut plan = parse_and_validate_plan(&valid_plan()).unwrap();
-        plan.schema_version = 3;
+        plan.schema_version = 4;
         assert!(matches!(
             validate_plan(&plan).unwrap_err(),
-            PlanValidationError::UnsupportedSchemaVersion { found: 3, .. }
+            PlanValidationError::UnsupportedSchemaVersion { found: 4, .. }
         ));
     }
 
@@ -1458,9 +1527,9 @@ mod tests {
     fn longer_cycle_rejected() {
         // Three chunks a -> b -> c -> a.
         let v = json!({
-            "schema_version": 2, "plan_rev": 1, "intent_rev": 1,
+            "schema_version": 3, "plan_rev": 1, "intent_rev": 1,
             "feature": {"slug": "f", "source_branch": "main", "integration_branch": "feat/f"},
-            "baseline": {"ref": "r", "test_passlist_hash": "h", "clippy_warnings_hash": "h"},
+            "baseline": minimal_baseline(),
             "acceptance": [{"kind": "check", "desc": "e2e", "run": "t"}],
             "chunks": [
                 {"id": "a", "title": "t", "tier": "code", "brief": "b", "deps": ["c"], "files_touched": ["x"], "checks": [{"desc": "d", "run": "r"}]},
@@ -1478,9 +1547,9 @@ mod tests {
     fn diamond_dag_is_acyclic() {
         // a -> {b, c} -> d is a valid DAG (a shared dep + a join).
         let v = json!({
-            "schema_version": 2, "plan_rev": 1, "intent_rev": 1,
+            "schema_version": 3, "plan_rev": 1, "intent_rev": 1,
             "feature": {"slug": "f", "source_branch": "main", "integration_branch": "feat/f"},
-            "baseline": {"ref": "r", "test_passlist_hash": "h", "clippy_warnings_hash": "h"},
+            "baseline": minimal_baseline(),
             "acceptance": [{"kind": "check", "desc": "e2e", "run": "t"}],
             "chunks": [
                 {"id": "a", "title": "t", "tier": "code", "brief": "b", "files_touched": ["w"], "checks": [{"desc": "d", "run": "r"}]},
@@ -1570,6 +1639,69 @@ mod tests {
         ));
     }
 
+    // --- v3 baseline provenance is structurally required ---
+
+    #[test]
+    fn missing_provenance_field_is_malformed() {
+        // Each provenance field carries no serde default in v3, so a document
+        // that OMITS one fails to deserialize (Malformed) — provenance can't be
+        // silently defaulted to empty as it was in v2.
+        for field in ["commit_oid", "toolchain", "enumerated_targets_hash"] {
+            let mut v = valid_plan();
+            v["baseline"].as_object_mut().unwrap().remove(field);
+            let err = parse_and_validate_plan(&v).unwrap_err();
+            assert!(
+                matches!(err, PlanValidationError::Malformed { .. }),
+                "expected Malformed for missing baseline.{field}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_provenance_field_rejected() {
+        // A present-but-blank provenance value is rejected by validate_plan with
+        // a per-field EmptyString error (the PROVENANCE_REQUIRED_SCHEMA gate) —
+        // "no evidence" is never treated as evidence.
+        for field in ["commit_oid", "toolchain", "enumerated_targets_hash"] {
+            let mut v = valid_plan();
+            v["baseline"][field] = json!("   ");
+            let err = parse_and_validate_plan(&v).unwrap_err();
+            assert!(
+                matches!(&err, PlanValidationError::EmptyString { path } if path == &format!("baseline.{field}")),
+                "expected EmptyString for blank baseline.{field}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_gate_fires_via_validate_plan_on_typed_blank() {
+        // A typed Plan that blanks a provenance field after deserialization is
+        // still rejected by validate_plan (the gate is in validate_plan, not
+        // only at the serde boundary).
+        let mut plan = parse_and_validate_plan(&valid_plan()).unwrap();
+        plan.baseline.commit_oid = String::new();
+        assert!(matches!(
+            validate_plan(&plan).unwrap_err(),
+            PlanValidationError::EmptyString { path } if path == "baseline.commit_oid"
+        ));
+    }
+
+    #[test]
+    fn provenance_fields_always_serialize() {
+        // Required fields carry no skip_serializing_if, so a round-trip always
+        // re-emits them (a spec that dropped one on serialize would fail the
+        // reader that re-validates it).
+        let plan = parse_and_validate_plan(&valid_plan()).unwrap();
+        let reser = serde_json::to_value(&plan).unwrap();
+        let baseline = reser["baseline"].as_object().unwrap();
+        for field in ["commit_oid", "toolchain", "enumerated_targets_hash"] {
+            assert!(
+                baseline.contains_key(field),
+                "baseline must serialize {field}"
+            );
+        }
+    }
+
     // --- tier wire names ---
 
     #[test]
@@ -1584,7 +1716,7 @@ mod tests {
 
     #[test]
     fn json_schema_matches_rust_types() {
-        let schema: Value = serde_json::from_str(PLAN_V2_JSON_SCHEMA)
+        let schema: Value = serde_json::from_str(PLAN_V3_JSON_SCHEMA)
             .expect("checked-in JSON Schema must be valid JSON");
 
         // Version constant agrees.
@@ -1642,7 +1774,14 @@ mod tests {
         );
         assert_eq!(
             required_at("/properties/baseline/required"),
-            set(&["ref", "test_passlist_hash", "clippy_warnings_hash"])
+            set(&[
+                "ref",
+                "commit_oid",
+                "toolchain",
+                "test_passlist_hash",
+                "clippy_warnings_hash",
+                "enumerated_targets_hash",
+            ])
         );
         assert_eq!(
             required_at("/$defs/chunk/required"),
@@ -1747,13 +1886,13 @@ mod tests {
 
         // The example the doc/tests use validates against the Rust validator,
         // tying schema + types + example together.
-        let example: Value = serde_json::from_str(PLAN_V2_EXAMPLE).unwrap();
+        let example: Value = serde_json::from_str(PLAN_V3_EXAMPLE).unwrap();
         assert!(parse_and_validate_plan(&example).is_ok());
     }
 
     #[test]
-    fn tolerated_optional_seam_is_empty_in_v2() {
-        // The governed-evolution seam exists but admits nothing in v2: every
+    fn tolerated_optional_seam_is_empty_in_v3() {
+        // The governed-evolution seam exists but admits nothing in v3: every
         // object shape's allowlist is empty, so any unknown key is rejected.
         for shape in [
             ObjectShape::Plan,

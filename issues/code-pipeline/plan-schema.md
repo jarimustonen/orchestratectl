@@ -1,8 +1,14 @@
-# `plan.json` — v2 schema draft (post-panel)
+# `plan.json` — v3 schema draft (post-panel)
 
 The **interface contract** the spec-node writes and the supervisor + orchestrator
 read. Immutable per revision, versioned, provenance-bearing. See design.md §4, §7,
 §13.
+
+**v3 (2026-08-03):** the three baseline provenance fields — `commit_oid`,
+`toolchain`, `enumerated_targets_hash` — are now **structurally required** (they
+were additive-optional in v2). A plan missing any of them is rejected at
+`validate_plan`, not silently defaulted; v2 is dropped from the supported majors.
+See issue `plan-schema-v3-provenance-required`.
 
 ## Principles
 
@@ -21,11 +27,11 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 - **Governed evolution.** A gap → a structured schema-gap event → deduplicated,
   reviewed proposal → versioned schema. Never "agent asks → field added."
 
-## Shape (v2)
+## Shape (v3)
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "plan_rev": 1,
   "intent_rev": 3,
   "feature": {
@@ -35,8 +41,11 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
   },
   "baseline": {
     "ref": "feat/user-csv-export@fork",
+    "commit_oid": "3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f40",
+    "toolchain": "rustc 1.97.1 (abcdef012 2026-06-01)",
     "test_passlist_hash": "sha256:…",
-    "clippy_warnings_hash": "sha256:…"
+    "clippy_warnings_hash": "sha256:…",
+    "enumerated_targets_hash": "sha256:…"
   },
   "acceptance": [
     {
@@ -84,15 +93,18 @@ read. Immutable per revision, versioned, provenance-bearing. See design.md §4, 
 }
 ```
 
-## Field reference (v2 changes in **bold**)
+## Field reference (v3 changes in **bold**)
 
 | Field | Type | Owner | Meaning |
 |---|---|---|---|
-| `schema_version` | int (major) | spec | reader rejects unsupported majors |
-| **`plan_rev`** | int | spec | immutable revision; chunk attempts reference it |
-| **`intent_rev`** | int | orchestrator | the intent revision this plan targets (intent lives in `intent.md`) |
-| `feature.slug/source_branch/integration_branch` | string | orchestrator/spec | as v1 (intent field removed — now referenced) |
-| **`baseline`** | object | supervisor | snapshot at `feat/<slug>` fork; verify + floor diff against it |
+| `schema_version` | int (major) | spec | reader rejects unsupported majors (v3 is the only supported major; v2 dropped) |
+| `plan_rev` | int | spec | immutable revision; chunk attempts reference it |
+| `intent_rev` | int | orchestrator | the intent revision this plan targets (intent lives in `intent.md`) |
+| `feature.slug/source_branch/integration_branch` | string | orchestrator/spec | feature identity |
+| `baseline` | object | supervisor | snapshot at `feat/<slug>` fork; verify + floor diff against it |
+| **`baseline.commit_oid`** | string | supervisor | **required as of v3** — the ref resolved to an immutable commit OID at capture time (provenance) |
+| **`baseline.toolchain`** | string | supervisor | **required as of v3** — the `rustc -V` fingerprint the snapshot was captured with (provenance) |
+| **`baseline.enumerated_targets_hash`** | string | supervisor | **required as of v3** — hash of the enumerated `(package, target_kind, target)` test-target set (floor F7 superset check) |
 | **`acceptance[]`** | object[] | spec | whole-feature intent gate; each is `check` (executable) or `assertion` (LLM-judged); **≥1 must be a `check`** |
 | `chunks[].id/title/deps/tier/brief` | — | spec | as v1 (`deps` = DAG; `tier` = starting hint, orchestrator owns promotion) |
 | `chunks[].files_touched[]` | string[] | spec | **now a merge-time constraint** (supervisor rejects out-of-scope merges beyond slack), not just a hint |
