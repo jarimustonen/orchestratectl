@@ -3,8 +3,9 @@ created: 2026-07-25
 updated: 2026-08-04
 type: feature
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-04
 ---
 
 # run cancel should accept an unambiguous run-id prefix (like run show), not require full 26-char ULID
