@@ -6,6 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-04
+
+First public release — published to crates.io (`orchestratectl`, `octl-core`)
+and installable via Homebrew (`brew install jarimustonen/orchestratectl/orchestratectl`).
+
 ### Fixed
 
 - **`pipeline run` spec/verify: parse the model's `type:result` message, not the `type:system` init banner (`pipeline-claude-output-parse`).** `claude -p --output-format json` (Claude Code ≥ 2.1.211) emits a *sequence* of JSON messages — an init banner first, then the answer — so reading `.result` off the whole output failed and the raw-transcript fallback fed the init banner into the plan parser, making every live spec fail `missing field acceptance`. `run_claude` now parses the transcript with a streaming deserializer (tolerant of a top-level array, NDJSON, concatenated `{…}{…}`, and pretty-printed multi-line objects) and selects the last `type == "result"` message's `.result`. The raw-transcript fallback is now narrow — it fires only when NO Claude envelope was recognized; a recognized envelope with no usable result returns empty so the caller fails loudly rather than silently mis-parsing the banner. Fixes both spec and verify in the shared path.
