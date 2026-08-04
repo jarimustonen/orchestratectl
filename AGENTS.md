@@ -45,9 +45,11 @@ All planning documents (plans, analyses, validations, designs, breakdowns, todos
 - `issues/<slug>/breakdown.md` — epic → child-issue breakdown with dependencies and critical path
 - `issues/<slug>/todo.md` — task checklists
 
-## Operating policy (for `/stint` and orchestrators)
+## Operating policy (for `/stint-start` and orchestrators)
 
-Read by `/stint` Phase 0. Every project-specific fact an orchestrator needs:
+Read by `/stint-start` Phase 0 (the round engine; `/stint` was split 2026-08-04 into
+`/stint-start` + `/stint-handoff`, with bug intake decoupled to homebase `/triage-bugs`).
+Every project-specific fact an orchestrator needs:
 
 - **No server deploy.** This project has no staging/production server. Changes land on `main` and the human pushes. A stint's "deploy" is therefore either nothing (work lands on main) or, when a CLI-surface / SKILL change must be reflected in the running tool, a **local rebuild**: `cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor` (expect 0 fail / 0 warn).
 - **Deploy autonomy:** local rebuild is always fine (no ask). **Pushing `main` is the human's call** (Jari's global CLAUDE.md) — never push without being asked.
