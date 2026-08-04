@@ -329,13 +329,8 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
     k.lifecycle()
 }
 
-/// Canonical length of a run-id ULID (mirrors the private `RunId::LEN`). A value
-/// of this length or longer is only ever accepted as an exact ULID; a shorter
-/// value is a candidate prefix.
-const RUN_ID_LEN: usize = 26;
-
 /// Resolve a run-id argument — which may be an unambiguous *prefix* (like `git`
-/// short SHAs) — to a full run-id string.
+/// short SHAs) — to a typed, validated [`RunId`].
 ///
 /// - A full-length value must be an exact valid ULID; it is returned verbatim
 ///   with no directory scan, so the existing exact-id behaviour (and each
@@ -345,23 +340,30 @@ const RUN_ID_LEN: usize = 26;
 ///   directories under `<root>/runs/`: exactly one match resolves; several match
 ///   surfaces `ambiguous_run_id` (listing the candidates in `expected`); none
 ///   match surfaces `run_not_found`.
-/// - A malformed value (empty, non-Crockford char, over-length non-ULID) surfaces
-///   `invalid_run_id`, keeping a typo distinct from a well-formed-but-unknown
-///   prefix.
-pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<String, CliError> {
+/// - A malformed value (empty, non-Crockford char, impossible leading digit,
+///   over-length non-ULID) surfaces `invalid_run_id`, keeping a typo distinct
+///   from a well-formed-but-unknown prefix.
+///
+/// The prefix scan is a best-effort read of the runs directory, deliberately NOT
+/// under a namespace lock (no such lock exists — a run is not known until after
+/// the scan). It fails *closed*: a `read_dir` iteration error propagates as
+/// `io_error` rather than dropping a candidate, so an ambiguous prefix can never
+/// be silently narrowed to a single (wrong) match. A run created or torn down
+/// concurrently with the scan is an accepted race — a resolved id that is then
+/// deleted before the caller locks it surfaces as the caller's own
+/// `run_not_found` (see e.g. `cancel`'s `NotFound` handling).
+pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<RunId, CliError> {
     // Full-length (or longer): must be an exact ULID. A 26-char string that is
     // not a valid ULID (wrong charset, timestamp overflow) stays `invalid_run_id`
     // rather than being reinterpreted as a length-26 prefix that matches nothing.
-    if arg.len() >= RUN_ID_LEN {
-        return RunId::parse_str(arg)
-            .map(|rid| rid.as_str().to_string())
-            .map_err(|e| {
-                CliError::user(
-                    "invalid_run_id",
-                    format!("run id {arg:?} is not a valid ULID: {e}"),
-                )
-                .with_invalid_value(arg)
-            });
+    if arg.len() >= RunId::LEN {
+        return RunId::parse_str(arg).map_err(|e| {
+            CliError::user(
+                "invalid_run_id",
+                format!("run id {arg:?} is not a valid ULID: {e}"),
+            )
+            .with_invalid_value(arg)
+        });
     }
     // Shorter than a ULID: a prefix. Reject a malformed prefix up front so a typo
     // is `invalid_run_id`, not a silent no-match.
@@ -370,22 +372,17 @@ pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<String, CliError> {
             "invalid_run_id",
             format!(
                 "run id {arg:?} is not a valid ULID or run-id prefix: \
-                 expected up to {RUN_ID_LEN} lowercase Crockford base32 characters"
+                 expected up to {} lowercase Crockford base32 characters (leading 0-7)",
+                RunId::LEN
             ),
         )
         .with_invalid_value(arg));
     }
     let runs_dir = runs_root(root);
-    let mut matches: Vec<String> = match std::fs::read_dir(&runs_dir) {
-        Ok(entries) => entries
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .filter_map(|e| e.file_name().to_str().map(str::to_string))
-            // Only count directory names that are themselves valid run ids so a
-            // foreign dir sharing the prefix can never be resolved to.
-            .filter(|name| name.starts_with(arg) && RunId::parse_str(name).is_ok())
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    let entries = match std::fs::read_dir(&runs_dir) {
+        Ok(entries) => entries,
+        // No runs dir yet ⇒ no run can match ⇒ not-found (not a system error).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(prefix_not_found(arg)),
         Err(e) => {
             return Err(CliError::system(
                 "io_error",
@@ -393,23 +390,63 @@ pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<String, CliError> {
             ))
         }
     };
-    matches.sort();
-    match matches.len() {
-        0 => Err(CliError::user(
-            "run_not_found",
-            format!("no run matching id prefix {arg:?}"),
-        )
-        .with_invalid_value(arg)),
-        1 => Ok(matches.pop().expect("len checked == 1")),
-        n => Err(CliError::user(
-            "ambiguous_run_id",
-            format!("run id prefix {arg:?} matches {n} runs; use more characters to disambiguate"),
-        )
-        .with_invalid_value(arg)
-        .with_expected(serde_json::Value::Array(
-            matches.into_iter().map(serde_json::Value::String).collect(),
-        ))),
+    // Fail closed: propagate a per-entry iteration error instead of dropping the
+    // entry (a dropped candidate could turn an ambiguous prefix into a falsely
+    // unique one and then act on the wrong run).
+    let mut matches: Vec<RunId> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            CliError::system(
+                "io_error",
+                format!("read_dir {}: {}", runs_dir.display(), e),
+            )
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        // Match on the entry NAME being a valid run id sharing the prefix; a
+        // foreign dir (non-ULID name) can never be resolved to. Entry type is not
+        // filtered — an exact-id lookup lets `from_validated` surface a
+        // `corrupt_run` for a symlinked run dir, so counting it as a candidate
+        // keeps prefix and exact addressing consistent for that corruption case.
+        if name.starts_with(arg) {
+            if let Ok(rid) = RunId::parse_str(&name) {
+                matches.push(rid);
+            }
+        }
     }
+    match matches.len() {
+        0 => Err(prefix_not_found(arg)),
+        1 => Ok(matches.pop().expect("len checked == 1")),
+        n => {
+            // Sort only here, where the candidate list is actually emitted, so a
+            // deterministic error is presented without paying for a sort on the
+            // common unique / not-found paths.
+            matches.sort();
+            Err(CliError::user(
+                "ambiguous_run_id",
+                format!(
+                    "run id prefix {arg:?} matches {n} runs; use more characters to disambiguate"
+                ),
+            )
+            .with_invalid_value(arg)
+            .with_expected(serde_json::Value::Array(
+                matches
+                    .into_iter()
+                    .map(|r| serde_json::Value::String(r.as_str().to_string()))
+                    .collect(),
+            )))
+        }
+    }
+}
+
+/// `run_not_found` for a well-formed prefix that matched no run.
+fn prefix_not_found(arg: &str) -> CliError {
+    CliError::user(
+        "run_not_found",
+        format!("no run matching id prefix {arg:?}"),
+    )
+    .with_invalid_value(arg)
 }
 
 /// Resolve `<root>/runs/<run-id>` and return validated `RunPaths`.
@@ -424,19 +461,10 @@ pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<String, CliError> {
 /// than being collapsed into `run_not_found`. Callers that look a run up by id
 /// still emit their own `run_not_found` for the valid-but-missing case.
 pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
-    // Resolve a prefix (if any) to a full id first; `resolve_run_id_arg`
-    // guarantees the result parses as a valid ULID.
-    let resolved = resolve_run_id_arg(root, run_id)?;
-    // Validate the run-id into a typed RunId *before* composing any path, then
-    // build the run dir from the validated id — `run_dir` only accepts RunId, so
-    // a `..`/absolute component can never reach the filesystem.
-    let rid = RunId::parse_str(&resolved).map_err(|e| {
-        CliError::user(
-            "invalid_run_id",
-            format!("run id {resolved:?} is not a valid ULID: {e}"),
-        )
-        .with_invalid_value(&resolved)
-    })?;
+    // Resolve a prefix (if any) to a typed, already-validated run id; no re-parse
+    // is needed — `run_dir` only accepts a `RunId`, so a `..`/absolute component
+    // can never reach the filesystem.
+    let rid = resolve_run_id_arg(root, run_id)?;
     let dir = octl_core::run_dir(root, &rid);
     // `from_validated` runs the symlink-root guard; a symlinked run dir maps to
     // the `corrupt_run` envelope rather than being silently followed.

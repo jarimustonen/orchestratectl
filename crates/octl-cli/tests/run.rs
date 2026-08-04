@@ -567,6 +567,18 @@ fn cancel_unknown_prefix_returns_run_not_found() {
 }
 
 #[test]
+fn cancel_impossible_prefix_leading_digit_returns_invalid_run_id() {
+    let home = TestHome::new();
+    // A valid ULID's first char is bounded to 0..=7 (timestamp range), so an
+    // 8-/9-leading prefix can never match any run — it is malformed, not merely
+    // absent, and must classify as invalid_run_id (not run_not_found).
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", "8abc"]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "invalid_run_id");
+    assert_eq!(v["error"]["invalid_value"], "8abc");
+}
+
+#[test]
 fn reattach_spawns_supervisor_and_records_events() {
     let home = TestHome::new();
     let run_id = create(&home, "spinoff", "x");

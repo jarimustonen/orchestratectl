@@ -20,14 +20,20 @@ fn all_crockford_lower(s: &str) -> bool {
 }
 
 /// True iff `s` is a syntactically valid (possibly partial) prefix of a
-/// [`RunId`]: non-empty, no longer than a full ULID, and every character a
-/// lowercase Crockford base32 digit. Used by the CLI to resolve an unambiguous
-/// run-id prefix (like `git`) — a value failing this is a malformed argument,
-/// not a legitimate-but-unknown prefix. Does NOT enforce the first-char
-/// ULID-timestamp bound (a `9…` prefix simply matches no run rather than being
-/// rejected as malformed).
+/// [`RunId`]: non-empty, no longer than a full ULID, every character a lowercase
+/// Crockford base32 digit, and a first character within ULID's `0..=7`
+/// timestamp bound. Used by the CLI to resolve an unambiguous run-id prefix
+/// (like `git`) — a value failing this is a malformed argument (`invalid_run_id`),
+/// not a legitimate-but-unknown prefix. The first-char bound is enforced because
+/// no valid `RunId` can begin outside `0..=7`, so an `8…`/`9…` prefix is
+/// impossible rather than merely absent — reporting it as malformed keeps the
+/// error class honest and consistent with how [`RunId::parse_str`] rejects a
+/// full-length id with the same leading digit.
 pub fn is_run_id_prefix(s: &str) -> bool {
-    !s.is_empty() && s.len() <= RunId::LEN && all_crockford_lower(s)
+    !s.is_empty()
+        && s.len() <= RunId::LEN
+        && all_crockford_lower(s)
+        && matches!(s.as_bytes().first(), Some(b'0'..=b'7'))
 }
 
 /// True iff every byte of `s` is an RFC 4648 base32 character, lowercase
@@ -200,8 +206,10 @@ id_newtype! {
 impl RunId {
     /// Accepted-shape hint shared by every rejection.
     const EXPECTED: &'static str = "26-char lowercase Crockford base32 ULID";
-    /// Canonical length of a ULID in Crockford base32.
-    const LEN: usize = 26;
+    /// Canonical length of a ULID in Crockford base32. Public so CLI-side prefix
+    /// resolution can branch on "full id vs. prefix" without mirroring the
+    /// constant (which would silently drift if the id shape ever changed).
+    pub const LEN: usize = 26;
 
     /// Parse and validate a `run_id`. Accepts only the 26-character lowercase
     /// ULID shape; rejects wrong length, non-Crockford characters, and a first
