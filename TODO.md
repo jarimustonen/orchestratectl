@@ -6,46 +6,50 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-07-31 (DAG-driven stint; 6 units landed)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-04 (4 rounds + the /stint split; 13 units landed)
 
-**One-paragraph state.** This `/stint` session made the **execution DAG a first-class,
-self-maintaining artifact** and then drained three waves through it — **6 units landed on
-`main`, all green, integrated-gate verified, `doctor` 0/0**: `capture-agent-pane-by-pane-id`
-(agent.log now captured by stable `pane_id`), **`stint-maintains-execution-dag`** (the DAG
-convention itself — `/stint` now maintains an issue-derived DAG in this file: DAG owns the
-plan, issuectl owns status, stateful-merge self-heal across phases; design in
-`issues/stint-maintains-execution-dag/design.md`), `interactive-code-run-self-merged`
-(interactive `code` runs gated behind `--confirm-interactive`, can no longer self-merge past
-the human review gate), `floor-capture-trust-model` + `floor-capture-hardening-round-2`
-(floor evidence capture is now structured-JSON, injection-resistant, fail-closed,
-target-qualified, OID-provenance-bound + repo-config-neutralized), and
-`agent-skips-run-merge-idle-pending` (supervisor safety-net: an autonomous run that committed
-but skipped `run merge` and went idle now terminalizes to recoverable-failed within a bounded
-time; interactive exempt). v0.1.0 publish still **deferred**.
+**One-paragraph state.** This stint's headline deliverable: **`/stint` is now split into
+two orx-maintained bundled skills — `/stint-start` (the round engine) and `/stint-handoff`
+(the terminal wrap) — with bug intake fully decoupled** (`/triage-bugs` stays homebase-only,
+Phase-1 removed from the round engine). The shared Execution-DAG convention now lives in
+`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`, which `/stint-handoff` links to.
+Around that, **13 units landed on `main` across 4 rounds, all green, integrated-gate verified,
+`doctor` 0/0 (428 ok)**: R1 `floor-capture-hardening-round-3` (structured argv cargo + F5/F6/F7
+completeness + provenance wiring), `vendor-workmux-multiplexer` (typed tmux module),
+`idempotency-key-allowed-duplicate-run` (atomic key reservation), triage-ownership fix (landed in
+**homebase** `c301e39`, not here); R2 `concurrent-self-merge-race` (serialized self-merges),
+`pipeline-fix-loop-provenance`, `stint-recoverable-death-retry-harvest`; R3
+`merge-terminal-misleading`, `plan-schema-v3-provenance-required` (plan schema v2→v3, provenance
+structurally required); R4 `skill-install-prune-deregistered` (provenance-safe prune + doctor
+orphan check), `pipeline-fix-loop-rollback-hardening`, `run-cancel-accept-unambiguous-prefix`
+(prefix accepted across all run-id subcommands). v0.1.0 publish still **deferred**.
 
-**KEY LEARNING (reaffirmed live this session) — worker deaths are TRANSIENT.** The
-`agent-skips-run-merge-idle-pending` worker died `agent-died` after committing a 523-line
-first cut; the recoverability signal preserved the branch, and a **retry that harvested the
-first cut** reviewed + completed + landed it. Retry (with harvest), NOT hand-merge of
-unreviewed work, NOT base-agent swap. Heavy-LLM units legitimately take **54–96 min**; don't
-mistake a long run for a hang. (Earlier precedent: `pipeline-tiered-triage` died twice at
-~13 min, third spawn ran ~54 min and landed.)
+**KEY LEARNING (from prior stints, still canonical) — worker deaths are TRANSIENT.** Retry
+**with harvest** of the recoverable preserved branch (review → adopt → complete → merge), NOT
+hand-merge of unreviewed work, NOT base-agent swap. Heavy-LLM units legitimately take **54–96
+min**; a long run is not a hang. (This tactic is now encoded in `/stint-start` Phase 3 via
+`stint-recoverable-death-retry-harvest`.) NOTE: every worker this session landed cleanly on the
+first spawn — no deaths — but the discipline holds.
 
-**NEXT — execute the DAG below.** `GLOBAL HEAD-OF-LINE` is **`floor-capture-hardening-round-3`**
-(Lane B, high — Lane A's remaining heads are investigative/normal). Recompute the actual
-head at pick time from live `issuectl` status (`open`/`in-progress`, deps `fixed`/`done`) —
-the DAG stores the plan + lane/collision ordering, NOT status. Merge the DAG at Phase 0/7
-(drop landed, add active, keep order) per the convention in
-`crates/octl-cli/skills/stint/SKILL.template.md`.
+**Cross-repo pending:** the `/triage-bugs` ownership fix landed in **homebase**
+(`dotfiles/src/.claude/skills/triage-bugs/SKILL.md`, commit `c301e39`) — it needs homebase's own
+deploy to go live; not an orchestratectl concern.
 
-The superseded orphan worktree/branch `wt/01kym6a7bz-idle-pending-safetynet` from the
-`agent-skips-run-merge-idle-pending` death has been **removed** (2026-07-31; its work was
-harvested + landed via the retry, and its uncommitted test fragment was verified subsumed by
-main's more comprehensive coverage). No worktrees remain. `main` was pushed to `origin`.
+**NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is
+**`supervisor-spawn-fails-silently-at-run-create`** (Lane A, only remaining high — but
+investigative/no-repro; #4 stateful load-trigger only). Practical *actionable* heads, all
+disjoint and parallel-safe: Lane B `pipeline-parallel-chunks`, Lane C `workmux-extract-libs`
+(**reassess scope first** — the multiplexer slice already landed via `vendor-workmux-multiplexer`;
+this may be a re-scope-or-close), Lane D `doctor-skill-companion-sync`, Lane E
+`landing-signal-reliable-after-rebase` (**carries `collision: bundled-skill snapshot`** — it edits
+stint-start + worktree-spinoff templates, so do NOT run it parallel with a Lane D worktree).
+Recompute the head at pick time from live `issuectl` status; merge the DAG at Phase 0/7 per
+`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`. No worktrees remain; `main` clean,
+~11 unpushed (human pushes).
 
 ---
 
-## Execution DAG (2026-08-01)
+## Execution DAG (2026-08-04)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -55,7 +59,8 @@ order) — don't regenerate. `▶` = head-of-line snapshot — **re-compute from
 pick time** (`open`/`in-progress`, not `deferred`, deps `fixed`/`done`). `after <slug>
 (needs …)` = logical `blocked_by` mirror. `collision: <file>` = touches another lane's hot
 file (spawn-time exclusion). `[wip]` = a worktree currently has it (don't spawn again).
-Convention: `crates/octl-cli/skills/stint/SKILL.template.md` → *Execution DAG*.
+Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared reference
+`/stint-handoff` also links to; the old monolith `/stint` skill was split 2026-08-04).
 
 <!-- execution-dag:begin -->
 ```
@@ -129,6 +134,14 @@ harvested the recoverable first cut and landed it). New Lane A follow-ups filed 
 **Orphan cleaned 2026-07-31:** the superseded dead worktree/branch
 `wt/01kym6a7bz-idle-pending-safetynet` was removed (work landed via the retry; uncommitted
 test fragment verified subsumed by main's coverage). No worktrees remain.
+**Reconciled 2026-08-04 (4-round split stint):** dropped 13 landed slugs across 4 rounds
+(R1 floor-r3/vendor-workmux/idempotency/triage-ownership · R2 selfmerge-race/fixloop-provenance/
+retry-harvest · R3 merge-terminal/plan-schema-v3 · R4 skill-prune/pipeline-rollback/run-cancel-prefix)
+plus the `split-stint-start-handoff` refactor (/stint → /stint-start + /stint-handoff). Added the
+worker-filed follow-ups: `plan-schema-v3-provenance-required` (landed), `pipeline-fix-loop-rollback-hardening`
+(landed), `pipeline-provenance-durable-refs`, `skill-install-prune-deregistered` (landed),
+`doctor-skill-companion-sync`, `skill-companion-codex-layout`, `cancel-run-already-terminal-error-class`,
+`run-paths-typed-selector-split`. Lane D (skill machinery) refilled; DAG driftless at wrap.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
