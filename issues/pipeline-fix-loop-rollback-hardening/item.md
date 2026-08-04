@@ -2,9 +2,10 @@
 created: 2026-08-01
 updated: 2026-08-04
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@pipeline-fix-loop-provenance']
+closed: 2026-08-04
 ---
 
 # Pipeline fix-loop rollback: transactional/audit hardening (deferred review items)
