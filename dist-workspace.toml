@@ -9,8 +9,10 @@ cargo-dist-version = "0.28.2"
 ci = "github"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
-# Homebrew tap repository for the auto-generated formula
-tap = "jarimustonen/homebrew-tap"
+# Homebrew tap repository for the auto-generated formula.
+# Per-tool tap convention (matches homebrew-ossctl / homebrew-issuectl):
+# repo `homebrew-orchestratectl` → `brew install jarimustonen/orchestratectl/orchestratectl`.
+tap = "jarimustonen/homebrew-orchestratectl"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).
@@ -30,5 +32,14 @@ hosting = "github"
 # Route the macOS build to the self-hosted `hauis` runner. GitHub-hosted
 # macOS minutes are effectively unavailable on the Free plan (multi-hour
 # queues); the two Linux targets stay on GitHub-hosted ubuntu runners.
+#
+# GOTCHA (fixed 2026-08-04): do NOT set `GIT_CONFIG_GLOBAL` in the `hauis`
+# runner's `~/actions-runner/.env`. `actions/checkout@v4` overrides HOME and
+# reads `$HOME/.gitconfig`, but git honors `GIT_CONFIG_GLOBAL` and writes the
+# auth token elsewhere → checkout fails with "Unable to replace auth
+# placeholder in .../.gitconfig", failing the mac build (and cascading to skip
+# host/publish-homebrew). Leave the runner's global git config at the default
+# `$HOME/.gitconfig` (a dotfiles symlink there is fine). See issue
+# `release-mac-checkout-git-config-global`.
 [dist.github-custom-runners]
 aarch64-apple-darwin = "self-hosted"
