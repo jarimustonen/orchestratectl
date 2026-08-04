@@ -2,9 +2,10 @@
 created: 2026-08-04
 updated: 2026-08-04
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@stint-maintains-execution-dag', '@triage-bugs-stint-inprogress-ownership-conflict']
+closed: 2026-08-04
 ---
 
 # Split /stint into stint-start + stint-handoff; decouple bug intake
