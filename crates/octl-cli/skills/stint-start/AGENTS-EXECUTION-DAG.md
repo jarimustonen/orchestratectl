@@ -1,3 +1,8 @@
+---
+cli_version: "{{CLI_VERSION}}"
+schema_version: 1
+---
+
 # Stint shared reference — Execution DAG convention, operating policy, prerequisites
 
 This is the shared reference for the stint skill family (`stint-start` runs it every
@@ -39,7 +44,8 @@ are **project facts** in the repo's `AGENTS.md` / `TODO.md`, never hardcoded her
 **What it owns vs. what it reads.** The DAG is authoritative for the *plan* — each issue's
 lane, the order within a lane, and cross-lane `collision:` tags. It stores **no status**;
 `issuectl` is authoritative for status, read on demand. No fact lives in both, so they
-cannot drift. You **merge** the DAG (Phase 0/7) — never regenerate it from scratch, which
+cannot drift. You **merge** the DAG (at the start of every `stint-start` round and again
+at the final `stint-handoff` wrap) — never regenerate it from scratch, which
 would force re-deriving the hot-file collision matrix and risk hallucinating or dropping a
 `collision:` edge.
 
@@ -56,7 +62,7 @@ a lane and **not** inside the fenced block (or the drift check flags them every 
 ## Execution DAG (<YYYY-MM-DD>)
 
 Scheduling PLAN — source of truth for lane + order; issuectl is authoritative for STATUS
-(never copied here). Merge at Phase 0/7 (drop landed, add active, keep existing order).
+(never copied here). Merge each round (drop landed, add active, keep existing order).
 `▶` = head-of-line snapshot — RE-COMPUTE from issuectl at pick time.
 `after <slug> (needs …)` = logical blocked_by mirror. `collision: <file>` = touches a
 second lane's hot file (spawn-time exclusion).
@@ -110,9 +116,12 @@ assignment, order, and `collision:` tags; only reconcile the *set* of issues.
   self-dep; no cycle. A dangling or cyclic edge **invalidates the DAG** — surface it and
   repair it before selecting or spawning any DAG-picked work; never render a wrong head
   silently.
-- **Recompute the head-of-line** (below) and **commit** the changed files — `TODO.md`
-  plus any issue files `issuectl` rewrote (`issuectl` does not auto-commit; name the exact
-  paths, not `git add -A`).
+- **Recompute the head-of-line** (below). The **calling skill owns the `git commit`** —
+  this procedure produces the reconciled `TODO.md` (plus any issue files `issuectl`
+  rewrote; `issuectl` does not auto-commit) and hands that changed-file list to the phase
+  that invoked it (`stint-start` Phase 0, or `stint-handoff` step 2), which commits by
+  exact path — never `git add -A`. Do **not** commit here, or you double-commit when the
+  caller commits again.
 
 **Head-of-line (compute on read, never trust the printed `▶`):**
 
@@ -125,7 +134,7 @@ assignment, order, and `collision:` tags; only reconcile the *set* of issues.
 - `head(lane)` = the first eligible issue in that lane's order.
 - A head is **spawnable** iff none of its collision files (its lane's hot-file family + any
   `collision:` tag) is held by a live *or* launched-but-unsettled run (see `stint-start`
-  Phase 3 — reserve at launch, not at first commit).
+  Phase 2 (Orchestrate) — reserve at launch, not at first commit).
 - `GLOBAL HEAD-OF-LINE` = pick among spawnable heads: an explicit handoff "start here"
   first, else highest `issuectl` priority, else the top-most lane in the file (then its
   first eligible item), else slug order.

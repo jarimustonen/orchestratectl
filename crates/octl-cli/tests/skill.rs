@@ -435,3 +435,117 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
         .expect("spawn");
     assert!(out.status.success(), "--force install must succeed");
 }
+
+#[test]
+fn skill_install_stint_start_writes_companion_resource_for_claude() {
+    // stint-start ships a companion reference (AGENTS-EXECUTION-DAG.md);
+    // the default claude install must write it as a sibling of SKILL.md so
+    // the skill's in-body link resolves at runtime, and report it in the
+    // install payload.
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install failed: {out:?}");
+
+    let skill_md = home.path().join(".claude/skills/stint-start/SKILL.md");
+    let companion = home
+        .path()
+        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
+    assert!(skill_md.exists(), "SKILL.md not installed");
+    assert!(
+        companion.exists(),
+        "companion AGENTS-EXECUTION-DAG.md not installed alongside SKILL.md"
+    );
+
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let installed = v["data"]["installed"].as_array().expect("installed array");
+    let paths: Vec<&str> = installed
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.iter().any(|p| p.ends_with("AGENTS-EXECUTION-DAG.md")),
+        "companion not reported in install payload: {paths:?}"
+    );
+}
+
+#[test]
+fn skill_install_stint_start_codex_skips_companion() {
+    // The codex layout is a flat prompts dir; a per-skill sibling would
+    // land un-namespaced and could collide across skills. Resources are
+    // therefore claude-only — codex gets the flat prompt but no companion.
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--agent",
+            "codex",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "codex install failed: {out:?}");
+    assert!(
+        home.path().join(".codex/prompts/stint-start.md").exists(),
+        "flat codex prompt not installed"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".codex/prompts/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "companion must not leak into the flat codex prompts dir"
+    );
+}
+
+#[test]
+fn skill_install_over_older_companion_upgrades_without_force() {
+    // §17 drift must apply to companion resources too: the shipped
+    // companion carries `cli_version` frontmatter, so a redeploy over an
+    // older on-disk copy overwrites it (with a warning) WITHOUT --force,
+    // exactly like SKILL.md. A version-less companion would wrongly force
+    // `--force` on every catalog update — this pins the fix.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let skill_md = home.path().join(".claude/skills/stint-start/SKILL.md");
+    let companion = home
+        .path()
+        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
+    // Make BOTH on-disk files look older than the binary so the whole
+    // plan qualifies for the drift-upgrade (no-force) path.
+    std::fs::write(
+        &skill_md,
+        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &companion,
+        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale\n",
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "redeploy over an older companion must not require --force: {out:?}"
+    );
+    let after = std::fs::read_to_string(&companion).unwrap();
+    assert!(
+        after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "companion was not upgraded to the binary version"
+    );
+}

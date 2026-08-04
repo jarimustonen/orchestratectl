@@ -107,10 +107,16 @@ fn generate_skill_files(manifest_dir: &Path) {
         println!("cargo:rerun-if-changed={}", template.display());
 
         // Companion reference files: every other `*.md` in the skill dir
-        // (not `SKILL.template.md`) is rendered through the same
-        // `{{CLI_VERSION}}` substitution into `$OUT_DIR/skills/<name>/`,
-        // so `skill.rs` can `include_str!` it and `skill install` writes
-        // it alongside the installed `SKILL.md`. See `EmbeddedResource`.
+        // (not `SKILL.template.md`, and not a stray rendered `SKILL.md`
+        // which would clobber the output written just above) is rendered
+        // through the same `{{CLI_VERSION}}` substitution into
+        // `$OUT_DIR/skills/<name>/`, so `skill.rs` can `include_str!` it
+        // and `skill install` writes it alongside the installed `SKILL.md`.
+        // See `EmbeddedResource`. Watch the skill dir itself so adding or
+        // removing a companion file re-triggers this build script (the
+        // per-file `rerun-if-changed` below only covers files that already
+        // exist on this run).
+        println!("cargo:rerun-if-changed={}", path.display());
         let files =
             std::fs::read_dir(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
         for file in files.flatten() {
@@ -120,7 +126,7 @@ fn generate_skill_files(manifest_dir: &Path) {
             }
             let is_md = fpath.extension().and_then(|e| e.to_str()) == Some("md");
             let fname = match fpath.file_name().and_then(|n| n.to_str()) {
-                Some(n) if is_md && n != "SKILL.template.md" => n.to_string(),
+                Some(n) if is_md && n != "SKILL.template.md" && n != "SKILL.md" => n.to_string(),
                 _ => continue,
             };
             let fbody = std::fs::read_to_string(&fpath)

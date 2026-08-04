@@ -41,7 +41,8 @@ struct EmbeddedResource {
 /// none. `build.rs` renders every non-`SKILL.template.md` `*.md` file in a
 /// skill's directory into `$OUT_DIR/skills/<name>/`, and the matching
 /// `include_str!` below embeds it. `cmd_install` writes each resource as a
-/// sibling of the skill's `SKILL.md` destination.
+/// sibling of the skill's `SKILL.md` destination — for the claude layout
+/// only (see the install loop for why codex is skipped).
 fn resources_for(name: &str) -> &'static [EmbeddedResource] {
     match name {
         "stint-start" => STINT_START_RESOURCES,
@@ -421,13 +422,22 @@ pub fn cmd_install(
             ],
         };
         for (agent_name, path) in targets {
-            for resource in resources_for(skill.name) {
-                plan.push(PlanItem {
-                    name: resource.filename,
-                    agent: agent_name,
-                    path: sibling_path(&path, resource.filename),
-                    content: resource.body,
-                });
+            // Companion resources are per-skill sibling files, which only
+            // works in the claude layout (`~/.claude/skills/<name>/`). The
+            // codex layout is a flat prompts directory, where a sibling
+            // would land un-namespaced in `~/.codex/prompts/` and could
+            // collide across skills — and cross-skill links like
+            // `../stint-start/…` cannot resolve there regardless. So we
+            // install resources for claude only.
+            if agent_name == "claude" {
+                for resource in resources_for(skill.name) {
+                    plan.push(PlanItem {
+                        name: resource.filename,
+                        agent: agent_name,
+                        path: sibling_path(&path, resource.filename),
+                        content: resource.body,
+                    });
+                }
             }
             plan.push(PlanItem {
                 name: skill.name,

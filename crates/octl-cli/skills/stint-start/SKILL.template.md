@@ -1,6 +1,6 @@
 ---
 name: stint-start
-description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language via `/worktree-status` → absorb feedback (a feedback mini-round is just a re-run of this skill). Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Generic across projects — reads all project specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT for a single one-off coding task (use `/worktree`); NOT for bug intake/triage (that is `/triage-bugs`, fully independent); NOT for the terminal handoff/wrap-up (that is `/stint-handoff`)."
+description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language via `/worktree-status` → absorb feedback (a feedback mini-round is just a re-run of this skill). Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Generic across projects — reads all project specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT for a single one-off coding task (use `/worktree`); NOT for bug intake/triage (that is a fully decoupled, user-invoked step); NOT for the terminal handoff/wrap-up (that is `/stint-handoff`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -14,11 +14,11 @@ report to the user → absorb feedback.* You conduct; **you do not write feature
 this session.** The actual implementation happens in worktrees you spawn, so this
 conversation's context stays free for orchestration and for talking to the user.
 
-Run this skill **every round**. A Phase-6 feedback mini-round is just a re-run of this
-same skill on the smaller work-list — there is no separate mini-round logic. When the
-session is done and the user asks to hand off, that terminal wrap is a **different**
-skill: **`/stint-handoff`** (update the `TODO.md` handoff block + final DAG merge, then
-`/wrap-up`).
+Run this skill **every round**. A feedback mini-round (Phase 5) is just a fresh re-run of
+this same skill — a full pass from Phase 0 — on the smaller work-list; there is no
+separate mini-round logic. When the session is done and the user asks to hand off, that
+terminal wrap is a **different** skill: **`/stint-handoff`** (update the `TODO.md` handoff
+block + final DAG merge, then `/wrap-up`).
 
 This skill is **generic**. Every project-specific fact — the deploy command, whether
 you may deploy without asking, the green-gate commands, hot files, the test-account
@@ -30,14 +30,16 @@ and `worktree-spinoff` before your first spawn.
 
 The Execution-DAG convention, the operating-policy facts to read, and the project
 prerequisites live in the shared reference **[`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md)**
-(installed alongside this skill). Read it once; the phases below reference it rather than
-repeating it.
+(installed alongside this skill). **Open and read it before Phase 0** — Claude Code loads
+only this `SKILL.md`, so the linked file is not in context until you open it, and the
+phases below reference its merge algorithm rather than repeating it. If the file is
+missing or unreadable, stop and report an incomplete skill install rather than improvising
+the DAG merge from memory.
 
-> **Bug intake is fully decoupled.** This skill does **not** triage incoming bug reports.
-> Bug intake is `/triage-bugs` — a separate, user-invoked skill that presents new bots'
-> bug reports and lets the user decide fix-now / defer / not-a-bug. Run it (or not) on its
-> own; anything the user decides to fix this round enters as a normal work-list item in
-> Phase 2. `stint-start` keeps only the plain Phase-0 `git pull`.
+> **Bug intake is fully decoupled.** This skill does **not** triage incoming bug reports —
+> that is a separate, user-invoked step, owned elsewhere and independent of the round
+> engine. Anything the user decides to fix this round simply enters as a normal work-list
+> item in Phase 1 (Plan). `stint-start` keeps only the plain Phase-0 `git pull`.
 
 ## Standing discipline (holds across every phase)
 
@@ -54,8 +56,8 @@ repeating it.
   It is authoritative for the **plan** (which lane each issue is in, the order within a
   lane, cross-lane file-collision tags) and it stores **no status**: status always lives
   in `issuectl`, read through on demand. So the DAG can never drift out of sync with
-  status. You **merge** it (drop landed issues, add new ones, keep the existing plan) —
-  you never regenerate it from scratch. The head-of-line ("what's next") is **computed
+  status. You **merge** it (drop only terminal issues, add active/non-terminal ones, keep
+  the existing plan) — you never regenerate it from scratch. The head-of-line ("what's next") is **computed
   on read** by joining the DAG's lane order with live `issuectl` status; the printed
   `▶` marker is only a snapshot. Full convention in the shared
   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md). Editing the DAG is orchestration,
@@ -69,7 +71,7 @@ repeating it.
 - **Sync with `run wait`; verify landing from git.** A spinoff runs **asynchronously** —
   its spawn call returns immediately. Record every returned run id and block on
   `orchestratectl run wait <run-id> …` to know the workers have *settled* before you
-  sequence the next unit or enter Phase 4. But do **not** trust run *status* as proof the
+  sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof the
   work landed: `orchestratectl run show` can report a false `failed` / `pending` even
   when the worker committed **and** merged — a known open bug
   (`BUG-false-failed-despite-successful-merge.md` in the orchestratectl repo, first hit
@@ -85,7 +87,7 @@ repeating it.
 Autonomy is **high**. Run orienting → planning → orchestration → deploy → report
 autonomously; narrate state changes and decisions, not internal deliberation. Pause only
 for: (a) a genuine fork where reasonable people disagree, (b) deploy go/no-go **if** the
-project has not pre-authorised deploys (see Phase 4), (c) the transition to handoff/wrap-up,
+project has not pre-authorised deploys (see Phase 3), (c) the transition to handoff/wrap-up,
 which is a separate skill (`/stint-handoff`) you propose and run only on the user's go.
 
 ## Phases
@@ -108,20 +110,20 @@ which is a separate skill (`/stint-handoff`) you propose and run only on the use
    otherwise you orient off stale data). This is a stateful **merge**, not a rewrite:
    preserve the existing lane assignment, order, and `collision:` tags; only reconcile
    the *set* of issues. The full merge procedure — active-set fetch, drop/add rules, the
-   `comm -3` drift check, edge validation, head recompute, and the commit step — is in the
-   shared [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md) § *Execution DAG (the
-   convention)*. **Commit** the changed files (`TODO.md` plus any issue files `issuectl`
-   rewrote — name the exact paths, not `git add -A`) so main is clean before Phase 2.
+   `comm -3` drift check, edge validation, and head recompute — is in the shared
+   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md) § *Execution DAG (the convention)*.
+   Then **commit** the changed files (`TODO.md` plus any issue files `issuectl`
+   rewrote — name the exact paths, not `git add -A`) so main is clean before Phase 1.
 5. **Orient the user** in one tight message: where things stand, what the pull
    brought in, **the ready frontier from the DAG** (head-of-line per lane, and what's
    blocked), and what you propose to tackle this round (fold in the `$ARGUMENTS` focus
    hint). Then proceed — don't wait for permission to *start*.
 
-### Phase 2 — Plan the round
+### Phase 1 — Plan the round
 
 Combine into a work-list: any feature/backlog items the user named, any bugs the user
-decided to fix this round (via `/triage-bugs`, run separately), and any `TODO.md` items
-the user wants pulled in. Then:
+decided to fix this round (triaged separately, out of band — the user hands you the
+slugs), and any `TODO.md` items the user wants pulled in. Then:
 
 - **Decompose** into independent worktree units.
 - **Resolve file collisions — this *is* the lane assignment.** Units that touch the
@@ -137,14 +139,14 @@ the user wants pulled in. Then:
   `in-progress`** — once a worktree owns it, its issue file is worker-owned (calling
   `issuectl` on it races the worker per `worktree-spinoff`); note the intended dep in the
   DAG and reconcile after it lands. **Commit `TODO.md` plus every issue file `issuectl`
-  rewrote (name the paths, not `git add -A`) before Phase 3 spawns anything** — verify a
+  rewrote (name the paths, not `git add -A`) before Phase 2 spawns anything** — verify a
   clean tree so workers branch off committed metadata.
 - **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
   big or genuinely ambiguous feature → design-first.
 - **Announce the plan** in one short message (which units, what's parallel vs
   sequenced). Proceed unless something is truly ambiguous.
 
-### Phase 3 — Orchestrate (spawn worktrees; never code here)
+### Phase 2 — Orchestrate (spawn worktrees; never code here)
 
 Spawn the right worktree skill per unit. Each unit has an **explicit landing
 contract** — know before launch where it lands, and **verify the actual landing from
@@ -166,16 +168,16 @@ git** before counting it toward the deploy pile:
 - **Do not use `/worktree-bugfix <slug>`** for an already-filed bug — it treats its
   argument as a *new* free-text report and would file a duplicate. Use
   `/worktree-spinoff --headless <slug>`.
-- **A multi-feature, dependency-ordered campaign is not a Phase-3 unit.** `/orchestrate`
+- **A multi-feature, dependency-ordered campaign is not a Phase-2 unit.** `/orchestrate`
   lands on its own integration branch (main untouched) and runs in its own window. If
   a unit is really such a campaign, **this stint becomes a hand-off**: launch
-  `/orchestrate`, tell the user, and stop before Phase 4 — do not try to deploy this
+  `/orchestrate`, tell the user, and stop before Phase 3 — do not try to deploy this
   round.
 - **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
   parallel batch, block on `orchestratectl run wait <id> …` and git-verify each landing
   before counting it. **Sequence hot-file units strictly:** launch → `run wait` → verify
   the landing → *then* launch the next (so it branches off the first's landed result).
-  Do not enter Phase 4 until every launched run has settled and its landing is
+  Do not enter Phase 3 until every launched run has settled and its landing is
   git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
@@ -221,13 +223,14 @@ git** before counting it toward the deploy pile:
   unsettled run already covers its issue — otherwise sequence it (this is why same-lane
   units already go launch → `run wait` → verify → next).
 
-### Phase 4 — Deploy (the conductor owns this — when the project permits)
+### Phase 3 — Deploy (the conductor owns this — when the project permits)
 
 Deploy is **conditional on project policy**, read from the repo's root `AGENTS.md`:
 
 - **Precondition:** the pile is in `main` and **green** — run the project's green-gate
   commands first (typecheck/build/smoke). If a gate fails, **halt the deploy, report
-  the failure, and spawn a fix worktree** for it; do not deploy red.
+  the failure, and spawn a fix worktree** for it (then wait, git-verify its landing, and
+  re-run the full green gate before reconsidering the deploy); do not deploy red.
 - **Deploy autonomy:** if the project grants deploy-without-asking (typical in an
   active test-cycle, where deploy targets a **test/staging server**, not production),
   deploy directly. If it requires confirmation, targets production, or `AGENTS.md` is
@@ -239,7 +242,7 @@ Deploy is **conditional on project policy**, read from the repo's root `AGENTS.m
 If the project has no deploy step for a stint (e.g. changes land on main and a human
 promotes later), skip this phase and say so.
 
-### Phase 5 — Report to the user  → `/worktree-status`
+### Phase 4 — Report to the user  → `/worktree-status`
 
 The coding happened in detached worktrees, so this conversation doesn't yet know what
 landed. **First gather the round's durable facts into the conversation:** the
@@ -250,25 +253,27 @@ which formats what's now in context into the product-owner snapshot: Summary · 
 to test · Decisions needed · Discussion points · Spin-offs. Your reactions seed the
 *next* round.
 
-### Phase 6 — Absorb the user's feedback
+### Phase 5 — Absorb the user's feedback
 
 The `/worktree-status` snapshot hands the user things to act on — items to test,
 discussion points, spin-off calls. This is where they react, and their reactions
 decide what happens next.
 
-- **Light feedback** (a handful of small asks) → **re-run this skill** on the smaller
-  work-list: each fix as its own worktree (Phases 2–4 again, in miniature). There is no
-  separate mini-round logic — a feedback round *is* a `stint-start` round. Still no coding
-  in this session — every change goes through a worktree.
+- **Light feedback** (a handful of small asks) → **re-run this whole skill** on the
+  smaller work-list: a fresh `stint-start` pass from Phase 0 (pull, ground-truth, DAG
+  merge, plan, spawn, deploy, report), just with fewer units. There is no separate
+  mini-round logic and no "phases in miniature" — a feedback round *is* an ordinary
+  `stint-start` round. Still no coding in this session — every change goes through a
+  worktree.
 - **Heavy feedback** (a lot comes back) → don't try to carry it in this session's
   context. **Land it durably first** — update the affected **issues**,
   **documentation**, and **`TODO.md`** so nothing is lost — *then* move to the handoff.
 
-**Keep the DAG current before any mini-round.** If feedback files new issues or changes a
-dependency, **insert them into the DAG and commit** (same edit as Phase 2) *before* a
-feedback mini-round consults it — a mini-round that sequences against a stale DAG can
-mis-order or miss an issue. If you capture feedback durably without a mini-round, still do
-the insert so the eventual handoff (`/stint-handoff`) opens onto an accurate graph.
+**Keep the DAG current before any re-run.** If feedback files new issues or changes a
+dependency, **insert them into the DAG and commit** (same edit as Phase 1) *before* a
+feedback re-run consults it — a re-run that sequences against a stale DAG can mis-order or
+miss an issue. If you capture feedback durably without a re-run, still do the insert so the
+eventual handoff (`/stint-handoff`) opens onto an accurate graph.
 
 Once the feedback is absorbed (acted on via worktrees, or captured durably), the round is
 done. When the session's context is filling or the user asks to wrap up, **propose
@@ -280,8 +285,9 @@ done. When the session's context is filling or the user asks to wrap up, **propo
   `/worktree-*` family.
 - **Does not write code** in this session — every change goes through a worktree.
 - **Not for a single one-off coding task** — that's `/worktree` (router).
-- **Not for bug intake / triage** — that's `/triage-bugs`, fully independent and
-  user-invoked; this skill does not call or reference it.
+- **Not for bug intake / triage** — that is a fully decoupled, user-invoked step owned
+  elsewhere; the round engine does not run it. Bugs the user chose to fix enter Phase 1
+  as ordinary work-list items.
 - **Not the terminal handoff/wrap-up** — that's `/stint-handoff` (update the `TODO.md`
   handoff block + final DAG merge, then `/wrap-up`).
 - **Not for bare** status / deploy — those are `/worktree-status` and the project deploy

@@ -22,6 +22,10 @@ the `TODO.md` handoff block lives) are read from the repo's own `AGENTS.md` / `T
 The Execution-DAG convention and the final-merge procedure live in the shared reference
 **[`AGENTS-EXECUTION-DAG.md`](../stint-start/AGENTS-EXECUTION-DAG.md)** (installed
 alongside `stint-start`); this skill LINKS there rather than repeating the rules.
+**Open and read that file before the DAG merge in step 1** — Claude Code loads only this
+`SKILL.md`, so the merge algorithm is not in context until you open the link. If it is
+missing or unreadable, stop and report an incomplete skill install rather than
+improvising the merge from memory.
 
 ## Standing discipline
 
@@ -29,8 +33,9 @@ alongside `stint-start`); this skill LINKS there rather than repeating the rules
   them in this session. But commit them promptly and on their own (see step 2); never
   leave `TODO.md` modified-but-uncommitted across the wrap.
 - **Never regenerate the DAG — merge it.** The final DAG update is a stateful *merge*
-  (drop landed, add still-open, keep the existing lane order), exactly the Phase-0 merge
-  from `/stint-start`. Regenerating from scratch risks dropping a `collision:` edge.
+  (drop only terminal issues, add active/non-terminal ones, keep the existing lane order),
+  exactly the Phase-0 merge `stint-start` runs at the start of a round. Regenerating from
+  scratch risks dropping a `collision:` edge.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 - **Propose, don't presume.** `/wrap-up` presents proposed `AGENTS.md`/issue/preference
   changes and asks before writing; don't assume it committed unless it reports saved
@@ -38,11 +43,20 @@ alongside `stint-start`); this skill LINKS there rather than repeating the rules
 
 ## Steps (propose; run only on the user's go)
 
+0. **Preflight (read-only).** This is the terminal wrap, not a re-orient — but because it
+   can be invoked standalone, confirm the ground truth you're about to record is real
+   before writing it. Verify a clean-ish worktree (`git status --short`) and that no round
+   worker is still unsettled (any live/launched `orchestratectl run` this round has
+   settled and its landing is git-verified). If workers are still running or a landing is
+   unverified, **do not wrap yet** — the round isn't done; go back to `/stint-start`. Read
+   the current `TODO.md` handoff block and, if the block will state deployment state, the
+   project's live-version check — write "unverified" rather than guessing if you can't
+   confirm it.
 1. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so a
    fresh agent can resume from `jatketaan @TODO.md` — where the round left off, what's
    landed, what prod is running, and what's next. **In the same edit, merge the execution
-   DAG one last time**: drop landed issues, add any still-open ones, refresh the date
-   stamp, and set the `GLOBAL HEAD-OF-LINE`. This is the Phase-0 merge — the active-set
+   DAG one last time**: drop only terminal issues, add active/non-terminal ones, refresh
+   the date stamp, and set the `GLOBAL HEAD-OF-LINE`. This is the same merge — the active-set
    fetch, drop/add rules, the `comm -3` drift check, edge validation, and head recompute
    are all in the shared
    [`AGENTS-EXECUTION-DAG.md`](../stint-start/AGENTS-EXECUTION-DAG.md) § *Execution DAG
@@ -56,6 +70,10 @@ alongside `stint-start`); this skill LINKS there rather than repeating the rules
 4. **Test-account reset.** If the project's `AGENTS.md` / `TODO.md` declares a
    **test-account reset preference** (so testing starts from a known state), do it or
    remind the user. If the project declares none, skip this step.
+5. **Verify terminal state.** Run `git status --short`. The handoff commit from step 2
+   should be in; if `/wrap-up` wrote approved files without committing, follow its commit
+   contract (or ask the user) — do not declare the handoff complete while main is left
+   dirty. This is what lets the next agent resume from a clean tree.
 
 ## Non-goals
 
@@ -64,6 +82,7 @@ alongside `stint-start`); this skill LINKS there rather than repeating the rules
 - **Not a bare `/wrap-up`** — this first updates the `TODO.md` handoff block and merges
   the DAG, *then* calls `/wrap-up`.
 - **Not a worktree**, and does not create one.
-- **Does not write product code** — the only edits are the `TODO.md` handoff block, the
-  DAG merge, and whatever `/wrap-up` proposes.
+- **Does not write product code** — the only direct edits are the `TODO.md` handoff block
+  and the DAG merge (plus any issue files `issuectl` necessarily rewrote while merging);
+  `/wrap-up` may separately propose other changes.
 - **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.
