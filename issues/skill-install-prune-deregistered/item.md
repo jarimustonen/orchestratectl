@@ -2,8 +2,9 @@
 created: 2026-08-04
 updated: 2026-08-04
 type: bug
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-04
 ---
 
 # skill install leaves de-registered bundled skills stranded in ~/.claude/skills
