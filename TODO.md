@@ -92,7 +92,7 @@ LANE C — workmux vendoring (fully independent)
   ▶ workmux-extract-libs   (now unblocked — vendored tree landed via vendor-workmux-multiplexer)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ split-stint-start-handoff              (decompose /stint → stint-start + stint-handoff bundled skills + shared reference file; remove triage-bugs coupling; user-settled design in issue)
+  ▶ skill-install-prune-deregistered       (skill.rs: skill install leaves de-registered bundled skills stranded in ~/.claude/skills — needs provenance-safe prune or doctor orphan check)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ landing-signal-reliable-after-rebase
