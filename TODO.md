@@ -93,6 +93,8 @@ LANE C — workmux vendoring (fully independent)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
   ▶ skill-install-prune-deregistered       (skill.rs: skill install leaves de-registered bundled skills stranded in ~/.claude/skills — needs provenance-safe prune or doctor orphan check)
+    doctor-skill-companion-sync            (skill.rs: doctor skill.sync should also verify companion resource files like AGENTS-EXECUTION-DAG.md, not just SKILL.md)
+    skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ landing-signal-reliable-after-rebase
