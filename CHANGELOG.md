@@ -6,12 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+## [0.1.0] - 2026-08-04
+
+First public release — published to crates.io (`orchestratectl`, `octl-core`) and
+installable via Homebrew (`brew install jarimustonen/orchestratectl/orchestratectl`).
+The first publishable cut: the CLI is real, the bundled skill family covers the full
+agent loop, and run state survives crashes via an append-only event log + lock-gated
+reducer. Groups the MVP foundation with the code-pipeline / harness work (mostly
+behind-the-seam) that landed before the release.
+
+### Fixed — code pipeline
 
 - **`pipeline run` spec/verify: parse the model's `type:result` message, not the `type:system` init banner (`pipeline-claude-output-parse`).** `claude -p --output-format json` (Claude Code ≥ 2.1.211) emits a *sequence* of JSON messages — an init banner first, then the answer — so reading `.result` off the whole output failed and the raw-transcript fallback fed the init banner into the plan parser, making every live spec fail `missing field acceptance`. `run_claude` now parses the transcript with a streaming deserializer (tolerant of a top-level array, NDJSON, concatenated `{…}{…}`, and pretty-printed multi-line objects) and selects the last `type == "result"` message's `.result`. The raw-transcript fallback is now narrow — it fires only when NO Claude envelope was recognized; a recognized envelope with no usable result returns empty so the caller fails loudly rather than silently mis-parsing the banner. Fixes both spec and verify in the shared path.
 - **`pipeline run` spec stage: schema-complete plan prompt + validation-error repair loop (`pipeline-spec-plan-conformance`).** The first live run failed at spec with `plan invalid: … missing field 'acceptance'` and the retry reproduced the same error because it re-prompted blind. The spec prompt now states which `plan.json` fields are REQUIRED (derived from the `octl_core::plan` types so it can't drift) and that `acceptance` must carry ≥1 executable `{desc,run}` check; on a validation failure the driver now runs a bounded **repair loop** that feeds the exact validator error and the invalid JSON back to the model to correct precisely that error. The parse stays strict (no silent server-side patching); on exhaustion the last raw invalid plan is persisted to `<workdir>/plan.invalid.json` and the error surfaces the last validator message.
 
-### Added
+### Added — code pipeline, harness bake-off & completion hook
 
 - **`pipeline run`: the first live end-to-end code pipeline (`pipeline-walking-skeleton`, T5).**
   A new ADDITIVE command `orchestratectl pipeline run --intent <str|file>
@@ -157,7 +166,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   into any live `run create`/supervisor path; staged rollout (design §14) plugs it
   in later.
 
-### Fixed
+### Fixed — supervisor self-merge reconciliation
 
 - **Supervisor reconciles run status with git after a self-merge.** A spinoff
   whose branch already merged into its `source_branch` is no longer reported
@@ -177,13 +186,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it, and re-checks the source-relative unmerged gate at teardown so a branch
   that diverged after the report is preserved, not force-deleted.
 
-## [0.1.0] - 2026-08-04
-
-First publishable cut. The CLI is real, the bundled skill family covers
-the full agent loop, and run state survives crashes via an append-only
-event log + lock-gated reducer.
-
-### Added
+### Added — MVP foundation
 
 - **Run model.** Every spawn is a `run` (`~/.orchestratectl/runs/<ulid>/`)
   with `events.jsonl` as the canonical source of truth and
