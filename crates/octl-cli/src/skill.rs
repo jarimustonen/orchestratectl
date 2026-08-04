@@ -188,6 +188,14 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// body contract itself, distinct from the envelope `schema_version`).
 const SKILL_SCHEMA_VERSION: u32 = 1;
 
+/// Provenance marker filename. `cmd_install` drops this hidden file into
+/// every claude-layout skill directory it writes (`~/.claude/skills/
+/// <name>/.orchestratectl-managed`). Its *presence* is the ONLY signal
+/// `prune` and the `skill.orphan.*` doctor check use to decide a directory
+/// is safe to delete: a user's own hand-authored skill of the same name
+/// never carries it, so it is never touched. See `is_managed_skill_dir`.
+const MANAGED_MARKER_FILENAME: &str = ".orchestratectl-managed";
+
 /// Public catalog entry used by `version --json` to expose the bundled
 /// skill set (AGENTS-AI-FIRST-CLI §17). The on-disk skill is the source
 /// of truth for `cli_version`; emit it directly from the parsed
@@ -261,6 +269,10 @@ struct ListPayload {
 #[derive(Serialize)]
 struct InstallPayload {
     installed: Vec<InstalledFile>,
+    /// Names of de-registered managed skill directories that this install
+    /// pruned from `~/.claude/skills/`. Empty in every install form except
+    /// the full-catalog default-path claude install (see `cmd_install`).
+    pruned: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -410,6 +422,12 @@ pub fn cmd_install(
     // failure. Each skill contributes its `SKILL.md` plus any companion
     // resources, installed as siblings of the skill's destination.
     let mut plan: Vec<PlanItem> = Vec::new();
+    // Claude-layout skill directories this install touches under the
+    // default path — each gets the provenance marker stamped after the
+    // writes land. Only the default path (`dest.is_none()`) is a real
+    // `~/.claude/skills/<name>/` directory we own; a `--dest` custom path
+    // is the caller's to manage, so we never litter a marker there.
+    let mut mark_dirs: Vec<PathBuf> = Vec::new();
     for skill in &skills {
         let targets: Vec<(&'static str, PathBuf)> = match (&agent, dest.as_ref()) {
             (AgentTarget::Claude, Some(p)) => vec![("claude", p.clone())],
@@ -430,6 +448,11 @@ pub fn cmd_install(
             // `../stint-start/…` cannot resolve there regardless. So we
             // install resources for claude only.
             if agent_name == "claude" {
+                if dest.is_none() {
+                    if let Some(parent) = path.parent() {
+                        mark_dirs.push(parent.to_path_buf());
+                    }
+                }
                 for resource in resources_for(skill.name) {
                     plan.push(PlanItem {
                         name: resource.filename,
@@ -472,7 +495,53 @@ pub fn cmd_install(
         });
     }
 
-    let payload = InstallPayload { installed };
+    // Stamp every freshly-installed claude-layout directory with the
+    // provenance marker (idempotent, always overwritten — it's ours). The
+    // marker is what makes later pruning safe, so a write failure here is
+    // fatal rather than silent: without it a genuine orphan would never be
+    // recognised as managed. Deduplicated because `--agent all` and the
+    // install-all form can enumerate the same dir once per skill.
+    mark_dirs.sort();
+    mark_dirs.dedup();
+    for dir in &mark_dirs {
+        write_marker(&dir.join(MANAGED_MARKER_FILENAME))?;
+    }
+
+    // Prune de-registered managed skills. Scoped to the full-catalog
+    // (`name.is_none()`), default-path (`dest.is_none()`), claude-targeting
+    // install: that is the exact `skill install --force` redeploy where the
+    // caller intends the on-disk catalog to mirror the binary's. A targeted
+    // `skill install <name>` must NEVER nuke the rest of the catalog, so it
+    // is excluded. Only directories carrying OUR marker AND absent from the
+    // shipped catalog are removed — a user's hand-authored skill lacks the
+    // marker and is spared.
+    let mut pruned: Vec<String> = Vec::new();
+    let prune_eligible =
+        name.is_none() && dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All);
+    if prune_eligible {
+        if let Some(root) = claude_skills_root() {
+            let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
+            for (orphan_name, orphan_path) in managed_orphan_dirs(&root, &registered) {
+                fs::remove_dir_all(&orphan_path).map_err(|e| {
+                    CliError::system(
+                        "prune_failed",
+                        format!(
+                            "could not prune de-registered skill {}: {}",
+                            orphan_path.display(),
+                            e
+                        ),
+                    )
+                })?;
+                all_warnings.push(format!(
+                    "skill_pruned: removed de-registered managed skill '{orphan_name}' at {}",
+                    orphan_path.display()
+                ));
+                pruned.push(orphan_name);
+            }
+        }
+    }
+
+    let payload = InstallPayload { installed, pruned };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, spec, &all_warnings)?;
@@ -480,6 +549,9 @@ pub fn cmd_install(
         OutputFormat::Text => {
             for f in &payload.installed {
                 println!("installed {} ({}) -> {}", f.name, f.agent, f.path);
+            }
+            for name in &payload.pruned {
+                println!("pruned {name} (de-registered)");
             }
             output::emit_text_warnings(&all_warnings);
         }
@@ -656,6 +728,86 @@ fn default_path(agent: &str, name: &str) -> Result<PathBuf, CliError> {
             ))
         }
     })
+}
+
+/// Root of the claude skill-install layout (`~/.claude/skills`). `None`
+/// when `HOME` is unset. Both `prune` and the `skill.orphan.*` doctor
+/// check scan this directory for managed-but-de-registered skills.
+pub fn claude_skills_root() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".claude/skills"))
+}
+
+/// True when `dir` is a claude-layout skill directory that orchestratectl
+/// installed — it carries the [`MANAGED_MARKER_FILENAME`] provenance file.
+/// A user's hand-authored skill directory never does.
+fn is_managed_skill_dir(dir: &Path) -> bool {
+    dir.join(MANAGED_MARKER_FILENAME).is_file()
+}
+
+/// Write (or overwrite) the provenance marker at `path`. Content is
+/// informational — only the file's *presence* carries meaning — but we
+/// stamp the installing binary's version to aid debugging. The parent
+/// directory already exists (the SKILL.md write created it), so this is a
+/// plain overwrite; the marker is always ours, never `--force`-gated.
+fn write_marker(path: &Path) -> Result<(), CliError> {
+    fs::write(
+        path,
+        format!("managed-by: orchestratectl\ncli_version: {CLI_VERSION}\n"),
+    )
+    .map_err(|e| {
+        CliError::system(
+            "marker_write_failed",
+            format!(
+                "could not write provenance marker {}: {}",
+                path.display(),
+                e
+            ),
+        )
+    })
+}
+
+/// Scan `skills_root` for managed skill directories whose name is NOT in
+/// `registered`. These are directories orchestratectl installed (they
+/// carry the provenance marker) but the running binary no longer ships —
+/// i.e. renamed or removed bundled skills, safe to prune. Directories
+/// without the marker (a user's own skills) are never returned. Result is
+/// sorted by name for deterministic output. An unreadable root yields an
+/// empty list (nothing to prune).
+fn managed_orphan_dirs(skills_root: &Path, registered: &HashSet<&str>) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(skills_root) else {
+        return Vec::new();
+    };
+    let mut orphans: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if registered.contains(dir_name) {
+            continue;
+        }
+        if is_managed_skill_dir(&path) {
+            orphans.push((dir_name.to_string(), path.clone()));
+        }
+    }
+    orphans.sort();
+    orphans
+}
+
+/// Managed-but-de-registered skill directories under the claude install
+/// root, as `(name, path)` pairs sorted by name. Consumed by the
+/// `skill.orphan.*` doctor check. Empty when `HOME` is unset or the root
+/// is unreadable.
+pub fn managed_orphans() -> Vec<(String, PathBuf)> {
+    let Some(root) = claude_skills_root() else {
+        return Vec::new();
+    };
+    let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
+    managed_orphan_dirs(&root, &registered)
 }
 
 /// Empty parent from `PathBuf::parent()` means a bare relative filename

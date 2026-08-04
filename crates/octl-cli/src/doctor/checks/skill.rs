@@ -95,6 +95,25 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
             }
         }
     }
+
+    // `skill.orphan.<name>` — a claude-layout skill directory that
+    // orchestratectl installed (carries the provenance marker) but the
+    // running binary no longer ships. This is a renamed/removed bundled
+    // skill left stranded as a stale slash-command. `skill install`
+    // auto-prunes these on its next full-catalog run, so the fix is a
+    // forced re-install; we surface it as a WARN rather than fixing
+    // autonomously (deletion stays with the explicit install path).
+    for (name, dir) in skill::managed_orphans() {
+        out.push(CheckResult::warn(
+            format!("skill.orphan.{name}"),
+            format!(
+                "skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                dir.display()
+            ),
+            "orchestratectl skill install --force",
+        ));
+    }
+
     out
 }
 

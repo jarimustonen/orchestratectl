@@ -212,6 +212,44 @@ fn skill_drift_warns_with_install_suggestion() {
 }
 
 #[test]
+fn skill_orphan_warns_only_for_managed_deregistered_dir() {
+    let env = setup();
+    // A managed-but-de-registered skill dir (carries the marker, not in
+    // the catalog) → WARN. A user's own same-shaped dir WITHOUT the marker
+    // must not be flagged.
+    let managed = env.home.path().join(".claude/skills/gone-skill");
+    std::fs::create_dir_all(&managed).unwrap();
+    std::fs::write(managed.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
+    std::fs::write(
+        managed.join(".orchestratectl-managed"),
+        "managed-by: orchestratectl\n",
+    )
+    .unwrap();
+
+    let user = env.home.path().join(".claude/skills/my-own-skill");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(user.join("SKILL.md"), "---\nname: my-own-skill\n---\n").unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.orphan.gone-skill");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("de-registered"));
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.my-own-skill"),
+        "unmanaged user skill must not be flagged as an orphan"
+    );
+    // An orphan WARN never flips the exit code.
+    assert!(out.status.success(), "warnings must not fail the run");
+}
+
+#[test]
 fn fix_reinstalls_drifted_skill() {
     let env = setup();
     install_skill(&env, "octl-run-overview", "0.0.0");

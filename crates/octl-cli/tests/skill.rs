@@ -436,6 +436,152 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
     assert!(out.status.success(), "--force install must succeed");
 }
 
+const MARKER: &str = ".orchestratectl-managed";
+
+#[test]
+fn skill_install_default_stamps_provenance_marker() {
+    // Every default claude install must drop the provenance marker beside
+    // SKILL.md — it's what makes later pruning safe.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "octl-run-overview"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    assert!(
+        home.path()
+            .join(".claude/skills/octl-run-overview")
+            .join(MARKER)
+            .is_file(),
+        "provenance marker not written next to SKILL.md"
+    );
+}
+
+#[test]
+fn skill_install_all_prunes_managed_orphan() {
+    // A managed skill dir that is NOT in the catalog (carries the marker)
+    // must be pruned by the full-catalog install.
+    let home = mk_home();
+    let orphan = home.path().join(".claude/skills/gone-skill");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(orphan.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
+    std::fs::write(orphan.join(MARKER), "managed-by: orchestratectl\n").unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(!orphan.exists(), "managed orphan was not pruned");
+
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned: Vec<&str> = v["data"]["pruned"]
+        .as_array()
+        .expect("pruned array")
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(pruned.contains(&"gone-skill"), "pruned list: {pruned:?}");
+    let warnings = v["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("skill_pruned")
+                && w.as_str().unwrap().contains("gone-skill")),
+        "expected skill_pruned warning; got {warnings:?}"
+    );
+}
+
+#[test]
+fn skill_install_all_spares_unmanaged_same_name_dir() {
+    // A user's hand-authored skill dir WITHOUT the marker must never be
+    // touched, even though it is not in the catalog.
+    let home = mk_home();
+    let user_skill = home.path().join(".claude/skills/my-own-skill");
+    std::fs::create_dir_all(&user_skill).unwrap();
+    std::fs::write(
+        user_skill.join("SKILL.md"),
+        "---\nname: my-own-skill\n---\nmine\n",
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(
+        user_skill.join("SKILL.md").exists(),
+        "unmanaged user skill was deleted — provenance guard failed"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned = v["data"]["pruned"].as_array().expect("pruned array");
+    assert!(
+        pruned.is_empty(),
+        "unmanaged dir must not appear in pruned: {pruned:?}"
+    );
+}
+
+#[test]
+fn skill_install_all_keeps_registered_skills() {
+    // A still-registered skill (installed with its marker) must survive a
+    // subsequent full-catalog install — it is not an orphan.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "--force"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let registered = home.path().join(".claude/skills/octl-run-overview");
+    assert!(registered.join("SKILL.md").exists());
+    assert!(registered.join(MARKER).is_file());
+
+    // Second full install must NOT prune the still-registered skill.
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "second install failed: {out:?}");
+    assert!(
+        registered.join("SKILL.md").exists(),
+        "still-registered skill was pruned"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+}
+
+#[test]
+fn skill_install_named_does_not_prune() {
+    // A targeted `skill install <name>` must NEVER prune the rest of the
+    // catalog — even a managed orphan is left alone.
+    let home = mk_home();
+    let orphan = home.path().join(".claude/skills/gone-skill");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(orphan.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
+    std::fs::write(orphan.join(MARKER), "managed-by: orchestratectl\n").unwrap();
+
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "octl-run-overview",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "named install failed: {out:?}");
+    assert!(
+        orphan.exists(),
+        "targeted install pruned an orphan — must be scoped to install-all"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+}
+
 #[test]
 fn skill_install_stint_start_writes_companion_resource_for_claude() {
     // stint-start ships a companion reference (AGENTS-EXECUTION-DAG.md);
