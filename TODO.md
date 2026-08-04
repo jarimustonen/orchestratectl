@@ -80,8 +80,8 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ pipeline-fix-loop-rollback-hardening     (fix-loop-provenance follow-up: transactional/audit hardening of the deferred review items)
-    pipeline-parallel-chunks                 (DAG scheduler)
+  ▶ pipeline-parallel-chunks                 (DAG scheduler)
+    pipeline-provenance-durable-refs         (fix-loop-rollback follow-up: durable per-chunk provenance refs)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
@@ -92,13 +92,13 @@ LANE C — workmux vendoring (fully independent)
   ▶ workmux-extract-libs   (now unblocked — vendored tree landed via vendor-workmux-multiplexer)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ skill-install-prune-deregistered       (skill.rs: skill install leaves de-registered bundled skills stranded in ~/.claude/skills — needs provenance-safe prune or doctor orphan check)
-    doctor-skill-companion-sync            (skill.rs: doctor skill.sync should also verify companion resource files like AGENTS-EXECUTION-DAG.md, not just SKILL.md)
+  ▶ doctor-skill-companion-sync            (skill.rs: doctor skill.sync should also verify companion resource files like AGENTS-EXECUTION-DAG.md, not just SKILL.md)
     skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ landing-signal-reliable-after-rebase
-    run-cancel-accept-unambiguous-prefix
+  ▶ landing-signal-reliable-after-rebase   collision: bundled-skill snapshot (edits stint-start + worktree-spinoff templates → sequence vs Lane D)
+    cancel-run-already-terminal-error-class  (run cancel on a terminal run: distinct error class; run-cancel-prefix follow-up)
+    run-paths-typed-selector-split           (typed run-id selector split-out; run-cancel-prefix follow-up)
     run-wait-timeout-unit-required
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
