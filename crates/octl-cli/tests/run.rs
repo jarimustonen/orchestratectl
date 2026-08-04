@@ -512,6 +512,61 @@ fn cancel_malformed_run_id_returns_invalid_run_id() {
 }
 
 #[test]
+fn cancel_resolves_unambiguous_run_id_prefix() {
+    let home = TestHome::new();
+    let run_id = create(&home, "spinoff", "prefix");
+    // A prefix (first 12 chars) that names exactly one run resolves to the full
+    // id and cancels it — the payload echoes the resolved full id, not the prefix.
+    let prefix = &run_id[..12];
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "cancel", prefix]));
+    assert_eq!(v["data"]["run_id"], run_id);
+    assert_eq!(v["data"]["already_cancelled"], false);
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", prefix]));
+    assert_eq!(v["data"]["manifest"]["run_id"], run_id);
+    assert_eq!(v["data"]["manifest"]["status"], "cancelled");
+}
+
+#[test]
+fn cancel_ambiguous_prefix_errors_with_candidates() {
+    let home = TestHome::new();
+    // Two runs created together share the ULID's leading timestamp chars; their
+    // longest common prefix is guaranteed to match both (and only both).
+    let a = create(&home, "spinoff", "one");
+    let b = create(&home, "spinoff", "two");
+    let lcp: String = a
+        .chars()
+        .zip(b.chars())
+        .take_while(|(x, y)| x == y)
+        .map(|(x, _)| x)
+        .collect();
+    assert!(
+        !lcp.is_empty(),
+        "ULIDs created together share the timestamp head"
+    );
+
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", &lcp]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "ambiguous_run_id");
+    let candidates = v["error"]["expected"]
+        .as_array()
+        .expect("expected is array");
+    assert!(candidates.iter().any(|c| c == &json!(a)));
+    assert!(candidates.iter().any(|c| c == &json!(b)));
+}
+
+#[test]
+fn cancel_unknown_prefix_returns_run_not_found() {
+    let home = TestHome::new();
+    let _run_id = create(&home, "spinoff", "present");
+    // A well-formed prefix that matches no run → run_not_found (not invalid).
+    let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", "7zzzzzzzz"]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "run_not_found");
+    assert_eq!(v["error"]["invalid_value"], "7zzzzzzzz");
+}
+
+#[test]
 fn reattach_spawns_supervisor_and_records_events() {
     let home = TestHome::new();
     let run_id = create(&home, "spinoff", "x");

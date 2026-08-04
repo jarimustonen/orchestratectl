@@ -19,6 +19,17 @@ fn all_crockford_lower(s: &str) -> bool {
     s.bytes().all(|b| CROCKFORD_LOWER.contains(&b))
 }
 
+/// True iff `s` is a syntactically valid (possibly partial) prefix of a
+/// [`RunId`]: non-empty, no longer than a full ULID, and every character a
+/// lowercase Crockford base32 digit. Used by the CLI to resolve an unambiguous
+/// run-id prefix (like `git`) — a value failing this is a malformed argument,
+/// not a legitimate-but-unknown prefix. Does NOT enforce the first-char
+/// ULID-timestamp bound (a `9…` prefix simply matches no run rather than being
+/// rejected as malformed).
+pub fn is_run_id_prefix(s: &str) -> bool {
+    !s.is_empty() && s.len() <= RunId::LEN && all_crockford_lower(s)
+}
+
 /// True iff every byte of `s` is an RFC 4648 base32 character, lowercase
 /// (`a-z` and `2-7`). Distinct from Crockford in both directions: it *includes*
 /// `i`/`l`/`o`/`u` and *excludes* `0`/`1`/`8`/`9`. This is the alphabet of the

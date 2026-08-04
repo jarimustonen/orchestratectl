@@ -30,6 +30,9 @@ pub fn run(
 ) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
     let paths = run_paths(&root, run_id)?;
+    // `run_id` may have been an unambiguous prefix; from here on report the full
+    // resolved id so payloads/messages never echo a partial id back to the user.
+    let run_id = paths.run_id.as_str();
 
     // Friendly `run_not_found` (exit 1) for a missing manifest, BEFORE taking
     // the lock — and, importantly, before `cancel_run` calls `RunLock::acquire`,
