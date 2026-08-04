@@ -23,11 +23,29 @@ fn git_bin() -> String {
 /// `commit.gpgsign=false` is forced so a merge commit created under a user
 /// whose global config signs commits cannot block on a gpg passphrase prompt
 /// (which would wedge the non-interactive pipeline).
+///
+/// A deterministic committer/author identity (`user.name` / `user.email`) is
+/// forced too (item H): every commit-creating helper here — `merge_no_ff`,
+/// `cherry_pick` — otherwise relies on the ambient git identity, so an
+/// identity-less CI/sandbox would fail to create the merge/replay commit with
+/// `*** Please tell me who you are`. Pinning it also keeps the pipeline's own
+/// commits attributed to the tool rather than to whoever's config happens to be
+/// in scope. Passed as `-c` overrides (not env) so they win over any repo/global
+/// config without mutating it.
 fn git_at(dir: &Path) -> Command {
     let mut cmd = Command::new(git_bin());
     cmd.arg("-C")
         .arg(dir)
-        .args(["-c", "core.quotePath=false", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=orchestratectl pipeline",
+            "-c",
+            "user.email=pipeline@orchestratectl.local",
+        ])
         .env("LC_ALL", "C");
     cmd
 }
@@ -178,6 +196,28 @@ pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool,
     }
 }
 
+/// Whether the range `base..tip` contains a merge commit (any commit with more
+/// than one parent). The provenance-aware rollback (item 1) replays each kept
+/// chunk with `git cherry-pick base..commit`, and a plain range cherry-pick
+/// cannot replay a merge commit without `-m <parent>` — it aborts with
+/// `error: commit … is a merge but no -m option was given`, which the rollback
+/// then reports as a spurious conflict. So a chunk whose history is non-linear is
+/// rejected at gate time (item F) rather than becoming an un-replayable kept
+/// chunk later. `git rev-list --merges --count` reports how many merge commits
+/// the range contains.
+pub fn range_has_merge(dir: &Path, base: &str, tip: &str) -> Result<bool, PipelineError> {
+    let out = git(
+        dir,
+        &["rev-list", "--merges", "--count", &format!("{base}..{tip}")],
+    )?;
+    let n = out.trim().parse::<usize>().map_err(|e| {
+        PipelineError::Git(format!(
+            "could not parse rev-list --merges count {out:?}: {e}"
+        ))
+    })?;
+    Ok(n > 0)
+}
+
 /// Hard-reset `worktree` to `rev` and remove untracked files/dirs, restoring it
 /// to exactly the tree at `rev`. Used to discard any side effects a
 /// planner/judge (spec/verify) stage left in the worktree, so ONLY the
@@ -230,9 +270,16 @@ const DIFF_CAP_BYTES: usize = 16 * 1024;
 /// are cherry-picked back in original order. On a conflict the cherry-pick is
 /// aborted so the worktree is left clean, and [`MergeOutcome::Conflict`] is
 /// returned rather than an error — the caller decides how to surface it.
+///
+/// `--empty=drop` (item G) handles a kept chunk whose change is already present
+/// on the rebuilt tip (e.g. two chunks made the same edit, or an upstream chunk
+/// subsumed it): such a commit would otherwise become empty mid-replay and stop
+/// the cherry-pick with `The previous cherry-pick is now empty` — which this
+/// helper would misread as a conflict and abort. Dropping the redundant commit
+/// replays the rest cleanly; the chunk simply contributes no new commit.
 pub fn cherry_pick(worktree: &Path, base: &str, tip: &str) -> Result<MergeOutcome, PipelineError> {
     let out = git_at(worktree)
-        .args(["cherry-pick", &format!("{base}..{tip}")])
+        .args(["cherry-pick", "--empty=drop", &format!("{base}..{tip}")])
         .output()
         .map_err(|e| {
             PipelineError::Git(format!(

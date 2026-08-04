@@ -183,6 +183,13 @@ pub struct PipelineConfig {
     pub budget: ResourceBudget,
 }
 
+/// `serde` `skip_serializing_if` predicate for a `bool` that stays out of the
+/// output when `false` (there is no built-in for `&bool`).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One chunk's outcome in the report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChunkReport {
@@ -203,13 +210,28 @@ pub struct ChunkReport {
     /// Whether the chunk was merged into the integration branch.
     pub merged: bool,
     /// The chunk's own resulting commit (the harness-produced, floor-gated oid),
-    /// when it committed.
+    /// when it committed. This is the AUTHORED commit and is preserved verbatim
+    /// even after a provenance rollback replays the chunk (item E): it names the
+    /// exact tree the floor gated, whereas `merge_commit` tracks the current
+    /// on-branch commit, which a replay rewrites.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The integration-branch merge commit that folded the chunk in, when merged
-    /// (distinct from `commit`, the chunk's own tip — so provenance is unambiguous).
+    /// The integration-branch commit that folded the chunk in, when merged. On the
+    /// initial merge this is the no-ff merge commit (distinct from `commit`, the
+    /// chunk's own tip). After a provenance rollback replays the chunk it is the
+    /// LINEAR replay commit on the rebuilt branch — so it always names where the
+    /// chunk currently lives on `feat/<slug>`, while `commit` keeps the authored
+    /// oid. See `replayed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merge_commit: Option<String>,
+    /// Whether this chunk's on-branch commit is a REPLAY (a provenance rollback
+    /// cherry-picked it onto a rebuilt integration branch) rather than its original
+    /// no-ff merge (item E). When true, `commit` is the authored/floor-gated oid and
+    /// `merge_commit` is the replayed oid, whose tree may differ from the gated one
+    /// (the feature-floor re-check at the tip is the safety net). Skipped in the
+    /// audit output unless set, so an un-replayed chunk's report is unchanged.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub replayed: bool,
     /// A failure/blocked reason, when not merged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -264,7 +286,10 @@ pub struct PipelineReport {
     /// The final commit on the source branch, when merged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_commit: Option<String>,
-    /// Overall status: `merged | floor_blocked | verify_failed | chunk_failed`.
+    /// Overall status: `merged | floor_blocked | verify_failed | chunk_failed |
+    /// rollback_conflict | …`. `rollback_conflict` means a provenance rollback
+    /// could not cleanly replay a kept chunk onto the rebuilt integration branch;
+    /// the branch was restored intact and the run terminated (item B).
     pub status: String,
     /// Decision envelopes recording the tier that made each call (design §2).
     pub decisions: Vec<DecisionEnvelope>,
@@ -664,6 +689,11 @@ struct Run<'a> {
     /// (`chunk_floor_blocked` vs `chunk_failed` vs `chunk_merge_conflict`, or
     /// `circuit_breaker` once a chunk's re-code budget is exhausted).
     code_block_status: Option<&'static str>,
+    /// The kept chunk a provenance rollback could not replay onto the rebuilt
+    /// integration branch (item B). Set on the `rollback_conflict` terminal path so
+    /// [`finalize`] can name the offending chunk in the report's failure reason
+    /// instead of surfacing a bare `PipelineError::Git`.
+    rollback_conflict: Option<String>,
     /// Per-chunk lifecycle across the fix loop (design §7). Seeded Pending from
     /// the plan; a chunk becomes `Merged` when it lands on `feat/<slug>`, and is
     /// reset to `Pending` by a `RE_CODE_CHUNK` re-brief or a re-spec DAG-diff.
@@ -855,6 +885,7 @@ pub fn run_pipeline_tiered(
         chunk_reports: Vec::new(),
         feature_floor: None,
         code_block_status: None,
+        rollback_conflict: None,
         chunk_status: BTreeMap::new(),
         chunk_tier: BTreeMap::new(),
         chunk_promotions: BTreeMap::new(),
@@ -926,6 +957,11 @@ pub fn run_pipeline_tiered(
     // §8 RE_CODE_CHUNK). Populated when a FIX verdict targets chunks; the code
     // stage consumes them, so it is cleared after each pass.
     let mut pending_findings: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Per-chunk prior diff to seed the next code-stage re-brief (item L): a
+    // verify-FIX rollback captures each re-code target's reverted attempt here so
+    // the re-run does not lose the code the rollback dropped. Consumed and cleared
+    // alongside `pending_findings`.
+    let mut pending_prior_diff: BTreeMap<String, String> = BTreeMap::new();
 
     // --- 3-5. The bounded verify→triage→fix loop (design §7/§8), stopped hard by
     //          the deterministic circuit-breakers of §9. ---
@@ -946,8 +982,16 @@ pub fn run_pipeline_tiered(
 
         // CODE STAGE over the Pending chunks, each with its own bounded RE_CODE
         // re-brief loop (design §8). Already-Merged chunks are skipped.
-        run_code_stage(&mut run, &plan, harnesses, &baseline, &pending_findings)?;
+        run_code_stage(
+            &mut run,
+            &plan,
+            harnesses,
+            &baseline,
+            &pending_findings,
+            &pending_prior_diff,
+        )?;
         pending_findings.clear();
+        pending_prior_diff.clear();
         if run.circuit_breaker.is_some() {
             // A chunk exhausted its re-code budget — the repeated-failure breaker
             // tripped (design §9). Stop; the failing chunk is preserved.
@@ -1039,12 +1083,39 @@ pub fn run_pipeline_tiered(
                     })
                     .map(|(id, _)| id.clone())
                     .collect();
+                // Item L: capture each re-code target's provenance diff BEFORE the
+                // rollback drops it, so its re-run carries the reverted attempt's code
+                // into the re-brief (the code-stage `prior_diff` only covers in-visit
+                // floor retries, not a verify-driven rollback). Best-effort — a diff
+                // failure just means no carried diff for that target.
+                let mut captured_diffs: BTreeMap<String, String> = BTreeMap::new();
+                for id in &targets {
+                    if let Some(prov) = run.chunk_provenance.get(id) {
+                        if let Ok(d) = git::diff(&run.integration_wt, &prov.base, &prov.commit) {
+                            captured_diffs.insert(id.clone(), d);
+                        }
+                    }
+                }
+                // Rebuild the integration branch keeping only the untouched merged
+                // chunks. A replay conflict is terminal (item B): name the chunk in a
+                // `rollback_conflict` report instead of erroring — the branch is
+                // restored intact. Audit/loop state is mutated only AFTER a clean
+                // rebuild, so a conflict-abort leaves the kept chunks' reports intact.
+                match rebuild_integration(&mut run, &keep)? {
+                    RebuildOutcome::Rebuilt => {}
+                    RebuildOutcome::Conflict { chunk_id } => {
+                        run.rollback_conflict = Some(chunk_id);
+                        break LoopExit::Terminal {
+                            verify: Some(verify_report),
+                            status: "rollback_conflict",
+                        };
+                    }
+                }
                 // Drop reports for the chunks whose code we are rolling back, so a
                 // mid-re-code abort cannot leave a stale "merged" report behind (the
                 // re-run upserts a fresh one). Mirrors the re-spec path's retain.
                 run.chunk_reports
                     .retain(|r| !affected.contains(r.id.as_str()));
-                rebuild_integration(&mut run, &keep)?;
                 for id in &targets {
                     record_recode_decision(
                         &mut run,
@@ -1054,6 +1125,9 @@ pub fn run_pipeline_tiered(
                         "verify FIX",
                     );
                     pending_findings.insert(id.clone(), verify_report.findings.clone());
+                    if let Some(d) = captured_diffs.remove(id) {
+                        pending_prior_diff.insert(id.clone(), d);
+                    }
                 }
                 // Revert every affected chunk (targets + dependents) to Pending so
                 // the code stage re-runs them off the rebuilt tip in dependency order.
@@ -1099,6 +1173,16 @@ pub fn run_pipeline_tiered(
                         break LoopExit::Terminal {
                             verify: Some(verify_report),
                             status: "escalated",
+                        };
+                    }
+                    ReSpecOutcome::RollbackConflict { chunk_id } => {
+                        // The re-spec's provenance rollback could not replay a kept
+                        // chunk (item B): terminate with a report naming it, branch
+                        // restored intact.
+                        run.rollback_conflict = Some(chunk_id);
+                        break LoopExit::Terminal {
+                            verify: Some(verify_report),
+                            status: "rollback_conflict",
                         };
                     }
                 }
@@ -1355,6 +1439,11 @@ enum ReSpecOutcome {
     /// The decider overrode the re-spec with an ESCALATE (or any non-re-spec
     /// verdict): the loop hands the feature up instead of re-planning.
     Escalated,
+    /// The new plan was produced, but the provenance rollback that rebuilds the
+    /// integration branch to the re-spec's kept-done set could not replay the named
+    /// kept chunk (item B). The branch was restored intact; the loop terminates with
+    /// a `rollback_conflict` report.
+    RollbackConflict { chunk_id: String },
 }
 
 /// The tier a repeat-failing chunk should be promoted to (design §3), or `None`
@@ -1546,8 +1635,13 @@ fn trigger_re_spec(
     // Provenance-aware rollback (item 1): rebuild the integration branch from the
     // fork replaying ONLY the kept-done chunks, so a reverted chunk's stale code and
     // a removed chunk's code are both dropped instead of stranded on `feat/<slug>`.
+    // A replay conflict is NOT a hard error (item B): hand the offending chunk id up
+    // so the loop terminates with a `rollback_conflict` report (the branch is
+    // restored intact regardless).
     let kept_ids: BTreeSet<String> = diff.kept_done.iter().cloned().collect();
-    rebuild_integration(run, &kept_ids)?;
+    if let RebuildOutcome::Conflict { chunk_id } = rebuild_integration(run, &kept_ids)? {
+        return Ok(ReSpecOutcome::RollbackConflict { chunk_id });
+    }
 
     write_plan(run, &new_plan)?;
     run.decisions.push(envelope(
@@ -1832,14 +1926,36 @@ fn refresh_storage(run: &mut Run) {
 /// then cherry-pick each kept chunk's own commit range (`base..commit`) back in
 /// original merge order. Cherry-picking the RANGE replays exactly that chunk's
 /// change (not its ancestry), so omitting a chunk drops precisely its content. The
-/// kept chunks' provenance and their merged-chunk reports are updated to the
-/// replayed oids; a replayed chunk is a linear commit, so its `commit` and
-/// `merge_commit` coincide (no separate no-ff merge commit on a rebuild).
+/// kept chunks' provenance is repointed to the replayed oids and their
+/// merged-chunk reports gain the replayed on-branch commit in `merge_commit` +
+/// the `replayed` flag, while the report's authored `commit` is kept verbatim
+/// (item E): a linear replay's tree may differ from the originally-gated one, so
+/// the audit distinguishes the authored oid from the current on-branch oid.
 ///
 /// A successful provenance rebuild's deferred mutations: the new per-chunk
 /// provenance map, and the `(chunk_id, replayed_commit)` report-oid updates to
 /// apply once every kept chunk has replayed cleanly.
 type ReplayResult = (BTreeMap<String, ChunkProvenance>, Vec<(String, String)>);
+
+/// The outcome of a provenance rebuild ([`rebuild_integration`]).
+enum RebuildOutcome {
+    /// Every kept chunk replayed cleanly; the integration branch is rebuilt and
+    /// the run's provenance/reports are updated.
+    Rebuilt,
+    /// A kept chunk could not be replayed onto the rebuilt tip; the branch was
+    /// restored intact and the run should terminate with a `rollback_conflict`
+    /// report naming this chunk (item B). NOT a `PipelineError` — a conflict is a
+    /// pipeline outcome the orchestrator gets a structured report for, not a crash.
+    Conflict { chunk_id: String },
+}
+
+/// One step's result inside the transactional replay closure.
+enum Replayed {
+    /// All kept chunks replayed; carries the deferred provenance + report updates.
+    Done(ReplayResult),
+    /// The named chunk conflicted; the caller restores the intact tip and reports.
+    Conflict(String),
+}
 
 /// The rebuild is **transactional**: the integration worktree's pre-rebuild tip is
 /// captured first, and on ANY failure (a cherry-pick conflict, or a hard git error
@@ -1850,9 +1966,15 @@ type ReplayResult = (BTreeMap<String, ChunkProvenance>, Vec<(String, String)>);
 /// failed rollback leaves the run's records consistent with the (restored) branch.
 ///
 /// A cherry-pick conflict (a kept chunk that no longer applies onto the rebuilt
-/// tip) is a hard [`PipelineError::Git`]: the loop cannot safely proceed, so the
-/// run aborts with the (restored, intact) integration branch preserved.
-fn rebuild_integration(run: &mut Run, keep: &BTreeSet<String>) -> Result<(), PipelineError> {
+/// tip) yields [`RebuildOutcome::Conflict`] naming the chunk, so the loop can
+/// terminate with a `rollback_conflict` [`PipelineReport`] rather than a bare
+/// [`PipelineError::Git`] (item B) — the run stops with the (restored, intact)
+/// integration branch preserved either way. A genuine git failure mid-replay is
+/// still surfaced as a hard error.
+fn rebuild_integration(
+    run: &mut Run,
+    keep: &BTreeSet<String>,
+) -> Result<RebuildOutcome, PipelineError> {
     // Fail closed: every id we intend to keep MUST have recorded provenance. A keep
     // id without provenance would be silently dropped from the rebuilt branch while
     // `chunk_status` still says Merged — resetting the branch BEFORE catching that
@@ -1881,9 +2003,9 @@ fn rebuild_integration(run: &mut Run, keep: &BTreeSet<String>) -> Result<(), Pip
 
     // Do all the fallible git work in a closure so ONE restore path handles every
     // early exit; report/provenance mutation is deferred until it fully succeeds.
-    // `Ok(None)` signals a replay conflict (restore + abort); `Ok(Some(..))` carries
-    // the new provenance and the (chunk_id, replayed_commit) report updates.
-    let replay = || -> Result<Option<ReplayResult>, PipelineError> {
+    // `Replayed::Conflict(id)` signals a replay conflict (restore + report);
+    // `Replayed::Done(..)` carries the new provenance and report updates.
+    let replay = || -> Result<Replayed, PipelineError> {
         // Reset to the fork, discarding every merged chunk's commits (kept ones are
         // replayed below). `restore_to` hard-resets AND cleans untracked files.
         git::restore_to(&run.integration_wt, &run.fork_commit)?;
@@ -1904,35 +2026,35 @@ fn rebuild_integration(run: &mut Run, keep: &BTreeSet<String>) -> Result<(), Pip
                         },
                     );
                 }
-                // Conflict → signal the caller (via `None`) to restore + abort.
-                MergeOutcome::Conflict { .. } => return Ok(None),
+                // Conflict → signal the caller to restore + report, naming the chunk.
+                MergeOutcome::Conflict { .. } => return Ok(Replayed::Conflict(id.clone())),
             }
         }
-        Ok(Some((new_prov, report_updates)))
+        Ok(Replayed::Done((new_prov, report_updates)))
     };
 
     match replay() {
-        Ok(Some((new_prov, report_updates))) => {
-            // Commit the transaction: update the kept chunks' report oids to the
-            // replayed commits (a linear replay → commit == merge_commit) and swap
-            // in the new provenance (dropped chunks are gone).
+        Ok(Replayed::Done((new_prov, report_updates))) => {
+            // Commit the transaction: point each kept chunk's report at its replayed
+            // on-branch commit (via `merge_commit`) and flag it replayed, keeping the
+            // authored `commit` oid intact (item E); then swap in the new provenance
+            // (dropped chunks are gone).
             for (id, commit) in report_updates {
                 for r in &mut run.chunk_reports {
                     if r.id == id {
-                        r.commit = Some(commit.clone());
                         r.merge_commit = Some(commit.clone());
+                        r.replayed = true;
                     }
                 }
             }
             run.chunk_provenance = new_prov;
-            Ok(())
+            Ok(RebuildOutcome::Rebuilt)
         }
-        Ok(None) => {
-            // Conflict: restore the intact branch, leave in-memory state untouched.
+        Ok(Replayed::Conflict(chunk_id)) => {
+            // Conflict: restore the intact branch, leave in-memory state untouched,
+            // and hand the offending chunk id back for a `rollback_conflict` report.
             let _ = git::restore_to(&run.integration_wt, &original_tip);
-            Err(PipelineError::Git(
-                "provenance rollback could not cleanly replay a kept chunk; the integration branch was restored intact".to_string(),
-            ))
+            Ok(RebuildOutcome::Conflict { chunk_id })
         }
         Err(e) => {
             // A hard git failure mid-replay: restore the intact branch, then surface.
@@ -1948,6 +2070,7 @@ fn run_code_stage(
     harnesses: &dyn TierHarness,
     baseline: &BaselineSnapshot,
     pending_findings: &BTreeMap<String, Vec<String>>,
+    pending_prior_diff: &BTreeMap<String, String>,
 ) -> Result<(), PipelineError> {
     let order = topo_order(&plan.chunks);
     for &idx in &order {
@@ -1965,7 +2088,10 @@ fn run_code_stage(
         let mut findings: Vec<String> = verify_seed.clone();
         // The prior failed attempt's diff, carried into the next re-brief so a
         // torn-down retry does not lose the failing work (item 3: re-code amnesia).
-        let mut prior_diff: Option<String> = None;
+        // Seeded from a verify-FIX rollback's captured pre-rollback diff (item L) so
+        // the very FIRST re-run after a rollback also carries the reverted code, not
+        // just the in-visit floor retries.
+        let mut prior_diff: Option<String> = pending_prior_diff.get(&chunk.id).cloned();
         // Two counters (see design §3 + §8): `recode` is the per-tier re-code
         // attempt (1-based) the re-code budget bounds — it RESETS to 1 on a
         // promotion so each tier gets its own fresh budget. `seq` is a monotonic
@@ -2024,6 +2150,7 @@ fn run_code_stage(
                             merged: true,
                             commit: Some(commit),
                             merge_commit: Some(merge_commit),
+                            replayed: false,
                             reason: None,
                             branch_preserved: None,
                         },
@@ -2197,9 +2324,21 @@ fn run_code_stage(
                     // like a conflict).
                     let promotions = run.chunk_promotions.get(&chunk.id).copied().unwrap_or(0);
                     if recodable && (run.cfg.fix_loop.max_recode_per_chunk > 0 || promotions > 0) {
+                        // Report the CUMULATIVE floor re-code count for this
+                        // `(plan_rev, chunk, tier)` (item O), not just the per-visit
+                        // `seq` (which resets each time the chunk re-enters the code
+                        // stage from a later verify iteration / re-spec) — so a
+                        // cross-visit exhaustion reads as the real total, not a
+                        // per-visit undercount.
+                        let cumulative_recodes = run
+                            .chunk_recode_total
+                            .get(&(plan.plan_rev, chunk.id.clone(), current_tier.wire_name()))
+                            .copied()
+                            .unwrap_or(0);
                         run.circuit_breaker = Some(format!(
-                            "chunk {} still blocked after {} attempt(s) and {promotions} promotion(s): {reason}",
-                            chunk.id, seq
+                            "chunk {} still blocked after {seq} attempt(s) this visit ({cumulative_recodes} cumulative floor re-code(s) at tier {} across visits) and {promotions} promotion(s): {reason}",
+                            chunk.id,
+                            current_tier.wire_name()
                         ));
                         run.code_block_status = Some("circuit_breaker");
                     } else {
@@ -2403,6 +2542,21 @@ fn attempt_chunk(
             ),
         ));
     }
+    // Reject a non-linear chunk history (item F): the provenance rollback replays a
+    // kept chunk with `git cherry-pick base..commit`, which cannot replay a merge
+    // commit without `-m` (it aborts, which the rollback would misread as a
+    // conflict). A chunk that merged something into its own range must be flattened
+    // by the harness before it can be a safe, replayable unit — treat it as a
+    // re-codable failure here rather than letting it become an un-replayable merged
+    // chunk later.
+    if git::range_has_merge(&chunk_wt, &base_commit, &head)? {
+        return Ok(harness_block(
+            "failed",
+            format!(
+                "chunk history {base_commit}..{head} contains a merge commit; the provenance rollback replays a linear range and cannot cherry-pick a merge — the chunk must be a linear sequence of commits"
+            ),
+        ));
+    }
     if !git::is_clean(&chunk_wt)? {
         return Ok(harness_block(
             "failed",
@@ -2516,6 +2670,7 @@ fn push_blocked_chunk(
             merged: false,
             commit: None,
             merge_commit: None,
+            replayed: false,
             reason: Some(reason),
             branch_preserved: Some(chunk_branch.to_string()),
         },
@@ -2762,6 +2917,13 @@ fn finalize(
             Some("verify judged the product does not match intent (or an acceptance check failed); not merged".to_string())
         }
         "floor_blocked" => Some("the feature floor regressed at the tip; not merged".to_string()),
+        "rollback_conflict" => Some(format!(
+            "the provenance rollback could not cleanly replay kept chunk{} onto the rebuilt integration branch; not merged — the integration branch was restored intact and its work preserved",
+            run.rollback_conflict
+                .as_ref()
+                .map(|c| format!(" `{c}`"))
+                .unwrap_or_default()
+        )),
         "escalated" => Some(
             "the decider escalated a consequential decision (declined to converge or re-spec) and handed the feature up; not merged — see the decision log for the reason".to_string(),
         ),

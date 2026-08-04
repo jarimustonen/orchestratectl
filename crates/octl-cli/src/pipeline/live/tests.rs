@@ -1473,12 +1473,14 @@ fn verify_fix_rollback_reverts_transitive_dependents() {
 }
 
 #[test]
-fn rollback_conflict_restores_the_intact_branch() {
-    // Review fix (transactional rollback): if a kept chunk cannot be replayed onto
-    // the rebuilt fork (here c2 modifies c1's file but does NOT declare the
-    // dependency, so the closure can't catch it), the rollback must restore the
-    // integration branch to its intact pre-rollback tip and abort — never leave a
-    // half-rebuilt branch, so invariant-5 preservation keeps the REAL work.
+fn rollback_conflict_yields_a_terminal_report_naming_the_chunk() {
+    // Item B (graceful rollback_conflict report) + transactional rollback: if a kept
+    // chunk cannot be replayed onto the rebuilt fork (here c2 modifies c1's file but
+    // does NOT declare the dependency, so the closure can't catch it), the rollback
+    // must (1) restore the integration branch to its intact pre-rollback tip — never
+    // leave a half-rebuilt branch, so invariant-5 preservation keeps the REAL work —
+    // and (2) yield a terminal `rollback_conflict` PipelineReport naming the chunk
+    // that failed to replay, rather than a bare PipelineError::Git.
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
@@ -1508,11 +1510,16 @@ fn rollback_conflict_restores_the_intact_branch() {
         },
     });
 
-    let err = run_pipeline(&cfg, &ScriptedSpec::new(plan), &SharedFileChunks, &verify)
-        .expect_err("a replay conflict aborts the run");
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &SharedFileChunks, &verify)
+        .expect("a replay conflict yields a terminal report, not a hard error");
+    assert_eq!(report.status, "rollback_conflict", "{report:#?}");
+    assert!(!report.merged);
+    // The failure reason names the kept chunk that could not replay (c2, the chunk
+    // kept while its unseen dependency c1 was dropped).
+    let failure = report.failure.as_deref().unwrap_or("");
     assert!(
-        format!("{err:?}").contains("rollback"),
-        "unexpected error: {err:?}"
+        failure.contains("`c2`"),
+        "failure should name the conflicting chunk c2: {failure:?}"
     );
     // The integration branch was restored intact (both chunks' work is still on it),
     // NOT left reset to the fork — proving the rebuild rolled back its own damage.
@@ -1521,6 +1528,291 @@ fn rollback_conflict_restores_the_intact_branch() {
         git_out(repo.path(), &["show", "feat/demo:shared.txt"]),
         "base\nextra",
         "feat must hold the intact pre-rollback content, not be reset to fork"
+    );
+}
+
+/// A per-chunk harness that writes `<id>.txt` keyed on the chunk id, so chunks
+/// touch disjoint files and replay cleanly onto a rebuilt fork. Every call writes
+/// the same content, so a re-run of a reverted chunk still produces a non-empty
+/// diff off the fork.
+struct DisjointChunks;
+impl CodeHarness for DisjointChunks {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let wt = &req.worktree_path;
+        let file = format!("{}.txt", req.chunk_id);
+        std::fs::write(wt.join(&file), format!("{} content\n", req.chunk_id)).unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        Ok(ChunkResult::committed(
+            git_out(wt, &["rev-parse", "HEAD"]),
+            vec![PathBuf::from(file)],
+        ))
+    }
+}
+
+#[test]
+fn replayed_chunk_report_keeps_authored_commit_and_flags_replayed() {
+    // Item E (replayed-chunk provenance fidelity): after a verify-FIX rollback
+    // replays a KEPT chunk onto the rebuilt integration branch, its report must keep
+    // the AUTHORED `commit` oid (the floor-gated tip) and record the replayed
+    // on-branch oid in `merge_commit` + set `replayed = true` — NOT overwrite
+    // `commit`. c1←c2 are stacked and both kept; the FIX targets only the
+    // independent c3, so c1 and c2 are replayed while c3 is re-coded fresh. c2 is
+    // replayed onto c1's REPLAYED tip (a different parent than its authored one), so
+    // its replayed oid is guaranteed distinct from the authored `commit`.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["c1.txt", "c2.txt", "c3.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "all", "run": "test -f c1.txt && test -f c2.txt && test -f c3.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make c1",
+             "files_touched": ["c1.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "make c2", "deps": ["c1"],
+             "files_touched": ["c2.txt"], "checks": [{"desc": "b", "run": "true"}]},
+            {"id": "c3", "title": "c", "tier": "code", "brief": "make c3",
+             "files_touched": ["c3.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c3".to_string(),
+            findings: vec!["c3 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c3".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &DisjointChunks, &verify)
+        .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+
+    let c1 = report.chunks.iter().find(|c| c.id == "c1").unwrap();
+    let c2 = report.chunks.iter().find(|c| c.id == "c2").unwrap();
+    let c3 = report.chunks.iter().find(|c| c.id == "c3").unwrap();
+    // The two kept chunks were replayed by the rollback.
+    assert!(c1.replayed, "c1 was kept through the rollback → replayed");
+    assert!(c2.replayed, "c2 was kept through the rollback → replayed");
+    // The re-code target was re-coded fresh (a normal no-ff merge), not replayed.
+    assert!(!c3.replayed, "c3 was re-coded, not replayed");
+    // Item E core: the authored `commit` is preserved distinct from the replayed
+    // on-branch `merge_commit` (which now has a different parent than the authored
+    // tip), instead of the old behaviour of overwriting `commit` with the replay.
+    assert!(c2.commit.is_some() && c2.merge_commit.is_some());
+    assert_ne!(
+        c2.commit, c2.merge_commit,
+        "authored commit must be preserved distinct from the replayed on-branch commit"
+    );
+    // The authored oid is still a real, resolvable commit object (not clobbered).
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["cat-file", "-e", c2.commit.as_deref().unwrap()])
+            .status()
+            .unwrap()
+            .success(),
+        "authored commit oid must remain a valid object"
+    );
+}
+
+#[test]
+fn nonlinear_chunk_history_is_rejected_at_gate() {
+    // Item F (merge-commit inside a chunk range): a chunk whose history contains a
+    // merge commit cannot be replayed by the provenance rollback (`git cherry-pick
+    // base..commit` refuses a merge without `-m`), so it must be rejected at gate
+    // time as a re-codable failure rather than becoming an un-replayable merged
+    // chunk. With no re-code budget the run terminates `chunk_failed`, naming the
+    // merge-commit reason.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    let spec = ScriptedSpec::new(one_chunk_plan(&["feature.txt"], "true", "true"));
+
+    // A harness that produces a NON-LINEAR chunk history: it commits on the chunk
+    // branch, then creates a side branch from the base, commits there, and merges it
+    // back with --no-ff — leaving a merge commit inside `base..HEAD`.
+    struct MergingHarness;
+    impl CodeHarness for MergingHarness {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            let wt = &req.worktree_path;
+            let base = git_out(wt, &["rev-parse", "HEAD"]);
+            // Main line commit on the chunk branch.
+            std::fs::write(wt.join("feature.txt"), "main line\n").unwrap();
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "mainline"]);
+            // A divergent side branch off the base, then merge it back (--no-ff) so a
+            // real merge commit lands inside base..HEAD.
+            git(wt, &["checkout", "-q", "-b", "side", &base]);
+            std::fs::write(wt.join("other.txt"), "side\n").unwrap();
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "side"]);
+            git(wt, &["checkout", "-q", "-"]);
+            git(
+                wt,
+                &["merge", "--no-ff", "--no-edit", "-m", "merge side", "side"],
+            );
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                vec![PathBuf::from("feature.txt"), PathBuf::from("other.txt")],
+            ))
+        }
+    }
+
+    let report = run_pipeline(&cfg, &spec, &MergingHarness, &ScriptedVerify::passing())
+        .expect("pipeline runs");
+    assert_eq!(report.status, "chunk_failed", "{report:#?}");
+    assert!(!report.merged);
+    let reason = report.chunks[0].reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("merge commit"),
+        "block reason should name the non-linear merge-commit history: {reason:?}"
+    );
+    // Nothing reached source.
+    assert!(!main_has(&repo, "feature.txt"));
+}
+
+#[test]
+fn verify_fix_rollback_carries_reverted_chunks_prior_diff() {
+    // Item L (carry the prior diff into verify-FIX re-codes): when a verify-FIX rolls
+    // a merged chunk back, its reverted attempt's diff must seed the re-run's
+    // re-brief — the code-stage `prior_diff` only covers in-visit floor retries, so
+    // without this the first re-run after a rollback would forget the code it just
+    // discarded. The re-code target's re-run brief must carry the fenced prior-diff
+    // section with the reverted content.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    // Verify fails once (FIX c1) to force a rollback + re-code, then passes.
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c1".to_string(),
+            findings: vec!["needs work".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c1".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    // Records each attempt's brief; every call writes a unique content so the
+    // reverted attempt has a real, identifiable diff.
+    struct BriefRecorder {
+        briefs: std::sync::Mutex<Vec<String>>,
+        n: AtomicU32,
+    }
+    impl CodeHarness for BriefRecorder {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            self.briefs.lock().unwrap().push(req.brief.clone());
+            let n = self.n.fetch_add(1, Ordering::SeqCst);
+            let wt = &req.worktree_path;
+            let marker = if n == 0 {
+                "REVERTED_ATTEMPT_MARKER"
+            } else {
+                "RECODED_MARKER"
+            };
+            std::fs::write(wt.join("feature.txt"), format!("{marker}\n")).unwrap();
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "edit"]);
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                vec![PathBuf::from("feature.txt")],
+            ))
+        }
+    }
+
+    let harness = BriefRecorder {
+        briefs: std::sync::Mutex::new(Vec::new()),
+        n: AtomicU32::new(0),
+    };
+    let report = run_pipeline(&cfg, &spec, &harness, &verify).expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+
+    let briefs = harness.briefs.into_inner().unwrap();
+    assert_eq!(
+        briefs.len(),
+        2,
+        "one initial attempt + one post-rollback re-code"
+    );
+    // The initial attempt gets the bare brief — no prior-diff section.
+    assert!(
+        !briefs[0].contains("previous attempt's diff"),
+        "initial brief must not carry a prior diff: {}",
+        briefs[0]
+    );
+    // The post-rollback re-code carries the reverted attempt's diff as fenced DATA.
+    assert!(
+        briefs[1].contains("previous attempt's diff"),
+        "post-rollback re-brief missing the carried prior diff: {}",
+        briefs[1]
+    );
+    assert!(
+        briefs[1].contains("REVERTED_ATTEMPT_MARKER"),
+        "the carried diff must contain the reverted attempt's content: {}",
+        briefs[1]
     );
 }
 

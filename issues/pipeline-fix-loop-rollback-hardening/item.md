@@ -1,8 +1,8 @@
 ---
 created: 2026-08-01
-updated: 2026-08-01
+updated: 2026-08-04
 type: task
-status: open
+status: in-progress
 priority: normal
 related: ['@pipeline-fix-loop-provenance']
 ---
@@ -57,10 +57,15 @@ correctness holes.
 
 ## Acceptance Criteria
 
-- [ ] B: rollback conflict yields a `PipelineReport` with a `rollback_conflict` status naming the failed chunk
-- [ ] E: replayed-chunk provenance no longer overwrites `merge_commit`; audit distinguishes authored vs replayed commits
-- [ ] F: non-linear chunk histories are rejected at gate time OR replayed correctly
-- [ ] H: cherry-pick/merge use a deterministic committer identity
-- [ ] L: verify-FIX / re-spec re-codes carry the reverted chunk's prior diff
-- [ ] G: provenance commits pinned under durable refs; empty cherry-pick handled
-- [ ] O: breaker messages report cumulative attempt counts
+- [x] B: rollback conflict yields a `PipelineReport` with a `rollback_conflict` status naming the failed chunk
+- [x] E: replayed-chunk provenance no longer overwrites `merge_commit`; audit distinguishes authored vs replayed commits (`ChunkReport.replayed` + authored `commit` kept, replayed oid in `merge_commit`)
+- [x] F: non-linear chunk histories are rejected at gate time (`git::range_has_merge` in `attempt_chunk`)
+- [x] H: cherry-pick/merge use a deterministic committer identity (`user.name`/`user.email` `-c` overrides in `git_at`)
+- [x] L: verify-FIX re-codes carry the reverted chunk's prior diff (`pending_prior_diff` seeded before rollback → `run_code_stage`). Re-spec re-codes deferred (see below).
+- [~] G: empty cherry-pick handled (`--empty=drop`). Durable `refs/pipeline/prov/*` pinning **deferred** → follow-up `pipeline-provenance-durable-refs`.
+- [x] O: breaker messages report cumulative `(plan_rev, chunk, tier)` re-code count alongside the per-visit seq
+
+### Deferred (filed follow-ups)
+
+- **G (durable provenance refs)** → `pipeline-provenance-durable-refs`. Rationale: within one supervised run no pipeline path invokes `git gc --prune`/`worktree prune`, and git's `gc --auto` default `gc.pruneExpire=2.weeks.ago` never prunes the seconds-old orphaned authored commits a rollback produces — so object-DB reachability holds for the run's lifetime. Pinning adds ref create/cleanup lifecycle (incl. the preserved-branch path) for an unobserved failure mode; worth doing, not blocking. Empty-cherry-pick half is DONE here.
+- **L for the re-spec path** → same follow-up note. A re-spec produces a whole new plan (chunk identity/brief may change), so carrying a prior authored diff into a re-spec re-code is lower-value and potentially misleading; the verify-FIX path (stable chunk identity) is the meaningful case and is implemented.
