@@ -271,15 +271,22 @@ const DIFF_CAP_BYTES: usize = 16 * 1024;
 /// aborted so the worktree is left clean, and [`MergeOutcome::Conflict`] is
 /// returned rather than an error — the caller decides how to surface it.
 ///
-/// `--empty=drop` (item G) handles a kept chunk whose change is already present
-/// on the rebuilt tip (e.g. two chunks made the same edit, or an upstream chunk
-/// subsumed it): such a commit would otherwise become empty mid-replay and stop
-/// the cherry-pick with `The previous cherry-pick is now empty` — which this
-/// helper would misread as a conflict and abort. Dropping the redundant commit
-/// replays the rest cleanly; the chunk simply contributes no new commit.
+/// Item G note: a kept chunk whose change is already present on the rebuilt tip
+/// (e.g. two chunks made the same edit, or an upstream chunk subsumed it) replays
+/// to an EMPTY commit, which git stops on with `The previous cherry-pick is now
+/// empty` and a set `CHERRY_PICK_HEAD` — so this helper surfaces it as a
+/// [`MergeOutcome::Conflict`], which the rollback turns into a clean
+/// `rollback_conflict` terminal report (branch restored intact), NOT a crash. This
+/// is deliberately conservative: `--empty=drop`-style "drop the redundant commit
+/// and continue" would let the rebuild proceed, but it produces a chunk whose
+/// provenance range is empty (`base == commit`) and whose report `merge_commit`
+/// would falsely point at a neighbour's commit — an audit hazard that also breaks
+/// a *second* rollback (an empty `base..base` range). Doing that correctly (an
+/// explicit no-op provenance state) plus its git-version dependency is deferred to
+/// `pipeline-provenance-durable-refs`.
 pub fn cherry_pick(worktree: &Path, base: &str, tip: &str) -> Result<MergeOutcome, PipelineError> {
     let out = git_at(worktree)
-        .args(["cherry-pick", "--empty=drop", &format!("{base}..{tip}")])
+        .args(["cherry-pick", &format!("{base}..{tip}")])
         .output()
         .map_err(|e| {
             PipelineError::Git(format!(

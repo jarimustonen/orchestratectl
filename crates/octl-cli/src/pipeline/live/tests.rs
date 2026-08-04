@@ -1531,6 +1531,82 @@ fn rollback_conflict_yields_a_terminal_report_naming_the_chunk() {
     );
 }
 
+#[test]
+fn respec_rollback_conflict_leaves_run_state_consistent_with_the_old_branch() {
+    // Item B transactional-audit fix (re-spec path): a re-spec whose provenance
+    // rollback conflicts must NOT have already repointed the run to the new plan —
+    // otherwise `finalize` emits a report for the new plan while the restored branch
+    // still holds the OLD chunks. v1 = c1 (shared="base") + c2 (shared="base\nextra",
+    // modifies shared, NO dep on c1). A SpecFlaw drops c1 to v2 (= c2 only); the
+    // rollback keeps c2 and replays it onto the fork, which conflicts (c2's change
+    // needs c1's shared.txt). The terminal report must describe the OLD plan: both
+    // chunks still reported, plan_rev 1, respec_count 0, branch intact.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 1,
+        max_promotions: 0,
+    };
+    let v1 = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make base",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "append",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let v2 = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c2", "title": "b", "tier": "code", "brief": "append",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let spec = ScriptedSpec::sequence(vec![v1, v2]);
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "c1 is a spec flaw; drop it".to_string(),
+        findings: vec!["remove c1".to_string()],
+        disposition: providers::VerifyDisposition::SpecFlaw {
+            reason: "c1 is a spec flaw; drop it".to_string(),
+            chunk_ids: vec!["c1".to_string()],
+        },
+    });
+
+    let report = run_pipeline(&cfg, &spec, &SharedFileChunks, &verify)
+        .expect("terminal report, not a crash");
+    assert_eq!(report.status, "rollback_conflict", "{report:#?}");
+    assert!(!report.merged);
+    // The re-spec did NOT take effect: state still describes plan v1.
+    assert_eq!(
+        report.plan_rev, 1,
+        "old plan revision, re-spec never landed"
+    );
+    assert_eq!(
+        report.respec_count, 0,
+        "respec_count must not advance when the rollback aborted the re-spec"
+    );
+    // Both chunks are still reported — the branch still holds them, so the audit must
+    // not have pruned c1's report to the new-plan kept set.
+    assert_eq!(
+        report.chunks.len(),
+        2,
+        "both old-plan chunks still reported"
+    );
+    assert!(report.chunks.iter().any(|c| c.id == "c1"));
+    assert!(report.chunks.iter().any(|c| c.id == "c2"));
+    // The branch was restored intact with both chunks' content.
+    assert!(super::git::branch_exists(repo.path(), "feat/demo"));
+    assert_eq!(
+        git_out(repo.path(), &["show", "feat/demo:shared.txt"]),
+        "base\nextra"
+    );
+}
+
 /// A per-chunk harness that writes `<id>.txt` keyed on the chunk id, so chunks
 /// touch disjoint files and replay cleanly onto a rebuilt fork. Every call writes
 /// the same content, so a re-run of a reverted chunk still produces a non-empty

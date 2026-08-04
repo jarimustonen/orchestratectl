@@ -1564,7 +1564,6 @@ fn trigger_re_spec(
         Action::TriggerReSpec { reason, chunk_ids } => (reason, chunk_ids),
         _ => return Ok(ReSpecOutcome::Escalated),
     };
-    run.respec_count = run.respec_count.saturating_add(1);
 
     // Produce plan.v(N+1). The spec stage runs headless in the integration
     // worktree; restore it to the current tip afterward so a planner's stray edit
@@ -1593,8 +1592,10 @@ fn trigger_re_spec(
         .collect();
     let diff = fixloop::dag_diff(old_plan, &new_plan, &merged, &forced);
 
-    // Rebuild the chunk-status map for the NEW plan. Removed chunks drop out (with
-    // their reports); kept-done chunks stay Merged; everything else is Pending.
+    // Build the NEW plan's chunk state as LOCALS first; nothing on `run` is mutated
+    // until the provenance rollback below succeeds. Rebuilding the chunk-status map:
+    // removed chunks drop out (with their reports); kept-done chunks stay Merged;
+    // everything else is Pending.
     let mut status = BTreeMap::new();
     for id in &diff.kept_done {
         status.insert(id.clone(), LiveChunkStatus::Merged);
@@ -1602,7 +1603,6 @@ fn trigger_re_spec(
     for id in &diff.revert_to_pending {
         status.insert(id.clone(), LiveChunkStatus::Pending);
     }
-    run.chunk_status = status;
     // Rebuild each chunk's tier for the NEW plan (design §3): a kept-done chunk
     // keeps whatever tier it converged at; a reverted / brand-new chunk resets to
     // the new plan's declared tier and its promotion count clears — the re-coded
@@ -1621,6 +1621,24 @@ fn trigger_re_spec(
             new_tier.insert(c.id.clone(), c.tier);
         }
     }
+
+    // Provenance-aware rollback (item 1): rebuild the integration branch from the
+    // fork replaying ONLY the kept-done chunks, so a reverted chunk's stale code and
+    // a removed chunk's code are both dropped instead of stranded on `feat/<slug>`.
+    // This is done BEFORE any `run` state is repointed to the new plan (item B
+    // transactional-audit fix): a replay conflict must leave the run describing the
+    // OLD plan that still matches the restored branch — otherwise `finalize` would
+    // emit a report for the new plan while the branch holds the old chunks. On a
+    // conflict, touch nothing and hand the offending chunk id up for a
+    // `rollback_conflict` report (the branch is restored intact regardless).
+    let kept_ids: BTreeSet<String> = diff.kept_done.iter().cloned().collect();
+    if let RebuildOutcome::Conflict { chunk_id } = rebuild_integration(run, &kept_ids)? {
+        return Ok(ReSpecOutcome::RollbackConflict { chunk_id });
+    }
+
+    // The rebuild committed — NOW apply the new plan's state to the run, so the
+    // audit records only advance to the new revision once the branch actually did.
+    run.chunk_status = status;
     run.chunk_tier = new_tier;
     run.chunk_promotions = new_promotions;
     // The cumulative re-code budget is keyed by plan_rev, so the new revision gets a
@@ -1629,19 +1647,11 @@ fn trigger_re_spec(
     run.chunk_recode_total
         .retain(|(rev, _, _), _| *rev >= new_rev);
     // Drop reports for chunks no longer in the plan (removed) or about to be
-    // re-coded (reverted) — the re-run upserts a fresh report for the latter.
+    // re-coded (reverted) — the re-run upserts a fresh report for the latter. (The
+    // rollback already refreshed the KEPT chunks' reports in place.)
     run.chunk_reports.retain(|r| keep.contains(r.id.as_str()));
-
-    // Provenance-aware rollback (item 1): rebuild the integration branch from the
-    // fork replaying ONLY the kept-done chunks, so a reverted chunk's stale code and
-    // a removed chunk's code are both dropped instead of stranded on `feat/<slug>`.
-    // A replay conflict is NOT a hard error (item B): hand the offending chunk id up
-    // so the loop terminates with a `rollback_conflict` report (the branch is
-    // restored intact regardless).
-    let kept_ids: BTreeSet<String> = diff.kept_done.iter().cloned().collect();
-    if let RebuildOutcome::Conflict { chunk_id } = rebuild_integration(run, &kept_ids)? {
-        return Ok(ReSpecOutcome::RollbackConflict { chunk_id });
-    }
+    // The re-spec has now taken effect on both the branch and the run state.
+    run.respec_count = run.respec_count.saturating_add(1);
 
     write_plan(run, &new_plan)?;
     run.decisions.push(envelope(
@@ -2053,15 +2063,47 @@ fn rebuild_integration(
         Ok(Replayed::Conflict(chunk_id)) => {
             // Conflict: restore the intact branch, leave in-memory state untouched,
             // and hand the offending chunk id back for a `rollback_conflict` report.
-            let _ = git::restore_to(&run.integration_wt, &original_tip);
+            // The restore MUST succeed to honour the report's "restored intact"
+            // claim — if it fails (disk full, a rejecting hook, repo corruption), the
+            // branch is in an unknown half-rebuilt state, so surface a hard error
+            // instead of a `Conflict` that would falsely assert preservation.
+            restore_intact(&run.integration_wt, &original_tip)?;
             Ok(RebuildOutcome::Conflict { chunk_id })
         }
         Err(e) => {
             // A hard git failure mid-replay: restore the intact branch, then surface.
-            let _ = git::restore_to(&run.integration_wt, &original_tip);
+            // A failed restore is chained onto the original error rather than masking
+            // it — either way this is a hard error, but the message must not claim
+            // the branch was preserved when it was not.
+            if let Err(restore_err) = restore_intact(&run.integration_wt, &original_tip) {
+                return Err(PipelineError::Git(format!(
+                    "provenance rollback failed ({e}) AND restoring the integration branch to its intact tip {original_tip} also failed ({restore_err}); the branch may be in an unknown state"
+                )));
+            }
             Err(e)
         }
     }
+}
+
+/// Hard-reset the integration worktree back to `original_tip` and VERIFY the reset
+/// landed (HEAD matches, worktree clean). A rollback's transactional/preservation
+/// guarantee rests entirely on this restore succeeding, so — unlike the best-effort
+/// teardown resets elsewhere — its failure is surfaced as an error rather than
+/// swallowed, so no caller can report "restored intact" over an unknown branch.
+fn restore_intact(worktree: &Path, original_tip: &str) -> Result<(), PipelineError> {
+    git::restore_to(worktree, original_tip)?;
+    let head = git::head(worktree)?;
+    if head != original_tip {
+        return Err(PipelineError::Git(format!(
+            "rollback restore did not land: HEAD is {head}, expected {original_tip}"
+        )));
+    }
+    if !git::is_clean(worktree)? {
+        return Err(PipelineError::Git(
+            "rollback restore left the integration worktree dirty".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn run_code_stage(
@@ -2324,21 +2366,25 @@ fn run_code_stage(
                     // like a conflict).
                     let promotions = run.chunk_promotions.get(&chunk.id).copied().unwrap_or(0);
                     if recodable && (run.cfg.fix_loop.max_recode_per_chunk > 0 || promotions > 0) {
-                        // Report the CUMULATIVE floor re-code count for this
-                        // `(plan_rev, chunk, tier)` (item O), not just the per-visit
-                        // `seq` (which resets each time the chunk re-enters the code
-                        // stage from a later verify iteration / re-spec) — so a
-                        // cross-visit exhaustion reads as the real total, not a
-                        // per-visit undercount.
-                        let cumulative_recodes = run
+                        // Report the CUMULATIVE floor re-code count for this chunk in
+                        // this plan revision (item O), not just the per-visit `seq`
+                        // (which resets each time the chunk re-enters the code stage
+                        // from a later verify iteration / re-spec). Sum ACROSS TIERS,
+                        // not just the current one, so a chunk exhausted after a
+                        // promotion doesn't read "0 re-codes at tier X" while the
+                        // lower tiers actually spent the budget — the total reflects
+                        // the real effort, and `promotions` shows how it was spread.
+                        let cumulative_recodes: u32 = run
                             .chunk_recode_total
-                            .get(&(plan.plan_rev, chunk.id.clone(), current_tier.wire_name()))
-                            .copied()
-                            .unwrap_or(0);
+                            .iter()
+                            .filter(|((rev, id, _tier), _)| {
+                                *rev == plan.plan_rev && id == &chunk.id
+                            })
+                            .map(|(_, n)| *n)
+                            .sum();
                         run.circuit_breaker = Some(format!(
-                            "chunk {} still blocked after {seq} attempt(s) this visit ({cumulative_recodes} cumulative floor re-code(s) at tier {} across visits) and {promotions} promotion(s): {reason}",
+                            "chunk {} still blocked after {seq} attempt(s) this visit ({cumulative_recodes} cumulative floor re-code(s) across visits, {promotions} promotion(s)): {reason}",
                             chunk.id,
-                            current_tier.wire_name()
                         ));
                         run.code_block_status = Some("circuit_breaker");
                     } else {

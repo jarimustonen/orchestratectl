@@ -27,7 +27,19 @@ reachability holds for the run's lifetime and the exposure is essentially nil un
 default git config. Real only if an external aggressive `git gc --prune=now` races the
 rollback. Belt-and-suspenders, not a correctness hole.
 
-The empty-cherry-pick half of G (`--empty=drop`) is already DONE in the parent issue.
+### Optimal empty-cherry-pick handling
+
+The parent issue handles an empty/redundant replay CONSERVATIVELY: it surfaces as a
+`Conflict` → clean `rollback_conflict` terminal report (branch restored intact), not a
+crash. `--empty=drop` was tried and reverted (it produced `base==commit` provenance, a
+misleading `merge_commit` pointing at a neighbour, a second-rollback `base..base` bug, and
+a git-version dependency — see `history/review-pipeline-rollback-hardening.md`).
+
+The optimal behaviour — DROP the redundant commit and CONTINUE the rebuild — needs an
+explicit no-op provenance/report state (e.g. `merge_commit: None` + a `replayed`/`dropped`
+marker, and preserving the AUTHORED range in provenance so a later rollback re-applies the
+chunk if its subsumer is gone), plus a git-version capability check for `--empty`. Do it
+here alongside the durable-refs work.
 
 ### L — re-spec path prior-diff carry
 

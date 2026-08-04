@@ -62,7 +62,7 @@ correctness holes.
 - [x] F: non-linear chunk histories are rejected at gate time (`git::range_has_merge` in `attempt_chunk`)
 - [x] H: cherry-pick/merge use a deterministic committer identity (`user.name`/`user.email` `-c` overrides in `git_at`)
 - [x] L: verify-FIX re-codes carry the reverted chunk's prior diff (`pending_prior_diff` seeded before rollback → `run_code_stage`). Re-spec re-codes deferred (see below).
-- [~] G: empty cherry-pick handled (`--empty=drop`). Durable `refs/pipeline/prov/*` pinning **deferred** → follow-up `pipeline-provenance-durable-refs`.
+- [~] G: empty cherry-pick handled — a redundant/empty replay stops with `CHERRY_PICK_HEAD` set and is surfaced as a `Conflict` → clean `rollback_conflict` terminal report (branch restored intact), NOT a hard crash. (`--empty=drop` was tried but reverted: it left `base==commit` provenance + a misleading `merge_commit` and a second-rollback `base..base` bug — /llm-review finding.) Durable `refs/pipeline/prov/*` pinning + optimal drop-and-continue **deferred** → follow-up `pipeline-provenance-durable-refs`.
 - [x] O: breaker messages report cumulative `(plan_rev, chunk, tier)` re-code count alongside the per-visit seq
 
 ### Deferred (filed follow-ups)
