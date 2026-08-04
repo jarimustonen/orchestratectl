@@ -27,6 +27,36 @@ struct EmbeddedSkill {
     path_in_repo: &'static str,
 }
 
+/// A companion reference file that ships *alongside* a skill's `SKILL.md`
+/// and installs into the same directory. Used for shared reference prose
+/// that more than one skill links to (e.g. the stint family's
+/// `AGENTS-EXECUTION-DAG.md`), so the linked file actually exists on disk
+/// next to the installed skill in whatever project the skill runs in.
+struct EmbeddedResource {
+    filename: &'static str,
+    body: &'static str,
+}
+
+/// Companion resources for a skill, keyed by skill name. Most skills have
+/// none. `build.rs` renders every non-`SKILL.template.md` `*.md` file in a
+/// skill's directory into `$OUT_DIR/skills/<name>/`, and the matching
+/// `include_str!` below embeds it. `cmd_install` writes each resource as a
+/// sibling of the skill's `SKILL.md` destination.
+fn resources_for(name: &str) -> &'static [EmbeddedResource] {
+    match name {
+        "stint-start" => STINT_START_RESOURCES,
+        _ => &[],
+    }
+}
+
+const STINT_START_RESOURCES: &[EmbeddedResource] = &[EmbeddedResource {
+    filename: "AGENTS-EXECUTION-DAG.md",
+    body: include_str!(concat!(
+        env!("OUT_DIR"),
+        "/skills/stint-start/AGENTS-EXECUTION-DAG.md"
+    )),
+}];
+
 const SKILLS: &[EmbeddedSkill] = &[
     EmbeddedSkill {
         name: "orchestratectl-overview",
@@ -126,9 +156,14 @@ const SKILLS: &[EmbeddedSkill] = &[
         path_in_repo: "crates/octl-cli/skills/worktree-status/SKILL.template.md",
     },
     EmbeddedSkill {
-        name: "stint",
-        body: include_str!(concat!(env!("OUT_DIR"), "/skills/stint/SKILL.md")),
-        path_in_repo: "crates/octl-cli/skills/stint/SKILL.template.md",
+        name: "stint-start",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/stint-start/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/stint-start/SKILL.template.md",
+    },
+    EmbeddedSkill {
+        name: "stint-handoff",
+        body: include_str!(concat!(env!("OUT_DIR"), "/skills/stint-handoff/SKILL.md")),
+        path_in_repo: "crates/octl-cli/skills/stint-handoff/SKILL.template.md",
     },
     EmbeddedSkill {
         name: "fan-out",
@@ -368,25 +403,38 @@ pub fn cmd_install(
         ));
     }
 
-    // Build the full (skill, agent, path) plan first, then preflight, then
-    // write. This avoids the partial-install retry trap where one of N
-    // writes succeeds and a re-run hits refused_overwrite on a different
-    // path than the original failure.
-    let mut plan: Vec<(&'static EmbeddedSkill, &'static str, PathBuf)> = Vec::new();
+    // Build the full plan first, then preflight, then write. This avoids
+    // the partial-install retry trap where one of N writes succeeds and a
+    // re-run hits refused_overwrite on a different path than the original
+    // failure. Each skill contributes its `SKILL.md` plus any companion
+    // resources, installed as siblings of the skill's destination.
+    let mut plan: Vec<PlanItem> = Vec::new();
     for skill in &skills {
-        match (&agent, dest.as_ref()) {
-            (AgentTarget::Claude, Some(p)) => plan.push((skill, "claude", p.clone())),
-            (AgentTarget::Codex, Some(p)) => plan.push((skill, "codex", p.clone())),
-            (AgentTarget::Claude, None) => {
-                plan.push((skill, "claude", default_path("claude", skill.name)?));
+        let targets: Vec<(&'static str, PathBuf)> = match (&agent, dest.as_ref()) {
+            (AgentTarget::Claude, Some(p)) => vec![("claude", p.clone())],
+            (AgentTarget::Codex, Some(p)) => vec![("codex", p.clone())],
+            (AgentTarget::Claude, None) => vec![("claude", default_path("claude", skill.name)?)],
+            (AgentTarget::Codex, None) => vec![("codex", default_path("codex", skill.name)?)],
+            (AgentTarget::All, _) => vec![
+                ("claude", default_path("claude", skill.name)?),
+                ("codex", default_path("codex", skill.name)?),
+            ],
+        };
+        for (agent_name, path) in targets {
+            for resource in resources_for(skill.name) {
+                plan.push(PlanItem {
+                    name: resource.filename,
+                    agent: agent_name,
+                    path: sibling_path(&path, resource.filename),
+                    content: resource.body,
+                });
             }
-            (AgentTarget::Codex, None) => {
-                plan.push((skill, "codex", default_path("codex", skill.name)?));
-            }
-            (AgentTarget::All, _) => {
-                plan.push((skill, "claude", default_path("claude", skill.name)?));
-                plan.push((skill, "codex", default_path("codex", skill.name)?));
-            }
+            plan.push(PlanItem {
+                name: skill.name,
+                agent: agent_name,
+                path,
+                content: skill.body,
+            });
         }
     }
 
@@ -398,19 +446,19 @@ pub fn cmd_install(
     all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
-    for (skill, agent_name, path) in plan {
+    for item in plan {
         // The set of paths approved for overwrite is decided exclusively
         // by preflight — never recomputed from `path.exists()` in this
         // loop. That keeps the persist_noclobber TOCTOU guarantee intact:
         // a file that did not exist at preflight time will refuse to
         // overwrite, even if a concurrent process created it in the
         // window. (Review finding #1.)
-        let allow_overwrite = preflight_result.overwrite_allowed.contains(&path);
-        write_atomic(&path, skill.body, allow_overwrite)?;
+        let allow_overwrite = preflight_result.overwrite_allowed.contains(&item.path);
+        write_atomic(&item.path, item.content, allow_overwrite)?;
         installed.push(InstalledFile {
-            name: skill.name,
-            agent: agent_name,
-            path: path.display().to_string(),
+            name: item.name,
+            agent: item.agent,
+            path: item.path.display().to_string(),
         });
     }
 
@@ -450,20 +498,38 @@ struct PreflightResult {
     overwrite_allowed: HashSet<PathBuf>,
 }
 
+/// One file the install will write: a skill's `SKILL.md` or one of its
+/// companion resources. `name` is what the install payload and drift
+/// warnings report (the skill name, or the resource filename).
+struct PlanItem {
+    name: &'static str,
+    agent: &'static str,
+    path: PathBuf,
+    content: &'static str,
+}
+
+/// Resolve a companion resource's destination: a file named `filename` in
+/// the same directory as the skill's `SKILL.md` destination `skill_path`.
+/// A bare relative `skill_path` (empty parent, e.g. `--dest SKILL.md`)
+/// places the resource in the current directory.
+fn sibling_path(skill_path: &Path, filename: &str) -> PathBuf {
+    match skill_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(filename),
+        _ => PathBuf::from(filename),
+    }
+}
+
 /// Reject the whole install plan before touching the filesystem when any
 /// destination already exists (without `--force`) or appears twice in
 /// the plan. Catches the partial-install retry trap noted by the review:
 /// without preflight, writing N targets sequentially can leave the user
 /// with a half-installed catalog and an ambiguous error on retry.
-fn preflight(
-    plan: &[(&'static EmbeddedSkill, &'static str, PathBuf)],
-    force: bool,
-) -> Result<PreflightResult, CliError> {
+fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError> {
     use std::cmp::Ordering;
     let mut seen: HashSet<&Path> = HashSet::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut overwrite_allowed: HashSet<PathBuf> = HashSet::new();
-    for (skill, _, path) in plan {
+    for PlanItem { name, path, .. } in plan {
         if !seen.insert(path.as_path()) {
             return Err(CliError::user(
                 "duplicate_destination",
@@ -499,8 +565,7 @@ fn preflight(
                 // agent learns the operating manual just moved.
                 overwrite_allowed.insert(path.clone());
                 warnings.push(format!(
-                    "skill_version_drift: {} on disk is {}; binary ships {}; overwriting",
-                    skill.name, v, CLI_VERSION
+                    "skill_version_drift: {name} on disk is {v}; binary ships {CLI_VERSION}; overwriting"
                 ));
             }
             Some((v, Ordering::Greater)) => {
@@ -518,8 +583,7 @@ fn preflight(
                 }
                 overwrite_allowed.insert(path.clone());
                 warnings.push(format!(
-                    "skill_version_drift: {} on disk is {} (newer than binary {}); --force overwriting",
-                    skill.name, v, CLI_VERSION
+                    "skill_version_drift: {name} on disk is {v} (newer than binary {CLI_VERSION}); --force overwriting"
                 ));
             }
             Some((_, Ordering::Equal)) | None => {

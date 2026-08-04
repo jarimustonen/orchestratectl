@@ -2,7 +2,7 @@
 created: 2026-08-04
 updated: 2026-08-04
 type: task
-status: open
+status: in-progress
 priority: normal
 related: ['@stint-maintains-execution-dag', '@triage-bugs-stint-inprogress-ownership-conflict']
 ---

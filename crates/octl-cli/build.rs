@@ -105,5 +105,31 @@ fn generate_skill_files(manifest_dir: &Path) {
         std::fs::write(&out_file, &rendered)
             .unwrap_or_else(|e| panic!("write {}: {}", out_file.display(), e));
         println!("cargo:rerun-if-changed={}", template.display());
+
+        // Companion reference files: every other `*.md` in the skill dir
+        // (not `SKILL.template.md`) is rendered through the same
+        // `{{CLI_VERSION}}` substitution into `$OUT_DIR/skills/<name>/`,
+        // so `skill.rs` can `include_str!` it and `skill install` writes
+        // it alongside the installed `SKILL.md`. See `EmbeddedResource`.
+        let files =
+            std::fs::read_dir(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+        for file in files.flatten() {
+            let fpath = file.path();
+            if !fpath.is_file() {
+                continue;
+            }
+            let is_md = fpath.extension().and_then(|e| e.to_str()) == Some("md");
+            let fname = match fpath.file_name().and_then(|n| n.to_str()) {
+                Some(n) if is_md && n != "SKILL.template.md" => n.to_string(),
+                _ => continue,
+            };
+            let fbody = std::fs::read_to_string(&fpath)
+                .unwrap_or_else(|e| panic!("read {}: {}", fpath.display(), e));
+            let frendered = fbody.replace("{{CLI_VERSION}}", cli_version);
+            let out_resource = out_skill_dir.join(&fname);
+            std::fs::write(&out_resource, &frendered)
+                .unwrap_or_else(|e| panic!("write {}: {}", out_resource.display(), e));
+            println!("cargo:rerun-if-changed={}", fpath.display());
+        }
     }
 }
