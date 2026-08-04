@@ -427,7 +427,7 @@ pub fn cmd_install(
     // writes land. Only the default path (`dest.is_none()`) is a real
     // `~/.claude/skills/<name>/` directory we own; a `--dest` custom path
     // is the caller's to manage, so we never litter a marker there.
-    let mut mark_dirs: Vec<PathBuf> = Vec::new();
+    let mut mark_dirs: Vec<(&'static str, PathBuf)> = Vec::new();
     for skill in &skills {
         let targets: Vec<(&'static str, PathBuf)> = match (&agent, dest.as_ref()) {
             (AgentTarget::Claude, Some(p)) => vec![("claude", p.clone())],
@@ -450,7 +450,7 @@ pub fn cmd_install(
             if agent_name == "claude" {
                 if dest.is_none() {
                     if let Some(parent) = path.parent() {
-                        mark_dirs.push(parent.to_path_buf());
+                        mark_dirs.push((skill.name, parent.to_path_buf()));
                     }
                 }
                 for resource in resources_for(skill.name) {
@@ -503,40 +503,47 @@ pub fn cmd_install(
     // install-all form can enumerate the same dir once per skill.
     mark_dirs.sort();
     mark_dirs.dedup();
-    for dir in &mark_dirs {
-        write_marker(&dir.join(MANAGED_MARKER_FILENAME))?;
+    for (skill_name, dir) in &mark_dirs {
+        write_marker(&dir.join(MANAGED_MARKER_FILENAME), skill_name)?;
     }
 
     // Prune de-registered managed skills. Scoped to the full-catalog
-    // (`name.is_none()`), default-path (`dest.is_none()`), claude-targeting
-    // install: that is the exact `skill install --force` redeploy where the
-    // caller intends the on-disk catalog to mirror the binary's. A targeted
-    // `skill install <name>` must NEVER nuke the rest of the catalog, so it
-    // is excluded. Only directories carrying OUR marker AND absent from the
-    // shipped catalog are removed — a user's hand-authored skill lacks the
-    // marker and is spared.
+    // (`name.is_none()`), default-path (`dest.is_none()`), `--force`,
+    // claude-targeting install: that is exactly the `skill install --force`
+    // redeploy where the caller intends the on-disk catalog to mirror the
+    // binary's. `--force` is required so a plain, non-destructive-looking
+    // `skill install` can never delete a directory as a side effect. A
+    // targeted `skill install <name>` must NEVER nuke the rest of the
+    // catalog, so it is excluded too. Only directories carrying a VALID
+    // marker (see `is_managed_skill_dir`) AND absent from the shipped
+    // catalog are removed — a user's hand-authored or copied skill is
+    // spared. A prune failure is a maintenance hiccup, not an install
+    // failure: the catalog already landed, so we warn and carry on rather
+    // than erroring out with the success payload unreported.
     let mut pruned: Vec<String> = Vec::new();
-    let prune_eligible =
-        name.is_none() && dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All);
+    let prune_eligible = name.is_none()
+        && dest.is_none()
+        && force
+        && matches!(agent, AgentTarget::Claude | AgentTarget::All);
     if prune_eligible {
         if let Some(root) = claude_skills_root() {
             let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
             for (orphan_name, orphan_path) in managed_orphan_dirs(&root, &registered) {
-                fs::remove_dir_all(&orphan_path).map_err(|e| {
-                    CliError::system(
-                        "prune_failed",
-                        format!(
-                            "could not prune de-registered skill {}: {}",
-                            orphan_path.display(),
-                            e
-                        ),
-                    )
-                })?;
-                all_warnings.push(format!(
-                    "skill_pruned: removed de-registered managed skill '{orphan_name}' at {}",
-                    orphan_path.display()
-                ));
-                pruned.push(orphan_name);
+                match fs::remove_dir_all(&orphan_path) {
+                    Ok(()) => {
+                        all_warnings.push(format!(
+                            "skill_pruned: removed de-registered managed skill '{orphan_name}' at {}",
+                            orphan_path.display()
+                        ));
+                        pruned.push(orphan_name);
+                    }
+                    Err(e) => {
+                        all_warnings.push(format!(
+                            "skill_prune_failed: could not remove de-registered skill '{orphan_name}' at {}: {e}",
+                            orphan_path.display()
+                        ));
+                    }
+                }
             }
         }
     }
@@ -739,21 +746,74 @@ pub fn claude_skills_root() -> Option<PathBuf> {
 }
 
 /// True when `dir` is a claude-layout skill directory that orchestratectl
-/// installed — it carries the [`MANAGED_MARKER_FILENAME`] provenance file.
-/// A user's hand-authored skill directory never does.
+/// installed. The guard is deliberately strict — its `true` is the SOLE
+/// authorization for a recursive `remove_dir_all`, so it must never yield
+/// a false positive on a user's own directory. Three conditions must ALL
+/// hold:
+///
+/// 1. The marker is a **regular file** (`symlink_metadata`, which does not
+///    follow links) — a planted `.orchestratectl-managed` *symlink* cannot
+///    make a directory look managed.
+/// 2. The marker carries the `managed-by: orchestratectl` stamp.
+/// 3. The marker's recorded `skill_name` equals this directory's name.
+///    This binding is what makes `cp -r managed-skill my-copy` safe: the
+///    copy's marker still names the ORIGINAL skill, so it never matches
+///    `my-copy` and the copy is spared.
 fn is_managed_skill_dir(dir: &Path) -> bool {
-    dir.join(MANAGED_MARKER_FILENAME).is_file()
+    let Some(dir_name) = dir.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let marker = dir.join(MANAGED_MARKER_FILENAME);
+    let Ok(meta) = fs::symlink_metadata(&marker) else {
+        return false;
+    };
+    if !meta.file_type().is_file() {
+        return false;
+    }
+    let Ok(content) = fs::read_to_string(&marker) else {
+        return false;
+    };
+    let mut has_stamp = false;
+    let mut name_matches = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "managed-by: orchestratectl" {
+            has_stamp = true;
+        } else if let Some(rest) = line.strip_prefix("skill_name:") {
+            name_matches = rest.trim() == dir_name;
+        }
+    }
+    has_stamp && name_matches
 }
 
-/// Write (or overwrite) the provenance marker at `path`. Content is
-/// informational — only the file's *presence* carries meaning — but we
-/// stamp the installing binary's version to aid debugging. The parent
-/// directory already exists (the SKILL.md write created it), so this is a
-/// plain overwrite; the marker is always ours, never `--force`-gated.
-fn write_marker(path: &Path) -> Result<(), CliError> {
+/// Write (or overwrite) the provenance marker for skill `skill_name` at
+/// `path`. The recorded `skill_name` is what `is_managed_skill_dir` binds
+/// against, so a copied-and-renamed skill is never mistaken for an orphan.
+/// The parent directory already exists (the SKILL.md write created it), so
+/// this is a plain overwrite; the marker is always ours. If a symlink is
+/// squatting at the marker path we unlink it first so `fs::write` cannot
+/// clobber the link's target (an arbitrary-file overwrite within the
+/// user's permissions).
+fn write_marker(path: &Path, skill_name: &str) -> Result<(), CliError> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            fs::remove_file(path).map_err(|e| {
+                CliError::system(
+                    "marker_write_failed",
+                    format!(
+                        "could not clear stale marker symlink {}: {}",
+                        path.display(),
+                        e
+                    ),
+                )
+            })?;
+        }
+    }
     fs::write(
         path,
-        format!("managed-by: orchestratectl\ncli_version: {CLI_VERSION}\n"),
+        format!(
+            "managed-by: orchestratectl\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\n"
+        ),
     )
     .map_err(|e| {
         CliError::system(
@@ -769,25 +829,41 @@ fn write_marker(path: &Path) -> Result<(), CliError> {
 
 /// Scan `skills_root` for managed skill directories whose name is NOT in
 /// `registered`. These are directories orchestratectl installed (they
-/// carry the provenance marker) but the running binary no longer ships —
-/// i.e. renamed or removed bundled skills, safe to prune. Directories
-/// without the marker (a user's own skills) are never returned. Result is
-/// sorted by name for deterministic output. An unreadable root yields an
-/// empty list (nothing to prune).
+/// carry a valid provenance marker naming that same directory) but the
+/// running binary no longer ships — renamed or removed bundled skills,
+/// safe to prune. Directories without a valid marker (a user's own skills)
+/// are never returned. Result is sorted by name for deterministic output.
+/// An unreadable root, or an unreadable entry, is skipped rather than
+/// guessed at — the prune path must always err toward NOT deleting.
 fn managed_orphan_dirs(skills_root: &Path, registered: &HashSet<&str>) -> Vec<(String, PathBuf)> {
     let Ok(entries) = fs::read_dir(skills_root) else {
         return Vec::new();
     };
     let mut orphans: Vec<(String, PathBuf)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        // `file_type()` is an lstat: it never follows a symlink. A
+        // symlinked entry — even one pointing at a real directory — is
+        // rejected so `remove_dir_all` can never traverse a link out of
+        // the skills root and delete an unrelated tree.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() || file_type.is_symlink() {
             continue;
         }
+        let path = entry.path();
         let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if registered.contains(dir_name) {
+        // Never prune a directory that matches a registered skill —
+        // exactly, OR case-insensitively (a differently-cased alias on a
+        // case-insensitive filesystem, e.g. macOS APFS, resolves to the
+        // same on-disk directory a fresh install just wrote).
+        if registered
+            .iter()
+            .any(|r| *r == dir_name || r.eq_ignore_ascii_case(dir_name))
+        {
             continue;
         }
         if is_managed_skill_dir(&path) {

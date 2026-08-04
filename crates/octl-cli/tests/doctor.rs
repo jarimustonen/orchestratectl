@@ -222,7 +222,7 @@ fn skill_orphan_warns_only_for_managed_deregistered_dir() {
     std::fs::write(managed.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
     std::fs::write(
         managed.join(".orchestratectl-managed"),
-        "managed-by: orchestratectl\n",
+        "managed-by: orchestratectl\ncli_version: 9.9.9\nskill_name: gone-skill\n",
     )
     .unwrap();
 

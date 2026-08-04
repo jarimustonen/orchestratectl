@@ -438,10 +438,21 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
 
 const MARKER: &str = ".orchestratectl-managed";
 
+/// Write a valid provenance marker naming `skill_name` into `dir` — the
+/// shape `is_managed_skill_dir` accepts.
+fn write_marker(dir: &std::path::Path, skill_name: &str) {
+    std::fs::write(
+        dir.join(MARKER),
+        format!("managed-by: orchestratectl\ncli_version: 9.9.9\nskill_name: {skill_name}\n"),
+    )
+    .unwrap();
+}
+
 #[test]
 fn skill_install_default_stamps_provenance_marker() {
     // Every default claude install must drop the provenance marker beside
-    // SKILL.md — it's what makes later pruning safe.
+    // SKILL.md — it's what makes later pruning safe. The marker must name
+    // the skill so a copied-and-renamed dir is never mistaken for it.
     let home = mk_home();
     assert!(bin(&home)
         .args(["skill", "install", "octl-run-overview"])
@@ -449,24 +460,34 @@ fn skill_install_default_stamps_provenance_marker() {
         .expect("spawn")
         .status
         .success());
+    let marker = home
+        .path()
+        .join(".claude/skills/octl-run-overview")
+        .join(MARKER);
     assert!(
-        home.path()
-            .join(".claude/skills/octl-run-overview")
-            .join(MARKER)
-            .is_file(),
+        marker.is_file(),
         "provenance marker not written next to SKILL.md"
+    );
+    let body = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        body.contains("managed-by: orchestratectl"),
+        "marker: {body}"
+    );
+    assert!(
+        body.contains("skill_name: octl-run-overview"),
+        "marker: {body}"
     );
 }
 
 #[test]
 fn skill_install_all_prunes_managed_orphan() {
-    // A managed skill dir that is NOT in the catalog (carries the marker)
-    // must be pruned by the full-catalog install.
+    // A managed skill dir that is NOT in the catalog (valid marker naming
+    // itself) must be pruned by the full-catalog --force install.
     let home = mk_home();
     let orphan = home.path().join(".claude/skills/gone-skill");
     std::fs::create_dir_all(&orphan).unwrap();
     std::fs::write(orphan.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
-    std::fs::write(orphan.join(MARKER), "managed-by: orchestratectl\n").unwrap();
+    write_marker(&orphan, "gone-skill");
 
     let out = bin(&home)
         .args(["skill", "install", "--force", "--output", "json"])
@@ -560,7 +581,7 @@ fn skill_install_named_does_not_prune() {
     let orphan = home.path().join(".claude/skills/gone-skill");
     std::fs::create_dir_all(&orphan).unwrap();
     std::fs::write(orphan.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
-    std::fs::write(orphan.join(MARKER), "managed-by: orchestratectl\n").unwrap();
+    write_marker(&orphan, "gone-skill");
 
     let out = bin(&home)
         .args([
@@ -577,6 +598,81 @@ fn skill_install_named_does_not_prune() {
     assert!(
         orphan.exists(),
         "targeted install pruned an orphan — must be scoped to install-all"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+}
+
+#[test]
+fn skill_install_all_without_force_does_not_prune() {
+    // Prune is gated on --force: a plain full-catalog install must never
+    // delete a directory as a side effect, even a valid managed orphan.
+    let home = mk_home();
+    let orphan = home.path().join(".claude/skills/gone-skill");
+    std::fs::create_dir_all(&orphan).unwrap();
+    std::fs::write(orphan.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
+    write_marker(&orphan, "gone-skill");
+
+    let out = bin(&home)
+        .args(["skill", "install", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(orphan.exists(), "prune ran without --force");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+}
+
+#[test]
+fn skill_install_all_spares_copied_and_renamed_managed_skill() {
+    // The core data-loss guard: a user copies a managed skill (marker and
+    // all) to a new name and edits it. The marker still names the ORIGINAL
+    // skill, so it must not match the new dir name — the copy is spared.
+    let home = mk_home();
+    let copy = home.path().join(".claude/skills/my-worktree");
+    std::fs::create_dir_all(&copy).unwrap();
+    std::fs::write(copy.join("SKILL.md"), "---\nname: my-worktree\n---\nmine\n").unwrap();
+    // Marker copied verbatim from `worktree` — names `worktree`, not the
+    // new dir `my-worktree`.
+    write_marker(&copy, "worktree");
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(
+        copy.join("SKILL.md").exists(),
+        "a copied-and-renamed managed skill was deleted — name-binding guard failed"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_install_all_does_not_follow_symlinked_orphan() {
+    // A symlink under ~/.claude/skills pointing at an outside directory
+    // must never be traversed by remove_dir_all, even if the target looks
+    // managed. The symlink entry is skipped; the target is untouched.
+    let home = mk_home();
+    let outside = home.path().join("precious");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("SKILL.md"), "important user data\n").unwrap();
+    write_marker(&outside, "evil");
+
+    let skills = home.path().join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    std::os::unix::fs::symlink(&outside, skills.join("evil")).unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(
+        outside.join("SKILL.md").exists(),
+        "remove_dir_all followed a symlink and deleted an outside directory"
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
