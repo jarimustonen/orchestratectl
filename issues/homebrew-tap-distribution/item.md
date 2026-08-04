@@ -2,8 +2,9 @@
 created: 2026-08-04
 updated: 2026-08-04
 type: feature
-status: open
+status: done
 priority: normal
+closed: 2026-08-04
 ---
 
 # Distribute orchestratectl via a Homebrew tap (match issuectl/ossctl)
@@ -41,3 +42,17 @@ In `~/Sources/homebase`:
 
 - Keep the global skill-install step: ossctl's hook is the closest model (brew upgrade + `skill install --force` + leftover-prune + lockstep check).
 - `issuectl`'s skill is intentionally repo-local and stays that way — this migration is about distribution parity, not skill parity.
+
+## Resolution (done)
+
+Tap published by Jari: `jarimustonen/tap/orchestratectl` (formula in `jarimustonen/homebrew-tap`), stable 0.1.0.
+
+Homebase side landed (commits in `~/Sources/homebase`):
+- `dotfiles/setup.d/brew-trust.sh` — trust `jarimustonen/tap`
+- `dotfiles/src/brew-packages.txt` — add `jarimustonen/tap/orchestratectl`
+- `dotfiles/setup.d/orchestratectl.sh` — rewritten from clone+`cargo install` to the brew-upgrade shape; also retires the legacy `~/.cargo/bin/orchestratectl` (it sat before `/opt/homebrew/bin` on PATH and would otherwise shadow the brew binary) and prunes dangling worktree-skill symlinks before `skill install --force`.
+
+Verified idempotent on gertrud + hauis; haapa (no brew) skips cleanly; brunhild migrates on next auto-sync. All three cross-machine CLIs (issuectl / ossctl / orchestratectl) now provision identically via `brew upgrade` in their `setup.d` hooks.
+
+### Upstream follow-up worth noting
+`orchestratectl skill install --force` aborts the entire install when it hits a pre-existing **symlink** at a target path (error `refused_overwrite`, even with `--force`). `--force` arguably should replace a symlink (at least a dangling one). Worked around in the homebase hook by pruning broken symlinks first, but consider making `--force` overwrite symlinks upstream.
