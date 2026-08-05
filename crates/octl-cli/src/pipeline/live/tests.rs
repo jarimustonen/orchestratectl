@@ -2968,6 +2968,100 @@ fn concurrent_same_file_conflict_triggers_rebase_and_fix() {
 }
 
 #[test]
+fn wave_preserves_unmerged_builds_when_a_mid_merge_rebase_and_fix_blocks() {
+    // Three independent chunks build green in one wave (concurrency 3). In the
+    // deterministic merge order c1 → c2 → c3: c1 merges; c2 conflicts on shared.txt
+    // and its rebase-and-fix rebuild FAILS (harness error, fix loop off) → the merge
+    // phase stops early. c3 was already built floor-green but never merged — its
+    // worktree/branch MUST be preserved (state-integrity invariant 5), not stranded.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt", "c3.txt"]);
+    cfg.intent = "invariant-5 mid-merge stop".to_string();
+    cfg.max_build_concurrency = 3;
+    // fix loop stays OFF (config default), so c2's failing rebuild is terminal.
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+            {"id": "c3", "title": "c", "tier": "code", "brief": "c", "files_touched": ["c3.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    // c1/c3 always succeed; c2 succeeds on its first (build) call — conflicting on
+    // shared.txt — but fails on its second (rebase-and-fix) call.
+    struct FailC2OnRebuild {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl CodeHarness for FailC2OnRebuild {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            let n = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(req.chunk_id.clone());
+                calls.iter().filter(|c| c.as_str() == req.chunk_id).count()
+            };
+            if req.chunk_id == "c2" && n >= 2 {
+                // A graceful failure OUTCOME (not an Err transport error) → a
+                // re-codable block that is terminal with the fix loop off.
+                return Ok(ChunkResult::failed("rebuild boom"));
+            }
+            let rel = if req.chunk_id == "c3" {
+                "c3.txt"
+            } else {
+                "shared.txt"
+            };
+            std::fs::write(req.worktree_path.join(rel), format!("{}\n", req.chunk_id)).unwrap();
+            git(&req.worktree_path, &["add", "-A"]);
+            git(&req.worktree_path, &["commit", "-qm", "edit"]);
+            let head = git_out(&req.worktree_path, &["rev-parse", "HEAD"]);
+            Ok(ChunkResult::committed(head, vec![PathBuf::from(rel)]))
+        }
+    }
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &FailC2OnRebuild {
+            calls: calls.clone(),
+        },
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline runs");
+
+    // The run did NOT merge (c2 is terminally blocked).
+    assert!(!report.merged, "{report:#?}");
+    // c3 built green but never merged → preserved, not silently dropped.
+    let c3 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c3")
+        .expect("c3 has a report");
+    assert!(!c3.merged, "c3 was not merged");
+    assert!(
+        c3.branch_preserved.is_some(),
+        "c3's un-merged build must be preserved (invariant 5): {c3:#?}"
+    );
+    // And the preserved branch actually still exists in the repo.
+    let branches = git_out(repo.path(), &["branch", "--list", "demo/chunk-c3"]);
+    assert!(
+        branches.contains("demo/chunk-c3"),
+        "c3's branch must survive teardown: {branches:?}"
+    );
+}
+
+#[test]
 fn dependent_chunks_serialise_even_at_high_concurrency() {
     // c2 depends on c1 → two single-chunk waves, so even with a generous concurrency
     // bound each wave drains one chunk at a time off the moving tip (k clamps to the

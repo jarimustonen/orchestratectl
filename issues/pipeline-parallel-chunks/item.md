@@ -5,6 +5,9 @@ type: task
 status: in-progress
 priority: normal
 related: ['@pipeline-walking-skeleton']
+commits:
+- hash: 4d64265
+  summary: concurrent DAG-wave chunk scheduling with deterministic merge + floor re-check + rebase-and-fix
 ---
 
 # Pipeline: parallel independent chunks (DAG scheduling)

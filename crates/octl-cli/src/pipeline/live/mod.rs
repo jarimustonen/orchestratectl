@@ -2184,8 +2184,14 @@ fn run_code_stage(
 /// configured [`max_build_concurrency`](PipelineConfig::max_build_concurrency),
 /// clamped to the wave size and to the **remaining §9 process-count budget** — so
 /// concurrency reuses the existing resource breaker rather than reinventing a
-/// limiter (and never schedules more agent runs than the budget would allow). With
-/// no process ceiling the budget clamp is inactive; the value is never below 1.
+/// limiter. With no process ceiling the budget clamp is inactive; the value is
+/// never below 1.
+///
+/// This bounds how many builds are DISPATCHED against the budget known at wave
+/// start, not the final tally: the dispatched builds each meter afterwards and a
+/// re-code can spend several agent runs, so a wave can still overshoot the ceiling
+/// within itself — the §9 breaker (checked at the wave boundary and the round
+/// boundary) is what actually stops the run once the metered spend crosses the cap.
 fn effective_build_concurrency(run: &Run, wave_len: usize) -> usize {
     let mut k = run.cfg.max_build_concurrency.min(wave_len).max(1);
     if let Some(cap) = run.cfg.budget.max_processes {
@@ -2717,8 +2723,8 @@ fn build_chunk_in_wave(
                     continue;
                 }
                 // `attempt_findings` drove the (now-exhausted) re-code loop; a
-                // terminal block is never re-briefed, so it is not carried further.
-                let _ = &attempt_findings;
+                // terminal block is never re-briefed, so it is dropped here.
+                drop(attempt_findings);
                 return Ok(WaveBuildResult {
                     idx,
                     tier,
@@ -2910,9 +2916,15 @@ fn run_wave_concurrent(
     }
 
     // Phase 2 — deterministic serial merge with a floor re-check at each merge, and
-    // rebase-and-fix on a conflict / floor regression at the moved tip.
-    for r in built {
+    // rebase-and-fix on a conflict / floor regression at the moved tip. Drained from
+    // a queue (not a `for` over a moved Vec) so that EVERY early return can first
+    // preserve the still-un-merged builds left in the queue (state-integrity
+    // invariant 5): a rebase-and-fix that itself blocks, or a post-merge breaker,
+    // must never strand a later floor-green build's committed worktree.
+    let mut pending_merges: VecDeque<WaveBuildResult> = built.into();
+    while let Some(r) = pending_merges.pop_front() {
         let idx = r.idx;
+        let tier = r.tier;
         // The build-time verdict was gated against the STALE shared base; the merge
         // phase re-checks the floor at the moved tip, so it is deliberately dropped.
         let (base, commit, wt, branch) = match r.outcome {
@@ -2953,6 +2965,7 @@ fn run_wave_concurrent(
                     finalize_wave_merge(
                         run,
                         chunk,
+                        tier,
                         verdict2,
                         base,
                         commit,
@@ -2967,6 +2980,7 @@ fn run_wave_concurrent(
                     if let Some(msg) = resource_breach(run) {
                         run.circuit_breaker = Some(msg);
                         run.code_block_status = Some("circuit_breaker");
+                        preserve_pending_merges(run, plan, &pending_merges);
                         return Ok(());
                     }
                 } else {
@@ -2979,8 +2993,9 @@ fn run_wave_concurrent(
                         "supervisor",
                         DecisionTier::Coordinator,
                         format!(
-                            "chunk {} floor regressed at merge — rebase&fix off moved tip",
-                            chunk.id
+                            "chunk {} floor regressed at merge — rebase&fix off moved tip ({})",
+                            chunk.id,
+                            fixloop::floor_findings(&verdict2).join("; ")
                         ),
                         vec![format!("chunk:{}", chunk.id)],
                         "supervisor",
@@ -2996,6 +3011,7 @@ fn run_wave_concurrent(
                         pending_prior_diff,
                     )?;
                     if run.code_block_status.is_some() {
+                        preserve_pending_merges(run, plan, &pending_merges);
                         return Ok(());
                     }
                 }
@@ -3026,6 +3042,7 @@ fn run_wave_concurrent(
                     pending_prior_diff,
                 )?;
                 if run.code_block_status.is_some() {
+                    preserve_pending_merges(run, plan, &pending_merges);
                     return Ok(());
                 }
             }
@@ -3075,6 +3092,7 @@ fn run_wave_concurrent(
 fn finalize_wave_merge(
     run: &mut Run,
     chunk: &Chunk,
+    tier: Tier,
     verdict: FloorVerdict,
     base: String,
     commit: String,
@@ -3104,13 +3122,10 @@ fn finalize_wave_merge(
         ChunkReport {
             id: chunk.id.clone(),
             title: chunk.title.clone(),
-            tier: run
-                .chunk_tier
-                .get(&chunk.id)
-                .copied()
-                .unwrap_or(chunk.tier)
-                .wire_name()
-                .to_string(),
+            // The tier the build actually ran at (from the build result), not a
+            // re-read of `run.chunk_tier` — so if in-wave promotion is ever added the
+            // report can't disagree with the tier that produced this commit.
+            tier: tier.wire_name().to_string(),
             outcome: "committed".to_string(),
             floor_passed: Some(true),
             floor: Some(verdict),
@@ -3126,6 +3141,16 @@ fn finalize_wave_merge(
         .insert(chunk.id.clone(), LiveChunkStatus::Merged);
     let _ = git::worktree_remove(&run.repo, wt);
     let _ = git::delete_branch(&run.repo, branch, true);
+}
+
+/// Preserve every still-un-merged build left in the merge queue when the merge
+/// phase stops early (a rebase-and-fix that blocked, or a post-merge breaker):
+/// their worktrees hold floor-green committed work that never reached feat, so
+/// state-integrity invariant 5 forbids dropping them on the way out.
+fn preserve_pending_merges(run: &mut Run, plan: &Plan, pending: &VecDeque<WaveBuildResult>) {
+    for r in pending {
+        preserve_wave_build(run, &plan.chunks[r.idx], r);
+    }
 }
 
 /// Preserve an un-merged wave build (a terminal block, or a build stopped by a
