@@ -2,11 +2,14 @@
 created: 2026-07-24
 updated: 2026-08-05
 type: feature
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: 6322a9f
   summary: expose rebase-robust landed signal on run wait/show; fix stint-start + worktree-spinoff skill docs
+- hash: 098d6e9
+  summary: harden landed git-verification per llm-review (ancestry net, git-authoritative precedence, success-gate, arg guard, doc clarifications)
+closed: 2026-08-05
 ---
 
 # run wait/show should expose a reliable git-verified 'landed' signal; stint skill's is-ancestor check gives false negatives after rebase
