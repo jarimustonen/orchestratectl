@@ -91,8 +91,8 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ pipeline-parallel-chunks                 (DAG scheduler)
-    pipeline-provenance-durable-refs         (fix-loop-rollback follow-up: durable per-chunk provenance refs)
+  ▶ pipeline-provenance-durable-refs         (fix-loop-rollback follow-up: durable per-chunk provenance refs)
+    immoderately-dirty-cushion               (adaptive tier promotion in concurrent wave builds — pipeline-parallel-chunks follow-up)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
@@ -103,8 +103,8 @@ LANE C — workmux vendoring (fully independent)
   ▶ workmux-extract-libs   (now unblocked — vendored tree landed via vendor-workmux-multiplexer)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ doctor-skill-companion-sync            (skill.rs: doctor skill.sync should also verify companion resource files like AGENTS-EXECUTION-DAG.md, not just SKILL.md)
-    skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
+  ▶ skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
+    doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up)
     skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
@@ -155,6 +155,14 @@ drift check found 2 left-only, 0 right-only → added the two newly-filed skill 
 (`skill-install-force-symlink`, `spinoff-skill-stale-preview-banner`), no drops; date refreshed.
 Headline non-DAG work: v0.1.0 shipped (crates.io + per-tool Homebrew tap) and the operating-policy
 change (release-often; `main`-push now always allowed).
+**Round executed 2026-08-05 (B‖C‖D parallel, then E):** landed `pipeline-parallel-chunks` (fixed;
+concurrent DAG-wave scheduling, opt-in `--max-build-concurrency`, /llm-review caught + fixed an
+invariant-5 leak) and `doctor-skill-companion-sync` (fixed; companion presence+sync check). Re-scoped
+`workmux-extract-libs` (kept open — multiplexer already vendored; narrowed to the git-worktree-wrapper
+remainder). Dropped the 2 landed; added worker follow-ups `immoderately-dirty-cushion` (Lane B, tier
+promotion in wave builds) + `doctor-orphan-companion-files` (Lane D, orphan-companion detection).
+`landing-signal-reliable-after-rebase` (Lane E) spawned after D landed (bundled-skill-snapshot
+collision cleared).
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
