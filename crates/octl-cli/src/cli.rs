@@ -154,6 +154,13 @@ struct PipelineRunArgs {
     /// Per-chunk wall-clock ceiling for the code harness, in seconds.
     #[arg(long, value_name = "SECONDS")]
     chunk_timeout: Option<u64>,
+    /// How many independent chunks in one dependency wave may build concurrently
+    /// (design §6 VAIHE 2). Omit for the default (1 = strictly sequential); a value
+    /// `> 1` builds no-dependency-path chunks in parallel worktrees, then merges
+    /// them deterministically with the floor re-checked at each merge. Bounded at
+    /// runtime by the `--max-processes` budget.
+    #[arg(long, value_name = "N")]
+    max_build_concurrency: Option<usize>,
     /// Circuit-breaker: max `RE_CODE` re-attempts per chunk on a floor / harness
     /// failure before the repeated-failure breaker stops the loop (design §8/§9).
     /// Omit for the default (1); 0 disables per-chunk re-coding.
@@ -412,6 +419,7 @@ pub fn run() -> ExitCode {
                     file_scope_slack: args.file_scope_slack,
                     keep: args.keep,
                     chunk_timeout_secs: args.chunk_timeout,
+                    max_build_concurrency: args.max_build_concurrency,
                     max_recode_per_chunk: args.max_recode_per_chunk,
                     max_fix_iterations: args.max_fix_iterations,
                     max_respec: args.max_respec,

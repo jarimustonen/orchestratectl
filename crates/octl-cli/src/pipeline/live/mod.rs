@@ -45,8 +45,9 @@ pub mod fixloop;
 pub mod git;
 pub mod providers;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use octl_core::plan::{self, Acceptance, Chunk, Plan, Tier};
@@ -56,7 +57,9 @@ use crate::error::CliError;
 use crate::floor::{
     self, evaluate_floor, BaselineSnapshot, CheckRun, FloorInputs, FloorVerdict, RunSnapshot,
 };
-use crate::harness::{CancelToken, Check as HarnessCheck, ChunkOutcome, ChunkRequest, CodeHarness};
+use crate::harness::{
+    CancelToken, Check as HarnessCheck, ChunkOutcome, ChunkRequest, CodeHarness, Usage,
+};
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::pipeline::{
     route_proposal, Action, ChunkState, ChunkStatus, Coordinator, CoordinatorProposal, Decider,
@@ -173,6 +176,15 @@ pub struct PipelineConfig {
     pub keep: bool,
     /// Optional per-chunk wall-clock ceiling for the code harness.
     pub chunk_timeout: Option<Duration>,
+    /// How many independent chunks in one dependency wave may **build**
+    /// concurrently (design §6 VAIHE 2). `1` (the default) keeps the proven
+    /// strictly-sequential path — each chunk forks off the moving `feat/<slug>`
+    /// tip and merges before the next starts. A value `> 1` schedules the
+    /// no-dependency-path chunks of a wave to build in parallel worktrees off a
+    /// shared base, then merges them in a deterministic order with the floor
+    /// re-checked at each merge. Bounded further at runtime by the §9
+    /// process-count budget (never reinvents a limiter).
+    pub max_build_concurrency: usize,
     /// Circuit-breaker bounds for the verify→triage→fix loop (design §9). Use
     /// [`FixLoopConfig::OFF`] for the v1 "first failure is terminal" behaviour.
     pub fix_loop: FixLoopConfig,
@@ -2114,287 +2126,233 @@ fn run_code_stage(
     pending_findings: &BTreeMap<String, Vec<String>>,
     pending_prior_diff: &BTreeMap<String, String>,
 ) -> Result<(), PipelineError> {
-    let order = topo_order(&plan.chunks);
-    for &idx in &order {
-        let chunk = &plan.chunks[idx];
-        if run.chunk_status.get(&chunk.id) == Some(&LiveChunkStatus::Merged) {
-            continue; // already on feat/<slug> (kept-done or merged earlier)
+    // Process the still-Pending chunks in dependency **waves** (design §6 VAIHE 2):
+    // wave `i` is the set of chunks whose deps are all satisfied (already Merged or
+    // built in an earlier wave), so a wave's members have no dependency PATH between
+    // them and can build concurrently; later waves still serialise on their dep
+    // edges. With `max_build_concurrency == 1` (the default) each wave is drained
+    // one chunk at a time off the moving `feat/<slug>` tip — byte-for-byte the
+    // proven strictly-sequential path.
+    let waves = ready_waves(plan, &run.chunk_status);
+    for wave in &waves {
+        let pending: Vec<usize> = wave
+            .iter()
+            .copied()
+            .filter(|&i| run.chunk_status.get(&plan.chunks[i].id) != Some(&LiveChunkStatus::Merged))
+            .collect();
+        if pending.is_empty() {
+            continue;
         }
-
-        // Seed the re-brief with any verify findings the fix loop routed to this
-        // chunk (a verify-driven RE_CODE_CHUNK). This seed PERSISTS across
-        // floor-retry attempts: a floor failure mid re-code appends its findings
-        // rather than erasing the verify context (why the chunk is being re-coded
-        // at all), so the model never "forgets" the original fix on attempt 2.
-        let verify_seed: Vec<String> = pending_findings.get(&chunk.id).cloned().unwrap_or_default();
-        let mut findings: Vec<String> = verify_seed.clone();
-        // The prior failed attempt's diff, carried into the next re-brief so a
-        // torn-down retry does not lose the failing work (item 3: re-code amnesia).
-        // Seeded from a verify-FIX rollback's captured pre-rollback diff (item L) so
-        // the very FIRST re-run after a rollback also carries the reverted code, not
-        // just the in-visit floor retries.
-        let mut prior_diff: Option<String> = pending_prior_diff.get(&chunk.id).cloned();
-        // Two counters (see design §3 + §8): `recode` is the per-tier re-code
-        // attempt (1-based) the re-code budget bounds — it RESETS to 1 on a
-        // promotion so each tier gets its own fresh budget. `seq` is a monotonic
-        // attempt id that NEVER resets; it names the attempt's worktree/branch, so
-        // a promoted re-run can never collide with a superseded lower-tier attempt's
-        // branch even if that attempt's cleanup failed (the names stay distinct).
-        let mut recode = 1u32;
-        let mut seq = 1u32;
-        loop {
-            let current_tier = run.chunk_tier.get(&chunk.id).copied().unwrap_or(chunk.tier);
-            match attempt_chunk(
+        let k = effective_build_concurrency(run, pending.len());
+        if k <= 1 {
+            for &idx in &pending {
+                process_chunk_sequential(
+                    run,
+                    plan,
+                    idx,
+                    harnesses,
+                    baseline,
+                    pending_findings,
+                    pending_prior_diff,
+                )?;
+                // Any block / breaker the chunk hit set `code_block_status` (the floor
+                // is the hard gate): stop the whole stage, exactly as the flat loop did.
+                if run.code_block_status.is_some() {
+                    return Ok(());
+                }
+            }
+        } else {
+            run_wave_concurrent(
                 run,
                 plan,
-                chunk,
+                &pending,
                 harnesses,
-                current_tier,
                 baseline,
-                seq,
-                &findings,
-                prior_diff.as_deref(),
-            )? {
-                ChunkAttempt::Merged {
-                    verdict,
-                    base,
-                    commit,
-                    merge_commit,
-                } => {
-                    run.decisions.push(envelope(
-                        "supervisor",
-                        DecisionTier::Coordinator,
-                        format!("chunk {} floor green — merged", chunk.id),
-                        vec![format!("chunk:{}", chunk.id), format!("commit:{commit}")],
-                        "supervisor",
-                        "v1",
-                    ));
-                    // Record merge provenance BEFORE moving `commit`/`base` into the
-                    // report, so a later rollback can replay this chunk (item 1).
-                    run.merge_seq += 1;
-                    run.chunk_provenance.insert(
-                        chunk.id.clone(),
-                        ChunkProvenance {
-                            base,
-                            commit: commit.clone(),
-                            order: run.merge_seq,
-                        },
-                    );
-                    upsert_chunk_report(
-                        run,
-                        ChunkReport {
-                            id: chunk.id.clone(),
-                            title: chunk.title.clone(),
-                            tier: current_tier.wire_name().to_string(),
-                            outcome: "committed".to_string(),
-                            floor_passed: Some(true),
-                            floor: Some(verdict),
-                            merged: true,
-                            commit: Some(commit),
-                            merge_commit: Some(merge_commit),
-                            replayed: false,
-                            reason: None,
-                            branch_preserved: None,
-                        },
-                    );
-                    run.chunk_status
-                        .insert(chunk.id.clone(), LiveChunkStatus::Merged);
-                    // A resource ceiling the merge's own spend crossed stops the
-                    // stage here (design §9). This is a post-attempt backstop, not an
-                    // atomic gate: this chunk already landed on `feat/<slug>` (its
-                    // work is preserved there — the feature never reaches source, and
-                    // teardown keeps the integration branch), and further chunks/
-                    // rounds are what the breaker prevents.
-                    refresh_storage(run);
-                    if let Some(msg) = resource_breach(run) {
-                        run.circuit_breaker = Some(msg);
-                        run.code_block_status = Some("circuit_breaker");
-                        return Ok(());
-                    }
-                    break;
+                k,
+                pending_findings,
+                pending_prior_diff,
+            )?;
+            if run.code_block_status.is_some() {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The effective build concurrency for a wave of `wave_len` ready chunks: the
+/// configured [`max_build_concurrency`](PipelineConfig::max_build_concurrency),
+/// clamped to the wave size and to the **remaining §9 process-count budget** — so
+/// concurrency reuses the existing resource breaker rather than reinventing a
+/// limiter (and never schedules more agent runs than the budget would allow). With
+/// no process ceiling the budget clamp is inactive; the value is never below 1.
+fn effective_build_concurrency(run: &Run, wave_len: usize) -> usize {
+    let mut k = run.cfg.max_build_concurrency.min(wave_len).max(1);
+    if let Some(cap) = run.cfg.budget.max_processes {
+        // `processes` already counts spec + earlier chunk/verify runs; leave at least
+        // one slot so a wave always makes progress (the breaker still trips later if
+        // the run genuinely exceeds the ceiling).
+        let used = run.meter.processes;
+        let remaining = (cap as usize).saturating_sub(used as usize).max(1);
+        k = k.min(remaining);
+    }
+    k
+}
+
+/// Drain ONE chunk to a terminal outcome the strictly-sequential way (design §6
+/// VAIHE 2 default): fork off the current moving `feat/<slug>` tip, drive the
+/// bounded `RE_CODE` re-brief + adaptive-promotion loop (design §8/§3), merge on
+/// green. A block / breaker sets [`Run::code_block_status`] (+ preserves the
+/// attempt) and returns; the caller stops the stage. This is the original flat
+/// code-stage body, unchanged — the wave dispatcher just calls it per chunk.
+#[allow(clippy::too_many_arguments)]
+fn process_chunk_sequential(
+    run: &mut Run,
+    plan: &Plan,
+    idx: usize,
+    harnesses: &dyn TierHarness,
+    baseline: &BaselineSnapshot,
+    pending_findings: &BTreeMap<String, Vec<String>>,
+    pending_prior_diff: &BTreeMap<String, String>,
+) -> Result<(), PipelineError> {
+    let chunk = &plan.chunks[idx];
+    // Seed the re-brief with any verify findings the fix loop routed to this
+    // chunk (a verify-driven RE_CODE_CHUNK). This seed PERSISTS across
+    // floor-retry attempts: a floor failure mid re-code appends its findings
+    // rather than erasing the verify context (why the chunk is being re-coded
+    // at all), so the model never "forgets" the original fix on attempt 2.
+    let verify_seed: Vec<String> = pending_findings.get(&chunk.id).cloned().unwrap_or_default();
+    let mut findings: Vec<String> = verify_seed.clone();
+    // The prior failed attempt's diff, carried into the next re-brief so a
+    // torn-down retry does not lose the failing work (item 3: re-code amnesia).
+    // Seeded from a verify-FIX rollback's captured pre-rollback diff (item L) so
+    // the very FIRST re-run after a rollback also carries the reverted code, not
+    // just the in-visit floor retries.
+    let mut prior_diff: Option<String> = pending_prior_diff.get(&chunk.id).cloned();
+    // Two counters (see design §3 + §8): `recode` is the per-tier re-code
+    // attempt (1-based) the re-code budget bounds — it RESETS to 1 on a
+    // promotion so each tier gets its own fresh budget. `seq` is a monotonic
+    // attempt id that NEVER resets; it names the attempt's worktree/branch, so
+    // a promoted re-run can never collide with a superseded lower-tier attempt's
+    // branch even if that attempt's cleanup failed (the names stay distinct).
+    let mut recode = 1u32;
+    let mut seq = 1u32;
+    loop {
+        let current_tier = run.chunk_tier.get(&chunk.id).copied().unwrap_or(chunk.tier);
+        match attempt_chunk(
+            run,
+            plan,
+            chunk,
+            harnesses,
+            current_tier,
+            baseline,
+            seq,
+            &findings,
+            prior_diff.as_deref(),
+        )? {
+            ChunkAttempt::Merged {
+                verdict,
+                base,
+                commit,
+                merge_commit,
+            } => {
+                run.decisions.push(envelope(
+                    "supervisor",
+                    DecisionTier::Coordinator,
+                    format!("chunk {} floor green — merged", chunk.id),
+                    vec![format!("chunk:{}", chunk.id), format!("commit:{commit}")],
+                    "supervisor",
+                    "v1",
+                ));
+                // Record merge provenance BEFORE moving `commit`/`base` into the
+                // report, so a later rollback can replay this chunk (item 1).
+                run.merge_seq += 1;
+                run.chunk_provenance.insert(
+                    chunk.id.clone(),
+                    ChunkProvenance {
+                        base,
+                        commit: commit.clone(),
+                        order: run.merge_seq,
+                    },
+                );
+                upsert_chunk_report(
+                    run,
+                    ChunkReport {
+                        id: chunk.id.clone(),
+                        title: chunk.title.clone(),
+                        tier: current_tier.wire_name().to_string(),
+                        outcome: "committed".to_string(),
+                        floor_passed: Some(true),
+                        floor: Some(verdict),
+                        merged: true,
+                        commit: Some(commit),
+                        merge_commit: Some(merge_commit),
+                        replayed: false,
+                        reason: None,
+                        branch_preserved: None,
+                    },
+                );
+                run.chunk_status
+                    .insert(chunk.id.clone(), LiveChunkStatus::Merged);
+                // A resource ceiling the merge's own spend crossed stops the
+                // stage here (design §9). This is a post-attempt backstop, not an
+                // atomic gate: this chunk already landed on `feat/<slug>` (its
+                // work is preserved there — the feature never reaches source, and
+                // teardown keeps the integration branch), and further chunks/
+                // rounds are what the breaker prevents.
+                refresh_storage(run);
+                if let Some(msg) = resource_breach(run) {
+                    run.circuit_breaker = Some(msg);
+                    run.code_block_status = Some("circuit_breaker");
+                    return Ok(());
                 }
-                ChunkAttempt::Blocked {
-                    outcome,
-                    diff: attempt_diff,
+                break;
+            }
+            ChunkAttempt::Blocked {
+                outcome,
+                diff: attempt_diff,
+                status,
+                reason,
+                findings: attempt_findings,
+                floor,
+                floor_passed,
+                recodable,
+                wt,
+                branch,
+            } => {
+                // Deterministic resource circuit-breakers (design §9), checked
+                // BEFORE spending another attempt on this chunk — the whole point
+                // of §9 (never gated on the model's judgment). (a) repeated-
+                // identical-failure: the SAME block (chunk + status + findings)
+                // recurring to the ceiling aborts instead of grinding the re-code
+                // budget on an unchanging failure. (b) any resource ceiling the
+                // attempt just metered crossed (cost/token/process/wall-time). On
+                // either, preserve the attempt (state-integrity invariant 5) and
+                // stop the stage at a `circuit_breaker` terminal.
+                let fp = failure_fingerprint(
+                    &chunk.id,
+                    current_tier.wire_name(),
                     status,
-                    reason,
-                    findings: attempt_findings,
-                    floor,
-                    floor_passed,
-                    recodable,
-                    wt,
-                    branch,
-                } => {
-                    // Deterministic resource circuit-breakers (design §9), checked
-                    // BEFORE spending another attempt on this chunk — the whole point
-                    // of §9 (never gated on the model's judgment). (a) repeated-
-                    // identical-failure: the SAME block (chunk + status + findings)
-                    // recurring to the ceiling aborts instead of grinding the re-code
-                    // budget on an unchanging failure. (b) any resource ceiling the
-                    // attempt just metered crossed (cost/token/process/wall-time). On
-                    // either, preserve the attempt (state-integrity invariant 5) and
-                    // stop the stage at a `circuit_breaker` terminal.
-                    let fp = failure_fingerprint(
-                        &chunk.id,
-                        current_tier.wire_name(),
-                        status,
-                        &attempt_findings,
-                    );
-                    let recurrence = run.meter.record_failure(&fp);
-                    // Refresh the storage measurement here too (not only at the round
-                    // boundary) so intra-code-stage disk growth can trip the breaker
-                    // before the next round; a no-op when the storage breaker is off.
-                    refresh_storage(run);
-                    if let Some(msg) = run
-                        .cfg
-                        .budget
-                        .identical_failure_breach(recurrence)
-                        .or_else(|| resource_breach(run))
-                    {
-                        run.circuit_breaker = Some(msg.clone());
-                        run.code_block_status = Some("circuit_breaker");
-                        run.decisions.push(envelope(
-                            "supervisor",
-                            DecisionTier::Coordinator,
-                            format!(
-                                "chunk {} stopped by circuit-breaker — preserved, not merged ({msg})",
-                                chunk.id
-                            ),
-                            vec![format!("chunk:{}", chunk.id)],
-                            "supervisor",
-                            "v1",
-                        ));
-                        push_blocked_chunk(
-                            run,
-                            chunk,
-                            outcome,
-                            floor,
-                            floor_passed,
-                            reason,
-                            &wt,
-                            &branch,
-                        );
-                        return Ok(());
-                    }
-
-                    // Re-code while the chunk is re-codable and BOTH budgets hold
-                    // (design §8): the per-tier `recode` counter (1-based; re-code N
-                    // is allowed iff N ≤ max_recode_per_chunk), AND the cumulative
-                    // per-`(plan_rev, chunk, tier)` budget (item 2). The cumulative
-                    // counter does NOT reset when the chunk re-enters the code stage
-                    // from a later verify iteration / re-spec, so a chunk cannot be
-                    // floor re-coded past the nominal bound across visits at a given
-                    // tier. (A re-spec bumps `plan_rev` → a genuinely new budget; a
-                    // promotion changes `current_tier` → a fresh per-tier budget, so a
-                    // promoted stronger model is not starved by the lower tier's spent
-                    // budget — while each individual tier is still capped.)
-                    let recode_key = (plan.plan_rev, chunk.id.clone(), current_tier.wire_name());
-                    let recode_total = run
-                        .chunk_recode_total
-                        .get(&recode_key)
-                        .copied()
-                        .unwrap_or(0);
-                    if recodable
-                        && recode <= run.cfg.fix_loop.max_recode_per_chunk
-                        && recode_total < run.cfg.fix_loop.max_recode_per_chunk
-                    {
-                        record_recode_decision(
-                            run,
-                            plan,
-                            &chunk.id,
-                            &attempt_findings,
-                            "floor re-code",
-                        );
-                        *run.chunk_recode_total.entry(recode_key).or_insert(0) += 1;
-                        // The floor-failed attempt is superseded — drop its
-                        // worktree + branch to make room for the re-brief (it is
-                        // not mergeable work; the final failed attempt, if the
-                        // budget runs out, IS preserved below). Carry its diff into
-                        // the next re-brief before the worktree is gone (item 3).
-                        let _ = git::worktree_remove(&run.repo, &wt);
-                        let _ = git::delete_branch(&run.repo, &branch, true);
-                        // Keep the LAST committed diff: a later attempt that produced
-                        // no commit (harness no-change / timeout) must not erase the
-                        // failing code a prior attempt did commit.
-                        if attempt_diff.is_some() {
-                            prior_diff = attempt_diff;
-                        }
-                        // Persist the verify seed, append this attempt's floor
-                        // findings (see `verify_seed` above).
-                        findings = verify_seed
-                            .iter()
-                            .cloned()
-                            .chain(attempt_findings)
-                            .collect();
-                        recode += 1;
-                        seq += 1;
-                        continue;
-                    }
-
-                    // Re-code budget exhausted at this tier. Before giving up,
-                    // adaptive promotion (design §3): a repeat-failing chunk is
-                    // re-run at the NEXT model tier the resolver offers. Bounded by
-                    // `max_promotions` and the top of the ladder; only a re-codable
-                    // block promotes (a merge conflict is not the model's fault).
-                    if let Some(promoted) = recodable
-                        .then(|| promotion_target(run, harnesses, &chunk.id, current_tier))
-                        .flatten()
-                    {
-                        promote_chunk(run, plan, &chunk.id, current_tier, promoted);
-                        // The failed attempt at the old tier is superseded — drop it.
-                        // The promoted re-run gets a fresh per-tier re-code budget
-                        // (`recode = 1`) but a NEW monotonic `seq`, so its
-                        // worktree/branch never collide with the just-dropped attempt.
-                        let _ = git::worktree_remove(&run.repo, &wt);
-                        let _ = git::delete_branch(&run.repo, &branch, true);
-                        if attempt_diff.is_some() {
-                            prior_diff = attempt_diff;
-                        }
-                        findings = verify_seed
-                            .iter()
-                            .cloned()
-                            .chain(attempt_findings)
-                            .collect();
-                        recode = 1;
-                        seq += 1;
-                        continue;
-                    }
-
-                    // Terminal for this chunk. Distinguish a breaker trip (we tried
-                    // re-codes / promotions and exhausted them) from the v1
-                    // first-failure block (re-code off, or a non-re-codable outcome
-                    // like a conflict).
-                    let promotions = run.chunk_promotions.get(&chunk.id).copied().unwrap_or(0);
-                    if recodable && (run.cfg.fix_loop.max_recode_per_chunk > 0 || promotions > 0) {
-                        // Report the CUMULATIVE floor re-code count for this chunk in
-                        // this plan revision (item O), not just the per-visit `seq`
-                        // (which resets each time the chunk re-enters the code stage
-                        // from a later verify iteration / re-spec). Sum ACROSS TIERS,
-                        // not just the current one, so a chunk exhausted after a
-                        // promotion doesn't read "0 re-codes at tier X" while the
-                        // lower tiers actually spent the budget — the total reflects
-                        // the real effort, and `promotions` shows how it was spread.
-                        let cumulative_recodes: u32 = run
-                            .chunk_recode_total
-                            .iter()
-                            .filter(|((rev, id, _tier), _)| {
-                                *rev == plan.plan_rev && id == &chunk.id
-                            })
-                            .map(|(_, n)| *n)
-                            .sum();
-                        run.circuit_breaker = Some(format!(
-                            "chunk {} still blocked after {seq} attempt(s) this visit ({cumulative_recodes} cumulative floor re-code(s) across visits, {promotions} promotion(s)): {reason}",
-                            chunk.id,
-                        ));
-                        run.code_block_status = Some("circuit_breaker");
-                    } else {
-                        run.code_block_status = Some(status);
-                    }
+                    &attempt_findings,
+                );
+                let recurrence = run.meter.record_failure(&fp);
+                // Refresh the storage measurement here too (not only at the round
+                // boundary) so intra-code-stage disk growth can trip the breaker
+                // before the next round; a no-op when the storage breaker is off.
+                refresh_storage(run);
+                if let Some(msg) = run
+                    .cfg
+                    .budget
+                    .identical_failure_breach(recurrence)
+                    .or_else(|| resource_breach(run))
+                {
+                    run.circuit_breaker = Some(msg.clone());
+                    run.code_block_status = Some("circuit_breaker");
                     run.decisions.push(envelope(
                         "supervisor",
                         DecisionTier::Coordinator,
                         format!(
-                            "chunk {} blocked — preserved, not merged ({reason})",
+                            "chunk {} stopped by circuit-breaker — preserved, not merged ({msg})",
                             chunk.id
                         ),
                         vec![format!("chunk:{}", chunk.id)],
@@ -2413,10 +2371,799 @@ fn run_code_stage(
                     );
                     return Ok(());
                 }
+
+                // Re-code while the chunk is re-codable and BOTH budgets hold
+                // (design §8): the per-tier `recode` counter (1-based; re-code N
+                // is allowed iff N ≤ max_recode_per_chunk), AND the cumulative
+                // per-`(plan_rev, chunk, tier)` budget (item 2). The cumulative
+                // counter does NOT reset when the chunk re-enters the code stage
+                // from a later verify iteration / re-spec, so a chunk cannot be
+                // floor re-coded past the nominal bound across visits at a given
+                // tier. (A re-spec bumps `plan_rev` → a genuinely new budget; a
+                // promotion changes `current_tier` → a fresh per-tier budget, so a
+                // promoted stronger model is not starved by the lower tier's spent
+                // budget — while each individual tier is still capped.)
+                let recode_key = (plan.plan_rev, chunk.id.clone(), current_tier.wire_name());
+                let recode_total = run
+                    .chunk_recode_total
+                    .get(&recode_key)
+                    .copied()
+                    .unwrap_or(0);
+                if recodable
+                    && recode <= run.cfg.fix_loop.max_recode_per_chunk
+                    && recode_total < run.cfg.fix_loop.max_recode_per_chunk
+                {
+                    record_recode_decision(
+                        run,
+                        plan,
+                        &chunk.id,
+                        &attempt_findings,
+                        "floor re-code",
+                    );
+                    *run.chunk_recode_total.entry(recode_key).or_insert(0) += 1;
+                    // The floor-failed attempt is superseded — drop its
+                    // worktree + branch to make room for the re-brief (it is
+                    // not mergeable work; the final failed attempt, if the
+                    // budget runs out, IS preserved below). Carry its diff into
+                    // the next re-brief before the worktree is gone (item 3).
+                    let _ = git::worktree_remove(&run.repo, &wt);
+                    let _ = git::delete_branch(&run.repo, &branch, true);
+                    // Keep the LAST committed diff: a later attempt that produced
+                    // no commit (harness no-change / timeout) must not erase the
+                    // failing code a prior attempt did commit.
+                    if attempt_diff.is_some() {
+                        prior_diff = attempt_diff;
+                    }
+                    // Persist the verify seed, append this attempt's floor
+                    // findings (see `verify_seed` above).
+                    findings = verify_seed
+                        .iter()
+                        .cloned()
+                        .chain(attempt_findings)
+                        .collect();
+                    recode += 1;
+                    seq += 1;
+                    continue;
+                }
+
+                // Re-code budget exhausted at this tier. Before giving up,
+                // adaptive promotion (design §3): a repeat-failing chunk is
+                // re-run at the NEXT model tier the resolver offers. Bounded by
+                // `max_promotions` and the top of the ladder; only a re-codable
+                // block promotes (a merge conflict is not the model's fault).
+                if let Some(promoted) = recodable
+                    .then(|| promotion_target(run, harnesses, &chunk.id, current_tier))
+                    .flatten()
+                {
+                    promote_chunk(run, plan, &chunk.id, current_tier, promoted);
+                    // The failed attempt at the old tier is superseded — drop it.
+                    // The promoted re-run gets a fresh per-tier re-code budget
+                    // (`recode = 1`) but a NEW monotonic `seq`, so its
+                    // worktree/branch never collide with the just-dropped attempt.
+                    let _ = git::worktree_remove(&run.repo, &wt);
+                    let _ = git::delete_branch(&run.repo, &branch, true);
+                    if attempt_diff.is_some() {
+                        prior_diff = attempt_diff;
+                    }
+                    findings = verify_seed
+                        .iter()
+                        .cloned()
+                        .chain(attempt_findings)
+                        .collect();
+                    recode = 1;
+                    seq += 1;
+                    continue;
+                }
+
+                // Terminal for this chunk. Distinguish a breaker trip (we tried
+                // re-codes / promotions and exhausted them) from the v1
+                // first-failure block (re-code off, or a non-re-codable outcome
+                // like a conflict).
+                let promotions = run.chunk_promotions.get(&chunk.id).copied().unwrap_or(0);
+                if recodable && (run.cfg.fix_loop.max_recode_per_chunk > 0 || promotions > 0) {
+                    // Report the CUMULATIVE floor re-code count for this chunk in
+                    // this plan revision (item O), not just the per-visit `seq`
+                    // (which resets each time the chunk re-enters the code stage
+                    // from a later verify iteration / re-spec). Sum ACROSS TIERS,
+                    // not just the current one, so a chunk exhausted after a
+                    // promotion doesn't read "0 re-codes at tier X" while the
+                    // lower tiers actually spent the budget — the total reflects
+                    // the real effort, and `promotions` shows how it was spread.
+                    let cumulative_recodes: u32 = run
+                        .chunk_recode_total
+                        .iter()
+                        .filter(|((rev, id, _tier), _)| *rev == plan.plan_rev && id == &chunk.id)
+                        .map(|(_, n)| *n)
+                        .sum();
+                    run.circuit_breaker = Some(format!(
+                            "chunk {} still blocked after {seq} attempt(s) this visit ({cumulative_recodes} cumulative floor re-code(s) across visits, {promotions} promotion(s)): {reason}",
+                            chunk.id,
+                        ));
+                    run.code_block_status = Some("circuit_breaker");
+                } else {
+                    run.code_block_status = Some(status);
+                }
+                run.decisions.push(envelope(
+                    "supervisor",
+                    DecisionTier::Coordinator,
+                    format!(
+                        "chunk {} blocked — preserved, not merged ({reason})",
+                        chunk.id
+                    ),
+                    vec![format!("chunk:{}", chunk.id)],
+                    "supervisor",
+                    "v1",
+                ));
+                push_blocked_chunk(
+                    run,
+                    chunk,
+                    outcome,
+                    floor,
+                    floor_passed,
+                    reason,
+                    &wt,
+                    &branch,
+                );
+                return Ok(());
             }
         }
     }
     Ok(())
+}
+
+/// Partition the plan's not-yet-`Merged` chunks into dependency **waves** for the
+/// concurrent scheduler (design §6 VAIHE 2). Wave `i` is the maximal set of
+/// still-Pending chunks whose deps are ALL satisfied — either already `Merged`
+/// (kept-done, or merged in an earlier code-stage visit) or emitted in an earlier
+/// wave. A wave's members therefore have no dependency PATH between them (they can
+/// build concurrently); chunks in later waves still serialise on their dep edges.
+///
+/// Deterministic: within a wave chunks keep the plan's declared order (the same
+/// tie-break as [`topo_order`]), so the downstream merge order is stable and
+/// reproducible. Returns indices into `plan.chunks`. A validated (acyclic) plan
+/// always fully partitions; a would-be cycle / unmet dep (unreachable for a
+/// validated plan) is emitted as one final wave in declared order rather than
+/// looping forever — mirroring `topo_order`'s own no-progress fallback.
+fn ready_waves(plan: &Plan, status: &BTreeMap<String, LiveChunkStatus>) -> Vec<Vec<usize>> {
+    let is_merged = |id: &str| status.get(id) == Some(&LiveChunkStatus::Merged);
+    let mut remaining: Vec<usize> = plan
+        .chunks
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !is_merged(&c.id))
+        .map(|(i, _)| i)
+        .collect();
+    // A dep is "satisfied" once its chunk is merged or has landed in an earlier wave.
+    let mut done: BTreeSet<String> = plan
+        .chunks
+        .iter()
+        .filter(|c| is_merged(&c.id))
+        .map(|c| c.id.clone())
+        .collect();
+    let mut waves: Vec<Vec<usize>> = Vec::new();
+    while !remaining.is_empty() {
+        let wave: Vec<usize> = remaining
+            .iter()
+            .copied()
+            .filter(|&i| plan.chunks[i].deps.iter().all(|d| done.contains(d)))
+            .collect();
+        if wave.is_empty() {
+            // No chunk became ready — a cycle or an unmet external dep, which a
+            // validated plan never has. Emit the remainder as one final wave in
+            // declared order instead of spinning forever.
+            waves.push(remaining.clone());
+            break;
+        }
+        for &i in &wave {
+            done.insert(plan.chunks[i].id.clone());
+        }
+        remaining.retain(|i| !wave.contains(i));
+        waves.push(wave);
+    }
+    waves
+}
+
+/// The outcome of building ONE wave chunk off the shared wave base (design §6
+/// VAIHE 2): a floor-green built commit ready for the deterministic merge phase, or
+/// a terminal block after the chunk exhausted its floor re-code budget. Mirrors
+/// [`BuildAttempt`] but carries the per-chunk audit the main thread folds back
+/// (metered usage, the findings behind each floor re-code) — a build thread holds
+/// no `&mut Run`, so it accumulates these and the folder replays them deterministically.
+struct WaveBuildResult {
+    /// Index into `plan.chunks`.
+    idx: usize,
+    /// The tier the chunk built at (no in-wave promotion — see the module note).
+    tier: Tier,
+    /// One entry per harness invocation (design §9 metering), folded in order.
+    usages: Vec<Option<Usage>>,
+    /// The findings behind each floor re-code the build spent, replayed as
+    /// `RE_CODE_CHUNK` decisions on the main thread so the audit + `recode_count`
+    /// match the sequential path.
+    recode_findings: Vec<Vec<String>>,
+    outcome: WaveBuildOutcome,
+}
+
+/// A wave chunk's build result (see [`WaveBuildResult`]).
+enum WaveBuildOutcome {
+    /// Floor green off the shared wave base; the deterministic merge phase merges
+    /// `commit` (re-checking the floor at the moved tip).
+    Built {
+        verdict: FloorVerdict,
+        base: String,
+        commit: String,
+        wt: PathBuf,
+        branch: String,
+    },
+    /// Terminal block; the worktree/branch are preserved (state-integrity invariant 5).
+    Blocked {
+        outcome: &'static str,
+        status: &'static str,
+        reason: String,
+        floor: Option<FloorVerdict>,
+        floor_passed: Option<bool>,
+        recodable: bool,
+        wt: PathBuf,
+        branch: String,
+    },
+}
+
+/// Build ONE wave chunk off the shared `wave_base` through a bounded floor re-code
+/// loop (design §6 VAIHE 2 + §8) WITHOUT merging. Thread-safe: it takes only shared
+/// (`Sync`) inputs and touches no `&mut Run`, so `k` of these run concurrently in a
+/// wave; the git worktree-metadata mutations serialise on `git_lock` while the slow
+/// harness runs stay parallel. Returns the built commit or a terminal block, plus
+/// the per-chunk audit for the main thread to fold in.
+///
+/// Adaptive tier promotion (design §3) is intentionally NOT done here — a promotion
+/// mutates shared run state and is rare; a wave chunk that exhausts its re-code
+/// budget blocks (preserved), and promotion remains the sequential path's job
+/// (`pipeline-parallel-promotion` follow-up). The deterministic FLOOR gate is
+/// identical to the sequential path — it is the shared [`build_and_gate`].
+#[allow(clippy::too_many_arguments)]
+fn build_chunk_in_wave(
+    cfg: &PipelineConfig,
+    repo: &Path,
+    slug: &str,
+    wave_base: &str,
+    plan_rev: u32,
+    idx: usize,
+    chunk: &Chunk,
+    tier: Tier,
+    harness: &dyn CodeHarness,
+    baseline: &BaselineSnapshot,
+    verify_seed: &[String],
+    seed_prior_diff: Option<&str>,
+    recode_budget: u32,
+    git_lock: &Mutex<()>,
+) -> Result<WaveBuildResult, PipelineError> {
+    let mut findings: Vec<String> = verify_seed.to_vec();
+    let mut prior_diff: Option<String> = seed_prior_diff.map(str::to_string);
+    let mut seq = 1u32;
+    let mut recode = 1u32;
+    let mut usages: Vec<Option<Usage>> = Vec::new();
+    let mut recode_findings: Vec<Vec<String>> = Vec::new();
+    loop {
+        let (built, usage) = build_and_gate(
+            cfg,
+            repo,
+            slug,
+            wave_base,
+            plan_rev,
+            chunk,
+            harness,
+            baseline,
+            seq,
+            &findings,
+            prior_diff.as_deref(),
+            Some(git_lock),
+        )?;
+        usages.push(usage);
+        match built {
+            BuildAttempt::Built {
+                verdict,
+                base,
+                commit,
+                wt,
+                branch,
+            } => {
+                return Ok(WaveBuildResult {
+                    idx,
+                    tier,
+                    usages,
+                    recode_findings,
+                    outcome: WaveBuildOutcome::Built {
+                        verdict,
+                        base,
+                        commit,
+                        wt,
+                        branch,
+                    },
+                });
+            }
+            BuildAttempt::Blocked {
+                outcome,
+                diff,
+                status,
+                reason,
+                findings: attempt_findings,
+                floor,
+                floor_passed,
+                recodable,
+                wt,
+                branch,
+            } => {
+                // Re-code while re-codable and the (cumulative) budget holds. The
+                // superseded attempt's worktree/branch are dropped under the git lock;
+                // its diff is carried into the next re-brief (item 3: re-code amnesia).
+                if recodable && recode <= recode_budget {
+                    {
+                        let _g = git_lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let _ = git::worktree_remove(repo, &wt);
+                        let _ = git::delete_branch(repo, &branch, true);
+                    }
+                    if diff.is_some() {
+                        prior_diff = diff;
+                    }
+                    recode_findings.push(attempt_findings.clone());
+                    findings = verify_seed
+                        .iter()
+                        .cloned()
+                        .chain(attempt_findings)
+                        .collect();
+                    recode += 1;
+                    seq += 1;
+                    continue;
+                }
+                // `attempt_findings` drove the (now-exhausted) re-code loop; a
+                // terminal block is never re-briefed, so it is not carried further.
+                let _ = &attempt_findings;
+                return Ok(WaveBuildResult {
+                    idx,
+                    tier,
+                    usages,
+                    recode_findings,
+                    outcome: WaveBuildOutcome::Blocked {
+                        outcome,
+                        status,
+                        reason,
+                        floor,
+                        floor_passed,
+                        recodable,
+                        wt,
+                        branch,
+                    },
+                });
+            }
+        }
+    }
+}
+
+/// Run ONE dependency wave with concurrent builds + a deterministic serial merge
+/// (design §6 VAIHE 2). `pending` are the wave's still-Pending chunk indices (no
+/// dependency path between them); `k > 1` is the effective concurrency.
+///
+/// Phase 1 — **concurrent build**: every wave chunk builds off the SAME shared base
+/// (the integration tip at wave start) in its own worktree, `k` at a time
+/// ([`build_chunk_in_wave`], work-stealing over a shared queue). The per-chunk audit
+/// is folded back on this thread in deterministic `pending` order (metering,
+/// re-code decisions, cumulative re-code budget), so the recorded state never
+/// depends on thread timing.
+///
+/// Phase 2 — **deterministic serial merge**: the floor-green chunks merge into
+/// `feat/<slug>` in `pending` order, and the floor is **re-checked at each merge**
+/// (the build was gated against the STALE shared base; a sibling merged first may
+/// have moved the tip). A merge conflict, or a floor regression at the moved tip,
+/// triggers the design's **rebase-and-fix**: discard the stale build and rebuild the
+/// chunk off the moved tip via the sequential drain (which re-forks off the new tip,
+/// re-gates, re-merges). Any block there stops the whole stage, exactly as the
+/// sequential path does.
+#[allow(clippy::too_many_arguments)]
+fn run_wave_concurrent(
+    run: &mut Run,
+    plan: &Plan,
+    pending: &[usize],
+    harnesses: &dyn TierHarness,
+    baseline: &BaselineSnapshot,
+    k: usize,
+    pending_findings: &BTreeMap<String, Vec<String>>,
+    pending_prior_diff: &BTreeMap<String, String>,
+) -> Result<(), PipelineError> {
+    let wave_base = git::head(&run.integration_wt)?;
+    let plan_rev = plan.plan_rev;
+    let max_recode = run.cfg.fix_loop.max_recode_per_chunk;
+
+    // Snapshot every per-chunk build input on the main thread — the build threads
+    // hold no `&Run`. The re-code budget is the sequential path's cumulative bound:
+    // `max_recode_per_chunk` minus what earlier visits already spent at this tier.
+    struct Job<'a> {
+        idx: usize,
+        chunk: &'a Chunk,
+        tier: Tier,
+        harness: &'a dyn CodeHarness,
+        verify_seed: Vec<String>,
+        prior_diff: Option<String>,
+        recode_budget: u32,
+    }
+    let jobs: Vec<Job> = pending
+        .iter()
+        .map(|&idx| {
+            let chunk = &plan.chunks[idx];
+            let tier = run.chunk_tier.get(&chunk.id).copied().unwrap_or(chunk.tier);
+            let spent = run
+                .chunk_recode_total
+                .get(&(plan_rev, chunk.id.clone(), tier.wire_name()))
+                .copied()
+                .unwrap_or(0);
+            Job {
+                idx,
+                chunk,
+                tier,
+                harness: harnesses.harness(tier),
+                verify_seed: pending_findings.get(&chunk.id).cloned().unwrap_or_default(),
+                prior_diff: pending_prior_diff.get(&chunk.id).cloned(),
+                recode_budget: max_recode.saturating_sub(spent),
+            }
+        })
+        .collect();
+
+    let cfg = run.cfg;
+    let repo = run.repo.clone();
+    let slug = run.slug.clone();
+    let git_lock: Mutex<()> = Mutex::new(());
+    let queue: Mutex<VecDeque<usize>> = Mutex::new((0..jobs.len()).collect());
+    let results: Mutex<BTreeMap<usize, Result<WaveBuildResult, PipelineError>>> =
+        Mutex::new(BTreeMap::new());
+
+    std::thread::scope(|scope| {
+        for _ in 0..k {
+            scope.spawn(|| loop {
+                let next = {
+                    let mut q = queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    q.pop_front()
+                };
+                let Some(job_i) = next else { break };
+                let job = &jobs[job_i];
+                let res = build_chunk_in_wave(
+                    cfg,
+                    &repo,
+                    &slug,
+                    &wave_base,
+                    plan_rev,
+                    job.idx,
+                    job.chunk,
+                    job.tier,
+                    job.harness,
+                    baseline,
+                    &job.verify_seed,
+                    job.prior_diff.as_deref(),
+                    job.recode_budget,
+                    &git_lock,
+                );
+                results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(job.idx, res);
+            });
+        }
+    });
+
+    let mut results = results
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    // Fold the per-chunk audit deterministically (pending order), splitting the
+    // outcomes into the floor-green builds (to merge) and the terminal blocks.
+    let mut built: Vec<WaveBuildResult> = Vec::new();
+    let mut blocked: Vec<WaveBuildResult> = Vec::new();
+    for &idx in pending {
+        let r = results
+            .remove(&idx)
+            .expect("every wave job records a result")?;
+        for u in &r.usages {
+            run.meter.record_agent_run(u.as_ref());
+        }
+        let chunk = &plan.chunks[idx];
+        let recode_key = (plan_rev, chunk.id.clone(), r.tier.wire_name());
+        for f in &r.recode_findings {
+            record_recode_decision(run, plan, &chunk.id, f, "floor re-code");
+            *run.chunk_recode_total
+                .entry(recode_key.clone())
+                .or_insert(0) += 1;
+        }
+        match r.outcome {
+            WaveBuildOutcome::Built { .. } => built.push(r),
+            WaveBuildOutcome::Blocked { .. } => blocked.push(r),
+        }
+    }
+
+    // Preserve every build-phase block's worktree/branch NOW (state-integrity
+    // invariant 5): they hold committed work, and a later early return from the
+    // merge phase (a rebase-and-fix that itself blocks) must never strand it. The
+    // terminal stage-stop status is set after the good chunks merge, below.
+    for r in &blocked {
+        preserve_wave_build(run, &plan.chunks[r.idx], r);
+    }
+
+    // A resource ceiling crossed by the wave's builds stops before ANY merge (design
+    // §9): preserve every un-merged BUILT worktree (invariant 5; blocked ones were
+    // preserved just above) and terminate.
+    refresh_storage(run);
+    if let Some(msg) = resource_breach(run) {
+        run.circuit_breaker = Some(msg.clone());
+        run.code_block_status = Some("circuit_breaker");
+        run.decisions.push(envelope(
+            "supervisor",
+            DecisionTier::Coordinator,
+            format!("wave stopped by circuit-breaker before merge — builds preserved ({msg})"),
+            vec![format!("plan_rev:{plan_rev}")],
+            "supervisor",
+            "v1",
+        ));
+        for r in &built {
+            preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
+        return Ok(());
+    }
+
+    // Phase 2 — deterministic serial merge with a floor re-check at each merge, and
+    // rebase-and-fix on a conflict / floor regression at the moved tip.
+    for r in built {
+        let idx = r.idx;
+        // The build-time verdict was gated against the STALE shared base; the merge
+        // phase re-checks the floor at the moved tip, so it is deliberately dropped.
+        let (base, commit, wt, branch) = match r.outcome {
+            WaveBuildOutcome::Built {
+                verdict: _,
+                base,
+                commit,
+                wt,
+                branch,
+            } => (base, commit, wt, branch),
+            WaveBuildOutcome::Blocked { .. } => unreachable!("split above keeps only Built here"),
+        };
+        let chunk = &plan.chunks[idx];
+        let pre_tip = git::head(&run.integration_wt)?;
+        match git::merge_no_ff(
+            &run.integration_wt,
+            &commit,
+            &format!("pipeline: merge chunk {}", chunk.id),
+        )? {
+            MergeOutcome::Merged {
+                commit: merge_commit,
+            } => {
+                // Re-check the floor at the moved tip (design §6 VAIHE 2: a chunk
+                // merges ONLY IF the floor still holds). The no-ff merge introduced
+                // exactly this chunk's changes relative to `pre_tip`.
+                let post_tip = git::head(&run.integration_wt)?;
+                let changed = floor::git::changed_files(&run.integration_wt, &pre_tip, &post_tip)?;
+                let verdict2 = gate_chunk(
+                    run.cfg,
+                    &run.repo,
+                    chunk,
+                    &run.integration_wt,
+                    &pre_tip,
+                    &changed,
+                    baseline,
+                )?;
+                if verdict2.passed() {
+                    finalize_wave_merge(
+                        run,
+                        chunk,
+                        verdict2,
+                        base,
+                        commit,
+                        merge_commit,
+                        &wt,
+                        &branch,
+                    );
+                    // Post-merge resource backstop (design §9), mirroring the
+                    // sequential Merged arm: the merge's own spend may have crossed a
+                    // ceiling. The chunk is already on feat (preserved); stop here.
+                    refresh_storage(run);
+                    if let Some(msg) = resource_breach(run) {
+                        run.circuit_breaker = Some(msg);
+                        run.code_block_status = Some("circuit_breaker");
+                        return Ok(());
+                    }
+                } else {
+                    // Floor regressed against a sibling merged earlier this wave →
+                    // undo the merge and rebase-and-fix off the moved tip.
+                    git::restore_to(&run.integration_wt, &pre_tip)?;
+                    let _ = git::worktree_remove(&run.repo, &wt);
+                    let _ = git::delete_branch(&run.repo, &branch, true);
+                    run.decisions.push(envelope(
+                        "supervisor",
+                        DecisionTier::Coordinator,
+                        format!(
+                            "chunk {} floor regressed at merge — rebase&fix off moved tip",
+                            chunk.id
+                        ),
+                        vec![format!("chunk:{}", chunk.id)],
+                        "supervisor",
+                        "v1",
+                    ));
+                    process_chunk_sequential(
+                        run,
+                        plan,
+                        idx,
+                        harnesses,
+                        baseline,
+                        pending_findings,
+                        pending_prior_diff,
+                    )?;
+                    if run.code_block_status.is_some() {
+                        return Ok(());
+                    }
+                }
+            }
+            MergeOutcome::Conflict { details } => {
+                // The stale build cannot land on the moved tip → discard it and
+                // rebase-and-fix: rebuild the chunk off the current tip (design §6).
+                let _ = git::worktree_remove(&run.repo, &wt);
+                let _ = git::delete_branch(&run.repo, &branch, true);
+                run.decisions.push(envelope(
+                    "supervisor",
+                    DecisionTier::Coordinator,
+                    format!(
+                        "chunk {} merge conflict — rebase&fix off moved tip: {details}",
+                        chunk.id
+                    ),
+                    vec![format!("chunk:{}", chunk.id)],
+                    "supervisor",
+                    "v1",
+                ));
+                process_chunk_sequential(
+                    run,
+                    plan,
+                    idx,
+                    harnesses,
+                    baseline,
+                    pending_findings,
+                    pending_prior_diff,
+                )?;
+                if run.code_block_status.is_some() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Any chunk that blocked during the build is terminal for the stage (the floor is
+    // the hard gate). The good chunks of the wave are already merged; the blocked
+    // worktrees were preserved before the merge phase — now stop with the first
+    // block's terminal status.
+    if let Some(first) = blocked.first() {
+        if let WaveBuildOutcome::Blocked {
+            status,
+            recodable,
+            reason,
+            ..
+        } = &first.outcome
+        {
+            let chunk_id = &plan.chunks[first.idx].id;
+            if *recodable && max_recode > 0 {
+                run.circuit_breaker = Some(format!(
+                    "chunk {chunk_id} still blocked after exhausting the wave re-code budget: {reason}"
+                ));
+                run.code_block_status = Some("circuit_breaker");
+            } else {
+                run.code_block_status = Some(status);
+            }
+            run.decisions.push(envelope(
+                "supervisor",
+                DecisionTier::Coordinator,
+                format!("chunk {chunk_id} blocked in wave — preserved, not merged ({reason})"),
+                vec![format!("chunk:{chunk_id}")],
+                "supervisor",
+                "v1",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Record a floor-green wave build's merge into `feat/<slug>` (design §6 VAIHE 2):
+/// mirrors the sequential [`process_chunk_sequential`] `Merged` arm — decision
+/// envelope, merge provenance (for a later rollback), one-per-chunk report, and the
+/// `Merged` status — then drops the chunk worktree/branch. `verdict` is the floor
+/// re-checked at the MOVED tip, so the reported floor reflects what actually shipped.
+#[allow(clippy::too_many_arguments)]
+fn finalize_wave_merge(
+    run: &mut Run,
+    chunk: &Chunk,
+    verdict: FloorVerdict,
+    base: String,
+    commit: String,
+    merge_commit: String,
+    wt: &Path,
+    branch: &str,
+) {
+    run.decisions.push(envelope(
+        "supervisor",
+        DecisionTier::Coordinator,
+        format!("chunk {} floor green — merged (wave)", chunk.id),
+        vec![format!("chunk:{}", chunk.id), format!("commit:{commit}")],
+        "supervisor",
+        "v1",
+    ));
+    run.merge_seq += 1;
+    run.chunk_provenance.insert(
+        chunk.id.clone(),
+        ChunkProvenance {
+            base,
+            commit: commit.clone(),
+            order: run.merge_seq,
+        },
+    );
+    upsert_chunk_report(
+        run,
+        ChunkReport {
+            id: chunk.id.clone(),
+            title: chunk.title.clone(),
+            tier: run
+                .chunk_tier
+                .get(&chunk.id)
+                .copied()
+                .unwrap_or(chunk.tier)
+                .wire_name()
+                .to_string(),
+            outcome: "committed".to_string(),
+            floor_passed: Some(true),
+            floor: Some(verdict),
+            merged: true,
+            commit: Some(commit),
+            merge_commit: Some(merge_commit),
+            replayed: false,
+            reason: None,
+            branch_preserved: None,
+        },
+    );
+    run.chunk_status
+        .insert(chunk.id.clone(), LiveChunkStatus::Merged);
+    let _ = git::worktree_remove(&run.repo, wt);
+    let _ = git::delete_branch(&run.repo, branch, true);
+}
+
+/// Preserve an un-merged wave build (a terminal block, or a build stopped by a
+/// wave-boundary breaker) — its worktree/branch hold committed work that never
+/// reached feat, so state-integrity invariant 5 forbids dropping it.
+fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
+    let (outcome, floor, floor_passed, reason, wt, branch) = match &r.outcome {
+        WaveBuildOutcome::Blocked {
+            outcome,
+            floor,
+            floor_passed,
+            reason,
+            wt,
+            branch,
+            ..
+        } => (
+            *outcome,
+            floor.clone(),
+            *floor_passed,
+            reason.clone(),
+            wt.as_path(),
+            branch.as_str(),
+        ),
+        WaveBuildOutcome::Built {
+            verdict,
+            wt,
+            branch,
+            ..
+        } => (
+            "committed",
+            Some(verdict.clone()),
+            Some(true),
+            "wave build preserved before merge".to_string(),
+            wt.as_path(),
+            branch.as_str(),
+        ),
+    };
+    push_blocked_chunk(run, chunk, outcome, floor, floor_passed, reason, wt, branch);
 }
 
 /// The result of one chunk attempt: a green-floor merge, or a block (with the
@@ -2485,165 +3232,68 @@ fn attempt_chunk(
     prior_diff: Option<&str>,
 ) -> Result<ChunkAttempt, PipelineError> {
     let base_commit = git::head(&run.integration_wt)?;
-    // The first attempt (seq 1) keeps the bare chunk name; every later attempt —
-    // re-code OR promotion — suffixes `-a{seq}` with the MONOTONIC sequence, so no
-    // two attempts (across any tier) ever share a worktree/branch name, even if a
-    // superseded attempt's cleanup failed.
-    let suffix = if seq == 1 {
-        String::new()
-    } else {
-        format!("-a{seq}")
-    };
-    let chunk_branch = format!("{}/chunk-{}{suffix}", run.slug, chunk.id);
-    let chunk_wt = run.cfg.workdir.join(format!("chunk-{}{suffix}", chunk.id));
-
-    git::worktree_add_new_branch(&run.repo, &chunk_wt, &chunk_branch, &base_commit)?;
-
-    let checks: Vec<HarnessCheck> = chunk
-        .checks
-        .iter()
-        .enumerate()
-        .map(|(i, c)| to_harness_check(i, c))
-        .collect();
-    let req = ChunkRequest {
-        run_id: format!("pipeline-{}", run.slug),
-        chunk_id: chunk.id.clone(),
-        attempt_id: format!("a{seq}"),
-        worktree_path: chunk_wt.clone(),
-        base_commit: base_commit.clone(),
-        plan_rev: plan.plan_rev.to_string(),
-        brief: fixloop::rebrief(&chunk.brief, findings, prior_diff),
-        checks,
-        files: chunk.files_touched.iter().map(PathBuf::from).collect(),
-        timeout: run.cfg.chunk_timeout,
-    };
-
-    // Select the harness for the chunk's CURRENT tier (design §3): a promoted
-    // chunk runs on the stronger adapter the resolver returns.
-    let cancel = CancelToken::new();
-    let result = harnesses
-        .harness(current_tier)
-        .run_chunk(&req, &cancel)
-        .map_err(|e| PipelineError::Harness(e.to_string()))?;
+    // Build + floor-gate the attempt off the current integration tip (design §6
+    // VAIHE 2). The build/gate is shared with the concurrent wave path — the ONE
+    // floor gate — so the sequential path stays byte-for-byte the same.
+    let (built, usage) = build_and_gate(
+        run.cfg,
+        &run.repo,
+        &run.slug,
+        &base_commit,
+        plan.plan_rev,
+        chunk,
+        harnesses.harness(current_tier),
+        baseline,
+        seq,
+        findings,
+        prior_diff,
+        None,
+    )?;
     // Meter this agent invocation into the per-run tally (design §9 cost
     // instrumentation): fold in the harness-reported Usage and count the process.
     // Done for EVERY outcome — a timeout/cancel/no-change still spent tokens.
-    run.meter.record_agent_run(result.usage.as_ref());
+    run.meter.record_agent_run(usage.as_ref());
 
-    // A harness failure (no change / failed / timeout / cancelled) is re-codable;
-    // its reason is the sole re-brief finding.
-    let harness_block = |outcome: &'static str, reason: String| ChunkAttempt::Blocked {
-        outcome,
-        // A harness that never produced a commit has no diff to carry forward.
-        diff: None,
-        status: "chunk_failed",
-        findings: vec![reason.clone()],
-        reason,
-        floor: None,
-        floor_passed: None,
-        recodable: true,
-        wt: chunk_wt.clone(),
-        branch: chunk_branch.clone(),
-    };
-
-    let commit = match &result.outcome {
-        ChunkOutcome::Committed { commit } => commit.clone(),
-        ChunkOutcome::NoChange => {
-            return Ok(harness_block(
-                "no_change",
-                "chunk produced no commit".to_string(),
-            ))
-        }
-        ChunkOutcome::Failed { reason } => return Ok(harness_block("failed", reason.clone())),
-        ChunkOutcome::Timeout => {
-            return Ok(harness_block("timeout", "chunk timed out".to_string()))
-        }
-        ChunkOutcome::Cancelled => {
-            return Ok(harness_block("cancelled", "chunk cancelled".to_string()))
-        }
-    };
-
-    // Validate the harness's claimed commit against real git state BEFORE the
-    // floor — an adapter that lies (reports a commit but left HEAD unmoved,
-    // committed an empty/rewritten tree, or left the passing work uncommitted)
-    // must not slip a merge past the floor. These are re-codable failures.
-    let head = git::head(&chunk_wt)?;
-    if head != commit {
-        return Ok(harness_block(
-            "failed",
-            format!("harness reported commit {commit} but worktree HEAD is {head}"),
-        ));
-    }
-    if head == base_commit {
-        return Ok(harness_block(
-            "no_change",
-            "harness reported a commit but HEAD did not advance".to_string(),
-        ));
-    }
-    if !git::is_ancestor(&chunk_wt, &base_commit, &head)? {
-        return Ok(harness_block(
-            "failed",
-            format!(
-                "chunk commit {head} is not a descendant of its base {base_commit} (history rewritten)"
-            ),
-        ));
-    }
-    // Reject a non-linear chunk history (item F): the provenance rollback replays a
-    // kept chunk with `git cherry-pick base..commit`, which cannot replay a merge
-    // commit without `-m` (it aborts, which the rollback would misread as a
-    // conflict). A chunk that merged something into its own range must be flattened
-    // by the harness before it can be a safe, replayable unit — treat it as a
-    // re-codable failure here rather than letting it become an un-replayable merged
-    // chunk later.
-    if git::range_has_merge(&chunk_wt, &base_commit, &head)? {
-        return Ok(harness_block(
-            "failed",
-            format!(
-                "chunk history {base_commit}..{head} contains a merge commit; the provenance rollback replays a linear range and cannot cherry-pick a merge — the chunk must be a linear sequence of commits"
-            ),
-        ));
-    }
-    if !git::is_clean(&chunk_wt)? {
-        return Ok(harness_block(
-            "failed",
-            "chunk worktree has uncommitted changes after the commit".to_string(),
-        ));
-    }
-    let changed = floor::git::changed_files(&chunk_wt, &base_commit, &head)?;
-    if changed.is_empty() {
-        return Ok(harness_block(
-            "no_change",
-            "committed chunk has an empty diff".to_string(),
-        ));
-    }
-
-    let verdict = gate_chunk(run, chunk, &chunk_wt, &base_commit, &changed, baseline)?;
-    if !verdict.passed() {
-        // Floor blocked → re-codable, with the floor violations as findings.
-        // Capture the failing diff now, BEFORE the worktree is torn down for the
-        // retry, so the re-brief carries the code this attempt actually produced
-        // (item 3: re-code amnesia). Best-effort — a diff failure must not mask the
-        // floor block, so it degrades to no carried diff.
-        let diff = git::diff(&chunk_wt, &base_commit, &head).ok();
-        return Ok(ChunkAttempt::Blocked {
-            outcome: "committed",
+    let (verdict, base, commit, chunk_wt, chunk_branch) = match built {
+        BuildAttempt::Blocked {
+            outcome,
             diff,
-            status: "chunk_floor_blocked",
-            reason: "floor gate failed".to_string(),
-            findings: fixloop::floor_findings(&verdict),
-            floor: Some(verdict),
-            floor_passed: Some(false),
-            recodable: true,
-            wt: chunk_wt,
-            branch: chunk_branch,
-        });
-    }
+            status,
+            reason,
+            findings,
+            floor,
+            floor_passed,
+            recodable,
+            wt,
+            branch,
+        } => {
+            return Ok(ChunkAttempt::Blocked {
+                outcome,
+                diff,
+                status,
+                reason,
+                findings,
+                floor,
+                floor_passed,
+                recodable,
+                wt,
+                branch,
+            })
+        }
+        BuildAttempt::Built {
+            verdict,
+            base,
+            commit,
+            wt,
+            branch,
+        } => (verdict, base, commit, wt, branch),
+    };
 
     // Floor green → supervisor-side merge of the EXACT gated commit oid (not the
     // mutable branch name — a stray child could have advanced the branch).
     match git::merge_no_ff(
         &run.integration_wt,
-        &head,
+        &commit,
         &format!("pipeline: merge chunk {}", chunk.id),
     )? {
         MergeOutcome::Merged {
@@ -2659,8 +3309,8 @@ fn attempt_chunk(
             let _ = git::delete_branch(&run.repo, &chunk_branch, true);
             Ok(ChunkAttempt::Merged {
                 verdict,
-                base: base_commit,
-                commit: head,
+                base,
+                commit,
                 merge_commit,
             })
         }
@@ -2678,6 +3328,262 @@ fn attempt_chunk(
             branch: chunk_branch,
         }),
     }
+}
+
+/// One build-and-gate attempt of a chunk, WITHOUT merging (design §6 VAIHE 2):
+/// fork an attempt worktree off `base_commit`, drive the harness with the
+/// (possibly re-briefed) brief, validate the claimed commit against real git state
+/// (lying commit, no-advance, rewritten history, non-linear merge, dirty tree,
+/// empty diff), and gate the deterministic floor (§4). Returns a floor-green
+/// [`BuildAttempt::Built`] (the caller merges the exact gated oid) or a re-codable
+/// [`BuildAttempt::Blocked`], plus the harness [`Usage`] for the caller to meter.
+///
+/// It is the SINGLE build/gate implementation: [`attempt_chunk`] (sequential,
+/// forking off the moving tip) and the concurrent wave build (forking every wave
+/// chunk off one shared base, then merging deterministically) both go through it,
+/// so the integrity checks + floor gate can never drift between the two paths.
+///
+/// `git_lock`, when supplied, serialises the `git worktree add` metadata mutation
+/// against sibling wave-build threads — concurrent `worktree add` on one repo can
+/// race on `.git/worktrees`. The slow harness `run_chunk` stays OUTSIDE the lock so
+/// independent chunks' agents genuinely run in parallel.
+#[allow(clippy::too_many_arguments)]
+fn build_and_gate(
+    cfg: &PipelineConfig,
+    repo: &Path,
+    slug: &str,
+    base_commit: &str,
+    plan_rev: u32,
+    chunk: &Chunk,
+    harness: &dyn CodeHarness,
+    baseline: &BaselineSnapshot,
+    seq: u32,
+    findings: &[String],
+    prior_diff: Option<&str>,
+    git_lock: Option<&Mutex<()>>,
+) -> Result<(BuildAttempt, Option<Usage>), PipelineError> {
+    // The first attempt (seq 1) keeps the bare chunk name; every later attempt —
+    // re-code OR promotion — suffixes `-a{seq}` with the MONOTONIC sequence, so no
+    // two attempts (across any tier) ever share a worktree/branch name, even if a
+    // superseded attempt's cleanup failed.
+    let suffix = if seq == 1 {
+        String::new()
+    } else {
+        format!("-a{seq}")
+    };
+    let chunk_branch = format!("{slug}/chunk-{}{suffix}", chunk.id);
+    let chunk_wt = cfg.workdir.join(format!("chunk-{}{suffix}", chunk.id));
+
+    {
+        // Serialise ONLY the worktree-add metadata mutation when running concurrently
+        // (a poisoned lock is fine to reuse — no invariant is guarded by the guard
+        // itself, only mutual exclusion of the git call).
+        let _guard = git_lock.map(|m| m.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        git::worktree_add_new_branch(repo, &chunk_wt, &chunk_branch, base_commit)?;
+    }
+
+    let checks: Vec<HarnessCheck> = chunk
+        .checks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| to_harness_check(i, c))
+        .collect();
+    let req = ChunkRequest {
+        run_id: format!("pipeline-{slug}"),
+        chunk_id: chunk.id.clone(),
+        attempt_id: format!("a{seq}"),
+        worktree_path: chunk_wt.clone(),
+        base_commit: base_commit.to_string(),
+        plan_rev: plan_rev.to_string(),
+        brief: fixloop::rebrief(&chunk.brief, findings, prior_diff),
+        checks,
+        files: chunk.files_touched.iter().map(PathBuf::from).collect(),
+        timeout: cfg.chunk_timeout,
+    };
+
+    let cancel = CancelToken::new();
+    let result = harness
+        .run_chunk(&req, &cancel)
+        .map_err(|e| PipelineError::Harness(e.to_string()))?;
+    let usage = result.usage.clone();
+
+    // A harness failure (no change / failed / timeout / cancelled) is re-codable;
+    // its reason is the sole re-brief finding.
+    let harness_block = |outcome: &'static str, reason: String| BuildAttempt::Blocked {
+        outcome,
+        // A harness that never produced a commit has no diff to carry forward.
+        diff: None,
+        status: "chunk_failed",
+        findings: vec![reason.clone()],
+        reason,
+        floor: None,
+        floor_passed: None,
+        recodable: true,
+        wt: chunk_wt.clone(),
+        branch: chunk_branch.clone(),
+    };
+
+    let commit = match &result.outcome {
+        ChunkOutcome::Committed { commit } => commit.clone(),
+        ChunkOutcome::NoChange => {
+            return Ok((
+                harness_block("no_change", "chunk produced no commit".to_string()),
+                usage,
+            ))
+        }
+        ChunkOutcome::Failed { reason } => {
+            return Ok((harness_block("failed", reason.clone()), usage))
+        }
+        ChunkOutcome::Timeout => {
+            return Ok((
+                harness_block("timeout", "chunk timed out".to_string()),
+                usage,
+            ))
+        }
+        ChunkOutcome::Cancelled => {
+            return Ok((
+                harness_block("cancelled", "chunk cancelled".to_string()),
+                usage,
+            ))
+        }
+    };
+
+    // Validate the harness's claimed commit against real git state BEFORE the
+    // floor — an adapter that lies (reports a commit but left HEAD unmoved,
+    // committed an empty/rewritten tree, or left the passing work uncommitted)
+    // must not slip a merge past the floor. These are re-codable failures.
+    let head = git::head(&chunk_wt)?;
+    if head != commit {
+        return Ok((
+            harness_block(
+                "failed",
+                format!("harness reported commit {commit} but worktree HEAD is {head}"),
+            ),
+            usage,
+        ));
+    }
+    if head == base_commit {
+        return Ok((
+            harness_block(
+                "no_change",
+                "harness reported a commit but HEAD did not advance".to_string(),
+            ),
+            usage,
+        ));
+    }
+    if !git::is_ancestor(&chunk_wt, base_commit, &head)? {
+        return Ok((
+            harness_block(
+                "failed",
+                format!(
+                    "chunk commit {head} is not a descendant of its base {base_commit} (history rewritten)"
+                ),
+            ),
+            usage,
+        ));
+    }
+    // Reject a non-linear chunk history (item F): the provenance rollback replays a
+    // kept chunk with `git cherry-pick base..commit`, which cannot replay a merge
+    // commit without `-m` (it aborts, which the rollback would misread as a
+    // conflict). A chunk that merged something into its own range must be flattened
+    // by the harness before it can be a safe, replayable unit — treat it as a
+    // re-codable failure here rather than letting it become an un-replayable merged
+    // chunk later.
+    if git::range_has_merge(&chunk_wt, base_commit, &head)? {
+        return Ok((
+            harness_block(
+                "failed",
+                format!(
+                    "chunk history {base_commit}..{head} contains a merge commit; the provenance rollback replays a linear range and cannot cherry-pick a merge — the chunk must be a linear sequence of commits"
+                ),
+            ),
+            usage,
+        ));
+    }
+    if !git::is_clean(&chunk_wt)? {
+        return Ok((
+            harness_block(
+                "failed",
+                "chunk worktree has uncommitted changes after the commit".to_string(),
+            ),
+            usage,
+        ));
+    }
+    let changed = floor::git::changed_files(&chunk_wt, base_commit, &head)?;
+    if changed.is_empty() {
+        return Ok((
+            harness_block("no_change", "committed chunk has an empty diff".to_string()),
+            usage,
+        ));
+    }
+
+    let verdict = gate_chunk(cfg, repo, chunk, &chunk_wt, base_commit, &changed, baseline)?;
+    if !verdict.passed() {
+        // Floor blocked → re-codable, with the floor violations as findings.
+        // Capture the failing diff now, BEFORE the worktree is torn down for the
+        // retry, so the re-brief carries the code this attempt actually produced
+        // (item 3: re-code amnesia). Best-effort — a diff failure must not mask the
+        // floor block, so it degrades to no carried diff.
+        let diff = git::diff(&chunk_wt, base_commit, &head).ok();
+        return Ok((
+            BuildAttempt::Blocked {
+                outcome: "committed",
+                diff,
+                status: "chunk_floor_blocked",
+                reason: "floor gate failed".to_string(),
+                findings: fixloop::floor_findings(&verdict),
+                floor: Some(verdict),
+                floor_passed: Some(false),
+                recodable: true,
+                wt: chunk_wt,
+                branch: chunk_branch,
+            },
+            usage,
+        ));
+    }
+
+    Ok((
+        BuildAttempt::Built {
+            verdict,
+            base: base_commit.to_string(),
+            commit: head,
+            wt: chunk_wt,
+            branch: chunk_branch,
+        },
+        usage,
+    ))
+}
+
+/// The result of one [`build_and_gate`] attempt: a floor-green built commit (not
+/// yet merged) or a block. Mirrors [`ChunkAttempt`] minus the merge outcomes — the
+/// caller owns the merge, so a `chunk_merge_conflict` is produced there, not here.
+enum BuildAttempt {
+    /// Floor green; the exact `commit` is ready for the caller to merge.
+    Built {
+        verdict: FloorVerdict,
+        /// The base the chunk forked from (its provenance replay base).
+        base: String,
+        /// The chunk's own floor-gated tip commit oid.
+        commit: String,
+        /// The attempt's worktree (torn down by the caller once merged).
+        wt: PathBuf,
+        /// The attempt's branch.
+        branch: String,
+    },
+    /// The attempt did not produce a mergeable commit; fields mirror
+    /// [`ChunkAttempt::Blocked`].
+    Blocked {
+        outcome: &'static str,
+        diff: Option<String>,
+        status: &'static str,
+        reason: String,
+        findings: Vec<String>,
+        floor: Option<FloorVerdict>,
+        floor_passed: Option<bool>,
+        recodable: bool,
+        wt: PathBuf,
+        branch: String,
+    },
 }
 
 /// Push a chunk report, replacing any existing report for the same chunk id
@@ -2730,8 +3636,14 @@ fn push_blocked_chunk(
 /// (the current integration tip), not the fork — so a later chunk that guts a
 /// test an earlier chunk added is caught, instead of hiding behind the fork's
 /// lower count. File-scope is against the chunk's `files_touched`.
+///
+/// Takes `cfg` + `repo` directly (not `&Run`) so it can run inside a concurrent
+/// wave-build thread that holds no `&Run` (design §6 VAIHE 2) — the floor gate is
+/// the one hard correctness gate and MUST be byte-for-byte the same on the
+/// sequential and the concurrent path.
 fn gate_chunk(
-    run: &Run,
+    cfg: &PipelineConfig,
+    repo: &Path,
     chunk: &Chunk,
     chunk_wt: &Path,
     base_commit: &str,
@@ -2739,10 +3651,9 @@ fn gate_chunk(
     baseline: &BaselineSnapshot,
 ) -> Result<FloorVerdict, PipelineError> {
     let check_results: Vec<CheckRun> = floor::runner::run_checks(&chunk.checks, chunk_wt);
-    let current = capture_snapshot(run.cfg, chunk_wt)?;
+    let current = capture_snapshot(cfg, chunk_wt)?;
     let declared: Vec<PathBuf> = chunk.files_touched.iter().map(PathBuf::from).collect();
-    let baseline_assertions =
-        floor::runner::assertion_counts_at_ref(&run.repo, base_commit, &declared)?;
+    let baseline_assertions = floor::runner::assertion_counts_at_ref(repo, base_commit, &declared)?;
     let current_assertions = floor::runner::assertion_counts_on_disk(chunk_wt, &declared);
 
     let inputs = FloorInputs {
@@ -2753,7 +3664,7 @@ fn gate_chunk(
         changed_files: changed,
         baseline_assertions: &baseline_assertions,
         current_assertions: &current_assertions,
-        file_scope_slack: run.cfg.file_scope_slack,
+        file_scope_slack: cfg.file_scope_slack,
     };
     Ok(evaluate_floor(&inputs))
 }
@@ -3062,6 +3973,9 @@ pub struct PipelineRunConfig {
     pub keep: bool,
     /// Optional per-chunk timeout (seconds).
     pub chunk_timeout_secs: Option<u64>,
+    /// Max concurrent chunk builds per dependency wave (design §6 VAIHE 2). `None`
+    /// (or `< 1`) uses the sequential default (1).
+    pub max_build_concurrency: Option<usize>,
     /// Max `RE_CODE` re-attempts per chunk in the code stage (design §8/§9).
     /// `None` uses the live default.
     pub max_recode_per_chunk: Option<u32>,
@@ -3163,6 +4077,9 @@ pub fn cmd_run(
         file_scope_slack: cfg.file_scope_slack,
         keep: cfg.keep,
         chunk_timeout: cfg.chunk_timeout_secs.map(Duration::from_secs),
+        // Sequential by default (1); a `0`/`None` collapses to 1 so the field is
+        // always a valid concurrency bound the wave scheduler can `min` against.
+        max_build_concurrency: cfg.max_build_concurrency.filter(|&n| n > 1).unwrap_or(1),
         fix_loop: {
             // The verify→triage→fix loop is ON by default for the live command
             // (design §7/§8), bounded by the §9 breakers; each bound is

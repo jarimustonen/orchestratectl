@@ -2244,6 +2244,35 @@ expression: value
                 }
               },
               {
+                "name": "max_build_concurrency",
+                "long": "max-build-concurrency",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "How many independent chunks in one dependency wave may build concurrently (design §6 VAIHE 2). Omit for the default (1 = strictly sequential); a value `> 1` builds no-dependency-path chunks in parallel worktrees, then merges them deterministically with the floor re-checked at each merge. Bounded at runtime by the `--max-processes` budget",
+                "value_names": [
+                  "N"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "max_cost_usd",
                 "long": "max-cost-usd",
                 "long_aliases": [],

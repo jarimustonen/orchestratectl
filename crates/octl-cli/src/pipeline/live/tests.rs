@@ -158,6 +158,10 @@ fn config(repo: &Path, workdir: &Path, plan_files: &[&str]) -> PipelineConfig {
         file_scope_slack: 0,
         keep: false,
         chunk_timeout: None,
+        // Sequential builds by default: the pre-existing flow tests assert the
+        // strictly-sequential stack-on-the-moving-tip behaviour; the concurrency
+        // tests opt in by bumping this explicitly.
+        max_build_concurrency: 1,
         // Default the fix loop OFF so the pre-loop tests keep asserting the
         // first-failure-is-terminal behaviour; fix-loop tests opt in explicitly.
         fix_loop: super::fixloop::FixLoopConfig::OFF,
@@ -2734,4 +2738,268 @@ fn capture_snapshot_allocates_a_fresh_target_dir_per_call() {
     );
     // And each is non-empty (the floor really pinned one).
     assert!(dirs.iter().all(|d| !d.is_empty()));
+}
+
+// ---------------------------------------------------------------------------
+// Parallel independent chunks (design §6 VAIHE 2): wave scheduling + concurrent
+// build + deterministic serial merge + floor-re-check + rebase-and-fix.
+// ---------------------------------------------------------------------------
+
+/// Deserialize a full (schema-valid) plan document around `chunks` so `ready_waves`
+/// can be unit-tested on a real [`Plan`] without running the driver. Only the
+/// `chunks` DAG matters here; the other fields are well-formed filler.
+fn plan_with_chunks(chunks: serde_json::Value) -> octl_core::plan::Plan {
+    let doc = json!({
+        "schema_version": 3,
+        "plan_rev": 1,
+        "intent_rev": 1,
+        "feature": {"slug": "demo", "source_branch": "main", "integration_branch": "feat/demo"},
+        "baseline": {
+            "ref": "feat/demo@fork",
+            "commit_oid": "0000000000000000000000000000000000000000",
+            "toolchain": "rustc 1.0.0",
+            "test_passlist_hash": "h",
+            "clippy_warnings_hash": "h",
+            "enumerated_targets_hash": "h"
+        },
+        "acceptance": [{"kind": "check", "desc": "d", "run": "true"}],
+        "chunks": chunks,
+    });
+    serde_json::from_value(doc).expect("valid plan document")
+}
+
+fn wave_ids<'a>(plan: &'a octl_core::plan::Plan, waves: &[Vec<usize>]) -> Vec<Vec<&'a str>> {
+    waves
+        .iter()
+        .map(|w| w.iter().map(|&i| plan.chunks[i].id.as_str()).collect())
+        .collect()
+}
+
+#[test]
+fn ready_waves_groups_independent_and_serialises_dependent() {
+    // c1, c2 have no dependency path → one wave; c3 depends on both → a second wave;
+    // c4 depends on c3 → a third. Declared order is the within-wave tie-break.
+    let plan = plan_with_chunks(json!([
+        {"id": "c1", "title": "", "tier": "code", "brief": "", "files_touched": ["a"], "checks": [{"desc": "", "run": "true"}]},
+        {"id": "c2", "title": "", "tier": "code", "brief": "", "files_touched": ["b"], "checks": [{"desc": "", "run": "true"}]},
+        {"id": "c3", "title": "", "tier": "code", "brief": "", "deps": ["c1", "c2"], "files_touched": ["c"], "checks": [{"desc": "", "run": "true"}]},
+        {"id": "c4", "title": "", "tier": "code", "brief": "", "deps": ["c3"], "files_touched": ["d"], "checks": [{"desc": "", "run": "true"}]},
+    ]));
+    let waves = ready_waves(&plan, &BTreeMap::new());
+    assert_eq!(
+        wave_ids(&plan, &waves),
+        vec![vec!["c1", "c2"], vec!["c3"], vec!["c4"]]
+    );
+}
+
+#[test]
+fn ready_waves_treats_already_merged_chunks_as_satisfied_deps() {
+    // c1 already Merged (a kept-done chunk / earlier visit) → excluded from the
+    // waves entirely, and its dependent c2 becomes immediately ready.
+    let plan = plan_with_chunks(json!([
+        {"id": "c1", "title": "", "tier": "code", "brief": "", "files_touched": ["a"], "checks": [{"desc": "", "run": "true"}]},
+        {"id": "c2", "title": "", "tier": "code", "brief": "", "deps": ["c1"], "files_touched": ["b"], "checks": [{"desc": "", "run": "true"}]},
+    ]));
+    let mut status = BTreeMap::new();
+    status.insert("c1".to_string(), LiveChunkStatus::Merged);
+    let waves = ready_waves(&plan, &status);
+    assert_eq!(wave_ids(&plan, &waves), vec![vec!["c2"]]);
+}
+
+/// A [`CodeHarness`] that writes one file per chunk (keyed on `chunk_id`) and
+/// records each invocation's chunk id, so a test can assert concurrency + rebuilds.
+/// `Send + Sync` (only a shared `Mutex`), so the wave scheduler can drive it from
+/// several build threads at once.
+struct RecordingHarness {
+    /// `chunk_id` -> relative file it writes.
+    files: BTreeMap<String, String>,
+    /// `chunk_id` -> fixed content it writes (overwriting, to force a merge conflict
+    /// when two chunks target the same file off the shared base).
+    content: BTreeMap<String, String>,
+    /// Every invocation's chunk id, in call order.
+    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl CodeHarness for RecordingHarness {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        self.calls.lock().unwrap().push(req.chunk_id.clone());
+        let rel = self
+            .files
+            .get(&req.chunk_id)
+            .cloned()
+            .unwrap_or_else(|| format!("{}.txt", req.chunk_id));
+        let body = self
+            .content
+            .get(&req.chunk_id)
+            .cloned()
+            .unwrap_or_else(|| format!("{}\n", req.chunk_id));
+        std::fs::write(req.worktree_path.join(&rel), body).unwrap();
+        git(&req.worktree_path, &["add", "-A"]);
+        git(&req.worktree_path, &["commit", "-qm", "edit"]);
+        let head = git_out(&req.worktree_path, &["rev-parse", "HEAD"]);
+        Ok(ChunkResult::committed(head, vec![PathBuf::from(rel)]))
+    }
+}
+
+fn on_main(repo: &Path, path: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["cat-file", "-e", &format!("main:{path}")])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
+fn independent_chunks_build_concurrently_and_merge_deterministically() {
+    // Two independent chunks (one wave), build concurrency 2: both build off the
+    // shared base in parallel worktrees, then merge in the deterministic declared
+    // order c1 → c2, floor re-checked at each merge. Both land on main.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "two independent chunks".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let harness = RecordingHarness {
+        files: [("c1", "a.txt"), ("c2", "b.txt")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        content: BTreeMap::new(),
+        calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &harness,
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.chunks.iter().all(|c| c.merged));
+    // Deterministic merge order: reports are pushed as chunks finalize, in the wave's
+    // declared order regardless of which build thread finished first.
+    let order: Vec<&str> = report.chunks.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(order, vec!["c1", "c2"], "merge order must be deterministic");
+    assert!(on_main(repo.path(), "a.txt") && on_main(repo.path(), "b.txt"));
+}
+
+#[test]
+fn concurrent_same_file_conflict_triggers_rebase_and_fix() {
+    // Two independent chunks that BOTH touch shared.txt. Built off the shared base
+    // each creates shared.txt, so the second chunk's merge conflicts (add/add). The
+    // deterministic merge (c1 then c2) resolves it via rebase-and-fix: c2 is rebuilt
+    // off the moved tip (which already has c1's shared.txt) and then merges cleanly.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
+    cfg.intent = "same-file concurrent chunks".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let harness = RecordingHarness {
+        files: [("c1", "shared.txt"), ("c2", "shared.txt")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        content: [("c1", "c1\n"), ("c2", "c2\n")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        calls: calls.clone(),
+    };
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &harness,
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline runs");
+
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.chunks.iter().all(|c| c.merged));
+    // c2 built twice: once off the stale shared base (conflicts), once rebased off
+    // the moved tip; c1 built exactly once.
+    let recorded = calls.lock().unwrap();
+    assert_eq!(
+        recorded.iter().filter(|c| c.as_str() == "c2").count(),
+        2,
+        "c2 must rebase-and-fix after the merge conflict: {recorded:?}"
+    );
+    assert_eq!(
+        recorded.iter().filter(|c| c.as_str() == "c1").count(),
+        1,
+        "c1 merges cleanly, no rebuild: {recorded:?}"
+    );
+    // The rebase-and-fix decision is recorded on the audit trail.
+    assert!(
+        report
+            .decisions
+            .iter()
+            .any(|d| d.reason.contains("rebase&fix")),
+        "a rebase&fix decision must be recorded"
+    );
+    // c2 rebased on top of c1, so its content wins on main.
+    let content = git_out(repo.path(), &["show", "main:shared.txt"]);
+    assert_eq!(content, "c2", "the rebased chunk's content is the tip");
+}
+
+#[test]
+fn dependent_chunks_serialise_even_at_high_concurrency() {
+    // c2 depends on c1 → two single-chunk waves, so even with a generous concurrency
+    // bound each wave drains one chunk at a time off the moving tip (k clamps to the
+    // wave size). The stacked stack-on-the-tip result is unchanged.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "dependent chunks".to_string();
+    cfg.max_build_concurrency = 8;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "deps": ["c1"], "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let harness = RecordingHarness {
+        files: [("c1", "a.txt"), ("c2", "b.txt")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        content: BTreeMap::new(),
+        calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &harness,
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.chunks.iter().all(|c| c.merged));
+    assert!(on_main(repo.path(), "a.txt") && on_main(repo.path(), "b.txt"));
 }
