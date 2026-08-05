@@ -6,23 +6,26 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-04 (4 rounds + the /stint split; 13 units landed)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-05 (v0.1.0 SHIPPED + operating-policy change)
 
-**One-paragraph state.** This stint's headline deliverable: **`/stint` is now split into
-two orx-maintained bundled skills — `/stint-start` (the round engine) and `/stint-handoff`
-(the terminal wrap) — with bug intake fully decoupled** (`/triage-bugs` stays homebase-only,
-Phase-1 removed from the round engine). The shared Execution-DAG convention now lives in
-`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`, which `/stint-handoff` links to.
-Around that, **13 units landed on `main` across 4 rounds, all green, integrated-gate verified,
-`doctor` 0/0 (428 ok)**: R1 `floor-capture-hardening-round-3` (structured argv cargo + F5/F6/F7
-completeness + provenance wiring), `vendor-workmux-multiplexer` (typed tmux module),
-`idempotency-key-allowed-duplicate-run` (atomic key reservation), triage-ownership fix (landed in
-**homebase** `c301e39`, not here); R2 `concurrent-self-merge-race` (serialized self-merges),
-`pipeline-fix-loop-provenance`, `stint-recoverable-death-retry-harvest`; R3
-`merge-terminal-misleading`, `plan-schema-v3-provenance-required` (plan schema v2→v3, provenance
-structurally required); R4 `skill-install-prune-deregistered` (provenance-safe prune + doctor
-orphan check), `pipeline-fix-loop-rollback-hardening`, `run-cancel-accept-unambiguous-prefix`
-(prefix accepted across all run-id subcommands). v0.1.0 publish still **deferred**.
+**One-paragraph state.** This was a **release + policy session** (no DAG round, no worktrees spawned).
+Headline: **`orchestratectl` 0.1.0 is PUBLISHED** — crates.io (`octl-core` + `orchestratectl`), a GitHub
+Release `v0.1.0` (aarch64-mac + x86_64/aarch64-linux binaries + installer), and a **per-tool Homebrew
+tap**: `brew install jarimustonen/orchestratectl/orchestratectl` (verified working). Distribution now
+matches issuectl/ossctl; homebase's dotfiles install hook was migrated to the per-tool tap (committed +
+pushed). Along the way: generated + approved `OSS-RELEASE.md`; finalized `CHANGELOG.md` (folded
+`[Unreleased]` into `[0.1.0] - 2026-08-04`); and fixed a release-blocking runner bug — the `hauis` mac
+build failed 3× at `actions/checkout` because the runner's `~/actions-runner/.env` set
+`GIT_CONFIG_GLOBAL`; removed it + documented the gotcha in `dist-workspace.toml` (issue
+`release-mac-checkout-git-config-global`, done). (The prior stint's 13-unit / 4-round work is in git
+history + the DAG reconcile notes below.)
+
+**OPERATING-POLICY CHANGE (2026-08-05, canonical — see root `AGENTS.md`).** (1) **Release often** — cut a
+release whenever something production-ready lands; don't batch. (2) **Pushing `main` is now always
+allowed (no ask)**, deliberately overriding the global "never push without being asked" default for this
+repo; the `pull → rebase → push` sequence can be run anytime. Only the two irreversible/public release
+steps stay behind the `/oss-release` approval boundary: `cargo publish` to crates.io and pushing a
+`vX.Y.Z` release tag (fires the public binary + Homebrew CI release).
 
 **KEY LEARNING (from prior stints, still canonical) — worker deaths are TRANSIENT.** Retry
 **with harvest** of the recoverable preserved branch (review → adopt → complete → merge), NOT
@@ -31,9 +34,11 @@ min**; a long run is not a hang. (This tactic is now encoded in `/stint-start` P
 `stint-recoverable-death-retry-harvest`.) NOTE: every worker this session landed cleanly on the
 first spawn — no deaths — but the discipline holds.
 
-**Cross-repo pending:** the `/triage-bugs` ownership fix landed in **homebase**
-(`dotfiles/src/.claude/skills/triage-bugs/SKILL.md`, commit `c301e39`) — it needs homebase's own
-deploy to go live; not an orchestratectl concern.
+**Cross-repo this session:** homebase dotfiles hook migrated to the per-tool tap
+(`dotfiles/{setup.d/orchestratectl.sh, setup.d/brew-trust.sh, src/brew-packages.txt}`) — committed +
+pushed on homebase `main`. Two `ossctl` release-engine bugs filed + committed in **~/Sources/ossctl**
+(`release-list-abandon-not-implemented`, `release-cut-multi-target-ecosystem`; unpushed there — ossctl
+push is the human's call, that repo keeps the global default).
 
 **NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is
 **`supervisor-spawn-fails-silently-at-run-create`** (Lane A, only remaining high — but
@@ -42,14 +47,15 @@ disjoint and parallel-safe: Lane B `pipeline-parallel-chunks`, Lane C `workmux-e
 (**reassess scope first** — the multiplexer slice already landed via `vendor-workmux-multiplexer`;
 this may be a re-scope-or-close), Lane D `doctor-skill-companion-sync`, Lane E
 `landing-signal-reliable-after-rebase` (**carries `collision: bundled-skill snapshot`** — it edits
-stint-start + worktree-spinoff templates, so do NOT run it parallel with a Lane D worktree).
+stint-start + worktree-spinoff templates, so do NOT run it parallel with a Lane D worktree, now
+including the new `spinoff-skill-stale-preview-banner` which also touches the bundled-skill snapshot).
 Recompute the head at pick time from live `issuectl` status; merge the DAG at Phase 0/7 per
-`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`. No worktrees remain; `main` clean,
-~11 unpushed (human pushes).
+`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`. No worktrees remain; **`main` clean and
+pushed (0 unpushed)** — pushing is now always allowed (no ask, see the policy change above).
 
 ---
 
-## Execution DAG (2026-08-04)
+## Execution DAG (2026-08-05)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -99,6 +105,8 @@ LANE C — workmux vendoring (fully independent)
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
   ▶ doctor-skill-companion-sync            (skill.rs: doctor skill.sync should also verify companion resource files like AGENTS-EXECUTION-DAG.md, not just SKILL.md)
     skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
+    skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
+    spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ landing-signal-reliable-after-rebase   collision: bundled-skill snapshot (edits stint-start + worktree-spinoff templates → sequence vs Lane D)
@@ -142,6 +150,11 @@ worker-filed follow-ups: `plan-schema-v3-provenance-required` (landed), `pipelin
 (landed), `pipeline-provenance-durable-refs`, `skill-install-prune-deregistered` (landed),
 `doctor-skill-companion-sync`, `skill-companion-codex-layout`, `cancel-run-already-terminal-error-class`,
 `run-paths-typed-selector-split`. Lane D (skill machinery) refilled; DAG driftless at wrap.
+**Reconciled 2026-08-05 (release/policy session — no DAG round):** no lanes executed; `comm -3`
+drift check found 2 left-only, 0 right-only → added the two newly-filed skill bugs to Lane D
+(`skill-install-force-symlink`, `spinoff-skill-stale-preview-banner`), no drops; date refreshed.
+Headline non-DAG work: v0.1.0 shipped (crates.io + per-tool Homebrew tap) and the operating-policy
+change (release-often; `main`-push now always allowed).
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
