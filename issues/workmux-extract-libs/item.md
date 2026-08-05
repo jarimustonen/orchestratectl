@@ -1,103 +1,83 @@
 ---
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-08-05
 type: improvement
 status: open
 priority: normal
-related: ['@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
+related: ['@vendor-workmux-multiplexer', '@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
 ---
 
-# workmux-extract-libs: get typed multiplexer/git logic into orchestratectl (crate split DECLINED → vendor instead)
+# workmux-extract-libs: vendor a typed git-worktree wrapper (multiplexer slice already landed)
 
 _Source: workmux (raine/workmux)_
 
-## Description
+## Status — re-scoped 2026-08-05
 
-Original ask: get raine to split workmux's single-package `src/` into lib crates so
-orchestratectl could depend on the multiplexer/git logic directly in Rust, instead of
-shelling out to the `workmux` CLI and forwarding flags.
+The original ask covered TWO slices — a typed **multiplexer** wrapper and a typed
+**git-worktree** wrapper — plus a speculative sandbox slice. Reconciled against what
+has actually landed:
 
-**Update (2026-07-13): raine declined the split** (maintenance burden) and suggested we
-duplicate/vendor the multiplexer code instead — see **Upstream decision** below. The
-issue is retained for the analysis and to track the vendoring alternative.
+- **Multiplexer slice — DONE (subsumed).** raine declined the upstream crate split
+  (2026-07-13) and suggested vendoring instead; the tmux slice was vendored under
+  `crates/octl-cli/src/multiplexer/` (`kill_window` / `kill_session` /
+  `new_session(headless)` / `find_window_by_path`) and the supervisor's tmux-cleanup
+  path now makes typed `Tmux` calls instead of shelling out. Tracked and closed by
+  `@vendor-workmux-multiplexer` (done 2026-07-31, commit `20ec690`). Nothing remains
+  here for the multiplexer.
+- **Sandbox slice — DROPPED.** No orchestratectl worktree kind uses sandboxing and
+  there is no concrete driver; the original "useful for some worktree kinds" line was
+  speculative. Out of scope — refile if a real need appears.
+- **Git-worktree slice — REMAINING (this issue, narrowed below).**
 
-This issue captures a concrete analysis of workmux's current module structure and
-the crate split it enables. It supersedes the three inline "if/when raine accepts
-the split" references (see **Related**) and the rejected MVP alternative A5.4
-(`issues/orchestratectl-mvp/alternatives.md`), which dismissed library embedding on
-the grounds that workmux's `lib.rs` surface isn't designed for it — this analysis
-argues the module boundaries are already clean enough that a split is realistic.
+## Remaining slice — typed git-worktree wrapper
 
-## Background — workmux is already de-facto modular
+Spawn still shells out through `~/.claude/skills/worktree/scripts/create.sh`
+(`crates/octl-cli/src/run/spawn.rs`), which itself calls `workmux add`, and the
+supervisor cleanup + merge paths issue ~40 raw `git` subprocesses
+(`crates/octl-cli/src/supervise/cleanup.rs`, `run/merge.rs`) — `git worktree remove`,
+`git branch -d/-D`, `git rev-list --count`, ancestry checks, etc. There is no typed
+git wrapper; git logic is scattered as `Command::new(git)` call sites.
 
-The repo is a single `[package]` (not a workspace), **but** `src/` is split into tidy
-modules, several of which are already de-facto separate components with clear
-interfaces:
+The workmux counterpart is `src/git/` (~50KB: branch + worktree + merge + remote +
+status). Following the multiplexer precedent, the route is **vendor the minimum**, not
+depend on a crate.
 
-| Module | Contents | Usefulness for our use |
-|---|---|---|
-| `src/multiplexer/` | tmux + kitty + wezterm + zellij + `handle.rs` + `types.rs` (trait-based abstraction) | ☆ **Directly usable** — the multiplexer trait + its tmux impl is exactly what we need for orchestratectl's tmux-cleanup side |
-| `src/git/` | branch + worktree + merge + remote + status (~50KB) | ☆ **Directly usable** — could replace our `create.sh` + plain git-shelling |
-| `src/sandbox/` | sandbox logic | Useful for some worktree kinds |
-| `src/config.rs` | 182KB(!) single-file conf system | Too big, repo-specific |
-| `src/command/` | clap verbs (add, remove, merge, etc.) | CLI-only, not usable |
+### Why this is NOT blocking
 
-## Proposed crate split
+`create.sh` + raw git-shelling is fully functional today. The state-integrity
+invariants (branch-preservation gates, source-relative ancestry checks) live in
+`cleanup.rs` and work. This is a **cleanliness / coupling** improvement — removing the
+`create.sh` stdout-contract parsing and the scattered git subprocess call sites in
+favour of typed calls — **not a functional gap**. Low urgency (the schema's priority
+enum is `normal|high`, so it stays `normal`, but treat it as backlog cleanup debt).
 
-```
-workmux-multiplexer  (lib crate — tmux/kitty/wezterm/zellij abstraction)
-workmux-git          (lib crate — git worktree wrapper)
-workmux-sandbox      (lib crate — sandbox primitives)
-workmux-core         (lib crate — shared types, naming)
-workmux              (bin crate — depends on the above + command/)
-```
+### Crisp done-definition (IF pursued)
 
-## What this enables for us
-
-Dependency in `Cargo.toml`: `workmux-multiplexer = "0.2"` → orchestratectl's supervisor
-can call `multiplexer::Tmux::kill_window(window_id)` directly, no shell. Same for the
-git side. Headless-spawn becomes one `multiplexer::Tmux::new_session(headless = true)`.
-
-This removes the whole flag-forwarding layer (`--parent-session`, window-name scraping,
-`create.sh` stdout-contract parsing) and lets the supervisor's tmux-cleanup path — the
-`find_window_by_path` / `git worktree remove` dance — become typed library calls.
-
-## Upstream decision — declined (2026-07-13)
-
-Jari filed the ask with raine. **Raine declined the split**: extracting the modules
-into published lib crates would *increase* his maintenance burden (versioning,
-API-stability promises, release coordination across crates) rather than reduce it.
-
-His counter-suggestion: **"couldn't you just duplicate the multiplexer code"** — i.e.
-vendor the `src/multiplexer/` trait + tmux impl into orchestratectl directly instead
-of depending on a workmux crate.
-
-So the crate-split path (as originally scoped by this issue) is **not happening
-upstream**. The underlying goal — typed multiplexer/git calls in Rust instead of
-shelling out — is still valid, but the route changes to duplication/vendoring.
-
-Installed workmux is 0.1.211; latest on the `raine/homebrew-workmux` tap is 0.1.220
-(2026-07-12) — no crate split has shipped, and none is expected.
-
-## Path forward — vendor the multiplexer code (raine's suggestion)
-
-Copy `src/multiplexer/` (trait + tmux impl, `handle.rs`, `types.rs`) into an
-orchestratectl-local module rather than depending on workmux as a library.
-
-Open questions before committing to this (worth their own issue if we pursue it):
-
-- **License / attribution** — confirm workmux's license permits vendoring and record
-  provenance + the upstream commit we copied from.
-- **Drift** — a vendored copy diverges from upstream over time. Decide whether we track
-  upstream fixes at all, or fork-and-own. Only the tmux impl is in scope for us, which
-  narrows the surface a lot.
-- **Scope** — we likely only need the tmux `kill_window` / `new_session(headless)` /
-  window-lookup slice, not the full kitty/wezterm/zellij abstraction. Vendor the minimum.
-- **Git side** — the `src/git/` wrapper is a separate, larger decision; keep shelling
-  out (`create.sh`) for now and revisit separately.
+1. A vendored `crates/octl-cli/src/git/` module (fork-and-own, same provenance +
+   attribution discipline as `multiplexer/`) exposing the worktree/branch operations
+   the supervisor and merge path actually use — `worktree_remove`, `branch_delete`
+   (with the `-d` vs `-D` unmerged-safety distinction preserved), `rev_list_count` /
+   ancestry check. Vendor only what call sites exist; no speculative surface.
+2. `cleanup.rs` + `run/merge.rs` call the typed wrapper instead of `Command::new(git)`.
+   **All five state-integrity invariants preserved** (see repo `CLAUDE.md` → "State
+   integrity invariants") — especially the branch-preservation gates and the
+   source-relative ancestry check; the wrapper must not soften them.
+3. The `create.sh`-side git handling (worktree creation via `workmux add`) may stay on
+   the shell for now — replacing spawn-side git is a larger, separate step and is NOT
+   required for this issue's done. Scope this to the supervisor/merge git call sites.
+4. Green gate + `/llm-review` before landing (touches hot correctness files).
 
 ## Out of scope
 
-- `config.rs` (too big, repo-specific) and `command/` (CLI-only) stay in the bin crate.
-- We do not block on this: flag-forwarding via `create.sh` is sufficient today. This is
-  a cleanliness/coupling improvement, not a functional gap.
+- The multiplexer slice (done — `@vendor-workmux-multiplexer`).
+- Sandbox (dropped — no driver).
+- `config.rs` (repo-specific) and `command/` (CLI-only) — never in scope.
+- Replacing the `workmux add` spawn path itself; keep `create.sh` for creation.
+
+## Open fork for a human call
+
+Whether to build this at all is a genuine judgment call, deferred here rather than
+guessed: (a) build the git-wrapper slice now, (b) keep it open at `low` as tracked
+cleanliness debt, or (c) close obsolete and accept scattered git-shelling as the
+permanent shape. The multiplexer vendoring already delivered the primary value; the
+git wrapper is a smaller, non-blocking cleanup whose payoff is coupling reduction only.
