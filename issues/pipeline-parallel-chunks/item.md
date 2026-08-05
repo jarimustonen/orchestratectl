@@ -2,12 +2,15 @@
 created: 2026-07-25
 updated: 2026-08-05
 type: task
-status: in-progress
+status: fixed
 priority: normal
 related: ['@pipeline-walking-skeleton']
 commits:
 - hash: 4d64265
   summary: concurrent DAG-wave chunk scheduling with deterministic merge + floor re-check + rebase-and-fix
+- hash: 7d9d818
+  summary: review fixes — invariant-5 preserve remaining wave builds on mid-merge early return
+closed: 2026-08-05
 ---
 
 # Pipeline: parallel independent chunks (DAG scheduling)
