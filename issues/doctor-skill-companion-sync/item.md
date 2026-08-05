@@ -2,12 +2,15 @@
 created: 2026-08-04
 updated: 2026-08-05
 type: improvement
-status: in-progress
+status: fixed
 priority: normal
 related: ['@split-stint-start-handoff']
 commits:
 - hash: c2c7118
   summary: 'feat(doctor): verify bundled-skill companion resource files in skill.sync'
+- hash: 10748a5
+  summary: 'refactor(doctor): apply companion-check review findings'
+closed: 2026-08-05
 ---
 
 # doctor skill.sync should also check companion resource files
