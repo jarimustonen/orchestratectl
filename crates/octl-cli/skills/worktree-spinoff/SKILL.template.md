@@ -374,17 +374,20 @@ supersedes the old `while … run show … case` snippet, which broke under
 zsh word-splitting and routinely polled the wrong field.
 
 **Settled ≠ landed — read the `landed` flag, not `merge-base --is-ancestor`.**
-Both `run wait` and `run show` surface a git-verified `landed` boolean (plus a
-`landed_method` of `git-verified` | `report-marker` | `unverified`). Trust it as
-the landing signal. Do **not** git-verify a landing with
+Both `run wait` and `run show` surface a `landed` boolean plus a `landed_method`
+(`git-verified` | `report-marker` | `unverified`). Trust it as the landing
+signal. Do **not** git-verify a landing with
 `git merge-base --is-ancestor <worker-branch> <target>`: if the caller rebased
 local `main` (routine on a busy repo), the worker's merge is replayed under a new
 hash while the branch ref stays put, so `--is-ancestor` returns a **false "not
 landed"** even though the work is fully merged. The CLI's `landed` flag is
-computed by patch-id equivalence against the *current* target tip and stays
-correct across that rebase; if you must double-check by hand, verify by **content
-on the rebased target** (`git log origin/main --oneline | grep <subject>`, file /
-symbol presence), never by the worker branch ref.
+git-verified against the *current* target tip (patch-id equivalence plus an
+ancestry net) and stays correct across that rebase; when git cannot run (the
+branch was already torn down) it falls back to the durable `run merge` marker and
+reports `landed_method: report-marker`. A `landed: false` with method
+`unverified` means "could not confirm", not "confirmed missing" — verify by
+**content on the actual target** (expected files/symbols, or the intended diff),
+never by the worker branch ref, before concluding the work did not land.
 
 ## Reporting completion back to this session
 

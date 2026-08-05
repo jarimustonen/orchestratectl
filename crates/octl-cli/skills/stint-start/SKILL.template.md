@@ -74,9 +74,12 @@ the DAG merge from memory.
   you sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof
   the work landed: `orchestratectl run show` can report a false `failed` / `pending` even
   when the worker committed **and** merged. **To confirm a landing, read the CLI's
-  `landed` boolean** (surfaced by both `run wait` and `run show`) — it is git-verified by
-  patch-id equivalence against the *current* target tip and stays correct after you rebase
-  local `main`. Settled ≠ landed; the `landed` flag is the landed signal.
+  `landed` boolean** (surfaced by both `run wait` and `run show`). It is git-verified against
+  the *current* target tip — patch-id equivalence plus an ancestry safety net — so it stays
+  correct after you rebase local `main`. The companion `landed_method` tells you the evidence:
+  `git-verified` (git decided), `report-marker` (git could not run — branch already torn
+  down — so the durable `run merge` marker decided), or `unverified`. Settled ≠ landed; the
+  `landed` flag is the landed signal.
   - **⚠️ Do NOT git-verify with `git merge-base --is-ancestor <worker-branch> <target>`.**
     In a busy repo you rebase local `main` onto `origin/main` every round; that **replays
     the worker's merge under a new hash** while the worker **branch ref stays at its
@@ -84,11 +87,17 @@ the DAG merge from memory.
     content is fully merged. This trap fired twice in one real stint and nearly triggered a
     destructive re-spawn / hand-salvage of already-merged work. The CLI `landed` flag exists
     precisely to replace this check.
-  - If you must double-check by hand, verify by **content on the rebased target**, never by
-    the worker branch ref: `git log origin/main --oneline | grep <subject>`, or the presence
-    of the expected files/symbols on `main`. `run wait` also still exposes `merged` (the
-    durable `run merge` marker) as a fallback attestation. If `landed` and your manual check
-    disagree, record the landing and flag the inconsistency — but default to `landed`.
+  - **`landed: false` is not always "not landed."** If `landed_method` is `git-verified`,
+    trust it — git positively found unlanded work (or genuine absence). If it is `unverified`,
+    the CLI *could not confirm* (missing inputs, transient git error) — do **not** auto-respawn
+    or salvage on that alone; verify by content first.
+  - If you must double-check by hand, verify by **content on the actual target the run merged
+    into** (usually local `main`, or the integration branch for an orchestrated child) — never
+    by the worker branch ref. Check for the expected files/symbols on that target, or the
+    intended diff (`git diff <base>..<target> -- <paths>`); a `git log … | grep <subject>` is
+    weak (subjects change under rebase/squash and can collide). If `landed` and your manual
+    check disagree, treat it as a reconciliation point — block and investigate rather than
+    auto-deploying or auto-salvaging.
 - **One deploy at a time.** Never parallel deploys.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 
