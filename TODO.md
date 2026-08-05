@@ -109,8 +109,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ landing-signal-reliable-after-rebase   collision: bundled-skill snapshot (edits stint-start + worktree-spinoff templates → sequence vs Lane D)
-    cancel-run-already-terminal-error-class  (run cancel on a terminal run: distinct error class; run-cancel-prefix follow-up)
+  ▶ cancel-run-already-terminal-error-class  (run cancel on a terminal run: distinct error class; run-cancel-prefix follow-up)
     run-paths-typed-selector-split           (typed run-id selector split-out; run-cancel-prefix follow-up)
     run-wait-timeout-unit-required
     run-salvage-command
@@ -161,8 +160,12 @@ invariant-5 leak) and `doctor-skill-companion-sync` (fixed; companion presence+s
 `workmux-extract-libs` (kept open — multiplexer already vendored; narrowed to the git-worktree-wrapper
 remainder). Dropped the 2 landed; added worker follow-ups `immoderately-dirty-cushion` (Lane B, tier
 promotion in wave builds) + `doctor-orphan-companion-files` (Lane D, orphan-companion detection).
-`landing-signal-reliable-after-rebase` (Lane E) spawned after D landed (bundled-skill-snapshot
-collision cleared).
+`landing-signal-reliable-after-rebase` (Lane E) landed after D cleared the bundled-skill-snapshot
+collision (CLI rebase-robust `landed` flag via git cherry patch-id + ancestry net; stint/spinoff docs
+no longer rely on `merge-base --is-ancestor`). Integrated gate green (fmt/clippy/`cargo test
+--workspace` all pass on integrated main); local rebuild redeployed, `doctor` 0 fail / 0 warn (the new
+`skill.sync.stint-start.AGENTS-EXECUTION-DAG.md` companion check passes live). All 4 units landed on
+first spawn — no worker deaths. No worktrees remain.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
