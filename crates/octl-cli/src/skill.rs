@@ -1092,6 +1092,34 @@ mod tests {
     }
 
     #[test]
+    fn every_companion_resource_is_rendered_and_version_pinned() {
+        // The doctor `skill.sync.<name>.<file>` OK arm reports a companion
+        // as "matching the bundled content for binary <CLI_VERSION>". That
+        // claim only holds if the embedded companion body is fully rendered
+        // (no leftover `{{CLI_VERSION}}` placeholder) and — when it carries
+        // `cli_version` frontmatter at all — pins it to this binary's
+        // version. Guard both here so a companion template can't silently
+        // ship stale or unrendered.
+        for name in SKILLS.iter().map(|s| s.name) {
+            for r in resources_for(name) {
+                assert!(
+                    !r.body.contains("{{CLI_VERSION}}"),
+                    "companion {} for skill {} still contains an unrendered {{{{CLI_VERSION}}}} placeholder",
+                    r.filename,
+                    name
+                );
+                if let Some(v) = parse_frontmatter_field(r.body, "cli_version") {
+                    assert_eq!(
+                        v, CLI_VERSION,
+                        "companion {} for skill {} declares cli_version {:?}, binary is {:?}",
+                        r.filename, name, v, CLI_VERSION
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn compare_versions_handles_semver_ordering() {
         use std::cmp::Ordering;
         // Pre-release is *less than* the release.

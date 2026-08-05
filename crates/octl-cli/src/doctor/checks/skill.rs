@@ -135,11 +135,17 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
 /// Audit one companion resource against the binary's bundled copy. Content
 /// identity is the primary in-sync signal — a freshly installed companion
 /// is byte-identical to the embedded source (both rendered through the same
-/// `{{CLI_VERSION}}` substitution), so any difference means it is stale (an
-/// older `cli_version`), ahead of the binary, or user-edited. When it
-/// differs, classify by the same semver `cli_version` drift model as
-/// SKILL.md so the message names which way it drifted. The id embeds the
-/// filename so the offending companion is unambiguous.
+/// `{{CLI_VERSION}}` substitution), so any byte difference means it is
+/// stale, ahead of the binary, or edited. When it differs, classify by the
+/// declared `cli_version` using the same semver drift model as SKILL.md so
+/// the message names which way it drifted. The id embeds the filename so the
+/// offending companion is unambiguous.
+///
+/// Note: only companions the *current* binary bundles are audited (the
+/// forward direction). A companion a prior binary installed but this one no
+/// longer ships is not detected here — that orphan-companion sweep needs a
+/// managed-file manifest + `skill install` prune support; see the
+/// `doctor-orphan-companion-files` follow-up.
 fn check_companion(
     skill_name: &str,
     companion: &skill::CompanionSource,
@@ -150,19 +156,22 @@ fn check_companion(
     let id = format!("skill.sync.{skill_name}.{filename}");
     let suggest_install = format!("orchestratectl skill install {skill_name} --force");
 
-    if !path.exists() {
-        return CheckResult::warn(
-            id,
-            format!(
-                "companion '{filename}' for skill '{skill_name}' is not installed at {}",
-                path.display()
-            ),
-            suggest_install,
-        );
-    }
-
+    // One read serves both existence and content: `read_to_string` returns
+    // `NotFound` for a missing companion (never installed) and a distinct
+    // error otherwise, so we classify precisely and avoid the
+    // exists()-then-read TOCTOU (and its symlink following).
     let on_disk = match std::fs::read_to_string(path) {
         Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "companion '{filename}' for skill '{skill_name}' is not installed at {}",
+                    path.display()
+                ),
+                suggest_install,
+            );
+        }
         Err(e) => {
             return CheckResult::warn(
                 id,
@@ -175,18 +184,26 @@ fn check_companion(
         }
     };
 
+    // Content identity is the primary in-sync signal: a freshly installed
+    // companion is byte-identical to the embedded source. We deliberately
+    // report what was checked (a content match) rather than asserting a
+    // parsed version, since a companion need not carry `cli_version`
+    // frontmatter.
     if on_disk == companion.bundled_body {
         return CheckResult::ok(
             id,
             format!(
-                "companion '{filename}' for skill '{skill_name}' in sync at cli_version {binary}"
+                "companion '{filename}' for skill '{skill_name}' matches the bundled content for binary {binary}"
             ),
         );
     }
 
-    match skill::cli_version_of(&on_disk)
+    // Content differs — classify by the declared `cli_version` (metadata in
+    // the differing file, so the message states evidence, not provenance).
+    let disk_version = skill::cli_version_of(&on_disk);
+    match disk_version
         .as_deref()
-        .and_then(|v| compare(v, binary).map(|o| (v.to_string(), o)))
+        .and_then(|v| compare(v, binary).map(|o| (v, o)))
     {
         Some((v, Ordering::Less)) => CheckResult::warn(
             id,
@@ -199,21 +216,21 @@ fn check_companion(
         Some((v, Ordering::Greater)) => CheckResult::warn(
             id,
             format!(
-                "companion '{filename}' for skill '{skill_name}' on disk is cli_version {v}, newer than binary {binary}"
+                "companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
             ),
-            "upgrade the orchestratectl binary to match the installed skill",
+            "upgrade the orchestratectl binary, or reinstall with --force to restore the bundled companion",
         ),
         Some((_, Ordering::Equal)) => CheckResult::warn(
             id,
             format!(
-                "companion '{filename}' for skill '{skill_name}' has local edits (cli_version matches binary {binary} but content differs)"
+                "companion '{filename}' for skill '{skill_name}' differs from the bundled copy while its cli_version matches binary {binary} (possible local edits)"
             ),
             suggest_install,
         ),
         None => CheckResult::warn(
             id,
             format!(
-                "companion '{filename}' for skill '{skill_name}' has an unreadable/unparseable cli_version at {}",
+                "companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares no parseable cli_version at {}",
                 path.display()
             ),
             suggest_install,

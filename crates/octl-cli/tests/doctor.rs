@@ -504,7 +504,12 @@ fn companion_local_edit_warns_even_when_version_matches() {
     let checks = v["data"]["checks"].as_array().unwrap();
     let c = find_check(checks, COMPANION_ID);
     assert_eq!(c["status"], "warn");
-    assert!(c["message"].as_str().unwrap().contains("local edits"));
+    let msg = c["message"].as_str().unwrap();
+    assert!(msg.contains("differs from the bundled copy"), "msg: {msg}");
+    assert!(msg.contains("cli_version matches binary"), "msg: {msg}");
+    // A same-version content difference is advisory only — no autonomous
+    // fix (we refuse to clobber possible local edits).
+    assert!(c["fix_suggestion"].is_string());
     assert!(out.status.success());
 }
 

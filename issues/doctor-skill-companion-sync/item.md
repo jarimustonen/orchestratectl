@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: normal
 related: ['@split-stint-start-handoff']
+commits:
+- hash: c2c7118
+  summary: 'feat(doctor): verify bundled-skill companion resource files in skill.sync'
 ---
 
 # doctor skill.sync should also check companion resource files
