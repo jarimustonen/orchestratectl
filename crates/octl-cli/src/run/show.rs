@@ -19,6 +19,16 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 struct ShowPayload<'a> {
     manifest: ManifestView<'a>,
     counts: Counts,
+    /// Rebase-robust landing signal for the reporting node: true when the
+    /// worker's committed work has landed in the target, confirmed by patch-id
+    /// equivalence against the *current* target tip (`git cherry`) — NOT by
+    /// branch-ref ancestry, which a caller-side `git rebase` invalidates. Falls
+    /// back to the durable merge marker when git verification is unavailable
+    /// (issue `landing-signal-reliable-after-rebase`). Callers should trust this
+    /// instead of running `git merge-base --is-ancestor` by hand.
+    landed: bool,
+    /// How `landed` was decided: `git-verified` | `report-marker` | `unverified`.
+    landed_method: &'static str,
     /// The `recoverable_work` block from the default node's terminal report,
     /// present only when a dead agent left unmerged commits ahead of source
     /// (issue `agent-death-strands-recoverable-work`). Surfaced so a caller can
@@ -26,6 +36,17 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
+}
+
+/// The run/node fields read under the shared lock to compute `landed` after the
+/// lock is released (the git shell-out must not run while the flock is held).
+struct LandingFields {
+    source_repo: Option<String>,
+    source_branch: Option<String>,
+    worktree_path: Option<String>,
+    branch: Option<String>,
+    base_sha: Option<String>,
+    report: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -60,28 +81,46 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // (the supervisor may roll status up and remove its pid file between the
         // two reads).
         let supervisor = SupervisorView::probe(&paths);
-        // Fold the default node's `recoverable_work` block (if any) in the SAME
-        // shared-lock window as the manifest/counters, so a `failed` status and
-        // the stranded-work signal that explains it are read as one consistent
-        // snapshot (state-integrity invariant 3). Gated on a `failed` status: the
-        // supervisor only stamps the block on the failed-synthesis path, so a
-        // block on a non-failed report is stale/spoofed (unknown report fields are
-        // permitted by the validator) and is not surfaced. A run with no `n-0001`
-        // node (or no such block) simply yields `None`.
+        // Read the reporting node ONCE inside the shared-lock window, alongside
+        // the manifest/counters, so the `landed` git-verification inputs and the
+        // `recoverable_work` signal are a single consistent snapshot with
+        // `manifest.status` (state-integrity invariant 3). The git shell-out that
+        // turns these inputs into `landed` runs AFTER the lock is released — never
+        // hold the flock across a subprocess.
+        let node_id =
+            NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+        let node = read_node_opt(&paths, &node_id)?;
+        // `recoverable_work` is gated on a `failed` status: the supervisor only
+        // stamps the block on the failed-synthesis path, so a block on a
+        // non-failed report is stale/spoofed (unknown report fields are permitted
+        // by the validator) and is not surfaced. A run with no `n-0001` node (or
+        // no such block) simply yields `None`.
         let recoverable_work = if matches!(manifest.status, Status::Failed) {
-            let node_id =
-                NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-            read_node_opt(&paths, &node_id)?
-                .and_then(|n| n.last_report)
+            node.as_ref()
+                .and_then(|n| n.last_report.as_ref())
                 .and_then(|r| r.get("recoverable_work").cloned())
                 .filter(Value::is_object)
         } else {
             None
         };
-        Ok(Some((manifest, counts, supervisor, recoverable_work)))
+        let landing = LandingFields {
+            source_repo: manifest.source_repo.clone(),
+            source_branch: manifest.source_branch.clone(),
+            worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
+            branch: node.as_ref().and_then(|n| n.branch.clone()),
+            base_sha: node.as_ref().and_then(|n| n.base_sha.clone()),
+            report: node.and_then(|n| n.last_report),
+        };
+        Ok(Some((
+            manifest,
+            counts,
+            supervisor,
+            recoverable_work,
+            landing,
+        )))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor, recoverable_work) = match scanned {
+    let (manifest, counts, supervisor, recoverable_work, landing) = match scanned {
         Some(v) => v,
         None => {
             return Err(
@@ -90,9 +129,25 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
+    // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
+    // computed outside the shared lock: the rebase-robust signal a caller should
+    // trust instead of hand-rolling `git merge-base --is-ancestor`.
+    let signal = crate::run::landed::landing_signal(
+        &crate::run::landed::LandingInputs {
+            source_repo: landing.source_repo.as_deref(),
+            source_branch: landing.source_branch.as_deref(),
+            worktree_path: landing.worktree_path.as_deref(),
+            branch: landing.branch.as_deref(),
+            base_sha: landing.base_sha.as_deref(),
+            report: landing.report.as_ref(),
+        },
+        &crate::supervise::cleanup::git_bin(),
+    );
     let payload = ShowPayload {
         manifest: ManifestView::from(&manifest).with_supervisor(supervisor),
         counts,
+        landed: signal.landed,
+        landed_method: signal.method.wire(),
         recoverable_work,
     };
     match spec.format {
@@ -106,6 +161,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 output::escape_one_line(payload.manifest.title)
             );
             println!("status:        {}", payload.manifest.status);
+            println!(
+                "landed:        {} ({})",
+                payload.landed, payload.landed_method
+            );
             println!("kind:          {}", payload.manifest.kind);
             println!("lifecycle:     {}", payload.manifest.lifecycle);
             println!("created_at:    {}", payload.manifest.created_at);

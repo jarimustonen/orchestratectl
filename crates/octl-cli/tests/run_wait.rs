@@ -154,6 +154,10 @@ fn all_happy_path_two_done_runs_exit_zero() {
     for r in runs {
         assert_eq!(r["status"], "done");
         assert_eq!(r["merged"], true);
+        // With no source repo/branch to git-verify against, the `landed` signal
+        // falls back to the durable `via: explicit-merge` marker.
+        assert_eq!(r["landed"], true);
+        assert_eq!(r["landed_method"], "report-marker");
         assert!(r["summary"].as_str().unwrap().starts_with("did "));
         assert!(r.get("error").is_none(), "done run has no error: {r}");
     }
@@ -268,6 +272,136 @@ fn malformed_timeout_is_rejected_up_front() {
         1,
     );
     assert_eq!(v["error"]["code"], "invalid_arguments");
+}
+
+/// End-to-end proof of the issue's fix: `run wait` reports `landed: true`
+/// (git-verified) even after the caller rebases local `main` so the worker's
+/// merge is replayed under a new hash — the exact case where
+/// `git merge-base --is-ancestor <worker-branch> main` lies.
+#[test]
+fn wait_reports_landed_git_verified_after_caller_rebase() {
+    use std::process::Command;
+
+    fn git(repo: &std::path::Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // Build a repo whose worker branch merged into main, then rebase local main
+    // (replaying the merge under a new hash; the worker branch ref stays put).
+    let repo_dir = TempDir::new().unwrap();
+    let repo = repo_dir.path();
+    git(repo, &["init", "-q", "-b", "main"]);
+    git(repo, &["config", "user.email", "t@t"]);
+    git(repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("f"), "base\n").unwrap();
+    git(repo, &["add", "f"]);
+    git(repo, &["commit", "-qm", "base"]);
+    let base = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["checkout", "-q", "-b", "wt/worker"]);
+    std::fs::write(repo.join("f"), "base\nwork\n").unwrap();
+    git(repo, &["commit", "-qam", "worker change"]);
+    git(repo, &["checkout", "-q", "main"]);
+    std::fs::write(repo.join("g"), "other\n").unwrap();
+    git(repo, &["add", "g"]);
+    git(repo, &["commit", "-qm", "other session"]);
+    let worker_tip = git(repo, &["rev-parse", "wt/worker"]);
+    git(repo, &["checkout", "-q", "-b", "replay", &worker_tip]);
+    git(repo, &["rebase", "-q", "main"]);
+    git(repo, &["checkout", "-q", "main"]);
+    git(repo, &["merge", "-q", "--ff-only", "replay"]);
+    git(repo, &["branch", "-q", "-D", "replay"]);
+    git(repo, &["checkout", "-q", "-b", "tmp", &base]);
+    std::fs::write(repo.join("h"), "upstream\n").unwrap();
+    git(repo, &["add", "h"]);
+    git(repo, &["commit", "-qm", "origin moved"]);
+    git(repo, &["checkout", "-q", "main"]);
+    git(repo, &["rebase", "-q", "tmp"]);
+
+    // Precondition: the ancestry check the old skill guidance used now lies.
+    let is_ancestor = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", "--is-ancestor", "wt/worker", "main"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(
+        !is_ancestor,
+        "the rebase-replay case must make --is-ancestor lie"
+    );
+
+    // Wire the run to that repo: source_repo + source_branch on the manifest,
+    // branch + base_sha on the node. No explicit-merge marker on the report, so
+    // `landed` can only come from git verification.
+    let home = TestHome::new();
+    let run_id = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "rebase-landed",
+        "--source-repo",
+        repo.to_str().unwrap(),
+        "--source-branch",
+        "main",
+    ]))["data"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    event_create(
+        &home,
+        &run_id,
+        "node.created",
+        Some("n-0001"),
+        json!({
+            "kind": "spinoff",
+            "branch": "wt/worker",
+            "base_sha": base,
+            "worktree_path": repo.to_str().unwrap(),
+        }),
+    );
+    node_report(
+        &home,
+        &run_id,
+        "n-0001",
+        json!({ "success": true, "summary": "landed via rebase-replay" }),
+    );
+    event_create(
+        &home,
+        &run_id,
+        "run.status",
+        None,
+        json!({ "status": "done" }),
+    );
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &run_id]));
+    let r = &v["data"]["runs"][0];
+    assert_eq!(r["status"], "done");
+    assert_eq!(
+        r["landed"], true,
+        "content is merged → landed must be true despite the rebase: {r}"
+    );
+    assert_eq!(
+        r["landed_method"], "git-verified",
+        "the landing is confirmed by patch-id, not the report marker: {r}"
+    );
+    // No explicit-merge marker → the report-based `merged` flag stays false,
+    // proving `landed` is independently git-derived.
+    assert_eq!(r["merged"], false);
 }
 
 #[test]

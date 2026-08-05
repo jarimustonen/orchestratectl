@@ -32,7 +32,9 @@ expression: value
       "nodes": 0,
       "discussions": 0,
       "spinoffs": 0
-    }
+    },
+    "landed": false,
+    "landed_method": "unverified"
   },
   "warnings": []
 }

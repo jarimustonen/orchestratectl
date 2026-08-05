@@ -68,17 +68,27 @@ the DAG merge from memory.
   `tmux attach -t headless` only when curious. Auto-cleanup still closes each window on
   terminal. Only interactive `/worktree-code` — which the user actively drives and
   reviews — stays foreground.
-- **Sync with `run wait`; verify landing from git.** A spinoff runs **asynchronously** —
-  its spawn call returns immediately. Record every returned run id and block on
-  `orchestratectl run wait <run-id> …` to know the workers have *settled* before you
-  sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof the
-  work landed: `orchestratectl run show` can report a false `failed` / `pending` even
-  when the worker committed **and** merged — a known open bug
-  (`BUG-false-failed-despite-successful-merge.md` in the orchestratectl repo, first hit
-  during a real stint). Confirm each landing from git —
-  `git merge-base --is-ancestor <worker-branch> <target>` (or `git log --oneline` against
-  the target) — before counting a unit toward the deploy pile. Settled ≠ landed; if
-  status and git disagree, record the landing and flag the run-state inconsistency.
+- **Sync with `run wait`; trust the CLI's `landed` flag for the landing.** A spinoff runs
+  **asynchronously** — its spawn call returns immediately. Record every returned run id and
+  block on `orchestratectl run wait <run-id> …` to know the workers have *settled* before
+  you sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof
+  the work landed: `orchestratectl run show` can report a false `failed` / `pending` even
+  when the worker committed **and** merged. **To confirm a landing, read the CLI's
+  `landed` boolean** (surfaced by both `run wait` and `run show`) — it is git-verified by
+  patch-id equivalence against the *current* target tip and stays correct after you rebase
+  local `main`. Settled ≠ landed; the `landed` flag is the landed signal.
+  - **⚠️ Do NOT git-verify with `git merge-base --is-ancestor <worker-branch> <target>`.**
+    In a busy repo you rebase local `main` onto `origin/main` every round; that **replays
+    the worker's merge under a new hash** while the worker **branch ref stays at its
+    pre-rebase hash**, so `--is-ancestor` returns a **false "not landed"** even though the
+    content is fully merged. This trap fired twice in one real stint and nearly triggered a
+    destructive re-spawn / hand-salvage of already-merged work. The CLI `landed` flag exists
+    precisely to replace this check.
+  - If you must double-check by hand, verify by **content on the rebased target**, never by
+    the worker branch ref: `git log origin/main --oneline | grep <subject>`, or the presence
+    of the expected files/symbols on `main`. `run wait` also still exposes `merged` (the
+    durable `run merge` marker) as a fallback attestation. If `landed` and your manual check
+    disagree, record the landing and flag the inconsistency — but default to `landed`.
 - **One deploy at a time.** Never parallel deploys.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 
@@ -174,11 +184,12 @@ git** before counting it toward the deploy pile:
   `/orchestrate`, tell the user, and stop before Phase 3 — do not try to deploy this
   round.
 - **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
-  parallel batch, block on `orchestratectl run wait <id> …` and git-verify each landing
-  before counting it. **Sequence hot-file units strictly:** launch → `run wait` → verify
-  the landing → *then* launch the next (so it branches off the first's landed result).
-  Do not enter Phase 3 until every launched run has settled and its landing is
-  git-verified. If a worker doesn't land its merge, **report it and leave main clean** —
+  parallel batch, block on `orchestratectl run wait <id> …` and confirm each landing via the
+  CLI's `landed` flag before counting it (NOT `merge-base --is-ancestor` — see the landing
+  warning above). **Sequence hot-file units strictly:** launch → `run wait` → confirm
+  `landed` → *then* launch the next (so it branches off the first's landed result).
+  Do not enter Phase 3 until every launched run has settled and its `landed` flag is true.
+  If a worker doesn't land its merge, **report it and leave main clean** —
   do not commit its work yourself. Salvage of a genuinely-dead worktree is a deliberate,
   separate manual step the user oversees, not an automatic conductor action.
 - **Recoverable worker death → retry-with-harvest, never hand-merge.** A worker can die

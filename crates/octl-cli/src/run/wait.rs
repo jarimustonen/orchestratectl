@@ -102,7 +102,24 @@ pub struct Args<'a> {
 struct RunOutcome {
     run_id: String,
     status: &'static str,
+    /// Report-based landing marker: the terminal `node.report` carries
+    /// `via: "explicit-merge"`. Retained for backward compatibility — prefer
+    /// [`Self::landed`], which is git-verified and robust to a caller-side
+    /// rebase (issue `landing-signal-reliable-after-rebase`).
     merged: bool,
+    /// Rebase-robust landing signal: true when the worker's committed work has
+    /// landed in the target, confirmed by patch-id equivalence against the
+    /// *current* target tip (`git cherry`) — NOT by branch-ref ancestry, which a
+    /// caller-side `git rebase` invalidates. Falls back to the durable merge
+    /// marker when git verification is unavailable. See [`landed_method`] for
+    /// which. This is the flag callers should trust instead of running
+    /// `git merge-base --is-ancestor <branch> <target>` by hand.
+    ///
+    /// [`landed_method`]: RunOutcome::landed_method
+    landed: bool,
+    /// How [`Self::landed`] was decided: `git-verified` | `report-marker` |
+    /// `unverified`.
+    landed_method: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,19 +307,49 @@ fn current_status(paths: &RunPaths) -> Result<Option<Status>, CliError> {
 /// the report it implies cannot disagree (state-integrity invariant 3).
 fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> {
     let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-    let (status, report) = RunLock::with_shared_lock(&paths.lock(), || {
-        let status = read_manifest_opt(paths)?.map(|m| m.status);
-        let report = read_node_opt(paths, &node_id)?.and_then(|n| n.last_report);
-        Ok((status, report))
+    // Read every field the outcome needs — status, the terminal report, and the
+    // git-verification inputs (source repo/branch, worker branch/base_sha) — in
+    // ONE shared-lock window so the status and the projections that explain it
+    // cannot disagree (state-integrity invariant 3). The git shell-out that
+    // computes `landed` runs AFTER the lock is released (below): holding the
+    // flock across a subprocess would serialize every reader behind git.
+    let git_inputs = RunLock::with_shared_lock(&paths.lock(), || {
+        let manifest = read_manifest_opt(paths)?;
+        let node = read_node_opt(paths, &node_id)?;
+        Ok(GitInputs {
+            status: manifest.as_ref().map(|m| m.status),
+            source_repo: manifest.as_ref().and_then(|m| m.source_repo.clone()),
+            source_branch: manifest.as_ref().and_then(|m| m.source_branch.clone()),
+            worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
+            branch: node.as_ref().and_then(|n| n.branch.clone()),
+            base_sha: node.as_ref().and_then(|n| n.base_sha.clone()),
+            report: node.and_then(|n| n.last_report),
+        })
     })
     .map_err(from_core)?;
 
-    let status = status.ok_or_else(|| {
+    let status = git_inputs.status.ok_or_else(|| {
         CliError::system(
             "io_error",
             format!("run {run_id} manifest disappeared while waiting"),
         )
     })?;
+    let report = git_inputs.report.clone();
+
+    // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`): the
+    // rebase-robust signal the caller should trust instead of hand-rolling
+    // `git merge-base --is-ancestor`. Computed outside the shared lock.
+    let signal = crate::run::landed::landing_signal(
+        &crate::run::landed::LandingInputs {
+            source_repo: git_inputs.source_repo.as_deref(),
+            source_branch: git_inputs.source_branch.as_deref(),
+            worktree_path: git_inputs.worktree_path.as_deref(),
+            branch: git_inputs.branch.as_deref(),
+            base_sha: git_inputs.base_sha.as_deref(),
+            report: report.as_ref(),
+        },
+        &crate::supervise::cleanup::git_bin(),
+    );
 
     let merged = report
         .as_ref()
@@ -346,10 +393,25 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
         run_id: run_id.to_string(),
         status: status_kebab(status),
         merged,
+        landed: signal.landed,
+        landed_method: signal.method.wire(),
         summary,
         error,
         recoverable_work,
     })
+}
+
+/// The run/node fields `read_outcome` reads under the shared lock before
+/// computing `landed` outside it. Bundling them keeps the single consistent
+/// snapshot (invariant 3) explicit and lets the git shell-out run lock-free.
+struct GitInputs {
+    status: Option<Status>,
+    source_repo: Option<String>,
+    source_branch: Option<String>,
+    worktree_path: Option<String>,
+    branch: Option<String>,
+    base_sha: Option<String>,
+    report: Option<Value>,
 }
 
 /// True iff any *settled* (terminal) run did not finish `done` — i.e. it is
@@ -413,7 +475,10 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("condition:  {}", data.condition);
             println!("waited_ms:  {}", data.waited_ms);
             for r in &data.runs {
-                print!("{}  status={} merged={}", r.run_id, r.status, r.merged);
+                print!(
+                    "{}  status={} landed={} ({}) merged={}",
+                    r.run_id, r.status, r.landed, r.landed_method, r.merged
+                );
                 if let Some(s) = &r.summary {
                     print!("  summary={}", output::escape_one_line(s));
                 }
@@ -463,6 +528,8 @@ mod tests {
             run_id: "r".into(),
             status,
             merged: false,
+            landed: false,
+            landed_method: "unverified",
             summary: None,
             error: None,
             recoverable_work: None,

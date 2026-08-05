@@ -6,6 +6,7 @@ expression: value
 run-id:        [RUN_ID]
 title:         seed-run
 status:        pending
+landed:        false (unverified)
 kind:          spinoff
 lifecycle:     autonomous
 created_at:    [TS]
