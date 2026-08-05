@@ -255,6 +255,37 @@ pub fn read_on_disk_cli_version(path: &Path) -> Option<String> {
     parse_frontmatter_field(&body, "cli_version")
 }
 
+/// Parse the `cli_version` frontmatter field from an in-memory body (e.g.
+/// a companion resource already read off disk). Sibling of
+/// [`read_on_disk_cli_version`] for content the caller has in hand.
+pub fn cli_version_of(body: &str) -> Option<String> {
+    parse_frontmatter_field(body, "cli_version")
+}
+
+/// One companion resource bundled alongside a skill's `SKILL.md`, surfaced
+/// for the `doctor` `skill.sync.<name>.<file>` companion sub-check: the
+/// filename and the embedded (authoritative) body. The expected install
+/// path is a sibling of the skill's `SKILL.md` — the doctor derives it from
+/// the resolved `SKILL.md` path it already holds.
+pub struct CompanionSource {
+    pub filename: &'static str,
+    pub bundled_body: &'static str,
+}
+
+/// Every companion resource bundled for skill `name` (empty for skills that
+/// ship none). Consumed by `doctor` to audit that each companion is present
+/// and version-synced with the binary, mirroring the SKILL.md `skill.sync`
+/// check.
+pub fn companion_sources(name: &str) -> Vec<CompanionSource> {
+    resources_for(name)
+        .iter()
+        .map(|r| CompanionSource {
+            filename: r.filename,
+            bundled_body: r.body,
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct SkillSummary {
     name: &'static str,

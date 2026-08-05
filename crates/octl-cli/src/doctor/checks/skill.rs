@@ -94,6 +94,21 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
                 ));
             }
         }
+
+        // Companion resource files shipped alongside this skill's SKILL.md
+        // (e.g. `stint-start/AGENTS-EXECUTION-DAG.md`). Each installs as a
+        // sibling of SKILL.md; a missing, stale, or user-edited companion
+        // leaves the skill's in-body link dangling while SKILL.md itself
+        // still looks in sync, so audit each one under its own id. Only
+        // reached when SKILL.md exists (the not-installed arm above
+        // `continue`s — the skill-not-installed WARN already covers the
+        // companions a re-install would restore).
+        if let Some(skill_dir) = path.parent() {
+            for companion in skill::companion_sources(name) {
+                let companion_path = skill_dir.join(companion.filename);
+                out.push(check_companion(name, &companion, &companion_path, binary));
+            }
+        }
     }
 
     // `skill.orphan.<name>` — a claude-layout skill directory that
@@ -115,6 +130,95 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
     }
 
     out
+}
+
+/// Audit one companion resource against the binary's bundled copy. Content
+/// identity is the primary in-sync signal — a freshly installed companion
+/// is byte-identical to the embedded source (both rendered through the same
+/// `{{CLI_VERSION}}` substitution), so any difference means it is stale (an
+/// older `cli_version`), ahead of the binary, or user-edited. When it
+/// differs, classify by the same semver `cli_version` drift model as
+/// SKILL.md so the message names which way it drifted. The id embeds the
+/// filename so the offending companion is unambiguous.
+fn check_companion(
+    skill_name: &str,
+    companion: &skill::CompanionSource,
+    path: &std::path::Path,
+    binary: &str,
+) -> CheckResult {
+    let filename = companion.filename;
+    let id = format!("skill.sync.{skill_name}.{filename}");
+    let suggest_install = format!("orchestratectl skill install {skill_name} --force");
+
+    if !path.exists() {
+        return CheckResult::warn(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' is not installed at {}",
+                path.display()
+            ),
+            suggest_install,
+        );
+    }
+
+    let on_disk = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "companion '{filename}' for skill '{skill_name}' is unreadable at {}: {e}",
+                    path.display()
+                ),
+                suggest_install,
+            );
+        }
+    };
+
+    if on_disk == companion.bundled_body {
+        return CheckResult::ok(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' in sync at cli_version {binary}"
+            ),
+        );
+    }
+
+    match skill::cli_version_of(&on_disk)
+        .as_deref()
+        .and_then(|v| compare(v, binary).map(|o| (v.to_string(), o)))
+    {
+        Some((v, Ordering::Less)) => CheckResult::warn(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' is cli_version {v}, binary is {binary}"
+            ),
+            suggest_install,
+        )
+        .with_safe_fix(FixAction::InstallSkill(skill_name.to_string())),
+        Some((v, Ordering::Greater)) => CheckResult::warn(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' on disk is cli_version {v}, newer than binary {binary}"
+            ),
+            "upgrade the orchestratectl binary to match the installed skill",
+        ),
+        Some((_, Ordering::Equal)) => CheckResult::warn(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' has local edits (cli_version matches binary {binary} but content differs)"
+            ),
+            suggest_install,
+        ),
+        None => CheckResult::warn(
+            id,
+            format!(
+                "companion '{filename}' for skill '{skill_name}' has an unreadable/unparseable cli_version at {}",
+                path.display()
+            ),
+            suggest_install,
+        ),
+    }
 }
 
 /// Semver-correct comparison; `None` if either side does not parse (the

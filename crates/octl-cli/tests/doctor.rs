@@ -396,6 +396,151 @@ fn fix_removes_stale_dead_supervisor_pid() {
     assert!(!pid_path.exists(), "stale pid file should be removed");
 }
 
+/// Install a bundled skill (and its companion resources) through the real
+/// `skill install` path, so companion checks see byte-identical on-disk
+/// copies of what the binary ships.
+fn install_bundled(env: &Env, name: &str) {
+    let out = bin(env)
+        .args(["--output", "json", "skill", "install", name])
+        .output()
+        .expect("spawn install");
+    assert!(out.status.success(), "install {name} failed: {out:?}");
+}
+
+/// The `stint-start` skill's companion, used by the companion checks.
+const COMPANION_REL: &str = ".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md";
+const COMPANION_ID: &str = "skill.sync.stint-start.AGENTS-EXECUTION-DAG.md";
+
+#[test]
+fn companion_in_sync_after_install_is_ok() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, COMPANION_ID);
+    assert_eq!(
+        c["status"], "ok",
+        "freshly-installed companion is in sync: {c:?}"
+    );
+    // A green companion never carries a fix suggestion.
+    assert!(c["fix_suggestion"].is_null());
+    assert!(out.status.success());
+}
+
+#[test]
+fn companion_missing_warns() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+    std::fs::remove_file(env.home.path().join(COMPANION_REL)).unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, COMPANION_ID);
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("not installed"));
+    assert!(c["message"]
+        .as_str()
+        .unwrap()
+        .contains("AGENTS-EXECUTION-DAG.md"));
+    // A missing companion is info-as-warn — never flips the exit code.
+    assert!(out.status.success());
+}
+
+#[test]
+fn companion_drift_warns_with_install_suggestion() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+    // Roll the companion back to an older cli_version so content + version
+    // both drift below the binary.
+    std::fs::write(
+        env.home.path().join(COMPANION_REL),
+        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale body\n",
+    )
+    .unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, COMPANION_ID);
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("0.0.0"));
+    assert!(c["fix_suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("skill install stint-start --force"));
+    assert!(out.status.success());
+}
+
+#[test]
+fn companion_local_edit_warns_even_when_version_matches() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+    // Same cli_version as the binary but edited body — a user tweak that a
+    // pure version check would miss; content-identity catches it.
+    let binary = env!("CARGO_PKG_VERSION");
+    std::fs::write(
+        env.home.path().join(COMPANION_REL),
+        format!("---\ncli_version: \"{binary}\"\nschema_version: 1\n---\nlocally edited\n"),
+    )
+    .unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, COMPANION_ID);
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("local edits"));
+    assert!(out.status.success());
+}
+
+#[test]
+fn fix_reinstalls_drifted_companion() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+    let companion = env.home.path().join(COMPANION_REL);
+    std::fs::write(
+        &companion,
+        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale body\n",
+    )
+    .unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor", "--fix"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let fixes = v["data"]["fixes_applied"]
+        .as_array()
+        .expect("fixes_applied");
+    let f = fixes
+        .iter()
+        .find(|f| f["check_id"] == COMPANION_ID)
+        .expect("companion re-install fix applied");
+    assert_eq!(f["applied"], true, "fix outcome: {f:?}");
+
+    // The companion is restored to the binary's bundled copy.
+    let after = std::fs::read_to_string(&companion).unwrap();
+    assert!(
+        after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "companion was not re-installed: {after}"
+    );
+}
+
 /// Write a schema-valid manifest so the orphan-supervisor test exercises
 /// only the data-integrity path (and schema.runs stays OK for that run).
 fn write_minimal_manifest(run_dir: &Path, run_id: &str) {

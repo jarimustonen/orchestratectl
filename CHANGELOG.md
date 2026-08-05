@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`doctor` now audits bundled-skill companion resource files (`doctor-skill-companion-sync`).** The `skill.sync.<name>` check previously validated only each skill's `SKILL.md`, so a companion sibling (e.g. `stint-start/AGENTS-EXECUTION-DAG.md`) that was missing, stale, or user-edited left the skill's in-body link dangling while `doctor` still reported the skill in-sync. `doctor` now emits a per-companion `skill.sync.<name>.<file>` check that verifies the companion is present at its install path and byte-identical to the binary's bundled copy — classifying any drift (older `cli_version` → WARN + `--fix`, newer → upgrade-the-binary WARN, content edited at the same version → local-edits WARN) and naming the offending file in the message.
+
 ## [0.1.0] - 2026-08-04
 
 First public release — published to crates.io (`orchestratectl`, `octl-core`) and
