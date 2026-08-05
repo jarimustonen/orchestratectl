@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-05
+
 ### Added
 
 - **`pipeline run` builds independent chunks concurrently (`pipeline-parallel-chunks`).** The T5 skeleton ran plan chunks strictly sequentially, each stacking on the moved `feat/<slug>` tip. Chunks with no dependency path between them can now build in parallel worktrees off a shared base and merge back in a deterministic order with the T3 floor re-checked at each merge; conflicts/regressions between concurrently-built chunks resolve via the deterministic rebase-and-fix protocol. Opt-in via a new `--max-build-concurrency` flag — the default of `1` leaves the proven sequential path completely untouched — and bounded by the existing §9 process budget. The floor gate is shared (`build_and_gate`) so it is byte-identical on both paths.
