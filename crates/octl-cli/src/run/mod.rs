@@ -200,10 +200,11 @@ pub enum RunAction {
         /// Return as soon as *one* listed run is terminal.
         #[arg(long)]
         any: bool,
-        /// Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code
-        /// `2` distinguishes timeout from a met condition. Defaults to `6h`
-        /// — a sane ceiling so a wait on a stuck run can never block an
-        /// orchestrator forever; pass a larger value for a long campaign.
+        /// Give up after this duration (e.g. `30s`, `5m`, `1h`; a bare integer
+        /// is seconds, so `2400` == `2400sec`); exit code `2` distinguishes
+        /// timeout from a met condition. Defaults to `6h` — a sane ceiling so a
+        /// wait on a stuck run can never block an orchestrator forever; pass a
+        /// larger value for a long campaign.
         #[arg(long, value_parser = wait::parse_duration, default_value = "6h")]
         timeout: Option<Duration>,
         /// Exit `3` if the condition is met but a settled run was

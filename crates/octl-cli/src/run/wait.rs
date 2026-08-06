@@ -500,7 +500,21 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
 /// written durations (`30s`, `5m`, `1h`, `2h 30m`); a malformed value is
 /// rejected up front by clap as `invalid_arguments` (AGENTS-AI-FIRST-CLI §4),
 /// never silently coerced.
+///
+/// A **bare unsigned integer** (all ASCII digits, e.g. `2400`) is interpreted
+/// as **seconds** — so `--timeout 2400` == `--timeout 2400sec`. This closes a
+/// silent-instant-exit trap: `humantime` alone rejects a unit-less integer, and
+/// a backgrounded `run wait` that exits on that error looks "completed" to the
+/// wrapping shell (exit 0) even though it never waited. Any value carrying a
+/// unit falls through to the existing unit-aware parse unchanged.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
+    let trimmed = s.trim();
+    // Bare integer → seconds. `u64::from_str` accepts only ASCII digits (no
+    // sign, no unit, no whitespace), which is exactly the "unit-less integer"
+    // case; everything else defers to the unit-aware humantime parse below.
+    if let Ok(secs) = trimmed.parse::<u64>() {
+        return Ok(Duration::from_secs(secs));
+    }
     humantime::parse_duration(s).map_err(|e| format!("invalid duration '{s}': {e}"))
 }
 
@@ -513,6 +527,22 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(
+            parse_duration("2400sec").unwrap(),
+            Duration::from_secs(2400)
+        );
+        assert_eq!(parse_duration("40min").unwrap(), Duration::from_secs(2400));
+        assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn parse_duration_bare_integer_is_seconds() {
+        // The unit-less-integer trap: `--timeout 2400` now waits 2400 seconds
+        // instead of erroring out and letting a backgrounded wait exit instantly.
+        assert_eq!(parse_duration("2400").unwrap(), Duration::from_secs(2400));
+        assert_eq!(parse_duration("0").unwrap(), Duration::from_secs(0));
+        // Surrounding whitespace is tolerated and still reads as seconds.
+        assert_eq!(parse_duration("  30  ").unwrap(), Duration::from_secs(30));
     }
 
     #[test]
@@ -520,6 +550,9 @@ mod tests {
         assert!(parse_duration("soon").is_err());
         assert!(parse_duration("").is_err());
         assert!(parse_duration("-5s").is_err());
+        // A bare negative integer is not a valid unsigned count and has no unit,
+        // so it stays an error rather than silently coercing.
+        assert!(parse_duration("-5").is_err());
     }
 
     #[test]
