@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, RunLock, RunPaths};
+use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -79,14 +79,28 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // pair must not straddle a reducer's status rollup + pid-file removal
         // (see show.rs). Costs one extra pid-file read per run; negligible for
         // realistic run counts.
+        // Read the driver node `n-0001` under the SAME shared lock as the
+        // manifest so the computed `stalled` hint (issue
+        // `peculiarly-muddled-caption`) is one consistent snapshot with
+        // `status` — the node's status/children/`updated_at` and the manifest
+        // must not straddle a reducer write. Read-only: touches no
+        // event/reducer/schema path.
+        let driver_id = NodeId::parse_str(crate::run::stalled::DRIVER_NODE_ID)
+            .expect("DRIVER_NODE_ID is a valid node id");
         let scanned = RunLock::with_shared_lock(&paths.lock(), || {
-            Ok(read_manifest_opt(&paths)?.map(|m| {
-                let supervisor = SupervisorView::probe(&paths);
-                (m, supervisor)
-            }))
+            let Some(m) = read_manifest_opt(&paths)? else {
+                return Ok(None);
+            };
+            let supervisor = SupervisorView::probe(&paths);
+            let stalled = crate::run::stalled::is_stalled(
+                m.kind,
+                read_node_opt(&paths, &driver_id)?.as_ref(),
+                chrono::Utc::now(),
+            );
+            Ok(Some((m, supervisor, stalled)))
         })
         .map_err(from_core)?;
-        let (m, supervisor) = match scanned {
+        let (m, supervisor, stalled) = match scanned {
             Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
@@ -94,7 +108,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // canonical kebab strings it carries — the DTO's `From` renders
         // `kind` / `status` through the `run/mod.rs` helpers rather than
         // round-tripping the enums through `serde_json::to_value`.
-        let summary = RunSummary::from(&m).with_supervisor(supervisor);
+        let summary = RunSummary::from(&m)
+            .with_supervisor(supervisor)
+            .with_stalled(stalled);
         if let Some(filter) = &args.status {
             if &summary.status != filter {
                 continue;
@@ -127,11 +143,19 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                     Some(pid) => format!("sup:dead({pid})"),
                     None => "sup:none".to_string(),
                 };
+                // The status column carries a `stalled` marker for an undriven
+                // orchestrate driver so a plain-text `run list` no longer shows
+                // the zombie as an ordinary live `pending` run.
+                let status = if r.stalled {
+                    format!("{} (stalled)", r.status)
+                } else {
+                    r.status.clone()
+                };
                 println!(
                     "{}\t{}\t{}\t{}\t{}\t{}",
                     r.run_id,
                     r.kind,
-                    r.status,
+                    status,
                     r.node_count,
                     sup,
                     output::escape_one_line(&r.title)

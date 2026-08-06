@@ -36,6 +36,14 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
+    /// Computed hint (never persisted): true for an undriven `--kind
+    /// orchestrate` driver run whose driver node has sat `pending` with zero
+    /// children and no fresh events past the grace window — the silent-zombie
+    /// signature from issue `peculiarly-muddled-caption`. `false` for every
+    /// other kind, and for an orchestrate run that has spawned children / is
+    /// emitting events / is still inside the grace window. See
+    /// [`crate::run::stalled`].
+    stalled: bool,
 }
 
 /// The run/node fields read under the shared lock to compute `landed` after the
@@ -103,6 +111,13 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         } else {
             None
         };
+        // Computed stall hint (issue `peculiarly-muddled-caption`): derived
+        // purely from the driver node's status/children/`updated_at`, which we
+        // already hold under the shared lock — no event/reducer/schema path is
+        // touched. Decided here, inside the lock, so it is one consistent
+        // snapshot with `manifest.status`.
+        let stalled =
+            crate::run::stalled::is_stalled(manifest.kind, node.as_ref(), chrono::Utc::now());
         let landing = LandingFields {
             source_repo: manifest.source_repo.clone(),
             source_branch: manifest.source_branch.clone(),
@@ -116,11 +131,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             counts,
             supervisor,
             recoverable_work,
+            stalled,
             landing,
         )))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor, recoverable_work, landing) = match scanned {
+    let (manifest, counts, supervisor, recoverable_work, stalled, landing) = match scanned {
         Some(v) => v,
         None => {
             return Err(
@@ -149,6 +165,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         landed: signal.landed,
         landed_method: signal.method.wire(),
         recoverable_work,
+        stalled,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -161,6 +178,14 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 output::escape_one_line(payload.manifest.title)
             );
             println!("status:        {}", payload.manifest.status);
+            if payload.stalled {
+                println!(
+                    "stalled:       true (undriven orchestrate driver — no children, idle > {} min; \
+                     `run cancel {}` and relaunch with an active orchestrator)",
+                    crate::run::stalled::STALL_GRACE.num_minutes(),
+                    payload.manifest.run_id
+                );
+            }
             println!(
                 "landed:        {} ({})",
                 payload.landed, payload.landed_method

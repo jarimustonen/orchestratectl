@@ -34,7 +34,8 @@ expression: value
       "spinoffs": 0
     },
     "landed": false,
-    "landed_method": "unverified"
+    "landed_method": "unverified",
+    "stalled": false
   },
   "warnings": []
 }

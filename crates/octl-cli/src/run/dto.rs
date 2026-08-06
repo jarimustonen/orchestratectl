@@ -153,6 +153,13 @@ pub struct RunSummary {
     /// probe from `From`; the `list` handler overrides it with a real probe
     /// via [`RunSummary::with_supervisor`] (it already holds each run's paths).
     pub supervisor: SupervisorView,
+    /// Computed hint (never persisted): true for an undriven `--kind
+    /// orchestrate` driver run past the stall grace window — the silent-zombie
+    /// signature from issue `peculiarly-muddled-caption`. Defaults to `false`
+    /// from `From`; the `list` handler overrides it via
+    /// [`RunSummary::with_stalled`] after reading the driver node under the
+    /// shared lock. See [`crate::run::stalled`].
+    pub stalled: bool,
 }
 
 impl RunSummary {
@@ -161,6 +168,14 @@ impl RunSummary {
     #[must_use]
     pub fn with_supervisor(mut self, supervisor: SupervisorView) -> Self {
         self.supervisor = supervisor;
+        self
+    }
+
+    /// Set the computed `stalled` hint, replacing the `From`-provided `false`
+    /// default.
+    #[must_use]
+    pub fn with_stalled(mut self, stalled: bool) -> Self {
+        self.stalled = stalled;
         self
     }
 }
@@ -175,6 +190,7 @@ impl From<&Manifest> for RunSummary {
             created_at: m.created_at,
             node_count: m.node_count,
             supervisor: SupervisorView::unknown(),
+            stalled: false,
         }
     }
 }
@@ -270,6 +286,7 @@ mod tests {
                 "created_at": "2024-01-01T00:00:00Z",
                 "node_count": 0,
                 "supervisor": { "pid": null, "alive": false },
+                "stalled": false,
             })
         );
     }
