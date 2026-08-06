@@ -6,9 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-06
+
+### Added
+
+- **`run show` / `run list` flag an undriven `--kind orchestrate` run as `stalled` (`peculiarly-muddled-caption`).** A `--kind orchestrate` supervisor only *adopts* children — it does not itself drive the fan-out — so a driver run whose orchestrator agent never ran (or died immediately) could sit `pending` with zero children for hours, indistinguishable at a glance from a healthy long-running campaign (one real case ran 15h). Both commands now expose a read-time `stalled` boolean (and a `(stalled)` marker in the human status column) that is true when the driver node `n-0001` is still `pending` with **zero children** and no node-touching events past a 12-minute grace window. The signal is computed entirely at read time from existing timestamps + event sequence — no reducer, schema, or event-append path is touched, so the state-integrity invariants are unaffected.
+
 ### Changed
 
 - **`run cancel` on an already-terminal run is now a user error, exit 1 (`cancel-run-already-terminal-error-class`).** Refusing to cancel a `Done`/`Failed` run is a deterministic domain refusal, not a system fault, so it now maps to `CliError::user` (exit 1) instead of `CliError::system` (exit 2) — exit-code class governs AI-caller retry behaviour, and exit 2 could trigger spurious retries of a permanently-refused operation. The error's `expected` hint also changes from the pipe-delimited string `"running|pending|blocked"` to a JSON array `["running","pending","blocked"]` (the non-terminal, cancellable states) for machine consumption, matching the array-valued `expected` convention used elsewhere.
+- **Pipeline rollback pins durable per-chunk provenance refs (`pipeline-provenance-durable-refs`).** Before `rebuild_integration` resets `feat/<slug>` to the fork, the kept chunks' authored commit OIDs are now pinned under `refs/pipeline/prov/<run>/<chunk>` instead of relying on object-DB reachability, closing the (narrow) window where an external aggressive `git gc --prune=now` racing a rollback could sweep the orphaned authored commits. Teardown is gated on the merge outcome: a merged run's provenance refs are pruned, while a preserved/unmerged branch keeps its refs.
 
 ## [0.1.1] - 2026-08-05
 
