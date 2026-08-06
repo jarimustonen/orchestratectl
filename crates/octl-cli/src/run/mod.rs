@@ -331,20 +331,85 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
     k.lifecycle()
 }
 
-/// Resolve a run-id argument — which may be an unambiguous *prefix* (like `git`
-/// short SHAs) — to a typed, validated [`RunId`].
+/// A parsed-but-unresolved CLI run selector: either a fully-validated exact
+/// [`RunId`] or a well-formed shorter *prefix* (like `git` short SHAs) awaiting a
+/// directory scan.
 ///
-/// - A full-length value must be an exact valid ULID; it is returned verbatim
-///   with no directory scan, so the existing exact-id behaviour (and each
-///   caller's own valid-but-missing `run_not_found`) is preserved unchanged, and
-///   the supervisor's hot lookups (which always pass full child ids) pay no scan.
-/// - A shorter value is treated as a prefix and matched against the run
-///   directories under `<root>/runs/`: exactly one match resolves; several match
-///   surfaces `ambiguous_run_id` (listing the candidates in `expected`); none
-///   match surfaces `run_not_found`.
-/// - A malformed value (empty, non-Crockford char, impossible leading digit,
-///   over-length non-ULID) surfaces `invalid_run_id`, keeping a typo distinct
-///   from a well-formed-but-unknown prefix.
+/// Prefix (fuzzy) resolution is a **CLI-only** concern — it exists so a human or
+/// AI caller can address a run by an unambiguous short id. Internal, supervisor,
+/// reducer, and event-data paths never construct a [`RunSelector::Prefix`]: they
+/// already hold a typed [`RunId`] and call [`run_paths_exact`] directly, so a
+/// truncated id can never silently fuzzy-resolve to the wrong run (a
+/// confused-deputy risk). A `Prefix` is only ever produced by
+/// [`RunSelector::parse`] on a raw CLI argument and only ever resolved at verb
+/// entry via [`RunSelector::resolve`] (or the [`run_paths`] convenience).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunSelector {
+    /// A fully-validated 26-char ULID — resolves with no directory scan.
+    Exact(RunId),
+    /// A well-formed shorter run-id prefix awaiting resolution against
+    /// `<root>/runs/`.
+    Prefix(String),
+}
+
+impl RunSelector {
+    /// Classify a raw CLI run-id argument as an exact ULID or a well-formed
+    /// prefix, rejecting malformed input up front.
+    ///
+    /// - A full-length value must be an exact valid ULID → [`RunSelector::Exact`]
+    ///   (no scan needed to resolve later), preserving the existing exact-id
+    ///   behaviour and each caller's own valid-but-missing `run_not_found`.
+    /// - A shorter, well-formed value becomes a [`RunSelector::Prefix`] to be
+    ///   matched against the run directories under `<root>/runs/` at resolve time.
+    /// - A malformed value (empty, non-Crockford char, impossible leading digit,
+    ///   over-length non-ULID) surfaces `invalid_run_id`, keeping a typo distinct
+    ///   from a well-formed-but-unknown prefix.
+    pub fn parse(arg: &str) -> Result<Self, CliError> {
+        // Full-length (or longer): must be an exact ULID. A 26-char string that is
+        // not a valid ULID (wrong charset, timestamp overflow) stays
+        // `invalid_run_id` rather than being reinterpreted as a length-26 prefix
+        // that matches nothing.
+        if arg.len() >= RunId::LEN {
+            return RunId::parse_str(arg).map(RunSelector::Exact).map_err(|e| {
+                CliError::user(
+                    "invalid_run_id",
+                    format!("run id {arg:?} is not a valid ULID: {e}"),
+                )
+                .with_invalid_value(arg)
+            });
+        }
+        // Shorter than a ULID: a prefix. Reject a malformed prefix up front so a
+        // typo is `invalid_run_id`, not a silent no-match.
+        if !is_run_id_prefix(arg) {
+            return Err(CliError::user(
+                "invalid_run_id",
+                format!(
+                    "run id {arg:?} is not a valid ULID or run-id prefix: \
+                     expected up to {} lowercase Crockford base32 characters (leading 0-7)",
+                    RunId::LEN
+                ),
+            )
+            .with_invalid_value(arg));
+        }
+        Ok(RunSelector::Prefix(arg.to_string()))
+    }
+
+    /// Resolve to a typed [`RunId`], scanning `<root>/runs/` **only** for a
+    /// [`RunSelector::Prefix`]. An [`RunSelector::Exact`] returns verbatim with no
+    /// scan, so the supervisor's hot lookups (which always pass full child ids)
+    /// pay nothing — but they get there through [`run_paths_exact`], never here.
+    pub fn resolve(self, root: &Path) -> Result<RunId, CliError> {
+        match self {
+            RunSelector::Exact(rid) => Ok(rid),
+            RunSelector::Prefix(prefix) => resolve_prefix(root, &prefix),
+        }
+    }
+}
+
+/// Scan `<root>/runs/` for the single run whose id starts with `arg` (assumed a
+/// well-formed prefix — [`RunSelector::parse`] has already rejected malformed
+/// input): exactly one match resolves; several match surfaces `ambiguous_run_id`
+/// (listing the candidates in `expected`); none match surfaces `run_not_found`.
 ///
 /// The prefix scan is a best-effort read of the runs directory, deliberately NOT
 /// under a namespace lock (no such lock exists — a run is not known until after
@@ -354,32 +419,7 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
 /// concurrently with the scan is an accepted race — a resolved id that is then
 /// deleted before the caller locks it surfaces as the caller's own
 /// `run_not_found` (see e.g. `cancel`'s `NotFound` handling).
-pub fn resolve_run_id_arg(root: &Path, arg: &str) -> Result<RunId, CliError> {
-    // Full-length (or longer): must be an exact ULID. A 26-char string that is
-    // not a valid ULID (wrong charset, timestamp overflow) stays `invalid_run_id`
-    // rather than being reinterpreted as a length-26 prefix that matches nothing.
-    if arg.len() >= RunId::LEN {
-        return RunId::parse_str(arg).map_err(|e| {
-            CliError::user(
-                "invalid_run_id",
-                format!("run id {arg:?} is not a valid ULID: {e}"),
-            )
-            .with_invalid_value(arg)
-        });
-    }
-    // Shorter than a ULID: a prefix. Reject a malformed prefix up front so a typo
-    // is `invalid_run_id`, not a silent no-match.
-    if !is_run_id_prefix(arg) {
-        return Err(CliError::user(
-            "invalid_run_id",
-            format!(
-                "run id {arg:?} is not a valid ULID or run-id prefix: \
-                 expected up to {} lowercase Crockford base32 characters (leading 0-7)",
-                RunId::LEN
-            ),
-        )
-        .with_invalid_value(arg));
-    }
+fn resolve_prefix(root: &Path, arg: &str) -> Result<RunId, CliError> {
     let runs_dir = runs_root(root);
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(entries) => entries,
@@ -451,11 +491,32 @@ fn prefix_not_found(arg: &str) -> CliError {
     .with_invalid_value(arg)
 }
 
-/// Resolve `<root>/runs/<run-id>` and return validated `RunPaths`.
+/// Resolve `<root>/runs/<run-id>` from a **typed** [`RunId`] and return validated
+/// `RunPaths` — **exact-only, no directory scan**.
+///
+/// This is the path helper every internal, supervisor, reducer, and event-data
+/// call site uses: they already hold a validated [`RunId`], so there is no
+/// truncated string that could fuzzy-resolve to the wrong run. Prefix
+/// resolution is deliberately *not* reachable from here — it lives only in
+/// [`RunSelector`] / [`run_paths`], gated to CLI verb entry.
+///
+/// `run_dir` only accepts a `RunId`, so a `..`/absolute component can never
+/// reach the filesystem, and `from_validated` runs the symlink-root guard (a
+/// symlinked run dir maps to the `corrupt_run` envelope rather than being
+/// silently followed).
+pub fn run_paths_exact(root: &Path, run_id: &RunId) -> Result<RunPaths, CliError> {
+    let dir = octl_core::run_dir(root, run_id);
+    RunPaths::from_validated(dir, run_id.clone()).map_err(from_core)
+}
+
+/// Resolve `<root>/runs/<run-id>` from a raw **CLI** run-id argument and return
+/// validated `RunPaths`.
 ///
 /// Accepts an unambiguous run-id prefix as well as a full ULID (see
-/// [`resolve_run_id_arg`]) — every run-id-taking subcommand routes through here,
-/// so prefix acceptance is uniform across the CLI.
+/// [`RunSelector`]) — this is the single CLI verb-entry chokepoint, so prefix
+/// acceptance is uniform across every run-id-taking subcommand. Internal callers
+/// must NOT use it: they hold a typed [`RunId`] and call [`run_paths_exact`],
+/// which cannot fuzzy-resolve.
 ///
 /// A malformed run-id is a distinct, machine-actionable error class from a
 /// well-formed id that simply names no run, so it surfaces as `invalid_run_id`
@@ -463,14 +524,11 @@ fn prefix_not_found(arg: &str) -> CliError {
 /// than being collapsed into `run_not_found`. Callers that look a run up by id
 /// still emit their own `run_not_found` for the valid-but-missing case.
 pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
-    // Resolve a prefix (if any) to a typed, already-validated run id; no re-parse
-    // is needed — `run_dir` only accepts a `RunId`, so a `..`/absolute component
-    // can never reach the filesystem.
-    let rid = resolve_run_id_arg(root, run_id)?;
-    let dir = octl_core::run_dir(root, &rid);
-    // `from_validated` runs the symlink-root guard; a symlinked run dir maps to
-    // the `corrupt_run` envelope rather than being silently followed.
-    RunPaths::from_validated(dir, rid).map_err(from_core)
+    // Resolve a prefix (if any) to a typed, already-validated run id, then hand
+    // off to the exact path helper. Prefix resolution happens here and nowhere
+    // downstream.
+    let rid = RunSelector::parse(run_id)?.resolve(root)?;
+    run_paths_exact(root, &rid)
 }
 
 /// Trim a CLI string argument and reject empty/whitespace-only values.
@@ -627,5 +685,72 @@ pub fn from_core(err: octl_core::Error) -> CliError {
             CliError::user("invalid_value", err.to_string()).with_invalid_value("")
         }
         other => CliError::system("io_error", other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_run_dir(root: &Path, id: &RunId) {
+        std::fs::create_dir_all(octl_core::run_dir(root, id)).unwrap();
+    }
+
+    /// The exact path is closed to a truncated id at the **type level**:
+    /// `run_paths_exact` accepts only a `&RunId`, and a `<26`-char string can
+    /// never become one — `parse_run_id` rejects it loudly as `invalid_id`
+    /// rather than letting it fuzzy-resolve to some other run (the confused-deputy
+    /// risk this split exists to remove).
+    #[test]
+    fn run_paths_exact_only_accepts_a_full_typed_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let full = octl_core::new_run_id();
+        let rid = parse_run_id(&full).unwrap();
+        make_run_dir(root, &rid);
+
+        // A full typed id resolves exactly, no scan.
+        let paths = run_paths_exact(root, &rid).unwrap();
+        assert_eq!(paths.run_id.as_str(), full);
+
+        // A truncated id cannot even be constructed into the `RunId` that
+        // `run_paths_exact` demands — the fuzzy path is unreachable internally.
+        let truncated = &full[..10];
+        let err = parse_run_id(truncated).unwrap_err();
+        assert_eq!(err.code, "invalid_id");
+    }
+
+    /// `RunSelector::parse` classifies a full ULID as `Exact` (no scan) and a
+    /// well-formed shorter fragment as `Prefix` — the only way a `Prefix` is ever
+    /// produced, and only from a raw CLI argument.
+    #[test]
+    fn run_selector_classifies_exact_vs_prefix() {
+        let full = octl_core::new_run_id();
+        assert!(matches!(
+            RunSelector::parse(&full).unwrap(),
+            RunSelector::Exact(_)
+        ));
+        assert!(matches!(
+            RunSelector::parse(&full[..10]).unwrap(),
+            RunSelector::Prefix(_)
+        ));
+        // A malformed fragment is a loud typo, not a silent no-match.
+        assert_eq!(
+            RunSelector::parse("not-a-ulid!").unwrap_err().code,
+            "invalid_run_id"
+        );
+    }
+
+    /// The CLI verb-entry chokepoint still resolves an unambiguous prefix to the
+    /// full run (behaviour preserved for `run-cancel-accept-unambiguous-prefix`).
+    #[test]
+    fn cli_verb_entry_resolves_unambiguous_prefix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let full = octl_core::new_run_id();
+        make_run_dir(root, &parse_run_id(&full).unwrap());
+
+        let paths = run_paths(root, &full[..10]).unwrap();
+        assert_eq!(paths.run_id.as_str(), full);
     }
 }

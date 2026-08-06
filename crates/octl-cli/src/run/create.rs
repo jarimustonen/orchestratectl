@@ -28,7 +28,7 @@ use crate::idempotency;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
     from_core, kind_kebab, lifecycle_for, lifecycle_kebab, parse_node_id, parse_run_id,
-    require_nonempty, run_paths, spawn, supervisor_spawn,
+    require_nonempty, run_paths_exact, spawn, supervisor_spawn,
 };
 
 /// Drop-releases an idempotency reservation unless disarmed.
@@ -384,7 +384,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // itself is emitted only AFTER create.sh succeeds — see below — so a
         // create.sh failure never pollutes the parent's DAG bookkeeping.
         let parent_run_id = parent_run_id.as_deref().unwrap();
-        let parent_paths = run_paths(&root, parent_run_id)?;
+        // `parent_run_id` was validated to a full `RunId` at arg-parse time
+        // (never a prefix), so re-parse to the typed id and take the exact path —
+        // a parent pointer must never fuzzy-resolve.
+        let parent_paths = run_paths_exact(&root, &parse_run_id(parent_run_id)?)?;
         if !parent_paths.manifest().exists() {
             return Err(CliError::user(
                 "parent_not_found",
@@ -398,7 +401,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     std::fs::create_dir_all(&child_dir).map_err(|e| {
         CliError::system("io_error", format!("mkdir {}: {}", child_dir.display(), e))
     })?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_exact(&root, &run_id_typed)?;
 
     // Materialize the prompt file under <run-dir>/prompt.md unless the
     // caller supplied one outside the run dir (in which case we use the
@@ -510,7 +513,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
         let parent_run_id = parent_run_id.as_deref().unwrap();
         let parent_node_id = parent_node_id.as_deref().unwrap();
-        let parent_paths = run_paths(&root, parent_run_id)?;
+        let parent_paths = run_paths_exact(&root, &parse_run_id(parent_run_id)?)?;
         let child_data = json!({
             "child_run_id": run_id,
             "child_node_id": "n-0001",

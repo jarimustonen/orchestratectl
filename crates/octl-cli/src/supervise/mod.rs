@@ -48,7 +48,7 @@ use octl_core::{
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_run_id, run_paths, supervisor_readiness};
+use crate::run::{from_core, parse_run_id, run_paths_exact, supervisor_readiness};
 
 /// Polling cadences (design.md §7.5 defaults).
 const TAIL_TICK: Duration = Duration::from_millis(500);
@@ -442,7 +442,9 @@ struct SupervisorBoot {
 /// pipe and propagates it.
 fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     let root = crate::home::root_dir()?;
-    let paths = run_paths(root.as_path(), run_id)?;
+    // The supervised run id is always a full ULID; parse to the typed id and take
+    // the exact path — the supervisor never fuzzy-resolves.
+    let paths = run_paths_exact(root.as_path(), &parse_run_id(run_id)?)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(CliError {
             kind: ExitKind::User,
@@ -503,7 +505,7 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
         // (`last_processed_report_seq_by_child`) so an un-consumed report is
         // re-tailed rather than skipped.
         for (cid, parent_node_id) in discover_children(&paths) {
-            let child_paths = run_paths(&root, &cid)?;
+            let child_paths = run_paths_exact(&root, &parse_run_id(&cid)?)?;
             let seq = state
                 .last_processed_report_seq_by_child
                 .get(&cid)
@@ -797,7 +799,8 @@ pub fn dispatch(
                     // whether the supervisor fork succeeds — the tail is
                     // the primary consumption path, so a spawn failure must
                     // never orphan the child's reports.
-                    let child_events = run_paths(&root, &child_run_id)?.events();
+                    let child_events =
+                        run_paths_exact(&root, &parse_run_id(&child_run_id)?)?.events();
                     let seq = state
                         .last_processed_report_seq_by_child
                         .get(&child_run_id)
@@ -997,7 +1000,9 @@ pub fn dispatch(
             // own log under that child's lock, so one child's bit rot can't
             // wedge the whole supervisor or strand poison bytes on disk. If the
             // child's paths can't be rebuilt, fall back to an in-memory skip.
-            let child_owner = run_paths(&root, &cid).ok();
+            let child_owner = parse_run_id(&cid)
+                .ok()
+                .and_then(|rid| run_paths_exact(&root, &rid).ok());
             let (owner, q) = match child_owner.as_ref() {
                 Some(cp) => (cp, quarantine),
                 None => (&paths, false),
@@ -1412,7 +1417,9 @@ pub fn dispatch(
 /// empty, so iterating it alone would silently orphan every adopted child.
 fn signal_children_term<'a>(root: &Path, child_run_ids: impl Iterator<Item = &'a str>) {
     for child_run_id in child_run_ids {
-        let Ok(child_paths) = run_paths(root, child_run_id) else {
+        let Ok(child_paths) =
+            parse_run_id(child_run_id).and_then(|rid| run_paths_exact(root, &rid))
+        else {
             continue;
         };
         // The child wrote its current pid (and start-time) into its own
@@ -1563,8 +1570,9 @@ fn reseed_child_spawns<'a>(
         if state.spawned_children.contains_key(cid) {
             continue;
         }
-        let child_terminal = run_paths(root, cid)
+        let child_terminal = parse_run_id(cid)
             .ok()
+            .and_then(|rid| run_paths_exact(root, &rid).ok())
             .and_then(|cp| read_manifest_opt(&cp).ok().flatten())
             .is_some_and(|m| m.status.is_terminal());
         if child_terminal {
@@ -1606,8 +1614,9 @@ fn reconcile_child_spawns(
         // Non-blocking, identity-verified read of the child's own pid file.
         // `None` (no file, or a recycled/mismatched pid) means "not confirmed"
         // — never treated as a successful start.
-        let confirmed_pid = run_paths(root, &cid)
+        let confirmed_pid = parse_run_id(&cid)
             .ok()
+            .and_then(|rid| run_paths_exact(root, &rid).ok())
             .and_then(|cp| crate::run::supervisor_spawn::read_live_recorded_pid(&cp));
         let attempts = child_spawn_attempts(&child_spawns[&cid]);
         match child_spawn_action(
@@ -1789,7 +1798,7 @@ fn record_child_attached(root: &Path, child_run_id: &str, parent_paths: &RunPath
     // child paths cannot even be resolved, skip the child append but STILL emit
     // the parent record below — the two are independent, and the parent event is
     // the documented fallback (never short-circuit past it).
-    match run_paths(root, child_run_id) {
+    match parse_run_id(child_run_id).and_then(|rid| run_paths_exact(root, &rid)) {
         Ok(child_paths) => {
             // `append_and_apply_event` takes the child run's flock itself (F11),
             // so this read-modify-write no longer races the child supervisor's
@@ -3462,10 +3471,10 @@ mod tests {
         let now = Instant::now();
 
         // Create a child run dir at the canonical `root/runs/<id>` layout that
-        // `run_paths` (and therefore `reseed_child_spawns`) resolves to, and
+        // `run_paths_exact` (and therefore `reseed_child_spawns`) resolves to, and
         // return its `RunPaths` for appends.
         let make_child = |id: &str| -> RunPaths {
-            let paths = run_paths(root, id).unwrap();
+            let paths = run_paths_exact(root, &parse_run_id(id).unwrap()).unwrap();
             std::fs::create_dir_all(octl_core::run_dir(root, &parse_run_id(id).unwrap())).unwrap();
             append_and_apply_event(
                 &paths,
