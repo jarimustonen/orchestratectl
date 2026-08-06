@@ -2,9 +2,10 @@
 created: 2026-08-04
 updated: 2026-08-06
 type: task
-status: in-progress
+status: done
 priority: normal
 related: ['@pipeline-fix-loop-rollback-hardening']
+closed: 2026-08-06
 ---
 
 # Pipeline rollback: durable provenance refs + re-spec prior-diff carry
