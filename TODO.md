@@ -6,10 +6,11 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (TWO more rounds landed + v0.1.3 FULLY SHIPPED — runner blocker fixed)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (THREE more rounds landed + v0.1.3 FULLY SHIPPED — runner blocker fixed)
 
-**✅ LATEST (this session, 2026-08-06 — read first).** Two more `/stint-start` rounds landed on `main`
-(6 units, all first-spawn, no deaths) — see the two `Round executed 2026-08-06` reconcile notes at the
+**✅ LATEST (this session, 2026-08-06 — read first).** Three more `/stint-start` rounds landed on `main`
+(9 units, all reviewed+green; round-3 Lane B paused ~6h at a genuine fork and was resolved by nudging the
+live agent — see the round-3 note + LESSON at the bottom of the DAG) — see the two `Round executed 2026-08-06` reconcile notes at the
 bottom of the DAG for the slug-level detail. **`orchestratectl` 0.1.3 is now FULLY SHIPPED across all three
 channels:** crates.io (`octl-core` + `orchestratectl`; 0.1.2 then 0.1.3), GitHub Release **v0.1.3** (aarch64-mac
 + x86_64/aarch64-linux binaries + installer), and the **Homebrew tap at 0.1.3**
@@ -91,9 +92,8 @@ GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, only
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
-    peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption)
-    moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up)
-    wildly-glorious-food                     (supervisor: distinguish CORRUPT persisted child ids from missing runs — log/quarantine, not silent skip; typed-selector review follow-up)
+    peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption; DESIGN-FIRST candidate)
+    moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up; STUB — needs scoping)
     idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
     watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
@@ -110,7 +110,9 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ entirely-faithful-beast                  (preserve sibling wave builds on a hard PipelineError — invariant 5; wave-promotion review follow-up)
+  ▶ pipeline-hard-failure-carries-report     (F5 — pipeline Result carries a report on the Err path so hard-failure preservation is AUDITABLE + non-zero-exit; the genuine invariant-5 audit fix entirely-faithful-beast reached toward; broad: touches Result type + every ?-propagation + cmd_run)
+    wave-terminal-worker-own-artifact-unaudited (F4 — a worker that commits then panics/errors leaves its OWN branch unaudited; pre-existing)
+    push-blocked-chunk-tier-and-commit-audit (F6 — push_blocked_chunk records plan-declared tier not the promoted one + omits commit OID; pre-existing)
     dreadfully-dirty-pain                    (carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
     practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
     pipeline-hardening
@@ -129,8 +131,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ run-wait-timeout-unit-required
-    run-salvage-command
+  ▶ run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
 <!-- execution-dag:end -->
@@ -215,7 +216,27 @@ sealed `RunSelector`, prefix resolved only at CLI verb entry, internal paths exa
 `dreadfully-dirty-pain` + `practically-exclusive-celery`. Local rebuild redeployed, `doctor`
 0 fail / 0 warn (553 ok). CHANGELOG `[Unreleased]` carries the wave-promotion fix (no release
 cut this round — internal/hardening + one opt-in-path fix; batch into the next user-facing cut).
-No worktrees remain.
+No worktrees remain. **Then v0.1.3 FULLY SHIPPED** (crates.io 0.1.2→0.1.3; the binary/brew release
+had been blocked by a leaked stale `actions/checkout` `http.extraheader` in the `hauis` runner's
+GLOBAL git config → HTTP 400; root-caused + fixed on `hauis` (`git config --global --unset-all` the
+extraheader + insteadof leaks), re-ran the v0.1.3 Release → all green; closed `peculiarly-madly-sneeze`).
+**Round 3 executed 2026-08-06 (A‖B‖E parallel, 3 headless spinoffs):** landed `wildly-glorious-food`
+(done; supervisor logs/quarantines CORRUPT persisted child ids vs benign missing-run skip),
+`run-wait-timeout-unit-required` (done; `run wait --timeout` accepts a bare integer as seconds — kills
+the silent-instant-exit failure mode), and `entirely-faithful-beast` (done). **Lane B paused ~6h at a
+genuine fork** — the worker did the work + /llm-review, but review found the issue's premise (data-loss
+on hard error) was a **non-bug** (teardown never deletes chunk branches). Orchestrator nudged the live
+agent (tmux) to option (1): land the reviewed/green modest inv-5 robustness improvement (hard error
+DOMINATES the wave terminal — reverts a panic-wins regression that hid infra failures via Ok/exit-0;
+co-occurring panic surfaced via `PipelineError::with_note`) + spin off the real audit work; the worker
+completed its own `run merge`. Integrated gate green (1164 passed, 0 failed; round-2 watchdog de-flake
+holding). Dropped the 3 landed; added 3 Lane B follow-ups the worker filed — `pipeline-hard-failure-carries-report`
+(F5, the genuine inv-5 audit fix), `wave-terminal-worker-own-artifact-unaudited` (F4),
+`push-blocked-chunk-tier-and-commit-audit` (F6). No worktrees remain.
+**LESSON: a spinoff CAN pause at a genuine fork and sit indefinitely — a `pending` run whose branch has
+committed work AND a live agent pane is a paused-for-decision worker, NOT a hang or a death. Read the
+pane (`tmux capture-pane`) + nudge (`tmux send-keys`) to let it finish its OWN `run merge`; do not
+respawn or hand-merge.**
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
