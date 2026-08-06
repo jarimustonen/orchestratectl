@@ -2,8 +2,9 @@
 created: 2026-08-06
 updated: 2026-08-06
 type: task
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-06
 ---
 
 # Preserve sibling wave builds on a hard PipelineError (invariant 5)
