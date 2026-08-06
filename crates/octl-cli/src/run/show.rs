@@ -112,12 +112,28 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             None
         };
         // Computed stall hint (issue `peculiarly-muddled-caption`): derived
-        // purely from the driver node's status/children/`updated_at`, which we
-        // already hold under the shared lock — no event/reducer/schema path is
-        // touched. Decided here, inside the lock, so it is one consistent
-        // snapshot with `manifest.status`.
-        let stalled =
-            crate::run::stalled::is_stalled(manifest.kind, node.as_ref(), chrono::Utc::now());
+        // purely from the manifest status/kind + the driver node's
+        // status/children/`updated_at`, which we already hold under the shared
+        // lock — no event/reducer/schema path is touched. Decided here, inside
+        // the lock, so it is one consistent snapshot with `manifest.status`.
+        // `run show` reads the reporting/driver node `n-0001` (there is no
+        // per-node selector on this verb), so `node` is always the driver node.
+        let stalled = crate::run::stalled::is_stalled(
+            manifest.status,
+            manifest.kind,
+            node.as_ref(),
+            chrono::Utc::now(),
+        );
+        // Idle minutes for the human message, only meaningful when stalled.
+        let stalled_idle_min = if stalled {
+            node.as_ref().map(|n| {
+                chrono::Utc::now()
+                    .signed_duration_since(n.updated_at)
+                    .num_minutes()
+            })
+        } else {
+            None
+        };
         let landing = LandingFields {
             source_repo: manifest.source_repo.clone(),
             source_branch: manifest.source_branch.clone(),
@@ -132,19 +148,21 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             supervisor,
             recoverable_work,
             stalled,
+            stalled_idle_min,
             landing,
         )))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor, recoverable_work, stalled, landing) = match scanned {
-        Some(v) => v,
-        None => {
-            return Err(
-                CliError::user("run_not_found", format!("no run with id {run_id}"))
-                    .with_invalid_value(run_id),
-            );
-        }
-    };
+    let (manifest, counts, supervisor, recoverable_work, stalled, stalled_idle_min, landing) =
+        match scanned {
+            Some(v) => v,
+            None => {
+                return Err(
+                    CliError::user("run_not_found", format!("no run with id {run_id}"))
+                        .with_invalid_value(run_id),
+                );
+            }
+        };
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
     // computed outside the shared lock: the rebase-robust signal a caller should
     // trust instead of hand-rolling `git merge-base --is-ancestor`.
@@ -179,10 +197,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
             println!("status:        {}", payload.manifest.status);
             if payload.stalled {
+                let idle =
+                    stalled_idle_min.map_or_else(String::new, |m| format!(" (idle {m} min)"));
                 println!(
-                    "stalled:       true (undriven orchestrate driver — no children, idle > {} min; \
-                     `run cancel {}` and relaunch with an active orchestrator)",
-                    crate::run::stalled::STALL_GRACE.num_minutes(),
+                    "stalled:       true — orchestrate driver looks undriven: pending, no children{idle}. \
+                     Verify no orchestrator agent is still driving this run before acting; \
+                     if none is, `run cancel {}` and relaunch with an active orchestrator.",
                     payload.manifest.run_id
                 );
             }

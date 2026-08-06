@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths};
+use octl_core::{read_manifest_opt, read_node_opt, Kind, NodeId, RunLock, RunPaths, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -43,6 +43,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
+    // One stall deadline per invocation — every run in this listing is judged
+    // against the same instant, so two runs with identical `updated_at` can't
+    // disagree on `stalled` due to per-run clock sampling.
+    let now = chrono::Utc::now();
+
     let mut out: Vec<RunSummary> = Vec::new();
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(e) => e,
@@ -79,24 +84,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // pair must not straddle a reducer's status rollup + pid-file removal
         // (see show.rs). Costs one extra pid-file read per run; negligible for
         // realistic run counts.
-        // Read the driver node `n-0001` under the SAME shared lock as the
-        // manifest so the computed `stalled` hint (issue
-        // `peculiarly-muddled-caption`) is one consistent snapshot with
-        // `status` — the node's status/children/`updated_at` and the manifest
-        // must not straddle a reducer write. Read-only: touches no
+        // Compute the `stalled` hint (issue `peculiarly-muddled-caption`) under
+        // the SAME shared lock as the manifest so the node's
+        // status/children/`updated_at` and the manifest form one consistent
+        // snapshot that cannot straddle a reducer write. Read-only: touches no
         // event/reducer/schema path.
-        let driver_id = NodeId::parse_str(crate::run::stalled::DRIVER_NODE_ID)
-            .expect("DRIVER_NODE_ID is a valid node id");
+        //
+        // The extra `n-0001` read is gated on `pending` + `orchestrate`: only a
+        // pending orchestrate run can be a stall candidate, so terminal runs and
+        // every other kind pay no extra I/O — and, critically, a corrupt/
+        // unreadable `n-0001` in an unrelated run can no longer abort the whole
+        // listing (the read only runs for the narrow candidate set).
         let scanned = RunLock::with_shared_lock(&paths.lock(), || {
             let Some(m) = read_manifest_opt(&paths)? else {
                 return Ok(None);
             };
             let supervisor = SupervisorView::probe(&paths);
-            let stalled = crate::run::stalled::is_stalled(
-                m.kind,
-                read_node_opt(&paths, &driver_id)?.as_ref(),
-                chrono::Utc::now(),
-            );
+            let stalled = if m.status == Status::Pending && m.kind == Kind::Orchestrate {
+                let driver_id = NodeId::parse_str(crate::run::stalled::DRIVER_NODE_ID)
+                    .expect("DRIVER_NODE_ID is a valid node id");
+                crate::run::stalled::is_stalled(
+                    m.status,
+                    m.kind,
+                    read_node_opt(&paths, &driver_id)?.as_ref(),
+                    now,
+                )
+            } else {
+                false
+            };
             Ok(Some((m, supervisor, stalled)))
         })
         .map_err(from_core)?;

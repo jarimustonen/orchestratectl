@@ -16,6 +16,14 @@
 //! already holds for the manifest. Terminal-status semantics are untouched — a
 //! stalled run is still `pending`; the flag only says "pending, but visibly not
 //! progressing".
+//!
+//! Scope: this catches the *specific* zombie in the issue — a driver that was
+//! **never driven** (still `pending`, zero children). It deliberately does NOT
+//! try to detect every stalled shape (a driver that spawned one child then
+//! died, or transitioned to `running` and then stopped emitting events): those
+//! need a real orchestrator liveness/heartbeat signal, tracked as the follow-up
+//! `peculiarly-cheerful-mine`. The hint is a heuristic, not a liveness proof —
+//! hence the human output says "verify" before prescribing a cancel.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -33,26 +41,47 @@ pub const STALL_GRACE: Duration = Duration::minutes(12);
 /// run. Mirrors `run show`'s `DEFAULT_NODE_ID`.
 pub const DRIVER_NODE_ID: &str = "n-0001";
 
-/// Compute the `stalled` hint for a run from its driver node.
+/// Compute the `stalled` hint for a run from its manifest status, kind, and
+/// driver node.
 ///
-/// Returns `true` only for a `--kind orchestrate` run whose driver node is
-/// still `pending`, has spawned **zero** children, and has not been touched for
-/// longer than [`STALL_GRACE`] — the exact signature of a driver that was
-/// created but never driven. Any of these disqualifies it:
+/// Returns `true` only for a `pending` `--kind orchestrate` run whose driver
+/// node is itself still `pending`, has spawned **zero** children, and has not
+/// been touched for longer than [`STALL_GRACE`] — the exact signature of a
+/// driver that was created but never driven. Any of these disqualifies it:
 ///
+/// - a non-`pending` run (a `done`/`failed`/`cancelled`/`running` manifest is
+///   not a zombie — a terminal run whose `n-0001` projection stayed `pending`
+///   must never be flagged, or `run list` would print `done (stalled)` and the
+///   remediation would tell the user to cancel an already-terminal run);
 /// - a non-`orchestrate` kind (only the orchestrate driver has the
 ///   "supervisor adopts but does not drive" shape);
 /// - a driver node that reached a non-`pending` status (it is running,
 ///   terminal, or otherwise progressing);
 /// - a driver node with ≥1 child (the orchestrator agent *is* driving);
-/// - a driver node touched within the grace window (recent activity — the node
-///   projection's `updated_at` advances whenever an event touches the node, so
-///   it is the read-time proxy for "no new events since creation");
-/// - a missing driver node (nothing to judge).
+/// - a driver node touched within the grace window. The node projection's
+///   `updated_at` is bumped by exactly the events that mark driver progress —
+///   `node.status` / `node.report` / `node.retry` / `child.spawned` (verified
+///   against the reducer). Discussion / spinoff / supervisor events bump the
+///   *manifest* timestamp, not the node's, so `node.updated_at` is a precise
+///   "the driver made progress" proxy — deliberately narrower than
+///   `manifest.updated_at`, which unrelated supervisor churn would keep falsely
+///   fresh. The narrow cost: a driver that only opens a discussion (e.g. asks
+///   the user a question) without spawning a child is still counted idle, which
+///   is why the hint is advisory, not authoritative;
+/// - a missing driver node (a half-initialized run — not assessable, so not
+///   flagged rather than falsely alarmed).
 ///
 /// `now` is injected so the decision is deterministic in tests.
 #[must_use]
-pub fn is_stalled(kind: Kind, driver: Option<&Node>, now: DateTime<Utc>) -> bool {
+pub fn is_stalled(
+    run_status: Status,
+    kind: Kind,
+    driver: Option<&Node>,
+    now: DateTime<Utc>,
+) -> bool {
+    if run_status != Status::Pending {
+        return false;
+    }
     if kind != Kind::Orchestrate {
         return false;
     }
@@ -113,7 +142,12 @@ mod tests {
     fn undriven_driver_past_grace_is_stalled() {
         let created = now() - STALL_GRACE - Duration::seconds(1);
         let n = node(Status::Pending, 0, created);
-        assert!(is_stalled(Kind::Orchestrate, Some(&n), now()));
+        assert!(is_stalled(
+            Status::Pending,
+            Kind::Orchestrate,
+            Some(&n),
+            now()
+        ));
     }
 
     /// (b1) A driver that has spawned a child is being driven — not stalled,
@@ -122,7 +156,12 @@ mod tests {
     fn driver_with_child_is_not_stalled() {
         let created = now() - STALL_GRACE - Duration::hours(1);
         let n = node(Status::Pending, 1, created);
-        assert!(!is_stalled(Kind::Orchestrate, Some(&n), now()));
+        assert!(!is_stalled(
+            Status::Pending,
+            Kind::Orchestrate,
+            Some(&n),
+            now()
+        ));
     }
 
     /// (b2) A driver whose node was touched recently (fresh events) is not
@@ -131,7 +170,12 @@ mod tests {
     fn driver_with_recent_activity_is_not_stalled() {
         let recent = now() - Duration::minutes(1);
         let n = node(Status::Pending, 0, recent);
-        assert!(!is_stalled(Kind::Orchestrate, Some(&n), now()));
+        assert!(!is_stalled(
+            Status::Pending,
+            Kind::Orchestrate,
+            Some(&n),
+            now()
+        ));
     }
 
     /// (c) Within the grace window, an undriven driver is not yet stalled.
@@ -139,7 +183,12 @@ mod tests {
     fn within_grace_window_is_not_stalled() {
         let created = now() - STALL_GRACE + Duration::seconds(1);
         let n = node(Status::Pending, 0, created);
-        assert!(!is_stalled(Kind::Orchestrate, Some(&n), now()));
+        assert!(!is_stalled(
+            Status::Pending,
+            Kind::Orchestrate,
+            Some(&n),
+            now()
+        ));
     }
 
     /// Exactly at the grace boundary is not yet stalled (strict `>`).
@@ -147,7 +196,34 @@ mod tests {
     fn exactly_at_grace_boundary_is_not_stalled() {
         let created = now() - STALL_GRACE;
         let n = node(Status::Pending, 0, created);
-        assert!(!is_stalled(Kind::Orchestrate, Some(&n), now()));
+        assert!(!is_stalled(
+            Status::Pending,
+            Kind::Orchestrate,
+            Some(&n),
+            now()
+        ));
+    }
+
+    /// A terminal (or otherwise non-`pending`) *manifest* is never flagged, even
+    /// when its driver projection stayed `pending` with 0 children and is stale
+    /// — a cancelled/done run is not a zombie, and flagging it would tell the
+    /// user to cancel an already-terminal run (the review's top finding).
+    #[test]
+    fn non_pending_run_status_is_never_stalled() {
+        let created = now() - STALL_GRACE - Duration::hours(1);
+        let n = node(Status::Pending, 0, created);
+        for run_status in [
+            Status::Running,
+            Status::Blocked,
+            Status::Done,
+            Status::Failed,
+            Status::Cancelled,
+        ] {
+            assert!(
+                !is_stalled(run_status, Kind::Orchestrate, Some(&n), now()),
+                "run status {run_status:?} must not stall"
+            );
+        }
     }
 
     /// A non-`orchestrate` kind is never flagged, however idle — other kinds do
@@ -157,25 +233,29 @@ mod tests {
         let created = now() - STALL_GRACE - Duration::hours(1);
         let n = node(Status::Pending, 0, created);
         for k in [Kind::Spinoff, Kind::FanOut, Kind::Orchestrated, Kind::Code] {
-            assert!(!is_stalled(k, Some(&n), now()), "kind {k:?} must not stall");
+            assert!(
+                !is_stalled(Status::Pending, k, Some(&n), now()),
+                "kind {k:?} must not stall"
+            );
         }
     }
 
-    /// A driver that reached a non-`pending` status (running / terminal) is
-    /// progressing, so it is never flagged even if idle.
+    /// A driver node that reached a non-`pending` status (running / blocked /
+    /// terminal) is progressing, so it is never flagged even if idle.
     #[test]
     fn non_pending_driver_is_not_stalled() {
         let created = now() - STALL_GRACE - Duration::hours(1);
         for s in [
             Status::Running,
+            Status::Blocked,
             Status::Done,
             Status::Failed,
             Status::Cancelled,
         ] {
             let n = node(s, 0, created);
             assert!(
-                !is_stalled(Kind::Orchestrate, Some(&n), now()),
-                "status {s:?} must not stall"
+                !is_stalled(Status::Pending, Kind::Orchestrate, Some(&n), now()),
+                "driver status {s:?} must not stall"
             );
         }
     }
@@ -183,6 +263,6 @@ mod tests {
     /// A run with no driver node yet cannot be judged — not stalled.
     #[test]
     fn missing_driver_node_is_not_stalled() {
-        assert!(!is_stalled(Kind::Orchestrate, None, now()));
+        assert!(!is_stalled(Status::Pending, Kind::Orchestrate, None, now()));
     }
 }
