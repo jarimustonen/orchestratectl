@@ -75,8 +75,9 @@ GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, only
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
-    immoderately-irate-north                 (watchdog snapshot invocation-count test — parallel-execution flake; caught by integrated gate 2026-08-06)
     peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption)
+    moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up)
+    wildly-glorious-food                     (supervisor: distinguish CORRUPT persisted child ids from missing runs — log/quarantine, not silent skip; typed-selector review follow-up)
     idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
     watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
@@ -93,7 +94,9 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ immoderately-dirty-cushion               (adaptive tier promotion in concurrent wave builds — pipeline-parallel-chunks follow-up)
+  ▶ entirely-faithful-beast                  (preserve sibling wave builds on a hard PipelineError — invariant 5; wave-promotion review follow-up)
+    dreadfully-dirty-pain                    (carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
+    practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
@@ -110,8 +113,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ run-paths-typed-selector-split           (typed run-id selector split-out; run-cancel-prefix follow-up)
-    run-wait-timeout-unit-required
+  ▶ run-wait-timeout-unit-required
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
@@ -182,7 +184,21 @@ parallel-execution flake `snapshot_is_one_invocation_per_socket_regardless_of_no
 in isolation/single-thread/retry; no round code touched watchdog) → filed `immoderately-irate-north`
 (Lane A). Dropped the 3 landed; added worker follow-up `peculiarly-cheerful-mine` (Lane A, driver
 heartbeat) + the flake. Local rebuild redeployed, `doctor` 0 fail / 0 warn (545 ok). No worktrees
-remain.
+remain. **Then v0.1.2 SHIPPED** (crates.io `octl-core`→`orchestratectl`, `v0.1.2` tag → Release CI).
+**Round 2 executed 2026-08-06 (A‖B‖E parallel, 3 headless spinoffs, ~66 min):** landed
+`immoderately-irate-north` (fixed; de-flaked the watchdog invocation-count test — isolation-safe
+counting + lock audit; confirmed: `cargo test --workspace` green across 2+ full runs, flake test
+passes every time), `immoderately-dirty-cushion` (done; wave-build exhaustion re-queues to a
+sequential drain for tier promotion + per-worker `catch_unwind` preserving siblings, inv-5;
+/llm-review applied), `run-paths-typed-selector-split` (done; typed `run_paths_exact` +
+sealed `RunSelector`, prefix resolved only at CLI verb entry, internal paths exact-only;
+4/4 review consensus applied). All 3 landed first spawn — no deaths. Integrated gate green
+(1159 passed, 0 failed). Dropped the 3 landed; added 5 worker follow-ups — Lane A
+`moderately-macabre-self` + `wildly-glorious-food`, Lane B `entirely-faithful-beast` +
+`dreadfully-dirty-pain` + `practically-exclusive-celery`. Local rebuild redeployed, `doctor`
+0 fail / 0 warn (553 ok). CHANGELOG `[Unreleased]` carries the wave-promotion fix (no release
+cut this round — internal/hardening + one opt-in-path fix; batch into the next user-facing cut).
+No worktrees remain.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:

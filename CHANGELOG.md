@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent wave builds now get adaptive tier promotion (`immoderately-dirty-cushion`).** Under `pipeline run --max-build-concurrency > 1`, a chunk that exhausted its floor re-code budget previously blocked terminally, even though the strictly-sequential path (`--max-build-concurrency 1`) would have promoted it to the next model tier and succeeded. On wave-build exhaustion the chunk is now re-queued into a sequential drain off the moved tip (the same pattern the merge phase uses for rebase-and-fix), so promotion runs and the outcome no longer depends on the concurrency setting; the preserved build-phase attempt is reconciled so no worktree is orphaned. A per-worker `catch_unwind` also turns a build-thread panic into a terminal stage-stop that still preserves sibling builds (state-integrity invariant 5).
+
 ## [0.1.2] - 2026-08-06
 
 ### Added
