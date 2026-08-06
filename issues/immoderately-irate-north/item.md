@@ -2,8 +2,9 @@
 created: 2026-08-06
 updated: 2026-08-06
 type: bug
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-06
 ---
 
 # watchdog snapshot invocation-count test is a parallel-execution flake
