@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`run wait --timeout` accepts a bare integer as seconds (`run-wait-timeout-unit-required`).** `--timeout 2400` now means 2400 seconds; previously a unit was required (`2400sec`) and a bare integer was rejected instantly — which, for a backgrounded `run wait`, looked like the run had settled when it had not (silent-instant-exit). Unit-suffixed values (`2400sec`, `40min`, `500ms`) parse as before; the bare-integer path is gated on all-digits + overflow.
+
 ## [0.1.3] - 2026-08-06
 
 Supersedes the 0.1.2 tag, whose prebuilt-binary + Homebrew release failed to
