@@ -1960,6 +1960,168 @@ fn teardown_keeps_a_preserved_runs_provenance_refs() {
 }
 
 #[test]
+fn prov_ref_tracks_the_original_authored_commit_across_two_rollbacks() {
+    // Item G (durable authored anchor): the prov ref must pin the ORIGINAL
+    // floor-gated authored commit and keep pinning IT across repeated rollbacks — not
+    // drift onto the replayed on-branch commit a prior rollback produced. c0<-c1 are
+    // stacked and kept through two verify-FIX rollbacks that target the independent
+    // c2; c1 is replayed onto c0's REPLAYED tip each time, so its authored oid
+    // (parented on c0's ORIGINAL tip) is orphaned from every branch after the first
+    // rollback. If the pin drifted to the replayed oid (pinning `prov.commit`), the
+    // authored oid would lose its only root and be swept; pinning the report's
+    // authored `commit` keeps it alive. Proven by expiring reflogs + `gc --prune=now`
+    // and asserting the report's authored oid still resolves via the ref.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["c0.txt", "c1.txt", "c2.txt"]);
+    cfg.keep = true;
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 3,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "all", "run": "test -f c0.txt && test -f c1.txt && test -f c2.txt"}],
+        "chunks": [
+            {"id": "c0", "title": "a", "tier": "code", "brief": "make c0",
+             "files_touched": ["c0.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c1", "title": "b", "tier": "code", "brief": "make c1", "deps": ["c0"],
+             "files_touched": ["c1.txt"], "checks": [{"desc": "b", "run": "true"}]},
+            {"id": "c2", "title": "c", "tier": "code", "brief": "make c2",
+             "files_touched": ["c2.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    // Two consecutive FIX-c2 rounds (each a rollback keeping c0, c1), then pass.
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c2".to_string(),
+            findings: vec!["c2 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c2".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c2 again".to_string(),
+            findings: vec!["c2 still wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c2".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &DisjointChunks, &verify)
+        .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    let c1 = report.chunks.iter().find(|c| c.id == "c1").unwrap();
+    let c1_authored = c1.commit.clone().expect("c1 has an authored commit");
+    // The authored oid was replayed away from the branch (its on-branch commit differs).
+    assert!(c1.replayed, "c1 was kept through the rollbacks → replayed");
+    assert_ne!(c1.commit, c1.merge_commit);
+    // After two rollbacks the ref still names the ORIGINAL authored oid, not the
+    // rollback-1 replayed oid.
+    assert_eq!(
+        git_out(repo.path(), &["rev-parse", "refs/pipeline/prov/demo/c1"]),
+        c1_authored,
+        "the prov ref pins the original authored commit across both rollbacks"
+    );
+
+    // Expire the reflog and prune: only the prov ref keeps the orphaned authored oid.
+    git(
+        repo.path(),
+        &[
+            "reflog",
+            "expire",
+            "--expire=now",
+            "--expire-unreachable=now",
+            "--all",
+        ],
+    );
+    git(repo.path(), &["gc", "--prune=now"]);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["cat-file", "-e", &c1_authored])
+            .status()
+            .unwrap()
+            .success(),
+        "the original authored commit {c1_authored} must survive gc via its prov ref"
+    );
+}
+
+#[test]
+fn prov_ref_pins_a_legitimately_dotted_chunk_id_verbatim() {
+    // Item G (ref-name safety): a chunk id with a legal single mid-dot (`a.b`) — valid
+    // both as the upstream worktree branch `demo/chunk-a.b` and as a ref component — is
+    // pinned VERBATIM, so the prov ref name matches the chunk id (no gratuitous
+    // mangling). Ids that git WOULD reject (`a..b`, `a.lock`, trailing `.`) can never
+    // reach pinning: they fail earlier at `demo/chunk-<id>` branch creation, so a
+    // pinnable chunk's id is always ref-safe. The dotted chunk is kept through a FIX of
+    // the independent `t3`.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.b.txt", "t3.txt"]);
+    cfg.keep = true;
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "all", "run": "test -f a.b.txt && test -f t3.txt"}],
+        "chunks": [
+            {"id": "a.b", "title": "a", "tier": "code", "brief": "make a.b",
+             "files_touched": ["a.b.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "t3", "title": "c", "tier": "code", "brief": "make t3",
+             "files_touched": ["t3.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix t3".to_string(),
+            findings: vec!["t3 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["t3".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &DisjointChunks, &verify)
+        .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    let kept = report.chunks.iter().find(|c| c.id == "a.b").unwrap();
+    let authored = kept.commit.clone().expect("a.b has an authored commit");
+    // The dotted id is pinned verbatim; the ref exists and points at the authored oid.
+    assert_eq!(
+        prov_refs(repo.path()),
+        vec!["refs/pipeline/prov/demo/a.b".to_string()],
+        "a legitimately dotted chunk id pins a verbatim ref name"
+    );
+    assert_eq!(
+        git_out(repo.path(), &["rev-parse", "refs/pipeline/prov/demo/a.b"]),
+        authored,
+        "the verbatim ref points at the dotted chunk's authored commit"
+    );
+}
+
+#[test]
 fn nonlinear_chunk_history_is_rejected_at_gate() {
     // Item F (merge-commit inside a chunk range): a chunk whose history contains a
     // merge commit cannot be replayed by the provenance rollback (`git cherry-pick

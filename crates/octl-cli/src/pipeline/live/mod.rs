@@ -1981,8 +1981,17 @@ enum Replayed {
 
 /// The durable-provenance ref for one chunk of a run (item G):
 /// `refs/pipeline/prov/<slug>/<chunk>`. The run is identified by its feature slug
-/// (already ref-safe — lowercased alnum + hyphens from [`slugify`]); the chunk id
-/// is a plan chunk id (validated `[A-Za-z0-9_.-]`, first char alphanumeric).
+/// (already ref-safe — lowercased alnum + hyphens from [`slugify`]); the chunk id is
+/// used verbatim.
+///
+/// The chunk id is safe as a trailing ref component even though the plan validator's
+/// `[A-Za-z0-9_.-]` alphabet is looser than git's ref grammar (which forbids `..`, a
+/// trailing `.`, or a `.lock` suffix): a chunk only HAS provenance to pin once it
+/// merged, and merging first created its own worktree branch `<slug>/chunk-<id>`. That
+/// branch creation already rejects any `<id>` that would make `chunk-<id>` an illegal
+/// ref component — the same dot rules — so a pinnable chunk's id is guaranteed to form
+/// a legal `refs/pipeline/prov/<slug>/<id>` too. A legitimately dotted id like `a.b`
+/// (a single mid-dot, legal) is pinned verbatim so the ref name matches the id.
 fn provenance_ref(slug: &str, chunk_id: &str) -> String {
     format!("refs/pipeline/prov/{slug}/{chunk_id}")
 }
@@ -1993,13 +2002,33 @@ fn provenance_ref_prefix(slug: &str) -> String {
     format!("refs/pipeline/prov/{slug}/")
 }
 
+/// The durable authored oid to pin for a kept chunk (item G). Prefer the chunk's
+/// REPORT `commit` — the original floor-gated authored oid, preserved verbatim across
+/// replays (item E) — over [`ChunkProvenance::commit`], which a prior rollback's
+/// successful rebuild rewrites to the *replayed* oid. Pinning the report oid keeps the
+/// stable authored anchor (the one `report.chunks[*].commit` references) alive across
+/// REPEATED rollbacks, instead of repointing the ref to a transient replay and
+/// orphaning the original authored commit. Falls back to the provenance oid if no
+/// report commit is recorded (defensive — a merged chunk always has one).
+fn authored_commit_for<'b>(run: &'b Run, id: &str, prov: &'b ChunkProvenance) -> &'b str {
+    run.chunk_reports
+        .iter()
+        .find(|r| r.id == id)
+        .and_then(|r| r.commit.as_deref())
+        .unwrap_or(&prov.commit)
+}
+
 /// Pin each kept chunk's authored commit under its [`provenance_ref`] (item G).
-/// Best-effort per ref: a pin that fails (an unusual-but-valid chunk id that is not
-/// a legal ref component) is skipped rather than aborting the rollback, since the
-/// pin is a belt-and-suspenders durability anchor, not a correctness requirement.
+/// Best-effort per ref: a pin that fails (a transient git/hook/disk error) is skipped
+/// rather than aborting the rollback. The rollback itself is data-safe WITHOUT the
+/// pins (under default git the authored commits stay reachable for the run's
+/// lifetime), so failing the whole rollback for a belt-and-suspenders anchor would be
+/// a worse outcome than proceeding — the exposure it closes is real only against an
+/// external aggressive `git gc --prune=now` (issue: nil under default config).
 fn pin_provenance_refs(run: &Run, kept: &[(String, ChunkProvenance)]) {
     for (id, prov) in kept {
-        let _ = git::update_ref(&run.repo, &provenance_ref(&run.slug, id), &prov.commit);
+        let oid = authored_commit_for(run, id, prov);
+        let _ = git::update_ref(&run.repo, &provenance_ref(&run.slug, id), oid);
     }
 }
 
@@ -3997,22 +4026,32 @@ fn teardown(run: &Run) {
     let safe_to_delete = run.merged_to_source
         || git::commits_ahead_of(&run.repo, &run.cfg.source_branch, &run.integration_branch)
             .is_ok_and(|n| n == 0);
+    // Item G: prune this run's durable provenance refs on the SAME gate as branch
+    // deletion, and only once the integration branch they backstop is actually gone.
+    // The refs exist to protect the kept chunks' authored OIDs across the destructive
+    // rollback window (a reset that orphans them from every branch tip). That window
+    // closes when the run ends: on a `safe_to_delete` outcome (merged to source, or an
+    // early failure that never accumulated work) the run is done and the anchors are
+    // intentionally RELEASED — this deliberately ends durability for the authored OIDs
+    // (which a rollback made unreachable from `source_branch`, so they may be gc'd
+    // afterwards; `report.chunks[*].commit` is a historical oid, not a promise that it
+    // still resolves post-teardown). On the PRESERVED (unmerged) path the whole block
+    // is skipped, so a preserved branch's refs stay exactly as long as its branch does.
+    //
+    // The prune is gated on the branch actually being deleted: if `delete_branch`
+    // fails (e.g. the branch is checked out elsewhere) the branch still roots its
+    // on-branch commits, and dropping the refs then would strip gc protection from the
+    // now-orphaned authored OIDs while the branch lingers — so keep the refs too.
     if safe_to_delete {
-        // `-d` refuses to drop an unmerged branch, so even a race here fails
-        // closed rather than losing work.
-        let _ = git::delete_branch(&run.repo, &run.integration_branch, run.merged_to_source);
-    }
-    // Item G: prune this run's durable provenance refs, gated on the SAME outcome as
-    // the branch deletion. When the branch is safe to delete (merged to source, or an
-    // early failure that never accumulated work) the authored OIDs are either
-    // reachable through the merge on `source_branch` or never existed, so the
-    // belt-and-suspenders anchors are redundant. On the PRESERVED (unmerged) path the
-    // refs are KEPT — a preserved branch's provenance must keep surviving a gc, so its
-    // refs stay exactly as long as its branch does.
-    if safe_to_delete {
-        if let Ok(refs) = git::refs_under(&run.repo, &provenance_ref_prefix(&run.slug)) {
-            for r in &refs {
-                let _ = git::delete_ref(&run.repo, r);
+        // `-d` refuses to drop an unmerged branch, so even a race here fails closed
+        // rather than losing work.
+        let branch_deleted =
+            git::delete_branch(&run.repo, &run.integration_branch, run.merged_to_source).is_ok();
+        if branch_deleted {
+            if let Ok(refs) = git::refs_under(&run.repo, &provenance_ref_prefix(&run.slug)) {
+                for r in &refs {
+                    let _ = git::delete_ref(&run.repo, r);
+                }
             }
         }
     }
