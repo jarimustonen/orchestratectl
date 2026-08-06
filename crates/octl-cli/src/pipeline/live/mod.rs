@@ -3033,50 +3033,77 @@ fn run_wave_concurrent(
         }
     }
 
-    // An orderly hard error from a build thread propagates as on the sequential path
-    // (`Run::Drop` tears down). Done BEFORE preserving the blocked builds so the
-    // behaviour matches the sequential hard-error path exactly (no sibling
-    // preservation on this path — a tracked follow-up); the panic path below is the
-    // one that DOES preserve, because a panic is a bug we want to lose no work to.
-    if let Some(e) = hard_error {
+    // A hard error or a panic from any build worker is terminal — no chunk merges
+    // this wave. Preserve EVERY committed-but-unmerged sibling worktree (the
+    // floor-green `built` ones AND the committed-but-`blocked` ones) before
+    // signalling either condition, so the terminal signal cannot strand real
+    // committed work (state-integrity invariant 5). Doing this once, up front, is
+    // what makes a wave carrying BOTH a hard error and a panic safe: neither terminal
+    // path's early return can bypass the other's preservation.
+    //
+    // Deliberate divergence from the sequential hard-error path, which does NOT
+    // preserve (it propagates and lets `Run::Drop` tear the run down). The concurrent
+    // case is materially different — by the time one worker hard-errors, its siblings
+    // have run to completion and can hold finished, committed work — so here we
+    // preserve where the sequential path does not (issue `entirely-faithful-beast`,
+    // follow-up from the `immoderately-dirty-cushion` review). The panicked chunk's
+    // OWN worktree is in an unknown state and cannot be reliably named for
+    // preservation — a `--keep`-recoverable residual, not silent data loss of a
+    // sibling's work.
+    if hard_error.is_some() || panicked.is_some() {
+        for r in blocked.iter().chain(built.iter()) {
+            preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
+
+        // Precedence when both a panic AND a hard error fire in one wave: the PANIC
+        // path wins the RETURN. A panic is converted (via the worker `catch_unwind`)
+        // into a GRACEFUL, auditable circuit-breaker stage-stop whose report NAMES
+        // every preserved sibling; a bare hard `Err` instead tears the run down and
+        // discards that report. Preferring the panic path terminates the run with a
+        // full audit of the preserved work rather than an opaque teardown — strictly
+        // better for invariant 5 (preserved work must stay RECOVERABLE, not just
+        // undeleted). A co-occurring hard error is recorded in the breaker message so
+        // it is surfaced, not silently swallowed.
+        if let Some((chunk_id, msg)) = panicked {
+            let also_hard = hard_error
+                .as_ref()
+                .map(|e| format!(" (a sibling worker also hard-errored: {e})"))
+                .unwrap_or_default();
+            run.circuit_breaker = Some(format!(
+                "wave build thread panicked on chunk {chunk_id} — sibling builds preserved, stage stopped: {msg}{also_hard}"
+            ));
+            run.code_block_status = Some("circuit_breaker");
+            run.decisions.push(envelope(
+                "supervisor",
+                DecisionTier::Coordinator,
+                format!(
+                    "chunk {chunk_id} build thread panicked — sibling builds preserved, stage stopped: {msg}{also_hard}"
+                ),
+                vec![format!("chunk:{chunk_id}")],
+                "supervisor",
+                "v1",
+            ));
+            return Ok(());
+        }
+
+        // No panic — an orderly hard error alone. Siblings are preserved above; now
+        // propagate as on the sequential path (`Run::Drop` tears down). NOTE: this
+        // preservation is invisible in THIS return (an `Err` discards the report), but
+        // it keeps the sibling worktrees/branches recorded in `run.preserved` +
+        // intact for `--keep` recovery, and future-proofs the teardown gate — matching
+        // the panic path's guarantee even where the return can't surface it.
+        let e = hard_error.expect("terminal branch entered: no panic, so a hard error remains");
         return Err(e);
     }
 
-    // Preserve every build-phase block's worktree/branch NOW (state-integrity
-    // invariant 5): they hold committed work, and a later early return from the
-    // merge phase (a rebase-and-fix that itself blocks) must never strand it. The
-    // terminal stage-stop status is set after the good chunks merge, below.
+    // Non-terminal path: preserve every build-phase block's worktree/branch NOW
+    // (state-integrity invariant 5): they hold committed work, and a later early
+    // return from the merge phase (a rebase-and-fix that itself blocks) must never
+    // strand it. The terminal stage-stop status is set after the good chunks merge,
+    // below. The floor-green `built` chunks are NOT preserved here — they proceed to
+    // the merge phase, which preserves any that a later early return leaves unmerged.
     for r in &blocked {
         preserve_wave_build(run, &plan.chunks[r.idx], r);
-    }
-
-    // A build worker panicked (its `catch_unwind` turned the panic into
-    // `WaveJob::Panicked` so it did not unwind out of the wave scope). Preserve every
-    // SIBLING build's committed worktree — the blocked ones just above, and the
-    // floor-green ones here — so the panic can't strand real work (invariant 5), then
-    // stop the stage at a terminal block naming the crashed chunk. The panicked
-    // chunk's OWN worktree is in an unknown state and cannot be reliably named for
-    // preservation — a `--keep`-recoverable residual, not silent data loss of a
-    // sibling's work.
-    if let Some((chunk_id, msg)) = panicked {
-        for r in &built {
-            preserve_wave_build(run, &plan.chunks[r.idx], r);
-        }
-        run.circuit_breaker = Some(format!(
-            "wave build thread panicked on chunk {chunk_id} — sibling builds preserved, stage stopped: {msg}"
-        ));
-        run.code_block_status = Some("circuit_breaker");
-        run.decisions.push(envelope(
-            "supervisor",
-            DecisionTier::Coordinator,
-            format!(
-                "chunk {chunk_id} build thread panicked — sibling builds preserved, stage stopped: {msg}"
-            ),
-            vec![format!("chunk:{chunk_id}")],
-            "supervisor",
-            "v1",
-        ));
-        return Ok(());
     }
 
     // A resource ceiling crossed by the wave's builds stops before ANY merge (design
