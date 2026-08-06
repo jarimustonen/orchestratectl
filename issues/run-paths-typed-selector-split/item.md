@@ -2,8 +2,9 @@
 created: 2026-08-04
 updated: 2026-08-06
 type: improvement
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-06
 ---
 
 # Split run_paths into typed run_paths_exact + RunSelector for CLI-only prefix resolution
