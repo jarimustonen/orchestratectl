@@ -2,8 +2,9 @@
 created: 2026-08-04
 updated: 2026-08-06
 type: bug
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-06
 ---
 
 # run cancel: RunAlreadyTerminal classified as system (exit 2) not user (exit 1)
