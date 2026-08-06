@@ -6,56 +6,56 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-05 (v0.1.0 SHIPPED + operating-policy change)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (round of 4 landed + v0.1.1 SHIPPED + release-autonomy policy change)
 
-**One-paragraph state.** This was a **release + policy session** (no DAG round, no worktrees spawned).
-Headline: **`orchestratectl` 0.1.0 is PUBLISHED** — crates.io (`octl-core` + `orchestratectl`), a GitHub
-Release `v0.1.0` (aarch64-mac + x86_64/aarch64-linux binaries + installer), and a **per-tool Homebrew
-tap**: `brew install jarimustonen/orchestratectl/orchestratectl` (verified working). Distribution now
-matches issuectl/ossctl; homebase's dotfiles install hook was migrated to the per-tool tap (committed +
-pushed). Along the way: generated + approved `OSS-RELEASE.md`; finalized `CHANGELOG.md` (folded
-`[Unreleased]` into `[0.1.0] - 2026-08-04`); and fixed a release-blocking runner bug — the `hauis` mac
-build failed 3× at `actions/checkout` because the runner's `~/actions-runner/.env` set
-`GIT_CONFIG_GLOBAL`; removed it + documented the gotcha in `dist-workspace.toml` (issue
-`release-mac-checkout-git-config-global`, done). (The prior stint's 13-unit / 4-round work is in git
-history + the DAG reconcile notes below.)
+**One-paragraph state.** A full **DAG round** followed by a **release** and a **policy change**. The round
+ran **B‖C‖D in parallel, then E** (all headless spinoffs, all landed on first spawn — no worker deaths):
+`pipeline-parallel-chunks` ✅ (concurrent DAG-wave builds, opt-in `--max-build-concurrency`; /llm-review
+caught + fixed an invariant-5 leak), `doctor-skill-companion-sync` ✅ (companion-file presence+sync
+check — the new `skill.sync.<name>.<file>` doctor check), `landing-signal-reliable-after-rebase` ✅ (CLI
+rebase-robust `landed` flag via git cherry patch-id + ancestry net; stint/spinoff docs no longer rely on
+`merge-base --is-ancestor`), and `workmux-extract-libs` **re-scoped** (kept open — multiplexer already
+vendored; narrowed to the git-worktree-wrapper remainder, ~40 raw `git` call sites in
+supervise/cleanup + run/merge). Integrated gate green; local rebuild redeployed, `doctor` 0 fail / 0
+warn. Then **`orchestratectl` 0.1.1 SHIPPED**: crates.io (`octl-core` → `orchestratectl`), GitHub Release
+`v0.1.1` (aarch64-mac + x86_64/aarch64-linux binaries + installer), Homebrew tap at 0.1.1
+(`brew upgrade jarimustonen/orchestratectl/orchestratectl`). Release CI green.
 
-**OPERATING-POLICY CHANGE (2026-08-05, canonical — see root `AGENTS.md`).** (1) **Release often** — cut a
-release whenever something production-ready lands; don't batch. (2) **Pushing `main` is now always
-allowed (no ask)**, deliberately overriding the global "never push without being asked" default for this
-repo; the `pull → rebase → push` sequence can be run anytime. Only the two irreversible/public release
-steps stay behind the `/oss-release` approval boundary: `cargo publish` to crates.io and pushing a
-`vX.Y.Z` release tag (fires the public binary + Homebrew CI release).
+**OPERATING-POLICY CHANGE (2026-08-06, canonical — see root `AGENTS.md`).** **Release publish is now
+FULLY AUTONOMOUS — no approval gate.** The former `/oss-release` approval boundary is **removed** for this
+project: the agent may `cargo publish` to crates.io AND push a `vX.Y.Z` release tag **without asking**,
+and may decide independently when a release is warranted (per the release-often cadence). Autonomy = no
+permission prompt, **not** less care — right version, changelog finalized, `octl-core` before
+`orchestratectl`, publish dry-run green, clean tree are still required. (Combines with the prior
+2026-08-05 changes: release-often, and `main`-push / `pull→rebase→push` always allowed.)
 
-**KEY LEARNING (from prior stints, still canonical) — worker deaths are TRANSIENT.** Retry
-**with harvest** of the recoverable preserved branch (review → adopt → complete → merge), NOT
-hand-merge of unreviewed work, NOT base-agent swap. Heavy-LLM units legitimately take **54–96
-min**; a long run is not a hang. (This tactic is now encoded in `/stint-start` Phase 3 via
-`stint-recoverable-death-retry-harvest`.) NOTE: every worker this session landed cleanly on the
-first spawn — no deaths — but the discipline holds.
+**crates.io TOKEN (mechanics — for the next release).** The local `~/.cargo/credentials.toml` token was
+stale (June-1, revoked) → 403 on publish. Fixed by pulling the fresh token from homebase SOPS:
+`sops -d --extract '["token"]' ~/Sources/homebase/infra/secrets/crates-io.yaml` → write to
+`~/.cargo/credentials.toml` (mode 600), never echo the value. `CARGO_REGISTRY_TOKEN` also lives as a
+write-only GitHub Actions secret but is NOT wired into CI for crates.io (cargo-dist `publish-jobs` only
+does homebrew), so the crates.io publish is local `cargo publish`. If a future publish 403s, re-pull from
+SOPS.
 
-**Cross-repo this session:** homebase dotfiles hook migrated to the per-tool tap
-(`dotfiles/{setup.d/orchestratectl.sh, setup.d/brew-trust.sh, src/brew-packages.txt}`) — committed +
-pushed on homebase `main`. Two `ossctl` release-engine bugs filed + committed in **~/Sources/ossctl**
-(`release-list-abandon-not-implemented`, `release-cut-multi-target-ecosystem`; unpushed there — ossctl
-push is the human's call, that repo keeps the global default).
+**KEY LEARNING (still canonical) — worker deaths are TRANSIENT.** Retry **with harvest** of the
+recoverable preserved branch (review → adopt → complete → merge), NOT hand-merge of unreviewed work, NOT
+base-agent swap. Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang. NOTE: every
+worker this round landed cleanly on first spawn — no deaths.
 
 **NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is
 **`supervisor-spawn-fails-silently-at-run-create`** (Lane A, only remaining high — but
-investigative/no-repro; #4 stateful load-trigger only). Practical *actionable* heads, all
-disjoint and parallel-safe: Lane B `pipeline-parallel-chunks`, Lane C `workmux-extract-libs`
-(**reassess scope first** — the multiplexer slice already landed via `vendor-workmux-multiplexer`;
-this may be a re-scope-or-close), Lane D `doctor-skill-companion-sync`, Lane E
-`landing-signal-reliable-after-rebase` (**carries `collision: bundled-skill snapshot`** — it edits
-stint-start + worktree-spinoff templates, so do NOT run it parallel with a Lane D worktree, now
-including the new `spinoff-skill-stale-preview-banner` which also touches the bundled-skill snapshot).
-Recompute the head at pick time from live `issuectl` status; merge the DAG at Phase 0/7 per
-`crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md`. No worktrees remain; **`main` clean and
-pushed (0 unpushed)** — pushing is now always allowed (no ask, see the policy change above).
+investigative/no-repro; #4 stateful load-trigger only). Practical *actionable* heads, all disjoint and
+parallel-safe: Lane A **`peculiarly-muddled-caption`** (NEW, concrete — an undriven `--kind orchestrate`
+driver run becomes a silent 15h zombie; good first Lane A pick), Lane B `pipeline-provenance-durable-refs`,
+Lane C `workmux-extract-libs` (now a real build — the git-worktree-wrapper remainder), Lane D
+`skill-companion-codex-layout`, Lane E `cancel-run-already-terminal-error-class`. **Lane D still carries a
+`collision: bundled-skill snapshot`** on `spinoff-skill-stale-preview-banner` — don't run it parallel with
+a Lane E worktree that touches skill templates. Recompute the head at pick time from live `issuectl`
+status; merge the DAG at Phase 0/handoff. No worktrees remain; **`main` clean, `v0.1.1` tagged + pushed.**
 
 ---
 
-## Execution DAG (2026-08-05)
+## Execution DAG (2026-08-06)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -75,6 +75,7 @@ GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, only
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
+    peculiarly-muddled-caption               (undriven --kind orchestrate driver run becomes a silent 15h zombie; concrete, actionable)
     idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
     watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
@@ -166,6 +167,11 @@ no longer rely on `merge-base --is-ancestor`). Integrated gate green (fmt/clippy
 --workspace` all pass on integrated main); local rebuild redeployed, `doctor` 0 fail / 0 warn (the new
 `skill.sync.stint-start.AGENTS-EXECUTION-DAG.md` companion check passes live). All 4 units landed on
 first spawn — no worker deaths. No worktrees remain.
+**Handoff reconcile 2026-08-06:** `comm -3` found 1 left-only (`peculiarly-muddled-caption`, filed by a
+parallel session) → added to Lane A; 0 right-only. Heads advanced (all round issues terminal): Lane B
+head → `pipeline-provenance-durable-refs`, Lane D head → `skill-companion-codex-layout`, Lane E head →
+`cancel-run-already-terminal-error-class`. Then v0.1.1 shipped + release-autonomy policy change (see
+Continue-here). DAG driftless at wrap.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
