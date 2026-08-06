@@ -75,7 +75,8 @@ GLOBAL HEAD-OF-LINE: supervisor-spawn-fails-silently-at-run-create (Lane A, only
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
-    peculiarly-muddled-caption               (undriven --kind orchestrate driver run becomes a silent 15h zombie; concrete, actionable)
+    immoderately-irate-north                 (watchdog snapshot invocation-count test — parallel-execution flake; caught by integrated gate 2026-08-06)
+    peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption)
     idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
     watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
@@ -92,8 +93,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ pipeline-provenance-durable-refs         (fix-loop-rollback follow-up: durable per-chunk provenance refs)
-    immoderately-dirty-cushion               (adaptive tier promotion in concurrent wave builds — pipeline-parallel-chunks follow-up)
+  ▶ immoderately-dirty-cushion               (adaptive tier promotion in concurrent wave builds — pipeline-parallel-chunks follow-up)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
@@ -110,8 +110,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ cancel-run-already-terminal-error-class  (run cancel on a terminal run: distinct error class; run-cancel-prefix follow-up)
-    run-paths-typed-selector-split           (typed run-id selector split-out; run-cancel-prefix follow-up)
+  ▶ run-paths-typed-selector-split           (typed run-id selector split-out; run-cancel-prefix follow-up)
     run-wait-timeout-unit-required
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
@@ -172,6 +171,18 @@ parallel session) → added to Lane A; 0 right-only. Heads advanced (all round i
 head → `pipeline-provenance-durable-refs`, Lane D head → `skill-companion-codex-layout`, Lane E head →
 `cancel-run-already-terminal-error-class`. Then v0.1.1 shipped + release-autonomy policy change (see
 Continue-here). DAG driftless at wrap.
+**Round executed 2026-08-06 (A‖B‖E parallel, 3 headless spinoffs, ~48 min):** landed
+`cancel-run-already-terminal-error-class` (fixed; `run cancel` on a terminal run is now a USER
+error exit 1 + array `expected` hint), `peculiarly-muddled-caption` (fixed; read-time `stalled`
+hint on `run show`/`run list` for undriven `--kind orchestrate` drivers, 12-min grace, no
+reducer/schema touch), `pipeline-provenance-durable-refs` (done; durable `refs/pipeline/prov/…`
+pinned before rebuild reset + teardown-gated cleanup; /llm-review applied). All 3 landed on first
+spawn — no worker deaths. Integrated gate: `cargo test --workspace` surfaced a PRE-EXISTING
+parallel-execution flake `snapshot_is_one_invocation_per_socket_regardless_of_node_count` (green
+in isolation/single-thread/retry; no round code touched watchdog) → filed `immoderately-irate-north`
+(Lane A). Dropped the 3 landed; added worker follow-up `peculiarly-cheerful-mine` (Lane A, driver
+heartbeat) + the flake. Local rebuild redeployed, `doctor` 0 fail / 0 warn (545 ok). No worktrees
+remain.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
