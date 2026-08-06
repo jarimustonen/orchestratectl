@@ -53,12 +53,12 @@ pub fn run(
         // printing success.
         Err(octl_core::Error::RunAlreadyTerminal { status }) => {
             let s = status_kebab(status);
-            return Err(CliError::system(
+            return Err(CliError::user(
                 "run_already_terminal",
                 format!("run is {s}, cannot cancel"),
             )
             .with_invalid_value(s)
-            .with_expected(json!("running|pending|blocked")));
+            .with_expected(json!(["running", "pending", "blocked"])));
         }
         // The run vanished between the pre-check and the lock: report it as the
         // same missing-run condition rather than a generic system I/O error.

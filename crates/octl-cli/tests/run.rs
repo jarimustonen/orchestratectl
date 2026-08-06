@@ -713,10 +713,13 @@ fn cancel_done_run_is_refused_run_already_terminal() {
     );
 
     let (code, v) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
-    assert_eq!(code, 2);
+    assert_eq!(code, 1);
     assert_eq!(v["error"]["code"], "run_already_terminal");
     assert_eq!(v["error"]["invalid_value"], "done");
-    assert_eq!(v["error"]["expected"], "running|pending|blocked");
+    assert_eq!(
+        v["error"]["expected"],
+        json!(["running", "pending", "blocked"])
+    );
 
     // The refusal mutated nothing: the run is still Done.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
