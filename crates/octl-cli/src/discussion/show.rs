@@ -4,7 +4,7 @@ use octl_core::{read_discussion_opt, Discussion};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_discussion_id, run_paths};
+use crate::run::{from_core, parse_discussion_id, run_paths_from_cli_arg};
 
 use super::dto::DiscussionView;
 use super::status_kebab;
@@ -17,7 +17,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let discussion_id = parse_discussion_id(discussion_id)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
 
     if !paths.root.is_dir() {
         return Err(

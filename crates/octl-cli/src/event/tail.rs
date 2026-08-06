@@ -35,7 +35,7 @@ use octl_core::{read_manifest_opt, Event, SCHEMA_VERSION};
 use crate::error::CliError;
 use crate::event::{resolve_format, FormatArg};
 use crate::output::OutputSpec;
-use crate::run::{from_core, run_paths};
+use crate::run::{from_core, run_paths_from_cli_arg};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Exit code returned for both SIGINT and SIGTERM. Strictly correct
@@ -56,7 +56,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let run_id = &args.run_id;
     let format = resolve_format(args.spec.format)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
 
     // Require the run to exist (consistent with `run show`); reading a
     // non-existent run id is a user error, not "stream of nothing".

@@ -55,7 +55,7 @@ use octl_core::{
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::SupervisorView;
-use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths};
+use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths_from_cli_arg};
 use crate::supervise::cleanup;
 
 /// The bundled merge backend, embedded at compile time so the binary is
@@ -162,7 +162,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_from_cli_arg(&root, &run_id)?;
 
     let manifest = read_manifest_opt(&paths)
         .map_err(from_core)?

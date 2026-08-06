@@ -23,7 +23,7 @@ use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
     from_core, parse_discussion_id, parse_node_id, parse_proposal_id, parse_run_id,
-    require_nonempty, run_paths,
+    require_nonempty, run_paths_from_cli_arg,
 };
 
 pub struct Args<'a> {
@@ -353,7 +353,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     validate_data_ids(kind, node_id.as_deref(), &data)?;
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_from_cli_arg(&root, &run_id)?;
 
     // The run dir must already exist — `event create` is a write path
     // for an existing run; it does NOT bootstrap one. `is_dir()` over

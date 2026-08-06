@@ -8,7 +8,7 @@ use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, Status};
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::{ManifestView, SupervisorView};
-use crate::run::{from_core, run_paths};
+use crate::run::{from_core, run_paths_from_cli_arg};
 
 /// The single reporting node of a single-worker worktree run (`n-0001`);
 /// mirrors `run merge` / `run wait`'s `DEFAULT_NODE_ID`. Its terminal report is
@@ -66,7 +66,7 @@ struct Counts {
 
 pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
     // Hold the run's shared lock for the whole manifest + projection-dir scan so
     // a concurrent reducer cannot leave us with a manifest counter that
     // disagrees with the projection files we count (design.md §4). The lock is

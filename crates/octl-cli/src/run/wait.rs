@@ -46,7 +46,7 @@ use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Sta
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, run_paths, status_kebab};
+use crate::run::{from_core, run_paths_from_cli_arg, status_kebab};
 
 /// Reporting node whose terminal `node.report` carries the run's outcome
 /// summary. Every single-worker worktree kind has exactly one node
@@ -158,12 +158,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
 
     // Validate + resolve every run up front so a malformed or unknown id is a
-    // fast exit-1, never something we discover mid-poll. `run_paths` rejects a
+    // fast exit-1, never something we discover mid-poll. `run_paths_from_cli_arg` rejects a
     // malformed ULID (`invalid_run_id`); a well-formed id naming no run on disk
     // surfaces as `unknown_run` here.
     let mut runs: Vec<(String, RunPaths)> = Vec::with_capacity(args.run_ids.len());
     for run_id in &args.run_ids {
-        let paths = run_paths(&root, run_id)?;
+        let paths = run_paths_from_cli_arg(&root, run_id)?;
         if current_status(&paths)?.is_none() {
             return Err(
                 CliError::user("unknown_run", format!("no run with id {run_id}"))

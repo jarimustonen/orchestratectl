@@ -12,7 +12,7 @@ use octl_core::{cancel_run, read_manifest_opt, CancelOutcome, NodeId};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, run_paths, status_kebab};
+use crate::run::{from_core, run_paths_from_cli_arg, status_kebab};
 
 #[derive(Serialize)]
 struct CancelPayload {
@@ -29,7 +29,7 @@ pub fn run(
     warnings: &[String],
 ) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
     // `run_id` may have been an unambiguous prefix; from here on report the full
     // resolved id so payloads/messages never echo a partial id back to the user.
     let run_id = paths.run_id.as_str();

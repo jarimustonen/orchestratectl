@@ -10,7 +10,7 @@ use octl_core::{
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_proposal_id, run_paths};
+use crate::run::{from_core, parse_proposal_id, run_paths_from_cli_arg};
 use crate::spinoff::validate_reason_like;
 
 pub struct Args<'a> {
@@ -57,7 +57,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_from_cli_arg(&root, &run_id)?;
 
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(

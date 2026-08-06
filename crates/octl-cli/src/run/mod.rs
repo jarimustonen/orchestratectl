@@ -342,14 +342,32 @@ pub fn lifecycle_for(k: Kind) -> Lifecycle {
 /// truncated id can never silently fuzzy-resolve to the wrong run (a
 /// confused-deputy risk). A `Prefix` is only ever produced by
 /// [`RunSelector::parse`] on a raw CLI argument and only ever resolved at verb
-/// entry via [`RunSelector::resolve`] (or the [`run_paths`] convenience).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// entry via [`RunSelector::resolve`] (or the [`run_paths_from_cli_arg`]
+/// convenience).
+#[derive(Debug)]
 pub enum RunSelector {
     /// A fully-validated 26-char ULID — resolves with no directory scan.
     Exact(RunId),
     /// A well-formed shorter run-id prefix awaiting resolution against
-    /// `<root>/runs/`.
-    Prefix(String),
+    /// `<root>/runs/`. The payload is [`RunIdPrefix`], whose private field can
+    /// only be built by [`RunSelector::parse`] — so no code outside this module
+    /// can hand-construct a prefix and feed it to [`RunSelector::resolve`], which
+    /// is what makes fuzzy resolution a *type-level* CLI-only concern rather than
+    /// a convention.
+    Prefix(RunIdPrefix),
+}
+
+/// A well-formed run-id prefix, constructible **only** via
+/// [`RunSelector::parse`] (the private field seals it). This is the type-level
+/// half of the confused-deputy guarantee: an internal caller cannot fabricate a
+/// `RunSelector::Prefix` to route a truncated id through fuzzy resolution.
+#[derive(Debug)]
+pub struct RunIdPrefix(String);
+
+impl RunIdPrefix {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl RunSelector {
@@ -391,7 +409,7 @@ impl RunSelector {
             )
             .with_invalid_value(arg));
         }
-        Ok(RunSelector::Prefix(arg.to_string()))
+        Ok(RunSelector::Prefix(RunIdPrefix(arg.to_string())))
     }
 
     /// Resolve to a typed [`RunId`], scanning `<root>/runs/` **only** for a
@@ -401,7 +419,7 @@ impl RunSelector {
     pub fn resolve(self, root: &Path) -> Result<RunId, CliError> {
         match self {
             RunSelector::Exact(rid) => Ok(rid),
-            RunSelector::Prefix(prefix) => resolve_prefix(root, &prefix),
+            RunSelector::Prefix(prefix) => resolve_prefix(root, prefix.as_str()),
         }
     }
 }
@@ -498,12 +516,19 @@ fn prefix_not_found(arg: &str) -> CliError {
 /// call site uses: they already hold a validated [`RunId`], so there is no
 /// truncated string that could fuzzy-resolve to the wrong run. Prefix
 /// resolution is deliberately *not* reachable from here — it lives only in
-/// [`RunSelector`] / [`run_paths`], gated to CLI verb entry.
+/// [`RunSelector`] / [`run_paths_from_cli_arg`], gated to CLI verb entry.
 ///
 /// `run_dir` only accepts a `RunId`, so a `..`/absolute component can never
 /// reach the filesystem, and `from_validated` runs the symlink-root guard (a
 /// symlinked run dir maps to the `corrupt_run` envelope rather than being
 /// silently followed).
+///
+/// Scope of the guarantee: this closes the *truncation → prefix* confused-deputy
+/// route only. It does NOT prove the named run is actually a child of / related
+/// to the caller — a corrupt or forged event carrying a *valid but unrelated*
+/// full ULID still resolves to that other run. Reciprocal parent/child
+/// validation is separate hardening (see the `run-paths-typed-selector-split`
+/// spinoffs), not something the id type can enforce.
 pub fn run_paths_exact(root: &Path, run_id: &RunId) -> Result<RunPaths, CliError> {
     let dir = octl_core::run_dir(root, run_id);
     RunPaths::from_validated(dir, run_id.clone()).map_err(from_core)
@@ -513,17 +538,21 @@ pub fn run_paths_exact(root: &Path, run_id: &RunId) -> Result<RunPaths, CliError
 /// validated `RunPaths`.
 ///
 /// Accepts an unambiguous run-id prefix as well as a full ULID (see
-/// [`RunSelector`]) — this is the single CLI verb-entry chokepoint, so prefix
-/// acceptance is uniform across every run-id-taking subcommand. Internal callers
-/// must NOT use it: they hold a typed [`RunId`] and call [`run_paths_exact`],
-/// which cannot fuzzy-resolve.
+/// [`RunSelector`]) — this is the CLI verb-entry chokepoint for verbs that
+/// intentionally accept a human/AI-entered run *selector*, so prefix acceptance
+/// is uniform across them. It is `pub(crate)` and named for its role so an
+/// internal caller does not reach for it by muscle memory: internal, supervisor,
+/// reducer, and event-data paths hold a typed [`RunId`] and call
+/// [`run_paths_exact`], which cannot fuzzy-resolve. (Relationship pointers like
+/// `run create --parent-run-id` are exact-only — they validate with
+/// [`parse_run_id`] and never route through here.)
 ///
 /// A malformed run-id is a distinct, machine-actionable error class from a
 /// well-formed id that simply names no run, so it surfaces as `invalid_run_id`
 /// carrying the core validator's reason (length, charset, ULID range) rather
 /// than being collapsed into `run_not_found`. Callers that look a run up by id
 /// still emit their own `run_not_found` for the valid-but-missing case.
-pub fn run_paths(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
+pub(crate) fn run_paths_from_cli_arg(root: &Path, run_id: &str) -> Result<RunPaths, CliError> {
     // Resolve a prefix (if any) to a typed, already-validated run id, then hand
     // off to the exact path helper. Prefix resolution happens here and nowhere
     // downstream.
@@ -556,8 +585,8 @@ pub fn invalid_id(value: &str, err: &IdValidationError) -> CliError {
 }
 
 /// Validate a `run_id` clap or event-data argument into a typed [`RunId`].
-/// Most run-id call sites instead go through [`run_paths`], which both
-/// validates and builds the [`RunPaths`]; use this when only validation of a
+/// CLI verb-entry call sites instead go through [`run_paths_from_cli_arg`], which
+/// both validates and builds the [`RunPaths`]; use this when only validation of a
 /// bare run-id string is needed (e.g. an event-data `child_run_id`).
 pub fn parse_run_id(value: &str) -> Result<RunId, CliError> {
     RunId::parse_str(value).map_err(|e| invalid_id(value, &e))
@@ -750,7 +779,35 @@ mod tests {
         let full = octl_core::new_run_id();
         make_run_dir(root, &parse_run_id(&full).unwrap());
 
-        let paths = run_paths(root, &full[..10]).unwrap();
+        let paths = run_paths_from_cli_arg(root, &full[..10]).unwrap();
         assert_eq!(paths.run_id.as_str(), full);
+    }
+
+    /// The confused-deputy contrast, on the SAME truncated fragment and the SAME
+    /// on-disk run: the CLI verb entry fuzzy-resolves it to the full run, but the
+    /// internal typed boundary (`parse_run_id`) rejects it loudly — so a truncated
+    /// `child_run_id` from event data can never reach `run_paths_exact` and
+    /// silently resolve to that run.
+    #[test]
+    fn truncated_id_resolves_on_cli_path_but_is_rejected_on_internal_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let full = octl_core::new_run_id();
+        make_run_dir(root, &parse_run_id(&full).unwrap());
+        let truncated = &full[..10];
+
+        // CLI verb entry: truncated fragment fuzzy-resolves to the full run.
+        assert_eq!(
+            run_paths_from_cli_arg(root, truncated)
+                .unwrap()
+                .run_id
+                .as_str(),
+            full
+        );
+
+        // Internal path: the same fragment cannot be typed as a `RunId`, so it
+        // never reaches `run_paths_exact` — the fuzzy match is unreachable. This
+        // is the whole point of the split.
+        assert_eq!(parse_run_id(truncated).unwrap_err().code, "invalid_id");
     }
 }

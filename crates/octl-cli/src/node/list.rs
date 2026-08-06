@@ -7,7 +7,7 @@ use octl_core::{read_manifest_opt, read_node_opt, RunLock};
 use crate::error::CliError;
 use crate::node::dto::NodeSummary;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_node_id, run_paths, status_kebab};
+use crate::run::{from_core, parse_node_id, run_paths_from_cli_arg, status_kebab};
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -33,7 +33,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_from_cli_arg(&root, &run_id)?;
     let filter = args.status.as_deref().map(str::trim);
 
     // Hold the run's shared lock across the manifest-existence check and the

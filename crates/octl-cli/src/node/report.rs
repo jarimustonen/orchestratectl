@@ -23,7 +23,7 @@ use octl_core::{ensure_root, read_manifest_opt, read_node_opt};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_node_id, require_nonempty, run_paths};
+use crate::run::{from_core, parse_node_id, require_nonempty, run_paths_from_cli_arg};
 
 /// Mirror of `event create`'s 1 MiB cap. `node.report` is the largest
 /// realistic payload (design.md §1.4 cites 10-50 KB); 1 MiB still
@@ -75,7 +75,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     validate_report_payload(&data).map_err(map_report_validation_error)?;
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, &run_id)?;
+    let paths = run_paths_from_cli_arg(&root, &run_id)?;
 
     // Both manifest and node must exist — `node report` is only meant
     // to update a live node, not bootstrap one. Reporting against a

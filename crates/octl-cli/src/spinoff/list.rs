@@ -6,7 +6,7 @@ use octl_core::{read_manifest_opt, read_spinoff_opt, RunLock};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_proposal_id, run_paths};
+use crate::run::{from_core, parse_proposal_id, run_paths_from_cli_arg};
 use crate::spinoff::dto::SpinoffSummary;
 use crate::spinoff::{status_arg_kebab, status_kebab, StatusFilterArg};
 
@@ -30,7 +30,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let status_filter = args.status.map(status_arg_kebab);
 
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
 
     // Hold the run's shared lock across the manifest-existence check and the
     // whole `spinoffs/` scan so a concurrent reducer cannot add or rewrite a

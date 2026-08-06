@@ -254,16 +254,24 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         ));
     }
 
-    // Validate the parent pointers strictly (RunId / NodeId shapes) but keep
-    // them as `String` for the event-data payload and downstream `as_deref`.
-    let parent_run_id = match args.parent_run_id.as_deref() {
-        Some(v) => Some(parse_run_id(v)?.to_string()),
+    // Validate the parent pointers strictly (RunId / NodeId shapes) ONCE, keeping
+    // the typed ids so the exact path helper (and the `child.spawned` append)
+    // reuse them without a re-parse — a parent pointer is exact-only and must
+    // never route through the fuzzy CLI resolver. The `String` forms are derived
+    // from the typed ids purely for the event-data payload and downstream
+    // `as_deref`.
+    let parent_run_id_typed = match args.parent_run_id.as_deref() {
+        Some(v) => Some(parse_run_id(v)?),
         None => None,
     };
-    let parent_node_id = match args.parent_node_id.as_deref() {
-        Some(v) => Some(parse_node_id(v)?.to_string()),
+    let parent_node_id_typed = match args.parent_node_id.as_deref() {
+        Some(v) => Some(parse_node_id(v)?),
         None => None,
     };
+    let parent_run_id = parent_run_id_typed.as_ref().map(|r| r.as_str().to_string());
+    let parent_node_id = parent_node_id_typed
+        .as_ref()
+        .map(|n| n.as_str().to_string());
 
     let root = crate::home::root_dir()?;
 
@@ -384,10 +392,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // itself is emitted only AFTER create.sh succeeds — see below — so a
         // create.sh failure never pollutes the parent's DAG bookkeeping.
         let parent_run_id = parent_run_id.as_deref().unwrap();
-        // `parent_run_id` was validated to a full `RunId` at arg-parse time
-        // (never a prefix), so re-parse to the typed id and take the exact path —
-        // a parent pointer must never fuzzy-resolve.
-        let parent_paths = run_paths_exact(&root, &parse_run_id(parent_run_id)?)?;
+        // `is_child` ⇒ the parent pointer was validated to a typed `RunId` above;
+        // reuse it for the exact path — a parent pointer must never fuzzy-resolve.
+        let parent_paths = run_paths_exact(&root, parent_run_id_typed.as_ref().expect("is_child"))?;
         if !parent_paths.manifest().exists() {
             return Err(CliError::user(
                 "parent_not_found",
@@ -511,9 +518,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         if !is_child {
             return Ok(());
         }
-        let parent_run_id = parent_run_id.as_deref().unwrap();
-        let parent_node_id = parent_node_id.as_deref().unwrap();
-        let parent_paths = run_paths_exact(&root, &parse_run_id(parent_run_id)?)?;
+        let parent_paths = run_paths_exact(&root, parent_run_id_typed.as_ref().expect("is_child"))?;
         let child_data = json!({
             "child_run_id": run_id,
             "child_node_id": "n-0001",
@@ -530,7 +535,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
-            Some(&parse_node_id(parent_node_id)?),
+            Some(parent_node_id_typed.as_ref().expect("is_child")),
             None,
             child_data,
         )

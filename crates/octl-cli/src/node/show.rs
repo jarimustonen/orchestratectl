@@ -5,7 +5,7 @@ use octl_core::{read_manifest_opt, read_node_opt, RunLock};
 use crate::error::CliError;
 use crate::node::dto::NodeView;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::{from_core, parse_node_id, run_paths, status_kebab};
+use crate::run::{from_core, parse_node_id, run_paths_from_cli_arg, status_kebab};
 
 pub fn run(
     run_id: &str,
@@ -15,7 +15,7 @@ pub fn run(
 ) -> Result<(), CliError> {
     let node_id = parse_node_id(node_id)?;
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
     // The run-existence check and the node read are two file reads; hold the
     // shared lock across both so a concurrent reducer cannot delete or rewrite
     // the node between them (design.md §4). `None` distinguishes a missing run

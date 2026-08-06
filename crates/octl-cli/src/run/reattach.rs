@@ -15,7 +15,7 @@ use octl_core::{append_and_apply_event, read_manifest_opt};
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::supervisor_spawn;
-use crate::run::{from_core, run_paths};
+use crate::run::{from_core, run_paths_from_cli_arg};
 use crate::supervise::pid_file;
 
 #[derive(Serialize)]
@@ -33,7 +33,7 @@ pub fn run(
     warnings: &[String],
 ) -> Result<(), CliError> {
     let root = crate::home::root_dir()?;
-    let paths = run_paths(&root, run_id)?;
+    let paths = run_paths_from_cli_arg(&root, run_id)?;
     if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
         return Err(
             CliError::user("run_not_found", format!("no run with id {run_id}"))
