@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`run cancel` on an already-terminal run is now a user error, exit 1 (`cancel-run-already-terminal-error-class`).** Refusing to cancel a `Done`/`Failed` run is a deterministic domain refusal, not a system fault, so it now maps to `CliError::user` (exit 1) instead of `CliError::system` (exit 2) — exit-code class governs AI-caller retry behaviour, and exit 2 could trigger spurious retries of a permanently-refused operation. The error's `expected` hint also changes from the pipe-delimited string `"running|pending|blocked"` to a JSON array `["running","pending","blocked"]` (the non-terminal, cancellable states) for machine consumption, matching the array-valued `expected` convention used elsewhere.
+
 ## [0.1.1] - 2026-08-05
 
 ### Added
