@@ -6,9 +6,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-06
+
+Supersedes the 0.1.2 tag, whose prebuilt-binary + Homebrew release failed to
+publish (a transient self-hosted-runner checkout error, compounded by two CI
+breakages now fixed here); 0.1.2 remains on crates.io. 0.1.3 is the first
+coherent cut across all three channels since 0.1.1.
+
 ### Fixed
 
 - **Concurrent wave builds now get adaptive tier promotion (`immoderately-dirty-cushion`).** Under `pipeline run --max-build-concurrency > 1`, a chunk that exhausted its floor re-code budget previously blocked terminally, even though the strictly-sequential path (`--max-build-concurrency 1`) would have promoted it to the next model tier and succeeded. On wave-build exhaustion the chunk is now re-queued into a sequential drain off the moved tip (the same pattern the merge phase uses for rebase-and-fix), so promotion runs and the outcome no longer depends on the concurrency setting; the preserved build-phase attempt is reconciled so no worktree is orphaned. A per-worker `catch_unwind` also turns a build-thread panic into a terminal stage-stop that still preserves sibling builds (state-integrity invariant 5).
+- **Pin `time` to 0.3.41 to hold the 1.85 MSRV.** `time@0.3.51` / `time-core@0.1.9` (transitive via `tracing-appender`) raised their MSRV to rustc 1.88, above the project's declared 1.85, breaking the MSRV CI job and the release build. Pinned back to `time@0.3.41` (rust-version 1.67.1).
+
+### Internal
+
+- **`run cancel` prefix resolution is now type-safe (`run-paths-typed-selector-split`).** Prefix (fuzzy) run-id resolution is confined to CLI verb entry via a sealed `RunSelector`; internal / supervisor / reducer paths take an exact typed `RunId` through `run_paths_exact`, so a future caller passing a truncated id can no longer silently fuzzy-resolve to the wrong run (a confused-deputy risk). No user-visible behaviour change.
+- De-flaked the `watchdog` snapshot invocation-count test (`immoderately-irate-north`) — isolation-safe counting so the integrated test suite is deterministic under parallelism.
 
 ## [0.1.2] - 2026-08-06
 
