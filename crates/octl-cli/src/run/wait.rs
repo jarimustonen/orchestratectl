@@ -509,13 +509,23 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
 /// unit falls through to the existing unit-aware parse unchanged.
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     let trimmed = s.trim();
-    // Bare integer → seconds. `u64::from_str` accepts only ASCII digits (no
-    // sign, no unit, no whitespace), which is exactly the "unit-less integer"
-    // case; everything else defers to the unit-aware humantime parse below.
-    if let Ok(secs) = trimmed.parse::<u64>() {
+    // Bare integer → seconds. Gate on an explicit all-ASCII-digits check rather
+    // than trusting `u64::from_str`: the latter also accepts a leading `+`
+    // (`+30`), which would diverge from the unit-bearing form (`+30s`, which
+    // humantime rejects) and from the "unit-less integer" grammar we advertise.
+    // A digit-only string that overflows `u64` is still unambiguously a bare
+    // count, so report the range explicitly instead of letting it fall through
+    // to a confusing "time unit needed" from humantime.
+    if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        let secs = trimmed
+            .parse::<u64>()
+            .map_err(|_| format!("invalid duration '{s}': bare seconds exceed {}", u64::MAX))?;
         return Ok(Duration::from_secs(secs));
     }
-    humantime::parse_duration(s).map_err(|e| format!("invalid duration '{s}': {e}"))
+    // Anything with a unit (or otherwise non-numeric) defers to the unit-aware
+    // parse. Use `trimmed` so surrounding whitespace is normalized on both
+    // paths, not just the bare-integer one.
+    humantime::parse_duration(trimmed).map_err(|e| format!("invalid duration '{s}': {e}"))
 }
 
 #[cfg(test)]
@@ -541,18 +551,41 @@ mod tests {
         // instead of erroring out and letting a backgrounded wait exit instantly.
         assert_eq!(parse_duration("2400").unwrap(), Duration::from_secs(2400));
         assert_eq!(parse_duration("0").unwrap(), Duration::from_secs(0));
-        // Surrounding whitespace is tolerated and still reads as seconds.
+        // Leading zeros are decimal (not octal) and carry no unit ambiguity.
+        assert_eq!(parse_duration("00030").unwrap(), Duration::from_secs(30));
+        // A bare integer is exactly equivalent to its explicit-`sec` form.
+        assert_eq!(
+            parse_duration("30").unwrap(),
+            parse_duration("30sec").unwrap()
+        );
+        // Surrounding whitespace is tolerated and normalized on both paths.
         assert_eq!(parse_duration("  30  ").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration("  30s  ").unwrap(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parse_duration_bare_integer_overflow_is_a_clear_error() {
+        // Digit-only but > u64::MAX: report the range explicitly rather than
+        // deferring to humantime's misleading "time unit needed".
+        let err = parse_duration("18446744073709551616").unwrap_err();
+        assert!(err.contains("bare seconds exceed"), "got: {err}");
     }
 
     #[test]
     fn parse_duration_rejects_garbage() {
         assert!(parse_duration("soon").is_err());
         assert!(parse_duration("").is_err());
+        assert!(parse_duration("   ").is_err());
         assert!(parse_duration("-5s").is_err());
         // A bare negative integer is not a valid unsigned count and has no unit,
         // so it stays an error rather than silently coercing.
         assert!(parse_duration("-5").is_err());
+        // A leading `+` is not part of the advertised digits-only grammar, so it
+        // is rejected (it is NOT silently read as `+30` == 30) — keeping the
+        // bare and unit-bearing (`+30s`, also rejected) forms consistent.
+        assert!(parse_duration("+30").is_err());
+        // Internal whitespace does not make a bare integer.
+        assert!(parse_duration("2 400").is_err());
     }
 
     #[test]
