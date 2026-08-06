@@ -642,6 +642,15 @@ pub fn dispatch(
     // `child-supervisor-spawn-unconfirmed-no-retry`).
     state.spawned_children.retain(|_, pid| *pid != 0);
 
+    // Data-integrity sweep (issue `wildly-glorious-food`). A persisted child id
+    // that fails `RunId` validation is corruption, not a torn-down child: every
+    // downstream adoption site resolves ids with `parse_run_id(..).ok()` and
+    // silently skips a failure, so a corrupt id would masquerade as a completed
+    // child (and wedge the `spawned_children.is_empty()` work-complete gate).
+    // Log it loudly + record a durable quarantine event + drop it from the live
+    // set here, once at boot, before any resolution path reads these ids.
+    quarantine_corrupt_persisted_children(&paths, &mut state);
+
     // In-flight child-supervisor startup state machine
     // (issue `child-supervisor-spawn-unconfirmed-no-retry`). A child is tracked
     // here from the moment we fork it until its identity-verified pid confirms
@@ -1549,6 +1558,76 @@ fn child_retry_backoff(attempts: u32) -> Duration {
 fn child_spawn_attempts(st: &ChildSpawn) -> u32 {
     match st {
         ChildSpawn::Starting { attempts, .. } | ChildSpawn::Failed { attempts, .. } => *attempts,
+    }
+}
+
+/// Sweep the persisted `spawned_children` set for structurally-corrupt run ids
+/// and quarantine them, so a data-integrity problem is loud rather than silent
+/// (issue `wildly-glorious-food`).
+///
+/// A persisted child id that fails [`RunId`](octl_core::RunId) validation
+/// (wrong length, invalid Crockford, out-of-range ULID) is a corruption signal:
+/// every downstream child-adoption site resolves it with `parse_run_id(..).ok()`
+/// and, on failure, silently skips it — making a corrupt id indistinguishable
+/// from a child that completed and was torn down (its run dir gone). Left in the
+/// set it would also block the run's `spawned_children.is_empty()` work-complete
+/// gate forever, since it can never resolve to a live child. For each corrupt id
+/// we therefore:
+///   1. **log loudly** (warn, naming the id + source), and
+///   2. **quarantine** it — emit a durable, operator-visible
+///      `supervisor.child_id_quarantined` audit event on the parent run (keyed
+///      idempotently so a crash-restart re-sweep never double-appends), then
+///      drop it from `spawned_children` so it can never masquerade as a live or
+///      completed child.
+///
+/// A *well-formed* id whose run dir is simply gone is NOT corrupt and is left
+/// untouched here — that is the expected, benign teardown case, handled quietly
+/// on the normal resolution paths. The event append goes through the sanctioned
+/// [`append_and_apply_event`] API (state-integrity invariants 1–2); a failed
+/// append is non-fatal (we still drop the poison from the live set). Called once
+/// at boot, off the hot tick, so the lock acquisition can never wedge the
+/// single-threaded tick loop.
+fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::SupervisorState) {
+    let corrupt: Vec<(String, String)> = state
+        .spawned_children
+        .keys()
+        .filter_map(|cid| match parse_run_id(cid) {
+            Ok(_) => None,
+            Err(e) => Some((cid.clone(), e.message.clone())),
+        })
+        .collect();
+    for (cid, reason) in corrupt {
+        warn!(
+            target: "orchestratectl::supervise",
+            child = %cid,
+            source = "spawned_children",
+            reason = %reason,
+            "corrupt persisted child run id in supervisor state; quarantining (NOT a completed child)"
+        );
+        let key = format!("supervisor-child-id-quarantine:{cid}");
+        if let Err(e) = append_and_apply_event(
+            paths,
+            "supervisor.child_id_quarantined",
+            None,
+            Some(&key),
+            json!({
+                "child_run_id": cid,
+                "source": "spawned_children",
+                "reason": reason,
+            }),
+        ) {
+            // Non-fatal: the loud warn above already surfaced the corruption, and
+            // dropping the id from the live set below is the load-bearing part of
+            // the quarantine. The durable record is a convenience a later restart
+            // re-attempts (the idempotency key keeps it at-most-once).
+            warn!(
+                target: "orchestratectl::supervise",
+                child = %cid,
+                error = %e,
+                "failed to record supervisor.child_id_quarantined (dropping from live set anyway)"
+            );
+        }
+        state.spawned_children.remove(&cid);
     }
 }
 
@@ -3525,6 +3604,69 @@ mod tests {
         assert!(
             !seeded.contains_key(&confirmed),
             "a confirmed-running child must not be re-seeded (would double-track)"
+        );
+    }
+
+    /// Data-integrity sweep (issue `wildly-glorious-food`): a persisted child id
+    /// that fails `RunId` validation is quarantined loudly (dropped from
+    /// `spawned_children` + a durable `supervisor.child_id_quarantined` event),
+    /// while a well-formed id whose run dir is simply gone stays a benign,
+    /// unrecorded skip — so a corrupt id is no longer indistinguishable from a
+    /// child that completed and was torn down.
+    #[test]
+    fn quarantine_sweep_flags_corrupt_ids_but_keeps_valid_missing_children() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // A parent run dir + `run.created` so appends validate and land.
+        let parent_id = "01jxsnap000000000000000000";
+        let parent_paths = run_paths_exact(root, &parse_run_id(parent_id).unwrap()).unwrap();
+        std::fs::create_dir_all(octl_core::run_dir(root, &parse_run_id(parent_id).unwrap()))
+            .unwrap();
+        append_and_apply_event(
+            &parent_paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+        )
+        .unwrap();
+
+        // Two persisted children: one structurally corrupt, one well-formed but
+        // with no run dir (the expected completed-and-torn-down case).
+        let corrupt = "not-a-valid-run-id".to_string();
+        let valid_missing = "01jxsnap000000000000000042".to_string();
+        let mut state = state::SupervisorState::default();
+        state.spawned_children.insert(corrupt.clone(), 111);
+        state.spawned_children.insert(valid_missing.clone(), 222);
+
+        quarantine_corrupt_persisted_children(&parent_paths, &mut state);
+
+        // Corrupt id → dropped from the live set (never masquerades as a child).
+        assert!(
+            !state.spawned_children.contains_key(&corrupt),
+            "a corrupt persisted child id must be quarantined out of spawned_children"
+        );
+        // Well-formed-but-missing id → left in place (benign skip elsewhere).
+        assert_eq!(
+            state.spawned_children.get(&valid_missing),
+            Some(&222),
+            "a well-formed id with no run dir is a benign teardown case, not corruption"
+        );
+
+        // The corruption is durably recorded on the parent log; the valid id is not.
+        let raw = std::fs::read_to_string(parent_paths.events()).unwrap();
+        assert!(
+            raw.contains("supervisor.child_id_quarantined"),
+            "a corrupt id must produce a loud quarantine record; log was: {raw}"
+        );
+        assert!(
+            raw.contains(&corrupt),
+            "the quarantine record must name the offending id; log was: {raw}"
+        );
+        assert!(
+            !raw.contains(&valid_missing),
+            "a well-formed-but-missing child must NOT be recorded as quarantined; log was: {raw}"
         );
     }
 

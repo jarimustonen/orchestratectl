@@ -379,6 +379,16 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         | "cleanup.branch_preserved"
         | "cleanup.session_killed"
         | "cleanup.session_retained" => Ok(vec![]),
+        // Data-integrity audit record: the supervisor found a persisted child
+        // run id (in `supervisor.state.json`'s `spawned_children`) that fails
+        // `RunId` structural validation and quarantined it — a corrupt id that
+        // would otherwise resolve with `.ok()` and be silently skipped every
+        // tick, indistinguishable from a child that completed and was torn down
+        // (issue `wildly-glorious-food`). It mutates no projection — the event
+        // log is its only home — so it folds to a clean no-op. Listed
+        // explicitly so the append path's transactional gate runs the same
+        // no-op plan and the intent is documented here.
+        "supervisor.child_id_quarantined" => Ok(vec![]),
         _ => Ok(vec![]),
     }
 }
