@@ -2677,6 +2677,27 @@ enum WaveBuildOutcome {
     },
 }
 
+/// What one wave-build worker handed back to the folding main thread. A worker
+/// holds no `&mut Run`, so it returns one of these into the shared results map and
+/// the fold replays it deterministically. The `Panicked` variant exists because the
+/// worker wraps its build in [`std::panic::catch_unwind`]: a panic must NOT unwind
+/// out of the wave scope (which would strand every SIBLING chunk's floor-green
+/// worktree — the fold never runs to preserve them, violating invariant 5), so it
+/// is caught and surfaced here as a terminal marker the fold turns into a clean
+/// stage-stop after preserving the siblings.
+enum WaveJob {
+    /// The build completed (floor-green or a terminal block) — fold it normally.
+    Done(WaveBuildResult),
+    /// An orderly hard [`PipelineError`] from the build thread. Propagated by the
+    /// fold exactly as the sequential path propagates its own hard errors (`Run::Drop`
+    /// tears down); sibling preservation on this path is a tracked follow-up.
+    Error(PipelineError),
+    /// The build thread panicked; the worker's `catch_unwind` caught it so the wave
+    /// scope does not re-panic. The fold preserves every sibling build and stops the
+    /// stage at a terminal block naming the crashed chunk.
+    Panicked,
+}
+
 /// Build ONE wave chunk off the shared `wave_base` through a bounded floor re-code
 /// loop (design §6 VAIHE 2 + §8) WITHOUT merging. Thread-safe: it takes only shared
 /// (`Sync`) inputs and touches no `&mut Run`, so `k` of these run concurrently in a
@@ -2684,11 +2705,16 @@ enum WaveBuildOutcome {
 /// harness runs stay parallel. Returns the built commit or a terminal block, plus
 /// the per-chunk audit for the main thread to fold in.
 ///
-/// Adaptive tier promotion (design §3) is intentionally NOT done here — a promotion
-/// mutates shared run state and is rare; a wave chunk that exhausts its re-code
-/// budget blocks (preserved), and promotion remains the sequential path's job
-/// (`pipeline-parallel-promotion` follow-up). The deterministic FLOOR gate is
-/// identical to the sequential path — it is the shared [`build_and_gate`].
+/// Adaptive tier promotion (design §3) is intentionally NOT done in the build thread
+/// — a promotion mutates shared run state, which a worker holding no `&mut Run`
+/// cannot touch. A wave chunk that exhausts its per-tier re-code budget blocks
+/// (preserved). Promotion still happens, just deferred to the main thread: on
+/// build-phase exhaustion [`run_wave_concurrent`] re-queues the blocked chunk into
+/// the sequential drain ([`process_chunk_sequential`]) off the moved tip, which
+/// exercises promotion — so `--max-build-concurrency > 1` no longer terminally
+/// blocks a promotable chunk that `1` would have promoted-and-merged
+/// (`immoderately-dirty-cushion`). The deterministic FLOOR gate is identical to the
+/// sequential path — it is the shared [`build_and_gate`].
 #[allow(clippy::too_many_arguments)]
 fn build_chunk_in_wave(
     cfg: &PipelineConfig,
@@ -2829,6 +2855,16 @@ fn build_chunk_in_wave(
 /// chunk off the moved tip via the sequential drain (which re-forks off the new tip,
 /// re-gates, re-merges). Any block there stops the whole stage, exactly as the
 /// sequential path does.
+///
+/// Phase 3 — **build-phase exhaustion → sequential drain**: a chunk that exhausted
+/// its floor re-code budget during the concurrent build blocked WITHOUT a tier
+/// promotion (the worker holds no `&mut Run`). Rather than terminally block — which
+/// would make a promotable chunk fail at `> 1` where `1` succeeds — each such chunk
+/// is re-queued into the same sequential drain off the moved tip, which exercises
+/// adaptive promotion (design §3, `immoderately-dirty-cushion`). Its preserved
+/// build-phase attempt (kept before Phase 2 as invariant-5 protection against a
+/// merge-phase early return) is first reconciled so the re-run's fresh outcome is
+/// the only one — no orphan worktree, no double preservation.
 #[allow(clippy::too_many_arguments)]
 fn run_wave_concurrent(
     run: &mut Run,
@@ -2883,8 +2919,7 @@ fn run_wave_concurrent(
     let slug = run.slug.clone();
     let git_lock: Mutex<()> = Mutex::new(());
     let queue: Mutex<VecDeque<usize>> = Mutex::new((0..jobs.len()).collect());
-    let results: Mutex<BTreeMap<usize, Result<WaveBuildResult, PipelineError>>> =
-        Mutex::new(BTreeMap::new());
+    let results: Mutex<BTreeMap<usize, WaveJob>> = Mutex::new(BTreeMap::new());
 
     std::thread::scope(|scope| {
         for _ in 0..k {
@@ -2897,26 +2932,40 @@ fn run_wave_concurrent(
                 };
                 let Some(job_i) = next else { break };
                 let job = &jobs[job_i];
-                let res = build_chunk_in_wave(
-                    cfg,
-                    &repo,
-                    &slug,
-                    &wave_base,
-                    plan_rev,
-                    job.idx,
-                    job.chunk,
-                    job.tier,
-                    job.harness,
-                    baseline,
-                    &job.verify_seed,
-                    job.prior_diff.as_deref(),
-                    job.recode_budget,
-                    &git_lock,
-                );
+                // Catch a panic INSIDE the worker so it never unwinds out of the wave
+                // scope: an escaping panic re-panics on the scope's join, skipping the
+                // fold — every sibling chunk's floor-green worktree would then go
+                // un-preserved (invariant 5). `AssertUnwindSafe` is sound here: the
+                // only shared state a re-code touches (the `git_lock`, its poison
+                // flag) is already accessed through `PoisonError::into_inner`, so a
+                // poisoned lock after a panic is handled, not observed as torn state.
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    build_chunk_in_wave(
+                        cfg,
+                        &repo,
+                        &slug,
+                        &wave_base,
+                        plan_rev,
+                        job.idx,
+                        job.chunk,
+                        job.tier,
+                        job.harness,
+                        baseline,
+                        &job.verify_seed,
+                        job.prior_diff.as_deref(),
+                        job.recode_budget,
+                        &git_lock,
+                    )
+                }));
+                let job = match res {
+                    Ok(Ok(r)) => WaveJob::Done(r),
+                    Ok(Err(e)) => WaveJob::Error(e),
+                    Err(_panic) => WaveJob::Panicked,
+                };
                 results
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(job.idx, res);
+                    .insert(jobs[job_i].idx, job);
             });
         }
     });
@@ -2926,13 +2975,32 @@ fn run_wave_concurrent(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Fold the per-chunk audit deterministically (pending order), splitting the
-    // outcomes into the floor-green builds (to merge) and the terminal blocks.
+    // outcomes into the floor-green builds (to merge) and the terminal blocks. A
+    // worker that hard-errored or panicked is folded separately (below) so the loop
+    // still visits every OTHER chunk's result — a mid-fold `?` would skip them.
     let mut built: Vec<WaveBuildResult> = Vec::new();
     let mut blocked: Vec<WaveBuildResult> = Vec::new();
+    let mut hard_error: Option<PipelineError> = None;
+    let mut panicked_chunk: Option<String> = None;
     for &idx in pending {
-        let r = results
+        let r = match results
             .remove(&idx)
-            .expect("every wave job records a result")?;
+            .expect("every wave job records a result")
+        {
+            WaveJob::Done(r) => r,
+            WaveJob::Error(e) => {
+                if hard_error.is_none() {
+                    hard_error = Some(e);
+                }
+                continue;
+            }
+            WaveJob::Panicked => {
+                if panicked_chunk.is_none() {
+                    panicked_chunk = Some(plan.chunks[idx].id.clone());
+                }
+                continue;
+            }
+        };
         for u in &r.usages {
             run.meter.record_agent_run(u.as_ref());
         }
@@ -2950,12 +3018,50 @@ fn run_wave_concurrent(
         }
     }
 
+    // An orderly hard error from a build thread propagates as on the sequential path
+    // (`Run::Drop` tears down). Done BEFORE preserving the blocked builds so the
+    // behaviour matches the sequential hard-error path exactly (no sibling
+    // preservation on this path — a tracked follow-up); the panic path below is the
+    // one that DOES preserve, because a panic is a bug we want to lose no work to.
+    if let Some(e) = hard_error {
+        return Err(e);
+    }
+
     // Preserve every build-phase block's worktree/branch NOW (state-integrity
     // invariant 5): they hold committed work, and a later early return from the
     // merge phase (a rebase-and-fix that itself blocks) must never strand it. The
     // terminal stage-stop status is set after the good chunks merge, below.
     for r in &blocked {
         preserve_wave_build(run, &plan.chunks[r.idx], r);
+    }
+
+    // A build worker panicked (its `catch_unwind` turned the panic into
+    // `WaveJob::Panicked` so it did not unwind out of the wave scope). Preserve every
+    // SIBLING build's committed worktree — the blocked ones just above, and the
+    // floor-green ones here — so the panic can't strand real work (invariant 5), then
+    // stop the stage at a terminal block naming the crashed chunk. The panicked
+    // chunk's OWN worktree is in an unknown state and cannot be reliably named for
+    // preservation — a `--keep`-recoverable residual, not silent data loss of a
+    // sibling's work.
+    if let Some(chunk_id) = panicked_chunk {
+        for r in &built {
+            preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
+        run.circuit_breaker = Some(format!(
+            "wave build thread panicked on chunk {chunk_id} — sibling builds preserved, stage stopped"
+        ));
+        run.code_block_status = Some("circuit_breaker");
+        run.decisions.push(envelope(
+            "supervisor",
+            DecisionTier::Coordinator,
+            format!(
+                "chunk {chunk_id} build thread panicked — sibling builds preserved, stage stopped"
+            ),
+            vec![format!("chunk:{chunk_id}")],
+            "supervisor",
+            "v1",
+        ));
+        return Ok(());
     }
 
     // A resource ceiling crossed by the wave's builds stops before ANY merge (design
@@ -3113,35 +3219,49 @@ fn run_wave_concurrent(
         }
     }
 
-    // Any chunk that blocked during the build is terminal for the stage (the floor is
-    // the hard gate). The good chunks of the wave are already merged; the blocked
-    // worktrees were preserved before the merge phase — now stop with the first
-    // block's terminal status.
-    if let Some(first) = blocked.first() {
-        if let WaveBuildOutcome::Blocked {
-            status,
-            recodable,
-            reason,
-            ..
-        } = &first.outcome
-        {
-            let chunk_id = &plan.chunks[first.idx].id;
-            if *recodable && max_recode > 0 {
-                run.circuit_breaker = Some(format!(
-                    "chunk {chunk_id} still blocked after exhausting the wave re-code budget: {reason}"
-                ));
-                run.code_block_status = Some("circuit_breaker");
-            } else {
-                run.code_block_status = Some(status);
-            }
-            run.decisions.push(envelope(
-                "supervisor",
-                DecisionTier::Coordinator,
-                format!("chunk {chunk_id} blocked in wave — preserved, not merged ({reason})"),
-                vec![format!("chunk:{chunk_id}")],
-                "supervisor",
-                "v1",
-            ));
+    // Phase 3 — build-phase exhaustion → sequential drain (design §3,
+    // `immoderately-dirty-cushion`). A chunk that exhausted its floor re-code budget
+    // during the concurrent build blocked WITHOUT a tier promotion — the build worker
+    // holds no `&mut Run`, so it can't promote. Rather than terminally block the
+    // stage (which would make a promotable chunk fail at `--max-build-concurrency > 1`
+    // where `1` promotes-and-merges), re-queue each such chunk into the sequential
+    // drain off the moved tip, exactly as the merge phase re-queues a conflict /
+    // floor-regression. `process_chunk_sequential` re-forks off the current tip: it
+    // spends one attempt at the (already-exhausted) tier, finds the cumulative
+    // re-code budget spent, and promotes to the next tier — the adaptive promotion
+    // the wave build deferred. A genuine block / breaker there stops the whole stage
+    // (the sequential drain preserves its OWN fresh attempt and sets the terminal
+    // status); any not-yet-drained blocked chunk stays preserved from before the
+    // merge phase, so its committed work is never stranded (invariant 5).
+    for r in blocked {
+        let idx = r.idx;
+        let chunk_id = plan.chunks[idx].id.clone();
+        // Reconcile the build-phase attempt we preserved before the merge phase: it
+        // was invariant-5 protection against a merge-phase early return, but now we
+        // re-fork the chunk off the moved tip, so drop that stale attempt (worktree +
+        // branch) and un-record it — no orphan worktree, no double preservation.
+        reconcile_preserved_wave_build(run, &r);
+        run.decisions.push(envelope(
+            "supervisor",
+            DecisionTier::Coordinator,
+            format!(
+                "chunk {chunk_id} exhausted the wave re-code budget — re-queued to the sequential drain for tier promotion"
+            ),
+            vec![format!("chunk:{chunk_id}")],
+            "supervisor",
+            "v1",
+        ));
+        process_chunk_sequential(
+            run,
+            plan,
+            idx,
+            harnesses,
+            baseline,
+            pending_findings,
+            pending_prior_diff,
+        )?;
+        if run.code_block_status.is_some() {
+            return Ok(());
         }
     }
     Ok(())
@@ -3253,6 +3373,28 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
         ),
     };
     push_blocked_chunk(run, chunk, outcome, floor, floor_passed, reason, wt, branch);
+}
+
+/// Undo the invariant-5 preservation of a build-phase block we are about to re-drive
+/// through the sequential drain (`immoderately-dirty-cushion`). The block was
+/// preserved before the merge phase as protection against a merge-phase early
+/// return; now that the merge phase completed and we re-fork the chunk off the moved
+/// tip, that stale attempt must be reconciled so it isn't left orphaned: drop its
+/// worktree + branch and remove its `run.preserved` entry. Force-deleting the branch
+/// is safe — it holds a superseded attempt the sequential re-run replaces (the same
+/// treatment the sequential path gives its own superseded re-code / promotion
+/// attempts). The stale blocked chunk report is left to be overwritten by the
+/// sequential re-run's own upsert (keyed on the chunk id), so no duplicate report
+/// survives either.
+fn reconcile_preserved_wave_build(run: &mut Run, r: &WaveBuildResult) {
+    let (wt, branch) = match &r.outcome {
+        WaveBuildOutcome::Blocked { wt, branch, .. }
+        | WaveBuildOutcome::Built { wt, branch, .. } => (wt.clone(), branch.clone()),
+    };
+    let _ = git::worktree_remove(&run.repo, &wt);
+    let _ = git::delete_branch(&run.repo, &branch, true);
+    run.preserved
+        .retain(|(w, b)| w.as_path() != wt.as_path() || b.as_str() != branch.as_str());
 }
 
 /// The result of one chunk attempt: a green-floor merge, or a block (with the

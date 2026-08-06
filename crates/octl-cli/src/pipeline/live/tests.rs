@@ -3500,3 +3500,215 @@ fn dependent_chunks_serialise_even_at_high_concurrency() {
     assert!(report.chunks.iter().all(|c| c.merged));
     assert!(on_main(repo.path(), "a.txt") && on_main(repo.path(), "b.txt"));
 }
+
+#[test]
+fn wave_build_exhaustion_re_queues_to_sequential_drain_for_promotion() {
+    // `immoderately-dirty-cushion`: two independent chunks in one wave, build
+    // concurrency 2. c1 is clean at the base tier; c2 always strays out of scope at
+    // the base tier (a floor file-scope violation) and only succeeds at the promoted
+    // tier. The concurrent build path does NOT promote — so c2 exhausts its floor
+    // re-code budget and blocks in the wave. Before this fix that block was terminal,
+    // even though `--max-build-concurrency 1` would have promoted c2 and merged. Now
+    // the wave re-queues c2 into the sequential drain off the moved tip, which
+    // promotes it and merges — the same outcome the strictly-sequential path gives.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave exhaustion promotes via the sequential drain".to_string();
+    cfg.max_build_concurrency = 2;
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 1,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    // Base tier: c1 commits a.txt in scope; c2 commits b.txt PLUS an out-of-scope
+    // stray (floor file-scope violation → a re-codable block that never passes here).
+    struct BaseTier;
+    impl CodeHarness for BaseTier {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            let wt = &req.worktree_path;
+            if req.chunk_id == "c1" {
+                std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+                git(wt, &["add", "-A"]);
+                git(wt, &["commit", "-qm", "edit"]);
+                return Ok(ChunkResult::committed(
+                    git_out(wt, &["rev-parse", "HEAD"]),
+                    vec![PathBuf::from("a.txt")],
+                ));
+            }
+            std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+            std::fs::write(wt.join("stray.txt"), "leak\n").unwrap();
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "edit"]);
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                vec![PathBuf::from("b.txt"), PathBuf::from("stray.txt")],
+            ))
+        }
+    }
+    let base = BaseTier;
+    let promoted = CommitFake::new(&[("b.txt", "b\n")]); // clean, in scope, at the higher tier
+    let promoted_ran = std::sync::atomic::AtomicBool::new(false);
+    let harnesses = TwoTier {
+        base: &base,
+        promoted: &promoted,
+        promoted_ran: &promoted_ran,
+    };
+    let decider = crate::pipeline::ScriptedDecider::confirming();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    // The wave path now promotes-and-merges instead of terminally blocking.
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(report.chunks.iter().all(|c| c.merged), "{report:#?}");
+    assert!(
+        promoted_ran.load(Ordering::SeqCst),
+        "c2's promoted (higher-tier) harness must have run"
+    );
+    assert_eq!(report.promote_count, 1, "exactly one PROMOTE_TIER happened");
+    // c2 merged at the promoted tier.
+    let c2 = report.chunks.iter().find(|c| c.id == "c2").unwrap();
+    assert_eq!(c2.tier, "mid", "c2 merged at the promoted tier: {c2:#?}");
+    // Both files really landed on main.
+    assert!(
+        on_main(repo.path(), "a.txt") && on_main(repo.path(), "b.txt"),
+        "{report:#?}"
+    );
+    // The re-queue decision is on the audit trail.
+    assert!(
+        report
+            .decisions
+            .iter()
+            .any(|d| d.reason.contains("re-queued to the sequential drain")),
+        "a re-queue-to-sequential-drain decision must be recorded: {:#?}",
+        report.decisions
+    );
+    // The build-phase attempt was reconciled — no orphaned c2 worktree / branch leaks
+    // (c2 finally merged, so every chunk-c2* branch is cleaned up).
+    let branches = git_out(repo.path(), &["branch", "--list", "demo/chunk-c2*"]);
+    assert!(
+        branches.is_empty(),
+        "no orphaned c2 build branch may survive: {branches:?}"
+    );
+    let leftover: Vec<_> = std::fs::read_dir(workdir.path())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("chunk-c2"))
+        .collect();
+    assert!(
+        leftover.is_empty(),
+        "no orphaned c2 worktree dir may survive: {leftover:?}"
+    );
+}
+
+#[test]
+fn wave_build_worker_panic_preserves_sibling_builds() {
+    // Secondary (`immoderately-dirty-cushion`): a build worker that PANICS must not
+    // unwind out of the wave scope and strand its siblings' floor-green worktrees.
+    // Two independent chunks, concurrency 2: c1 builds green; c2's harness panics.
+    // The per-worker `catch_unwind` turns the panic into a terminal stage-stop, and
+    // c1's un-merged build is preserved (state-integrity invariant 5), not dropped.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave worker panic preserves siblings".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    // c1 commits a.txt cleanly; c2 panics mid-build.
+    struct PanicOnC2;
+    impl CodeHarness for PanicOnC2 {
+        fn capabilities(&self) -> HarnessCapabilities {
+            HarnessCapabilities {
+                can_author_tests: true,
+                reports_usage: false,
+                honors_file_scope: false,
+                runs_checks: false,
+            }
+        }
+        fn run_chunk(
+            &self,
+            req: &ChunkRequest,
+            _c: &CancelToken,
+        ) -> Result<ChunkResult, HarnessError> {
+            assert_ne!(req.chunk_id, "c2", "simulated build-thread panic on c2");
+            let wt = &req.worktree_path;
+            std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+            git(wt, &["add", "-A"]);
+            git(wt, &["commit", "-qm", "edit"]);
+            Ok(ChunkResult::committed(
+                git_out(wt, &["rev-parse", "HEAD"]),
+                vec![PathBuf::from("a.txt")],
+            ))
+        }
+    }
+
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &PanicOnC2,
+        &ScriptedVerify::passing(),
+    )
+    .expect("pipeline returns a terminal report, not a panic");
+
+    // The panic did not merge the feature and stopped the stage.
+    assert!(!report.merged, "{report:#?}");
+    // c1 built floor-green but never merged → preserved, not stranded by the panic.
+    let c1 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c1")
+        .expect("c1 has a report");
+    assert!(!c1.merged, "c1 was not merged");
+    assert!(
+        c1.branch_preserved.is_some(),
+        "c1's un-merged build must be preserved despite the sibling panic: {c1:#?}"
+    );
+    let branches = git_out(repo.path(), &["branch", "--list", "demo/chunk-c1"]);
+    assert!(
+        branches.contains("demo/chunk-c1"),
+        "c1's branch must survive teardown: {branches:?}"
+    );
+    // The panic is on the audit trail.
+    assert!(
+        report
+            .decisions
+            .iter()
+            .any(|d| d.reason.contains("build thread panicked")),
+        "the panic must be recorded as a decision"
+    );
+}
