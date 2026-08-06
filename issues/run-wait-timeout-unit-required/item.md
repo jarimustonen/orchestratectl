@@ -2,8 +2,9 @@
 created: 2026-07-26
 updated: 2026-08-06
 type: feature
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-06
 ---
 
 # run wait --timeout requires a unit suffix; bare integer rejected
