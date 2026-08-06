@@ -2,8 +2,9 @@
 created: 2026-08-06
 updated: 2026-08-06
 type: bug
-status: open
+status: fixed
 priority: high
+closed: 2026-08-06
 ---
 
 # self-hosted hauis runner: git checkout fails with HTTP 400 (blocks mac binary + Homebrew release)
@@ -43,3 +44,29 @@ NOT a repo or workflow problem (same workflow succeeded at v0.1.1). Candidates t
 Inspect + repair git access on the `hauis` runner, then **re-run the v0.1.3 Release workflow**
 (`gh run rerun <id>` or re-push the tag) to publish the 0.1.3 mac binary + Homebrew formula —
 no new version bump needed (crates.io already has 0.1.3).
+
+## RESOLVED 2026-08-06
+
+**Root cause:** the `hauis` **global** git config (`~/.gitconfig`) carried a leaked
+`http.https://github.com/.extraheader = AUTHORIZATION: basic <stale ghs_ token>` plus two
+leaked `url.https://github.com/.insteadof` rewrites (`git@github.com:`, `org-1272053@github.com:`)
+— all values `actions/checkout` normally writes to the *local* repo config and removes in its
+post step, but here they had leaked into `--global`. `http.extraheader` is **multi-valued**, so
+each checkout sent BOTH the fresh per-job token AND the stale global one as two `Authorization`
+headers → GitHub rejected the conflicting auth with **HTTP 400** at the checkout step, failing
+the mac build (and thus the binary upload + Homebrew publish) for v0.1.2 and v0.1.3.
+
+**Fix applied on `hauis`:**
+```
+git config --global --unset-all "http.https://github.com/.extraheader"
+git config --global --unset-all "url.https://github.com/.insteadof"
+```
+Then re-ran the v0.1.3 Release workflow (`gh run rerun 31099042451 --failed`) → **all jobs green**:
+mac build cleared checkout (1m26s), build-global-artifacts → host → publish-homebrew-formula →
+announce all succeeded. GitHub Release v0.1.3 now carries the mac+linux binaries + installer, and
+the Homebrew tap formula is at `version "0.1.3"`. crates.io was already at 0.1.3.
+
+**Watch-item (recurrence):** the deeper question of WHY checkout leaked to `--global` on this
+runner (normally it writes local; possible `HOME`/`persist-credentials` interaction) is not fully
+root-caused. If binary/brew releases 400 again, re-apply the two `--unset-all` above first. A
+permanent fix would investigate the runner's checkout config so the leak can't reoccur.
