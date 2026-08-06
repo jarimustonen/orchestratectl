@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
 expression: value
 ---
 {
@@ -4332,7 +4331,7 @@ expression: value
                 "long": "timeout",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Give up after this duration (e.g. `30s`, `5m`, `1h`); exit code `2` distinguishes timeout from a met condition. Defaults to `6h` — a sane ceiling so a wait on a stuck run can never block an orchestrator forever; pass a larger value for a long campaign",
+                "help": "Give up after this duration (e.g. `30s`, `5m`, `1h`; a bare integer is seconds, so `2400` == `2400sec`); exit code `2` distinguishes timeout from a met condition. Defaults to `6h` — a sane ceiling so a wait on a stuck run can never block an orchestrator forever; pass a larger value for a long campaign",
                 "value_names": [
                   "TIMEOUT"
                 ],
