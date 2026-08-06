@@ -634,14 +634,6 @@ pub fn dispatch(
     let mut capture_attempts: std::collections::BTreeMap<String, u32> =
         std::collections::BTreeMap::new();
 
-    // Repair state written by the pre-state-machine version, which inserted
-    // unconfirmed children at pid 0 (the very bug this change fixes). Drop those
-    // sentinels so an already-affected run does not treat a never-started child
-    // as "confirmed running" forever — it re-enters the startup state machine
-    // via the reseed below and is retried (issue
-    // `child-supervisor-spawn-unconfirmed-no-retry`).
-    state.spawned_children.retain(|_, pid| *pid != 0);
-
     // Data-integrity sweep (issue `wildly-glorious-food`). A persisted child id
     // that fails `RunId` validation is corruption, not a torn-down child: every
     // downstream adoption site resolves ids with `parse_run_id(..).ok()` and
@@ -649,7 +641,19 @@ pub fn dispatch(
     // child (and wedge the `spawned_children.is_empty()` work-complete gate).
     // Log it loudly + record a durable quarantine event + drop it from the live
     // set here, once at boot, before any resolution path reads these ids.
+    //
+    // Runs BEFORE the pid-0 repair below: an unconfirmed sentinel that is ALSO
+    // structurally corrupt must still be quarantined loudly, not silently
+    // discarded by the `retain`. A well-formed sentinel is left to the `retain`.
     quarantine_corrupt_persisted_children(&paths, &mut state);
+
+    // Repair state written by the pre-state-machine version, which inserted
+    // unconfirmed children at pid 0 (the very bug this change fixes). Drop those
+    // sentinels so an already-affected run does not treat a never-started child
+    // as "confirmed running" forever — it re-enters the startup state machine
+    // via the reseed below and is retried (issue
+    // `child-supervisor-spawn-unconfirmed-no-retry`).
+    state.spawned_children.retain(|_, pid| *pid != 0);
 
     // In-flight child-supervisor startup state machine
     // (issue `child-supervisor-spawn-unconfirmed-no-retry`). A child is tracked
@@ -1582,18 +1586,30 @@ fn child_spawn_attempts(st: &ChildSpawn) -> u32 {
 ///
 /// A *well-formed* id whose run dir is simply gone is NOT corrupt and is left
 /// untouched here — that is the expected, benign teardown case, handled quietly
-/// on the normal resolution paths. The event append goes through the sanctioned
-/// [`append_and_apply_event`] API (state-integrity invariants 1–2); a failed
-/// append is non-fatal (we still drop the poison from the live set). Called once
-/// at boot, off the hot tick, so the lock acquisition can never wedge the
-/// single-threaded tick loop.
+/// on the normal resolution paths. The durable event append goes through the
+/// sanctioned [`append_and_apply_event`] API (state-integrity invariants 1–2).
+///
+/// The **guaranteed-observable** signal is the warn log, which always fires; the
+/// durable event is best-effort. We drop the id from the live set unconditionally
+/// (even if the append failed) rather than keep it: a retained corrupt id would
+/// re-wedge the `spawned_children.is_empty()` gate, and the corruption is already
+/// visible in the log. So this trades durable-audit retry for availability — a
+/// deliberate choice, not an accident (a persistent append failure would
+/// otherwise spin the supervisor forever). On a crash-restart that re-presents
+/// the same corrupt id, the idempotency-keyed append keeps the durable record
+/// at-most-once.
+///
+/// Called once at boot, before the tick `loop`, so the flock acquisition can
+/// never wedge the single-threaded tick loop (the adjacent `supervisor.started`
+/// append uses the same self-locking API at the same boot phase).
 fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::SupervisorState) {
     let corrupt: Vec<(String, String)> = state
         .spawned_children
         .keys()
         .filter_map(|cid| match parse_run_id(cid) {
             Ok(_) => None,
-            Err(e) => Some((cid.clone(), e.message.clone())),
+            // `e` is owned here (parse_run_id returns `Err` by value), so no clone.
+            Err(e) => Some((cid.clone(), e.message)),
         })
         .collect();
     for (cid, reason) in corrupt {
@@ -1604,7 +1620,14 @@ fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::Su
             reason = %reason,
             "corrupt persisted child run id in supervisor state; quarantining (NOT a completed child)"
         );
-        let key = format!("supervisor-child-id-quarantine:{cid}");
+        // Bound the id substring in the idempotency key: a corrupt value is
+        // arbitrary bytes and a pathological (huge) one would bloat the key
+        // scan. A well-formed run id is 26 chars, so a 64-char cap never clips a
+        // real id; two distinct corrupt ids sharing a 64-char prefix would share
+        // a key (one event instead of two), which is harmless — both are still
+        // warn-logged and dropped. The full value is preserved in the payload.
+        let key_id: String = cid.chars().take(64).collect();
+        let key = format!("supervisor-child-id-quarantine:{key_id}");
         if let Err(e) = append_and_apply_event(
             paths,
             "supervisor.child_id_quarantined",
@@ -1616,10 +1639,8 @@ fn quarantine_corrupt_persisted_children(paths: &RunPaths, state: &mut state::Su
                 "reason": reason,
             }),
         ) {
-            // Non-fatal: the loud warn above already surfaced the corruption, and
-            // dropping the id from the live set below is the load-bearing part of
-            // the quarantine. The durable record is a convenience a later restart
-            // re-attempts (the idempotency key keeps it at-most-once).
+            // Non-fatal: the warn above is the guaranteed signal; the durable
+            // record is best-effort. We still drop the id below (see the fn doc).
             warn!(
                 target: "orchestratectl::supervise",
                 child = %cid,
@@ -3632,20 +3653,29 @@ mod tests {
         )
         .unwrap();
 
-        // Two persisted children: one structurally corrupt, one well-formed but
-        // with no run dir (the expected completed-and-torn-down case).
+        // Three persisted children: a structurally corrupt one; a structurally
+        // corrupt one carrying the pre-state-machine pid-0 sentinel (must STILL
+        // be quarantined loudly, not silently dropped by the pid-0 repair); and a
+        // well-formed id with no run dir (the expected torn-down case).
         let corrupt = "not-a-valid-run-id".to_string();
+        let corrupt_pid0 = "also-not-valid".to_string();
         let valid_missing = "01jxsnap000000000000000042".to_string();
         let mut state = state::SupervisorState::default();
         state.spawned_children.insert(corrupt.clone(), 111);
+        state.spawned_children.insert(corrupt_pid0.clone(), 0);
         state.spawned_children.insert(valid_missing.clone(), 222);
 
         quarantine_corrupt_persisted_children(&parent_paths, &mut state);
 
-        // Corrupt id → dropped from the live set (never masquerades as a child).
+        // Both corrupt ids → dropped from the live set (never masquerade as a
+        // child), regardless of their pid.
         assert!(
             !state.spawned_children.contains_key(&corrupt),
             "a corrupt persisted child id must be quarantined out of spawned_children"
+        );
+        assert!(
+            !state.spawned_children.contains_key(&corrupt_pid0),
+            "a corrupt pid-0 id must be quarantined loudly, not silently dropped"
         );
         // Well-formed-but-missing id → left in place (benign skip elsewhere).
         assert_eq!(
@@ -3654,19 +3684,40 @@ mod tests {
             "a well-formed id with no run dir is a benign teardown case, not corruption"
         );
 
-        // The corruption is durably recorded on the parent log; the valid id is not.
-        let raw = std::fs::read_to_string(parent_paths.events()).unwrap();
+        // Parse the log and assert on the quarantine records precisely: one per
+        // corrupt id, naming it, and none for the valid id.
+        let quarantined: Vec<String> = std::fs::read_to_string(parent_paths.events())
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["kind"] == "supervisor.child_id_quarantined")
+            .filter_map(|v| v["data"]["child_run_id"].as_str().map(str::to_string))
+            .collect();
         assert!(
-            raw.contains("supervisor.child_id_quarantined"),
-            "a corrupt id must produce a loud quarantine record; log was: {raw}"
+            quarantined.contains(&corrupt) && quarantined.contains(&corrupt_pid0),
+            "both corrupt ids must produce a loud quarantine record; got {quarantined:?}"
         );
         assert!(
-            raw.contains(&corrupt),
-            "the quarantine record must name the offending id; log was: {raw}"
+            !quarantined.contains(&valid_missing),
+            "a well-formed-but-missing child must NOT be recorded as quarantined; got {quarantined:?}"
         );
-        assert!(
-            !raw.contains(&valid_missing),
-            "a well-formed-but-missing child must NOT be recorded as quarantined; log was: {raw}"
+
+        // Crash-restart idempotency: the same corrupt id re-presented (a torn
+        // state write that resurrected it) must NOT double-append its record.
+        state.spawned_children.insert(corrupt.clone(), 111);
+        quarantine_corrupt_persisted_children(&parent_paths, &mut state);
+        let count = std::fs::read_to_string(parent_paths.events())
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| {
+                v["kind"] == "supervisor.child_id_quarantined"
+                    && v["data"]["child_run_id"] == corrupt
+            })
+            .count();
+        assert_eq!(
+            count, 1,
+            "the idempotency key must keep the quarantine record at-most-once across re-sweeps"
         );
     }
 
