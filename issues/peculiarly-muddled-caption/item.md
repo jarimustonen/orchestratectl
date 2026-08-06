@@ -2,8 +2,9 @@
 created: 2026-08-05
 updated: 2026-08-06
 type: bug
-status: in-progress
+status: fixed
 priority: normal
+closed: 2026-08-06
 ---
 
 # orchestrate driver run created but never driven becomes a silent zombie
