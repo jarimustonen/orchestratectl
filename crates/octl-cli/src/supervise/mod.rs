@@ -3302,6 +3302,14 @@ mod tests {
         // `OCTL_AGENT_RETRY_BACKOFF_SECS`) and defensively cleared, so this reads
         // the compiled default rather than a value another test left set.
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let prior = std::env::var_os(AGENT_RETRY_BACKOFF_ENV);
         std::env::remove_var(AGENT_RETRY_BACKOFF_ENV);
         assert_eq!(agent_retry_backoff(1), AGENT_RETRY_BASE_BACKOFF);
@@ -3716,6 +3724,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_reconciles_merged_branch_on_agent_death() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, wt, base) = init_merged_repo(&tmp);
@@ -3787,6 +3803,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_reconciles_merged_branch_while_agent_alive() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, wt, base) = init_merged_repo(&tmp);
@@ -3829,6 +3853,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_leaves_live_agent_with_dirty_worktree_alone() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, wt, base) = init_merged_repo(&tmp);
@@ -3985,6 +4017,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_terminalizes_idle_unmerged_autonomous_as_recoverable() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         // Fire on the first quiet tick (any idle ≥ 0s counts).
         let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
@@ -4038,6 +4078,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_exempts_interactive_idle_unmerged() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4074,6 +4122,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_does_not_trip_long_working_agent_with_fresh_commit() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         // A generous threshold; the fresh commit is well within it.
         let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
@@ -4112,6 +4168,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_does_not_trip_when_pane_active_despite_stale_commit() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4153,6 +4217,14 @@ mod tests {
     #[serial_test::serial(octl_watchdog_grace)]
     fn watchdog_terminalizes_idle_unmerged_conflicting_as_recoverable_false() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4396,6 +4468,14 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn empty_handed_death_retries_and_then_succeeds() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         // Share the create.sh env lock with `run::spawn::tests` so our global
         // `OCTL_CREATE_SH` mutation cannot race their fixtures.
         let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
@@ -4493,6 +4573,14 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn empty_handed_death_terminalizes_failed_after_max_attempts() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _max = EnvGuard::set(AGENT_RETRY_MAX_ATTEMPTS_ENV, "1");
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
@@ -4560,6 +4648,14 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn committed_work_death_is_not_retried_and_preserves_salvage_signal() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
         let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
@@ -4629,6 +4725,14 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn respawn_infrastructure_failure_terminalizes_after_budget() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
         let _grace = GraceGuard::zero();
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
@@ -4698,6 +4802,14 @@ EOF
     #[serial_test::serial(octl_watchdog_grace)]
     fn dirty_worktree_death_is_not_retried() {
         let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        // Also hold the crate-wide env lock: these tests read/mutate process-global
+        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
+        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
+        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
+        // tick and letting its fake tmux pollute that test's invocation counter
+        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
+        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
+        let _env_lock = crate::harness::support::test_env::lock();
         let _grace = GraceGuard::zero();
         let _backoff = EnvGuard::set(AGENT_RETRY_BACKOFF_ENV, "0");
         let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");

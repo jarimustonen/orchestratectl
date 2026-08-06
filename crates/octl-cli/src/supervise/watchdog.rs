@@ -723,18 +723,20 @@ mod tests {
     }
 
     /// Write an executable fake `tmux` that records its argv (one arg per line)
-    /// to `<dir>/args`, appends an `x` line to `<dir>/invocations` per call (so
-    /// tests can count how many times the watchdog shelled out), and replays the
-    /// lines in `<dir>/stdout`, exiting `code`. Passing a non-zero `code`
-    /// simulates "server unreachable" for the `Unknown` path. `stdout_lines` is
-    /// written to a file (not interpolated into the script) so arbitrary content
-    /// — including quotes — is safe.
+    /// to `<dir>/args`, appends the invocation's full argv (space-joined) as one
+    /// line to `<dir>/invocations` per call (so tests can count how many times the
+    /// watchdog shelled out AND filter those calls by a per-test nonce carried in
+    /// the argv, e.g. a unique `-S <socket>` — see
+    /// [`invocations_matching`]), and replays the lines in `<dir>/stdout`, exiting
+    /// `code`. Passing a non-zero `code` simulates "server unreachable" for the
+    /// `Unknown` path. `stdout_lines` is written to a file (not interpolated into
+    /// the script) so arbitrary content — including quotes — is safe.
     fn fake_tmux(dir: &Path, stdout_lines: &[&str], code: i32) -> PathBuf {
         let out = dir.join("stdout");
         std::fs::write(&out, stdout_lines.join("\n")).unwrap();
         let p = dir.join("fake-tmux.sh");
         let body = format!(
-            "#!/bin/bash\nprintf '%s\\n' \"$@\" > {args:?}\necho x >> {inv:?}\ncat {out:?}\nexit {code}\n",
+            "#!/bin/bash\nprintf '%s\\n' \"$@\" > {args:?}\necho \"$*\" >> {inv:?}\ncat {out:?}\nexit {code}\n",
             args = dir.join("args"),
             inv = dir.join("invocations"),
             out = out,
@@ -766,6 +768,17 @@ mod tests {
     /// How many times the fake `tmux` was invoked (lines in `invocations`).
     fn invocation_count(dir: &Path) -> usize {
         std::fs::read_to_string(dir.join("invocations")).map_or(0, |s| s.lines().count())
+    }
+
+    /// How many recorded fake-`tmux` invocations carry `needle` in their argv line.
+    /// Filtering on a per-test nonce (a unique `-S <socket>` this test alone
+    /// passes) makes the count immune to a stray invocation another test appended
+    /// to our counter by leaking our `TMUX_BIN` and running this same fake script:
+    /// that foreign call uses a different socket (usually the default, no `-S`), so
+    /// it never matches the nonce (issue `immoderately-irate-north`).
+    fn invocations_matching(dir: &Path, needle: &str) -> usize {
+        std::fs::read_to_string(dir.join("invocations"))
+            .map_or(0, |s| s.lines().filter(|l| l.contains(needle)).count())
     }
 
     fn id(socket: Option<&str>, session: &str, window_id: &str) -> TmuxIdentity {
@@ -957,28 +970,40 @@ mod tests {
     fn snapshot_is_one_invocation_per_socket_regardless_of_node_count() {
         let _g = test_env::lock();
         let dir = tempfile::TempDir::new().unwrap();
-        // Five nodes all live on the same (default) socket.
+        // A per-test nonce socket, unique to this TempDir. Probing it makes the
+        // watchdog pass `-S <nonce>` to the fake, so the recorded invocation argv
+        // carries the nonce — letting `invocations_matching` count ONLY this tick's
+        // own tmux call and ignore any stray invocation a lock-forgetting test
+        // might append to our counter by leaking our `TMUX_BIN` and running this
+        // fake (that call would use the default socket, no `-S`, and never match).
+        // This is what makes the count deterministic under full-parallel test runs
+        // (issue `immoderately-irate-north`).
+        let sock_buf = dir.path().join("wd.sock");
+        let sock = sock_buf.to_str().unwrap();
+        // Five nodes all live on the same (nonce) socket.
         let _e = EnvGuard::set(
             "TMUX_BIN",
             fake_tmux(dir.path(), &["@1|a", "@2|b", "@3|c", "@4|d", "@5|e"], 0),
         );
         // One snapshot for the tick — the watchdog gathers the distinct sockets
-        // (here just the default) and probes each once.
-        let snap = snapshot(&[None]);
+        // (here just our nonce socket) and probes each once.
+        let snap = snapshot(&[Some(sock)]);
         // Evaluate all five nodes against it: pure set lookups, no extra forks.
         for n in 1..=5 {
             let probe = AgentProbe {
                 pid: std::process::id(),
                 start_time: None,
                 tmux_window: None,
-                tmux_identity: Some(id(None, "octl", &format!("@{n}"))),
+                tmux_identity: Some(id(Some(sock), "octl", &format!("@{n}"))),
                 skip_tmux_check: false,
             };
             assert_eq!(check_liveness(&probe, &snap), Liveness::Alive);
         }
-        // The whole tick shelled out to tmux exactly once (was once-per-node).
+        // The whole tick shelled out to tmux exactly once for our socket (was
+        // once-per-node). Counting only OUR socket's invocations makes this immune
+        // to cross-test counter pollution.
         assert_eq!(
-            invocation_count(dir.path()),
+            invocations_matching(dir.path(), sock),
             1,
             "expected a single tmux invocation for the tick"
         );
