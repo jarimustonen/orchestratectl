@@ -6,9 +6,23 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (round of 4 landed + v0.1.1 SHIPPED + release-autonomy policy change)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (TWO more rounds landed + v0.1.3 on crates.io — but BINARY/BREW RELEASE BLOCKED on hauis runner)
 
-**One-paragraph state.** A full **DAG round** followed by a **release** and a **policy change**. The round
+**⚠️ LATEST (this session, 2026-08-06 — read first).** Two more `/stint-start` rounds landed on `main`
+(6 units, all first-spawn, no deaths) — see the two `Round executed 2026-08-06` reconcile notes at the
+bottom of the DAG for the slug-level detail. **crates.io is at 0.1.3** (`octl-core` + `orchestratectl`;
+0.1.2 then 0.1.3 both published). **BUT the prebuilt-binary + Homebrew release is BROKEN and stuck at
+0.1.1:** the cargo-dist **Release** workflow's `build-local-artifacts (aarch64-apple-darwin)` job on the
+self-hosted **`hauis`** runner fails at `actions/checkout@v4` with
+`fatal: unable to access 'https://github.com/…': The requested URL returned error: 400` (git exit 128) —
+for BOTH v0.1.2 and v0.1.3. v0.1.1 (~08:10) succeeded, so the runner regressed between ~08:10 and ~09:45
+today; it is **persistent, not transient**. Filed as **`peculiarly-madly-sneeze`** (high) with the full
+timeline + on-`hauis` diagnosis checklist. **Action needed (human/ops): repair git access on the `hauis`
+runner, then re-run the v0.1.3 Release workflow** (`gh run rerun <id>` — no version bump; crates.io already
+has 0.1.3) to publish the mac binary + Homebrew formula. Do NOT keep cutting new versions — the runner is
+the blocker. `main` clean, 0 unpushed, no worktrees remain, local binary rebuilt to 0.1.3 (`doctor` 0/0).
+
+**One-paragraph state (prior session).** A full **DAG round** followed by a **release** and a **policy change**. The round
 ran **B‖C‖D in parallel, then E** (all headless spinoffs, all landed on first spawn — no worker deaths):
 `pipeline-parallel-chunks` ✅ (concurrent DAG-wave builds, opt-in `--max-build-concurrency`; /llm-review
 caught + fixed an invariant-5 leak), `doctor-skill-companion-sync` ✅ (companion-file presence+sync
@@ -120,8 +134,11 @@ LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, 
 <!-- execution-dag:end -->
 
 **Epic (not a lane node):** `code-pipeline` — parent of the Lane B `pipeline-*` work.
-**Adjacent backlog / deferred:** none currently parked; the full open list is
-`issuectl ls --status open`.
+**Adjacent backlog / deferred:** `peculiarly-madly-sneeze` (high) is an **ops/infra** blocker
+(the `hauis` self-hosted runner's git checkout returns HTTP 400 → binary/brew release stuck at
+0.1.1) — **not a code lane** (no worktree-spawnable code fix; needs on-machine runner repair), so
+it lives here, not in a DAG lane. It WILL show as left-only in the `comm -3` drift check; that is
+expected until the runner is fixed and the issue closed. The full open list is `issuectl ls --status open`.
 
 **Parallelism rule of thumb:** ≤1 live worktree per lane. Cross-lane, several heads can run
 at once — e.g. Lane A + B + C heads — except a head carrying `collision: <file>` must not
