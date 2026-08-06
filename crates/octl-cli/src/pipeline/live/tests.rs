@@ -1718,6 +1718,247 @@ fn replayed_chunk_report_keeps_authored_commit_and_flags_replayed() {
     );
 }
 
+/// The full names of the durable provenance refs for slug `demo` (item G).
+fn prov_refs(repo: &Path) -> Vec<String> {
+    git_out(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/pipeline/prov/demo/",
+        ],
+    )
+    .lines()
+    .filter(|l| !l.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
+#[test]
+fn rollback_pins_durable_provenance_refs_that_survive_gc() {
+    // Item G (durable provenance refs): a verify-FIX rollback resets `feat/<slug>` to
+    // the fork and replays the kept chunks as FRESH cherry-picked commits, leaving the
+    // kept chunks' AUTHORED commit OIDs reachable only through the object DB. Before
+    // the reset the rollback must pin each kept chunk's authored commit under
+    // `refs/pipeline/prov/<slug>/<chunk>`, so an external aggressive `git gc
+    // --prune=now` racing the rollback (simulated here by expiring the reflog and
+    // pruning) cannot sweep the authored OID. c1←c2 are stacked and both kept; the FIX
+    // targets the independent c3, so c1/c2 are replayed (authored OIDs orphaned from
+    // any branch tip) while c3 is re-coded fresh. `keep` is set so teardown does not
+    // prune the refs before we inspect them.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["c1.txt", "c2.txt", "c3.txt"]);
+    cfg.keep = true;
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "all", "run": "test -f c1.txt && test -f c2.txt && test -f c3.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make c1",
+             "files_touched": ["c1.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "make c2", "deps": ["c1"],
+             "files_touched": ["c2.txt"], "checks": [{"desc": "b", "run": "true"}]},
+            {"id": "c3", "title": "c", "tier": "code", "brief": "make c3",
+             "files_touched": ["c3.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c3".to_string(),
+            findings: vec!["c3 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c3".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &DisjointChunks, &verify)
+        .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    let c1 = report.chunks.iter().find(|c| c.id == "c1").unwrap();
+    let c2 = report.chunks.iter().find(|c| c.id == "c2").unwrap();
+    let c1_authored = c1.commit.clone().expect("c1 has an authored commit");
+    let c2_authored = c2.commit.clone().expect("c2 has an authored commit");
+
+    // Both kept chunks are pinned under `refs/pipeline/prov/demo/…`, each resolving to
+    // its AUTHORED commit (not the replayed on-branch commit).
+    assert_eq!(
+        prov_refs(repo.path()),
+        vec![
+            "refs/pipeline/prov/demo/c1".to_string(),
+            "refs/pipeline/prov/demo/c2".to_string(),
+        ],
+        "both kept chunks pinned under refs/pipeline/prov/demo/"
+    );
+    assert_eq!(
+        git_out(repo.path(), &["rev-parse", "refs/pipeline/prov/demo/c1"]),
+        c1_authored,
+        "c1's prov ref points at its authored commit"
+    );
+    assert_eq!(
+        git_out(repo.path(), &["rev-parse", "refs/pipeline/prov/demo/c2"]),
+        c2_authored,
+        "c2's prov ref points at its authored commit"
+    );
+    // The authored commits are NOT reachable from the rebuilt feature branch (they
+    // were replayed as fresh commits) — the prov ref is their only root.
+    assert_ne!(c1.commit, c1.merge_commit);
+    assert_ne!(c2.commit, c2.merge_commit);
+
+    // Simulate an aggressive external gc racing the rollback: expire every reflog
+    // entry (the other transient root) and prune loose objects immediately. Only the
+    // prov refs keep the authored commits alive.
+    git(
+        repo.path(),
+        &[
+            "reflog",
+            "expire",
+            "--expire=now",
+            "--expire-unreachable=now",
+            "--all",
+        ],
+    );
+    git(repo.path(), &["gc", "--prune=now"]);
+
+    // The authored commits survived the prune because the prov refs pin them.
+    for oid in [&c1_authored, &c2_authored] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["cat-file", "-e", oid])
+                .status()
+                .unwrap()
+                .success(),
+            "authored commit {oid} must survive gc --prune=now via its provenance ref"
+        );
+    }
+    // The refs themselves still exist and still resolve after the gc.
+    assert_eq!(prov_refs(repo.path()).len(), 2, "prov refs survive the gc");
+    assert_eq!(
+        git_out(repo.path(), &["rev-parse", "refs/pipeline/prov/demo/c1"]),
+        c1_authored
+    );
+}
+
+#[test]
+fn teardown_prunes_a_merged_runs_provenance_refs() {
+    // Item G teardown gate: when a run merges to source, its authored OIDs are
+    // reachable through the merge commit on `main`, so the belt-and-suspenders prov
+    // refs are redundant — teardown must prune them. Same rollback scenario as
+    // `rollback_pins_…` but with the default `keep = false`, so teardown runs.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["c1.txt", "c2.txt", "c3.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "all", "run": "test -f c1.txt && test -f c2.txt && test -f c3.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make c1",
+             "files_touched": ["c1.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "make c2", "deps": ["c1"],
+             "files_touched": ["c2.txt"], "checks": [{"desc": "b", "run": "true"}]},
+            {"id": "c3", "title": "c", "tier": "code", "brief": "make c3",
+             "files_touched": ["c3.txt"], "checks": [{"desc": "c", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::sequence(vec![
+        providers::VerifyJudgment {
+            passed: false,
+            summary: "fix c3".to_string(),
+            findings: vec!["c3 wrong".to_string()],
+            disposition: providers::VerifyDisposition::FixChunks {
+                chunk_ids: vec!["c3".to_string()],
+            },
+        },
+        providers::VerifyJudgment {
+            passed: true,
+            summary: "ok".to_string(),
+            findings: vec![],
+            disposition: providers::VerifyDisposition::Fix,
+        },
+    ]);
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &DisjointChunks, &verify)
+        .expect("pipeline runs");
+    assert_eq!(report.status, "merged", "{report:#?}");
+    assert!(
+        prov_refs(repo.path()).is_empty(),
+        "a merged run's provenance refs are pruned on teardown: {:?}",
+        prov_refs(repo.path())
+    );
+}
+
+#[test]
+fn teardown_keeps_a_preserved_runs_provenance_refs() {
+    // Item G teardown gate (preserved path): a rollback pins the kept chunk's prov
+    // ref, then the replay conflicts and the run terminates `rollback_conflict` with
+    // the integration branch restored intact (unmerged, preserved). Because the branch
+    // is preserved, its provenance refs must be KEPT — a preserved branch's authored
+    // OIDs still need to survive a gc. Reuses the `rollback_conflict` scenario: c2
+    // modifies c1's file without declaring the dep, so the rollback keeps c2 (pinning
+    // its prov ref) and its replay onto the fork conflicts.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["shared.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 2,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "exists", "run": "test -f shared.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "make base",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "append",
+             "files_touched": ["shared.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+    let verify = ScriptedVerify::new(providers::VerifyJudgment {
+        passed: false,
+        summary: "fix c1".to_string(),
+        findings: vec!["c1 wrong".to_string()],
+        disposition: providers::VerifyDisposition::FixChunks {
+            chunk_ids: vec!["c1".to_string()],
+        },
+    });
+
+    let report = run_pipeline(&cfg, &ScriptedSpec::new(plan), &SharedFileChunks, &verify)
+        .expect("terminal report, not a crash");
+    assert_eq!(report.status, "rollback_conflict", "{report:#?}");
+    assert!(!report.merged);
+    // The branch is preserved (unmerged), so its prov ref (pinned for the kept c2
+    // before the reset) is kept by teardown.
+    assert!(
+        super::git::branch_exists(repo.path(), "feat/demo"),
+        "the preserved branch is retained"
+    );
+    assert_eq!(
+        prov_refs(repo.path()),
+        vec!["refs/pipeline/prov/demo/c2".to_string()],
+        "a preserved run keeps its provenance refs"
+    );
+}
+
 #[test]
 fn nonlinear_chunk_history_is_rejected_at_gate() {
     // Item F (merge-commit inside a chunk range): a chunk whose history contains a

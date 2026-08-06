@@ -1979,6 +1979,30 @@ enum Replayed {
     Conflict(String),
 }
 
+/// The durable-provenance ref for one chunk of a run (item G):
+/// `refs/pipeline/prov/<slug>/<chunk>`. The run is identified by its feature slug
+/// (already ref-safe — lowercased alnum + hyphens from [`slugify`]); the chunk id
+/// is a plan chunk id (validated `[A-Za-z0-9_.-]`, first char alphanumeric).
+fn provenance_ref(slug: &str, chunk_id: &str) -> String {
+    format!("refs/pipeline/prov/{slug}/{chunk_id}")
+}
+
+/// The ref-namespace prefix (with trailing `/`) holding a run's provenance refs, so
+/// teardown can enumerate and prune exactly this run's refs (item G).
+fn provenance_ref_prefix(slug: &str) -> String {
+    format!("refs/pipeline/prov/{slug}/")
+}
+
+/// Pin each kept chunk's authored commit under its [`provenance_ref`] (item G).
+/// Best-effort per ref: a pin that fails (an unusual-but-valid chunk id that is not
+/// a legal ref component) is skipped rather than aborting the rollback, since the
+/// pin is a belt-and-suspenders durability anchor, not a correctness requirement.
+fn pin_provenance_refs(run: &Run, kept: &[(String, ChunkProvenance)]) {
+    for (id, prov) in kept {
+        let _ = git::update_ref(&run.repo, &provenance_ref(&run.slug, id), &prov.commit);
+    }
+}
+
 /// The rebuild is **transactional**: the integration worktree's pre-rebuild tip is
 /// captured first, and on ANY failure (a cherry-pick conflict, or a hard git error
 /// mid-replay) the branch is restored to that intact tip before returning — so a
@@ -2019,6 +2043,17 @@ fn rebuild_integration(
         .map(|(id, p)| (id.clone(), p.clone()))
         .collect();
     kept.sort_by_key(|(_, p)| p.order);
+
+    // Item G (durable provenance refs): pin each kept chunk's authored commit under
+    // `refs/pipeline/prov/<run>/<chunk>` BEFORE the replay closure resets the branch
+    // to the fork. After that reset the authored OIDs are reachable only via the
+    // object DB (the replayed chunks get fresh cherry-picked OIDs), so an external
+    // aggressive `git gc --prune=now` racing the rollback could sweep them; a ref is
+    // a first-class GC root that survives. Done here, before ANY reset, to keep the
+    // pin atomic relative to the branch reset. Best-effort: a pin failure (e.g. a
+    // chunk id that is not a valid ref component) does not abort the rollback —
+    // object-DB reachability still holds for the run's lifetime under default git.
+    pin_provenance_refs(run, &kept);
 
     // The intact pre-rebuild tip, to restore on any failure.
     let original_tip = git::head(&run.integration_wt)?;
@@ -3966,6 +4001,20 @@ fn teardown(run: &Run) {
         // `-d` refuses to drop an unmerged branch, so even a race here fails
         // closed rather than losing work.
         let _ = git::delete_branch(&run.repo, &run.integration_branch, run.merged_to_source);
+    }
+    // Item G: prune this run's durable provenance refs, gated on the SAME outcome as
+    // the branch deletion. When the branch is safe to delete (merged to source, or an
+    // early failure that never accumulated work) the authored OIDs are either
+    // reachable through the merge on `source_branch` or never existed, so the
+    // belt-and-suspenders anchors are redundant. On the PRESERVED (unmerged) path the
+    // refs are KEPT — a preserved branch's provenance must keep surviving a gc, so its
+    // refs stay exactly as long as its branch does.
+    if safe_to_delete {
+        if let Ok(refs) = git::refs_under(&run.repo, &provenance_ref_prefix(&run.slug)) {
+            for r in &refs {
+                let _ = git::delete_ref(&run.repo, r);
+            }
+        }
     }
     // Preserved chunk worktrees/branches are intentionally left in place — they
     // hold unmerged work (invariant 5). Nothing else to remove.

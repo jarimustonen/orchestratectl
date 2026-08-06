@@ -1,8 +1,8 @@
 ---
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-06
 type: task
-status: open
+status: in-progress
 priority: normal
 related: ['@pipeline-fix-loop-rollback-hardening']
 ---

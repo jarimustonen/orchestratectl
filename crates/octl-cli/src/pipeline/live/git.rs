@@ -323,6 +323,40 @@ pub fn cherry_pick(worktree: &Path, base: &str, tip: &str) -> Result<MergeOutcom
     }
 }
 
+/// Pin `oid` under the ref `ref_name` (`git update-ref <ref_name> <oid>`). Used by
+/// the durable-provenance refs (item G): before a rollback resets `feat/<slug>` to
+/// the fork — discarding the kept chunks' authored commits from any branch tip —
+/// each kept chunk's authored commit is anchored under `refs/pipeline/prov/<run>/…`
+/// so an external aggressive `git gc --prune=now` racing the rollback cannot sweep
+/// the (now object-DB-only-reachable) authored OID. A ref is a first-class GC root,
+/// unlike reflog entries or bare object-DB reachability.
+pub fn update_ref(dir: &Path, ref_name: &str, oid: &str) -> Result<(), PipelineError> {
+    git(dir, &["update-ref", ref_name, oid])?;
+    Ok(())
+}
+
+/// The full names of every ref under `prefix` (`git for-each-ref --format
+/// %(refname) <prefix>`), for the teardown cleanup of a run's provenance refs
+/// (item G). `prefix` should end in `/` so it matches a directory of refs exactly
+/// (a bare `refs/pipeline/prov/demo` would also match `…/demo2`).
+pub fn refs_under(dir: &Path, prefix: &str) -> Result<Vec<String>, PipelineError> {
+    let out = git(dir, &["for-each-ref", "--format=%(refname)", prefix])?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Delete the ref `ref_name` (`git update-ref -d <ref_name>`). Best-effort at the
+/// call site (teardown): a stale provenance ref is harmless, so a failure is not
+/// fatal to the run result.
+pub fn delete_ref(dir: &Path, ref_name: &str) -> Result<(), PipelineError> {
+    git(dir, &["update-ref", "-d", ref_name])?;
+    Ok(())
+}
+
 /// The outcome of a merge attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeOutcome {
