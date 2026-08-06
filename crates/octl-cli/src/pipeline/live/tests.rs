@@ -3762,18 +3762,22 @@ impl CodeHarness for WaveFailInjector {
 }
 
 #[test]
-fn wave_worker_hard_error_preserves_sibling_builds() {
+fn wave_hard_error_returns_typed_err_and_leaves_committed_siblings_intact() {
     // (`entirely-faithful-beast`) A build worker that returns a HARD `PipelineError`
-    // (a harness transport error, not a graceful block) tears the run down via
-    // `Run::Drop`. Before propagating it, the wave must preserve every
-    // committed-but-unmerged SIBLING (state-integrity invariant 5): a floor-green
-    // sibling already holds real committed work by the time a concurrent worker
-    // hard-errors. This deliberately diverges from the sequential hard-error path,
-    // which does NOT preserve — the concurrent siblings have more at stake.
+    // (a harness transport error, not a graceful block) DOMINATES the wave: the run
+    // propagates `Err` (so it exits non-zero with a typed, coded error), as on the
+    // sequential hard-error path — it must NOT be converted to a circuit-breaker `Ok`
+    // (which `cmd_run` renders with exit 0). This is a CONTRACT LOCK, not a preservation
+    // regression guard: on the `Err` path the run's report is discarded, and `teardown`
+    // never deletes chunk branches, so a floor-green sibling's committed work survives on
+    // disk regardless of whether it was recorded — the branch/blob assertions below hold
+    // with or without any in-memory preservation. Surfacing that committed work in an
+    // AUDIT on a hard failure needs the pipeline `Result` to carry a report (tracked
+    // follow-up); this test locks only what is observable here.
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
-    cfg.intent = "wave worker hard error preserves siblings".to_string();
+    cfg.intent = "wave worker hard error".to_string();
     cfg.max_build_concurrency = 2;
     let plan = json!({
         "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
@@ -3796,10 +3800,17 @@ fn wave_worker_hard_error_preserves_sibling_builds() {
         &ScriptedVerify::passing(),
     )
     .unwrap_err();
+    // A pure hard error stays a typed `Err` (never downgraded to `Ok`), preserving its
+    // variant + stable code for the CLI envelope / non-zero exit.
     assert!(matches!(err, PipelineError::Harness(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("simulated hard error on c2"),
+        "the hard error must carry its own message: {err}"
+    );
 
-    // c1 built floor-green but never merged. Its branch + committed content MUST
-    // survive the hard-error teardown (invariant 5: no lost committed work).
+    // c1 built floor-green but never merged. Its branch + committed content survive the
+    // hard-error teardown (invariant 5: no lost committed work — teardown never deletes
+    // chunk branches).
     let branches = git_out(repo.path(), &["branch", "--list", "demo/chunk-c1"]);
     assert!(
         branches.contains("demo/chunk-c1"),
@@ -3810,18 +3821,20 @@ fn wave_worker_hard_error_preserves_sibling_builds() {
 }
 
 #[test]
-fn wave_hard_error_and_panic_together_preserve_siblings() {
+fn wave_hard_error_dominates_and_surfaces_co_occurring_panic() {
     // (`entirely-faithful-beast`) A wave where BOTH terminal conditions fire at once:
-    // c1 builds green, c2 PANICS, c3 returns a hard `PipelineError`. Whichever wins
-    // the return, the shared preservation must run so c1's floor-green build is never
-    // stranded (invariant 5). Precedence resolves to the PANIC path — a graceful,
-    // auditable circuit-breaker stage-stop whose report NAMES the preserved siblings
-    // (a bare `Err` would discard that report) — so the run returns Ok with c1
-    // recorded as preserved, and the co-occurring hard error is surfaced in the audit.
+    // c1 builds green, c2 PANICS, c3 returns a hard `PipelineError`. A hard error
+    // DOMINATES the terminal outcome — the run returns `Err` (non-zero exit), NOT a
+    // circuit-breaker `Ok` (exit 0): a co-occurring panic must not downgrade an
+    // infrastructure failure to a success (the reviewer-confirmed exit-code trap). The
+    // panic is not silently swallowed: it is surfaced in the returned error, which still
+    // carries the hard error's typed variant (+ stable code) — regression guard, since
+    // the earlier revision either returned `Ok` (masking the hard error) or would drop
+    // the panic entirely on a bare `Err`.
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt", "c.txt"]);
-    cfg.intent = "wave hard error + panic preserve siblings".to_string();
+    cfg.intent = "wave hard error + panic".to_string();
     cfg.max_build_concurrency = 3;
     let plan = json!({
         "acceptance": [{"kind": "check", "desc": "a", "run": "test -f a.txt"}],
@@ -3832,7 +3845,7 @@ fn wave_hard_error_and_panic_together_preserve_siblings() {
         ],
     });
 
-    let report = run_pipeline(
+    let err = run_pipeline(
         &cfg,
         &ScriptedSpec::new(plan),
         &WaveFailInjector {
@@ -3844,37 +3857,30 @@ fn wave_hard_error_and_panic_together_preserve_siblings() {
         },
         &ScriptedVerify::passing(),
     )
-    .expect("panic path resolves to a terminal report, not an Err teardown");
+    .unwrap_err();
 
-    // No chunk merged; the stage stopped on the circuit breaker.
-    assert!(!report.merged, "{report:#?}");
-    // c1 built floor-green but never merged → preserved despite the sibling panic AND
-    // the sibling hard error (neither terminal path's early return may bypass it).
-    let c1 = report
-        .chunks
-        .iter()
-        .find(|c| c.id == "c1")
-        .expect("c1 has a report");
-    assert!(!c1.merged, "c1 was not merged");
+    // Hard error dominates: the typed variant + stable code are preserved (the error is
+    // NOT collapsed into a free-form string, and NOT downgraded to an `Ok` report).
+    assert!(matches!(err, PipelineError::Harness(_)), "{err:?}");
+    let msg = err.to_string();
+    // The original hard error (c3) is preserved verbatim ...
     assert!(
-        c1.branch_preserved.is_some(),
-        "c1's un-merged build must be preserved despite a sibling panic + hard error: {c1:#?}"
+        msg.contains("simulated hard error on c3"),
+        "the dominant hard error must be preserved: {msg:?}"
     );
+    // ... AND the co-occurring panic (c2) is surfaced in the same error, not dropped.
+    assert!(
+        msg.contains("also panicked on chunk c2")
+            && msg.contains("simulated build-thread panic on c2"),
+        "the co-occurring panic must be surfaced in the returned error, not swallowed: {msg:?}"
+    );
+
+    // c1 built floor-green but never merged; its committed work survives teardown.
     let branches = git_out(repo.path(), &["branch", "--list", "demo/chunk-c1"]);
     assert!(
         branches.contains("demo/chunk-c1"),
         "c1's branch must survive teardown: {branches:?}"
     );
-    // Both terminal conditions are surfaced on the audit trail: the panic (with its
-    // payload) AND the co-occurring hard error — neither is silently swallowed.
-    assert!(
-        report.decisions.iter().any(|d| {
-            d.reason.contains("build thread panicked")
-                && d.reason.contains("simulated build-thread panic on c2")
-                && d.reason.contains("also hard-errored")
-                && d.reason.contains("simulated hard error on c3")
-        }),
-        "the panic AND the co-occurring hard error must both be recorded: {:#?}",
-        report.decisions
-    );
+    let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c1:a.txt"]);
+    assert_eq!(blob, "c1", "c1's committed work must survive: {blob:?}");
 }
