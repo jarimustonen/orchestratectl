@@ -3703,12 +3703,15 @@ fn wave_build_worker_panic_preserves_sibling_builds() {
         branches.contains("demo/chunk-c1"),
         "c1's branch must survive teardown: {branches:?}"
     );
-    // The panic is on the audit trail.
+    // The panic is on the audit trail, WITH its payload message (not a context-free
+    // "a thread panicked") so a post-mortem can see why the worker crashed.
     assert!(
         report
             .decisions
             .iter()
-            .any(|d| d.reason.contains("build thread panicked")),
-        "the panic must be recorded as a decision"
+            .any(|d| d.reason.contains("build thread panicked")
+                && d.reason.contains("simulated build-thread panic on c2")),
+        "the panic (with its payload message) must be recorded as a decision: {:#?}",
+        report.decisions
     );
 }
