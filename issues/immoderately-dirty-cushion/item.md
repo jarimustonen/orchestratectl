@@ -2,8 +2,9 @@
 created: 2026-08-05
 updated: 2026-08-06
 type: task
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-06
 ---
 
 # Adaptive tier promotion in concurrent wave builds
