@@ -6,12 +6,12 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-06 (THREE more rounds landed + v0.1.3 FULLY SHIPPED — runner blocker fixed)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-07 (THREE rounds landed + v0.1.3 FULLY SHIPPED — runner blocker fixed; v0.1.4 warranted next)
 
-**✅ LATEST (this session, 2026-08-06 — read first).** Three more `/stint-start` rounds landed on `main`
+**✅ LATEST (2026-08-06/07 session — read first).** Three `/stint-start` rounds landed on `main`
 (9 units, all reviewed+green; round-3 Lane B paused ~6h at a genuine fork and was resolved by nudging the
-live agent — see the round-3 note + LESSON at the bottom of the DAG) — see the two `Round executed 2026-08-06` reconcile notes at the
-bottom of the DAG for the slug-level detail. **`orchestratectl` 0.1.3 is now FULLY SHIPPED across all three
+live agent — see the three `Round executed 2026-08-06` reconcile notes + the LESSON at the bottom of the
+DAG for slug-level detail). **`orchestratectl` 0.1.3 is now FULLY SHIPPED across all three
 channels:** crates.io (`octl-core` + `orchestratectl`; 0.1.2 then 0.1.3), GitHub Release **v0.1.3** (aarch64-mac
 + x86_64/aarch64-linux binaries + installer), and the **Homebrew tap at 0.1.3**
 (`brew upgrade jarimustonen/orchestratectl/orchestratectl`). **Release-blocker fixed:** the binary/brew
@@ -56,23 +56,33 @@ SOPS.
 
 **KEY LEARNING (still canonical) — worker deaths are TRANSIENT.** Retry **with harvest** of the
 recoverable preserved branch (review → adopt → complete → merge), NOT hand-merge of unreviewed work, NOT
-base-agent swap. Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang. NOTE: every
-worker this round landed cleanly on first spawn — no deaths.
+base-agent swap. Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang.
+**NEW COMPANION LESSON (round 3):** a spinoff can also **PAUSE at a genuine fork and sit indefinitely** —
+a `run wait` `pending` run whose branch has committed work AND a live agent pane is a *paused-for-decision*
+worker, not a hang or a death. Diagnose with `tmux capture-pane`, resolve by nudging (`tmux send-keys`) so
+the worker finishes its OWN `run merge` — do not respawn or hand-merge. (See the round-3 note at the DAG bottom.)
 
-**NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is
-**`supervisor-spawn-fails-silently-at-run-create`** (Lane A, only remaining high — but
-investigative/no-repro; #4 stateful load-trigger only). Practical *actionable* heads, all disjoint and
-parallel-safe: Lane A **`peculiarly-muddled-caption`** (NEW, concrete — an undriven `--kind orchestrate`
-driver run becomes a silent 15h zombie; good first Lane A pick), Lane B `pipeline-provenance-durable-refs`,
-Lane C `workmux-extract-libs` (now a real build — the git-worktree-wrapper remainder), Lane D
-`skill-companion-codex-layout`, Lane E `cancel-run-already-terminal-error-class`. **Lane D still carries a
-`collision: bundled-skill snapshot`** on `spinoff-skill-stale-preview-banner` — don't run it parallel with
-a Lane E worktree that touches skill templates. Recompute the head at pick time from live `issuectl`
-status; merge the DAG at Phase 0/handoff. No worktrees remain; **`main` clean, `v0.1.1` tagged + pushed.**
+**RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all at **0.1.3** (fully coherent). CHANGELOG
+`[Unreleased]` carries one user-facing change (`run wait --timeout` accepts a bare integer as seconds) →
+**a v0.1.4 cut is warranted** next (release is fully autonomous — see operating policy). The `hauis`-runner
+git-400 blocker is **fixed + closed** (`peculiarly-madly-sneeze`); recurrence playbook is in that issue.
+
+**NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is still
+**`supervisor-spawn-fails-silently-at-run-create`** (Lane A, only remaining high — but investigative/no-repro;
+#4 stateful load-trigger only). Practical *actionable* heads, all disjoint and parallel-safe: Lane B
+**`pipeline-hard-failure-carries-report`** (F5 — the substantive invariant-5 audit fix; broad, touches the
+pipeline `Result` type), Lane C `workmux-extract-libs` (git-worktree-wrapper remainder, ~40 raw-git sites),
+Lane D `skill-companion-codex-layout` (a decide-the-layout design issue, low urgency), Lane E
+`run-salvage-command`. Lane A's higher-value follow-up **`peculiarly-cheerful-mine`** (orchestrate driver
+heartbeat) is a **design-first** candidate (needs LockedRun+append, inv 1-2) — better as `/worktree-code`
+than a fire-and-forget spinoff. **Lane D still carries `collision: bundled-skill snapshot`** on
+`spinoff-skill-stale-preview-banner` — don't run it parallel with another worktree touching skill templates.
+Recompute the head at pick time from live `issuectl` status; merge the DAG at Phase 0/handoff. No worktrees
+remain; **`main` clean, 0 unpushed, `v0.1.3` tagged + shipped, local binary 0.1.3 (`doctor` 0/0).**
 
 ---
 
-## Execution DAG (2026-08-06)
+## Execution DAG (2026-08-07)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
