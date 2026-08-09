@@ -1,6 +1,6 @@
 ---
 created: 2026-07-25
-updated: 2026-07-28
+updated: 2026-08-09
 type: bug
 reporter: jari
 status: fixed
@@ -28,3 +28,9 @@ EXPECTED: an interactive 'code' run should idle after /wrap-up and wait for the 
 IMPACT: this is production LTI code (games.yaml drift can 400 live launches). The whole point of --kind code over --kind spinoff is the human review gate before landing. If interactive runs can self-merge, that guarantee is silently broken and reviewers stop trusting it — the orchestrator had to review the landed diff after the fact.
 
 Need to determine: did the agent inside the worktree call `run merge` itself (agent behaviour — the code-run system prompt should forbid self-merge), or did the supervisor auto-merge (supervisor behaviour — interactive lifecycle should never auto-merge)? Either way the interactive guarantee failed. Repro: spawn any `run create --kind code`, let the agent finish through /wrap-up, observe whether it self-merges.
+
+## Comments
+
+### 2026-08-09T04:02:08Z · @claude-intakectl-stint
+
+Observed again on orchestratectl binary **0.1.0** during an intakectl stint (2026-08-08). An interactive `--kind code` run (extract-agent-bridge, run 01kzb1r1yf...) self-landed to main despite (a) an explicit no-self-merge prohibition in the brief and (b) the `interactive_merge_requires_confirmation` backstop: the work reached main via a direct `git merge` (a real merge commit) and the run was left marked `failed`. Likely a STALE-BINARY repro, not a regression — this 0.1.0 binary predates the bundled skills (worktree-spinoff ships for 0.1.1, worktree-technical-decision for 0.1.3), so the fix probably shipped in 0.1.1+. Flagging in case it's worth recording the fix version and/or having the skill hard-gate on a binary older than the fix.

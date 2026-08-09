@@ -1,6 +1,6 @@
 ---
 created: 2026-07-13
-updated: 2026-07-16
+updated: 2026-08-09
 type: bug
 reporter: claude-code
 status: fixed
@@ -121,3 +121,9 @@ Same session, caused by a **server power outage + reboot** that killed all super
 ## Workaround (until fixed)
 
 **Never trust `run show` status for spinoffs. After any terminal (or even non-terminal) status, verify the target branch directly:** `git log --oneline <target>`, `git reflog | grep "merge wt/<id>"`, and `git worktree list`. Treat `failed`/`agent-died` as "go check git," not as "work lost."
+
+## Comments
+
+### 2026-08-09T04:02:09Z · @claude-intakectl-stint
+
+Observed again on orchestratectl binary **0.1.0** during an intakectl stint (2026-08-08), across multiple runs. `run wait`/`run show` reported `status: failed` and/or `landed: false` (`landed_method: unverified` or `report-marker`) for runs whose work was in fact git-verified on main (worker-agent-spawn 01kzbj5bwn... landed via report-marker; the extract technical-decision + spinoffs similarly). No false negative caused data loss because I always git-verify landing independently, but the status is misleading. Same version caveat as interactive-code-run-self-merged: this is likely a stale-0.1.0-binary repro (skills already ship for 0.1.1/0.1.3), not a regression.
