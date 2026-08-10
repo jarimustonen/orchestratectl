@@ -9,9 +9,9 @@ for the actual tracked work.
 ## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-07 (THREE rounds landed + v0.1.3 FULLY SHIPPED — runner blocker fixed; v0.1.4 warranted next)
 
 **✅ LATEST (2026-08-06/07 session — read first).** Three `/stint-start` rounds landed on `main`
-(9 units, all reviewed+green; round-3 Lane B paused ~6h at a genuine fork and was resolved by nudging the
-live agent — see the three `Round executed 2026-08-06` reconcile notes + the LESSON at the bottom of the
-DAG for slug-level detail). **`orchestratectl` 0.1.3 is now FULLY SHIPPED across all three
+(9 units, all reviewed+green; round-3 Lane B paused ~6h blocked on user input at a genuine fork — a real
+lifecycle gap now filed as `uncommonly-fuzzy-swing`, Lane A — see the three `Round executed 2026-08-06`
+reconcile notes at the bottom of the DAG for slug-level detail). **`orchestratectl` 0.1.3 is now FULLY SHIPPED across all three
 channels:** crates.io (`octl-core` + `orchestratectl`; 0.1.2 then 0.1.3), GitHub Release **v0.1.3** (aarch64-mac
 + x86_64/aarch64-linux binaries + installer), and the **Homebrew tap at 0.1.3**
 (`brew upgrade jarimustonen/orchestratectl/orchestratectl`). **Release-blocker fixed:** the binary/brew
@@ -57,10 +57,8 @@ SOPS.
 **KEY LEARNING (still canonical) — worker deaths are TRANSIENT.** Retry **with harvest** of the
 recoverable preserved branch (review → adopt → complete → merge), NOT hand-merge of unreviewed work, NOT
 base-agent swap. Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang.
-**NEW COMPANION LESSON (round 3):** a spinoff can also **PAUSE at a genuine fork and sit indefinitely** —
-a `run wait` `pending` run whose branch has committed work AND a live agent pane is a *paused-for-decision*
-worker, not a hang or a death. Diagnose with `tmux capture-pane`, resolve by nudging (`tmux send-keys`) so
-the worker finishes its OWN `run merge` — do not respawn or hand-merge. (See the round-3 note at the DAG bottom.)
+(Round 3 hit a *different* alive-agent `pending` shape — a spinoff blocked on user input at a genuine
+fork — which is being fixed properly, not worked around: see issue **`uncommonly-fuzzy-swing`**.)
 
 **RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all at **0.1.3** (fully coherent). CHANGELOG
 `[Unreleased]` carries one user-facing change (`run wait --timeout` accepts a bare integer as seconds) →
@@ -104,6 +102,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
     peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption; DESIGN-FIRST candidate)
     moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up; STUB — needs scoping)
+    uncommonly-fuzzy-swing                   (spinoff blocked on USER INPUT at a genuine fork must propagate to the parent agent (with delay) → surfaced to user, not a silent multi-hour block; round-3 finding; relates to no-completion-notification-to-parent + notify-run-level-summary)
     idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
     watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
     watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
@@ -129,6 +128,7 @@ LANE B — pipeline/* + floor/* + harness/*
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
     pipeline-drop-primitive-underspecified
+    run-create-harness-flag                  (feature: `run create --harness` promotes the pi adapter (+ others) from bakeoff into real runs; touches harness/* — collision: create.sh w/ Lane A)
     pipeline-tiered-triage                   (in-progress; deferred self-disagreement trigger)
 
 LANE C — workmux vendoring (fully independent)
@@ -141,7 +141,8 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ run-salvage-command
+  ▶ run-wait-stillborn-run-not-detected      (bug: `run wait` blocks the full timeout on a stillborn run — dead supervisor, 0 nodes, never started; should detect + return promptly)
+    run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
 <!-- execution-dag:end -->
@@ -235,18 +236,17 @@ extraheader + insteadof leaks), re-ran the v0.1.3 Release → all green; closed 
 `run-wait-timeout-unit-required` (done; `run wait --timeout` accepts a bare integer as seconds — kills
 the silent-instant-exit failure mode), and `entirely-faithful-beast` (done). **Lane B paused ~6h at a
 genuine fork** — the worker did the work + /llm-review, but review found the issue's premise (data-loss
-on hard error) was a **non-bug** (teardown never deletes chunk branches). Orchestrator nudged the live
-agent (tmux) to option (1): land the reviewed/green modest inv-5 robustness improvement (hard error
-DOMINATES the wave terminal — reverts a panic-wins regression that hid infra failures via Ok/exit-0;
-co-occurring panic surfaced via `PipelineError::with_note`) + spin off the real audit work; the worker
-completed its own `run merge`. Integrated gate green (1164 passed, 0 failed; round-2 watchdog de-flake
-holding). Dropped the 3 landed; added 3 Lane B follow-ups the worker filed — `pipeline-hard-failure-carries-report`
-(F5, the genuine inv-5 audit fix), `wave-terminal-worker-own-artifact-unaudited` (F4),
-`push-blocked-chunk-tier-and-commit-audit` (F6). No worktrees remain.
-**LESSON: a spinoff CAN pause at a genuine fork and sit indefinitely — a `pending` run whose branch has
-committed work AND a live agent pane is a paused-for-decision worker, NOT a hang or a death. Read the
-pane (`tmux capture-pane`) + nudge (`tmux send-keys`) to let it finish its OWN `run merge`; do not
-respawn or hand-merge.**
+on hard error) was a **non-bug** (teardown never deletes chunk branches), and it then blocked ~6h on user
+input awaiting a scope decision. Resolved this once manually (option 1): land the reviewed/green modest
+inv-5 robustness improvement (hard error DOMINATES the wave terminal — reverts a panic-wins regression
+that hid infra failures via Ok/exit-0; co-occurring panic surfaced via `PipelineError::with_note`) + spin
+off the real audit work; the worker completed its own `run merge`. Integrated gate green (1164 passed, 0
+failed; round-2 watchdog de-flake holding). Dropped the 3 landed; added 3 Lane B follow-ups the worker
+filed — `pipeline-hard-failure-carries-report` (F5, the genuine inv-5 audit fix),
+`wave-terminal-worker-own-artifact-unaudited` (F4), `push-blocked-chunk-tier-and-commit-audit` (F6). No
+worktrees remain. **The spinoff-blocked-on-user-input stall is a real lifecycle gap → filed as
+`uncommonly-fuzzy-swing` (Lane A): the need-for-input must propagate to the parent agent (with a delay)
+so it surfaces to the user, instead of a silent multi-hour block. Not a workaround — the fix.**
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
