@@ -850,12 +850,30 @@ fn dry_run_does_not_touch_filesystem() {
         .exists());
 }
 
-/// Snapshot every projection file under a run dir to a run-root-relative
-/// `path → inode` map. An atomic projection write is temp-file + rename, so a
-/// rewrite always lands a fresh inode — letting the caller detect a write even
-/// when the bytes are unchanged (e.g. a manifest timestamp refresh).
+/// A per-file write fingerprint: `(inode, mtime_secs, mtime_nanos, size)`.
+///
+/// Inode alone is NOT a reliable write signal under load. An atomic projection
+/// write is temp-file + rename, which frees the old file's inode; a busy
+/// filesystem (CI's high test parallelism) can immediately RECYCLE that inode
+/// number onto the very next file created in the same directory — so a genuine
+/// rewrite can land the *same* inode number it had before, and an inode-only
+/// diff then misses the write. This was the `dry-run-projection-parity-flake`:
+/// a real `manifest.json` rewrite went undetected only under CI parallelism.
+///
+/// Pairing the inode with the file's mtime (nanosecond) and size defeats reuse:
+/// a rewrite always stamps a fresh mtime (the two writes come from separate CLI
+/// process invocations, seconds apart — never the same nanosecond), so even a
+/// recycled inode reads as a change. An *unchanged* file keeps all four fields,
+/// and a byte-identical rewrite (e.g. a manifest timestamp refresh) still shows
+/// a new inode/mtime — preserving the "detect every fsync" semantic.
 #[cfg(unix)]
-fn projection_inodes(run_dir: &Path) -> std::collections::BTreeMap<String, u64> {
+type WriteFingerprint = (u64, i64, i64, u64);
+
+/// Snapshot every projection file under a run dir to a run-root-relative
+/// `path → fingerprint` map (see [`WriteFingerprint`] for why inode alone is
+/// not enough).
+#[cfg(unix)]
+fn projection_inodes(run_dir: &Path) -> std::collections::BTreeMap<String, WriteFingerprint> {
     use std::os::unix::fs::MetadataExt;
     let mut consider = vec![run_dir.join("manifest.json")];
     for sub in ["nodes", "discussions", "spinoffs"] {
@@ -877,7 +895,7 @@ fn projection_inodes(run_dir: &Path) -> std::collections::BTreeMap<String, u64> 
                     .unwrap()
                     .to_string_lossy()
                     .into_owned();
-                map.insert(rel, md.ino());
+                map.insert(rel, (md.ino(), md.mtime(), md.mtime_nsec(), md.size()));
             }
         }
     }

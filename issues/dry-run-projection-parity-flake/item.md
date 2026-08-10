@@ -3,7 +3,7 @@ created: 2026-08-10
 updated: 2026-08-10
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 ---
 
