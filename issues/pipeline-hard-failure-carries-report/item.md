@@ -2,11 +2,14 @@
 created: 2026-08-06
 updated: 2026-08-10
 type: task
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: 66865f2
   summary: carry PipelineReport on hard-failure Err path; cmd_run exits non-zero AND surfaces branch_preserved siblings
+- hash: 74fd1af
+  summary: review fixes — best-effort failure-report emit; drop dead PipelineFailure->CliError conv
+closed: 2026-08-10
 ---
 
 # Carry a PipelineReport with hard-failure Err so inv-5 preservation is auditable (genuine inv-5 fix)
