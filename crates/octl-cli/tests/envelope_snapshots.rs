@@ -459,6 +459,12 @@ fn run_create_envelopes() {
 fn run_show_envelopes() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
+    // Seed a worker node so the canonical `run show` example is a healthy,
+    // started run — a 0-node run with no supervisor would (correctly) render
+    // `stalled: true` (a stillborn run; issue
+    // `run-wait-stillborn-run-not-detected`), which is not the representative
+    // shape this snapshot pins.
+    seed_node(&home, &run_id);
     let red = redactions(&home, Some(&run_id));
     for (fmt, name) in [
         ("text", "run_show_text"),

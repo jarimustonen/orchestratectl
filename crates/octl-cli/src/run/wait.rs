@@ -22,6 +22,18 @@
 //! can never expose a half-applied projection set (CLAUDE.md state-integrity
 //! invariant 3).
 //!
+//! ## Stillborn early-exit
+//!
+//! A run is normally settled by reaching a terminal `manifest.status`. But a
+//! *stillborn* run — supervisor died before creating any worker node — sits
+//! `pending` forever and would otherwise block the whole `--timeout` (a real
+//! incident waited ~6h; issue `run-wait-stillborn-run-not-detected`). The poll
+//! also treats that shape as settled: [`is_stillborn`] over the manifest plus a
+//! single-file supervisor-pid probe. Such a run cannot become terminal on its
+//! own, so counting it as settled lets the wait return promptly; its outcome
+//! carries `stalled: true` and, under `--fail-on-error`, grades as a failure
+//! (exit `3`).
+//!
 //! ## Exit codes
 //!
 //! - `0` — wait condition satisfied (`--all` → every run terminal; `--any`
@@ -46,6 +58,8 @@ use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Sta
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
+use crate::run::dto::SupervisorView;
+use crate::run::stalled::is_stillborn;
 use crate::run::{from_core, run_paths_from_cli_arg, status_kebab};
 
 /// Reporting node whose terminal `node.report` carries the run's outcome
@@ -120,6 +134,13 @@ struct RunOutcome {
     /// How [`Self::landed`] was decided: `git-verified` | `report-marker` |
     /// `unverified`.
     landed_method: &'static str,
+    /// Computed hint (never persisted): true when this run is stillborn — its
+    /// supervisor died before creating any worker node, so it is `pending` yet
+    /// can never progress (issue `run-wait-stillborn-run-not-detected`). The
+    /// poll counts a stillborn run as settled (it returns promptly instead of
+    /// blocking the whole `--timeout`); under `--fail-on-error` a stalled run
+    /// grades as a failure. Mirrors `run show`'s `stalled`.
+    stalled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,12 +211,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     // Decide the exit code from the assembled outcomes:
-    //   timeout                       → 2
+    //   timeout                         → 2
     //   --fail-on-error & any settled
-    //     run failed/cancelled        → 3
-    //   otherwise                     → 0
+    //     run failed/cancelled/stalled  → 3
+    //   otherwise                       → 0
     // A timeout takes precedence over fail-on-error: the condition was never
-    // met, so there is nothing to grade.
+    // met, so there is nothing to grade. A stillborn (stalled) run settled the
+    // wait without ever finishing `done`, so it grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
         Stop::Met if args.fail_on_error && any_settled_error(&outcomes) => 3,
@@ -239,9 +261,9 @@ fn wait_loop(
     let mut prev: Vec<Option<Status>> = vec![None; runs.len()];
 
     loop {
-        let mut terminal = 0usize;
+        let mut settled = 0usize;
         for (i, (run_id, paths)) in runs.iter().enumerate() {
-            let status = current_status(paths)?.ok_or_else(|| {
+            let settle = current_settle(paths)?.ok_or_else(|| {
                 // A run dir validated at entry but its manifest vanished
                 // mid-poll: report it rather than spin forever.
                 CliError::system(
@@ -249,18 +271,23 @@ fn wait_loop(
                     format!("run {run_id} manifest disappeared while waiting"),
                 )
             })?;
-            if status.is_terminal() {
-                terminal += 1;
+            // A run is settled when it reaches a terminal status OR when it is
+            // stillborn — a supervisor that died before creating any node can
+            // never make the run terminal, so waiting for `is_terminal()` alone
+            // would block the whole timeout (issue
+            // `run-wait-stillborn-run-not-detected`).
+            if settle.status.is_terminal() || settle.stillborn {
+                settled += 1;
             }
-            if progress && prev[i] != Some(status) {
-                emit_progress(run_id, status);
+            if progress && prev[i] != Some(settle.status) {
+                emit_progress(run_id, settle.status);
             }
-            prev[i] = Some(status);
+            prev[i] = Some(settle.status);
         }
 
         let met = match condition {
-            Condition::All => terminal == runs.len(),
-            Condition::Any => terminal >= 1,
+            Condition::All => settled == runs.len(),
+            Condition::Any => settled >= 1,
         };
         if met {
             return Ok(Stop::Met);
@@ -299,6 +326,39 @@ fn current_status(paths: &RunPaths) -> Result<Option<Status>, CliError> {
     .map_err(from_core)
 }
 
+/// One poll's settle snapshot: the run's `manifest.status` plus whether the run
+/// is stillborn (supervisor dead, zero nodes, no progress since creation). Both
+/// are decided as ONE consistent snapshot under the shared lock — the
+/// supervisor-pid probe is a single-file read that does not participate in the
+/// projection guards, but reading it inside the lock keeps `status` and the
+/// stillborn verdict from disagreeing (mirrors `run show`).
+struct Settle {
+    status: Status,
+    stillborn: bool,
+}
+
+/// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
+/// dir holds no manifest (unknown/uninitialized run).
+fn current_settle(paths: &RunPaths) -> Result<Option<Settle>, CliError> {
+    RunLock::with_shared_lock(&paths.lock(), || {
+        let Some(m) = read_manifest_opt(paths)? else {
+            return Ok(None);
+        };
+        let supervisor = SupervisorView::probe(paths);
+        Ok(Some(Settle {
+            status: m.status,
+            stillborn: is_stillborn(
+                m.status,
+                supervisor.alive,
+                m.node_count,
+                m.created_at,
+                m.updated_at,
+            ),
+        }))
+    })
+    .map_err(from_core)
+}
+
 /// Assemble one run's terminal outcome: its `manifest.status` plus the
 /// outcome fields folded from the default node's terminal `node.report`
 /// (`summary`, the `via: "explicit-merge"` merge marker, and — for a
@@ -316,8 +376,20 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
     let git_inputs = RunLock::with_shared_lock(&paths.lock(), || {
         let manifest = read_manifest_opt(paths)?;
         let node = read_node_opt(paths, &node_id)?;
+        // Recompute the stillborn verdict for the final outcome from the same
+        // consistent snapshot (manifest + supervisor-pid probe) the poll used.
+        let stillborn = manifest.as_ref().is_some_and(|m| {
+            is_stillborn(
+                m.status,
+                SupervisorView::probe(paths).alive,
+                m.node_count,
+                m.created_at,
+                m.updated_at,
+            )
+        });
         Ok(GitInputs {
             status: manifest.as_ref().map(|m| m.status),
+            stillborn,
             source_repo: manifest.as_ref().and_then(|m| m.source_repo.clone()),
             source_branch: manifest.as_ref().and_then(|m| m.source_branch.clone()),
             worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
@@ -395,6 +467,7 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
         merged,
         landed: signal.landed,
         landed_method: signal.method.wire(),
+        stalled: git_inputs.stillborn,
         summary,
         error,
         recoverable_work,
@@ -406,6 +479,7 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
 /// snapshot (invariant 3) explicit and lets the git shell-out run lock-free.
 struct GitInputs {
     status: Option<Status>,
+    stillborn: bool,
     source_repo: Option<String>,
     source_branch: Option<String>,
     worktree_path: Option<String>,
@@ -414,13 +488,15 @@ struct GitInputs {
     report: Option<Value>,
 }
 
-/// True iff any *settled* (terminal) run did not finish `done` — i.e. it is
-/// `failed` or `cancelled`. Non-terminal runs (possible under `--any`) are
-/// not graded: they never settled.
+/// True iff any *settled* run did not finish cleanly `done` — i.e. it is
+/// `failed`, `cancelled`, or stillborn (`stalled`, a `pending` run that settled
+/// the wait only because its supervisor died before it could start). Non-settled
+/// runs (a still-progressing run under `--any`) are not graded: they never
+/// settled.
 fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
     outcomes
         .iter()
-        .any(|o| matches!(o.status, "failed" | "cancelled"))
+        .any(|o| matches!(o.status, "failed" | "cancelled") || o.stalled)
 }
 
 /// Emit one compact JSONL transition line to **stderr** for `--progress`, so a
@@ -479,6 +555,13 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     "{}  status={} landed={} ({}) merged={}",
                     r.run_id, r.status, r.landed, r.landed_method, r.merged
                 );
+                if r.stalled {
+                    print!(
+                        "  stalled=true (stillborn: supervisor died before starting — \
+                         `run reattach {}` or `run cancel {}`)",
+                        r.run_id, r.run_id
+                    );
+                }
                 if let Some(s) = &r.summary {
                     print!("  summary={}", output::escape_one_line(s));
                 }
@@ -596,15 +679,24 @@ mod tests {
             merged: false,
             landed: false,
             landed_method: "unverified",
+            stalled: false,
             summary: None,
             error: None,
             recoverable_work: None,
+        };
+        let mk_stalled = || RunOutcome {
+            stalled: true,
+            ..mk("pending")
         };
         assert!(!any_settled_error(&[mk("done"), mk("done")]));
         assert!(any_settled_error(&[mk("done"), mk("failed")]));
         assert!(any_settled_error(&[mk("cancelled")]));
         // A still-running run under --any is not a settled error.
         assert!(!any_settled_error(&[mk("done"), mk("running")]));
+        // A stillborn (stalled) run grades as a settled error even though its
+        // status is still `pending`.
+        assert!(any_settled_error(&[mk_stalled()]));
+        assert!(any_settled_error(&[mk("done"), mk_stalled()]));
     }
 
     #[test]

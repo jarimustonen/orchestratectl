@@ -97,6 +97,46 @@ pub fn is_stalled(
     now.signed_duration_since(node.updated_at) > STALL_GRACE
 }
 
+/// Detect a *stillborn* run: created successfully, but its supervisor died
+/// before ever spawning the first worker node — so the run can never make
+/// progress and will otherwise sit `pending` until a caller's timeout expires
+/// (issue `run-wait-stillborn-run-not-detected`; a real incident blocked
+/// `run wait` for ~6h).
+///
+/// Returns `true` only for the exact "never started" signature:
+///
+/// - `status == Pending` — the run never advanced past creation. A terminal or
+///   `running` manifest is not stillborn (it started).
+/// - the supervisor is **not alive** — the actor that would create `n-0001` and
+///   roll the run up is dead (or was never recorded). This is the crucial
+///   difference from [`is_stalled`]: there the supervisor is *alive* but idle,
+///   so a grace window is needed to tell "slow" from "dead"; here the
+///   supervisor is confirmed dead, which is unambiguous and needs no grace.
+/// - `node_count == 0` — not a single worker node was ever created. This also
+///   makes the check kind-agnostic: a `--kind orchestrate` run whose driver
+///   node was never even created is stillborn by the same logic, while a run
+///   that got as far as `n-0001` is excluded (it started).
+/// - `updated_at == created_at` — no event has been applied since creation
+///   (`node.created` / `supervisor.started` / any projection write bumps
+///   `manifest.updated_at`), so there has been zero forward progress.
+///
+/// Like [`is_stalled`], this is a **computed** read-time hint over the manifest
+/// (plus a single-file supervisor-pid probe) — it touches no
+/// event-append / reducer / schema path.
+#[must_use]
+pub fn is_stillborn(
+    run_status: Status,
+    supervisor_alive: bool,
+    node_count: u32,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+) -> bool {
+    run_status == Status::Pending
+        && !supervisor_alive
+        && node_count == 0
+        && updated_at == created_at
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +304,74 @@ mod tests {
     #[test]
     fn missing_driver_node_is_not_stalled() {
         assert!(!is_stalled(Status::Pending, Kind::Orchestrate, None, now()));
+    }
+
+    fn created() -> DateTime<Utc> {
+        "2026-08-06T11:00:00Z".parse().unwrap()
+    }
+
+    /// The exact stillborn signature: pending, dead supervisor, zero nodes, no
+    /// forward progress since creation.
+    #[test]
+    fn stillborn_signature_is_detected() {
+        assert!(is_stillborn(
+            Status::Pending,
+            false,
+            0,
+            created(),
+            created()
+        ));
+    }
+
+    /// An alive supervisor is a run that is (or may still be) starting — never
+    /// stillborn, however fresh.
+    #[test]
+    fn alive_supervisor_is_not_stillborn() {
+        assert!(!is_stillborn(
+            Status::Pending,
+            true,
+            0,
+            created(),
+            created()
+        ));
+    }
+
+    /// A run that created its first node started — not stillborn, even with a
+    /// dead supervisor (that is an orphaned-but-started run, a different shape).
+    #[test]
+    fn nonzero_node_count_is_not_stillborn() {
+        assert!(!is_stillborn(
+            Status::Pending,
+            false,
+            1,
+            created(),
+            created()
+        ));
+    }
+
+    /// Any forward progress (`updated_at` past `created_at`) means the
+    /// supervisor did something before dying — not the never-started shape.
+    #[test]
+    fn forward_progress_is_not_stillborn() {
+        let updated = created() + Duration::seconds(1);
+        assert!(!is_stillborn(Status::Pending, false, 0, created(), updated));
+    }
+
+    /// A non-`pending` run started (and possibly finished) — never stillborn,
+    /// whatever the counters say.
+    #[test]
+    fn non_pending_run_is_not_stillborn() {
+        for s in [
+            Status::Running,
+            Status::Blocked,
+            Status::Done,
+            Status::Failed,
+            Status::Cancelled,
+        ] {
+            assert!(
+                !is_stillborn(s, false, 0, created(), created()),
+                "status {s:?} must not be stillborn"
+            );
+        }
     }
 }

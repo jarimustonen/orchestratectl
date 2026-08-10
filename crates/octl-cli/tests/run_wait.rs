@@ -190,6 +190,10 @@ fn any_returns_when_one_of_two_is_terminal() {
 fn timeout_without_terminal_run_exits_two() {
     let home = TestHome::new();
     let pending = pending_run(&home, "pending");
+    // Give it a worker node so it reads as genuinely "still working" rather than
+    // stillborn (a 0-node run with no supervisor now settles promptly as
+    // stalled; this test wants a run that legitimately never settles).
+    add_node(&home, &pending, "n-0001");
 
     // No run will ever settle within the budget → exit 2, with waited_ms ≈ 500.
     let v = run_exit(
@@ -402,6 +406,71 @@ fn wait_reports_landed_git_verified_after_caller_rebase() {
     // No explicit-merge marker → the report-based `merged` flag stays false,
     // proving `landed` is independently git-derived.
     assert_eq!(r["merged"], false);
+}
+
+/// A stillborn run — created, but its supervisor died before spawning any node
+/// (no supervisor pid, 0 nodes, `updated_at == created_at`) — settles the wait
+/// promptly instead of blocking the whole timeout, and reports `stalled: true`.
+/// This is the core of issue `run-wait-stillborn-run-not-detected` (a real
+/// incident blocked `run wait` for ~6h).
+#[test]
+fn stillborn_run_settles_promptly_as_stalled() {
+    let home = TestHome::new();
+    // `run create` under OCTL_TEST_SKIP_MATERIALIZE spawns no supervisor, so the
+    // fresh run has the exact stillborn shape (pending, 0 nodes, no supervisor,
+    // updated_at == created_at).
+    let born = pending_run(&home, "stillborn");
+
+    // A generous timeout the wait must NOT consume: a stillborn run is detected
+    // on the first poll, so it returns far sooner than the budget.
+    let start = std::time::Instant::now();
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &born, "--timeout", "30s"]));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "stillborn run must settle promptly, took {elapsed:?}"
+    );
+    let r = &v["data"]["runs"][0];
+    // Status is still `pending` (the run never started) — the `stalled` flag is
+    // what tells the caller it is dead, not slow.
+    assert_eq!(r["status"], "pending");
+    assert_eq!(r["stalled"], true, "stillborn run must be stalled: {r}");
+    let waited = v["data"]["waited_ms"].as_u64().expect("waited_ms u64");
+    assert!(
+        waited < 5000,
+        "waited_ms {waited} should be well under the 30s budget"
+    );
+}
+
+/// Under `--fail-on-error`, a stillborn run grades as a failure (exit 3) even
+/// though its status is still `pending` — a caller that relies on the exit code
+/// must not mistake a dead run for a clean completion. Without the flag the same
+/// shape settles as a plain success (exit 0), carrying `stalled: true` for a
+/// caller that inspects the envelope.
+#[test]
+fn stillborn_run_fail_on_error_exits_three() {
+    let home = TestHome::new();
+    let born = pending_run(&home, "stillborn-fail");
+
+    let v = run_exit(
+        bin(&home).args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &born,
+            "--fail-on-error",
+            "--timeout",
+            "30s",
+        ]),
+        3,
+    );
+    assert_eq!(v["data"]["runs"][0]["stalled"], true);
+    assert_eq!(v["data"]["runs"][0]["status"], "pending");
+
+    // Same run, no --fail-on-error → exit 0, but still flagged stalled.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &born, "--timeout", "30s"]));
+    assert_eq!(v["data"]["runs"][0]["stalled"], true);
 }
 
 #[test]

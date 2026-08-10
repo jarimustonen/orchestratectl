@@ -36,13 +36,18 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
-    /// Computed hint (never persisted): true for an undriven `--kind
-    /// orchestrate` driver run whose driver node has sat `pending` with zero
-    /// children and no fresh events past the grace window — the silent-zombie
-    /// signature from issue `peculiarly-muddled-caption`. `false` for every
-    /// other kind, and for an orchestrate run that has spawned children / is
-    /// emitting events / is still inside the grace window. See
-    /// [`crate::run::stalled`].
+    /// Computed hint (never persisted): true when the run is visibly stuck.
+    /// Two shapes trip it (see [`crate::run::stalled`]):
+    ///
+    /// - an undriven `--kind orchestrate` driver run whose driver node has sat
+    ///   `pending` with zero children and no fresh events past the grace window
+    ///   (issue `peculiarly-muddled-caption`); or
+    /// - a *stillborn* run whose supervisor died before creating any worker node
+    ///   (`pending`, 0 nodes, no progress since creation — issue
+    ///   `run-wait-stillborn-run-not-detected`).
+    ///
+    /// `false` for a healthy run of any kind (children spawned / events flowing
+    /// / supervisor alive / still inside the grace window).
     stalled: bool,
 }
 
@@ -118,19 +123,30 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // the lock, so it is one consistent snapshot with `manifest.status`.
         // `run show` reads the reporting/driver node `n-0001` (there is no
         // per-node selector on this verb), so `node` is always the driver node.
-        let stalled = crate::run::stalled::is_stalled(
+        let now = chrono::Utc::now();
+        let stalled_orchestrate =
+            crate::run::stalled::is_stalled(manifest.status, manifest.kind, node.as_ref(), now);
+        // Stillborn: the supervisor died before ever creating `n-0001`, so the
+        // run can never progress (issue `run-wait-stillborn-run-not-detected`).
+        // Uses the same shared-lock snapshot — `manifest.status` + the
+        // supervisor liveness probe above + the manifest counters/timestamps.
+        let stillborn = crate::run::stalled::is_stillborn(
             manifest.status,
-            manifest.kind,
-            node.as_ref(),
-            chrono::Utc::now(),
+            supervisor.alive,
+            manifest.node_count,
+            manifest.created_at,
+            manifest.updated_at,
         );
-        // Idle minutes for the human message, only meaningful when stalled.
-        let stalled_idle_min = if stalled {
-            node.as_ref().map(|n| {
-                chrono::Utc::now()
-                    .signed_duration_since(n.updated_at)
-                    .num_minutes()
-            })
+        let stalled = stalled_orchestrate || stillborn;
+        // Idle minutes for the human message, only meaningful when stalled. The
+        // stillborn shape has no driver node to read, so its idle clock runs
+        // from `manifest.updated_at` (== `created_at`); the orchestrate stall
+        // reads the driver node's `updated_at`.
+        let stalled_idle_min = if stillborn {
+            Some(now.signed_duration_since(manifest.updated_at).num_minutes())
+        } else if stalled {
+            node.as_ref()
+                .map(|n| now.signed_duration_since(n.updated_at).num_minutes())
         } else {
             None
         };
@@ -148,21 +164,30 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             supervisor,
             recoverable_work,
             stalled,
+            stillborn,
             stalled_idle_min,
             landing,
         )))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor, recoverable_work, stalled, stalled_idle_min, landing) =
-        match scanned {
-            Some(v) => v,
-            None => {
-                return Err(
-                    CliError::user("run_not_found", format!("no run with id {run_id}"))
-                        .with_invalid_value(run_id),
-                );
-            }
-        };
+    let (
+        manifest,
+        counts,
+        supervisor,
+        recoverable_work,
+        stalled,
+        stillborn,
+        stalled_idle_min,
+        landing,
+    ) = match scanned {
+        Some(v) => v,
+        None => {
+            return Err(
+                CliError::user("run_not_found", format!("no run with id {run_id}"))
+                    .with_invalid_value(run_id),
+            );
+        }
+    };
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
     // computed outside the shared lock: the rebase-robust signal a caller should
     // trust instead of hand-rolling `git merge-base --is-ancestor`.
@@ -199,12 +224,22 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             if payload.stalled {
                 let idle =
                     stalled_idle_min.map_or_else(String::new, |m| format!(" (idle {m} min)"));
-                println!(
-                    "stalled:       true — orchestrate driver looks undriven: pending, no children{idle}. \
-                     Verify no orchestrator agent is still driving this run before acting; \
-                     if none is, `run cancel {}` and relaunch with an active orchestrator.",
-                    payload.manifest.run_id
-                );
+                if stillborn {
+                    println!(
+                        "stalled:       true — stillborn run: supervisor died before creating any \
+                         worker node (pending, 0 nodes, no progress since creation{idle}). \
+                         The run cannot progress on its own; `run reattach {run_id}` to recover it, \
+                         or `run cancel {run_id}` to lay it to rest.",
+                        run_id = payload.manifest.run_id
+                    );
+                } else {
+                    println!(
+                        "stalled:       true — orchestrate driver looks undriven: pending, no children{idle}. \
+                         Verify no orchestrator agent is still driving this run before acting; \
+                         if none is, `run cancel {}` and relaunch with an active orchestrator.",
+                        payload.manifest.run_id
+                    );
+                }
             }
             println!(
                 "landed:        {} ({})",

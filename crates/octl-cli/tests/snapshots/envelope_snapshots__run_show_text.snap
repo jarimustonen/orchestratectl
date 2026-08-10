@@ -11,7 +11,7 @@ kind:          spinoff
 lifecycle:     autonomous
 created_at:    [TS]
 updated_at:    [TS]
-nodes:         0
+nodes:         1
 discussions:   0
 spinoffs:      0
 supervisor:    (none recorded)
