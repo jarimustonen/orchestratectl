@@ -299,8 +299,14 @@ fn wait_loop(
     loop {
         let mut settled = 0usize;
         let mut stall_now: Vec<Option<StallKind>> = vec![None; runs.len()];
+        // Sample the clock ONCE per poll and share it across every run in this
+        // iteration, so a multi-run wait grades all runs' grace windows against
+        // the same `now` (rather than a per-run drift as the loop walks the
+        // list). Passed into `current_settle` so the settle predicate stays
+        // deterministic and test-injectable through `stall_kind`.
+        let now = chrono::Utc::now();
         for (i, (run_id, paths)) in runs.iter().enumerate() {
-            let settle = current_settle(paths)?.ok_or_else(|| {
+            let settle = current_settle(paths, now)?.ok_or_else(|| {
                 // A run dir validated at entry but its manifest vanished
                 // mid-poll: report it rather than spin forever.
                 CliError::system(
@@ -379,10 +385,19 @@ struct Settle {
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
-/// dir holds no manifest (unknown/uninitialized run). `now` is sampled inside
-/// the lock so the orphan grace window is measured against the same manifest
-/// clock this snapshot reads.
-fn current_settle(paths: &RunPaths) -> Result<Option<Settle>, CliError> {
+/// dir holds no manifest (unknown/uninitialized run). `now` is passed in (one
+/// value per poll — see [`wait_loop`]) rather than sampled here, so the settle
+/// decision is deterministic and every run in a multi-run poll shares one clock.
+///
+/// The shared lock gives a consistent *manifest/projection* snapshot; it does
+/// NOT make the supervisor liveness probe transactionally consistent with the
+/// manifest (the pid file is removed without the lock, and process death is
+/// unsynchronized). The probe is read here so it is as fresh as the manifest it
+/// sits beside — a best-effort point-in-time hint, not a welded pairing.
+fn current_settle(
+    paths: &RunPaths,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<Settle>, CliError> {
     RunLock::with_shared_lock(&paths.lock(), || {
         let Some(m) = read_manifest_opt(paths)? else {
             return Ok(None);
@@ -396,7 +411,7 @@ fn current_settle(paths: &RunPaths) -> Result<Option<Settle>, CliError> {
                 m.node_count,
                 m.created_at,
                 m.updated_at,
-                chrono::Utc::now(),
+                now,
             ),
         }))
     })
@@ -629,25 +644,20 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     r.run_id, r.status, r.landed, r.landed_method, r.merged
                 );
                 if r.stalled {
-                    // The per-kind reason is carried in `error`; fold it into the
-                    // marker (with the remediation) so text output names the
-                    // specific supervisor-death shape without a redundant second
-                    // line below.
-                    let reason = r.error.as_deref().unwrap_or("supervisor died");
+                    // A remediation hint only; the specific per-kind reason is
+                    // carried in the `error=` field below, printed unconditionally
+                    // so a `grep error=` scraper finds a stalled run's reason the
+                    // same way it finds a failed/cancelled one.
                     print!(
-                        "  stalled=true ({reason} — `run reattach {id}` or `run cancel {id}`)",
+                        "  stalled=true (`run reattach {id}` or `run cancel {id}`)",
                         id = r.run_id
                     );
                 }
                 if let Some(s) = &r.summary {
                     print!("  summary={}", output::escape_one_line(s));
                 }
-                // A stalled run already prints its reason in the marker above; only
-                // surface a standalone `error=` for a non-stalled failure/cancel.
                 if let Some(e) = &r.error {
-                    if !r.stalled {
-                        print!("  error={}", output::escape_one_line(e));
-                    }
+                    print!("  error={}", output::escape_one_line(e));
                 }
                 if let Some(line) = recoverable_summary(r.recoverable_work.as_ref()) {
                     print!("  {line}");

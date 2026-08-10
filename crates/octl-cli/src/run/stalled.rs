@@ -205,6 +205,16 @@ pub const ORPHAN_GRACE: Duration = Duration::minutes(15);
 /// reads only fields already held under the caller's shared lock (the manifest)
 /// plus the single-file supervisor-pid probe. `now` is injected so the decision
 /// is deterministic in tests.
+///
+/// Clock skew fails closed: a `updated_at` in the future yields a negative
+/// `signed_duration_since`, which is never `> ORPHAN_GRACE`, so a skewed clock
+/// suppresses the verdict rather than raising a false orphan alarm — the run
+/// degrades to the old timeout behavior, no new harm. (The residual weakness is
+/// a genuinely-dead supervisor whose transient dead-read coincides with a
+/// heads-down worker that has legitimately emitted no manifest event for the
+/// grace window; hardening that needs a supervisor heartbeat/lease, tracked as a
+/// follow-up. The hint stays advisory — it points at the non-destructive
+/// `run reattach`, never a destructive action.)
 #[must_use]
 pub fn is_orphaned(
     run_status: Status,

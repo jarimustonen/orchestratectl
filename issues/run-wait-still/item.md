@@ -5,6 +5,9 @@ type: bug
 status: in-progress
 priority: normal
 labels: [run-wait, supervisor, reliability]
+commits:
+- hash: 87db6c1
+  summary: 'fix(run): detect orphaned mid-run runs in run wait/show'
 ---
 
 # run wait still blocks on orphaned run with node_count>0 (supervisor died mid-run)
