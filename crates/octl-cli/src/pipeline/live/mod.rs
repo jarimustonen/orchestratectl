@@ -2754,6 +2754,20 @@ struct WaveBuildResult {
     outcome: WaveBuildOutcome,
 }
 
+/// The deterministic identity (worktree + branch) of the attempt a wave worker is
+/// CURRENTLY building. A worker registers this in the shared artifact map BEFORE each
+/// [`build_and_gate`] call so that, if the attempt commits real work and then the
+/// worker hard-errors or panics, the branch it committed on is still named for the
+/// invariant-5 audit fold — [`WaveJob::Error`]/[`WaveJob::Panicked`] discard the
+/// [`WaveBuildResult`], so without this the branch would be orphaned (issue
+/// `wave-terminal-worker-own-artifact-unaudited`). Cleared on a clean terminal return
+/// (the `WaveBuildResult` then carries the identity, folded normally).
+#[derive(Clone)]
+struct WaveArtifact {
+    wt: PathBuf,
+    branch: String,
+}
+
 /// A wave chunk's build result (see [`WaveBuildResult`]).
 enum WaveBuildOutcome {
     /// Floor green off the shared wave base; the deterministic merge phase merges
@@ -2846,6 +2860,7 @@ fn build_chunk_in_wave(
     seed_prior_diff: Option<&str>,
     recode_budget: u32,
     git_lock: &Mutex<()>,
+    artifacts: &Mutex<BTreeMap<usize, WaveArtifact>>,
 ) -> Result<WaveBuildResult, PipelineError> {
     let mut findings: Vec<String> = verify_seed.to_vec();
     let mut prior_diff: Option<String> = seed_prior_diff.map(str::to_string);
@@ -2854,6 +2869,20 @@ fn build_chunk_in_wave(
     let mut usages: Vec<Option<Usage>> = Vec::new();
     let mut recode_findings: Vec<Vec<String>> = Vec::new();
     loop {
+        // Register the deterministic identity this attempt is ABOUT to build under,
+        // BEFORE `build_and_gate` creates (and the harness may commit on) the branch.
+        // If the harness commits real work and then hard-errors or panics, `?`/unwind
+        // leaves without a `WaveBuildResult`, but the fold can still name + audit this
+        // branch from the registry (invariant 5, issue
+        // `wave-terminal-worker-own-artifact-unaudited`). A clean terminal return
+        // clears the entry (the result carries the identity from there).
+        {
+            let (wt, branch) = chunk_attempt_names(cfg, slug, &chunk.id, seq);
+            artifacts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(idx, WaveArtifact { wt, branch });
+        }
         let (built, usage) = build_and_gate(
             cfg,
             repo,
@@ -2877,6 +2906,13 @@ fn build_chunk_in_wave(
                 wt,
                 branch,
             } => {
+                // Clean terminal return: the `WaveBuildResult` carries the identity, so
+                // clear the in-flight marker — the fold preserves this via the result,
+                // not the artifact registry.
+                artifacts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&idx);
                 return Ok(WaveBuildResult {
                     idx,
                     tier,
@@ -2930,6 +2966,12 @@ fn build_chunk_in_wave(
                 // `attempt_findings` drove the (now-exhausted) re-code loop; a
                 // terminal block is never re-briefed, so it is dropped here.
                 drop(attempt_findings);
+                // Clean terminal return (the `WaveBuildResult` carries the identity):
+                // clear the in-flight marker so the fold preserves this via the result.
+                artifacts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&idx);
                 return Ok(WaveBuildResult {
                     idx,
                     tier,
@@ -3035,6 +3077,12 @@ fn run_wave_concurrent(
     let git_lock: Mutex<()> = Mutex::new(());
     let queue: Mutex<VecDeque<usize>> = Mutex::new((0..jobs.len()).collect());
     let results: Mutex<BTreeMap<usize, WaveJob>> = Mutex::new(BTreeMap::new());
+    // The in-flight artifact identity of each worker, keyed by chunk idx. A worker
+    // clears its entry on a clean terminal return; an entry that SURVIVES the scope
+    // belongs to a worker that hard-errored or panicked mid-attempt — its branch (which
+    // may hold committed work) is not named by any `WaveBuildResult`, so the fold audits
+    // it (invariant 5, `wave-terminal-worker-own-artifact-unaudited`).
+    let artifacts: Mutex<BTreeMap<usize, WaveArtifact>> = Mutex::new(BTreeMap::new());
 
     std::thread::scope(|scope| {
         for _ in 0..k {
@@ -3070,6 +3118,7 @@ fn run_wave_concurrent(
                         job.prior_diff.as_deref(),
                         job.recode_budget,
                         &git_lock,
+                        &artifacts,
                     )
                 }));
                 let outcome = match res {
@@ -3086,6 +3135,12 @@ fn run_wave_concurrent(
     });
 
     let mut results = results
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Any entry that survived the scope belongs to a worker that hard-errored or
+    // panicked mid-attempt (a clean return clears it): the branch it may have committed
+    // on is named by no `WaveBuildResult`. Audited below on the terminal paths.
+    let artifacts = artifacts
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -3149,11 +3204,27 @@ fn run_wave_concurrent(
     // branches), but recording each as a `branch_preserved` `ChunkReport` is what makes
     // that preservation AUDITABLE — `run_pipeline_tiered` now pairs this hard `Err` with
     // the accumulated report (`pipeline-hard-failure-carries-report`), so `cmd_run`
-    // surfaces the preserved siblings on the failure path rather than dropping them. The
-    // panicked chunk's OWN worktree is in an unknown state and is not vouched for here.
+    // surfaces the preserved siblings on the failure path rather than dropping them.
+    //
+    // A terminal worker's OWN artifact is audited too (`artifacts` holds every
+    // error/panic worker's in-flight branch): a worker that COMMITTED real work and then
+    // hard-errored/panicked left that commit on its deterministic branch, which no
+    // `WaveBuildResult` names. `audit_terminal_worker_artifact` records it as an
+    // audit-only `branch_preserved` `ChunkReport` (contents NOT vouched for — the floor
+    // never gated the crashing attempt), so it is named + kept, not silently orphaned
+    // (invariant 5, `wave-terminal-worker-own-artifact-unaudited`).
     if let Some(e) = hard_error {
         for r in blocked.iter().chain(built.iter()) {
             preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
+        for (idx, artifact) in &artifacts {
+            audit_terminal_worker_artifact(
+                run,
+                &plan.chunks[*idx],
+                &wave_base,
+                artifact,
+                "terminal wave worker hard-errored after committing — branch preserved, contents unaudited (floor never gated this attempt)",
+            );
         }
         return match panicked {
             Some((chunk_id, msg)) => Err(e.with_note(format!(
@@ -3170,12 +3241,27 @@ fn run_wave_concurrent(
     // circuit-breaker `Ok` report, so preservation IS surfaced: record every
     // committed-but-unmerged SIBLING (the committed-but-`blocked` ones and the
     // floor-green `built` ones) so the panic can't strand real work, then stop the stage
-    // at a terminal block naming the crashed chunk. The panicked chunk's OWN worktree is
-    // in an unknown state and cannot be reliably vouched for — a `--keep`-recoverable
-    // residual, not silent data loss of a sibling's work.
+    // at a terminal block naming the crashed chunk.
+    //
+    // The panicked chunk's OWN artifact is now audited when it committed before crashing
+    // (`artifacts` holds its in-flight branch): `audit_terminal_worker_artifact` records
+    // a committed-but-unmerged branch as an audit-only `branch_preserved` `ChunkReport`
+    // (contents NOT vouched for — the worktree is in an unknown state, the floor never
+    // gated it), so real committed work can't be stranded (invariant 5,
+    // `wave-terminal-worker-own-artifact-unaudited`). A branch with no commit beyond the
+    // wave base is left as the `--keep`-recoverable residual it always was.
     if let Some((chunk_id, msg)) = panicked {
         for r in blocked.iter().chain(built.iter()) {
             preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
+        for (idx, artifact) in &artifacts {
+            audit_terminal_worker_artifact(
+                run,
+                &plan.chunks[*idx],
+                &wave_base,
+                artifact,
+                "terminal wave worker panicked after committing — branch preserved, contents unaudited (floor never gated this attempt)",
+            );
         }
         run.circuit_breaker = Some(format!(
             "wave build thread panicked on chunk {chunk_id} — sibling builds preserved, stage stopped: {msg}"
@@ -3544,6 +3630,59 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
     push_blocked_chunk(run, chunk, outcome, floor, floor_passed, reason, wt, branch);
 }
 
+/// Audit a wave worker's OWN artifact after it hard-errored or panicked mid-attempt
+/// (invariant 5, `wave-terminal-worker-own-artifact-unaudited`). The worker discarded
+/// its [`WaveBuildResult`] on the way out (`WaveJob::Error`/`Panicked`), so nothing
+/// else names the deterministic branch it may have COMMITTED real work on. If that
+/// branch exists AND holds commits beyond the wave `base`, record an audit-only
+/// `branch_preserved` [`ChunkReport`] — the floor NEVER gated the crashing attempt, so
+/// `floor`/`floor_passed` stay `None` and the report does not vouch for the contents —
+/// and keep the worktree/branch on disk (teardown never deletes chunk branches).
+///
+/// A branch that never committed anything beyond `base` (or was never created — a panic
+/// before `worktree_add`) is nothing invariant 5 protects: it is left untouched as the
+/// `--keep`-recoverable residual the panic/error path always produced, and NOT reported
+/// (an audit entry would falsely imply preserved committed work). A `commits_ahead_of`
+/// error is treated conservatively as "has work" so a transient git failure never drops
+/// a possibly-committed branch.
+fn audit_terminal_worker_artifact(
+    run: &mut Run,
+    chunk: &Chunk,
+    base: &str,
+    artifact: &WaveArtifact,
+    reason: &str,
+) {
+    if !git::branch_exists(&run.repo, &artifact.branch) {
+        return;
+    }
+    let ahead = git::commits_ahead_of(&run.repo, base, &artifact.branch).unwrap_or(1);
+    if ahead == 0 {
+        return;
+    }
+    // The branch ref is the durable artifact (the worktree may be dirty after a mid-run
+    // panic); read the committed tip from it, not from the worktree.
+    let commit = git::resolve_commit(&run.repo, &artifact.branch).ok();
+    run.preserved
+        .push((artifact.wt.clone(), artifact.branch.clone()));
+    upsert_chunk_report(
+        run,
+        ChunkReport {
+            id: chunk.id.clone(),
+            title: chunk.title.clone(),
+            tier: chunk.tier.wire_name().to_string(),
+            outcome: "committed".to_string(),
+            floor_passed: None,
+            floor: None,
+            merged: false,
+            commit,
+            merge_commit: None,
+            replayed: false,
+            reason: Some(reason.to_string()),
+            branch_preserved: Some(artifact.branch.clone()),
+        },
+    );
+}
+
 /// Undo the invariant-5 preservation of a build-phase block we are about to re-drive
 /// through the sequential drain (`immoderately-dirty-cushion`). The block was
 /// preserved before the merge phase as protection against a merge-phase early
@@ -3755,6 +3894,30 @@ fn attempt_chunk(
 /// against sibling wave-build threads — concurrent `worktree add` on one repo can
 /// race on `.git/worktrees`. The slow harness `run_chunk` stays OUTSIDE the lock so
 /// independent chunks' agents genuinely run in parallel.
+/// The deterministic worktree + branch names for one build attempt of a chunk
+/// (design §6). The first attempt (seq 1) keeps the bare chunk name; every later
+/// attempt — re-code OR promotion — suffixes `-a{seq}` with the MONOTONIC sequence,
+/// so no two attempts (across any tier) ever share a worktree/branch name, even if a
+/// superseded attempt's cleanup failed. Shared by [`build_and_gate`] (which CREATES
+/// them) and the wave worker ([`build_chunk_in_wave`], which PRE-REGISTERS them so a
+/// commit-then-panic/error attempt is still named for the invariant-5 audit) so the
+/// naming can never drift between the two.
+fn chunk_attempt_names(
+    cfg: &PipelineConfig,
+    slug: &str,
+    chunk_id: &str,
+    seq: u32,
+) -> (PathBuf, String) {
+    let suffix = if seq == 1 {
+        String::new()
+    } else {
+        format!("-a{seq}")
+    };
+    let branch = format!("{slug}/chunk-{chunk_id}{suffix}");
+    let wt = cfg.workdir.join(format!("chunk-{chunk_id}{suffix}"));
+    (wt, branch)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_and_gate(
     cfg: &PipelineConfig,
@@ -3770,17 +3933,7 @@ fn build_and_gate(
     prior_diff: Option<&str>,
     git_lock: Option<&Mutex<()>>,
 ) -> Result<(BuildAttempt, Option<Usage>), PipelineError> {
-    // The first attempt (seq 1) keeps the bare chunk name; every later attempt —
-    // re-code OR promotion — suffixes `-a{seq}` with the MONOTONIC sequence, so no
-    // two attempts (across any tier) ever share a worktree/branch name, even if a
-    // superseded attempt's cleanup failed.
-    let suffix = if seq == 1 {
-        String::new()
-    } else {
-        format!("-a{seq}")
-    };
-    let chunk_branch = format!("{slug}/chunk-{}{suffix}", chunk.id);
-    let chunk_wt = cfg.workdir.join(format!("chunk-{}{suffix}", chunk.id));
+    let (chunk_wt, chunk_branch) = chunk_attempt_names(cfg, slug, &chunk.id, seq);
 
     {
         // Serialise ONLY the worktree-add metadata mutation when running concurrently

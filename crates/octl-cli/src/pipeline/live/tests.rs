@@ -3919,3 +3919,209 @@ fn wave_hard_error_dominates_and_surfaces_co_occurring_panic() {
     let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c1:a.txt"]);
     assert_eq!(blob, "c1", "c1's committed work must survive: {blob:?}");
 }
+
+/// A [`CodeHarness`] that COMMITS real work in the chunk worktree and THEN fails
+/// terminally — panics (`panic` ids) or returns a hard `HarnessError` (`hard` ids) —
+/// modelling an agent that lands a commit on its deterministic branch and then crashes.
+/// Distinct from [`WaveFailInjector`], which fails BEFORE committing: this is the
+/// commit-then-crash window where the terminal worker's OWN branch holds committed work
+/// that no `WaveBuildResult` names (issue `wave-terminal-worker-own-artifact-unaudited`).
+/// Clean chunks (neither `hard` nor `panic`) just commit their scoped file.
+struct CommitThenFail {
+    hard: &'static [&'static str],
+    panic: &'static [&'static str],
+    files: BTreeMap<String, String>,
+}
+impl CodeHarness for CommitThenFail {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let rel = self
+            .files
+            .get(&req.chunk_id)
+            .unwrap_or_else(|| panic!("no scoped file for {}", req.chunk_id));
+        let wt = &req.worktree_path;
+        // Commit FIRST — the branch ref advances on disk before we crash.
+        std::fs::write(wt.join(rel), format!("{}\n", req.chunk_id)).unwrap();
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        let head = git_out(wt, &["rev-parse", "HEAD"]);
+        // ...then fail terminally, with the commit already landed on the branch.
+        assert!(
+            !self.panic.contains(&req.chunk_id.as_str()),
+            "simulated post-commit panic on {}",
+            req.chunk_id
+        );
+        if self.hard.contains(&req.chunk_id.as_str()) {
+            return Err(HarnessError::ProviderFailure {
+                message: format!("simulated post-commit hard error on {}", req.chunk_id),
+            });
+        }
+        Ok(ChunkResult::committed(head, vec![PathBuf::from(rel)]))
+    }
+}
+
+#[test]
+fn wave_worker_that_commits_then_panics_audits_its_own_branch() {
+    // (`wave-terminal-worker-own-artifact-unaudited`, invariant 5) A wave worker that
+    // COMMITS real work and then PANICS discards its `WaveBuildResult` on the way out
+    // (`WaveJob::Panicked`), so before this fix nothing named the branch it committed
+    // on — the committed-but-unmerged branch `demo/chunk-c2` was orphaned. The worker now
+    // pre-registers its deterministic artifact identity, so the fold records an
+    // audit-only `branch_preserved` `ChunkReport` for the crashed worker's OWN branch
+    // (contents NOT vouched for — the floor never gated the crashing attempt).
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave worker commits then panics".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &CommitThenFail {
+            hard: &[],
+            panic: &["c2"],
+            files: [
+                ("c1".to_string(), "a.txt".to_string()),
+                ("c2".to_string(), "b.txt".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        },
+        &ScriptedVerify::passing(),
+    )
+    .expect("a post-commit panic returns a terminal report, not a panic");
+
+    assert!(!report.merged, "the panic stopped the stage: {report:#?}");
+
+    // The crashed worker's OWN branch is now audited (invariant-5 gap closed): named,
+    // committed-oid recorded, but explicitly not vouched for (floor `None`).
+    let c2 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c2")
+        .expect("the terminal worker's own artifact must be in the report");
+    assert_eq!(
+        c2.branch_preserved.as_deref(),
+        Some("demo/chunk-c2"),
+        "c2's committed-but-unmerged branch must be named, not orphaned: {c2:?}"
+    );
+    assert!(!c2.merged, "c2 never merged");
+    assert!(
+        c2.commit.is_some(),
+        "the audited artifact records its committed oid: {c2:?}"
+    );
+    assert_eq!(
+        c2.floor, None,
+        "the crashing attempt was never floor-gated, so it is not vouched for: {c2:?}"
+    );
+    assert_eq!(c2.floor_passed, None, "{c2:?}");
+    assert!(
+        c2.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("panicked after committing")),
+        "the audit reason must record WHY the branch is unaudited: {c2:?}"
+    );
+
+    // The branch + its committed blob really survive on disk (teardown never deletes a
+    // preserved chunk branch).
+    assert!(
+        super::git::branch_exists(repo.path(), "demo/chunk-c2"),
+        "c2's branch must survive teardown"
+    );
+    let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c2:b.txt"]);
+    assert_eq!(blob, "c2", "c2's committed work must survive: {blob:?}");
+}
+
+#[test]
+fn wave_worker_that_commits_then_hard_errors_audits_its_own_branch() {
+    // (`wave-terminal-worker-own-artifact-unaudited`, invariant 5) The hard-error twin
+    // of the panic case: a worker that COMMITS and then returns a hard `PipelineError`
+    // discards its `WaveBuildResult` (`WaveJob::Error`). The hard error still DOMINATES
+    // (the run returns `Err`, non-zero exit), but the accumulated report now carries an
+    // audit-only `branch_preserved` entry for the crashed worker's OWN committed branch,
+    // so its committed-but-unmerged work is auditable on the failure path rather than
+    // silently orphaned.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave worker commits then hard-errors".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    let err = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &CommitThenFail {
+            hard: &["c2"],
+            panic: &[],
+            files: [
+                ("c1".to_string(), "a.txt".to_string()),
+                ("c2".to_string(), "b.txt".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        },
+        &ScriptedVerify::passing(),
+    )
+    .unwrap_err();
+
+    // The hard error still dominates the terminal outcome (typed variant preserved).
+    assert!(matches!(err.error, PipelineError::Harness(_)), "{err:?}");
+    assert!(
+        err.error
+            .to_string()
+            .contains("simulated post-commit hard error on c2"),
+        "the hard error carries its own message: {}",
+        err.error
+    );
+
+    // ...and the crashed worker's OWN committed branch is auditable on the failure path.
+    let report = err.report.expect("hard wave failure must carry a report");
+    let c2 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c2")
+        .expect("the terminal worker's own artifact must be in the failure report");
+    assert_eq!(
+        c2.branch_preserved.as_deref(),
+        Some("demo/chunk-c2"),
+        "c2's committed-but-unmerged branch must be named, not orphaned: {c2:?}"
+    );
+    assert!(c2.commit.is_some(), "{c2:?}");
+    assert_eq!(
+        c2.floor, None,
+        "the crashing attempt was never floor-gated: {c2:?}"
+    );
+    assert!(
+        c2.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("hard-errored after committing")),
+        "the audit reason must record WHY the branch is unaudited: {c2:?}"
+    );
+
+    // The branch + committed blob survive on disk.
+    assert!(super::git::branch_exists(repo.path(), "demo/chunk-c2"));
+    let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c2:b.txt"]);
+    assert_eq!(blob, "c2", "c2's committed work must survive: {blob:?}");
+}
