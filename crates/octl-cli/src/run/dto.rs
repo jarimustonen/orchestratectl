@@ -80,6 +80,14 @@ impl SupervisorView {
 /// for the lifetime of the emit. Field order and names mirror the
 /// established wire contract; the internal `applied_seq` watermark is
 /// intentionally absent (see module docs).
+///
+/// Note: supervisor liveness is deliberately NOT a field here. It is a
+/// *computed* probe (not a persisted manifest field), so it lives as a
+/// sibling of the other computed `run show` fields (`counts`, `landed`,
+/// `stalled`) at the top level of the `data` payload — `data.supervisor`,
+/// matching where `run list` rows and the bundled skills expect it (issue
+/// `run-show-json-null-fields`: burying it at `data.manifest.supervisor`
+/// made a consumer reading `data.supervisor` observe a null).
 #[derive(Serialize)]
 pub struct ManifestView<'a> {
     pub schema_version: u32,
@@ -98,20 +106,6 @@ pub struct ManifestView<'a> {
     pub pending_spinoffs: u32,
     pub parent_run_id: Option<&'a RunId>,
     pub parent_node_id: Option<&'a NodeId>,
-    /// Liveness of the run's per-run supervisor. Defaults to the "unknown"
-    /// probe (`{pid: null, alive: false}`) from `From`; the `show` handler
-    /// overrides it with a real probe via [`ManifestView::with_supervisor`].
-    pub supervisor: SupervisorView,
-}
-
-impl ManifestView<'_> {
-    /// Attach a probed [`SupervisorView`], replacing the `From`-provided
-    /// "unknown" default. Builder so the handler stays a one-liner.
-    #[must_use]
-    pub fn with_supervisor(mut self, supervisor: SupervisorView) -> Self {
-        self.supervisor = supervisor;
-        self
-    }
 }
 
 impl<'a> From<&'a Manifest> for ManifestView<'a> {
@@ -133,7 +127,6 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             pending_spinoffs: m.pending_spinoffs,
             parent_run_id: m.parent_run_id.as_ref(),
             parent_node_id: m.parent_node_id.as_ref(),
-            supervisor: SupervisorView::unknown(),
         }
     }
 }
@@ -252,7 +245,6 @@ mod tests {
                 "pending_spinoffs": 0,
                 "parent_run_id": null,
                 "parent_node_id": null,
-                "supervisor": { "pid": null, "alive": false },
             })
         );
     }

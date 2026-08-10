@@ -95,7 +95,10 @@ Fields that drive decisions:
 ## `run show` payload
 
 `data.manifest` extends the summary with detail; `data.counts` carries
-denormalised counters; some kinds add kind-specific fields.
+denormalised counters; `data.supervisor` is the probed liveness of the
+run's supervisor (a top-level sibling of `counts` — NOT nested under
+`manifest`, exactly as `run list` rows carry it); some kinds add
+kind-specific fields.
 
 ```json
 {
@@ -113,7 +116,8 @@ denormalised counters; some kinds add kind-specific fields.
       "open_discussions": 0,
       "pending_spinoffs": 0
     },
-    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 }
+    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 },
+    "supervisor": { "pid": 65745, "alive": true }
   }
 }
 ```

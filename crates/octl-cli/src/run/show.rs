@@ -19,6 +19,14 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 struct ShowPayload<'a> {
     manifest: ManifestView<'a>,
     counts: Counts,
+    /// Liveness of the run's per-run supervisor, probed under the shared lock
+    /// alongside `manifest.status` so the pair is one consistent snapshot. Sits
+    /// here — a top-level `data.supervisor`, sibling of `counts`/`landed`/
+    /// `stalled` — rather than under `manifest`, because it is a *computed*
+    /// probe (not a persisted manifest field) and because that is where
+    /// `run list` rows and the bundled skills read it (issue
+    /// `run-show-json-null-fields`).
+    supervisor: SupervisorView,
     /// Rebase-robust landing signal for the reporting node: true when the
     /// worker's committed work has landed in the target, confirmed by patch-id
     /// equivalence against the *current* target tip (`git cherry`) — NOT by
@@ -209,8 +217,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         &crate::supervise::cleanup::git_bin(),
     );
     let payload = ShowPayload {
-        manifest: ManifestView::from(&manifest).with_supervisor(supervisor),
+        manifest: ManifestView::from(&manifest),
         counts,
+        supervisor,
         landed: signal.landed,
         landed_method: signal.method.wire(),
         recoverable_work,
@@ -258,8 +267,8 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("nodes:         {}", payload.counts.nodes);
             println!("discussions:   {}", payload.counts.discussions);
             println!("spinoffs:      {}", payload.counts.spinoffs);
-            match payload.manifest.supervisor.pid {
-                Some(pid) if payload.manifest.supervisor.alive => {
+            match payload.supervisor.pid {
+                Some(pid) if payload.supervisor.alive => {
                     println!("supervisor:    pid {pid} (alive)");
                 }
                 Some(pid) => println!(
