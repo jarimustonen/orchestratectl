@@ -168,6 +168,60 @@ impl From<PipelineError> for CliError {
     }
 }
 
+/// A hard failure of [`run_pipeline_tiered`], pairing the dominant
+/// [`PipelineError`] with the run's accumulated [`PipelineReport`] when the run got
+/// far enough to accumulate auditable state (issue
+/// `pipeline-hard-failure-carries-report`).
+///
+/// The `error` is the terminal signal and drives the CLI exit code / envelope (its
+/// stable [`PipelineError::code`] is preserved — a hard failure is NEVER downgraded to
+/// a success). The `report` is `Some` once the run passed the spec stage and could
+/// preserve floor-green / blocked wave siblings (state-integrity invariant 5): it
+/// carries their `branch_preserved` entries so `cmd_run` can render the invariant-5
+/// audit on the failure path instead of silently dropping it. A pre-plan failure (bad
+/// repo/branch, spec failure) carries `report: None` — there is no chunk state to
+/// audit yet.
+#[derive(Debug)]
+pub struct PipelineFailure {
+    /// The dominant typed error (drives the exit code + stable envelope `code`).
+    pub error: PipelineError,
+    /// The accumulated report, when the run reached a state worth auditing. Boxed so
+    /// the common (report-less) `Err` stays small — the report is a large struct and
+    /// an unboxed `Err`-variant that size is what `clippy::result_large_err` guards.
+    pub report: Option<Box<PipelineReport>>,
+}
+
+impl std::fmt::Display for PipelineFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for PipelineFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// A pre-plan failure carries no report — the `?`-sites in the setup/spec prologue
+/// (before any chunk state accrues) propagate through this conversion.
+impl From<PipelineError> for PipelineFailure {
+    fn from(error: PipelineError) -> Self {
+        PipelineFailure {
+            error,
+            report: None,
+        }
+    }
+}
+
+/// The exit-code / envelope mapping is the inner error's — pairing a report with the
+/// error must NOT change how loudly the failure exits.
+impl From<PipelineFailure> for CliError {
+    fn from(f: PipelineFailure) -> Self {
+        f.error.into()
+    }
+}
+
 /// Fully-resolved configuration for one pipeline run.
 pub struct PipelineConfig {
     /// Git repository to operate on (a path inside it; the toplevel is derived).
@@ -836,7 +890,7 @@ pub fn run_pipeline(
     spec: &dyn SpecProvider,
     code: &dyn CodeHarness,
     verify: &dyn VerifyProvider,
-) -> Result<PipelineReport, PipelineError> {
+) -> Result<PipelineReport, PipelineFailure> {
     let resolver = SingleTierHarness(code);
     // The confirming decider preserves the pre-tiering behaviour: a consequential
     // decision is stamped decider-tier and its proposed action is recorded as-is.
@@ -859,7 +913,7 @@ pub fn run_pipeline_tiered(
     harnesses: &dyn TierHarness,
     verify: &dyn VerifyProvider,
     decider: &dyn Decider,
-) -> Result<PipelineReport, PipelineError> {
+) -> Result<PipelineReport, PipelineFailure> {
     // --- 1. Setup: validate repo/branch, fork the integration branch, snapshot
     //        the baseline, write intent.md. Every fallible step after the branch
     //        is created runs under `run`, whose `Drop` guarantees teardown. ---
@@ -871,7 +925,8 @@ pub fn run_pipeline_tiered(
         return Err(PipelineError::Setup(format!(
             "source `{}` is not a local branch (tags, remotes, and HEAD are rejected)",
             cfg.source_branch
-        )));
+        ))
+        .into());
     }
     let source_commit = git::resolve_commit(&repo, &cfg.source_branch)?;
 
@@ -885,7 +940,8 @@ pub fn run_pipeline_tiered(
     if git::branch_exists(&repo, &integration_branch) {
         return Err(PipelineError::Setup(format!(
             "integration branch `{integration_branch}` already exists; refusing to reuse it"
-        )));
+        ))
+        .into());
     }
 
     std::fs::create_dir_all(&cfg.workdir).map_err(|e| {
@@ -996,341 +1052,368 @@ pub fn run_pipeline_tiered(
 
     // --- 3-5. The bounded verify→triage→fix loop (design §7/§8), stopped hard by
     //          the deterministic circuit-breakers of §9. ---
-    let mut fix_iter = 0u32;
-    let outcome = loop {
-        // Deterministic resource breakers (design §9) at the round boundary, BEFORE
-        // spending another code/verify cycle: refresh the storage measurement, then
-        // trip on any crossed ceiling (cost/token/wall-time/process/storage).
-        // Supervisor-owned — the orchestrator is never consulted about a breaker.
-        refresh_storage(&mut run);
-        if let Some(msg) = resource_breach(&run) {
-            run.circuit_breaker = Some(msg);
-            break LoopExit::Terminal {
-                verify: None,
-                status: "circuit_breaker",
-            };
-        }
+    //
+    // Everything past the spec stage runs inside this fallible section. A hard
+    // `PipelineError` here — most importantly a hard failure in a concurrent wave,
+    // after floor-green / blocked siblings have been preserved (invariant 5) — is
+    // paired with the run's accumulated report on the way out, so the
+    // `branch_preserved` audit is SURFACED on the failure path instead of being
+    // dropped when `run` is torn down (issue `pipeline-hard-failure-carries-report`).
+    // The exit code stays the error's — the failure is not downgraded.
+    let body: Result<PipelineReport, PipelineError> = (|| {
+        let mut fix_iter = 0u32;
+        let outcome = loop {
+            // Deterministic resource breakers (design §9) at the round boundary, BEFORE
+            // spending another code/verify cycle: refresh the storage measurement, then
+            // trip on any crossed ceiling (cost/token/wall-time/process/storage).
+            // Supervisor-owned — the orchestrator is never consulted about a breaker.
+            refresh_storage(&mut run);
+            if let Some(msg) = resource_breach(&run) {
+                run.circuit_breaker = Some(msg);
+                break LoopExit::Terminal {
+                    verify: None,
+                    status: "circuit_breaker",
+                };
+            }
 
-        // CODE STAGE over the Pending chunks, each with its own bounded RE_CODE
-        // re-brief loop (design §8). Already-Merged chunks are skipped.
-        run_code_stage(
-            &mut run,
-            &plan,
-            harnesses,
-            &baseline,
-            &pending_findings,
-            &pending_prior_diff,
-        )?;
-        pending_findings.clear();
-        pending_prior_diff.clear();
-        if run.circuit_breaker.is_some() {
-            // A chunk exhausted its re-code budget — the repeated-failure breaker
-            // tripped (design §9). Stop; the failing chunk is preserved.
-            break LoopExit::Terminal {
-                verify: None,
-                status: "circuit_breaker",
-            };
-        }
-        if !all_merged(&run, &plan) {
-            // A chunk could not be merged and re-code was off / not applicable:
-            // terminal at the specific status the code stage recorded (the floor
-            // is the hard gate — no merge, design §4/§14).
-            let status = run.code_block_status.unwrap_or("chunk_failed");
-            break LoopExit::Terminal {
-                verify: None,
-                status,
-            };
-        }
+            // CODE STAGE over the Pending chunks, each with its own bounded RE_CODE
+            // re-brief loop (design §8). Already-Merged chunks are skipped.
+            run_code_stage(
+                &mut run,
+                &plan,
+                harnesses,
+                &baseline,
+                &pending_findings,
+                &pending_prior_diff,
+            )?;
+            pending_findings.clear();
+            pending_prior_diff.clear();
+            if run.circuit_breaker.is_some() {
+                // A chunk exhausted its re-code budget — the repeated-failure breaker
+                // tripped (design §9). Stop; the failing chunk is preserved.
+                break LoopExit::Terminal {
+                    verify: None,
+                    status: "circuit_breaker",
+                };
+            }
+            if !all_merged(&run, &plan) {
+                // A chunk could not be merged and re-code was off / not applicable:
+                // terminal at the specific status the code stage recorded (the floor
+                // is the hard gate — no merge, design §4/§14).
+                let status = run.code_block_status.unwrap_or("chunk_failed");
+                break LoopExit::Terminal {
+                    verify: None,
+                    status,
+                };
+            }
 
-        // VERIFY on the feature tip (design §6 VAIHE 3). Capture the floor-gated
-        // tip BEFORE verify runs, then restore to it afterwards — verify runs
-        // headless with skipped permissions, so a verify-time commit or untracked
-        // write must never become the tip and smuggle content past the floor
-        // (`restore_to` hard-resets AND cleans untracked files).
-        let feat_tip = git::head(&run.integration_wt)?;
-        let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
-        git::restore_to(&run.integration_wt, &feat_tip)?;
-        // The verify invocation spent process/wall-time budget — check the breakers
-        // BEFORE acting on its verdict, so a verify that crossed a ceiling aborts
-        // rather than converging-and-merging or launching a re-spec (design §9).
-        if let Some(msg) = resource_breach(&run) {
-            run.circuit_breaker = Some(msg);
-            break LoopExit::Terminal {
-                verify: Some(verify_report),
-                status: "circuit_breaker",
-            };
-        }
-        if verify_report.passed {
-            break LoopExit::Converged {
-                verify: verify_report,
-                feat_tip,
-            };
-        }
+            // VERIFY on the feature tip (design §6 VAIHE 3). Capture the floor-gated
+            // tip BEFORE verify runs, then restore to it afterwards — verify runs
+            // headless with skipped permissions, so a verify-time commit or untracked
+            // write must never become the tip and smuggle content past the floor
+            // (`restore_to` hard-resets AND cleans untracked files).
+            let feat_tip = git::head(&run.integration_wt)?;
+            let (verify_report, disposition) = run_verify_stage(&mut run, &plan, verify)?;
+            git::restore_to(&run.integration_wt, &feat_tip)?;
+            // The verify invocation spent process/wall-time budget — check the breakers
+            // BEFORE acting on its verdict, so a verify that crossed a ceiling aborts
+            // rather than converging-and-merging or launching a re-spec (design §9).
+            if let Some(msg) = resource_breach(&run) {
+                run.circuit_breaker = Some(msg);
+                break LoopExit::Terminal {
+                    verify: Some(verify_report),
+                    status: "circuit_breaker",
+                };
+            }
+            if verify_report.passed {
+                break LoopExit::Converged {
+                    verify: verify_report,
+                    feat_tip,
+                };
+            }
 
-        // Verify failed → triage, bounded by the fix-iteration breaker (design §9).
-        if fix_iter >= run.cfg.fix_loop.max_fix_iterations {
-            // With the bound at 0 no fix was ever attempted → the v1 terminal
-            // `verify_failed`; otherwise the loop tried and the breaker trips.
-            let status = if run.cfg.fix_loop.max_fix_iterations == 0 {
-                "verify_failed"
-            } else {
-                run.circuit_breaker = Some(format!(
-                    "verify still failing after {} fix iteration(s)",
-                    run.cfg.fix_loop.max_fix_iterations
-                ));
-                "circuit_breaker"
-            };
-            break LoopExit::Terminal {
-                verify: Some(verify_report),
-                status,
-            };
-        }
-        fix_iter += 1;
+            // Verify failed → triage, bounded by the fix-iteration breaker (design §9).
+            if fix_iter >= run.cfg.fix_loop.max_fix_iterations {
+                // With the bound at 0 no fix was ever attempted → the v1 terminal
+                // `verify_failed`; otherwise the loop tried and the breaker trips.
+                let status = if run.cfg.fix_loop.max_fix_iterations == 0 {
+                    "verify_failed"
+                } else {
+                    run.circuit_breaker = Some(format!(
+                        "verify still failing after {} fix iteration(s)",
+                        run.cfg.fix_loop.max_fix_iterations
+                    ));
+                    "circuit_breaker"
+                };
+                break LoopExit::Terminal {
+                    verify: Some(verify_report),
+                    status,
+                };
+            }
+            fix_iter += 1;
 
-        match disposition {
-            VerifyDisposition::Fix | VerifyDisposition::FixChunks { .. } => {
-                let targets = resolve_fix_targets(&disposition, &plan, &run);
-                if targets.is_empty() {
-                    // No chunk to re-code (e.g. nothing merged yet) — cannot make
-                    // progress on a fix, so this is a terminal verify failure.
-                    break LoopExit::Terminal {
-                        verify: Some(verify_report),
-                        status: "verify_failed",
-                    };
-                }
-                // Provenance-aware rollback (item 1): rebuild the integration branch
-                // keeping every merged chunk EXCEPT the re-code targets AND their
-                // transitive dependents, so a dropped chunk's downstream code cannot
-                // linger on a tree that no longer contains what it was authored
-                // against. Targets get a re-code decision + the verify findings;
-                // dependents are simply reverted (their inputs changed under them).
-                let seeds: BTreeSet<String> = targets.iter().cloned().collect();
-                let affected = dependent_closure(&plan, &seeds);
-                let keep: BTreeSet<String> = run
-                    .chunk_status
-                    .iter()
-                    .filter(|(id, s)| {
-                        **s == LiveChunkStatus::Merged && !affected.contains(id.as_str())
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                // Item L: capture each re-code target's provenance diff BEFORE the
-                // rollback drops it, so its re-run carries the reverted attempt's code
-                // into the re-brief (the code-stage `prior_diff` only covers in-visit
-                // floor retries, not a verify-driven rollback). Best-effort — a diff
-                // failure just means no carried diff for that target.
-                let mut captured_diffs: BTreeMap<String, String> = BTreeMap::new();
-                for id in &targets {
-                    if let Some(prov) = run.chunk_provenance.get(id) {
-                        if let Ok(d) = git::diff(&run.integration_wt, &prov.base, &prov.commit) {
-                            captured_diffs.insert(id.clone(), d);
+            match disposition {
+                VerifyDisposition::Fix | VerifyDisposition::FixChunks { .. } => {
+                    let targets = resolve_fix_targets(&disposition, &plan, &run);
+                    if targets.is_empty() {
+                        // No chunk to re-code (e.g. nothing merged yet) — cannot make
+                        // progress on a fix, so this is a terminal verify failure.
+                        break LoopExit::Terminal {
+                            verify: Some(verify_report),
+                            status: "verify_failed",
+                        };
+                    }
+                    // Provenance-aware rollback (item 1): rebuild the integration branch
+                    // keeping every merged chunk EXCEPT the re-code targets AND their
+                    // transitive dependents, so a dropped chunk's downstream code cannot
+                    // linger on a tree that no longer contains what it was authored
+                    // against. Targets get a re-code decision + the verify findings;
+                    // dependents are simply reverted (their inputs changed under them).
+                    let seeds: BTreeSet<String> = targets.iter().cloned().collect();
+                    let affected = dependent_closure(&plan, &seeds);
+                    let keep: BTreeSet<String> = run
+                        .chunk_status
+                        .iter()
+                        .filter(|(id, s)| {
+                            **s == LiveChunkStatus::Merged && !affected.contains(id.as_str())
+                        })
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    // Item L: capture each re-code target's provenance diff BEFORE the
+                    // rollback drops it, so its re-run carries the reverted attempt's code
+                    // into the re-brief (the code-stage `prior_diff` only covers in-visit
+                    // floor retries, not a verify-driven rollback). Best-effort — a diff
+                    // failure just means no carried diff for that target.
+                    let mut captured_diffs: BTreeMap<String, String> = BTreeMap::new();
+                    for id in &targets {
+                        if let Some(prov) = run.chunk_provenance.get(id) {
+                            if let Ok(d) = git::diff(&run.integration_wt, &prov.base, &prov.commit)
+                            {
+                                captured_diffs.insert(id.clone(), d);
+                            }
                         }
                     }
+                    // Rebuild the integration branch keeping only the untouched merged
+                    // chunks. A replay conflict is terminal (item B): name the chunk in a
+                    // `rollback_conflict` report instead of erroring — the branch is
+                    // restored intact. Audit/loop state is mutated only AFTER a clean
+                    // rebuild, so a conflict-abort leaves the kept chunks' reports intact.
+                    match rebuild_integration(&mut run, &keep)? {
+                        RebuildOutcome::Rebuilt => {}
+                        RebuildOutcome::Conflict { chunk_id } => {
+                            run.rollback_conflict = Some(chunk_id);
+                            break LoopExit::Terminal {
+                                verify: Some(verify_report),
+                                status: "rollback_conflict",
+                            };
+                        }
+                    }
+                    // Drop reports for the chunks whose code we are rolling back, so a
+                    // mid-re-code abort cannot leave a stale "merged" report behind (the
+                    // re-run upserts a fresh one). Mirrors the re-spec path's retain.
+                    run.chunk_reports
+                        .retain(|r| !affected.contains(r.id.as_str()));
+                    for id in &targets {
+                        record_recode_decision(
+                            &mut run,
+                            &plan,
+                            id,
+                            &verify_report.findings,
+                            "verify FIX",
+                        );
+                        pending_findings.insert(id.clone(), verify_report.findings.clone());
+                        if let Some(d) = captured_diffs.remove(id) {
+                            pending_prior_diff.insert(id.clone(), d);
+                        }
+                    }
+                    // Revert every affected chunk (targets + dependents) to Pending so
+                    // the code stage re-runs them off the rebuilt tip in dependency order.
+                    for id in &affected {
+                        run.chunk_status
+                            .insert(id.clone(), LiveChunkStatus::Pending);
+                    }
+                    // Loop back → the code stage re-runs the reverted chunks, then the
+                    // loop re-verifies (design §8: FIX-class MUST re-verify before close).
                 }
-                // Rebuild the integration branch keeping only the untouched merged
-                // chunks. A replay conflict is terminal (item B): name the chunk in a
-                // `rollback_conflict` report instead of erroring — the branch is
-                // restored intact. Audit/loop state is mutated only AFTER a clean
-                // rebuild, so a conflict-abort leaves the kept chunks' reports intact.
-                match rebuild_integration(&mut run, &keep)? {
-                    RebuildOutcome::Rebuilt => {}
-                    RebuildOutcome::Conflict { chunk_id } => {
-                        run.rollback_conflict = Some(chunk_id);
+                VerifyDisposition::SpecFlaw { reason, chunk_ids } => {
+                    if run.respec_count >= run.cfg.fix_loop.max_respec {
+                        // Re-spec off (0) → terminal verify failure; else breaker trip.
+                        let status = if run.cfg.fix_loop.max_respec == 0 {
+                            "verify_failed"
+                        } else {
+                            run.circuit_breaker = Some(format!(
+                                "re-spec budget exhausted after {} re-spec(s)",
+                                run.cfg.fix_loop.max_respec
+                            ));
+                            "circuit_breaker"
+                        };
                         break LoopExit::Terminal {
                             verify: Some(verify_report),
-                            status: "rollback_conflict",
+                            status,
                         };
                     }
-                }
-                // Drop reports for the chunks whose code we are rolling back, so a
-                // mid-re-code abort cannot leave a stale "merged" report behind (the
-                // re-run upserts a fresh one). Mirrors the re-spec path's retain.
-                run.chunk_reports
-                    .retain(|r| !affected.contains(r.id.as_str()));
-                for id in &targets {
-                    record_recode_decision(
+                    // TRIGGER_RE_SPEC (design §7): route the consequential decision to
+                    // the decider, produce plan.v(N+1), DAG-diff which chunks revert to
+                    // Pending, then loop back to the code stage. If the decider declined
+                    // the re-spec (ESCALATE override) the loop hands up instead.
+                    match trigger_re_spec(
                         &mut run,
+                        spec,
                         &plan,
-                        id,
+                        &reason,
+                        &chunk_ids,
                         &verify_report.findings,
-                        "verify FIX",
-                    );
-                    pending_findings.insert(id.clone(), verify_report.findings.clone());
-                    if let Some(d) = captured_diffs.remove(id) {
-                        pending_prior_diff.insert(id.clone(), d);
+                        &baseline,
+                    )? {
+                        ReSpecOutcome::Replanned(new_plan) => plan = *new_plan,
+                        ReSpecOutcome::Escalated => {
+                            break LoopExit::Terminal {
+                                verify: Some(verify_report),
+                                status: "escalated",
+                            };
+                        }
+                        ReSpecOutcome::RollbackConflict { chunk_id } => {
+                            // The re-spec's provenance rollback could not replay a kept
+                            // chunk (item B): terminate with a report naming it, branch
+                            // restored intact.
+                            run.rollback_conflict = Some(chunk_id);
+                            break LoopExit::Terminal {
+                                verify: Some(verify_report),
+                                status: "rollback_conflict",
+                            };
+                        }
                     }
+                    // Loop back → code stage re-runs reverted chunks, then re-verifies.
                 }
-                // Revert every affected chunk (targets + dependents) to Pending so
-                // the code stage re-runs them off the rebuilt tip in dependency order.
-                for id in &affected {
-                    run.chunk_status
-                        .insert(id.clone(), LiveChunkStatus::Pending);
-                }
-                // Loop back → the code stage re-runs the reverted chunks, then the
-                // loop re-verifies (design §8: FIX-class MUST re-verify before close).
             }
-            VerifyDisposition::SpecFlaw { reason, chunk_ids } => {
-                if run.respec_count >= run.cfg.fix_loop.max_respec {
-                    // Re-spec off (0) → terminal verify failure; else breaker trip.
-                    let status = if run.cfg.fix_loop.max_respec == 0 {
-                        "verify_failed"
-                    } else {
-                        run.circuit_breaker = Some(format!(
-                            "re-spec budget exhausted after {} re-spec(s)",
-                            run.cfg.fix_loop.max_respec
-                        ));
-                        "circuit_breaker"
-                    };
-                    break LoopExit::Terminal {
-                        verify: Some(verify_report),
-                        status,
-                    };
-                }
-                // TRIGGER_RE_SPEC (design §7): route the consequential decision to
-                // the decider, produce plan.v(N+1), DAG-diff which chunks revert to
-                // Pending, then loop back to the code stage. If the decider declined
-                // the re-spec (ESCALATE override) the loop hands up instead.
-                match trigger_re_spec(
-                    &mut run,
-                    spec,
-                    &plan,
-                    &reason,
-                    &chunk_ids,
-                    &verify_report.findings,
-                    &baseline,
-                )? {
-                    ReSpecOutcome::Replanned(new_plan) => plan = *new_plan,
-                    ReSpecOutcome::Escalated => {
-                        break LoopExit::Terminal {
-                            verify: Some(verify_report),
-                            status: "escalated",
-                        };
-                    }
-                    ReSpecOutcome::RollbackConflict { chunk_id } => {
-                        // The re-spec's provenance rollback could not replay a kept
-                        // chunk (item B): terminate with a report naming it, branch
-                        // restored intact.
-                        run.rollback_conflict = Some(chunk_id);
-                        break LoopExit::Terminal {
-                            verify: Some(verify_report),
-                            status: "rollback_conflict",
-                        };
-                    }
-                }
-                // Loop back → code stage re-runs reverted chunks, then re-verifies.
+        };
+
+        // Resolve the loop outcome into a report.
+        let (verify_report, feat_tip) = match outcome {
+            LoopExit::Terminal { verify, status } => {
+                return Ok(finalize(&run, &plan, verify, false, None, status));
             }
-        }
-    };
+            LoopExit::Converged { verify, feat_tip } => (verify, feat_tip),
+        };
 
-    // Resolve the loop outcome into a report.
-    let (verify_report, feat_tip) = match outcome {
-        LoopExit::Terminal { verify, status } => {
-            return Ok(finalize(&run, &plan, verify, false, None, status));
-        }
-        LoopExit::Converged { verify, feat_tip } => (verify, feat_tip),
-    };
+        // --- 5. Merge: re-check the feature floor at the tip, then merge → source. ---
+        let declared: Vec<PathBuf> = union_declared_files(&plan);
+        let feature_floor = evaluate_feature_floor(&run, &plan, &baseline, &declared, &feat_tip)?;
+        run.feature_floor = Some(feature_floor.clone());
 
-    // --- 5. Merge: re-check the feature floor at the tip, then merge → source. ---
-    let declared: Vec<PathBuf> = union_declared_files(&plan);
-    let feature_floor = evaluate_feature_floor(&run, &plan, &baseline, &declared, &feat_tip)?;
-    run.feature_floor = Some(feature_floor.clone());
-
-    if !feature_floor.passed() {
-        // Floor regressed at the tip — do NOT merge (design §4/§14).
-        return Ok(finalize(
-            &run,
-            &plan,
-            Some(verify_report),
-            false,
-            None,
-            "floor_blocked",
-        ));
-    }
-
-    // The consequential ship judgment: the fast coordinator PROPOSES
-    // DECLARE_CONVERGED (verify passed + the deterministic floor is green) and the
-    // shared tiered routing defers it to the decider (design §0.2/§2). The decider
-    // CONFIRMS — or overrides to ESCALATE (the seam the circuit-breaker layer
-    // forces later): an escalation stops short of the merge.
-    // The trigger is the passed verify report (no outstanding findings) — the
-    // evidence the ship decision rests on.
-    let converge_ctx = live_decision_ctx(
-        &run,
-        &plan,
-        DecisionTrigger::VerifyReport {
-            report_id: format!("verify-plan-v{}", plan.plan_rev),
-            findings: Vec::new(),
-        },
-    );
-    let (converge_action, converge_env) = route_proposal(
-        run.coordinator,
-        run.decider,
-        &converge_ctx,
-        CoordinatorProposal {
-            action: Action::DeclareConverged,
-            reason: "declared converged: verify passed and the feature floor is green".to_string(),
-            input_artifacts: vec![
-                format!("feat:{feat_tip}"),
-                format!("source:{source_commit}"),
-            ],
-        },
-    );
-    run.decisions.push(converge_env);
-    if !matches!(converge_action, Action::DeclareConverged) {
-        // The decider declined to ship (an ESCALATE override, or any non-converge
-        // verdict): do NOT merge — the feature is handed up rather than landed.
-        return Ok(finalize(
-            &run,
-            &plan,
-            Some(verify_report),
-            false,
-            None,
-            "escalated",
-        ));
-    }
-
-    // The merge mechanics are routine coordination (supervisor-tier), gated by
-    // the decider decision above — kept as a SEPARATE envelope so the tier split
-    // is honest (the merge is not itself an Opus judgment).
-    match merge_feature_to_source(&run, &feat_tip)? {
-        MergeOutcome::Merged { commit } => {
-            run.merged_to_source = true;
-            run.decisions.push(envelope(
-                "supervisor",
-                DecisionTier::Coordinator,
-                format!("merged {feat_tip} into {}", run.cfg.source_branch),
-                vec![
-                    format!("feat:{feat_tip}"),
-                    format!("source:{source_commit}"),
-                ],
-                "supervisor",
-                "v1",
-            ));
-            Ok(finalize(
+        if !feature_floor.passed() {
+            // Floor regressed at the tip — do NOT merge (design §4/§14).
+            return Ok(finalize(
                 &run,
                 &plan,
                 Some(verify_report),
-                true,
-                Some(commit),
-                "merged",
-            ))
-        }
-        MergeOutcome::Conflict { details } => {
-            // The floor was green, but the source branch moved underneath us and
-            // the merge conflicts. Report it (preserve the integration branch);
-            // it is not a crash — the caller resolves and re-runs.
-            let mut vr = verify_report;
-            vr.summary = format!("{} (source merge conflicted: {details})", vr.summary);
-            Ok(finalize(
-                &run,
-                &plan,
-                Some(vr),
                 false,
                 None,
-                "merge_conflict",
-            ))
+                "floor_blocked",
+            ));
         }
-    }
+
+        // The consequential ship judgment: the fast coordinator PROPOSES
+        // DECLARE_CONVERGED (verify passed + the deterministic floor is green) and the
+        // shared tiered routing defers it to the decider (design §0.2/§2). The decider
+        // CONFIRMS — or overrides to ESCALATE (the seam the circuit-breaker layer
+        // forces later): an escalation stops short of the merge.
+        // The trigger is the passed verify report (no outstanding findings) — the
+        // evidence the ship decision rests on.
+        let converge_ctx = live_decision_ctx(
+            &run,
+            &plan,
+            DecisionTrigger::VerifyReport {
+                report_id: format!("verify-plan-v{}", plan.plan_rev),
+                findings: Vec::new(),
+            },
+        );
+        let (converge_action, converge_env) = route_proposal(
+            run.coordinator,
+            run.decider,
+            &converge_ctx,
+            CoordinatorProposal {
+                action: Action::DeclareConverged,
+                reason: "declared converged: verify passed and the feature floor is green"
+                    .to_string(),
+                input_artifacts: vec![
+                    format!("feat:{feat_tip}"),
+                    format!("source:{source_commit}"),
+                ],
+            },
+        );
+        run.decisions.push(converge_env);
+        if !matches!(converge_action, Action::DeclareConverged) {
+            // The decider declined to ship (an ESCALATE override, or any non-converge
+            // verdict): do NOT merge — the feature is handed up rather than landed.
+            return Ok(finalize(
+                &run,
+                &plan,
+                Some(verify_report),
+                false,
+                None,
+                "escalated",
+            ));
+        }
+
+        // The merge mechanics are routine coordination (supervisor-tier), gated by
+        // the decider decision above — kept as a SEPARATE envelope so the tier split
+        // is honest (the merge is not itself an Opus judgment).
+        match merge_feature_to_source(&run, &feat_tip)? {
+            MergeOutcome::Merged { commit } => {
+                run.merged_to_source = true;
+                run.decisions.push(envelope(
+                    "supervisor",
+                    DecisionTier::Coordinator,
+                    format!("merged {feat_tip} into {}", run.cfg.source_branch),
+                    vec![
+                        format!("feat:{feat_tip}"),
+                        format!("source:{source_commit}"),
+                    ],
+                    "supervisor",
+                    "v1",
+                ));
+                Ok(finalize(
+                    &run,
+                    &plan,
+                    Some(verify_report),
+                    true,
+                    Some(commit),
+                    "merged",
+                ))
+            }
+            MergeOutcome::Conflict { details } => {
+                // The floor was green, but the source branch moved underneath us and
+                // the merge conflicts. Report it (preserve the integration branch);
+                // it is not a crash — the caller resolves and re-runs.
+                let mut vr = verify_report;
+                vr.summary = format!("{} (source merge conflicted: {details})", vr.summary);
+                Ok(finalize(
+                    &run,
+                    &plan,
+                    Some(vr),
+                    false,
+                    None,
+                    "merge_conflict",
+                ))
+            }
+        }
+    })();
+
+    // A hard `PipelineError` past the spec stage keeps its typed variant + stable
+    // code (the exit signal), but now carries the run's accumulated report so the
+    // preserved wave siblings (invariant 5) are auditable on the failure path. The
+    // report is built from the SAME `run` state the successful terminals finalize
+    // from — `run` outlives this call, so its `Drop`-time teardown still runs after
+    // the report is captured, exactly as on the `Ok` path.
+    body.map_err(|error| {
+        let mut report = finalize(&run, &plan, None, false, None, "pipeline_error");
+        report.failure = Some(error.to_string());
+        PipelineFailure {
+            error,
+            report: Some(Box::new(report)),
+        }
+    })
 }
 
 /// The outcome of the bounded fix loop: either a terminal state (a breaker trip,
@@ -3057,15 +3140,22 @@ fn run_wave_concurrent(
     // path. This precedence is deliberate: `cmd_run` renders a circuit-breaker `Ok`
     // report with exit code 0, so downgrading a hard infrastructure failure to `Ok`
     // merely because a sibling ALSO panicked would hide the failure from CI / supervisors
-    // (a co-occurring panic must not make the failure quieter). We deliberately do NOT
-    // preserve the floor-green / blocked siblings on this path: the `Err` discards the
-    // run's report, so a preservation record would be unobservable, and `teardown` never
-    // deletes chunk branches — the committed sibling work survives on disk regardless (it
-    // is simply not AUDITED here; surfacing it on a hard failure needs the pipeline
-    // `Result` to carry a report, tracked as a follow-up — `entirely-faithful-beast`).
-    // A co-occurring panic is still surfaced in the returned error (via `with_note`,
-    // which preserves the error's variant + code), never silently swallowed.
+    // (a co-occurring panic must not make the failure quieter). A co-occurring panic is
+    // still surfaced in the returned error (via `with_note`, which preserves the error's
+    // variant + code), never silently swallowed.
+    //
+    // Before returning, PRESERVE the floor-green (`built`) and blocked siblings
+    // (state-integrity invariant 5): they committed work that never merged. Their
+    // worktrees/branches already survive on disk (`teardown` never deletes chunk
+    // branches), but recording each as a `branch_preserved` `ChunkReport` is what makes
+    // that preservation AUDITABLE — `run_pipeline_tiered` now pairs this hard `Err` with
+    // the accumulated report (`pipeline-hard-failure-carries-report`), so `cmd_run`
+    // surfaces the preserved siblings on the failure path rather than dropping them. The
+    // panicked chunk's OWN worktree is in an unknown state and is not vouched for here.
     if let Some(e) = hard_error {
+        for r in blocked.iter().chain(built.iter()) {
+            preserve_wave_build(run, &plan.chunks[r.idx], r);
+        }
         return match panicked {
             Some((chunk_id, msg)) => Err(e.with_note(format!(
                 "a sibling build thread also panicked on chunk {chunk_id}: {msg}"
@@ -4484,13 +4574,35 @@ pub fn cmd_run(
         model: verify_provider.model(),
     };
 
-    let report = run_pipeline_tiered(
+    let report = match run_pipeline_tiered(
         &pcfg,
         &spec_provider,
         &harnesses,
         &verify_provider,
         &decider,
-    )?;
+    ) {
+        Ok(report) => report,
+        Err(PipelineFailure { error, report }) => {
+            // A hard failure past the spec stage still exits NON-ZERO (the error's
+            // stable code drives the envelope), but first render the accumulated
+            // report so the invariant-5 audit — every `branch_preserved` sibling
+            // that committed work but never merged — is visible on the failure path
+            // rather than lost (`pipeline-hard-failure-carries-report`). A pre-plan
+            // failure carries no report; there is nothing to audit yet.
+            if let Some(report) = report {
+                match spec.format {
+                    OutputFormat::Json | OutputFormat::Jsonl => {
+                        output::emit_envelope(&report, spec, warnings)?;
+                    }
+                    OutputFormat::Text => {
+                        print_report(&report);
+                        output::emit_text_warnings(warnings);
+                    }
+                }
+            }
+            return Err(error.into());
+        }
+    };
 
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => output::emit_envelope(&report, spec, warnings)?,
@@ -4540,6 +4652,12 @@ fn print_report(r: &PipelineReport) {
         );
         if let Some(reason) = &c.reason {
             println!("        reason: {}", output::escape_one_line(reason));
+        }
+        // Surface the invariant-5 audit: a preserved (unmerged, committed) chunk names
+        // the branch its work was kept on, so a hard-failure report shows exactly where
+        // each sibling's work survives.
+        if let Some(branch) = &c.branch_preserved {
+            println!("        preserved: {}", output::escape_one_line(branch));
         }
     }
     if let Some(v) = &r.verify {

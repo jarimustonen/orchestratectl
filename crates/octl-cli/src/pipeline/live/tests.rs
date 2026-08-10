@@ -330,8 +330,13 @@ fn persistently_invalid_plan_fails_with_raw_persisted_and_error_surfaced() {
     let verify = ScriptedVerify::passing();
 
     let err = run_pipeline(&cfg, &spec, &code, &verify).unwrap_err();
+    // A pre-plan failure carries no report to audit — nothing was built yet.
+    assert!(
+        err.report.is_none(),
+        "pre-plan failure should carry no report"
+    );
     // The last validator message is surfaced (not swallowed into "attempt N").
-    match &err {
+    match &err.error {
         PipelineError::PlanInvalid(msg) => {
             assert!(
                 msg.contains("acceptance"),
@@ -410,7 +415,7 @@ fn repair_call_failure_persists_the_prior_invalid_plan() {
 
     let err = run_pipeline(&cfg, &spec, &code, &verify).unwrap_err();
     // The surfaced error is the spec transport failure (repair could not run).
-    assert!(matches!(err, PipelineError::Spec(_)), "{err:?}");
+    assert!(matches!(err.error, PipelineError::Spec(_)), "{err:?}");
     // But the invalid plan from attempt 0 was persisted anyway.
     let persisted = workdir.path().join("plan.invalid.json");
     assert!(
@@ -451,7 +456,7 @@ fn refuses_to_reuse_an_existing_integration_branch() {
     let verify = ScriptedVerify::passing();
 
     let err = run_pipeline(&cfg, &spec, &code, &verify).unwrap_err();
-    assert!(matches!(err, PipelineError::Setup(_)), "{err:?}");
+    assert!(matches!(err.error, PipelineError::Setup(_)), "{err:?}");
 }
 
 #[test]
@@ -3763,17 +3768,15 @@ impl CodeHarness for WaveFailInjector {
 
 #[test]
 fn wave_hard_error_returns_typed_err_and_leaves_committed_siblings_intact() {
-    // (`entirely-faithful-beast`) A build worker that returns a HARD `PipelineError`
-    // (a harness transport error, not a graceful block) DOMINATES the wave: the run
-    // propagates `Err` (so it exits non-zero with a typed, coded error), as on the
-    // sequential hard-error path — it must NOT be converted to a circuit-breaker `Ok`
-    // (which `cmd_run` renders with exit 0). This is a CONTRACT LOCK, not a preservation
-    // regression guard: on the `Err` path the run's report is discarded, and `teardown`
-    // never deletes chunk branches, so a floor-green sibling's committed work survives on
-    // disk regardless of whether it was recorded — the branch/blob assertions below hold
-    // with or without any in-memory preservation. Surfacing that committed work in an
-    // AUDIT on a hard failure needs the pipeline `Result` to carry a report (tracked
-    // follow-up); this test locks only what is observable here.
+    // (`entirely-faithful-beast` → `pipeline-hard-failure-carries-report`) A build
+    // worker that returns a HARD `PipelineError` (a harness transport error, not a
+    // graceful block) DOMINATES the wave: the run propagates `Err` (so it exits non-zero
+    // with a typed, coded error), as on the sequential hard-error path — it must NOT be
+    // converted to a circuit-breaker `Ok` (which `cmd_run` renders with exit 0). The
+    // `Err` now CARRIES the accumulated report (`PipelineFailure { error, report }`), so
+    // the floor-green sibling's committed-but-unmerged work is AUDITABLE (its
+    // `branch_preserved` entry) on the failure path — asserted below alongside the
+    // on-disk branch/blob survival (teardown never deletes chunk branches).
     let repo = init_repo();
     let workdir = TempDir::new().unwrap();
     let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
@@ -3802,10 +3805,27 @@ fn wave_hard_error_returns_typed_err_and_leaves_committed_siblings_intact() {
     .unwrap_err();
     // A pure hard error stays a typed `Err` (never downgraded to `Ok`), preserving its
     // variant + stable code for the CLI envelope / non-zero exit.
-    assert!(matches!(err, PipelineError::Harness(_)), "{err:?}");
+    assert!(matches!(err.error, PipelineError::Harness(_)), "{err:?}");
     assert!(
-        err.to_string().contains("simulated hard error on c2"),
-        "the hard error must carry its own message: {err}"
+        err.error.to_string().contains("simulated hard error on c2"),
+        "the hard error must carry its own message: {}",
+        err.error
+    );
+
+    // The invariant-5 audit is now SURFACED on the failure path: the `Err` carries the
+    // accumulated report, and c1 (floor-green, unmerged) appears as a `branch_preserved`
+    // chunk. This is what `cmd_run` renders while still exiting non-zero.
+    let report = err.report.expect("hard wave failure must carry a report");
+    let c1 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c1")
+        .expect("c1 must appear in the failure report");
+    assert!(!c1.merged, "c1 never merged");
+    assert_eq!(
+        c1.branch_preserved.as_deref(),
+        Some("demo/chunk-c1"),
+        "c1's preserved branch must be auditable in the report: {c1:?}"
     );
 
     // c1 built floor-green but never merged. Its branch + committed content survive the
@@ -3861,8 +3881,8 @@ fn wave_hard_error_dominates_and_surfaces_co_occurring_panic() {
 
     // Hard error dominates: the typed variant + stable code are preserved (the error is
     // NOT collapsed into a free-form string, and NOT downgraded to an `Ok` report).
-    assert!(matches!(err, PipelineError::Harness(_)), "{err:?}");
-    let msg = err.to_string();
+    assert!(matches!(err.error, PipelineError::Harness(_)), "{err:?}");
+    let msg = err.error.to_string();
     // The original hard error (c3) is preserved verbatim ...
     assert!(
         msg.contains("simulated hard error on c3"),
@@ -3873,6 +3893,21 @@ fn wave_hard_error_dominates_and_surfaces_co_occurring_panic() {
         msg.contains("also panicked on chunk c2")
             && msg.contains("simulated build-thread panic on c2"),
         "the co-occurring panic must be surfaced in the returned error, not swallowed: {msg:?}"
+    );
+
+    // The report is carried even when a panic co-occurs: c1 (floor-green, unmerged) is
+    // auditable as a `branch_preserved` sibling. The panicked c2 is NOT vouched for (its
+    // worktree is in an unknown state) — only the cleanly-built sibling is asserted.
+    let report = err.report.expect("hard wave failure must carry a report");
+    let c1 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c1")
+        .expect("c1 must appear in the failure report");
+    assert_eq!(
+        c1.branch_preserved.as_deref(),
+        Some("demo/chunk-c1"),
+        "c1's preserved branch must be auditable in the report: {c1:?}"
     );
 
     // c1 built floor-green but never merged; its committed work survives teardown.
