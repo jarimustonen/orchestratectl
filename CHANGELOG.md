@@ -12,6 +12,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`run show --output json` no longer returns an all-null payload for a resolvable live run (`run-show-json-null-fields`).** `run show` now surfaces the same populated data that `run list` / `event tail` resolve — the supervisor block is lifted to the top level of `.data` and the run-list row is flattened in — instead of the silent all-null object seen intermittently against a live run.
 - **`run wait` / `run show` detect a stillborn run and return promptly (`run-wait-stillborn-run-not-detected`).** A run whose supervisor died before creating any node (dead supervisor, 0 nodes, no forward progress) is now reported as `stalled` and `run wait` returns immediately (non-zero under `--fail-on-error`) instead of blocking the full timeout.
+- **The worktree-merge lock now works on stock macOS (`merge-lock-flock-not-portable-macos`).** `merge.sh` previously serialized concurrent merges with `flock`, which ships with util-linux and is absent on a stock Mac — so on macOS (the primary platform) the merge lock silently failed and `run merge` could misreport a lock error as `merge_in_progress`. Replaced it with a portable atomic `mkdir` mutex (same 600s timeout and serialization semantics, no external binary), so merges serialize correctly with no `flock` dependency.
 
 ### Changed
 
@@ -20,7 +21,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- **Bumped `time` past RUSTSEC-2026-0009 (`ci-red-main-deny-docs`).** Resolved the RUSTSEC-2026-0009 stack-exhaustion DoS advisory flagged by `cargo-deny`, alongside repairing `octl-core`/`octl-cli` intra-doc links that had left CI red.
+- **Addressed RUSTSEC-2026-0009 without dropping the 1.85 MSRV (`ci-red-main-deny-docs`, `dry-run-projection-parity-flake`).** The `time` crate's stack-exhaustion DoS advisory (fixed only in `time ≥0.3.47`, which requires rustc 1.88 — above our 1.85 floor) is a transitive dependency via `tracing-appender`, used solely for log-file-rotation timestamps; we never parse untrusted time input, so the advisory is not exploitable here. Resolved by pinning `time` to `0.3.41` (keeping MSRV 1.85) plus a scoped, time-boxed `deny.toml` ignore documenting the rationale, and repaired the `octl-core`/`octl-cli` intra-doc links that had left CI red.
 
 ## [0.1.3] - 2026-08-06
 
