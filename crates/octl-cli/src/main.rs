@@ -11,6 +11,10 @@ mod event;
 // re-exports (`pub use`) have no in-crate consumer until T5 either.
 #[allow(dead_code, unused_imports)]
 mod floor;
+// Vendored typed git-worktree/branch wrapper (issue `workmux-extract-libs`,
+// following the `multiplexer` precedent). The supervisor teardown + reconcile
+// paths route their git subprocesses through `git::repo::Git`.
+mod git;
 // Behind-the-seam code-pipeline harness contract (design.md §10). Nothing in the
 // live `run create` / supervisor path constructs a `CodeHarness` yet — staged
 // rollout (design §14) wires it in later. The one live surface is the standalone

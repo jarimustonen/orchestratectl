@@ -1,8 +1,8 @@
 ---
 created: 2026-07-13
-updated: 2026-08-05
+updated: 2026-08-10
 type: improvement
-status: open
+status: in-progress
 priority: normal
 related: ['@vendor-workmux-multiplexer', '@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
 ---

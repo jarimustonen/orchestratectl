@@ -46,6 +46,9 @@
 //! and git binaries are resolved through `TMUX_BIN` / `GIT_BIN` overrides (as
 //! the watchdog already does for tmux) so tests can stub them.
 
+// Production git subprocesses now route through `crate::git::repo::Git`; the raw
+// `Command`/`Stdio` types are only used by the real-git test fixtures below.
+#[cfg(test)]
 use std::process::{Command, Stdio};
 
 use octl_core::{
@@ -53,6 +56,7 @@ use octl_core::{
     VIA_EXPLICIT_MERGE,
 };
 
+use crate::git::repo::Git;
 use crate::multiplexer::tmux::Tmux;
 use serde_json::json;
 use tracing::{info, warn};
@@ -476,19 +480,9 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
 /// [`delete_branch`] `-d` fallback still refuses an unmerged branch as the final
 /// backstop. Only a *confirmed* positive count preserves here.
 fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str) -> bool {
-    let out = Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-list", "--count", &format!("{source}..{branch}")])
-        .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .trim()
-            .parse::<u64>()
-            .is_ok_and(|count| count > 0),
-        _ => false,
-    }
+    Git::with_bin(git)
+        .rev_list_count(repo, source, branch)
+        .is_some_and(|count| count > 0)
 }
 
 /// True when this node's branch has been **merged into the run's source
@@ -588,20 +582,7 @@ pub fn node_branch_merged_to_source(paths: &RunPaths, n: &Node, git: &str) -> bo
 /// forward past its fork point). `None` on a git error / unparseable output, so
 /// the caller declines the reconcile rather than guess.
 fn git_ahead_count(repo: &str, base: &str, branch: &str, git: &str) -> Option<u64> {
-    let out = Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-list", "--count", &format!("{base}..{branch}")])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<u64>()
-        .ok()
+    Git::with_bin(git).rev_list_count(repo, base, branch)
 }
 
 /// A machine-readable recoverability signal for a dead agent's stranded work
@@ -786,24 +767,7 @@ pub struct IdleUnmerged {
 /// while an agent keeps committing, the tip advances and this stays fresh, so a
 /// still-working agent is never judged idle on this signal.
 fn branch_tip_committer_time(repo: &str, branch: &str, git: &str) -> Option<i64> {
-    let out = Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        // `--end-of-options` (NOT `--`, which for `git log` starts a PATHSPEC and
-        // would make `branch` be read as a file path) so a branch whose name
-        // begins with `-` is never parsed as a flag; a misparse would silently
-        // return the wrong / no commit time and skew the idle clock.
-        .args(["log", "-1", "--format=%ct", "--end-of-options", branch])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<i64>()
-        .ok()
+    Git::with_bin(git).tip_committer_time(repo, branch)
 }
 
 /// The Unix mtime of the run's durable pane transcript (`<run-dir>/agent.log`),
@@ -945,14 +909,7 @@ fn branch_merges_cleanly(repo: &str, source: &str, branch: &str, git: &str) -> b
     }
     // (2) In-memory three-way merge. `--write-tree` writes only to the object
     // store (never a worktree); exit 0 = clean, 1 = conflicts, ≥2 = git error.
-    Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        .args(["merge-tree", "--write-tree", source, branch])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    Git::with_bin(git).merge_tree_clean(repo, source, branch)
 }
 
 /// True when the node's worktree holds no unsaved work — `git -C <worktree>
@@ -968,16 +925,7 @@ fn worktree_is_clean(worktree_path: Option<&str>, git: &str) -> bool {
     if !std::path::Path::new(wt).exists() {
         return true;
     }
-    match Command::new(git)
-        .arg("-C")
-        .arg(wt)
-        .args(["status", "--porcelain"])
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(out) if out.status.success() => out.stdout.iter().all(u8::is_ascii_whitespace),
-        _ => false,
-    }
+    Git::with_bin(git).worktree_is_clean(wt)
 }
 
 /// `git -C <repo> merge-base --is-ancestor <ancestor> <descendant>` — true when
@@ -988,14 +936,7 @@ fn worktree_is_clean(worktree_path: Option<&str>, git: &str) -> bool {
 /// "fast-forwards?" check passes `(source, branch)` — the argument ORDER is what
 /// distinguishes them, so don't conflate order with the source/branch nouns.
 fn git_is_ancestor(repo: &str, ancestor: &str, descendant: &str, git: &str) -> bool {
-    Command::new(git)
-        .arg("-C")
-        .arg(repo)
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    Git::with_bin(git).is_ancestor(repo, ancestor, descendant)
 }
 
 /// The run's recorded source repository (`manifest.source_repo`), if any. Used
@@ -1300,20 +1241,7 @@ fn record_branch_preserved(
 /// (git always lists the main worktree first). `None` if git is unavailable, the
 /// path is no longer a worktree, or the output is unparseable.
 fn main_worktree_of(worktree_path: &str, git: &str) -> Option<String> {
-    let out = Command::new(git)
-        .arg("-C")
-        .arg(worktree_path)
-        .args(["worktree", "list", "--porcelain"])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|l| l.strip_prefix("worktree ").map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty())
+    Git::with_bin(git).main_worktree(worktree_path)
 }
 
 /// `git -C <repo> worktree remove --force <worktree_path>` — lenient. `--force`
@@ -1326,11 +1254,7 @@ fn main_worktree_of(worktree_path: &str, git: &str) -> Option<String> {
 /// `supervisor-worktree-remove-no-force`). Returns `true` on success so the
 /// caller can distinguish an already-gone worktree from a genuine refusal.
 fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
-    let mut cmd = Command::new(git);
-    cmd.arg("-C")
-        .arg(repo)
-        .args(["worktree", "remove", "--force", worktree_path]);
-    run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
+    Git::with_bin(git).worktree_remove(repo, worktree_path)
 }
 
 /// `git -C <repo> branch -{d|D} <branch>` — lenient. The flag is the
@@ -1367,62 +1291,15 @@ fn delete_branch(
     git: &str,
     merged: bool,
 ) -> Option<String> {
-    let flag = if merged { "-D" } else { "-d" };
-    let mut cmd = Command::new(git);
-    cmd.arg("-C").arg(repo).args(["branch", flag, "--", branch]);
-    match run_lenient_detail(cmd, &format!("git branch {flag} -- {branch}")) {
+    // `merged` selects the force flag: a confirmed `run merge` (`via:
+    // "explicit-merge"`) force-deletes with `-D`; every other path uses the
+    // unmerged-safe `-d`. See [`Git::branch_delete`] for the full safety rationale.
+    match Git::with_bin(git).branch_delete(repo, branch, merged) {
         Some(detail) => {
             record_branch_remove_failed(paths, n, branch, &detail);
             Some(detail)
         }
         None => None,
-    }
-}
-
-/// Run a cleanup command, logging its outcome to both `tracing` and stderr
-/// (captured to `supervisor.stderr.log`) so the user can audit the teardown.
-/// Returns `true` only when the command exited successfully; a non-zero exit or
-/// spawn error is logged at `warn`, swallowed, and reported as `false` — cleanup
-/// is best-effort by contract, but the boolean lets a caller (the tmux-window
-/// teardown) fall back rather than leak.
-fn run_lenient(cmd: Command, label: &str) -> bool {
-    run_lenient_detail(cmd, label).is_none()
-}
-
-/// Like [`run_lenient`] but returns the captured failure detail on a non-zero
-/// exit or spawn error (`None` on success), so a caller can record it in an
-/// audit event (e.g. `cleanup.branch_remove_failed`). Logging is identical.
-fn run_lenient_detail(mut cmd: Command, label: &str) -> Option<String> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
-    match cmd.output() {
-        Ok(out) if out.status.success() => {
-            info!(target: "orchestratectl::supervise", step = label, "cleanup step ok");
-            eprintln!("supervisor cleanup: {label}: ok");
-            None
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let detail = stderr.trim().to_string();
-            warn!(
-                target: "orchestratectl::supervise",
-                step = label,
-                code = out.status.code(),
-                detail = %detail,
-                "cleanup step non-zero (treated as already-done/refused; continuing)"
-            );
-            eprintln!("supervisor cleanup: {label}: non-zero exit (continuing): {detail}");
-            Some(detail)
-        }
-        Err(e) => {
-            warn!(
-                target: "orchestratectl::supervise",
-                step = label,
-                error = %e,
-                "cleanup step could not spawn (continuing)"
-            );
-            eprintln!("supervisor cleanup: {label}: spawn failed (continuing): {e}");
-            Some(format!("spawn failed: {e}"))
-        }
     }
 }
 
