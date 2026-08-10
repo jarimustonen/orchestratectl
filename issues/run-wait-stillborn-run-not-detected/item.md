@@ -2,12 +2,15 @@
 created: 2026-08-08
 updated: 2026-08-10
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [run-wait, supervisor, reliability]
 commits:
 - hash: 3567d75
   summary: run wait/show detect stillborn run as stalled
+- hash: a44e567
+  summary: harden stillborn detection per llm-review (latch verdict, docs, structured error)
+closed: 2026-08-10
 ---
 
 # run wait blocks full timeout on stillborn run (dead supervisor, 0 nodes, never started)
