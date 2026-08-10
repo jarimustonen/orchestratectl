@@ -3,11 +3,14 @@ created: 2026-08-10
 updated: 2026-08-10
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: high
 commits:
 - hash: 2e8bd5e
   summary: portable mkdir merge lock replaces flock
+- hash: a3dbae7
+  summary: harden lock per llm-review (remove racy stale-reclaim, classify mkdir errors, cap timeout)
+closed: 2026-08-10
 ---
 
 # merge.sh depends on flock, absent on stock macOS — merge lock silently broken on primary platform
