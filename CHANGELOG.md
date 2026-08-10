@@ -6,9 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-10
+
+### Fixed
+
+- **`run show --output json` no longer returns an all-null payload for a resolvable live run (`run-show-json-null-fields`).** `run show` now surfaces the same populated data that `run list` / `event tail` resolve — the supervisor block is lifted to the top level of `.data` and the run-list row is flattened in — instead of the silent all-null object seen intermittently against a live run.
+- **`run wait` / `run show` detect a stillborn run and return promptly (`run-wait-stillborn-run-not-detected`).** A run whose supervisor died before creating any node (dead supervisor, 0 nodes, no forward progress) is now reported as `stalled` and `run wait` returns immediately (non-zero under `--fail-on-error`) instead of blocking the full timeout.
+
 ### Changed
 
 - **`run wait --timeout` accepts a bare integer as seconds (`run-wait-timeout-unit-required`).** `--timeout 2400` now means 2400 seconds; previously a unit was required (`2400sec`) and a bare integer was rejected instantly — which, for a backgrounded `run wait`, looked like the run had settled when it had not (silent-instant-exit). Unit-suffixed values (`2400sec`, `40min`, `500ms`) parse as before; the bare-integer path is gated on all-digits + overflow.
+- **A hard pipeline failure now exits non-zero *and* surfaces the preserved-branch audit (`pipeline-hard-failure-carries-report`).** `pipeline run` carries a report on the hard-failure error path, so `cmd_run` both fails loudly and renders the `branch_preserved` siblings (the invariant-5 preservation is now auditable on the failure path, not just the success path).
+
+### Security
+
+- **Bumped `time` past RUSTSEC-2026-0009 (`ci-red-main-deny-docs`).** Resolved the RUSTSEC-2026-0009 stack-exhaustion DoS advisory flagged by `cargo-deny`, alongside repairing `octl-core`/`octl-cli` intra-doc links that had left CI red.
 
 ## [0.1.3] - 2026-08-06
 
