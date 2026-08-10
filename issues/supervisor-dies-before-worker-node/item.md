@@ -2,12 +2,13 @@
 created: 2026-08-10
 updated: 2026-08-10
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [supervisor, spinoff]
 commits:
 - hash: 5678bf3
   summary: surface stillborn runs in run list with age-gate and first-class stillborn DTO flag
+closed: 2026-08-10
 ---
 
 # supervisor died before creating any worker node (spinoff pending→stalled, 0 work)
