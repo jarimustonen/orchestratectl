@@ -4125,3 +4125,200 @@ fn wave_worker_that_commits_then_hard_errors_audits_its_own_branch() {
     let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c2:b.txt"]);
     assert_eq!(blob, "c2", "c2's committed work must survive: {blob:?}");
 }
+
+#[test]
+fn wave_mixed_hard_error_and_panic_audit_each_with_its_own_reason() {
+    // (`wave-terminal-worker-own-artifact-unaudited`, review finding) When BOTH terminal
+    // conditions fire and BOTH workers committed before crashing — c1 commits then
+    // hard-errors, c2 commits then panics — each worker's OWN artifact must be audited
+    // with ITS OWN reason string. Auditing in the dominant-terminal block would stamp
+    // every survivor with one reason (labelling the panicked c2 as "hard-errored"); the
+    // fold instead audits each in its `WaveJob::Error`/`Panicked` arm, so the audit trail
+    // stays factually per-worker correct.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave mixed hard-error + panic, both commit first".to_string();
+    cfg.max_build_concurrency = 2;
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    let err = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &CommitThenFail {
+            hard: &["c1"],
+            panic: &["c2"],
+            files: [
+                ("c1".to_string(), "a.txt".to_string()),
+                ("c2".to_string(), "b.txt".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        },
+        &ScriptedVerify::passing(),
+    )
+    .unwrap_err();
+
+    // The hard error still dominates (returns `Err`), and the co-occurring panic is noted.
+    assert!(matches!(err.error, PipelineError::Harness(_)), "{err:?}");
+    let report = err.report.expect("mixed wave failure must carry a report");
+
+    // c1 (committed then hard-errored) is audited as hard-errored...
+    let c1 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c1")
+        .expect("c1's own artifact must be audited");
+    assert_eq!(c1.branch_preserved.as_deref(), Some("demo/chunk-c1"));
+    assert!(
+        c1.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("hard-errored after committing")),
+        "c1 must be audited with the hard-error reason: {c1:?}"
+    );
+    // ...and c2 (committed then panicked) is audited as panicked — NOT mislabelled as a
+    // hard error just because a sibling hard-errored.
+    let c2 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c2")
+        .expect("c2's own artifact must be audited");
+    assert_eq!(c2.branch_preserved.as_deref(), Some("demo/chunk-c2"));
+    assert!(
+        c2.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("panicked after committing")),
+        "c2 must keep its OWN panic reason, not the sibling's hard-error reason: {c2:?}"
+    );
+
+    // Both committed branches survive on disk.
+    assert!(super::git::branch_exists(repo.path(), "demo/chunk-c1"));
+    assert!(super::git::branch_exists(repo.path(), "demo/chunk-c2"));
+}
+
+/// A [`CodeHarness`] where chunk c2 STRAYS out of file-scope on its first attempt
+/// (a re-codable floor block that supersedes the `demo/chunk-c2` branch and re-forks a
+/// fresh `demo/chunk-c2-a2`), then commits its scoped file and PANICS on the re-code
+/// attempt. Clean chunks just commit their scoped file. Exercises the artifact-registry
+/// lifecycle ACROSS a re-code iteration: the audited branch must be the LATEST attempt
+/// (`-a2`), not the superseded first attempt.
+struct StrayThenRecodePanic {
+    files: BTreeMap<String, String>,
+}
+impl CodeHarness for StrayThenRecodePanic {
+    fn capabilities(&self) -> HarnessCapabilities {
+        HarnessCapabilities {
+            can_author_tests: true,
+            reports_usage: false,
+            honors_file_scope: false,
+            runs_checks: false,
+        }
+    }
+    fn run_chunk(&self, req: &ChunkRequest, _c: &CancelToken) -> Result<ChunkResult, HarnessError> {
+        let rel = self
+            .files
+            .get(&req.chunk_id)
+            .unwrap_or_else(|| panic!("no scoped file for {}", req.chunk_id));
+        let wt = &req.worktree_path;
+        std::fs::write(wt.join(rel), format!("{}\n", req.chunk_id)).unwrap();
+        let mut changed = vec![PathBuf::from(rel)];
+        if req.chunk_id == "c2" && req.attempt_id == "a1" {
+            // Stray out of scope → the file-scope floor gate blocks (re-codable), so the
+            // worker tears down `demo/chunk-c2` and re-forks `demo/chunk-c2-a2`.
+            std::fs::write(wt.join("stray.txt"), "leak\n").unwrap();
+            changed.push(PathBuf::from("stray.txt"));
+        }
+        git(wt, &["add", "-A"]);
+        git(wt, &["commit", "-qm", "edit"]);
+        let head = git_out(wt, &["rev-parse", "HEAD"]);
+        // On the re-code attempt (a2), c2 commits in-scope and THEN panics.
+        assert!(
+            !(req.chunk_id == "c2" && req.attempt_id == "a2"),
+            "simulated post-commit panic on c2 recode attempt"
+        );
+        Ok(ChunkResult::committed(head, changed))
+    }
+}
+
+#[test]
+fn wave_worker_that_commits_then_panics_on_a_recode_attempt_audits_the_latest_branch() {
+    // (`wave-terminal-worker-own-artifact-unaudited`, review finding) The registry tracks
+    // the LATEST attempt: c2 strays on a1 (re-codable floor block → `demo/chunk-c2` torn
+    // down, re-forked as `demo/chunk-c2-a2`), then commits and panics on a2. The audit
+    // must name the `-a2` branch that actually holds the committed-but-unmerged work —
+    // proving the pre-registration is refreshed each attempt, not stuck on the superseded
+    // first name.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["a.txt", "b.txt"]);
+    cfg.intent = "wave recode then panic".to_string();
+    cfg.max_build_concurrency = 2;
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 1,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 0,
+    };
+    let plan = json!({
+        "acceptance": [{"kind": "check", "desc": "both", "run": "test -f a.txt && test -f b.txt"}],
+        "chunks": [
+            {"id": "c1", "title": "a", "tier": "code", "brief": "a", "files_touched": ["a.txt"], "checks": [{"desc": "a", "run": "true"}]},
+            {"id": "c2", "title": "b", "tier": "code", "brief": "b", "files_touched": ["b.txt"], "checks": [{"desc": "b", "run": "true"}]},
+        ],
+    });
+
+    let report = run_pipeline(
+        &cfg,
+        &ScriptedSpec::new(plan),
+        &StrayThenRecodePanic {
+            files: [
+                ("c1".to_string(), "a.txt".to_string()),
+                ("c2".to_string(), "b.txt".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        },
+        &ScriptedVerify::passing(),
+    )
+    .expect("a post-commit panic on a re-code attempt returns a terminal report");
+
+    assert!(!report.merged, "{report:#?}");
+    let c2 = report
+        .chunks
+        .iter()
+        .find(|c| c.id == "c2")
+        .expect("the recode-crashed worker's own artifact must be audited");
+    // The audited branch is the LATEST attempt's, not the superseded first one.
+    assert_eq!(
+        c2.branch_preserved.as_deref(),
+        Some("demo/chunk-c2-a2"),
+        "the audit must name the LATEST (`-a2`) attempt's branch: {c2:?}"
+    );
+    assert!(
+        c2.reason
+            .as_deref()
+            .is_some_and(|r| r.contains("panicked after committing")),
+        "{c2:?}"
+    );
+    // The re-code attempt's branch survives with its committed work; the superseded
+    // first attempt was torn down.
+    assert!(
+        super::git::branch_exists(repo.path(), "demo/chunk-c2-a2"),
+        "the latest attempt's branch must be preserved"
+    );
+    assert!(
+        !super::git::branch_exists(repo.path(), "demo/chunk-c2"),
+        "the superseded first attempt must have been torn down, not preserved"
+    );
+    let blob = git_out(repo.path(), &["cat-file", "-p", "demo/chunk-c2-a2:b.txt"]);
+    assert_eq!(
+        blob, "c2",
+        "the re-code attempt's committed work must survive: {blob:?}"
+    );
+}

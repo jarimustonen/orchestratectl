@@ -4,6 +4,9 @@ updated: 2026-08-10
 type: task
 status: in-progress
 priority: normal
+commits:
+- hash: 8217c54
+  summary: 'fix(pipeline): audit wave worker own branch on commit-then-panic/error'
 ---
 
 # Wave worker that commits then panics/errors leaves its own work unaudited (inv 5)
