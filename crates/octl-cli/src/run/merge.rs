@@ -74,8 +74,9 @@ const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 /// The exit status `merge.sh` reserves for "could not acquire the merge lock in
 /// time" — another self-merge into the SAME target branch held the serializing
 /// lock past the timeout (issue `concurrent-self-merge-race`). It is the sole
-/// producer of this status in the script (`flock`'s own timeout returns 1, and
-/// the `workmux` invocation normalizes its exit), so mapping it to a distinct,
+/// producer of this status in the script (the mkdir-lock acquire loop is the
+/// only path that emits 75, and the `workmux` invocation normalizes its exit so
+/// a downstream 75 can't leak), so mapping it to a distinct,
 /// retryable `merge_in_progress` code is unambiguous. Value is `EX_TEMPFAIL`
 /// (75) from sysexits(3): "temporary failure, the user is invited to retry".
 const MERGE_SH_LOCK_TIMEOUT_EXIT: i32 = 75;

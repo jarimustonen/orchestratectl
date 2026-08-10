@@ -999,7 +999,7 @@ fn autonomous_run_merge_accepts_confirmation_flag_as_noop() {
 // Several independent spinoffs that self-merge into the SAME source branch within
 // seconds must serialize on the merge lock, never observe each other's mid-merge
 // (transient-dirty) target state. The bug: merge.sh checked the target worktree
-// for cleanliness BEFORE taking the serializing flock, so a concurrent merge that
+// for cleanliness BEFORE taking the serializing lock, so a concurrent merge that
 // was mid-rebase made the checker fail with a spurious "uncommitted changes in
 // target". The fix moves that check inside the lock; a lock-acquisition timeout is
 // surfaced as a distinct, retryable `merge_in_progress` error. These two tests
@@ -1023,7 +1023,7 @@ fn real_merge_sh(dir: &Path) -> std::path::PathBuf {
 }
 
 /// Kills and reaps a spawned child on drop — panic-safe cleanup for the
-/// background merge-lock holder, so a failing assertion can't leave a `flock`
+/// background merge-lock holder, so a failing assertion can't leave a holder
 /// process (and its lock) alive for the rest of its sleep.
 struct ChildGuard(std::process::Child);
 
@@ -1034,19 +1034,22 @@ impl Drop for ChildGuard {
     }
 }
 
-/// Spawn a background holder of the repo's merge lock — `flock`ing exactly the
-/// path merge.sh derives (`<git-common-dir>/worktree-merge.lock`) — that touches
-/// `ready` once it holds the lock, then holds it. The returned guard releases
-/// the lock (kills the holder) on drop.
+/// Spawn a background holder of the repo's merge lock — the portable mkdir lock
+/// merge.sh derives (`<git-common-dir>/worktree-merge.lock`, a directory). It
+/// records its own live pid inside (so merge.sh's stale-lock reclaim sees a live
+/// holder and waits), touches `ready` once it holds the lock, then holds it. The
+/// returned guard releases the lock (kills the holder) on drop.
 fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
     let lock = repo.join(".git").join("worktree-merge.lock");
-    let child = Command::new("flock")
-        .arg("-x")
-        .arg(&lock)
+    let child = Command::new("bash")
         .arg("-c")
-        .arg(format!("touch '{}'; sleep 30", ready.display()))
+        .arg(format!(
+            "mkdir '{lock}'; echo $$ > '{lock}/pid'; touch '{ready}'; sleep 30",
+            lock = lock.display(),
+            ready = ready.display(),
+        ))
         .spawn()
-        .expect("spawn flock holder");
+        .expect("spawn merge-lock holder");
     ChildGuard(child)
 }
 
@@ -1056,17 +1059,17 @@ fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
 /// dirty window must NOT observe the dirt — it acquires only after the clean.
 fn hold_lock_dirty_then_clean(repo: &Path, dirty: &Path, ready: &Path) -> ChildGuard {
     let lock = repo.join(".git").join("worktree-merge.lock");
-    let child = Command::new("flock")
-        .arg("-x")
-        .arg(&lock)
+    let child = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "touch '{dirty}'; touch '{ready}'; sleep 2; rm -f '{dirty}'",
+            "mkdir '{lock}'; echo $$ > '{lock}/pid'; touch '{dirty}'; touch '{ready}'; \
+             sleep 2; rm -f '{dirty}'; rm -rf '{lock}'",
+            lock = lock.display(),
             dirty = dirty.display(),
             ready = ready.display(),
         ))
         .spawn()
-        .expect("spawn flock holder");
+        .expect("spawn merge-lock holder");
     ChildGuard(child)
 }
 

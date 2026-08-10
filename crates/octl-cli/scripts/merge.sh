@@ -4,9 +4,9 @@
 # BUNDLED COPY. This script is embedded into the `orchestratectl` binary
 # (see crates/octl-cli/src/run/merge.rs) and materialized to a temp file at
 # runtime by `orchestratectl run merge`. It is the v1 merge-mechanics
-# backend: it owns the rebase, the flock that serializes concurrent merges,
-# the workmux merge, and the post-merge teardown of the worktree + tmux
-# window + branch. `run merge` wraps it, then submits the terminal
+# backend: it owns the rebase, the portable mkdir lock that serializes
+# concurrent merges, the workmux merge, and the post-merge teardown of the
+# worktree + tmux window + branch. `run merge` wraps it, then submits the terminal
 # `node.report` so the supervisor can wind the run down.
 #
 # It descends from homebase `~/.claude/skills/worktree-merge/scripts/merge.sh`
@@ -117,32 +117,74 @@ echo ""
 # Without the lock, two parallel rebases would also race on the FF step and one
 # would fail. Use the shared common git dir so the lock works from linked
 # worktrees too (a linked worktree's .git is a file, not a directory).
+#
+# The mutex is an atomic `mkdir` lock, NOT `flock`: `flock(1)` ships with
+# util-linux and is ABSENT on stock macOS (present only via a keg-only homebrew
+# util-linux), and macOS is the primary platform. `mkdir` is atomic on
+# POSIX/HFS+/APFS — exactly one racer wins the create; the losers spin with a
+# short sleep until they win it or the timeout elapses (issue
+# merge-lock-flock-not-portable-macos). No external binary required.
 GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-LOCK_FILE="$GIT_COMMON_DIR/worktree-merge.lock"
+LOCK_DIR="$GIT_COMMON_DIR/worktree-merge.lock"
 LOCK_TIMEOUT="${MERGE_LOCK_TIMEOUT:-600}"
-# Validate the timeout: flock treats a non-numeric / non-positive `-w` as an
-# error, which would look like a lock-contention failure and be misreported as
-# `merge_in_progress`. Reject a bad value up front with a plain error instead.
+# Validate the timeout: a non-numeric / non-positive value would make the
+# acquire loop below behave nonsensically and could be misread downstream as a
+# lock-contention failure (`merge_in_progress`). Reject a bad value up front
+# with a plain error instead.
 if ! [[ "$LOCK_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$LOCK_TIMEOUT" -lt 1 ]]; then
     echo "Error: MERGE_LOCK_TIMEOUT must be a positive integer (got '$LOCK_TIMEOUT')" >&2
     exit 1
 fi
-# `>>` (not `>`): open the lock file without truncating it — the advisory lock
-# is on the inode and survives truncation, but truncating a file another merge
-# is actively using is a needless surprise when inspecting it.
-exec 9>>"$LOCK_FILE"
+
+# Release the lock on ANY exit once we own it. The lock is the directory itself,
+# so removal releases it — no fd to leak into workmux descendants (the old
+# `flock` fd-inheritance deadlock is gone). Guarded by LOCK_ACQUIRED so a
+# timeout exit (which never owns the dir) can't remove a peer's live lock.
+LOCK_ACQUIRED=0
+release_merge_lock() {
+    if [[ "$LOCK_ACQUIRED" -eq 1 ]]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+trap release_merge_lock EXIT
+
 # Exit 75 (EX_TEMPFAIL) is RESERVED for the lock-timeout case below and mapped
-# to `merge_in_progress` by `run merge`. `flock`'s own timeout returns 1, so it
-# never collides; the `exit 75` here is the sole producer of that status (the
-# workmux invocation later normalizes its exit so a downstream 75 can't leak).
-if ! flock -w "$LOCK_TIMEOUT" 9; then
-    # A concurrent merge into this target held the lock longer than we waited.
-    # This is a serialization timeout, NOT a dirty tree: exit 75 so `run merge`
-    # surfaces a distinct, retryable `merge_in_progress` error rather than the
-    # misleading dirty-target failure this race used to produce.
-    echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_FILE within ${LOCK_TIMEOUT}s" >&2
-    exit 75
-fi
+# to `merge_in_progress` by `run merge`. It is the sole producer of that status
+# (the `workmux` invocation later normalizes its exit so a downstream 75 can't
+# leak).
+LOCK_DEADLINE=$(( SECONDS + LOCK_TIMEOUT ))
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    # Stale-lock reclaim: a crashed merge leaves its lock dir behind, which would
+    # otherwise wedge EVERY future merge for the whole timeout. If the recorded
+    # holder pid is dead, the dir is an orphan — atomically rename it aside (only
+    # one racer can win the rename, so this cannot double-free a live lock) and
+    # remove it, then retry immediately. A holder that just won the lock but has
+    # not written its pid yet leaves an absent/empty pid file; that is a LIVE
+    # holder mid-acquire, so treat it as alive and keep waiting — never reclaim.
+    holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+        stale_dir="$LOCK_DIR.stale.$$"
+        if mv "$LOCK_DIR" "$stale_dir" 2>/dev/null; then
+            rm -rf "$stale_dir" 2>/dev/null || true
+            continue
+        fi
+    fi
+    if (( SECONDS >= LOCK_DEADLINE )); then
+        # A concurrent merge into this target held the lock longer than we
+        # waited. This is a serialization timeout, NOT a dirty tree: exit 75 so
+        # `run merge` surfaces a distinct, retryable `merge_in_progress` error
+        # rather than the misleading dirty-target failure this race used to
+        # produce.
+        echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_DIR within ${LOCK_TIMEOUT}s" >&2
+        exit 75
+    fi
+    sleep 0.1
+done
+LOCK_ACQUIRED=1
+# Record our pid so a later contender can detect a crashed holder (above). Best
+# effort: failing to write it does not lose the lock (the dir is the lock), it
+# only forgoes stale-reclaim, so never abort the merge over it.
+echo "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
 echo "Acquired merge lock"
 echo ""
 
@@ -179,18 +221,16 @@ echo "Running workmux merge --rebase --into $TARGET_BRANCH..."
 # Use --keep so workmux doesn't try (and fail) to kill our own window.
 # --into pins the merge target (defaults to config main_branch when omitted).
 #
-# `9>&-` closes the lock fd for the child: bash fds are not close-on-exec, so
-# workmux (and anything it spawns, e.g. a tmux server) would otherwise inherit
-# fd 9 and — if a descendant outlived this script — hold the advisory lock
-# forever, deadlocking every future merge. We still hold fd 9 in this shell, so
-# the critical section is unaffected.
+# The lock is a directory removed by our EXIT trap, so there is no lock fd for a
+# workmux descendant to inherit and hold past our exit — the old `flock`
+# fd-inheritance deadlock cannot occur.
 #
 # Capture the status instead of letting `set -e` propagate it: a downstream exit
 # 75 (from workmux or git) would otherwise leak out as the script's status and
 # be misclassified as the lock-timeout `merge_in_progress`. Any workmux failure
 # is a genuine merge failure — normalize it to exit 1 (`merge_failed`).
 merge_rc=0
-workmux merge --rebase --keep --into "$TARGET_BRANCH" 9>&- || merge_rc=$?
+workmux merge --rebase --keep --into "$TARGET_BRANCH" || merge_rc=$?
 if [[ "$merge_rc" -ne 0 ]]; then
     echo "Error: workmux merge failed (exit $merge_rc)" >&2
     exit 1
