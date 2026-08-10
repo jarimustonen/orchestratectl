@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-10
+
+### Fixed
+
+- **A stillborn run is now visibly flagged in `run list`, not shown as an ordinary `pending` row (`supervisor-dies-before-worker-node`).** A run whose supervisor died before creating the first worker node (dead/absent supervisor, 0 nodes, no progress) previously appeared in `run list` identical to a healthy just-created run — the "looks stuck until someone notices" failure that reproduced 3× under saturation. `run list` now wires in the same `is_stillborn` verdict `run wait` / `run show` already use (no extra I/O, under the existing shared lock) and renders a distinct `pending (stillborn)` marker. Pure read path — no event/reducer/schema/lock write; all five state-integrity invariants untouched.
+- **`run wait` / `run show` now detect an *orphaned mid-run* run and settle promptly instead of blocking the full timeout (`run-wait-still`).** The stillborn fix only covered a supervisor that died before any node (`node_count == 0`). This handles the sibling case: a supervisor that died *after* creating `n-0001` but before rolling the run up — `node_count > 0`, dead supervisor, `pending`/`running`, idle past a 15-minute grace window (to avoid misreading a briefly-unschedulable but live supervisor). Such a run is now reported `stalled` with a per-kind reason and pointed at `run reattach` for recovery. Read-time only; shared lock preserved.
+- **A wave-build worker that commits then panics/errors now has its own branch audited, not orphaned (`wave-terminal-worker-own-artifact-unaudited`).** Previously `WaveJob::Error`/`Panicked` discarded the terminal worker's artifact identity, leaving its committed `<slug>/chunk-<id>` branch on disk that no report named — an invariant-5 audit gap. The worker now carries its artifact identity (deterministic worktree/branch + observed head) across the `catch_unwind` boundary and records an audit-only `branch_preserved` `ChunkReport` (contents not vouched for, since the crash means it was never reviewed), so nothing committed silently vanishes from the ledger.
+
 ## [0.1.4] - 2026-08-10
 
 ### Fixed
