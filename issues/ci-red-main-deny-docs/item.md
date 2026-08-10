@@ -3,8 +3,12 @@ created: 2026-08-10
 updated: 2026-08-10
 type: bug
 reporter: claude-code
-status: in-progress
+status: fixed
 priority: high
+commits:
+- hash: 2beaec7
+  summary: repair intra-doc links + time bump for RUSTSEC-2026-0009; accept help snapshot
+closed: 2026-08-10
 ---
 
 # CI red on main: cargo-deny (RUSTSEC-2026-0009), broken intra-doc links, macos doctests
