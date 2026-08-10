@@ -54,6 +54,22 @@ hard wave failure both **exits non-zero** AND **prints every preserved sibling**
 `print_report` gains a `preserved: <branch>` line per chunk so the audit is visible in
 text output.
 
+## Review dispositions (llm-review + source verification)
+
+- The `--json` "double envelope" concern (all 4 reviewers) is **refuted**: the report
+  is emitted to **stdout** and `CliError` to **stderr** — one document per stream.
+- The "post-wave preservation gap" (consensus) is **refuted**: merged chunks fold into
+  the integration branch (loose branches deleted), blocked chunks are preserved before
+  the code stage returns Ok, and the Err report is built from the already-accumulated
+  `run.chunk_reports`, so every preserved sibling is carried on any post-spec error.
+- **Applied:** `cmd_run` emits the report best-effort (never `?`) so an emit failure
+  can't replace the pipeline error's exit code; removed the unused/foot-gun
+  `From<PipelineFailure> for CliError`.
+- **Deferred follow-up:** the Err report hardcodes `verify: None`. A post-verify hard
+  failure therefore drops the verify evidence from the audit. Threading the latest
+  verify state onto `Run` would restore it — a fidelity improvement orthogonal to the
+  inv-5 audit that is this issue's goal.
+
 ## Invariants preserved
 
 - Inv 5: preservation still holds — now it is also auditable. Teardown gating unchanged.

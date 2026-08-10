@@ -4,6 +4,9 @@ updated: 2026-08-10
 type: task
 status: in-progress
 priority: normal
+commits:
+- hash: 66865f2
+  summary: carry PipelineReport on hard-failure Err path; cmd_run exits non-zero AND surfaces branch_preserved siblings
 ---
 
 # Carry a PipelineReport with hard-failure Err so inv-5 preservation is auditable (genuine inv-5 fix)

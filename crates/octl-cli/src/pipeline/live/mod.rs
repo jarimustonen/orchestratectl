@@ -214,13 +214,12 @@ impl From<PipelineError> for PipelineFailure {
     }
 }
 
-/// The exit-code / envelope mapping is the inner error's — pairing a report with the
-/// error must NOT change how loudly the failure exits.
-impl From<PipelineFailure> for CliError {
-    fn from(f: PipelineFailure) -> Self {
-        f.error.into()
-    }
-}
+// NOTE: there is deliberately NO `From<PipelineFailure> for CliError`. The exit
+// code / envelope mapping is the inner `PipelineError`'s, and the report must be
+// RENDERED before the failure is turned into a `CliError` — `cmd_run` destructures
+// the `PipelineFailure`, emits the report, then converts `error` explicitly. A
+// blanket `PipelineFailure -> CliError` would let a bare `?` silently drop the audit
+// report on some future caller (`pipeline-hard-failure-carries-report` review).
 
 /// Fully-resolved configuration for one pipeline run.
 pub struct PipelineConfig {
@@ -4590,9 +4589,17 @@ pub fn cmd_run(
             // rather than lost (`pipeline-hard-failure-carries-report`). A pre-plan
             // failure carries no report; there is nothing to audit yet.
             if let Some(report) = report {
+                // Best-effort: the report goes to stdout, but the DOMINANT signal is
+                // the error (its stable code + non-zero exit, emitted by the dispatcher
+                // to stderr). A failure to render the report must NOT replace the
+                // pipeline error's exit code — so swallow an emit error here rather than
+                // `?`-propagating it (which would exit with the emit error's code and
+                // hide the real failure). See `pipeline-hard-failure-carries-report`.
                 match spec.format {
                     OutputFormat::Json | OutputFormat::Jsonl => {
-                        output::emit_envelope(&report, spec, warnings)?;
+                        if let Err(e) = output::emit_envelope(&report, spec, warnings) {
+                            eprintln!("warning: could not render failure report: {}", e.message);
+                        }
                     }
                     OutputFormat::Text => {
                         print_report(&report);
