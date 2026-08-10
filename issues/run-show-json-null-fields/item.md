@@ -8,6 +8,8 @@ labels: [from-homebase]
 commits:
 - hash: dc8b151047504793854c51c63f5aaf960be5f92a
   summary: surface supervisor at run show data top level
+- hash: 9527b8c
+  summary: flatten run-list row into run show + llm-review hardening
 ---
 
 # run show --output json returns all-null data fields for a run that list/event-tail resolve
