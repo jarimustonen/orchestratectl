@@ -16,6 +16,7 @@ expression: value
       "alive": false
     },
     "stalled": false,
+    "stillborn": false,
     "manifest": {
       "schema_version": 1,
       "run_id": "[RUN_ID]",

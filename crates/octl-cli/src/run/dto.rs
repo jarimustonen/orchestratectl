@@ -155,6 +155,26 @@ pub struct RunSummary {
     /// [`RunSummary::with_stalled`] after reading the driver node under the
     /// shared lock. See [`crate::run::stalled`].
     pub stalled: bool,
+    /// Computed hint (never persisted): true for a *stillborn* run — pending, a
+    /// dead/absent supervisor, zero nodes, and no forward progress since
+    /// creation — the "supervisor died before creating any worker node"
+    /// signature from issue `supervisor-dies-before-worker-node`. Kind-agnostic
+    /// (any run created but never started), unlike [`Self::stalled`], which is
+    /// the orchestrate-driver-specific idle shape. Defaults to `false` from
+    /// `From`; the `list` / `show` handlers override it via
+    /// [`RunSummary::with_stillborn`] from the same shared-lock snapshot. See
+    /// [`crate::run::stalled::is_stillborn`].
+    ///
+    /// Relationship to [`Self::stalled`]: the two *underlying detections* are
+    /// mutually exclusive by construction (stillborn requires `node_count == 0`;
+    /// the orchestrate stall requires a driver node, i.e. `node_count >= 1`), so
+    /// a single run is never simultaneously an orchestrate stall AND stillborn.
+    /// But `stalled` is the umbrella "pending yet not progressing" flag — set
+    /// for *either* shape (matching `run show` / `run wait`) — so a stillborn
+    /// run carries BOTH `stillborn: true` and `stalled: true`. Read `stillborn`
+    /// for the specific never-started diagnosis; read `stalled` for the generic
+    /// "needs attention" signal.
+    pub stillborn: bool,
 }
 
 impl RunSummary {
@@ -173,6 +193,14 @@ impl RunSummary {
         self.stalled = stalled;
         self
     }
+
+    /// Set the computed `stillborn` hint, replacing the `From`-provided `false`
+    /// default.
+    #[must_use]
+    pub fn with_stillborn(mut self, stillborn: bool) -> Self {
+        self.stillborn = stillborn;
+        self
+    }
 }
 
 impl From<&Manifest> for RunSummary {
@@ -186,6 +214,7 @@ impl From<&Manifest> for RunSummary {
             node_count: m.node_count,
             supervisor: SupervisorView::unknown(),
             stalled: false,
+            stillborn: false,
         }
     }
 }
@@ -281,6 +310,7 @@ mod tests {
                 "node_count": 0,
                 "supervisor": { "pid": null, "alive": false },
                 "stalled": false,
+                "stillborn": false,
             })
         );
     }

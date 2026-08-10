@@ -717,6 +717,122 @@ fn list_when_root_missing_returns_empty() {
     assert!(v["data"]["runs"].as_array().unwrap().is_empty());
 }
 
+/// `run list` flags a *stillborn* run — created, but its supervisor died before
+/// creating any worker node (pending, no supervisor, 0 nodes, no progress since
+/// creation) — with `stillborn: true`, so it is no longer a silent `pending`
+/// row that looks stuck until someone notices (issue
+/// `supervisor-dies-before-worker-node`). Under `OCTL_TEST_SKIP_MATERIALIZE` a
+/// fresh `run create` spawns no supervisor, giving exactly that shape. A run
+/// that reached its first node is NOT stillborn — the two flags never coincide,
+/// since stillborn requires `node_count == 0`.
+///
+/// `OCTL_STILLBORN_LIST_GRACE_SECS=0` disables the age gate so the just-created
+/// run flags immediately; the companion `list_within_grace_does_not_flag_
+/// stillborn` test covers the default (grace-protected) create window.
+#[test]
+fn list_flags_stillborn_run() {
+    let home = TestHome::new();
+    let born = create(&home, "spinoff", "stillborn");
+    let started = create(&home, "spinoff", "started");
+    // Give `started` its first worker node → node_count 1, so it is not
+    // stillborn even though its supervisor is likewise absent in this fixture.
+    add_node(&home, &started, "n-0001");
+
+    let v = run_ok(
+        bin(&home)
+            .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+            .args(["--output", "json", "run", "list"]),
+    );
+    let runs = v["data"]["runs"].as_array().expect("runs array");
+    let row = |id: &str| {
+        runs.iter()
+            .find(|r| r["run_id"] == id)
+            .unwrap_or_else(|| panic!("run {id} missing from list"))
+    };
+
+    let b = row(&born);
+    assert_eq!(b["status"], "pending");
+    assert_eq!(b["node_count"], 0);
+    assert_eq!(b["supervisor"]["alive"], false);
+    assert_eq!(
+        b["stillborn"], true,
+        "0-node dead-supervisor run is stillborn: {b}"
+    );
+    // `stalled` is the umbrella flag; a stillborn run trips it too so a caller
+    // keying on the generic "not progressing" hint still catches it.
+    assert_eq!(
+        b["stalled"], true,
+        "stillborn implies the umbrella stalled hint: {b}"
+    );
+
+    let s = row(&started);
+    assert_eq!(s["node_count"], 1);
+    assert_eq!(
+        s["stillborn"], false,
+        "a run that reached n-0001 is not stillborn: {s}"
+    );
+    assert_eq!(
+        s["stalled"], false,
+        "a non-orchestrate run with a node is not stalled: {s}"
+    );
+
+    // The plain-text row carries the `(stillborn)` marker, distinct from
+    // `(stalled)`, so a human scanning `run list` sees the dead run.
+    let out = bin(&home)
+        .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+        .args(["--output", "text", "run", "list"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "run list (text) failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8");
+    let born_line = text
+        .lines()
+        .find(|l| l.contains(&born))
+        .expect("stillborn run present in text output");
+    assert!(
+        born_line.contains("pending (stillborn)"),
+        "text row must mark the run stillborn: {born_line}"
+    );
+}
+
+/// A run younger than the stillborn grace is NOT flagged, even though it has the
+/// stillborn shape (pending, 0 nodes, no supervisor). This is the false-positive
+/// guard: `run list` sweeps runs another process is mid-`run create` on, which
+/// transiently present that exact shape during the create.sh window — a bulk
+/// list (or a monitor over `--json`) must not flag/cancel a healthy in-flight
+/// run. With the default grace (900s) a just-created run is well within the
+/// window, so `stillborn` reads `false` (issue `supervisor-dies-before-worker-
+/// node`, review finding: transient create-window false positive).
+#[test]
+fn list_within_grace_does_not_flag_stillborn() {
+    let home = TestHome::new();
+    let born = create(&home, "spinoff", "fresh");
+
+    // No env override → the default 900s grace applies. The run was created
+    // milliseconds ago, so it is inside the create window and must not flag.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let r = v["data"]["runs"]
+        .as_array()
+        .expect("runs array")
+        .iter()
+        .find(|r| r["run_id"] == born)
+        .expect("run present");
+    assert_eq!(r["status"], "pending");
+    assert_eq!(r["node_count"], 0);
+    assert_eq!(
+        r["stillborn"], false,
+        "a run inside the create-window grace must NOT be flagged stillborn: {r}"
+    );
+    assert_eq!(
+        r["stalled"], false,
+        "nor tripped as stalled while still within grace: {r}"
+    );
+}
+
 // --- `run cancel` terminal-run + convergence semantics ---------------------
 //
 // These drive a run's state through the sanctioned `event create` write path
