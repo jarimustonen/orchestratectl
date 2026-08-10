@@ -2,12 +2,15 @@
 created: 2026-07-13
 updated: 2026-08-10
 type: improvement
-status: in-progress
+status: done
 priority: normal
 related: ['@vendor-workmux-multiplexer', '@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
 commits:
 - hash: '1538680'
   summary: vendor typed git-worktree wrapper; cleanup.rs routes git through git::repo::Git
+- hash: a6bc8ed
+  summary: tighten git-wrapper tests per llm-review (assert worktree_remove)
+closed: 2026-08-10
 ---
 
 # workmux-extract-libs: vendor a typed git-worktree wrapper (multiplexer slice already landed)
