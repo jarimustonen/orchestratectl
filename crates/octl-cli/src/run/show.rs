@@ -219,7 +219,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     let summary = crate::run::dto::RunSummary::from(&manifest)
         .with_supervisor(supervisor)
         .with_stalled(stalled)
-        .with_stillborn(stillborn);
+        .with_stillborn(matches!(
+            &stall,
+            Some(crate::run::stalled::StallKind::Stillborn)
+        ));
     let payload = ShowPayload {
         summary,
         manifest: ManifestView::from(&manifest),
