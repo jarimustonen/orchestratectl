@@ -80,7 +80,7 @@ remain; **`main` clean, 0 unpushed, `v0.1.3` tagged + shipped, local binary 0.1.
 
 ---
 
-## Execution DAG (2026-08-07)
+## Execution DAG (2026-08-10)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -142,6 +142,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
   ▶ run-wait-stillborn-run-not-detected      (bug: `run wait` blocks the full timeout on a stillborn run — dead supervisor, 0 nodes, never started; should detect + return promptly)
+    run-show-json-null-fields                (bug from-homebase: `run show --output json` returns all-null data fields for a run list/event-tail resolve; touches run/show output projection)
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
