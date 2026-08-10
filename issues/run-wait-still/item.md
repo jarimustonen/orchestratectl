@@ -2,12 +2,15 @@
 created: 2026-08-10
 updated: 2026-08-10
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [run-wait, supervisor, reliability]
 commits:
 - hash: 87db6c1
   summary: 'fix(run): detect orphaned mid-run runs in run wait/show'
+- hash: f830d7b
+  summary: 'refactor(run): apply llm-review FIX findings to orphan detection'
+closed: 2026-08-10
 ---
 
 # run wait still blocks on orphaned run with node_count>0 (supervisor died mid-run)
