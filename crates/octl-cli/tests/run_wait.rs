@@ -483,6 +483,97 @@ fn stillborn_run_fail_on_error_exits_three() {
     assert_eq!(v["data"]["runs"][0]["stalled"], true);
 }
 
+/// Rewrite a run manifest's `updated_at` to `minutes_ago` before now, leaving
+/// every other field intact. Used to age a `node_count > 0` run past the orphan
+/// grace window without waiting real time — a legitimate synthesis (the wait
+/// loop only *reads* the manifest under a shared lock; no reducer replay runs on
+/// a read, so the backdated clock is what the poll observes).
+fn backdate_manifest_updated_at(home: &TempDir, run_id: &str, minutes_ago: i64) {
+    let path = home.path().join("runs").join(run_id).join("manifest.json");
+    let mut m: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read manifest")).expect("parse");
+    let old = chrono::Utc::now() - chrono::Duration::minutes(minutes_ago);
+    // Match the manifest's RFC3339 serialization (`chrono` `DateTime<Utc>`).
+    m["updated_at"] = json!(old.to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
+    std::fs::write(&path, serde_json::to_vec(&m).expect("serialize")).expect("write manifest");
+}
+
+/// An *orphaned* run — its supervisor created a worker node (`node_count > 0`)
+/// then died mid-run, leaving the run `pending` with a dead supervisor and a
+/// manifest clock idle past the grace window — settles the wait promptly as
+/// `stalled` instead of blocking the whole timeout, and carries the
+/// orphaned-specific reason. This is the core of issue `run-wait-still`, the
+/// sibling the stillborn fix (`node_count == 0`) scoped out.
+#[test]
+fn orphaned_run_settles_promptly_as_stalled() {
+    let home = TestHome::new();
+    // Create a run and give it a worker node so `node_count > 0` (not stillborn).
+    // Under SKIP_MATERIALIZE no supervisor is spawned, so it reads as dead.
+    let run = pending_run(&home, "orphaned");
+    add_node(&home, &run, "n-0001");
+    // Age the manifest clock well past the 15-minute orphan grace so the poll
+    // sees a genuinely stranded run rather than a transiently-idle one.
+    backdate_manifest_updated_at(&home, &run, 30);
+
+    let start = std::time::Instant::now();
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &run, "--timeout", "30s"]));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "orphaned run must settle promptly, took {elapsed:?}"
+    );
+    let r = &v["data"]["runs"][0];
+    // Status is still `pending` (the run never reached a terminal state) — the
+    // `stalled` flag is what tells the caller it is stranded, not still working.
+    assert_eq!(r["status"], "pending");
+    assert_eq!(r["stalled"], true, "orphaned run must be stalled: {r}");
+    assert_eq!(
+        r["error"], "supervisor died mid-run; work is stranded and cannot be rolled up",
+        "orphaned outcome carries the mid-run reason, distinct from stillborn: {r}"
+    );
+    let waited = v["data"]["waited_ms"].as_u64().expect("waited_ms u64");
+    assert!(
+        waited < 5000,
+        "waited_ms {waited} well under the 30s budget"
+    );
+}
+
+/// The grace-window guard, end-to-end: a `node_count > 0` run with a dead
+/// supervisor but a FRESH manifest clock (no backdating) is NOT treated as
+/// orphaned — it must block the full budget and time out, because a supervisor
+/// caught mid-reattach/restart would present this exact shape. (Complements the
+/// unit-level boundary tests in `run::stalled`.) This mirrors — and pins the
+/// grace-guard reason for — `timeout_without_terminal_run_exits_two`.
+#[test]
+fn recently_active_dead_supervisor_run_does_not_settle_early() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "fresh-orphan-candidate");
+    add_node(&home, &run, "n-0001"); // node_count > 0, clock ≈ now
+
+    let v = run_exit(
+        bin(&home).args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &run,
+            "--timeout",
+            "500ms",
+        ]),
+        2,
+    );
+    assert_eq!(v["data"]["runs"][0]["status"], "pending");
+    assert_eq!(
+        v["data"]["runs"][0]["stalled"], false,
+        "within the grace window a dead-supervisor run must NOT be flagged stalled"
+    );
+    let waited = v["data"]["waited_ms"].as_u64().expect("waited_ms u64");
+    assert!(
+        (400..=2000).contains(&waited),
+        "waited_ms {waited} should be ~500ms (the timeout budget, not an early exit)"
+    );
+}
+
 #[test]
 fn all_and_any_are_mutually_exclusive() {
     let home = TestHome::new();

@@ -8,6 +8,7 @@ use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, Status};
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::{ManifestView, SupervisorView};
+use crate::run::stalled::StallKind;
 use crate::run::{from_core, run_paths_from_cli_arg};
 
 /// The single reporting node of a single-worker worktree run (`n-0001`);
@@ -132,25 +133,30 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         let now = chrono::Utc::now();
         let stalled_orchestrate =
             crate::run::stalled::is_stalled(manifest.status, manifest.kind, node.as_ref(), now);
-        // Stillborn: the supervisor died before ever creating `n-0001`, so the
-        // run can never progress (issue `run-wait-stillborn-run-not-detected`).
-        // Uses the same shared-lock snapshot — `manifest.status` + the
-        // supervisor liveness probe above + the manifest counters/timestamps.
-        let stillborn = crate::run::stalled::is_stillborn(
+        // Supervisor-death stall verdict over the same shared-lock snapshot —
+        // `manifest.status` + the supervisor liveness probe above + the manifest
+        // counters/timestamps. `Stillborn` = died before creating `n-0001`
+        // (issue `run-wait-stillborn-run-not-detected`); `Orphaned` = died
+        // mid-run with ≥1 node, idle past the grace (issue `run-wait-still`).
+        let stall = crate::run::stalled::stall_kind(
             manifest.status,
             supervisor.alive,
             manifest.node_count,
             manifest.created_at,
             manifest.updated_at,
+            now,
         );
-        let stalled = stalled_orchestrate || stillborn;
-        // Idle minutes for the human message, only meaningful when stalled. The
-        // stillborn shape has no driver node to read, so its idle clock runs
-        // from `manifest.updated_at` (== `created_at`); the orchestrate stall
-        // reads the driver node's `updated_at`.
+        // A dead-supervisor verdict (stillborn/orphaned) takes precedence over
+        // the orchestrate-undriven hint when both could apply: the supervisor
+        // being provably dead is the more actionable signal.
+        let stalled = stall.is_some() || stalled_orchestrate;
+        // Idle minutes for the human message, only meaningful when stalled. Both
+        // supervisor-death shapes clock idle from `manifest.updated_at` (they
+        // have no live driver node to read); the orchestrate stall reads the
+        // driver node's `updated_at`.
         // Clamp to 0: clock skew or a future timestamp must never print a
         // negative "idle -3 min" in the human hint.
-        let stalled_idle_min = if stillborn {
+        let stalled_idle_min = if stall.is_some() {
             Some(
                 now.signed_duration_since(manifest.updated_at)
                     .num_minutes()
@@ -176,30 +182,22 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             supervisor,
             recoverable_work,
             stalled,
-            stillborn,
+            stall,
             stalled_idle_min,
             landing,
         )))
     })
     .map_err(from_core)?;
-    let (
-        manifest,
-        counts,
-        supervisor,
-        recoverable_work,
-        stalled,
-        stillborn,
-        stalled_idle_min,
-        landing,
-    ) = match scanned {
-        Some(v) => v,
-        None => {
-            return Err(
-                CliError::user("run_not_found", format!("no run with id {run_id}"))
-                    .with_invalid_value(run_id),
-            );
-        }
-    };
+    let (manifest, counts, supervisor, recoverable_work, stalled, stall, stalled_idle_min, landing) =
+        match scanned {
+            Some(v) => v,
+            None => {
+                return Err(
+                    CliError::user("run_not_found", format!("no run with id {run_id}"))
+                        .with_invalid_value(run_id),
+                );
+            }
+        };
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
     // computed outside the shared lock: the rebase-robust signal a caller should
     // trust instead of hand-rolling `git merge-base --is-ancestor`.
@@ -244,21 +242,29 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             if payload.summary.stalled {
                 let idle =
                     stalled_idle_min.map_or_else(String::new, |m| format!(" (idle {m} min)"));
-                if stillborn {
-                    println!(
+                match stall {
+                    Some(StallKind::Stillborn) => println!(
                         "stalled:       true — stillborn run: supervisor died before creating any \
                          worker node (pending, 0 nodes, no progress since creation{idle}). \
                          The run cannot progress on its own; `run reattach {run_id}` to recover it, \
                          or `run cancel {run_id}` to lay it to rest.",
                         run_id = payload.manifest.run_id
-                    );
-                } else {
-                    println!(
+                    ),
+                    Some(StallKind::Orphaned) => println!(
+                        "stalled:       true — orphaned run: supervisor died mid-run, leaving work \
+                         stranded ({status}, {nodes} node(s), idle past the grace window{idle}). \
+                         No actor can roll it up; `run reattach {run_id}` to revive the supervisor \
+                         (it then rolls the run up or fails it), or `run cancel {run_id}`.",
+                        status = payload.manifest.status,
+                        nodes = payload.manifest.node_count,
+                        run_id = payload.manifest.run_id
+                    ),
+                    None => println!(
                         "stalled:       true — orchestrate driver looks undriven: pending, no children{idle}. \
                          Verify no orchestrator agent is still driving this run before acting; \
                          if none is, `run cancel {}` and relaunch with an active orchestrator.",
                         payload.manifest.run_id
-                    );
+                    ),
                 }
             }
             println!(
