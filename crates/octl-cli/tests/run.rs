@@ -83,45 +83,74 @@ fn create_then_list_then_show_then_cancel_flow() {
     assert_eq!(v["data"]["manifest"]["status"], "cancelled");
 }
 
-/// Regression for `run-show-json-null-fields`: the supervisor liveness probe
-/// must live at the TOP level of `run show`'s `data` (`data.supervisor`, a
-/// sibling of `counts`/`landed`/`stalled`) — NOT buried under
-/// `data.manifest.supervisor`. Burying it there made a consumer that read
-/// `data.supervisor` (the shape `run list` rows use, and the shape the bundled
-/// `worktree-spinoff` skill documents) observe a silent `null` for a live,
-/// resolvable run. Pins the field placement AND its consistency with `run
-/// list`, so a future move back under `manifest` fails loudly.
+/// Regression for `run-show-json-null-fields`: `run show`'s `data` must carry
+/// the run's identity + liveness at the TOP level, in the SAME flat shape a
+/// `run list` row uses — `data.run_id` / `data.kind` / `data.status` /
+/// `data.title` / `data.supervisor` — not only nested under `data.manifest`.
+/// A consumer that reused `run list`'s flat field layout on `run show` output
+/// (the bundled `worktree-spinoff` skill reads `data.supervisor`) observed a
+/// silent `null` for every field, for a live, resolvable run. This pins the
+/// flat placement, asserts `supervisor` is no longer nested under `manifest`,
+/// and checks the two verbs agree field-for-field — so a future re-nesting
+/// fails loudly.
 #[test]
-fn show_surfaces_supervisor_at_top_level_matching_list() {
+fn show_surfaces_run_row_at_top_level_matching_list() {
     let home = TestHome::new();
     let run_id = create(&home, "spinoff", "sup-placement");
 
     let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
-    // Present and well-formed at the top level.
-    let sup = &show["data"]["supervisor"];
-    assert!(
-        sup.is_object(),
-        "run show must expose `data.supervisor` as an object, got {sup:?}"
-    );
-    assert!(
-        sup.get("pid").is_some() && sup.get("alive").is_some(),
-        "`data.supervisor` must carry pid + alive keys, got {sup:?}"
-    );
-    // NOT the old buried location — a `null` here is exactly the reported bug.
-    assert!(
-        show["data"]["manifest"]["supervisor"].is_null(),
-        "supervisor must NOT be nested under manifest anymore"
+    let data = show["data"].as_object().expect("data must be an object");
+
+    // The run-list row fields are reachable FLAT on run show's data.
+    assert_eq!(data["run_id"], run_id, "data.run_id must be flat");
+    assert_eq!(data["kind"], "spinoff", "data.kind must be flat");
+    assert_eq!(data["status"], "pending", "data.status must be flat");
+    assert_eq!(data["title"], "sup-placement", "data.title must be flat");
+
+    // Supervisor is a well-formed object at the top level with exactly the
+    // documented keys (a stray extra key would be silent schema drift).
+    let sup = data["supervisor"]
+        .as_object()
+        .expect("data.supervisor must be an object");
+    let mut sup_keys: Vec<&str> = sup.keys().map(String::as_str).collect();
+    sup_keys.sort_unstable();
+    assert_eq!(
+        sup_keys,
+        ["alive", "pid"],
+        "data.supervisor must carry exactly pid + alive"
     );
 
-    // Same shape `run list` rows carry, so a consumer can read `.supervisor`
-    // uniformly across both verbs.
-    let list = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
-    let row = &list["data"]["runs"][0];
-    assert_eq!(row["run_id"], run_id);
+    // The nested `manifest` still exists (back-compat) but must NOT re-introduce
+    // the buried supervisor. `contains_key` distinguishes "absent" from an
+    // explicit `null` — `Value::Index` would report both as `is_null()`.
+    let manifest = data["manifest"]
+        .as_object()
+        .expect("data.manifest must remain for back-compat");
     assert!(
-        row["supervisor"].is_object(),
-        "run list rows carry a flat `supervisor`; run show must match"
+        !manifest.contains_key("supervisor"),
+        "supervisor must be absent from data.manifest, not merely null"
     );
+
+    // The two verbs agree field-for-field on the shared row shape, so a consumer
+    // can switch between a list row and a show payload without re-pathing.
+    let list = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let row = list["data"]["runs"][0]
+        .as_object()
+        .expect("run list row must be an object");
+    for key in [
+        "run_id",
+        "kind",
+        "status",
+        "title",
+        "node_count",
+        "supervisor",
+    ] {
+        assert_eq!(
+            data.get(key),
+            row.get(key),
+            "run show and run list disagree on flat field `{key}`"
+        );
+    }
 }
 
 #[test]

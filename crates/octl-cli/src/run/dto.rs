@@ -63,8 +63,10 @@ impl SupervisorView {
         }
     }
 
-    /// The "no supervisor probed" default the DTO `From` impls carry until a
-    /// handler overrides it via `with_supervisor`.
+    /// The "no supervisor probed" default [`RunSummary::from`] carries until a
+    /// handler overrides it via [`RunSummary::with_supervisor`]. (`ManifestView`
+    /// no longer holds a supervisor — `run show` probes one and attaches it to
+    /// the flattened summary row; see `run/show.rs`.)
     fn unknown() -> Self {
         Self {
             pid: None,

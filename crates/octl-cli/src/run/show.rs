@@ -17,16 +17,19 @@ const DEFAULT_NODE_ID: &str = "n-0001";
 
 #[derive(Serialize)]
 struct ShowPayload<'a> {
+    /// The run-list-shaped summary row, flattened to the TOP level of `data`
+    /// (`data.run_id`, `data.kind`, `data.status`, `data.title`,
+    /// `data.created_at`, `data.node_count`, `data.supervisor`, `data.stalled`).
+    /// This is the *same* shape a `run list` row carries, so a consumer can
+    /// address a run's identity + liveness the same way across both verbs
+    /// (issue `run-show-json-null-fields`: the reported all-null payload came
+    /// from re-using `run list`'s flat field layout on `run show`, whose fields
+    /// were reachable only under `data.manifest`). `manifest` below keeps the
+    /// full nested detail for existing consumers that poll `data.manifest.*`.
+    #[serde(flatten)]
+    summary: crate::run::dto::RunSummary,
     manifest: ManifestView<'a>,
     counts: Counts,
-    /// Liveness of the run's per-run supervisor, probed under the shared lock
-    /// alongside `manifest.status` so the pair is one consistent snapshot. Sits
-    /// here — a top-level `data.supervisor`, sibling of `counts`/`landed`/
-    /// `stalled` — rather than under `manifest`, because it is a *computed*
-    /// probe (not a persisted manifest field) and because that is where
-    /// `run list` rows and the bundled skills read it (issue
-    /// `run-show-json-null-fields`).
-    supervisor: SupervisorView,
     /// Rebase-robust landing signal for the reporting node: true when the
     /// worker's committed work has landed in the target, confirmed by patch-id
     /// equivalence against the *current* target tip (`git cherry`) — NOT by
@@ -44,19 +47,10 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
-    /// Computed hint (never persisted): true when the run is visibly stuck.
-    /// Two shapes trip it (see [`crate::run::stalled`]):
-    ///
-    /// - an undriven `--kind orchestrate` driver run whose driver node has sat
-    ///   `pending` with zero children and no fresh events past the grace window
-    ///   (issue `peculiarly-muddled-caption`); or
-    /// - a *stillborn* run whose supervisor died before creating any worker node
-    ///   (`pending`, 0 nodes, no progress since creation — issue
-    ///   `run-wait-stillborn-run-not-detected`).
-    ///
-    /// `false` for a healthy run of any kind (children spawned / events flowing
-    /// / supervisor alive / still inside the grace window).
-    stalled: bool,
+    // `landed`/`landed_method`/`recoverable_work` are computed detail unique to
+    // `run show`. The run's `stalled` hint (see [`crate::run::stalled`]) and the
+    // `supervisor` liveness probe live on the flattened `summary` row above, so
+    // they read the same way as a `run list` row (issue `run-show-json-null-fields`).
 }
 
 /// The run/node fields read under the shared lock to compute `landed` after the
@@ -93,14 +87,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             discussions: count_jsons(&paths.discussions_dir()),
             spinoffs: count_jsons(&paths.spinoffs_dir()),
         };
-        // Probe supervisor liveness INSIDE the shared lock: the whole point of
-        // the field is to let a caller reason "status pending + supervisor dead
-        // => orphaned", so `manifest.status` and `supervisor` are a single
-        // decision and must be read as one consistent snapshot (design.md §4).
-        // Reading the pid file outside the lock could emit a
-        // `{status: pending, supervisor: dead}` pair that never actually existed
-        // (the supervisor may roll status up and remove its pid file between the
-        // two reads).
+        // Probe supervisor liveness INSIDE the shared-lock window so it is read
+        // in the same critical section as `manifest.status`, letting a caller
+        // reason "status pending + supervisor dead => orphaned" off one scan.
+        // Caveat: this is NOT a transactionally consistent pairing. The shared
+        // lock only serializes against cooperating flock holders — the reducer's
+        // manifest/counter/projection writes (invariant 3). The supervisor's pid
+        // file is written under the exclusive lock (`claim_pid_atomic`) but
+        // *removed* without it (`pid_file::remove_if_owner`), and involuntary
+        // process death is unsynchronized entirely, so the liveness bit is a
+        // best-effort point-in-time hint, not a value welded to `status`. Read it
+        // here anyway so the hint is as fresh as the manifest it sits beside.
         let supervisor = SupervisorView::probe(&paths);
         // Read the reporting node ONCE inside the shared-lock window, alongside
         // the manifest/counters, so the `landed` git-verification inputs and the
@@ -119,8 +116,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         let recoverable_work = if matches!(manifest.status, Status::Failed) {
             node.as_ref()
                 .and_then(|n| n.last_report.as_ref())
-                .and_then(|r| r.get("recoverable_work").cloned())
-                .filter(Value::is_object)
+                .and_then(|r| r.get("recoverable_work"))
+                .filter(|v| v.is_object())
+                .cloned()
         } else {
             None
         };
@@ -216,14 +214,20 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         },
         &crate::supervise::cleanup::git_bin(),
     );
+    // The flattened top-level row: same shape as a `run list` row, so
+    // `data.supervisor` / `data.status` / `data.kind` read identically across
+    // both verbs (issue `run-show-json-null-fields`). `manifest` keeps the full
+    // nested detail alongside it.
+    let summary = crate::run::dto::RunSummary::from(&manifest)
+        .with_supervisor(supervisor)
+        .with_stalled(stalled);
     let payload = ShowPayload {
+        summary,
         manifest: ManifestView::from(&manifest),
         counts,
-        supervisor,
         landed: signal.landed,
         landed_method: signal.method.wire(),
         recoverable_work,
-        stalled,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -236,7 +240,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 output::escape_one_line(payload.manifest.title)
             );
             println!("status:        {}", payload.manifest.status);
-            if payload.stalled {
+            if payload.summary.stalled {
                 let idle =
                     stalled_idle_min.map_or_else(String::new, |m| format!(" (idle {m} min)"));
                 if stillborn {
@@ -267,8 +271,8 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("nodes:         {}", payload.counts.nodes);
             println!("discussions:   {}", payload.counts.discussions);
             println!("spinoffs:      {}", payload.counts.spinoffs);
-            match payload.supervisor.pid {
-                Some(pid) if payload.supervisor.alive => {
+            match payload.summary.supervisor.pid {
+                Some(pid) if payload.summary.supervisor.alive => {
                     println!("supervisor:    pid {pid} (alive)");
                 }
                 Some(pid) => println!(

@@ -94,15 +94,27 @@ Fields that drive decisions:
 
 ## `run show` payload
 
-`data.manifest` extends the summary with detail; `data.counts` carries
-denormalised counters; `data.supervisor` is the probed liveness of the
-run's supervisor (a top-level sibling of `counts` — NOT nested under
-`manifest`, exactly as `run list` rows carry it); some kinds add
-kind-specific fields.
+`run show`'s `data` carries the **same flat row a `run list` row does**
+at the top level (`run_id`, `kind`, `status`, `title`, `created_at`,
+`node_count`, `supervisor`, `stalled`) — so you can address these the
+same way across both verbs. `data.manifest` then extends that row with
+full detail (`lifecycle`, `updated_at`, `source_*`, `parent_*`,
+`open_discussions`, `pending_spinoffs`); `data.counts` carries
+denormalised counters; `data.supervisor` is the probed supervisor
+liveness; `landed`/`landed_method`/`recoverable_work` are `run
+show`-only computed detail; some kinds add kind-specific fields.
 
 ```json
 {
   "data": {
+    "run_id": "01HZ...",
+    "kind": "fan-out",
+    "status": "running",
+    "title": "...",
+    "created_at": "...",
+    "node_count": 10,
+    "supervisor": { "pid": 65745, "alive": true },
+    "stalled": false,
     "manifest": {
       "schema_version": 1,
       "run_id": "01HZ...",
@@ -116,11 +128,14 @@ kind-specific fields.
       "open_discussions": 0,
       "pending_spinoffs": 0
     },
-    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 },
-    "supervisor": { "pid": 65745, "alive": true }
+    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 }
   }
 }
 ```
+
+Both `data.status` (flat) and `data.manifest.status` resolve to the same
+value; the flat path matches `run list`, the nested one is kept for
+back-compat.
 
 ## Decision rules
 
