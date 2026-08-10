@@ -6,31 +6,42 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-10 (one round + v0.1.4 FULLY SHIPPED; CI was red-for-days → now green)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-10 (round 2 today: v0.1.5 SHIPPED — 3 reliability fixes + integration-collision caught by the gate)
 
-**✅ LATEST (2026-08-10 session — read first).** One `/stint-start` round: **8 units landed on `main`, all
-reviewed+green, all self-merged (no worker deaths).** The planned 3 were `run-wait-stillborn-run-not-detected`
-✅ (fixed; `run wait`/`run show` flag a stillborn run — dead supervisor, 0 nodes — as `stalled` and return
-promptly instead of blocking the full timeout), `pipeline-hard-failure-carries-report` ✅ (done; hard
-`PipelineError` carries a report so `cmd_run` exits non-zero AND surfaces the `branch_preserved` inv-5 audit),
-and `run-show-json-null-fields` ✅ (fixed; `run show --output json` no longer all-null — supervisor lifted to
-`.data` top level, run-list row flattened in). **Then a CI-health thread became the substantive work:** a
-worker's mail-sweep caught that **`main`'s CI had been RED for several days** and nobody had noticed →
-`ci-red-main-deny-docs` ✅ (fixed; repaired `octl-core`/`octl-cli` broken intra-doc links + the RUSTSEC-2026-0009
-`cargo-deny` advisory). Fixing that surfaced two more: **a REAL macOS bug** `merge-lock-flock-not-portable-macos`
-✅ (fixed; `merge.sh` used `flock` which is absent on stock macOS — the primary platform — so the worktree-merge
-lock was silently broken; replaced with a portable atomic `mkdir` mutex, same 600s/serialization semantics), and
-an **MSRV-vs-advisory conflict** (below). Plus `dry-run-projection-parity-flake` ✅ (fixed; a subtle
-inode-recycle write-detection bug in the test — atomic temp+rename frees an inode CI's busy FS recycles, so an
-inode-only diff missed a real `manifest.json` rewrite → fingerprint by `(inode, mtime, size)`; 100/100 green at
-16 threads; reducer itself confirmed correct) and `workmux-extract-libs` ✅ (done; user-approved — vendored a
-typed `crates/octl-cli/src/git/` wrapper, `run/merge.rs` + `supervise/cleanup.rs` production git calls routed
-through it, all 5 invariants preserved). **`orchestratectl` 0.1.4 is now FULLY SHIPPED across all three
-channels:** crates.io (`octl-core` then `orchestratectl`), GitHub Release **v0.1.4** (aarch64-mac +
-x86_64/aarch64-linux binaries + installer), Homebrew tap at **0.1.4**
-(`brew upgrade jarimustonen/orchestratectl/orchestratectl`). Release workflow all-green (no `hauis` git-400
-recurrence). `main` clean, 0 unpushed, `v0.1.4` tagged, no worktrees remain, local binary **0.1.4** (`doctor`
-0 fail / 0 warn, 687 ok). crates.io token was present this round (no SOPS re-pull needed).
+**✅ LATEST (2026-08-10 round 2 — read first).** One `/stint-start` round: **3 planned units landed on `main`,
+all reviewed+green, self-merged first spawn (no deaths):** `supervisor-dies-before-worker-node` ✅ (fixed),
+`run-wait-still` ✅ (fixed), `wave-terminal-worker-own-artifact-unaudited` ✅ (done). **The integrated gate then
+caught a latent collision** (KEY LEARNING #NEW below) → a 4th integration-fix spinoff landed it green.
+**v0.1.5 FULLY SHIPPED** across all 3 channels: crates.io (`octl-core`→`orchestratectl`), GitHub Release
+**v0.1.5** (aarch64-mac + x86_64/aarch64-linux binaries + installer), Homebrew tap **0.1.5**
+(`brew upgrade jarimustonen/orchestratectl/orchestratectl`). Release CI green (4m36s, no `hauis` git-400).
+`main` clean, 0 unpushed, `v0.1.5` tagged, no worktrees, local binary **0.1.5** (`doctor` 0 fail / 0 warn, 690 ok).
+
+**What the 3 fixes do:**
+- `supervisor-dies-before-worker-node` — a stillborn run (supervisor died before node `n-0001`; 0 nodes, 0
+  commits) is now flagged `pending (stillborn)` in `run list` (it already surfaced in `run wait`/`run show`;
+  `run list` was the last silent-`pending` surface). **NOTE the re-scope:** the issue's proposed "supervisor
+  retry on node creation" rested on a misread — for a *top-level* worker the supervisor is spawned AFTER
+  `node.created`, so there's nothing to retry there; the stillborn shape comes from `create.sh` failing (or
+  `run create` being killed) before `node.created`. Read path only; no reducer/schema/lock write.
+- `run-wait-still` — `run wait`/`run show` now detect an *orphaned mid-run* run (node_count>0, dead supervisor,
+  pending|running, idle past a 15-min grace) and settle promptly with a per-kind reason + `run reattach`
+  remediation, instead of blocking the full timeout. The sibling the stillborn fix scoped out (that was
+  node_count==0). Read-time only; shared lock preserved.
+- `wave-terminal-worker-own-artifact-unaudited` — a wave-build worker that commits then panics/errors now has
+  its own branch named + audited (audit-only `branch_preserved` ChunkReport, contents not vouched-for) across
+  the `catch_unwind` boundary, instead of orphaned (inv-5 gap closed).
+
+**KEY LEARNING #NEW (canonical) — "disjoint lanes" is a PREDICTION, not a guarantee; the integrated gate is
+non-optional.** The DAG put `supervisor-dies-before-worker-node` in Lane A (supervise/*) and `run-wait-still`
+in Lane E (run/*) as parallel-safe. But the supervisor-dies fix, once its real shape emerged, landed in
+`run/*` (`run list` + the `RunSummary` DTO + `run show`), NOT supervise/*. Both spinoffs were green in
+isolation; INTEGRATED, `main` did not compile (`E0425: stillborn not in scope` — run-wait-still's refactor of
+`run/show.rs`'s scan-return tuple removed the `stillborn` binding the supervisor-dies change relied on). The
+post-round `cargo test --workspace` on integrated `main` caught it immediately; a small 4th spinoff derived the
+bool from the single `stall` source of truth. **Lesson:** a lane assignment predicts *likely*-touched files; a
+fix can legitimately land elsewhere. Never skip the integrated gate for "independent" parallel units, and when
+two units might both touch the `run show` / `RunSummary` DTO surface, prefer sequencing them.
 
 **KEY LEARNING #1 (canonical) — RUSTSEC-2026-0009 vs MSRV 1.85 is a standing conflict.** The `time` crate's
 stack-exhaustion DoS advisory is fixed only in `time ≥0.3.47`, but **every `time ≥0.3.47` requires rustc 1.88**
@@ -41,42 +52,44 @@ rationale. **Re-evaluate the ignore if/when MSRV moves to ≥1.88** (then unpin 
 Corollary: bumping a dep to clear a `cargo-deny` advisory can silently blow the MSRV — always re-check the
 `msrv (1.85)` job, don't just look at ubuntu.
 
-**KEY LEARNING #2 (NEW, canonical) — parallel spinoff waves under saturation kill supervisors before the
-worker node.** Filed + reproduced **3× today** (in a *3dbear-monorepo* parallel `/stint` wave, not this repo):
-`supervisor-dies-before-worker-node` — under heavy FS/CPU contention (multiple live supervisors, `git index.lock`
-races, `git worktree remove` + `run list` hitting the 120s timeout) the per-run supervisor dies *before* creating
-node `n-0001`, leaving the run `pending`/`stalled=true`, `node_count=0`, a base-main worktree with **0 commits**.
-**Re-spawn does NOT help if the load persists** (dies again immediately); cleanup itself can wedge (worktree-remove
-timeout → dir stranded, needed manual `rm -rf`). Mitigations proposed in the issue: (a) supervisor retry/backoff on
-worker-node creation, (b) `run create` fail-fast on a non-alive supervisor (no pending-lie), (c) `run create`
-backpressure/queue when N supervisors already live. **Validation bonus:** this round's shipped stillborn-detection
-fix is exactly what surfaced these as `stalled=true` (previously they'd have blocked the full timeout). Sibling:
-`run-wait-still` (the `node_count>0`, supervisor-died-*mid*-run variant still blocks — my fix only covered
-`node_count==0`). Both Lane A/E; see DAG.
+**KEY LEARNING #2 (canonical) — parallel spinoff waves under saturation kill supervisors before the worker
+node — the SURFACING half is now shipped (0.1.5); the RESILIENCE half remains open.** Under heavy FS/CPU
+contention (multiple live supervisors, `git index.lock` races, `git worktree remove` + `run list` hitting the
+120s timeout) a per-run supervisor can die before/around the first node, leaving a run `pending`/`stalled`,
+`node_count=0` (stillborn) or `node_count>0` (orphaned mid-run), 0 useful commits. **As of 0.1.5 both shapes now
+SURFACE promptly** (`pending (stillborn)` in `run list`; orphaned mid-run settles in `run wait`/`run show` past a
+15-min grace) instead of blocking or looking-healthy — but the underlying *resilience* (making the supervisor not
+die under load, or `run create` backpressure/queue when N supervisors already live) is **still open**:
+`supervisor-spawn-fails-silently-at-run-create` (#4 load-trigger, investigative), `run-create-back-to-back-no-supervisor`,
+plus the backpressure idea. Re-spawn does NOT help while the load persists (dies again); cleanup itself can wedge
+(worktree-remove timeout → dir stranded, manual `rm -rf`). Next reliability thread: the resilience half.
 
 **KEY LEARNING #3 (still canonical) — worker deaths are TRANSIENT.** Retry **with harvest** of the recoverable
 preserved branch (review → adopt → complete → merge), NOT hand-merge of unreviewed work, NOT base-agent swap.
 Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang. (This round: all 8 units landed on
 first spawn, no deaths.)
 
-**RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all at **0.1.4** (fully coherent). CHANGELOG
-`[Unreleased]` is now **empty** (everything folded into the dated `[0.1.4]`). Operating policy unchanged
-(release fully autonomous, `main`-push always allowed, `pull→rebase→push` always allowed — root `AGENTS.md`).
-The `hauis`-runner git-400 recurrence playbook is in `peculiarly-madly-sneeze` (closed) if binary/brew 400s again.
+**RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all at **0.1.5** (fully coherent). CHANGELOG
+`[Unreleased]` is now **empty** (everything folded into the dated `[0.1.5]`). **Release autonomy REAFFIRMED by
+Jari (2026-08-10): cut releases autonomously at the right moments — DON'T ask, DON'T re-confirm.** This is
+already the operating policy (release fully autonomous, `main`-push always allowed, `pull→rebase→push` always
+allowed — root `AGENTS.md`); honor it without a permission prompt. The `hauis`-runner git-400 recurrence
+playbook is in `peculiarly-madly-sneeze` (closed) if binary/brew 400s again.
 
 **NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is now
-**`supervisor-dies-before-worker-node`** (Lane A) — the freshest high-value reliability bug, **3× reproduced
-under load today**, directly relevant to parallel spinoff waves (relates to the still-open
-`supervisor-spawn-fails-silently-at-run-create` #4-load-trigger). Practical *actionable* heads, disjoint +
-parallel-safe: Lane B **`wave-terminal-worker-own-artifact-unaudited`** (F4 — a worker that commits then
-panics leaves its OWN branch unaudited), Lane E **`run-wait-still`** (the `node_count>0` supervisor-died-mid-run
-variant of the stillborn fix — actionable), Lane D `skill-companion-codex-layout` (decide-the-layout, low
-urgency). Lane A's `peculiarly-cheerful-mine` (orchestrate driver heartbeat) is a **design-first** candidate
-(needs LockedRun+append, inv 1-2) — better as `/worktree-code`. **Lane C is now EMPTY** (workmux vendoring
-fully complete — multiplexer + git-wrapper both landed). **Lane D still carries `collision: bundled-skill
-snapshot`** on `spinoff-skill-stale-preview-banner`. Recompute the head at pick time from live `issuectl`
-status; merge the DAG at Phase 0/handoff. No worktrees remain; **`main` clean, 0 unpushed, `v0.1.4` tagged +
-shipped, local binary 0.1.4 (`doctor` 0/0).**
+**`push-blocked-chunk-tier-and-commit-audit`** (Lane B, F6 — a concrete pipeline audit bug continuing the
+wave-audit thread just advanced by `wave-terminal-worker-own-artifact-unaudited`). Practical *actionable*
+heads, disjoint + parallel-safe: Lane E **`supervisorview-conflates-states`** + `count-jsons-swallows-io`
+(run-show hardening, low-risk), Lane D **`skill-companion-codex-layout`** (layout decision, low urgency),
+Lane A **`supervisor-spawn-fails-silently-at-run-create`** (the resilience half of KEY LEARNING #2 —
+investigative, no repro; `worker-process-hang` is in-progress/agent-runtime scope, parked;
+`peculiarly-cheerful-mine` is **design-first** (LockedRun+append, inv 1-2) → better as `/worktree-code`).
+**Lane C stays EMPTY** (workmux vendoring complete). **Lane D still carries `collision: bundled-skill
+snapshot`** on `spinoff-skill-stale-preview-banner`. **⚠️ Watch the run-show/DTO collision surface** (KEY
+LEARNING #NEW): Lane E run-show items + any Lane A fix that touches `run list`/`run show`/`RunSummary` can
+collide — sequence them if both are in a wave. Recompute the head at pick time from live `issuectl` status;
+merge the DAG at Phase 0/handoff. No worktrees remain; **`main` clean, 0 unpushed, `v0.1.5` tagged + shipped,
+local binary 0.1.5 (`doctor` 0/0).**
 
 ---
 
@@ -95,12 +108,11 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: supervisor-dies-before-worker-node (Lane A — NEW, 3× reproduced under load today; freshest high-value reliability bug. Other actionable heads: Lane B wave-terminal-worker-own-artifact-unaudited, Lane E run-wait-still)   ← start here on resume
+GLOBAL HEAD-OF-LINE: push-blocked-chunk-tier-and-commit-audit (Lane B — concrete pipeline audit bug, continues the wave-audit thread. Other actionable heads: Lane E supervisorview-conflates-states, Lane D skill-companion-codex-layout, Lane A supervisor-spawn-fails-silently-at-run-create)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
-  ▶ supervisor-dies-before-worker-node       (NEW; supervisor dies BEFORE creating node n-0001 under FS/CPU saturation → run pending/stalled, 0 nodes, 0 commits; reproduced 3× today in a 3dbear parallel wave; re-spawn does NOT help under sustained load. Fix: retry/backoff on node creation, run-create fail-fast on non-alive supervisor, or backpressure/queue. Relates to supervisor-spawn-fails-silently-at-run-create)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
-    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative)
+  ▶ supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; the RESILIENCE half of KEY LEARNING #2 now that the surfacing half shipped in 0.1.5)
     peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption; DESIGN-FIRST candidate)
     moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up; STUB — needs scoping)
     uncommonly-fuzzy-swing                   (spinoff blocked on USER INPUT at a genuine fork must propagate to the parent agent (with delay) → surfaced to user, not a silent multi-hour block; round-3 finding; relates to no-completion-notification-to-parent + notify-run-level-summary)
@@ -120,8 +132,7 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ wave-terminal-worker-own-artifact-unaudited (F4 — a worker that commits then panics/errors leaves its OWN branch unaudited; pre-existing)
-    push-blocked-chunk-tier-and-commit-audit (F6 — push_blocked_chunk records plan-declared tier not the promoted one + omits commit OID; pre-existing)
+  ▶ push-blocked-chunk-tier-and-commit-audit (F6 — push_blocked_chunk records plan-declared tier not the promoted one + omits commit OID; pre-existing)
     dreadfully-dirty-pain                    (carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
     practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
     pipeline-hardening
@@ -140,8 +151,7 @@ LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundl
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ run-wait-still                           (NEW; `run wait` STILL blocks on an orphaned run with node_count>0 when the supervisor died MID-run — the sibling the stillborn fix did NOT cover (that fix handled node_count==0). run-wait/supervisor/reliability)
-    supervisorview-conflates-states          (NEW; run show/list SupervisorView conflates absent/dead/unreadable/unprobed supervisor states — run-show follow-up)
+  ▶ supervisorview-conflates-states          (NEW; run show/list SupervisorView conflates absent/dead/unreadable/unprobed supervisor states — run-show follow-up)
     count-jsons-swallows-io                  (NEW; `run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
@@ -265,6 +275,20 @@ run-show follow-ups). Lane B head → `wave-terminal-worker-own-artifact-unaudit
 (crates.io `octl-core`→`orchestratectl`, `v0.1.4` tag → Release CI all-green, Homebrew tap 0.1.4). Integrated
 gate + full CI green (all 7 jobs) before publish. Local rebuild redeployed, `doctor` 0 fail / 0 warn (687 ok).
 No worktrees remain. DAG driftless at wrap.
+**Round 2 executed 2026-08-10 (A‖B‖E parallel, 3 headless spinoffs):** landed
+`supervisor-dies-before-worker-node` (fixed; stillborn surfaced in `run list` — re-scoped, see LEARNING #NEW),
+`run-wait-still` (fixed; orphaned-mid-run detection in `run wait`/`run show`, 15-min grace), and
+`wave-terminal-worker-own-artifact-unaudited` (done; wave worker's own branch audited across `catch_unwind`).
+All 3 landed first spawn, no deaths. **Integrated gate caught a latent collision:** the supervisor-dies fix
+actually landed in `run/*` (not supervise/*), colliding with run-wait-still on `run/show.rs` → `main` didn't
+compile (`E0425 stillborn`, each green alone). A 4th integration-fix spinoff resolved it (derive the bool from
+the single `stall` verdict); full `cargo test --workspace` then green. `comm -3` drift found only the 3 landed
+as right-only (0 left-only — no worker-filed issues); dropped all 3. Heads advanced: Lane A ▶
+`supervisor-spawn-fails-silently-at-run-create` (worker-process-hang parked in-progress), Lane B ▶
+`push-blocked-chunk-tier-and-commit-audit`, Lane E ▶ `supervisorview-conflates-states`; Lane D unchanged.
+**Then v0.1.5 FULLY SHIPPED** (crates.io `octl-core`→`orchestratectl`, `v0.1.5` tag → Release CI green 4m36s,
+Homebrew tap 0.1.5). Local rebuild redeployed, `doctor` 0 fail / 0 warn (690 ok). No worktrees remain. DAG
+driftless at wrap.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
