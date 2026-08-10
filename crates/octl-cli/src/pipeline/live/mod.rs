@@ -3,7 +3,7 @@
 //!
 //! This is the additive `orchestratectl pipeline run` command: it runs one
 //! single feature through the whole loop —
-//! **spec[Opus] → code[claude-deepseek] → floor-gate → verify[Opus] → merge** —
+//! **spec(Opus) → code[claude-deepseek] → floor-gate → verify(Opus) → merge** —
 //! reusing every landed piece behind the seam:
 //!
 //! - the [`CodeHarness`](crate::harness::CodeHarness) adapters (the code stage
@@ -18,7 +18,7 @@
 //! This command does **not** create an orchestratectl run, append events, or
 //! touch the supervisor / reducer / lock layer — it keeps its own scratch state
 //! (intent.md, plan.json, transcripts, git worktrees) under a work dir and emits
-//! a structured [`PipelineReport`]. That keeps it clear of the five
+//! a structured [`PipelineReport`](crate::pipeline::live::PipelineReport). That keeps it clear of the five
 //! state-integrity invariants (no new raw event-append path) while it proves the
 //! whole system end to end.
 //!
@@ -30,8 +30,8 @@
 //! re-brief and MUST re-verify before it can close; a SPEC-FLAW verdict emits
 //! TRIGGER_RE_SPEC (a new `plan.v(N+1)` + a DAG-diff deciding which chunks revert
 //! to Pending). The loop is bounded **hard** by the deterministic circuit-breakers
-//! of [`fixloop::FixLoopConfig`] (design §9) so it can never loop on judgment
-//! alone. With the breakers set to [`OFF`](fixloop::FixLoopConfig::OFF) the driver
+//! of [`fixloop::FixLoopConfig`](crate::pipeline::live::fixloop::FixLoopConfig) (design §9) so it can never loop on judgment
+//! alone. With the breakers set to [`OFF`](crate::pipeline::live::fixloop::FixLoopConfig::OFF) the driver
 //! reverts to the original walking-skeleton behaviour (the first failure is
 //! terminal), which is how the pre-loop tests stay meaningful. The floor stays
 //! the hard merge gate throughout (design §4/§14): a chunk or feature it blocks is
@@ -687,8 +687,8 @@ static LIVE_COORDINATOR: LiveCoordinator = LiveCoordinator;
 
 /// The live **decider** seam (design §0.2/§2): the consequential-decision authority
 /// the fast coordinator defers to. In the live loop the consequential proposals are
-/// ALREADY backed by an Opus stage — `DECLARE_CONVERGED` ⟵ verify[Opus] passed +
-/// the deterministic floor green, `TRIGGER_RE_SPEC` ⟵ verify[Opus]'s SPEC-FLAW
+/// ALREADY backed by an Opus stage — `DECLARE_CONVERGED` ⟵ verify(Opus) passed +
+/// the deterministic floor green, `TRIGGER_RE_SPEC` ⟵ verify(Opus)'s SPEC-FLAW
 /// verdict + the Opus re-plan — so this decider **confirms** each proposal and
 /// records Opus provenance, giving `decision_tier` an honest decider-tier stamp.
 ///
@@ -1006,7 +1006,7 @@ pub fn run_pipeline_tiered(
         baseline_snapshot,
     );
 
-    // --- 2. Spec [Opus]: produce + validate the initial plan (retry once). ---
+    // --- 2. Spec (Opus): produce + validate the initial plan (retry once). ---
     let mut plan =
         produce_and_validate_plan(&mut run, spec, &baseline.to_plan_baseline(), 1, None)?;
     // T5 evaluator gate: the plan's baseline must match the live one (and the live

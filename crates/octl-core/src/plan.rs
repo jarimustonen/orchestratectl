@@ -39,7 +39,7 @@
 //! - Readers **reject undeclared fields** — any key not in the v3 shape is a
 //!   rejection. On the map-like objects (plan, `feature`, `baseline`,
 //!   `chunks[]`, `chunks[].checks[]`) this is [`PlanValidationError::UnknownField`],
-//!   gated by a **per-object-shape** allowlist ([`tolerated_fields`]): a field
+//!   gated by a **per-object-shape** allowlist (`tolerated_fields`): a field
 //!   ratified as additive on one shape is tolerated there and nowhere else. On
 //!   `acceptance[]` items (a tagged enum) it is a `deny_unknown_fields`
 //!   deserialization error ([`PlanValidationError::Malformed`]) — the same
@@ -98,12 +98,12 @@ pub const PROVENANCE_REQUIRED_SCHEMA: u32 = 3;
 ///
 /// This is the flattened union across every object shape, exposed for
 /// documentation and the `expected` hint. The *operative* allowlist is
-/// **per-object-shape** ([`tolerated_fields`]): a field ratified as additive on
+/// **per-object-shape** (`tolerated_fields`): a field ratified as additive on
 /// `chunks[]` is tolerated there and nowhere else — a field's optionality
 /// depends on its location, not just its name, so a global name-only allowlist
 /// would leak a `chunks[].retries` tolerance onto `feature`, `baseline`, and
 /// the top level. A future minor registers a new field against its specific
-/// [`ObjectShape`] (and in the JSON Schema) so older readers tolerate it there;
+/// `ObjectShape` (and in the JSON Schema) so older readers tolerate it there;
 /// anything not listed for that shape is a possibly-required unknown and is
 /// rejected.
 pub const TOLERATED_OPTIONAL_FIELDS: &[&str] = &[];
@@ -536,7 +536,7 @@ pub enum PlanValidationError {
     },
 
     /// A check's optional `cwd` was not a safe repo-relative directory. Held to
-    /// the same lexical guard as `files_touched` ([`is_safe_repo_relative`]) —
+    /// the same lexical guard as `files_touched` (`is_safe_repo_relative`) —
     /// `cwd` controls *where a shell command executes*, so an absolute path
     /// (`/etc`) or a `..`/`~` traversal would let a check escape the worktree the
     /// floor gates. Absence already means "the worktree root", so a bare `.` is

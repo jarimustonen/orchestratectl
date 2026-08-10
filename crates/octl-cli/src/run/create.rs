@@ -769,7 +769,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// Spawn the run's supervisor and require it to confirm start, turning a
 /// silent boot failure into a loud, actionable error.
 ///
-/// [`supervisor_spawn::spawn_for_run`] returns [`SupervisorSpawn::Unconfirmed`]
+/// [`supervisor_spawn::spawn_for_run`] returns
+/// [`SupervisorSpawn::Unconfirmed`](crate::run::supervisor_spawn::SupervisorSpawn::Unconfirmed)
 /// when the detached supervisor never confirms boot over its readiness pipe —
 /// it died during init, reported a structured boot error, or the fork/exec
 /// failed — the run would otherwise be left in `pending` with a dead/absent

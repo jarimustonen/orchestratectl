@@ -80,7 +80,7 @@ impl FixLoopConfig {
 }
 
 /// The next model tier up from `tier` on the promotion ladder (design §3:
-/// `code → mid → high`), or `None` at the ceiling ([`Tier::High`]). A repeat-failing
+/// `code → mid → high`), or `None` at the ceiling (`Tier::High`). A repeat-failing
 /// chunk is re-run at [`next_tier`]; when there is no higher tier the loop stops
 /// promoting and the repeated-failure breaker takes over.
 #[must_use]

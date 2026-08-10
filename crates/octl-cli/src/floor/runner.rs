@@ -512,7 +512,8 @@ pub fn run_checks(checks: &[plan::Check], cwd: &Path) -> Vec<CheckRun> {
 ///    libtest text is reconciled against its own announced summary
 ///    ([`reconcile_single_binary`]). A forged `test x ... ok` line, a truncated
 ///    run, or an exit code inconsistent with the summary rejects the whole
-///    capture. Surviving names become target-qualified [`TestId`]s.
+///    capture. Surviving names become target-qualified
+///    [`TestId`](crate::floor::snapshot::TestId)s.
 ///
 /// `target_dir` is the floor-controlled `CARGO_TARGET_DIR` for this capture
 /// (`floor-capture-hardening-round-2` item 1 / F4): a fresh, per-snapshot dir the

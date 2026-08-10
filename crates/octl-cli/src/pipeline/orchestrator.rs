@@ -136,7 +136,7 @@ pub struct DeciderVerdict {
     pub input_artifacts: Vec<String>,
 }
 
-/// The expensive decider tier (design §0.2, §3 "decider [Opus]"). Invoked by the
+/// The expensive decider tier (design §0.2, §3 "decider (Opus)"). Invoked by the
 /// coordinator (via the tiered wrapper) for every final/consequential decision;
 /// its verdict is the recorded authority.
 pub trait Decider {

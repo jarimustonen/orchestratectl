@@ -610,7 +610,7 @@ fn git_ahead_count(repo: &str, base: &str, branch: &str, git: &str) -> Option<u6
 /// but its branch may hold complete, mergeable commits ahead of the run's source
 /// that were never merged. Stamped into the failed report under the
 /// `recoverable_work` key so `run show` / `run wait` can surface "N unmerged
-/// commits recoverable on <branch>" instead of a bare failure — a caller can
+/// commits recoverable on `<branch>`" instead of a bare failure — a caller can
 /// then salvage without hand-rolling `git log <source>..<branch>`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Recoverability {

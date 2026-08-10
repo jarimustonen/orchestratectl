@@ -1,13 +1,14 @@
-//! Reusable conformance suite for [`CodeHarness`] adapters (design.md §10: "A
+//! Reusable conformance suite for [`CodeHarness`](crate::harness::CodeHarness)
+//! adapters (design.md §10: "A
 //! conformance suite tests each adapter against: clean success, no-change,
 //! self-check fail, malformed output, dirty worktree, transcript+usage capture,
 //! …").
 //!
 //! The core is [`assert_result_conforms`] — the adapter-agnostic structural
-//! invariants every [`ChunkResult`] must satisfy — and [`run_and_check`], which
+//! invariants every [`ChunkResult`] must satisfy — and `run_and_check`, which
 //! runs an adapter and gates its result through those invariants. Every
 //! git-inspecting adapter ([`aider`], [`claude`], [`pi`]) is "run through the
-//! suite" by driving its scenarios via [`run_and_check`] in its own module's
+//! suite" by driving its scenarios via `run_and_check` in its own module's
 //! tests — each against a **fixture script** (`OCTL_*_BIN` override) so the
 //! contract cases (clean success, no-change, self-check fail, timeout/cancel,
 //! provider spawn failure, transcript+usage capture) run deterministically with
@@ -17,7 +18,7 @@
 //! The scenario matrix runs against the [`StubHarness`] by default (no network,
 //! no git) so CI tests the *contract* deterministically. Tests that drive a
 //! **real** agent (not a fixture script) are gated behind the `OCTL_HARNESS_LIVE`
-//! env var — see [`live_enabled`] and the live smoke tests below — so CI never
+//! env var — see `live_enabled` and the live smoke tests below — so CI never
 //! reaches for a binary/credential/network; the `harness bakeoff` command is the
 //! primary live exercise and is run explicitly.
 //!

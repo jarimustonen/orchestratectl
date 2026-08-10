@@ -392,7 +392,7 @@ impl PipelineState {
 
     /// Set a chunk's status. Preconditions guarantee the id exists on the applied
     /// path; the anomaly branch defends `absorb_trigger` (a stage outcome for an
-    /// unknown chunk) which does not go through [`check_preconditions`].
+    /// unknown chunk) which does not go through [`Self::check_preconditions`].
     fn set_chunk_status(&mut self, chunk_id: &str, status: ChunkStatus) {
         if let Some(chunk) = self.chunks.get_mut(chunk_id) {
             chunk.status = status;

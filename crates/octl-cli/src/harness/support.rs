@@ -1,4 +1,4 @@
-//! Shared machinery for the git-inspecting [`CodeHarness`] adapters
+//! Shared machinery for the git-inspecting [`CodeHarness`](crate::harness::CodeHarness) adapters
 //! (`aider`, `claude`, `claude-deepseek`, …).
 //!
 //! Every adapter in this family follows the same shape (design.md §10): shell

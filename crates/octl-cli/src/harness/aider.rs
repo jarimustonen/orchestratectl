@@ -12,8 +12,10 @@
 //! It **commits but does not merge** (design §3 code role). The outcome is read
 //! from the resulting *git* state — never from aider's stdout prose (design §10):
 //! the worktree must be forked at `base_commit`; a forward HEAD advance is
-//! [`ChunkOutcome::Committed`]; a clean no-op is [`ChunkOutcome::NoChange`];
-//! uncommitted leftovers or a history rewrite are [`ChunkOutcome::Failed`].
+//! [`ChunkOutcome::Committed`](crate::harness::ChunkOutcome::Committed); a clean
+//! no-op is [`ChunkOutcome::NoChange`](crate::harness::ChunkOutcome::NoChange);
+//! uncommitted leftovers or a history rewrite are
+//! [`ChunkOutcome::Failed`](crate::harness::ChunkOutcome::Failed).
 //!
 //! Credentials are never hardcoded: the model id and the credential env-var name
 //! are [`AiderConfig`] inputs; the key itself is read from the environment the

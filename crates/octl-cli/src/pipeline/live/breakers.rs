@@ -142,7 +142,7 @@ impl ResourceBudget {
 ///
 /// Findings are run through [`normalize_volatile`], which collapses hex-oid-like
 /// tokens (commit shas in a harness-failure reason such as "harness reported commit
-/// <oid> but worktree HEAD is <oid>") to a placeholder. Without this, a chunk stuck
+/// `<oid>` but worktree HEAD is `<oid>`") to a placeholder. Without this, a chunk stuck
 /// rewriting history would emit a *new* reason every attempt and evade the breaker —
 /// exactly the unchanging-failure loop it must catch. Floor-violation lines are
 /// already stable, so this only affects the volatile harness reasons.

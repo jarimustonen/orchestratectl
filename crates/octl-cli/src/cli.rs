@@ -97,8 +97,8 @@ enum Command {
         action: HarnessAction,
     },
     /// Spec-driven code pipeline (design §6). `run` drives ONE feature
-    /// end-to-end — spec[Opus] → code[claude-deepseek] → floor-gate →
-    /// verify[Opus] → merge — as an ADDITIVE command (it does not touch
+    /// end-to-end — spec(Opus) → code[claude-deepseek] → floor-gate →
+    /// verify(Opus) → merge — as an ADDITIVE command (it does not touch
     /// `run create` / the supervisor). Bold-to-live: it invokes real
     /// agents and really merges, gated by the deterministic floor.
     Pipeline {
