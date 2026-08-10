@@ -2,7 +2,7 @@
 created: 2026-08-10
 updated: 2026-08-10
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [from-homebase]
 commits:
@@ -10,6 +10,7 @@ commits:
   summary: surface supervisor at run show data top level
 - hash: 9527b8c
   summary: flatten run-list row into run show + llm-review hardening
+closed: 2026-08-10
 ---
 
 # run show --output json returns all-null data fields for a run that list/event-tail resolve
