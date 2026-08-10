@@ -3,8 +3,12 @@ created: 2026-08-10
 updated: 2026-08-10
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: normal
+commits:
+- hash: 50dc4f6
+  summary: de-flake via (inode,mtime,size) fingerprint — inode-reuse under CI parallelism was the mechanism; test-detection flake not reducer bug; 100/100 green at 16 threads
+closed: 2026-08-10
 ---
 
 # Flaky: dry_run_projections_match_real_apply_writes fails only under CI parallelism (event.rs)
