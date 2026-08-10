@@ -418,7 +418,7 @@ mod tests {
         std::fs::write(wt.join("f"), "y").unwrap();
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-qm", "unmerged work"]);
-        g.worktree_remove(repo_s, wt.to_str().unwrap());
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap()));
         assert!(branch_exists(&repo, "wt/foo"));
 
         // `-d` refuses: the branch has commits not merged into HEAD (main).
@@ -441,7 +441,7 @@ mod tests {
         let g = Git::with_bin("git");
         let repo_s = repo.to_str().unwrap();
         // wt/foo is at main (fully merged); detach worktree then `-d` succeeds.
-        g.worktree_remove(repo_s, wt.to_str().unwrap());
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap()));
         assert_eq!(g.branch_delete(repo_s, "wt/foo", false), None);
         assert!(!branch_exists(&repo, "wt/foo"));
     }

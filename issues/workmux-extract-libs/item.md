@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: normal
 related: ['@vendor-workmux-multiplexer', '@orchestratectl-headless-spawn', '@spinoff-e2e-harness', '@bundle-worktree-merge']
+commits:
+- hash: '1538680'
+  summary: vendor typed git-worktree wrapper; cleanup.rs routes git through git::repo::Git
 ---
 
 # workmux-extract-libs: vendor a typed git-worktree wrapper (multiplexer slice already landed)
