@@ -116,9 +116,29 @@ pub fn is_stalled(
 ///   makes the check kind-agnostic: a `--kind orchestrate` run whose driver
 ///   node was never even created is stillborn by the same logic, while a run
 ///   that got as far as `n-0001` is excluded (it started).
-/// - `updated_at == created_at` — no event has been applied since creation
-///   (`node.created` / `supervisor.started` / any projection write bumps
-///   `manifest.updated_at`), so there has been zero forward progress.
+/// - `updated_at == created_at` — no manifest-bumping event has been applied
+///   since creation, so there has been zero forward progress.
+///
+/// # Why the timestamp guard is sound (not the fragile check it looks like)
+///
+/// A reasonable worry is that `supervisor.started` (emitted during supervisor
+/// boot, before `run create` returns) would bump `manifest.updated_at` and make
+/// this a common false negative. It does not: `supervisor.started` has **no
+/// reducer arm** — it folds through the catch-all to a no-op that emits zero
+/// projection ops, so it never touches `manifest.updated_at` (verified against
+/// `octl-core::reducer`). The first event that bumps the manifest clock on a
+/// fresh run is `node.created`, which *also* increments `node_count`. So on a
+/// zero-node run `node_count == 0` and `updated_at == created_at` move in
+/// lockstep — the guard is redundant-but-robust confirmation, and matches the
+/// incident manifest exactly. The `alive` check dominates the healthy path
+/// regardless: during the (up to ~90s) create window between `run.created` and
+/// `node.created`, the supervisor is alive, so a healthy run is never flagged.
+///
+/// Residual limitation: a human manually opening a discussion/spinoff on a
+/// never-started run *would* bump `updated_at` and defeat the guard — the run
+/// then degrades to the old timeout behavior (no new harm). Runs orphaned
+/// *after* creating `n-0001` (a supervisor that died mid-run, `node_count > 0`)
+/// are out of scope here — a distinct detection problem.
 ///
 /// Like [`is_stalled`], this is a **computed** read-time hint over the manifest
 /// (plus a single-file supervisor-pid probe) — it touches no

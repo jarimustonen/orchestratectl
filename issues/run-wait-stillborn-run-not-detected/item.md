@@ -1,10 +1,13 @@
 ---
 created: 2026-08-08
-updated: 2026-08-08
+updated: 2026-08-10
 type: bug
-status: open
+status: in-progress
 priority: normal
-labels: [run-wait,supervisor,reliability]
+labels: [run-wait, supervisor, reliability]
+commits:
+- hash: 3567d75
+  summary: run wait/show detect stillborn run as stalled
 ---
 
 # run wait blocks full timeout on stillborn run (dead supervisor, 0 nodes, never started)

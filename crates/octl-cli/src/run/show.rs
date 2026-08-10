@@ -142,11 +142,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // stillborn shape has no driver node to read, so its idle clock runs
         // from `manifest.updated_at` (== `created_at`); the orchestrate stall
         // reads the driver node's `updated_at`.
+        // Clamp to 0: clock skew or a future timestamp must never print a
+        // negative "idle -3 min" in the human hint.
         let stalled_idle_min = if stillborn {
-            Some(now.signed_duration_since(manifest.updated_at).num_minutes())
+            Some(
+                now.signed_duration_since(manifest.updated_at)
+                    .num_minutes()
+                    .max(0),
+            )
         } else if stalled {
             node.as_ref()
-                .map(|n| now.signed_duration_since(n.updated_at).num_minutes())
+                .map(|n| now.signed_duration_since(n.updated_at).num_minutes().max(0))
         } else {
             None
         };

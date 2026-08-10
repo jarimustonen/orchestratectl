@@ -36,12 +36,18 @@
 //!
 //! ## Exit codes
 //!
-//! - `0` — wait condition satisfied (`--all` → every run terminal; `--any`
-//!   → ≥1 terminal). With `--fail-on-error`, every settled run was `done`.
+//! A run counts as *settled* when it reaches a terminal status OR when it is
+//! stillborn (supervisor dead before it created any node — it can never become
+//! terminal on its own, so it settles the wait rather than blocking the whole
+//! timeout; see the "Stillborn early-exit" section).
+//!
+//! - `0` — wait condition satisfied (`--all` → every run settled; `--any`
+//!   → ≥1 settled). With `--fail-on-error`, every settled run finished `done`.
 //! - `1` — usage / unknown run id / internal error (a `CliError`).
 //! - `2` — `--timeout` reached before the wait condition was met.
 //! - `3` — `--fail-on-error` and the wait condition was met but ≥1 settled
-//!   run was `failed`/`cancelled`.
+//!   run was `failed`/`cancelled`/stillborn. A stillborn run is still `pending`,
+//!   so exit `3` can accompany a non-terminal status.
 //!
 //! Exit codes `2` and `3` still emit the normal success-shaped data
 //! envelope on stdout (the summary is the answer); they cannot ride the
@@ -77,9 +83,9 @@ const BACKOFF_CAP: Duration = Duration::from_secs(2);
 /// Which settle condition ends the wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Condition {
-    /// Return once *every* listed run is terminal.
+    /// Return once *every* listed run is settled (terminal or stillborn).
     All,
-    /// Return as soon as *one* listed run is terminal.
+    /// Return as soon as *one* listed run is settled (terminal or stillborn).
     Any,
 }
 
@@ -139,7 +145,13 @@ struct RunOutcome {
     /// can never progress (issue `run-wait-stillborn-run-not-detected`). The
     /// poll counts a stillborn run as settled (it returns promptly instead of
     /// blocking the whole `--timeout`); under `--fail-on-error` a stalled run
-    /// grades as a failure. Mirrors `run show`'s `stalled`.
+    /// grades as a failure (exit `3`).
+    ///
+    /// Narrower than `run show`'s `stalled`: this is stillborn-only, whereas
+    /// `run show` ORs in the undriven-orchestrate-driver hint (`is_stalled`).
+    /// `run wait` is a single-worker completion primitive, so the driver-stall
+    /// shape (a `--kind orchestrate` concern surfaced by `run show`/`run list`)
+    /// is deliberately not folded in here.
     stalled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
@@ -195,7 +207,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let start = Instant::now();
-    let stop = wait_loop(
+    // `latched_stillborn[i]` is run `i`'s stillborn verdict AT THE POLL THAT
+    // ENDED THE WAIT — the decision `wait_loop` actually acted on. `read_outcome`
+    // reuses it rather than recomputing from a fresh probe, so the reported
+    // outcome (and the exit code derived from it) can never disagree with the
+    // stop decision. A stillborn verdict is not monotonic like a terminal status
+    // — a `run reattach` in the gap between the settling poll and the outcome
+    // read could revive the supervisor — so recomputing there would let the wait
+    // exit `0` on a `pending` run it had just settled as stillborn (a hole every
+    // reviewer flagged).
+    let (stop, latched_stillborn) = wait_loop(
         &runs,
         condition,
         args.timeout,
@@ -204,10 +225,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )?;
     let waited_ms = start.elapsed().as_millis() as u64;
 
-    // Build the final per-run summary, folding in each terminal node report.
+    // Build the final per-run summary, folding in each terminal node report and
+    // the latched stillborn verdict.
     let mut outcomes = Vec::with_capacity(runs.len());
-    for (run_id, paths) in &runs {
-        outcomes.push(read_outcome(run_id, paths)?);
+    for (i, (run_id, paths)) in runs.iter().enumerate() {
+        outcomes.push(read_outcome(run_id, paths, latched_stillborn[i])?);
     }
 
     // Decide the exit code from the assembled outcomes:
@@ -242,7 +264,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 }
 
 /// Poll until the condition is met or `--timeout` elapses. Returns the reason
-/// the loop stopped; the caller times the wait and assembles the summary.
+/// the loop stopped **and** the per-run stillborn verdict from the poll that
+/// ended the wait (`Vec` indexed like `runs`), so the caller can build outcomes
+/// consistent with the decision the loop acted on (see [`run`]).
 ///
 /// Cadence: the sleep between idle polls starts at [`BACKOFF_START`] (100ms)
 /// and doubles each round up to [`BACKOFF_CAP`] (2s), unless `--poll-interval`
@@ -255,13 +279,16 @@ fn wait_loop(
     timeout: Option<Duration>,
     poll_interval: Option<Duration>,
     progress: bool,
-) -> Result<Stop, CliError> {
+) -> Result<(Stop, Vec<bool>), CliError> {
     let start = Instant::now();
     let mut backoff = poll_interval.unwrap_or(BACKOFF_START);
-    let mut prev: Vec<Option<Status>> = vec![None; runs.len()];
+    // Progress transitions key on `(status, stillborn)` so a healthy `pending`
+    // run going stillborn (status unchanged) still emits one progress line.
+    let mut prev: Vec<Option<(Status, bool)>> = vec![None; runs.len()];
 
     loop {
         let mut settled = 0usize;
+        let mut stillborn_now: Vec<bool> = vec![false; runs.len()];
         for (i, (run_id, paths)) in runs.iter().enumerate() {
             let settle = current_settle(paths)?.ok_or_else(|| {
                 // A run dir validated at entry but its manifest vanished
@@ -271,6 +298,7 @@ fn wait_loop(
                     format!("run {run_id} manifest disappeared while waiting"),
                 )
             })?;
+            stillborn_now[i] = settle.stillborn;
             // A run is settled when it reaches a terminal status OR when it is
             // stillborn — a supervisor that died before creating any node can
             // never make the run terminal, so waiting for `is_terminal()` alone
@@ -279,10 +307,11 @@ fn wait_loop(
             if settle.status.is_terminal() || settle.stillborn {
                 settled += 1;
             }
-            if progress && prev[i] != Some(settle.status) {
-                emit_progress(run_id, settle.status);
+            let key = (settle.status, settle.stillborn);
+            if progress && prev[i] != Some(key) {
+                emit_progress(run_id, settle.status, settle.stillborn);
             }
-            prev[i] = Some(settle.status);
+            prev[i] = Some(key);
         }
 
         let met = match condition {
@@ -290,11 +319,11 @@ fn wait_loop(
             Condition::Any => settled >= 1,
         };
         if met {
-            return Ok(Stop::Met);
+            return Ok((Stop::Met, stillborn_now));
         }
         if let Some(t) = timeout {
             if start.elapsed() >= t {
-                return Ok(Stop::TimedOut);
+                return Ok((Stop::TimedOut, stillborn_now));
             }
         }
 
@@ -365,7 +394,16 @@ fn current_settle(paths: &RunPaths) -> Result<Option<Settle>, CliError> {
 /// failed/cancelled settle — a best-effort `error` reason). The manifest and
 /// node projections are read in a single shared-lock window so the status and
 /// the report it implies cannot disagree (state-integrity invariant 3).
-fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> {
+///
+/// `latched_stillborn` is the stillborn verdict from the poll that ended the
+/// wait — the caller passes it in rather than having this function recompute it,
+/// so the outcome (and the exit code) reflect the decision `wait_loop` acted on,
+/// not a fresh probe that a concurrent `run reattach` could have flipped.
+fn read_outcome(
+    run_id: &str,
+    paths: &RunPaths,
+    latched_stillborn: bool,
+) -> Result<RunOutcome, CliError> {
     let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
     // Read every field the outcome needs — status, the terminal report, and the
     // git-verification inputs (source repo/branch, worker branch/base_sha) — in
@@ -376,20 +414,8 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
     let git_inputs = RunLock::with_shared_lock(&paths.lock(), || {
         let manifest = read_manifest_opt(paths)?;
         let node = read_node_opt(paths, &node_id)?;
-        // Recompute the stillborn verdict for the final outcome from the same
-        // consistent snapshot (manifest + supervisor-pid probe) the poll used.
-        let stillborn = manifest.as_ref().is_some_and(|m| {
-            is_stillborn(
-                m.status,
-                SupervisorView::probe(paths).alive,
-                m.node_count,
-                m.created_at,
-                m.updated_at,
-            )
-        });
         Ok(GitInputs {
             status: manifest.as_ref().map(|m| m.status),
-            stillborn,
             source_repo: manifest.as_ref().and_then(|m| m.source_repo.clone()),
             source_branch: manifest.as_ref().and_then(|m| m.source_branch.clone()),
             worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
@@ -433,9 +459,20 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
         .and_then(|r| r.get("summary"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    // `error` is best-effort for a non-`done` settle: the §7.3 report has no
-    // dedicated error field, so surface the cancel `reason` when present.
-    let error = if matches!(status, Status::Failed | Status::Cancelled) {
+    // A stillborn run is only `stalled` if it did NOT reach a terminal status:
+    // if a `run reattach` revived the supervisor and terminalized the run in the
+    // gap between the settling poll and this read, its real terminal status is
+    // the truth and `stalled` must not contradict it. In the common case (the
+    // supervisor stays dead) the run is still `pending` and `stalled` stays true.
+    let stalled = latched_stillborn && !status.is_terminal();
+    // `error` explains a non-`done` settle. For failed/cancelled the §7.3 report
+    // has no dedicated error field, so surface the cancel `reason` when present;
+    // for a stillborn settle (a `pending` run graded as a failure under
+    // `--fail-on-error`) synthesize a structured reason so a JSON grader can tell
+    // "supervisor never started" from "worker failed" without re-deriving it.
+    let error = if stalled {
+        Some("supervisor died before creating any worker node".to_string())
+    } else if matches!(status, Status::Failed | Status::Cancelled) {
         report
             .as_ref()
             .and_then(|r| r.get("reason"))
@@ -467,7 +504,7 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
         merged,
         landed: signal.landed,
         landed_method: signal.method.wire(),
-        stalled: git_inputs.stillborn,
+        stalled,
         summary,
         error,
         recoverable_work,
@@ -479,7 +516,6 @@ fn read_outcome(run_id: &str, paths: &RunPaths) -> Result<RunOutcome, CliError> 
 /// snapshot (invariant 3) explicit and lets the git shell-out run lock-free.
 struct GitInputs {
     status: Option<Status>,
-    stillborn: bool,
     source_repo: Option<String>,
     source_branch: Option<String>,
     worktree_path: Option<String>,
@@ -501,12 +537,15 @@ fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
 
 /// Emit one compact JSONL transition line to **stderr** for `--progress`, so a
 /// live UI can follow state changes while the machine summary still lands on
-/// stdout at the end. Best-effort: a serialization failure is swallowed rather
-/// than aborting the wait.
-fn emit_progress(run_id: &str, status: Status) {
+/// stdout at the end. `stalled` carries the stillborn verdict so a run that goes
+/// stillborn without a status change (it stays `pending`) still surfaces one
+/// line. Best-effort: a serialization failure is swallowed rather than aborting
+/// the wait.
+fn emit_progress(run_id: &str, status: Status, stalled: bool) {
     if let Ok(line) = serde_json::to_string(&serde_json::json!({
         "run_id": run_id,
         "status": status_kebab(status),
+        "stalled": stalled,
     })) {
         eprintln!("{line}");
     }

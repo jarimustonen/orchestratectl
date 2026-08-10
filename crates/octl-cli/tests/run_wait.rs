@@ -435,6 +435,12 @@ fn stillborn_run_settles_promptly_as_stalled() {
     // what tells the caller it is dead, not slow.
     assert_eq!(r["status"], "pending");
     assert_eq!(r["stalled"], true, "stillborn run must be stalled: {r}");
+    // A structured reason lets a JSON grader tell "supervisor never started"
+    // from "worker failed" without re-deriving it.
+    assert_eq!(
+        r["error"], "supervisor died before creating any worker node",
+        "stillborn outcome carries a structured reason: {r}"
+    );
     let waited = v["data"]["waited_ms"].as_u64().expect("waited_ms u64");
     assert!(
         waited < 5000,
@@ -467,6 +473,10 @@ fn stillborn_run_fail_on_error_exits_three() {
     );
     assert_eq!(v["data"]["runs"][0]["stalled"], true);
     assert_eq!(v["data"]["runs"][0]["status"], "pending");
+    assert_eq!(
+        v["data"]["runs"][0]["error"],
+        "supervisor died before creating any worker node"
+    );
 
     // Same run, no --fail-on-error → exit 0, but still flagged stalled.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &born, "--timeout", "30s"]));
