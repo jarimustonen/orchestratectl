@@ -1036,15 +1036,17 @@ impl Drop for ChildGuard {
 
 /// Spawn a background holder of the repo's merge lock — the portable mkdir lock
 /// merge.sh derives (`<git-common-dir>/worktree-merge.lock`, a directory). It
-/// records its own live pid inside (so merge.sh's stale-lock reclaim sees a live
-/// holder and waits), touches `ready` once it holds the lock, then holds it. The
-/// returned guard releases the lock (kills the holder) on drop.
+/// `mkdir`s the lock (aborting via `set -e` if that fails, so it never falsely
+/// signals `ready` without holding the lock), touches `ready` once it holds the
+/// lock, then holds it via `exec sleep` so the guard's SIGKILL hits the sleep
+/// directly and leaves no orphaned process. The returned guard releases the lock
+/// (kills the holder) on drop.
 fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
     let lock = repo.join(".git").join("worktree-merge.lock");
     let child = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "mkdir '{lock}'; echo $$ > '{lock}/pid'; touch '{ready}'; sleep 30",
+            "set -e; mkdir '{lock}'; touch '{ready}'; exec sleep 30",
             lock = lock.display(),
             ready = ready.display(),
         ))
@@ -1055,14 +1057,15 @@ fn hold_merge_lock(repo: &Path, ready: &Path) -> ChildGuard {
 
 /// Spawn a holder that mimics a concurrent merge's full life: acquire the lock,
 /// transiently dirty the target (`dirty`), signal `ready`, hold briefly, then
-/// clean the target and release. A merge that blocks on the lock during the
-/// dirty window must NOT observe the dirt — it acquires only after the clean.
+/// clean the target and release (`rm -rf` the lock dir, as merge.sh's trap does).
+/// A merge that blocks on the lock during the dirty window must NOT observe the
+/// dirt — it acquires only after the clean.
 fn hold_lock_dirty_then_clean(repo: &Path, dirty: &Path, ready: &Path) -> ChildGuard {
     let lock = repo.join(".git").join("worktree-merge.lock");
     let child = Command::new("bash")
         .arg("-c")
         .arg(format!(
-            "mkdir '{lock}'; echo $$ > '{lock}/pid'; touch '{dirty}'; touch '{ready}'; \
+            "set -e; mkdir '{lock}'; touch '{dirty}'; touch '{ready}'; \
              sleep 2; rm -f '{dirty}'; rm -rf '{lock}'",
             lock = lock.display(),
             dirty = dirty.display(),

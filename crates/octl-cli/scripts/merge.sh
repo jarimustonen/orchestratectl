@@ -129,17 +129,27 @@ LOCK_DIR="$GIT_COMMON_DIR/worktree-merge.lock"
 LOCK_TIMEOUT="${MERGE_LOCK_TIMEOUT:-600}"
 # Validate the timeout: a non-numeric / non-positive value would make the
 # acquire loop below behave nonsensically and could be misread downstream as a
-# lock-contention failure (`merge_in_progress`). Reject a bad value up front
-# with a plain error instead.
-if ! [[ "$LOCK_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$LOCK_TIMEOUT" -lt 1 ]]; then
-    echo "Error: MERGE_LOCK_TIMEOUT must be a positive integer (got '$LOCK_TIMEOUT')" >&2
+# lock-contention failure (`merge_in_progress`). The upper bound guards the
+# `SECONDS + LOCK_TIMEOUT` deadline arithmetic below from overflowing bash's
+# signed integers (a huge value would wrap negative and fire the timeout
+# immediately). 86400s (a full day) is far past any legitimate merge wait.
+# Reject a bad value up front with a plain error instead.
+# The `{1,5}` digit cap (max 99999) keeps the value well inside signed-integer
+# range so neither the comparisons here nor the deadline arithmetic can overflow.
+if ! [[ "$LOCK_TIMEOUT" =~ ^[0-9]{1,5}$ ]] || [[ "$LOCK_TIMEOUT" -lt 1 ]] || [[ "$LOCK_TIMEOUT" -gt 86400 ]]; then
+    echo "Error: MERGE_LOCK_TIMEOUT must be an integer between 1 and 86400 (got '$LOCK_TIMEOUT')" >&2
     exit 1
 fi
 
 # Release the lock on ANY exit once we own it. The lock is the directory itself,
 # so removal releases it — no fd to leak into workmux descendants (the old
 # `flock` fd-inheritance deadlock is gone). Guarded by LOCK_ACQUIRED so a
-# timeout exit (which never owns the dir) can't remove a peer's live lock.
+# timeout exit (which never owns the dir) can't remove a peer's live lock. The
+# INT/TERM/HUP traps route a signal death through the same cleanup (each re-exits
+# so the EXIT trap fires), so a Ctrl-C or `kill` between acquire and release does
+# not strand the lock dir — important because there is deliberately NO automatic
+# stale-lock reclaim (see the acquire loop). Only an uncatchable SIGKILL / crash
+# can leave a stale dir behind, bounded by the timeout below.
 LOCK_ACQUIRED=0
 release_merge_lock() {
     if [[ "$LOCK_ACQUIRED" -eq 1 ]]; then
@@ -147,26 +157,46 @@ release_merge_lock() {
     fi
 }
 trap release_merge_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # Exit 75 (EX_TEMPFAIL) is RESERVED for the lock-timeout case below and mapped
 # to `merge_in_progress` by `run merge`. It is the sole producer of that status
 # (the `workmux` invocation later normalizes its exit so a downstream 75 can't
 # leak).
+#
+# A `mkdir` that fails because the dir already exists is genuine contention — a
+# peer holds the lock — so we wait. A `mkdir` that fails for ANY OTHER reason
+# (permission denied, read-only `.git`, a non-directory sitting at the path) is a
+# hard error that must fail as `merge_failed`, NOT spin for the whole timeout and
+# masquerade as `merge_in_progress`; we detect that as "mkdir failed AND the dir
+# is still absent" and exit 1 immediately.
+#
+# There is deliberately NO pid-based stale-lock reclaim: a shell has no atomic
+# check-and-delete for a directory, so any "read holder pid → decide dead →
+# rename aside" sequence races a successor that acquires the path in between and
+# can rip a LIVE lock out from under it, letting two merges run concurrently.
+# Mutual exclusion matters more than crash auto-recovery here, so a crashed
+# holder's lock is instead bounded by the timeout, with the operator told how to
+# clear it. The signal traps above keep such orphans to SIGKILL/crash only.
 LOCK_DEADLINE=$(( SECONDS + LOCK_TIMEOUT ))
-while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    # Stale-lock reclaim: a crashed merge leaves its lock dir behind, which would
-    # otherwise wedge EVERY future merge for the whole timeout. If the recorded
-    # holder pid is dead, the dir is an orphan — atomically rename it aside (only
-    # one racer can win the rename, so this cannot double-free a live lock) and
-    # remove it, then retry immediately. A holder that just won the lock but has
-    # not written its pid yet leaves an absent/empty pid file; that is a LIVE
-    # holder mid-acquire, so treat it as alive and keep waiting — never reclaim.
-    holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
-    if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
-        stale_dir="$LOCK_DIR.stale.$$"
-        if mv "$LOCK_DIR" "$stale_dir" 2>/dev/null; then
-            rm -rf "$stale_dir" 2>/dev/null || true
-            continue
+while true; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        LOCK_ACQUIRED=1
+        break
+    fi
+    if [[ ! -d "$LOCK_DIR" ]]; then
+        # Not an "already exists" failure. Retry once in case the holder released
+        # between our mkdir and this test; if the dir still isn't there, mkdir
+        # failed for a real reason — fail hard rather than loop to the timeout.
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            LOCK_ACQUIRED=1
+            break
+        fi
+        if [[ ! -d "$LOCK_DIR" ]]; then
+            echo "Error: could not create the merge lock directory at $LOCK_DIR" >&2
+            exit 1
         fi
     fi
     if (( SECONDS >= LOCK_DEADLINE )); then
@@ -175,16 +205,11 @@ while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         # `run merge` surfaces a distinct, retryable `merge_in_progress` error
         # rather than the misleading dirty-target failure this race used to
         # produce.
-        echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_DIR within ${LOCK_TIMEOUT}s" >&2
+        echo "Error: another merge is holding the target branch '$TARGET_BRANCH'; could not acquire the merge lock at $LOCK_DIR within ${LOCK_TIMEOUT}s (if no merge is running, the lock may be stale from a crashed merge — remove $LOCK_DIR and retry)" >&2
         exit 75
     fi
     sleep 0.1
 done
-LOCK_ACQUIRED=1
-# Record our pid so a later contender can detect a crashed holder (above). Best
-# effort: failing to write it does not lose the lock (the dir is the lock), it
-# only forgoes stale-reclaim, so never abort the merge over it.
-echo "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
 echo "Acquired merge lock"
 echo ""
 

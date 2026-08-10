@@ -5,6 +5,9 @@ type: bug
 reporter: jari
 status: in-progress
 priority: high
+commits:
+- hash: 2e8bd5e
+  summary: portable mkdir merge lock replaces flock
 ---
 
 # merge.sh depends on flock, absent on stock macOS — merge lock silently broken on primary platform
