@@ -8,6 +8,8 @@ related: ['@split-stint-start-handoff']
 commits:
 - hash: '4992356'
   summary: codex companion resources install to _shared/ with link rewriting
+- hash: f17ef65
+  summary: harden codex rewrite with drift-guard + layout-identity unit tests
 ---
 
 # Companion skill resources are claude-only; codex flat layout unsupported
