@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-08-11
+
+### Added
+
+- **`run create --harness <name>` selects the worker's code harness (`run-create-harness-flag`).** The existing `CodeHarness` seam (adapters `aider`, `claude`, `claude-deepseek`, `pi`) — previously reachable only via `harness bakeoff` — is now wired into the real worker-launch path for every run kind. Resolution follows flag > env (`ORCHESTRATECTL_HARNESS`) > config file > built-in default (`claude`), with a per-kind default so autonomous kinds (`spinoff`/`research`) can default to **pi.dev** while interactive `code` stays on Claude. The chosen harness is surfaced in `run show` / `run list --json` and the event log, and the supervisor preserves it across a retry. Claude remains the default.
+- **`skill install` dual-homes skills into pi.dev's skill dir (`pidev-dual-home-skills`).** Each skill's `SKILL.md` is now installed into `~/.pi/agent/skills/<name>/` in addition to `~/.claude/skills/<name>/`, so the CLI's bundled skills are discoverable under the pi.dev harness (`/skill:name`). Vendored-filtering-aware (only `SKILL.md` is mirrored into the pi target); the Claude Code install path is byte-for-byte unchanged, and the pi mirror is decoupled from the all-or-nothing preflight so it can never block a Claude install.
+- **Companion resources install for the codex flat layout (`skill-companion-codex-layout`).** Companion files install into the shared `~/.codex/prompts/_shared/` subdir with per-skill link rewrites; the claude layout is provably byte-for-byte unchanged.
+- **`doctor` detects and `prune` removes orphan companion files (`doctor-orphan-companion-files`).** A companion resource a prior binary installed but the current binary no longer bundles is now surfaced as a distinct `skill.orphan.*` diagnostic (not conflated with missing/out-of-sync) and can be pruned.
+
+### Fixed
+
+- **`run show` / `run list` distinguish supervisor states instead of one boolean (`supervisorview-conflates-states`).** A wire-level `SupervisorState` enum (`alive` | `dead` | `not-recorded` | `unreadable` | `unknown`, `alive` kept as a back-compat boolean) replaces the collapsed condition. Closed a real probe read-then-stat TOCTOU (flagged unanimously by the review panel), and indeterminate states (`unreadable`/`unknown`) no longer drive stillborn/orphaned verdicts, so an unreadable pid file can't mislead a reattach/cancel decision.
+- **The pipeline audit path records the effective tier and commit OID of committed-but-blocked work (`push-blocked-chunk-tier-and-commit-audit`).** `push_blocked_chunk` and the crash/panic audit path now record the promoted/effective tier (not the plan-declared one) plus the commit OID, threaded through `BuildAttempt`/`ChunkAttempt`/`WaveBuildOutcome::Blocked`.
+- **Refreshed the stale `version_text` insta snapshot, clearing a main-wide CI red (`version-envelopes-snapshot`).**
+
 ## [0.1.5] - 2026-08-10
 
 ### Fixed

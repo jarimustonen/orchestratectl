@@ -21,7 +21,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-octl-core = { path = "../octl-core", version = "=0.1.5" }
+octl-core = { path = "../octl-core", version = "=0.1.6" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
