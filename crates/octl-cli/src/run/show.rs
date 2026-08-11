@@ -7,7 +7,7 @@ use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, Status};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::dto::{ManifestView, SupervisorView};
+use crate::run::dto::{ManifestView, SupervisorState, SupervisorView};
 use crate::run::stalled::StallKind;
 use crate::run::{from_core, run_paths_from_cli_arg};
 
@@ -281,15 +281,24 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("nodes:         {}", payload.counts.nodes);
             println!("discussions:   {}", payload.counts.discussions);
             println!("spinoffs:      {}", payload.counts.spinoffs);
-            match payload.summary.supervisor.pid {
-                Some(pid) if payload.summary.supervisor.alive => {
-                    println!("supervisor:    pid {pid} (alive)");
-                }
-                Some(pid) => println!(
-                    "supervisor:    pid {pid} (dead — run `orchestratectl run reattach {}` to recover)",
+            match payload.summary.supervisor.state {
+                SupervisorState::Alive => match payload.summary.supervisor.pid {
+                    Some(pid) => println!("supervisor:    pid {pid} (alive)"),
+                    None => println!("supervisor:    (alive)"),
+                },
+                SupervisorState::Dead => match payload.summary.supervisor.pid {
+                    Some(pid) => println!(
+                        "supervisor:    pid {pid} (dead — run `orchestratectl run reattach {}` to recover)",
+                        payload.manifest.run_id
+                    ),
+                    None => println!("supervisor:    (dead)"),
+                },
+                SupervisorState::NotRecorded => println!("supervisor:    (none recorded)"),
+                SupervisorState::Unreadable => println!(
+                    "supervisor:    (pid file unreadable — inspect `{}/supervisor.pid`)",
                     payload.manifest.run_id
                 ),
-                None => println!("supervisor:    (none recorded)"),
+                SupervisorState::Unknown => println!("supervisor:    (not probed)"),
             }
             if let Some(line) =
                 crate::run::wait::recoverable_summary(payload.recoverable_work.as_ref())

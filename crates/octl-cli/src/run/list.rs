@@ -6,7 +6,7 @@ use octl_core::{read_manifest_opt, read_node_opt, Kind, NodeId, RunLock, RunPath
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
-use crate::run::dto::{RunSummary, SupervisorView};
+use crate::run::dto::{RunSummary, SupervisorState, SupervisorView};
 use crate::run::{from_core, runs_root};
 
 pub struct Args<'a> {
@@ -226,10 +226,18 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                 println!("(no runs)");
             }
             for r in &runs {
-                let sup = match r.supervisor.pid {
-                    Some(pid) if r.supervisor.alive => format!("sup:alive({pid})"),
-                    Some(pid) => format!("sup:dead({pid})"),
-                    None => "sup:none".to_string(),
+                let sup = match r.supervisor.state {
+                    SupervisorState::Alive => match r.supervisor.pid {
+                        Some(pid) => format!("sup:alive({pid})"),
+                        None => "sup:alive".to_string(),
+                    },
+                    SupervisorState::Dead => match r.supervisor.pid {
+                        Some(pid) => format!("sup:dead({pid})"),
+                        None => "sup:dead".to_string(),
+                    },
+                    SupervisorState::NotRecorded => "sup:none".to_string(),
+                    SupervisorState::Unreadable => "sup:unreadable".to_string(),
+                    SupervisorState::Unknown => "sup:unknown".to_string(),
                 };
                 // The status column carries a marker so a plain-text `run list`
                 // no longer shows a zombie as an ordinary live `pending` run:

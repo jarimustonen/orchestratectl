@@ -104,6 +104,16 @@ denormalised counters; `data.supervisor` is the probed supervisor
 liveness; `landed`/`landed_method`/`recoverable_work` are `run
 show`-only computed detail; some kinds add kind-specific fields.
 
+`data.supervisor.state` is the field to branch on — it distinguishes the
+conditions the legacy `alive` boolean collapses: `alive` (running),
+`dead` (started then died / recycled — orphaned, recover with `run
+reattach`), `not-recorded` (never launched or cleanly torn down),
+`unreadable` (pid file present but can't be parsed — investigate), and
+`unknown` (not probed; you won't see it on `run show`/`run list`, which
+always probe). `data.supervisor.alive` is retained for back-compat and
+equals `state == "alive"` — prefer `state`, since only it tells
+"orphaned" from "finished" from "I/O error".
+
 ```json
 {
   "data": {
@@ -113,7 +123,7 @@ show`-only computed detail; some kinds add kind-specific fields.
     "title": "...",
     "created_at": "...",
     "node_count": 10,
-    "supervisor": { "pid": 65745, "alive": true },
+    "supervisor": { "pid": 65745, "state": "alive", "alive": true },
     "stalled": false,
     "manifest": {
       "schema_version": 1,

@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -13,6 +14,7 @@ expression: value
     "node_count": 1,
     "supervisor": {
       "pid": null,
+      "state": "not-recorded",
       "alive": false
     },
     "stalled": false,

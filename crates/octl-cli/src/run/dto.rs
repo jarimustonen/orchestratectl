@@ -23,43 +23,126 @@ use octl_core::{Manifest, NodeId, RunId, RunPaths};
 use super::{kind_kebab, lifecycle_kebab, status_kebab};
 use crate::supervise::pid_file;
 
-/// Liveness of the run's per-run supervisor, surfaced on `run show` /
-/// `run list` so a caller can tell "still working" from "orphaned".
+/// The distinct conditions a per-run supervisor can be in, as observed from
+/// its `<run-dir>/supervisor.pid` file. Replaces the old boolean `alive`,
+/// which collapsed four genuinely different situations into `false` and so
+/// could not tell "finished cleanly" from "orphaned" from "I/O error" — a
+/// consumer reasoning about that boolean risked a wrong `run reattach` /
+/// `run cancel` decision (issue `supervisorview-conflates-states`).
 ///
-/// A run whose `status` is still `pending` while `alive` is `false` and a
-/// `pid` is recorded is the orphaned condition the
-/// `supervisor-dead-merge-no-teardown` bug describes: a supervisor was
-/// started, then died (e.g. SIGTERM), and nothing is left to consume the
-/// terminal report or run teardown. Recover with `run reattach <id>`.
+/// Serialized kebab-case: `alive | dead | not-recorded | unreadable |
+/// unknown`.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub enum SupervisorState {
+    /// A PID is recorded and is a live process whose start-time still matches
+    /// the record (§7.6 identity check). The supervisor is running.
+    Alive,
+    /// A PID is recorded but is NOT a live matching process — the supervisor
+    /// was started and then died (e.g. SIGTERM), or the PID was recycled by an
+    /// unrelated process. This is the orphaned condition the
+    /// `supervisor-dead-merge-no-teardown` bug describes: nothing is left to
+    /// consume the terminal report or run teardown. Recover with
+    /// `run reattach <id>`.
+    Dead,
+    /// No pid file exists on disk. The supervisor either never materialized, or
+    /// exited cleanly (it removes its pid file on a clean tear-down). These two
+    /// are indistinguishable at the pid-file layer, so they share one state —
+    /// but both are decisively "nothing recorded", distinct from a file that is
+    /// present-but-unreadable.
+    NotRecorded,
+    /// A pid file is present but could not be read or parsed — an I/O error, a
+    /// non-integer / out-of-range first token, or a rejected symlink (the read
+    /// path fails a symlinked file closed with `ELOOP`). Distinct from
+    /// `NotRecorded`: something is there, we just cannot trust it. A consumer
+    /// should treat this as "unknown liveness, investigate" rather than
+    /// silently as "no supervisor".
+    Unreadable,
+    /// Not yet probed — the default [`RunSummary::from`] carries until a handler
+    /// overrides it via [`RunSummary::with_supervisor`]. Both `run show` and
+    /// `run list` always probe, so a wire consumer should not see this there; it
+    /// exists so an unprobed summary is never silently rendered as
+    /// `NotRecorded`.
+    Unknown,
+}
+
+impl SupervisorState {
+    /// Back-compat convenience: whether the supervisor is running. Only `Alive`
+    /// is live; every other state maps to `false`, matching the old boolean's
+    /// "not alive" semantics for existing consumers.
+    fn is_alive(self) -> bool {
+        matches!(self, SupervisorState::Alive)
+    }
+}
+
+/// Liveness of the run's per-run supervisor, surfaced on `run show` /
+/// `run list` so a caller can tell "still working" from "orphaned" from
+/// "finished" from "can't tell".
+///
+/// The authoritative field is [`state`](Self::state) — a
+/// [`SupervisorState`] distinguishing all four non-alive conditions. The
+/// `alive` boolean is retained for back-compat (it equals `state == Alive`)
+/// so existing consumers keep working during migration; new consumers should
+/// branch on `state`.
 #[derive(Serialize)]
 pub struct SupervisorView {
     /// The supervisor PID recorded in `<run-dir>/supervisor.pid`, or `null`
-    /// when no supervisor is recorded (never materialized, or cleanly torn
-    /// down — the supervisor removes its pid file on a clean exit).
+    /// when no readable PID is recorded (`NotRecorded` — never materialized or
+    /// cleanly torn down — or `Unreadable`).
     pub pid: Option<u32>,
-    /// Whether that PID is a live process whose start-time still matches the
-    /// record (§7.6 identity check — a recycled PID reads as dead). Always
-    /// `false` when `pid` is `null`.
+    /// The distinct supervisor condition — see [`SupervisorState`]. This is the
+    /// field to branch on; it disambiguates the cases the `alive` boolean
+    /// collapses.
+    pub state: SupervisorState,
+    /// Back-compat: `true` iff `state` is [`SupervisorState::Alive`]. Retained
+    /// so consumers reading `supervisor.alive` keep working; prefer `state`.
     pub alive: bool,
 }
 
 impl SupervisorView {
+    /// Build a view from a resolved [`SupervisorState`] and optional PID,
+    /// keeping the derived `alive` boolean in lockstep with `state`.
+    fn new(pid: Option<u32>, state: SupervisorState) -> Self {
+        Self {
+            pid,
+            state,
+            alive: state.is_alive(),
+        }
+    }
+
     /// Probe `<run-dir>/supervisor.pid` for the recorded supervisor and its
-    /// liveness. An absent/unreadable file → `{pid: null, alive: false}`.
+    /// liveness, resolving the exact [`SupervisorState`]:
+    ///
+    /// - readable record, live + identity-matching → `Alive`
+    /// - readable record, dead / recycled → `Dead`
+    /// - no file on disk → `NotRecorded`
+    /// - file present but unreadable / unparseable → `Unreadable`
     ///
     /// Single-file read (the pid file is CLI-owned and does not route through
     /// the run-state projection guards), so it needs no shared lock: it never
     /// participates in a multi-projection decision.
     pub fn probe(paths: &RunPaths) -> Self {
-        match pid_file::read_pid_record(&paths.supervisor_pid()) {
-            Some((pid, start_time)) => Self {
-                pid: Some(pid),
-                alive: pid_file::pid_live_with_identity(pid, start_time),
-            },
-            None => Self {
-                pid: None,
-                alive: false,
-            },
+        let path = paths.supervisor_pid();
+        match pid_file::read_pid_record(&path) {
+            Some((pid, start_time)) => {
+                let state = if pid_file::pid_live_with_identity(pid, start_time) {
+                    SupervisorState::Alive
+                } else {
+                    SupervisorState::Dead
+                };
+                Self::new(Some(pid), state)
+            }
+            // `read_pid_record` swallows absent vs. present-but-unreadable into
+            // one `None`. Disambiguate by asking whether *anything* is at the
+            // path (a symlink counts as present → `Unreadable`, since the read
+            // rejects it): present → `Unreadable`, absent → `NotRecorded`.
+            None => {
+                if pid_file::pid_file_present(&path) {
+                    Self::new(None, SupervisorState::Unreadable)
+                } else {
+                    Self::new(None, SupervisorState::NotRecorded)
+                }
+            }
         }
     }
 
@@ -68,10 +151,7 @@ impl SupervisorView {
     /// no longer holds a supervisor — `run show` probes one and attaches it to
     /// the flattened summary row; see `run/show.rs`.)
     fn unknown() -> Self {
-        Self {
-            pid: None,
-            alive: false,
-        }
+        Self::new(None, SupervisorState::Unknown)
     }
 }
 
@@ -308,40 +388,69 @@ mod tests {
                 "title": "seed-run",
                 "created_at": "2024-01-01T00:00:00Z",
                 "node_count": 0,
-                "supervisor": { "pid": null, "alive": false },
+                "supervisor": { "pid": null, "state": "unknown", "alive": false },
                 "stalled": false,
                 "stillborn": false,
             })
         );
     }
 
-    /// `SupervisorView::probe` reads the real `supervisor.pid` file: a live,
-    /// identity-matching record reads `alive`, an absent file reads
-    /// `{pid: null, alive: false}`.
+    /// `SupervisorView::probe` reads the real `supervisor.pid` file and resolves
+    /// the exact [`SupervisorState`] for each condition, no longer collapsing
+    /// absent / dead / unreadable into one `{pid: null, alive: false}`.
     #[test]
-    fn supervisor_probe_reads_pid_file() {
+    fn supervisor_probe_resolves_distinct_states() {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let run_dir = dir.path().join("01arz3ndektsv4rrffq69g5fav");
         std::fs::create_dir_all(&run_dir).unwrap();
         let paths = RunPaths::new(run_dir, "01arz3ndektsv4rrffq69g5fav").unwrap();
 
-        // No pid file yet → unknown.
+        // No pid file on disk → NotRecorded (never launched / cleanly torn down).
         let v = SupervisorView::probe(&paths);
         assert_eq!(v.pid, None);
+        assert_eq!(v.state, SupervisorState::NotRecorded);
         assert!(!v.alive);
 
-        // Our own live pid (written with its start-time) → alive.
+        // Our own live pid (written with its start-time) → Alive.
         let our_pid = std::process::id();
         pid_file::write_pid(&paths.supervisor_pid(), our_pid).unwrap();
         let v = SupervisorView::probe(&paths);
         assert_eq!(v.pid, Some(our_pid));
+        assert_eq!(v.state, SupervisorState::Alive);
         assert!(v.alive, "our own recorded pid must read alive");
 
-        // A recorded-but-dead pid (guaranteed-free high value) → orphaned.
+        // A recorded-but-dead pid (guaranteed-free high value) → Dead.
         std::fs::write(paths.supervisor_pid(), "2147483646").unwrap();
         let v = SupervisorView::probe(&paths);
         assert_eq!(v.pid, Some(2_147_483_646));
+        assert_eq!(v.state, SupervisorState::Dead);
         assert!(!v.alive, "a dead recorded pid must read not-alive");
+
+        // A present-but-unreadable pid file (non-integer garbage) → Unreadable,
+        // distinct from NotRecorded — the file is there, we just can't trust it.
+        std::fs::write(paths.supervisor_pid(), "not-a-pid").unwrap();
+        let v = SupervisorView::probe(&paths);
+        assert_eq!(v.pid, None);
+        assert_eq!(v.state, SupervisorState::Unreadable);
+        assert!(!v.alive);
+    }
+
+    /// The `alive` boolean stays in lockstep with `state` for back-compat: it is
+    /// `true` only for [`SupervisorState::Alive`], `false` for every other.
+    #[test]
+    fn alive_boolean_tracks_state() {
+        assert!(SupervisorView::new(Some(1), SupervisorState::Alive).alive);
+        for state in [
+            SupervisorState::Dead,
+            SupervisorState::NotRecorded,
+            SupervisorState::Unreadable,
+            SupervisorState::Unknown,
+        ] {
+            assert!(
+                !SupervisorView::new(None, state).alive,
+                "{state:?} must not read alive"
+            );
+        }
     }
 }

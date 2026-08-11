@@ -228,6 +228,17 @@ pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
     Some((pid, start_time))
 }
 
+/// Whether *something* exists at `path`, regardless of whether it is a
+/// readable pid record. Used to disambiguate the two `None` outcomes of
+/// [`read_pid_record`]: an absent file (no supervisor recorded) from a file
+/// that is present but unreadable/unparseable (I/O error, garbage, or a
+/// symlink the read path rejects). Uses `symlink_metadata` so a symlink
+/// planted where the pid file belongs counts as "present" (the read closes it
+/// with `ELOOP`, so it is present-but-unreadable, not absent).
+pub fn pid_file_present(path: &Path) -> bool {
+    path.symlink_metadata().is_ok()
+}
+
 /// Liveness check for a recorded supervisor PID that additionally
 /// defends against PID reuse via the §7.5 start-time identity check
 /// (§7.6). A recycled PID (alive, but start-time disagrees) is reported

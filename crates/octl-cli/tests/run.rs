@@ -116,8 +116,8 @@ fn show_surfaces_run_row_at_top_level_matching_list() {
     sup_keys.sort_unstable();
     assert_eq!(
         sup_keys,
-        ["alive", "pid"],
-        "data.supervisor must carry exactly pid + alive"
+        ["alive", "pid", "state"],
+        "data.supervisor must carry exactly pid + state + alive"
     );
 
     // The nested `manifest` still exists (back-compat) but must NOT re-introduce
@@ -754,6 +754,9 @@ fn list_flags_stillborn_run() {
     assert_eq!(b["status"], "pending");
     assert_eq!(b["node_count"], 0);
     assert_eq!(b["supervisor"]["alive"], false);
+    // No supervisor was spawned (SKIP_MATERIALIZE), so no pid file exists → the
+    // distinct `not-recorded` state, not the conflated old `alive:false`.
+    assert_eq!(b["supervisor"]["state"], "not-recorded");
     assert_eq!(
         b["stillborn"], true,
         "0-node dead-supervisor run is stillborn: {b}"
