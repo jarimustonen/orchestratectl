@@ -2,6 +2,10 @@
 
 The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `event tail`, `skill install`, etc.) per `AGENTS-AI-FIRST-CLI.md`. Bundled SKILLs live under `skills/<name>/SKILL.template.md` and are embedded via `build.rs` + `include_str!`.
 
+## `skill install` dual-homes into pi.dev (`~/.pi/agent/skills/`)
+
+A default `skill install` (plain, `--force`, or `--agent all`, without `--dest`) writes each skill's `SKILL.md` to **two** locations: the Claude Code path `~/.claude/skills/<name>/SKILL.md` AND a pi.dev mirror at `~/.pi/agent/skills/<name>/SKILL.md`. pi discovers skills from a per-skill dir just like Claude and invokes them as `/skill:<name>`; bare `/name` cross-references resolve via pi's injected available-skills list, so **only the install target differs — no body/link rewrite**. The pi mirror is byte-identical to the Claude `SKILL.md`. Vendored filter: **only `SKILL.md` is mirrored** — companion resources (e.g. `stint-start`'s `AGENTS-EXECUTION-DAG.md`) stay Claude-only, matching homebase `dotfiles link`. The Claude write is unchanged, and the pi mirror carries no provenance marker and is not pruned (prune/marker logic stays Claude-scoped). Skipped for a custom `--dest` (caller-managed) and for `--agent codex` alone (codex is not a claude-format consumer). See `src/skill.rs` `cmd_install`.
+
 ## Insta snapshot test loop
 
 Many integration tests in `tests/` use `insta` for envelope / help / skill-catalog snapshots. After any CLI surface change (added flag, renamed verb, new bundled skill, edited error message), running `cargo test -p octl-cli` produces `.snap.new` files for every diff. Accept them with:

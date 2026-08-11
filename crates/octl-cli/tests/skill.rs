@@ -154,12 +154,16 @@ fn skill_install_with_default_paths_writes_under_home() {
     assert!(out.status.success(), "default install failed: {out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let installed = v["data"]["installed"].as_array().expect("installed array");
-    assert_eq!(installed.len(), 1);
-    assert_eq!(installed[0]["agent"], "claude");
+    // A default install dual-homes the skill: the claude copy plus the pi
+    // mirror (see `skill_install_default_dual_homes_into_pi`).
+    let claude = installed
+        .iter()
+        .find(|f| f["agent"] == "claude")
+        .expect("claude entry");
     let expected: PathBuf = home
         .path()
         .join(".claude/skills/octl-run-overview/SKILL.md");
-    assert_eq!(installed[0]["path"], expected.display().to_string());
+    assert_eq!(claude["path"], expected.display().to_string());
     assert!(expected.exists(), "claude install not on disk");
 }
 
@@ -476,6 +480,131 @@ fn skill_install_default_stamps_provenance_marker() {
     assert!(
         body.contains("skill_name: octl-run-overview"),
         "marker: {body}"
+    );
+}
+
+#[test]
+fn skill_install_default_dual_homes_into_pi() {
+    // A default `skill install` writes the claude copy AND mirrors the same
+    // SKILL.md into pi.dev's per-skill dir (`~/.pi/agent/skills/<name>/`),
+    // byte-for-byte identical. The claude path is proven unchanged: same
+    // location, same bytes it has always written.
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "default install failed: {out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let installed = v["data"]["installed"].as_array().expect("installed array");
+    let agents: Vec<&str> = installed
+        .iter()
+        .map(|f| f["agent"].as_str().unwrap())
+        .collect();
+    assert!(
+        agents.contains(&"claude"),
+        "claude entry missing: {agents:?}"
+    );
+    assert!(agents.contains(&"pi"), "pi entry missing: {agents:?}");
+
+    let claude = home.path().join(".claude/skills/stint-start/SKILL.md");
+    let pi = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    assert!(claude.exists(), "claude SKILL.md not on disk");
+    assert!(pi.exists(), "pi SKILL.md not on disk");
+    assert_eq!(
+        std::fs::read(&claude).unwrap(),
+        std::fs::read(&pi).unwrap(),
+        "pi mirror must be byte-identical to the claude SKILL.md"
+    );
+
+    // Vendored filter: only SKILL.md is mirrored into pi — companion
+    // resources (stint-start ships AGENTS-EXECUTION-DAG.md) stay claude-only.
+    assert!(
+        home.path()
+            .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "companion missing from claude dir"
+    );
+    assert!(
+        !home
+            .path()
+            .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "companion must NOT be mirrored into the pi dir"
+    );
+    // The pi mirror is not a managed claude dir — no provenance marker.
+    assert!(
+        !home
+            .path()
+            .join(".pi/agent/skills/stint-start")
+            .join(MARKER)
+            .is_file(),
+        "pi mirror must not carry the claude provenance marker"
+    );
+}
+
+#[test]
+fn skill_install_agent_all_also_dual_homes_into_pi() {
+    // `--agent all` installs claude + codex, and still mirrors into pi.
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "octl-spawn-spinoff",
+            "--agent",
+            "all",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "agent=all install failed: {out:?}");
+    assert!(home
+        .path()
+        .join(".pi/agent/skills/octl-spawn-spinoff/SKILL.md")
+        .exists());
+}
+
+#[test]
+fn skill_install_agent_codex_does_not_dual_home_into_pi() {
+    // pi mirrors the claude corpus; a codex-only install must not touch it.
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "octl-run-overview",
+            "--agent",
+            "codex",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "codex install failed: {out:?}");
+    assert!(
+        !home.path().join(".pi/agent/skills").exists(),
+        "codex-only install must not create the pi skill dir"
+    );
+}
+
+#[test]
+fn skill_install_dest_does_not_dual_home_into_pi() {
+    // A custom `--dest` is caller-managed; the pi mirror is skipped.
+    let home = mk_home();
+    let dest = home.path().join("custom/SKILL.md");
+    let out = bin(&home)
+        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .arg(&dest)
+        .args(["--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "dest install failed: {out:?}");
+    assert!(dest.exists(), "dest SKILL.md not on disk");
+    assert!(
+        !home.path().join(".pi/agent/skills").exists(),
+        "--dest install must not create the pi skill dir"
     );
 }
 
@@ -856,13 +985,16 @@ fn skill_install_over_older_companion_upgrades_without_force() {
     let companion = home
         .path()
         .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    // Make BOTH on-disk files look older than the binary so the whole
+    // The default install also dual-homes SKILL.md into the pi dir; that
+    // copy must be aged too or the redeploy's whole-plan drift check trips
+    // over the still-current pi mirror.
+    let pi_skill_md = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    let stale_skill_md =
+        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n";
+    // Make every on-disk file look older than the binary so the whole
     // plan qualifies for the drift-upgrade (no-force) path.
-    std::fs::write(
-        &skill_md,
-        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
-    )
-    .unwrap();
+    std::fs::write(&skill_md, stale_skill_md).unwrap();
+    std::fs::write(&pi_skill_md, stale_skill_md).unwrap();
     std::fs::write(
         &companion,
         "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale\n",

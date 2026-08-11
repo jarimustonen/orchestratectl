@@ -35,7 +35,12 @@ all behind one canonical command surface.
 
 The orchestration semantics ship as bundled Claude Code skills — install
 once with `orchestratectl skill install` and the `/worktree-*`,
-`/orchestrate`, `/fan-out` commands appear in any Claude Code session.
+`/orchestrate`, `/fan-out` commands appear in any Claude Code session. A
+default install **dual-homes** each skill: alongside the Claude Code copy in
+`~/.claude/skills/<name>/`, it mirrors the same `SKILL.md` into
+`~/.pi/agent/skills/<name>/` so the skills are also discoverable under the
+[pi.dev](https://pi.dev) harness (invoked there as `/skill:<name>`). Only
+`SKILL.md` is mirrored — companion resources stay Claude-only.
 
 ## Quick start
 

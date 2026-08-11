@@ -599,6 +599,29 @@ pub fn cmd_install(
                 content,
             });
         }
+
+        // Dual-home into pi.dev's skill dir. Whenever the claude layout is
+        // installed to its default path, mirror the SAME claude-format
+        // `SKILL.md` into `~/.pi/agent/skills/<name>/SKILL.md` so the skill
+        // is discoverable under the pi.dev harness (pi loads it and invokes
+        // `/skill:name`; bare `/name` cross-references resolve via pi's
+        // injected available-skills list, so no link rewrite is needed —
+        // only the target). This is an ADDITIONAL target that never alters
+        // the claude write.
+        //
+        // Vendored filter: mirror ONLY `SKILL.md`, never companion
+        // resources — matching homebase `dotfiles link`, which copies just
+        // the skill body into the pi corpus. Skipped for a custom `--dest`
+        // (caller-managed path) and for `--agent codex` alone (codex is not
+        // a claude-format consumer; pi mirrors the claude corpus).
+        if dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All) {
+            plan.push(PlanItem {
+                name: skill.name,
+                agent: "pi",
+                path: default_path("pi", skill.name)?,
+                content: Cow::Borrowed(skill.body),
+            });
+        }
     }
 
     let preflight_result = preflight(&plan, force)?;
@@ -860,6 +883,11 @@ fn default_path(agent: &str, name: &str) -> Result<PathBuf, CliError> {
     Ok(match agent {
         "claude" => base.join(".claude/skills").join(name).join("SKILL.md"),
         "codex" => base.join(".codex/prompts").join(format!("{name}.md")),
+        // pi.dev discovers skills from a per-skill directory just like
+        // claude, only rooted at `~/.pi/agent/skills/`, and invokes them
+        // as `/skill:name`. The dual-home mirror writes the same
+        // claude-format `SKILL.md` here (see `cmd_install`).
+        "pi" => base.join(".pi/agent/skills").join(name).join("SKILL.md"),
         // unreachable in practice — callers only pass the literals above.
         other => {
             return Err(CliError::user(
