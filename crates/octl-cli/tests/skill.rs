@@ -544,6 +544,159 @@ fn skill_install_default_dual_homes_into_pi() {
 }
 
 #[test]
+fn skill_install_repairs_missing_claude_when_pi_mirror_is_current() {
+    // F1: the derived pi mirror must never gate the primary claude install.
+    // Divergent state — pi present + current, claude deleted — must still let
+    // a plain (no --force) install re-create the claude skill. Before the F1
+    // fix this aborted the whole plan with refused_overwrite on the pi path.
+    let home = mk_home();
+    // First install populates both homes.
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let claude = home.path().join(".claude/skills/stint-start/SKILL.md");
+    let pi = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    assert!(claude.exists() && pi.exists());
+    let pi_bytes_before = std::fs::read(&pi).unwrap();
+
+    // Delete only the claude copy, leaving the current pi mirror behind.
+    std::fs::remove_dir_all(home.path().join(".claude/skills/stint-start")).unwrap();
+
+    // A plain re-install (no --force) must succeed and repair claude.
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "plain re-install must repair claude despite a current pi mirror: {out:?}"
+    );
+    assert!(claude.exists(), "claude skill was not repaired");
+    // The untouched pi mirror is left byte-for-byte in place.
+    assert_eq!(
+        std::fs::read(&pi).unwrap(),
+        pi_bytes_before,
+        "pi mirror must be left untouched on a non-force run"
+    );
+    // The skipped pi copy is not reported as installed; claude is.
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let agents: Vec<&str> = v["data"]["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["agent"].as_str().unwrap())
+        .collect();
+    assert!(
+        agents.contains(&"claude"),
+        "claude not in installed: {agents:?}"
+    );
+    assert!(
+        !agents.contains(&"pi"),
+        "an untouched pi mirror must not be reported as installed: {agents:?}"
+    );
+}
+
+#[test]
+fn skill_install_self_repairs_missing_pi_mirror_without_force() {
+    // The inverse partial state: claude current, pi missing. A plain install
+    // refuses the equal-version claude copy (existing contract), so use
+    // --force — the refresh must (re)create the pi mirror.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let pi = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    std::fs::remove_dir_all(home.path().join(".pi/agent/skills/stint-start")).unwrap();
+    assert!(!pi.exists());
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start", "--force"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    assert!(pi.exists(), "pi mirror was not recreated by --force");
+}
+
+#[test]
+fn skill_install_force_refreshes_stale_pi_mirror() {
+    // A stale/divergent pi copy is refreshed only under --force.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let pi = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    std::fs::write(
+        &pi,
+        "---\nname: stint-start\ncli_version: \"0.0.0\"\n---\nstale\n",
+    )
+    .unwrap();
+
+    // Non-force: pi is left alone (skipped) and a differ-warning is emitted;
+    // but claude is equal-version so the plain plan refuses. Force the whole
+    // redeploy and confirm pi is brought back in sync with the binary.
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "force redeploy failed: {out:?}");
+    let after = std::fs::read_to_string(&pi).unwrap();
+    assert!(
+        after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "pi mirror was not refreshed to the binary version under --force"
+    );
+}
+
+#[test]
+fn skill_install_does_not_clobber_divergent_pi_mirror_without_force() {
+    // A pre-existing pi file that differs (e.g. user-authored, older) must be
+    // LEFT IN PLACE on a plain run — never silently clobbered just because it
+    // looks older. pi has no provenance marker, so we cannot prove ownership.
+    let home = mk_home();
+    let pi_dir = home.path().join(".pi/agent/skills/stint-start");
+    std::fs::create_dir_all(&pi_dir).unwrap();
+    let pi = pi_dir.join("SKILL.md");
+    let user_content = "---\nname: stint-start\ncli_version: \"0.0.0\"\n---\nMINE — do not touch\n";
+    std::fs::write(&pi, user_content).unwrap();
+
+    // Fresh claude (no prior install) + differing pi present, no --force.
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install must succeed: {out:?}");
+    assert_eq!(
+        std::fs::read_to_string(&pi).unwrap(),
+        user_content,
+        "divergent pi file must not be clobbered without --force"
+    );
+    // The differ is surfaced as a warning, not silently ignored.
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let warnings = v["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("pi_mirror_skipped")),
+        "expected a pi_mirror_skipped warning; got {warnings:?}"
+    );
+}
+
+#[test]
 fn skill_install_agent_all_also_dual_homes_into_pi() {
     // `--agent all` installs claude + codex, and still mirrors into pi.
     let home = mk_home();
@@ -985,16 +1138,16 @@ fn skill_install_over_older_companion_upgrades_without_force() {
     let companion = home
         .path()
         .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    // The default install also dual-homes SKILL.md into the pi dir; that
-    // copy must be aged too or the redeploy's whole-plan drift check trips
-    // over the still-current pi mirror.
-    let pi_skill_md = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
-    let stale_skill_md =
-        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n";
-    // Make every on-disk file look older than the binary so the whole
-    // plan qualifies for the drift-upgrade (no-force) path.
-    std::fs::write(&skill_md, stale_skill_md).unwrap();
-    std::fs::write(&pi_skill_md, stale_skill_md).unwrap();
+    // Make BOTH claude on-disk files look older than the binary so the
+    // whole plan qualifies for the drift-upgrade (no-force) path. The pi
+    // mirror (also written by the first install) does NOT need aging: a
+    // derived pi mirror never gates the plan — preflight leaves an existing
+    // pi copy in place on a non-force run (see F1 / `pi_mirror_skipped`).
+    std::fs::write(
+        &skill_md,
+        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
+    )
+    .unwrap();
     std::fs::write(
         &companion,
         "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale\n",

@@ -614,6 +614,21 @@ pub fn cmd_install(
         // the skill body into the pi corpus. Skipped for a custom `--dest`
         // (caller-managed path) and for `--agent codex` alone (codex is not
         // a claude-format consumer; pi mirrors the claude corpus).
+        //
+        // Consequence (accepted, review finding F3): a skill body whose
+        // prose links to a companion (e.g. `stint-start` →
+        // `AGENTS-EXECUTION-DAG.md`) leaves that markdown link dangling in
+        // the pi copy, since the companion is not mirrored. This is
+        // reference prose, not an execution target — pi resolves bare
+        // `/name` and `/skill:name` via its injected available-skills list,
+        // so the dangling link degrades only inline reading, never
+        // invocation. Rewriting it would require a codex-style pass that
+        // violates the byte-identity requirement, so it is left as-is.
+        //
+        // The pi mirror is intentionally UNMANAGED: no `.orchestratectl-
+        // managed` marker and no prune (that machinery stays claude-scoped).
+        // Orphan cleanup + doctor drift-detection for pi need an out-of-band
+        // provenance record and are tracked as `pidev-pi-skill-lifecycle`.
         if dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All) {
             plan.push(PlanItem {
                 name: skill.name,
@@ -633,6 +648,14 @@ pub fn cmd_install(
 
     let mut installed = Vec::with_capacity(plan.len());
     for item in plan {
+        // A pi mirror that preflight chose to leave in place (present, no
+        // --force) is skipped outright — NOT written and NOT reported as
+        // installed. Falling through to `write_atomic` here would call
+        // `persist_noclobber`, hit `EEXIST`, and fail the whole install,
+        // which is exactly the divergent-state repair-block F1 fixes.
+        if preflight_result.skipped.contains(&item.path) {
+            continue;
+        }
         // The set of paths approved for overwrite is decided exclusively
         // by preflight — never recomputed from `path.exists()` in this
         // loop. That keeps the persist_noclobber TOCTOU guarantee intact:
@@ -735,9 +758,16 @@ fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
 /// `overwrite_allowed` is the *authoritative* set of paths the write
 /// loop is permitted to clobber. Computed once, then never recomputed —
 /// see `cmd_install` for the TOCTOU rationale.
+///
+/// `skipped` is the set of already-present pi-mirror paths a non-`--force`
+/// run must leave untouched (see `preflight`'s pi arm). The write loop
+/// skips them entirely — it must NOT fall through to `write_atomic`, whose
+/// `persist_noclobber` would hit `EEXIST` and fail the whole install. A
+/// skipped path is never reported as `installed`.
 struct PreflightResult {
     warnings: Vec<String>,
     overwrite_allowed: HashSet<PathBuf>,
+    skipped: HashSet<PathBuf>,
 }
 
 /// One file the install will write: a skill's `SKILL.md` or one of its
@@ -774,7 +804,14 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
     let mut seen: HashSet<&Path> = HashSet::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut overwrite_allowed: HashSet<PathBuf> = HashSet::new();
-    for PlanItem { name, path, .. } in plan {
+    let mut skipped: HashSet<PathBuf> = HashSet::new();
+    for PlanItem {
+        name,
+        agent,
+        path,
+        content,
+    } in plan
+    {
         if !seen.insert(path.as_path()) {
             return Err(CliError::user(
                 "duplicate_destination",
@@ -788,6 +825,41 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
                 format!("destination is a directory: {}", path.display()),
             )
             .with_invalid_value(path.display().to_string()));
+        }
+        // The pi mirror is a DERIVED copy of the claude SKILL.md, never a
+        // first-class target the user asked for. It must not let its own
+        // state gate the primary claude install (issue
+        // `pidev-dual-home-skills`, review finding F1): a present-and-current
+        // pi copy must NOT block re-creating a deleted claude skill, and an
+        // unmanaged pi file (no provenance marker) must NOT be clobbered on a
+        // plain run merely because it looks older. So:
+        //   - absent            → fall through to the normal write path.
+        //   - present, --force  → refresh it (overwrite_allowed).
+        //   - present, no force → leave it in place (skipped); warn only when
+        //                         the on-disk bytes actually differ, so a
+        //                         byte-identical mirror is a silent no-op.
+        // Trade-off: a non-force claude drift-upgrade leaves a stale pi copy
+        // until the next `--force` redeploy — acceptable because the
+        // operating policy always deploys with `--force`. Lifecycle
+        // (prune + doctor drift) is tracked separately as
+        // `pidev-pi-skill-lifecycle`.
+        if *agent == "pi" && path.exists() {
+            if force {
+                overwrite_allowed.insert(path.clone());
+            } else {
+                // Warn unless the on-disk bytes are provably identical to
+                // the bundled copy — an unreadable file counts as "differs"
+                // so the skip is surfaced rather than silently assumed a
+                // no-op.
+                if !fs::read(path).is_ok_and(|b| b == content.as_bytes()) {
+                    warnings.push(format!(
+                        "pi_mirror_skipped: {name} already exists at {} and differs from the bundled copy; left unchanged (pass --force to refresh)",
+                        path.display()
+                    ));
+                }
+                skipped.insert(path.clone());
+            }
+            continue;
         }
         if !path.exists() {
             // No file → the write loop will refuse to clobber via
@@ -853,6 +925,7 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
     Ok(PreflightResult {
         warnings,
         overwrite_allowed,
+        skipped,
     })
 }
 
