@@ -1,9 +1,9 @@
 ---
 created: 2026-07-26
-updated: 2026-07-28
+updated: 2026-08-11
 type: bug
 reporter: jari
-status: fixed
+status: open
 priority: high
 related: ['@supervisor-stuck-pending-after-self-merge', '@spinoff-must-submit-node-report']
 commits:
@@ -13,7 +13,6 @@ commits:
   summary: order idle-unmerged probe cheap-first
 - hash: 51a0410
   summary: apply /llm-review findings — conflicting-branch terminalize, CPU third clock, git-log ref fix
-closed: 2026-07-28
 ---
 
 _Source: orchestratectl technical-decision run (agent closing contract)_
@@ -84,3 +83,29 @@ So `run merge` works fine when invoked — the gap is purely that **the agent ne
 ## Implementation Notes
 
 Reported from a live `/stint` round. Related fixes reconciled *post-merge* status (`@supervisor-stuck-pending-after-self-merge`), and mandated agents submit a terminal report (`@spinoff-must-submit-node-report`) — this issue is the **pre-merge** gap those didn't cover: the agent committed but neither merged nor reported, and stayed alive/idle rather than dying.
+
+## Uusi esiintymä 2026-08-11 (spinoff, "fixed"-tilan jälkeen — mahdollinen regressio)
+
+Toistui `/stint-start`-sessiossa (`3dbear-monorepo`), **spinoff**-kind (`run create --kind
+spinoff --headless`), run `01kzrcv66p707688b7163rsj0s`, single node `n-0001`.
+
+- Agentti teki KOKO työn: korjasi bugin (`chat.js` 3 muutosta), ajoi `/llm-review` (4 mallia,
+  löysi + korjasi must-fixin), committoi 2 committia (fix + issue-close), sulki issuen `fixed`.
+- **Pysähtyi ENNEN `run merge`:ä**: kirjoitti `merge this back to main` -vapaatekstin
+  syötekenttään mutta EI lähettänyt/suorittanut sitä. Run jäi `status: pending`, `landed: false`,
+  supervisor elossa, tmux-ikkuna auki (näytti jumilta vaikka työ oli valmis).
+- **idle-unmerged safety net (2026-07-28 fix, `3377843`/`a17203c`/`51a0410`) EI laukennut**
+  siinä havaintoikkunassa jossa orkestroija katsoi (~13 min agentin "Cooked for 12m 54s"
+  -merkinnän jälkeen). Konduktööri joutui nudgeamaan agenttia tmux-paneen kautta
+  (`send-keys` täsmäkäsky ajaa `orchestratectl run merge "$run_id"`) → sitten merge onnistui,
+  `landed: true git-verified`.
+
+**Miksi tämä on relevantti vaikka issue on `fixed`:** safety net korjasi tapauksen jossa run jää
+IKUISESTI pendingiin, mutta joko (a) sen laukaisukynnys/ajastus ei kata tätä spinoff-polkua, tai
+(b) kynnys on niin pitkä että käytännössä konduktööri ehtii aina puuttua ensin. Kannattaa tarkistaa
+kattaako idle-unmerged-probe spinoff-kindin ja mikä sen idle-kynnys on suhteessa tyypilliseen
+agentin "valmis mutta ei mergännyt" -tilaan. Binary-versio session aikana: `orchestratectl 0.1.5`.
+
+## Reopen Notes — 2026-08-11
+
+_Add rationale for reopening here._
