@@ -4,6 +4,9 @@ updated: 2026-08-11
 type: task
 status: in-progress
 priority: normal
+commits:
+- hash: b3fd826
+  summary: push_blocked_chunk records effective tier + commit oid
 ---
 
 # push_blocked_chunk records plan tier not actual promoted tier, omits commit OID

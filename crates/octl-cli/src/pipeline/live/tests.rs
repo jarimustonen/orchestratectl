@@ -2466,6 +2466,81 @@ fn repeat_fail_promotes_chunk_to_a_higher_tier() {
 }
 
 #[test]
+fn preserved_block_after_promotion_records_promoted_tier_and_commit_oid() {
+    // (`push-blocked-chunk-tier-and-commit-audit`) A chunk that is PROMOTED and then
+    // terminally blocks must record the tier it actually ran at (the promoted `mid`),
+    // NOT the plan-declared `code`, and — because the harness committed real work that
+    // only the floor rejected — the exact authored commit oid of the preserved branch.
+    // The old audit recorded `chunk.tier` (always `code` here) and `commit: None`, so
+    // this test fails against the pre-fix code on BOTH the tier and the commit.
+    let repo = init_repo();
+    let workdir = TempDir::new().unwrap();
+    let mut cfg = config(repo.path(), workdir.path(), &["feature.txt"]);
+    cfg.fix_loop = FixLoopConfig {
+        max_recode_per_chunk: 0,
+        max_fix_iterations: 0,
+        max_respec: 0,
+        max_promotions: 1,
+    };
+    let spec = ScriptedSpec::new(one_chunk_plan(
+        &["feature.txt"],
+        "true",
+        "test -f feature.txt",
+    ));
+    // Both tiers commit an out-of-scope `stray.txt` — a persistent floor (file-scope)
+    // block no promotion can fix. The chunk promotes code→mid, then blocks at mid.
+    let base = AlwaysStray;
+    let promoted = AlwaysStray;
+    let promoted_ran = std::sync::atomic::AtomicBool::new(false);
+    let harnesses = TwoTier {
+        base: &base,
+        promoted: &promoted,
+        promoted_ran: &promoted_ran,
+    };
+    let decider = crate::pipeline::ScriptedDecider::confirming();
+
+    let report = run_pipeline_tiered(
+        &cfg,
+        &spec,
+        &harnesses,
+        &ScriptedVerify::passing(),
+        &decider,
+    )
+    .expect("pipeline runs");
+
+    assert!(!report.merged, "the chunk never merged: {report:#?}");
+    assert_eq!(report.promote_count, 1, "exactly one promotion happened");
+    assert!(
+        promoted_ran.load(Ordering::SeqCst),
+        "the promoted (mid) harness must have run"
+    );
+    let c1 = &report.chunks[0];
+    // Regression guard: the preserved report carries the PROMOTED tier, not `code`.
+    assert_eq!(
+        c1.tier, "mid",
+        "preserved block records the effective (promoted) tier: {c1:#?}"
+    );
+    assert_eq!(c1.outcome, "committed", "{c1:#?}");
+    assert_eq!(c1.floor_passed, Some(false), "{c1:#?}");
+    assert!(!c1.merged, "{c1:#?}");
+    // Regression guard: the committed-but-floor-blocked work names its exact oid,
+    // which must be the tip of the preserved branch.
+    let branch = c1
+        .branch_preserved
+        .clone()
+        .expect("a committed block preserves its branch");
+    let commit = c1
+        .commit
+        .clone()
+        .expect("a committed floor-block records its authored oid");
+    let branch_tip = git_out(repo.path(), &["rev-parse", &branch]);
+    assert_eq!(
+        commit, branch_tip,
+        "the recorded oid must be the preserved branch tip: {c1:#?}"
+    );
+}
+
+#[test]
 fn promotion_is_bounded_by_max_promotions_then_the_breaker_trips() {
     // With promotion budget 0 the pre-promotion behaviour is preserved: a
     // persistently-failing chunk trips the repeated-failure breaker, never promotes.

@@ -2487,6 +2487,7 @@ fn process_chunk_sequential(
                 findings: attempt_findings,
                 floor,
                 floor_passed,
+                commit: attempt_commit,
                 recodable,
                 wt,
                 branch,
@@ -2537,7 +2538,7 @@ fn process_chunk_sequential(
                         outcome,
                         floor,
                         floor_passed,
-                        None,
+                        attempt_commit,
                         reason,
                         &wt,
                         &branch,
@@ -2674,7 +2675,7 @@ fn process_chunk_sequential(
                     outcome,
                     floor,
                     floor_passed,
-                    None,
+                    attempt_commit,
                     reason,
                     &wt,
                     &branch,
@@ -2795,6 +2796,9 @@ enum WaveBuildOutcome {
         reason: String,
         floor: Option<FloorVerdict>,
         floor_passed: Option<bool>,
+        /// The validated authored commit oid when the block committed but never
+        /// merged (a floor-blocked commit); `None` when no commit was produced.
+        commit: Option<String>,
         recodable: bool,
         wt: PathBuf,
         branch: String,
@@ -2960,6 +2964,7 @@ fn build_chunk_in_wave(
                 findings: attempt_findings,
                 floor,
                 floor_passed,
+                commit,
                 recodable,
                 wt,
                 branch,
@@ -3008,6 +3013,7 @@ fn build_chunk_in_wave(
                         reason,
                         floor,
                         floor_passed,
+                        commit,
                         recodable,
                         wt,
                         branch,
@@ -3625,6 +3631,7 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
             outcome,
             floor,
             floor_passed,
+            commit,
             reason,
             wt,
             branch,
@@ -3633,7 +3640,8 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
             *outcome,
             floor.clone(),
             *floor_passed,
-            None,
+            // A floor-blocked wave build still committed real work — carry its oid.
+            commit.clone(),
             reason.clone(),
             wt.as_path(),
             branch.as_str(),
@@ -3713,6 +3721,17 @@ fn audit_terminal_worker_artifact(
     if ahead == 0 {
         return;
     }
+    // Record the tier the chunk actually ran at (promoted/effective), not the
+    // plan-declared `chunk.tier`: a chunk promoted on an earlier code-stage visit
+    // keeps its promoted tier in `run.chunk_tier`, and a worker that crashes must
+    // not misreport the base tier for the work it committed.
+    let effective_tier = run
+        .chunk_tier
+        .get(&chunk.id)
+        .copied()
+        .unwrap_or(chunk.tier)
+        .wire_name()
+        .to_string();
     run.preserved
         .push((artifact.wt.clone(), artifact.branch.clone()));
     upsert_chunk_report(
@@ -3720,7 +3739,7 @@ fn audit_terminal_worker_artifact(
         ChunkReport {
             id: chunk.id.clone(),
             title: chunk.title.clone(),
-            tier: chunk.tier.wire_name().to_string(),
+            tier: effective_tier,
             outcome: "committed".to_string(),
             floor_passed: None,
             floor: None,
@@ -3800,6 +3819,11 @@ enum ChunkAttempt {
         floor: Option<FloorVerdict>,
         /// Whether the floor passed (`Some(true)` only on a merge conflict).
         floor_passed: Option<bool>,
+        /// The validated authored commit oid when the attempt committed but never
+        /// merged (a floor-blocked commit, or a floor-green build that hit a merge
+        /// conflict). `None` when no commit was produced. Recorded in the preserved
+        /// [`ChunkReport`] so the audit names the recoverable commit.
+        commit: Option<String>,
         /// Whether this outcome can be retried by a re-code (a merge conflict
         /// cannot — re-coding the same chunk would not resolve a moved tip here).
         recodable: bool,
@@ -3861,6 +3885,7 @@ fn attempt_chunk(
             findings,
             floor,
             floor_passed,
+            commit,
             recodable,
             wt,
             branch,
@@ -3873,6 +3898,7 @@ fn attempt_chunk(
                 findings,
                 floor,
                 floor_passed,
+                commit,
                 recodable,
                 wt,
                 branch,
@@ -3921,6 +3947,9 @@ fn attempt_chunk(
             findings: vec![format!("chunk merge conflict: {details}")],
             floor: Some(verdict),
             floor_passed: Some(true),
+            // The floor-green build committed real work; the conflict is only against
+            // the moved integration tip. Preserve the authored oid for the audit.
+            commit: Some(commit),
             recodable: false,
             wt: chunk_wt,
             branch: chunk_branch,
@@ -4030,6 +4059,9 @@ fn build_and_gate(
         reason,
         floor: None,
         floor_passed: None,
+        // No validated commit was produced (no-change / failure / timeout / cancel,
+        // or an integrity check that rejected the harness's claimed commit).
+        commit: None,
         recodable: true,
         wt: chunk_wt.clone(),
         branch: chunk_branch.clone(),
@@ -4146,6 +4178,11 @@ fn build_and_gate(
                 findings: fixloop::floor_findings(&verdict),
                 floor: Some(verdict),
                 floor_passed: Some(false),
+                // The harness committed real work that the floor then rejected —
+                // `head` is validated (== reported commit, descendant of base,
+                // linear, clean). Preserve its oid so the audit names the exact
+                // recoverable commit, not just the branch.
+                commit: Some(head),
                 recodable: true,
                 wt: chunk_wt,
                 branch: chunk_branch,
@@ -4192,6 +4229,10 @@ enum BuildAttempt {
         findings: Vec<String>,
         floor: Option<FloorVerdict>,
         floor_passed: Option<bool>,
+        /// The validated authored commit oid, when the harness DID commit but the
+        /// work never merged (a floor-blocked commit). `None` for a block that
+        /// produced no commit (harness no-change / failure / timeout / cancel).
+        commit: Option<String>,
         recodable: bool,
         wt: PathBuf,
         branch: String,
@@ -4237,9 +4278,10 @@ fn push_blocked_chunk(
             floor_passed,
             floor,
             merged: false,
-            // The floor-gated commit oid when the preserved work committed (a
-            // Built-then-unmerged preservation); `None` when no mergeable commit
-            // exists to name.
+            // The authored commit oid of any preserved-but-unmerged work that DID
+            // commit — a floor-green Built preservation, a floor-blocked commit, or
+            // a floor-green build that hit a merge conflict. `None` when the block
+            // produced no commit (harness no-change / failure / timeout / cancel).
             commit,
             merge_commit: None,
             replayed: false,
