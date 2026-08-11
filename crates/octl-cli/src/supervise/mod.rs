@@ -2578,6 +2578,13 @@ fn respawn_agent(
     let branch = retry_branch_name(node.branch.as_deref(), attempt);
     let req = crate::run::spawn::SpawnRequest {
         kind: crate::run::kind_kebab(node.kind),
+        // Re-spawn under the SAME harness the run was created with (recorded on
+        // the manifest), so a retry never silently drops back to claude. `None`
+        // (legacy manifest / claude) keeps workmux's default agent, unchanged.
+        agent: manifest
+            .harness
+            .as_deref()
+            .and_then(crate::harness::workmux_agent),
         branch: &branch,
         prompt_file: &prompt_path,
         layout: None,

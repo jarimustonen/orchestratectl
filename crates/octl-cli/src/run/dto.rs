@@ -196,6 +196,9 @@ pub struct ManifestView<'a> {
     pub source_repo: Option<&'a str>,
     pub source_branch: Option<&'a str>,
     pub worktree_root: Option<&'a str>,
+    /// The code-harness this run's worker was launched with (`claude` | `pi` |
+    /// …). `null` for a legacy run created before harness selection existed.
+    pub harness: Option<&'a str>,
     pub node_count: u32,
     pub open_discussions: u32,
     pub pending_spinoffs: u32,
@@ -217,6 +220,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             source_repo: m.source_repo.as_deref(),
             source_branch: m.source_branch.as_deref(),
             worktree_root: m.worktree_root.as_deref(),
+            harness: m.harness.as_deref(),
             node_count: m.node_count,
             open_discussions: m.open_discussions,
             pending_spinoffs: m.pending_spinoffs,
@@ -236,6 +240,9 @@ pub struct RunSummary {
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
+    /// The code-harness this run's worker was launched with (`claude` | `pi` |
+    /// …). `null` for a legacy run created before harness selection existed.
+    pub harness: Option<String>,
     pub node_count: u32,
     /// Liveness of the run's per-run supervisor. Defaults to the "unknown"
     /// probe from `From`; the `list` handler overrides it with a real probe
@@ -304,6 +311,7 @@ impl From<&Manifest> for RunSummary {
             status: status_kebab(m.status).to_string(),
             title: m.title.clone(),
             created_at: m.created_at,
+            harness: m.harness.clone(),
             node_count: m.node_count,
             supervisor: SupervisorView::unknown(),
             stalled: false,
@@ -338,6 +346,7 @@ mod tests {
             worktree_root: None,
             managed_tmux_session: None,
             notify_cmd: None,
+            harness: None,
             node_count: 0,
             open_discussions: 0,
             pending_spinoffs: 0,
@@ -364,6 +373,7 @@ mod tests {
                 "source_repo": null,
                 "source_branch": null,
                 "worktree_root": null,
+                "harness": null,
                 "node_count": 0,
                 "open_discussions": 0,
                 "pending_spinoffs": 0,
@@ -400,6 +410,7 @@ mod tests {
                 "status": "pending",
                 "title": "seed-run",
                 "created_at": "2024-01-01T00:00:00Z",
+                "harness": null,
                 "node_count": 0,
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },
                 "stalled": false,

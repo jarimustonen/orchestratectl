@@ -96,6 +96,11 @@ pub struct Args<'a> {
     pub agent_startup_timeout: u32,
     pub parent_run_id: Option<String>,
     pub parent_node_id: Option<String>,
+    /// Raw `--harness <name>` flag, if given. The top layer of the
+    /// flag > env > config > default precedence resolved in
+    /// [`crate::harness::select::resolve`]; `None` falls through to
+    /// `ORCHESTRATECTL_HARNESS`, then `config.toml`, then the built-in `claude`.
+    pub harness: Option<String>,
     /// Completion-notification command (`--notify`). Persisted into the
     /// `run.created` event as `notify_cmd` so the supervisor can run it once
     /// on the terminal transition. `None` for a run created without `--notify`.
@@ -194,6 +199,13 @@ struct SpawnResult {
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let title = require_nonempty(&args.title, "title")?;
+
+    // Resolve the harness (flag > env > config > default) up front so an invalid
+    // `--harness` / `ORCHESTRATECTL_HARNESS` / config value fails fast before we
+    // touch disk — same fail-fast contract as `--notify` / `--tmux-session`
+    // below. Recorded on the run as provenance and mapped to the worker's workmux
+    // agent at spawn (issue `run-create-harness-flag`).
+    let harness = crate::harness::select::resolve(args.kind, args.harness.as_deref())?;
 
     // Validate the optional completion hook up front (fail fast, before we
     // touch disk): an all-whitespace `--notify` is a caller mistake. `None`
@@ -452,6 +464,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if let Some(cmd) = notify_cmd.as_deref() {
         data.insert("notify_cmd".into(), Value::String(cmd.into()));
     }
+    // Record the resolved harness (folded into `manifest.harness` by the reducer)
+    // and, for provenance, which precedence layer chose it. `harness_source` is
+    // event-log-only — it explains *why* this run got this harness without
+    // bloating the manifest projection.
+    data.insert("harness".into(), Value::String(harness.name.clone()));
+    data.insert(
+        "harness_source".into(),
+        Value::String(harness.source.as_str().into()),
+    );
     if let Some(v) = args.task.as_deref() {
         data.insert("task".into(), Value::String(v.into()));
     }
@@ -615,6 +636,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let branch_name = derive_branch_name(args.kind, &run_id, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
+        // Launch the worker under the resolved harness's workmux agent. `None`
+        // for the default (claude) keeps create.sh's argv unchanged from before
+        // `--harness` existed; `Some("pi")` etc. selects a non-default harness.
+        agent: harness.workmux_agent(),
         branch: &branch_name,
         prompt_file: &prompt_path,
         layout: args.layout.as_deref(),

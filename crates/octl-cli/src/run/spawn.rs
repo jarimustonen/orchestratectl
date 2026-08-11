@@ -101,6 +101,13 @@ impl SpawnOutcome {
 pub struct SpawnRequest<'a> {
     /// kebab-case kind string passed as `--type`.
     pub kind: &'a str,
+    /// Workmux agent to launch in the worker's pane, forwarded to create.sh as
+    /// `--agent <name>` (→ `workmux add -a <name>`). `None` keeps workmux's own
+    /// configured default agent — the historical behaviour, and what a `claude`
+    /// harness resolves to (byte-identical to before this flag existed).
+    /// `Some(name)` selects a non-default harness's agent (e.g. `pi`); the
+    /// harness → agent mapping lives in [`crate::harness::workmux_agent`].
+    pub agent: Option<&'a str>,
     /// Branch name (positional 1). Caller is responsible for any
     /// canonicalization; create.sh validates the charset.
     pub branch: &'a str,
@@ -186,6 +193,12 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         cmd.current_dir(cwd);
     }
     cmd.arg("--type").arg(req.kind);
+    // Forward the selected harness's workmux agent. Omitted for the default
+    // (claude → `None`), so a default-harness spawn's create.sh argv is unchanged
+    // from before `--harness` existed.
+    if let Some(agent) = req.agent {
+        cmd.arg("--agent").arg(agent);
+    }
     if let Some(layout) = req.layout {
         cmd.arg("--layout").arg(layout);
     }
@@ -446,6 +459,7 @@ EOF
         std::fs::write(&prompt, "do thing").unwrap();
         let out = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -480,6 +494,7 @@ exit 2
         std::fs::write(&prompt, "do thing").unwrap();
         let err = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -513,6 +528,7 @@ exit 1
         std::fs::write(&prompt, "x").unwrap();
         let err = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -563,6 +579,7 @@ exit 1
         std::fs::write(&prompt, "x").unwrap();
         let out = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -653,6 +670,72 @@ EOF
     }
 
     #[test]
+    fn forwards_agent_flag() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let me = std::process::id();
+        // Fixture echoes back whichever `--agent <name>` it was given (default
+        // `none` if absent) as the emitted `tmux_session`, so the test can assert
+        // the flag actually reached the script's argv (→ `workmux add -a`).
+        let script = fixture_script(
+            dir.path(),
+            &format!(
+                r#"#!/bin/bash
+agent="none"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent) agent="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat <<EOF
+{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$agent","tmux_window_id":"@9"}}
+EOF
+"#
+            ),
+        );
+        std::env::set_var("OCTL_CREATE_SH", &script);
+        let prompt = dir.path().join("p.md");
+        std::fs::write(&prompt, "x").unwrap();
+
+        // A non-default harness agent is forwarded verbatim.
+        let with = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            agent: Some("pi"),
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
+            parent_session: None,
+            source_branch: None,
+            cwd: None,
+        })
+        .unwrap();
+        assert_eq!(with.tmux_session.as_deref(), Some("pi"));
+
+        // No `--agent` when the harness maps to `None` (claude default): create.sh
+        // sees no agent flag and keeps workmux's default agent — unchanged argv.
+        let without = run_create_sh(&SpawnRequest {
+            kind: "spinoff",
+            agent: None,
+            branch: "wt/x",
+            prompt_file: &prompt,
+            layout: None,
+            no_hooks: false,
+            keep_tmux_on_error: false,
+            agent_startup_timeout: 90,
+            parent_session: None,
+            source_branch: None,
+            cwd: None,
+        })
+        .unwrap();
+        assert_eq!(without.tmux_session.as_deref(), Some("none"));
+        std::env::remove_var("OCTL_CREATE_SH");
+    }
+
+    #[test]
     fn forwards_parent_session_flag() {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
@@ -683,6 +766,7 @@ EOF
 
         let with = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -698,6 +782,7 @@ EOF
 
         let without = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -744,6 +829,7 @@ EOF
 
         let with = run_create_sh(&SpawnRequest {
             kind: "orchestrated",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -762,6 +848,7 @@ EOF
 
         let without = run_create_sh(&SpawnRequest {
             kind: "orchestrated",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -809,6 +896,7 @@ EOF
         // Explicit non-default value is forwarded verbatim.
         let with = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -825,6 +913,7 @@ EOF
         // The octl default (90) is always forwarded — never create.sh's 30s.
         let defaulted = run_create_sh(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,
@@ -882,6 +971,7 @@ EOF
         std::fs::write(&prompt, "x").unwrap();
         let out = run_create_sh_with_tmux_retry(&SpawnRequest {
             kind: "spinoff",
+            agent: None,
             branch: "wt/x",
             prompt_file: &prompt,
             layout: None,

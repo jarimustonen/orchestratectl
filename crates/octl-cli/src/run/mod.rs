@@ -82,6 +82,15 @@ pub enum RunAction {
         /// Workmux layout name; forwarded to create.sh as `-l <name>`.
         #[arg(long)]
         layout: Option<String>,
+        /// Code harness to launch the worker under: `claude` (default) | `pi` |
+        /// `aider` | `claude-deepseek`. Overrides `ORCHESTRATECTL_HARNESS`, the
+        /// `config.toml` `[harness]` default, and the built-in default (in that
+        /// precedence order). A non-claude harness is forwarded to create.sh as
+        /// `--agent <name>` (→ `workmux add -a`), so the selected agent must be
+        /// configured in workmux. Recorded on the run and shown by `run show` /
+        /// `run list --json`.
+        #[arg(long)]
+        harness: Option<String>,
         /// Skip workmux post-create hooks; forwarded to create.sh.
         #[arg(long)]
         no_hooks: bool,
@@ -243,6 +252,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             task,
             prompt_file,
             layout,
+            harness,
             no_hooks,
             headless,
             tmux_session,
@@ -262,6 +272,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             task,
             prompt_file,
             layout,
+            harness,
             no_hooks,
             headless,
             tmux_session,

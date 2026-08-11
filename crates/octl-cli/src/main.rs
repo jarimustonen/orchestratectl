@@ -1,4 +1,9 @@
 mod cli;
+// User-facing configuration file (`~/.orchestratectl/config.toml`), the `file`
+// layer of the flag > env > file > default precedence (AGENTS-AI-FIRST-CLI §8).
+// Currently read only for the `run create --harness` default; a missing/empty
+// file is the common case and yields the built-in defaults.
+mod config;
 mod discussion;
 mod doctor;
 mod error;

@@ -39,8 +39,36 @@ pub mod bakeoff;
 pub mod claude;
 pub mod conformance;
 pub mod pi;
+pub mod select;
 pub mod stub;
 pub(crate) mod support;
+
+/// The canonical set of harness adapter names, in registry order. Single source
+/// of truth for a valid `run create --harness <name>` (and `harness bakeoff
+/// --only <name>`) value; mirrors [`bakeoff::registry`]'s adapter names.
+pub const KNOWN_HARNESSES: &[&str] = &["aider", "claude", "claude-deepseek", "pi"];
+
+/// The built-in default harness when no flag / env / config selects one. Claude
+/// stays the default and the interactive driver (issue `run-create-harness-flag`).
+pub const DEFAULT_HARNESS: &str = "claude";
+
+/// Map a resolved harness name to the workmux agent to launch in the worker's
+/// tmux pane (`create.sh --agent` → `workmux add -a`).
+///
+/// `claude` maps to `None` so the launch stays **byte-identical** to today's
+/// default — no `--agent` is passed and workmux uses its own configured default
+/// agent. Every other harness forwards its own name as the workmux agent (so
+/// `--harness pi` runs `workmux add -a pi`; workmux must have that agent
+/// configured). `None` is also the fallback for an unrecognised name, but
+/// callers validate against [`KNOWN_HARNESSES`] before reaching here.
+#[must_use]
+pub fn workmux_agent(harness: &str) -> Option<&str> {
+    match harness {
+        "claude" => None,
+        other if KNOWN_HARNESSES.contains(&other) => Some(other),
+        _ => None,
+    }
+}
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

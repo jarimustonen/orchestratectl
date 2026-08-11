@@ -578,6 +578,14 @@ pub struct Manifest {
     /// field existed readable.
     #[serde(default)]
     pub notify_cmd: Option<String>,
+    /// The code-harness adapter this run's worker was launched with
+    /// (`claude` | `pi` | `aider` | `claude-deepseek`), resolved at `run create`
+    /// via the flag > env > config > default precedence and recorded here as
+    /// provenance. `None` for a manifest written before this field existed
+    /// (`#[serde(default)]`) — such legacy runs predate harness selection and
+    /// were all `claude`. Surfaced on `run show` / `run list --json`.
+    #[serde(default)]
+    pub harness: Option<String>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
     /// Count of currently open discussions (denormalized counter).

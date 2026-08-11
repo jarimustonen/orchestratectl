@@ -543,6 +543,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .get("notify_cmd")
             .and_then(Value::as_str)
             .map(str::to_string),
+        harness: d.get("harness").and_then(Value::as_str).map(str::to_string),
         node_count: 0,
         open_discussions: 0,
         pending_spinoffs: 0,
@@ -1324,6 +1325,41 @@ mod tests {
             "audit events must not mutate the manifest"
         );
         assert!(!paths.nodes_dir().exists(), "no node projection created");
+    }
+
+    #[test]
+    fn run_created_folds_harness_when_present_and_defaults_none() {
+        let tmp = TempDir::new().unwrap();
+
+        // A `run.created` carrying `harness` folds it onto the manifest.
+        let run_id = "01jxhrnsaa0000000000000001";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data = serde_json::json!({
+            "kind": "spinoff", "lifecycle": "autonomous", "title": "t",
+            "harness": "pi", "harness_source": "flag",
+        });
+        apply_event(&paths, &created).expect("run.created applies");
+        let m = read_manifest_opt(&paths).unwrap().unwrap();
+        assert_eq!(m.harness.as_deref(), Some("pi"));
+
+        // A `run.created` WITHOUT `harness` (legacy / claude) leaves it `None`.
+        let run_id2 = "01jxhrnsaa0000000000000002";
+        let rid2 = RunId::parse_str(run_id2).unwrap();
+        let dir2 = crate::run_dir(tmp.path(), &rid2);
+        std::fs::create_dir_all(&dir2).unwrap();
+        let paths2 = RunPaths::new(dir2, run_id2).unwrap();
+        let mut created2 = event(run_id2);
+        created2.kind = "run.created".into();
+        created2.data =
+            serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" });
+        apply_event(&paths2, &created2).expect("run.created applies");
+        let m2 = read_manifest_opt(&paths2).unwrap().unwrap();
+        assert_eq!(m2.harness, None);
     }
 
     /// Bootstrap a run manifest + one live `n-0001` spinoff node, returning its

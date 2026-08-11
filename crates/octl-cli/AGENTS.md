@@ -33,6 +33,34 @@ After `cargo test -p octl-cli` finishes, `pgrep -lf "orchestratectl.*supervise"`
 
 It stubs the two shell-out boundaries through the production override hooks — `OCTL_CREATE_SH` (`run::spawn`) and `OCTL_MERGE_SH` (`run::merge`) — and points `TMUX_BIN`/`GIT_BIN` at nonexistent paths so the supervisor's tmux liveness probe reads `Unknown` (PID liveness governs → the live stub agent stays `Alive` until the merge terminalizes the node) and every teardown step is a lenient no-op. The stub agent (a `sleep`) is reaped by an `AgentGuard` on drop, panic-safe, alongside `TestHome`'s supervisor reaper. No new test-only hook was needed; adding lifecycle scenarios (failure path, concurrency, reattach) means extending this file.
 
+## `run create --harness` (worker harness selection)
+
+`run create --harness <name>` picks which code harness launches the worker in its
+tmux pane — `claude` (default) | `pi` | `aider` | `claude-deepseek` (the
+`harness::KNOWN_HARNESSES` registry; same names as `harness bakeoff`). The
+mechanism is deliberately narrow: the resolved harness maps to a **workmux agent**
+(`harness::workmux_agent`) forwarded to `create.sh` as `--agent <name>` (→
+`workmux add -a`). `claude` maps to `None` — no `--agent` is passed, so a default
+spawn's create.sh argv is byte-identical to before the flag existed. The
+supervisor/merge/report path is harness-agnostic, so a non-claude worker rides the
+exact same lifecycle.
+
+Precedence (AGENTS-AI-FIRST-CLI §8), resolved per run in `harness::select`:
+**flag `--harness` > env `ORCHESTRATECTL_HARNESS` > `config.toml` `[harness]`
+(per-kind override, then section default) > built-in default (`claude`)**. The
+config file (`~/.orchestratectl/config.toml`, `config.rs`) is the tool's first
+config-file layer; a repo/user points `[harness.per_kind] research = "pi"` while
+`code` stays claude. The resolved harness is folded onto `manifest.harness` (from
+the `run.created` event, which also carries `harness_source` for provenance) and
+surfaced on `run show` / `run list --json`. `harness::select::resolve_with` is the
+pure, unit-tested resolver; `resolve` supplies the ambient config+env.
+
+NOT wired: the `CodeHarness::run_chunk` in-process contract (bakeoff/pipeline) is a
+*synchronous* seam and is unrelated to the detached-tmux worker launch — do not try
+to route `run create` through it. `--harness pi` requires a `pi` agent configured
+in workmux; the Claude-flavored bundled-SKILL prompt translation for a pi worker is
+a separate follow-up (`run create --harness` lands the launch selector only).
+
 ## Shelling out to `claude -p` (pipeline spec/verify + harness adapters)
 
 `claude -p --output-format json` does **not** emit a single result object — it

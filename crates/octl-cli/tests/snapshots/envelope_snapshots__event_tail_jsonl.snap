@@ -1,7 +1,8 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
-{"ts":"[TS]","seq":1,"kind":"run.created","run_id":"[RUN_ID]","data":{"kind":"spinoff","lifecycle":"autonomous","title":"seed-run"}}
+{"ts":"[TS]","seq":1,"kind":"run.created","run_id":"[RUN_ID]","data":{"harness":"claude","harness_source":"default","kind":"spinoff","lifecycle":"autonomous","title":"seed-run"}}
 {"ts":"[TS]","seq":2,"kind":"node.created","run_id":"[RUN_ID]","node_id":"n-0001","data":{"agent_pid":4242,"branch":"wt/seed","kind":"spinoff","tmux_window":"seed-win","worktree_path":"/tmp/seed-wt"}}
 {"schema_version":1,"event":"result","status":"ok","last_seq":2}

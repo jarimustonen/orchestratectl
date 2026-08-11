@@ -11,6 +11,7 @@ expression: value
     "status": "pending",
     "title": "seed-run",
     "created_at": "[TS]",
+    "harness": "claude",
     "node_count": 1,
     "supervisor": {
       "pid": null,
@@ -31,6 +32,7 @@ expression: value
       "source_repo": null,
       "source_branch": null,
       "worktree_root": null,
+      "harness": "claude",
       "node_count": 1,
       "open_discussions": 0,
       "pending_spinoffs": 0,

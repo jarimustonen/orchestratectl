@@ -73,6 +73,35 @@ expression: value
         }
       },
       {
+        "name": "harness",
+        "long": "harness",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Code harness to launch the worker under: `claude` (default) | `pi` | `aider` | `claude-deepseek`. Overrides `ORCHESTRATECTL_HARNESS`, the `config.toml` `[harness]` default, and the built-in default (in that precedence order). A non-claude harness is forwarded to create.sh as `--agent <name>` (→ `workmux add -a`), so the selected agent must be configured in workmux. Recorded on the run and shown by `run show` / `run list --json`",
+        "value_names": [
+          "HARNESS"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
         "name": "headless",
         "long": "headless",
         "long_aliases": [],
