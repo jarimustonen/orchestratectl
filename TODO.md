@@ -155,7 +155,8 @@ LANE B — pipeline/* + floor/* + harness/*
 LANE C — workmux vendoring — COMPLETE (empty; multiplexer + git-worktree wrapper both vendored & landed 2026-08-10)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up)
+  ◀ pidev-dual-home-skills                   ◀ URGENT (Jari 2026-08-11): `skill install` must dual-home each SKILL.md into `~/.pi/agent/skills/<name>/` (pi.dev harness discovery) in addition to `~/.claude/skills/`, vendored-filtering-aware, claude path unchanged. touches skill.rs — collision w/ doctor-orphan-companion-files (sequence, same file).
+  ▶ doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up; sequenced AFTER pidev-dual-home-skills — same skill.rs)
     doctor-codex-companion-coverage         (skill.rs: doctor + prune do not cover codex skills or _shared companions; filed by the codex-companion-layout worker's /llm-review — natural pair w/ doctor-orphan-companion-files)
     skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
