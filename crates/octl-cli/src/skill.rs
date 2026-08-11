@@ -7,6 +7,7 @@
 //! embedded into the binary at compile time via `include_str!`, so they
 //! version with the CLI. See `AGENTS-AI-FIRST-CLI.md` §15-§17.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
@@ -27,22 +28,48 @@ struct EmbeddedSkill {
     path_in_repo: &'static str,
 }
 
-/// A companion reference file that ships *alongside* a skill's `SKILL.md`
-/// and installs into the same directory. Used for shared reference prose
-/// that more than one skill links to (e.g. the stint family's
-/// `AGENTS-EXECUTION-DAG.md`), so the linked file actually exists on disk
-/// next to the installed skill in whatever project the skill runs in.
+/// A companion reference file that ships *alongside* a skill's `SKILL.md`.
+/// Used for shared reference prose that more than one skill links to (e.g.
+/// the stint family's `AGENTS-EXECUTION-DAG.md`), so the linked file
+/// actually exists on disk in whatever project the skill runs in.
+///
+/// The two supported agent layouts install it differently:
+///
+/// - **claude** (`~/.claude/skills/<name>/`) — a per-skill directory, so the
+///   companion is written as a plain sibling of the owning skill's
+///   `SKILL.md` and the in-body links (`AGENTS-EXECUTION-DAG.md` from the
+///   owner, `../stint-start/AGENTS-EXECUTION-DAG.md` from a cross-skill
+///   linker) resolve as authored.
+/// - **codex** (`~/.codex/prompts/`) — a flat prompts dir where every
+///   top-level `*.md` becomes a slash-command, so a bare companion would
+///   surface as a bogus prompt and collide across skills. The companion is
+///   instead written into a shared `_shared/` subdir (ignored by codex's
+///   top-level prompt discovery), and `cmd_install` rewrites each
+///   `claude_link_target` in the codex skill body to the single
+///   `_shared/<filename>` form so the link still resolves.
 struct EmbeddedResource {
     filename: &'static str,
     body: &'static str,
+    /// The markdown link targets (the payload inside `](…)`) that reference
+    /// this companion in the claude-layout skill bodies. On a codex install
+    /// each is rewritten to `_shared/<filename>`. Anchoring the rewrite on
+    /// the full `](target)` form keeps the shorter sibling target from
+    /// matching inside a longer `../owner/target` one.
+    claude_link_targets: &'static [&'static str],
 }
+
+/// Subdir under the flat codex prompts dir (`~/.codex/prompts/_shared/`)
+/// that holds companion reference files. A subdir (not a top-level `.md`)
+/// so codex never mistakes a companion for a slash-command prompt, and a
+/// single shared location so every skill links to the one copy.
+const CODEX_SHARED_SUBDIR: &str = "_shared";
 
 /// Companion resources for a skill, keyed by skill name. Most skills have
 /// none. `build.rs` renders every non-`SKILL.template.md` `*.md` file in a
 /// skill's directory into `$OUT_DIR/skills/<name>/`, and the matching
 /// `include_str!` below embeds it. `cmd_install` writes each resource as a
-/// sibling of the skill's `SKILL.md` destination — for the claude layout
-/// only (see the install loop for why codex is skipped).
+/// sibling of the skill's `SKILL.md` (claude) or into the `_shared/` subdir
+/// (codex) — see `EmbeddedResource` for the layout rationale.
 fn resources_for(name: &str) -> &'static [EmbeddedResource] {
     match name {
         "stint-start" => STINT_START_RESOURCES,
@@ -56,7 +83,57 @@ const STINT_START_RESOURCES: &[EmbeddedResource] = &[EmbeddedResource {
         env!("OUT_DIR"),
         "/skills/stint-start/AGENTS-EXECUTION-DAG.md"
     )),
+    // `stint-start` links to it as a sibling; `stint-handoff` links across
+    // to it via `../stint-start/…`. Both collapse to `_shared/…` on codex.
+    claude_link_targets: &[
+        "AGENTS-EXECUTION-DAG.md",
+        "../stint-start/AGENTS-EXECUTION-DAG.md",
+    ],
 }];
+
+/// The codex-layout link target for a companion: a single shared path every
+/// skill body resolves to, relative to the flat prompts dir.
+fn codex_link_target(filename: &str) -> String {
+    format!("{CODEX_SHARED_SUBDIR}/{filename}")
+}
+
+/// Rewrite a skill body for the target agent. Claude bodies are byte-for-byte
+/// the embedded source. Codex bodies get every companion's claude-layout link
+/// forms rewritten to the shared `_shared/<filename>` target, so the flat
+/// prompts layout resolves the same reference the per-skill claude layout
+/// does. The rewrite is anchored on the full `](target)` form and is a no-op
+/// for any body that references no companion.
+fn render_body_for_agent(agent: &str, body: &'static str) -> Cow<'static, str> {
+    if agent != "codex" {
+        return Cow::Borrowed(body);
+    }
+    let mut rendered = Cow::Borrowed(body);
+    for skill in SKILLS {
+        for resource in resources_for(skill.name) {
+            let codex_target = codex_link_target(resource.filename);
+            for claude_target in resource.claude_link_targets {
+                let from = format!("]({claude_target})");
+                if rendered.contains(&from) {
+                    let to = format!("]({codex_target})");
+                    rendered = Cow::Owned(rendered.replace(&from, &to));
+                }
+            }
+        }
+    }
+    rendered
+}
+
+/// Resolve a codex companion's destination: `<prompts-dir>/_shared/<filename>`,
+/// where the prompts dir is the parent of the skill's flat prompt file
+/// `skill_path`. A bare relative `skill_path` (empty parent) places the
+/// `_shared/` subdir in the current directory.
+fn codex_companion_path(skill_path: &Path, filename: &str) -> PathBuf {
+    let shared_dir = match skill_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(CODEX_SHARED_SUBDIR),
+        _ => PathBuf::from(CODEX_SHARED_SUBDIR),
+    };
+    shared_dir.join(filename)
+}
 
 const SKILLS: &[EmbeddedSkill] = &[
     EmbeddedSkill {
@@ -471,33 +548,45 @@ pub fn cmd_install(
             ],
         };
         for (agent_name, path) in targets {
-            // Companion resources are per-skill sibling files, which only
-            // works in the claude layout (`~/.claude/skills/<name>/`). The
-            // codex layout is a flat prompts directory, where a sibling
-            // would land un-namespaced in `~/.codex/prompts/` and could
-            // collide across skills — and cross-skill links like
-            // `../stint-start/…` cannot resolve there regardless. So we
-            // install resources for claude only.
-            if agent_name == "claude" {
-                if dest.is_none() {
-                    if let Some(parent) = path.parent() {
-                        mark_dirs.push((skill.name, parent.to_path_buf()));
+            // Companion resources install per layout (see `EmbeddedResource`):
+            // claude gets them as plain siblings of the skill's `SKILL.md`;
+            // codex, whose flat prompts dir surfaces every top-level `.md` as
+            // a slash-command, gets them in a shared `_shared/` subdir with
+            // the skill body's companion links rewritten to point there.
+            match agent_name {
+                "claude" => {
+                    if dest.is_none() {
+                        if let Some(parent) = path.parent() {
+                            mark_dirs.push((skill.name, parent.to_path_buf()));
+                        }
+                    }
+                    for resource in resources_for(skill.name) {
+                        plan.push(PlanItem {
+                            name: resource.filename,
+                            agent: agent_name,
+                            path: sibling_path(&path, resource.filename),
+                            content: Cow::Borrowed(resource.body),
+                        });
                     }
                 }
-                for resource in resources_for(skill.name) {
-                    plan.push(PlanItem {
-                        name: resource.filename,
-                        agent: agent_name,
-                        path: sibling_path(&path, resource.filename),
-                        content: resource.body,
-                    });
+                "codex" => {
+                    for resource in resources_for(skill.name) {
+                        plan.push(PlanItem {
+                            name: resource.filename,
+                            agent: agent_name,
+                            path: codex_companion_path(&path, resource.filename),
+                            content: Cow::Borrowed(resource.body),
+                        });
+                    }
                 }
+                _ => {}
             }
+            let content = render_body_for_agent(agent_name, skill.body);
             plan.push(PlanItem {
                 name: skill.name,
                 agent: agent_name,
                 path,
-                content: skill.body,
+                content,
             });
         }
     }
@@ -518,7 +607,7 @@ pub fn cmd_install(
         // overwrite, even if a concurrent process created it in the
         // window. (Review finding #1.)
         let allow_overwrite = preflight_result.overwrite_allowed.contains(&item.path);
-        write_atomic(&item.path, item.content, allow_overwrite)?;
+        write_atomic(&item.path, &item.content, allow_overwrite)?;
         installed.push(InstalledFile {
             name: item.name,
             agent: item.agent,
@@ -625,7 +714,10 @@ struct PlanItem {
     name: &'static str,
     agent: &'static str,
     path: PathBuf,
-    content: &'static str,
+    /// Bytes to write. Borrowed for the claude layout and companions (the
+    /// embedded source verbatim); owned when a codex body needed companion
+    /// links rewritten (see `render_body_for_agent`).
+    content: Cow<'static, str>,
 }
 
 /// Resolve a companion resource's destination: a file named `filename` in

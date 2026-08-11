@@ -714,10 +714,11 @@ fn skill_install_stint_start_writes_companion_resource_for_claude() {
 }
 
 #[test]
-fn skill_install_stint_start_codex_skips_companion() {
-    // The codex layout is a flat prompts dir; a per-skill sibling would
-    // land un-namespaced and could collide across skills. Resources are
-    // therefore claude-only — codex gets the flat prompt but no companion.
+fn skill_install_stint_start_codex_writes_companion_to_shared_and_rewrites_link() {
+    // The codex layout is a flat prompts dir where every top-level `.md`
+    // surfaces as a slash-command, so the companion is installed into a
+    // `_shared/` subdir (never a bogus top-level prompt) and the skill body's
+    // sibling link `](AGENTS-EXECUTION-DAG.md)` is rewritten to point there.
     let home = mk_home();
     let out = bin(&home)
         .args([
@@ -732,16 +733,107 @@ fn skill_install_stint_start_codex_skips_companion() {
         .output()
         .expect("spawn");
     assert!(out.status.success(), "codex install failed: {out:?}");
+
+    let prompt = home.path().join(".codex/prompts/stint-start.md");
+    assert!(prompt.exists(), "flat codex prompt not installed");
+    // Companion lands in `_shared/`, NOT as a top-level flat prompt.
     assert!(
-        home.path().join(".codex/prompts/stint-start.md").exists(),
-        "flat codex prompt not installed"
+        home.path()
+            .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "companion not installed into the codex _shared/ subdir"
     );
     assert!(
         !home
             .path()
             .join(".codex/prompts/AGENTS-EXECUTION-DAG.md")
             .exists(),
-        "companion must not leak into the flat codex prompts dir"
+        "companion must not leak into the flat codex prompts dir as a bogus prompt"
+    );
+
+    // The in-body link resolves to the shared copy, and the claude-layout
+    // sibling form is gone.
+    let body = std::fs::read_to_string(&prompt).unwrap();
+    assert!(
+        body.contains("](_shared/AGENTS-EXECUTION-DAG.md)"),
+        "codex body link was not rewritten to the _shared/ target"
+    );
+    assert!(
+        !body.contains("](AGENTS-EXECUTION-DAG.md)"),
+        "codex body still carries the un-rewritten claude sibling link"
+    );
+
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let installed = v["data"]["installed"].as_array().expect("installed array");
+    let paths: Vec<&str> = installed
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths
+            .iter()
+            .any(|p| p.ends_with("_shared/AGENTS-EXECUTION-DAG.md")),
+        "companion not reported in codex install payload: {paths:?}"
+    );
+}
+
+#[test]
+fn skill_install_stint_handoff_codex_rewrites_cross_skill_link() {
+    // `stint-handoff` links to the DAG cross-skill via
+    // `](../stint-start/AGENTS-EXECUTION-DAG.md)`. On codex that collapses to
+    // the same shared `_shared/` target so the reference still resolves in the
+    // flat layout.
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "install", "stint-handoff", "--agent", "codex"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "codex install failed: {out:?}");
+
+    let body =
+        std::fs::read_to_string(home.path().join(".codex/prompts/stint-handoff.md")).unwrap();
+    assert!(
+        body.contains("](_shared/AGENTS-EXECUTION-DAG.md)"),
+        "cross-skill codex link was not rewritten to the _shared/ target"
+    );
+    assert!(
+        !body.contains("](../stint-start/AGENTS-EXECUTION-DAG.md)"),
+        "codex body still carries the un-rewritten cross-skill link"
+    );
+}
+
+#[test]
+fn skill_install_all_codex_writes_shared_companion_once() {
+    // A full codex catalog install must place the companion in `_shared/`
+    // exactly once (owned by stint-start) with no duplicate-destination
+    // collision, and leave the claude sibling body link byte-for-byte in the
+    // claude install untouched.
+    let home = mk_home();
+    let out = bin(&home)
+        .args(["skill", "install", "--agent", "all"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install --agent all failed: {out:?}");
+
+    // codex: shared companion present, no flat leak.
+    assert!(
+        home.path()
+            .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "codex shared companion missing after --agent all"
+    );
+    // claude: unchanged sibling layout, body link NOT rewritten.
+    let claude_body =
+        std::fs::read_to_string(home.path().join(".claude/skills/stint-start/SKILL.md")).unwrap();
+    assert!(
+        claude_body.contains("](AGENTS-EXECUTION-DAG.md)"),
+        "claude body sibling link must be preserved verbatim"
+    );
+    assert!(
+        home.path()
+            .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "claude sibling companion missing after --agent all"
     );
 }
 
