@@ -80,9 +80,18 @@ pub const HARNESS_ENV: &str = "ORCHESTRATECTL_HARNESS";
 /// the environment. Thin wrapper over [`resolve_with`] that supplies the two
 /// ambient inputs; the pure resolver is unit-tested directly.
 pub fn resolve(kind: Kind, flag: Option<&str>) -> Result<HarnessChoice, CliError> {
+    // The flag is top precedence and must be self-sufficient: a `--harness pi`
+    // run never consults config.toml or the env, so we neither read them nor fail
+    // on a broken one when the flag is present. This also means an idempotent
+    // replay that carries `--harness` is not held hostage to ambient config that
+    // drifted after the original run was created. Only the lower layers below
+    // touch disk / the environment.
+    if let Some(raw) = flag {
+        return finish(raw, HarnessSource::Flag);
+    }
     let config = Config::load()?;
     let env = std::env::var(HARNESS_ENV).ok();
-    resolve_with(kind, flag, env.as_deref(), &config)
+    resolve_with(kind, None, env.as_deref(), &config)
 }
 
 /// The pure precedence resolver: given the explicit flag, the env value, and the
@@ -124,6 +133,21 @@ pub fn resolve_with(
 /// or fail with a structured error that names both the bad value and the layer.
 fn finish(raw: &str, source: HarnessSource) -> Result<HarnessChoice, CliError> {
     let name = raw.trim();
+    // An empty value (e.g. `--harness ""`, or `ORCHESTRATECTL_HARNESS=` reaching
+    // the flag path) deserves a clear message rather than the confusing
+    // "unknown harness ''". (An empty env value is already treated as unset one
+    // layer up in `resolve_with`; this catches the explicit-empty cases.)
+    if name.is_empty() {
+        return Err(CliError::user(
+            "invalid_harness",
+            format!(
+                "empty harness name (from {}); known harnesses: {}",
+                source.as_str(),
+                super::KNOWN_HARNESSES.join(", ")
+            ),
+        )
+        .with_expected(serde_json::json!(super::KNOWN_HARNESSES)));
+    }
     if super::KNOWN_HARNESSES.contains(&name) {
         return Ok(HarnessChoice {
             name: name.to_string(),
@@ -232,6 +256,30 @@ mod tests {
         let e = resolve_with(Kind::Spinoff, None, None, &c).unwrap_err();
         assert_eq!(e.code, "invalid_harness");
         assert!(e.message.contains("from file"), "message: {}", e.message);
+    }
+
+    #[test]
+    fn invalid_per_kind_config_value_names_the_layer() {
+        // A bad harness in a per-kind override is rejected the same way as the
+        // section default, and still attributed to the file layer.
+        let c = cfg(None, &[("spinoff", "gpt")]);
+        let e = resolve_with(Kind::Spinoff, None, None, &c).unwrap_err();
+        assert_eq!(e.code, "invalid_harness");
+        assert_eq!(e.invalid_value.as_deref(), Some("gpt"));
+        assert!(e.message.contains("from file"), "message: {}", e.message);
+    }
+
+    #[test]
+    fn empty_flag_is_a_clear_error() {
+        // `--harness ""` / `--harness "  "` gets a specific message, not the
+        // confusing `unknown harness ''`.
+        let e = resolve_with(Kind::Spinoff, Some("  "), None, &Config::default()).unwrap_err();
+        assert_eq!(e.code, "invalid_harness");
+        assert!(
+            e.message.contains("empty harness name"),
+            "message: {}",
+            e.message
+        );
     }
 
     #[test]

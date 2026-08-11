@@ -48,9 +48,10 @@ exact same lifecycle.
 Precedence (AGENTS-AI-FIRST-CLI §8), resolved per run in `harness::select`:
 **flag `--harness` > env `ORCHESTRATECTL_HARNESS` > `config.toml` `[harness]`
 (per-kind override, then section default) > built-in default (`claude`)**. The
-config file (`~/.orchestratectl/config.toml`, `config.rs`) is the tool's first
-config-file layer; a repo/user points `[harness.per_kind] research = "pi"` while
-`code` stays claude. The resolved harness is folded onto `manifest.harness` (from
+config file (`config.toml` under the resolved home — `$ORCHESTRATECTL_HOME` or
+`~/.orchestratectl`; `config.rs`) is the tool's first config-file layer; a user
+points `[harness.per_kind] research = "pi"` while `code` stays claude (per-kind
+keys are validated against the known run kinds at load, so a typo fails loudly). The resolved harness is folded onto `manifest.harness` (from
 the `run.created` event, which also carries `harness_source` for provenance) and
 surfaced on `run show` / `run list --json`. `harness::select::resolve_with` is the
 pure, unit-tested resolver; `resolve` supplies the ambient config+env.

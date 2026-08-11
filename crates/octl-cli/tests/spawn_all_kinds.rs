@@ -300,6 +300,137 @@ fn no_source_branch_omits_base_flag() {
 }
 
 #[test]
+fn harness_flag_forwards_agent_records_and_surfaces() {
+    // End-to-end for `--harness pi`: create.sh receives `--agent pi`, the run's
+    // manifest records `harness = "pi"`, and `run show --json` surfaces it at
+    // both `data.harness` and `data.manifest.harness`.
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    let v = run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "h",
+        "--task",
+        "do work",
+        "--harness",
+        "pi",
+    ]));
+    let run_id = v["data"]["run_id"].as_str().unwrap().to_string();
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    let forwarded: Vec<&str> = recorded.lines().collect();
+    let pos = forwarded
+        .iter()
+        .position(|a| *a == "--agent")
+        .unwrap_or_else(|| panic!("--agent not forwarded; argv={forwarded:?}"));
+    assert_eq!(
+        forwarded.get(pos + 1).copied(),
+        Some("pi"),
+        "--agent value should be the selected harness; argv={forwarded:?}"
+    );
+
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("runs").join(&run_id).join("manifest.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["harness"], "pi", "manifest records the harness");
+
+    let show = run_ok(bin(&home, &script).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(show["data"]["harness"], "pi", "run show surfaces harness");
+    assert_eq!(
+        show["data"]["manifest"]["harness"], "pi",
+        "run show manifest surfaces harness"
+    );
+}
+
+#[test]
+fn default_harness_omits_agent_and_records_claude() {
+    // No `--harness`: create.sh gets NO `--agent` (byte-identical to before the
+    // flag existed, so workmux's default agent runs), but the manifest still
+    // records the resolved default `claude`.
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    let v = run_ok(bin(&home, &script).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "d", "--task",
+        "do work",
+    ]));
+    let run_id = v["data"]["run_id"].as_str().unwrap().to_string();
+
+    let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
+    assert!(
+        !recorded.lines().any(|a| a == "--agent"),
+        "default harness must not forward --agent; argv={recorded:?}"
+    );
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join("runs").join(&run_id).join("manifest.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["harness"], "claude");
+}
+
+#[test]
+fn flag_harness_works_despite_broken_config_but_default_path_surfaces_it() {
+    // The flag is top precedence and self-sufficient: a malformed config.toml must
+    // NOT fail a `run create --harness pi`. Conversely, the no-flag path DOES
+    // consult the config, so the same broken file is surfaced as a clear error.
+    let home = TestHome::new();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "this is not = valid toml [[[\n",
+    )
+    .unwrap();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+
+    // Flag present → config never read → success.
+    let v = run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "bc",
+        "--task",
+        "do work",
+        "--harness",
+        "pi",
+    ]));
+    assert!(v["data"]["run_id"].as_str().is_some());
+
+    // Flag absent → config consulted → the broken file is a clear error (and no
+    // worktree/supervisor is spawned, since resolution fails before materialize).
+    let (code, err) = run_fail(bin(&home, &script).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "bc2", "--task",
+        "do work",
+    ]));
+    assert_eq!(code, 1, "malformed config is a user error: {err}");
+    assert_eq!(err["error"]["code"], "invalid_config");
+}
+
+#[test]
 fn task_writes_prompt_file_in_run_dir() {
     // `home` reaps the supervisor `run create` spawns when it drops, before
     // the run dir is removed.

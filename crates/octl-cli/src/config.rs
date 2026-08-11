@@ -22,11 +22,19 @@
 //! spinoff = "pi"
 //! ```
 //!
-//! Parsing is strict: a syntactically invalid `config.toml` is a hard
-//! [`CliError`] (a silently ignored config is worse than a loud one — the caller
-//! would reason about a value the file was supposed to set). Unknown keys are
-//! rejected (`deny_unknown_fields`) so a typo'd setting fails loudly rather than
-//! silently doing nothing.
+//! Parsing is strict where it catches user mistakes, lenient where strictness
+//! would only hurt forward-compat:
+//!
+//! - A syntactically invalid `config.toml` is a hard [`CliError`] (a silently
+//!   ignored config is worse than a loud one — the caller would reason about a
+//!   value the file was supposed to set).
+//! - An unknown **key** inside `[harness]` (`defualt = …`) is rejected
+//!   (`deny_unknown_fields` on [`HarnessConfig`]); a typo'd `[harness.per_kind]`
+//!   run-kind key is validated against [`octl_core::Kind::WIRE_NAMES`] and
+//!   likewise rejected. Both fail loudly rather than silently no-op'ing.
+//! - An unknown top-level **section** is tolerated (no `deny_unknown_fields` on
+//!   [`Config`]) so a newer build's future `[section]` never bricks an older
+//!   build reading the same home.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,8 +45,13 @@ use crate::error::CliError;
 
 /// The parsed `config.toml`. All sections optional; an absent section leaves the
 /// corresponding settings at their built-in defaults.
+///
+/// Deliberately NOT `deny_unknown_fields` at the top level: an unknown *section*
+/// (e.g. a future `[ui]` written by a newer build sharing the same home) must not
+/// brick an older build's `run create`. Strictness lives one level down on
+/// [`HarnessConfig`], where an unknown *key* in `[harness]` IS a typo worth
+/// failing on.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     /// `[harness]` — harness-selection defaults for `run create`.
     #[serde(default)]
@@ -54,9 +67,11 @@ pub struct HarnessConfig {
     #[serde(default)]
     pub default: Option<String>,
     /// Per-kind overrides, keyed by kebab-case run kind (`research`, `spinoff`,
-    /// …). A `BTreeMap` keeps the parse deterministic; keys are validated as run
-    /// kinds only lazily, when a matching run is created (an unrelated key never
-    /// blocks an unrelated run).
+    /// …). A `BTreeMap` keeps the parse deterministic. Because `deny_unknown_fields`
+    /// cannot police map keys, [`Config::load_from`] validates every key against
+    /// [`octl_core::Kind::WIRE_NAMES`] at load time — a typo'd kind (`reserach`)
+    /// fails loudly instead of silently no-op'ing (which would defeat the whole
+    /// point of the override).
     #[serde(default)]
     pub per_kind: BTreeMap<String, String>,
 }
@@ -93,12 +108,32 @@ impl Config {
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        toml::from_str(&text).map_err(|e| {
+        let config: Self = toml::from_str(&text).map_err(|e| {
             CliError::user(
                 "invalid_config",
                 format!("config file {} is not valid: {e}", path.display()),
             )
-        })
+        })?;
+        // `deny_unknown_fields` guards the `[harness]` struct fields but not the
+        // dynamic `per_kind` map keys, so validate them here — a typo'd kind
+        // (`reserach = "pi"`) is a mistake the user wants surfaced, not silently
+        // ignored at lookup time.
+        for key in config.harness.per_kind.keys() {
+            if !octl_core::Kind::WIRE_NAMES.contains(&key.as_str()) {
+                return Err(CliError::user(
+                    "invalid_config",
+                    format!(
+                        "config file {} has an unknown run kind '{}' in [harness.per_kind]; \
+                         valid kinds: {}",
+                        path.display(),
+                        key,
+                        octl_core::Kind::WIRE_NAMES.join(", ")
+                    ),
+                )
+                .with_invalid_value(key.clone()));
+            }
+        }
+        Ok(config)
     }
 }
 
@@ -167,5 +202,43 @@ code = "claude"
         let p = write(&dir, "[harness\n");
         let err = Config::load_from(&p).unwrap_err();
         assert_eq!(err.code, "invalid_config");
+    }
+
+    #[test]
+    fn unknown_per_kind_run_kind_is_rejected() {
+        // deny_unknown_fields cannot police map keys, so load-time validation
+        // must: a typo'd run kind fails loudly instead of silently no-op'ing.
+        let dir = TempDir::new().unwrap();
+        let p = write(&dir, "[harness.per_kind]\nreserach = \"pi\"\n");
+        let err = Config::load_from(&p).unwrap_err();
+        assert_eq!(err.code, "invalid_config");
+        assert_eq!(err.invalid_value.as_deref(), Some("reserach"));
+    }
+
+    #[test]
+    fn valid_per_kind_run_kinds_pass() {
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "[harness.per_kind]\nresearch = \"pi\"\ntechnical-decision = \"claude\"\n",
+        );
+        let cfg = Config::load_from(&p).unwrap();
+        assert_eq!(
+            cfg.harness.per_kind.get("research").map(String::as_str),
+            Some("pi")
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_section_is_tolerated() {
+        // Forward-compat: a future section from a newer build must not brick an
+        // older build reading the same home.
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "[ui]\ntheme = \"dark\"\n\n[harness]\ndefault = \"pi\"\n",
+        );
+        let cfg = Config::load_from(&p).unwrap();
+        assert_eq!(cfg.harness.default.as_deref(), Some("pi"));
     }
 }

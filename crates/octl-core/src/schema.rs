@@ -578,10 +578,12 @@ pub struct Manifest {
     /// field existed readable.
     #[serde(default)]
     pub notify_cmd: Option<String>,
-    /// The code-harness adapter this run's worker was launched with
+    /// The code-harness adapter selected for this run's worker
     /// (`claude` | `pi` | `aider` | `claude-deepseek`), resolved at `run create`
     /// via the flag > env > config > default precedence and recorded here as
-    /// provenance. `None` for a manifest written before this field existed
+    /// provenance. This is the *selected* harness — recorded before the worker is
+    /// spawned, so it reflects intent even if the spawn later fails. `None` for a
+    /// manifest written before this field existed
     /// (`#[serde(default)]`) — such legacy runs predate harness selection and
     /// were all `claude`. Surfaced on `run show` / `run list --json`.
     #[serde(default)]

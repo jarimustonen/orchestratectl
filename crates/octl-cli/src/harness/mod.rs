@@ -57,16 +57,23 @@ pub const DEFAULT_HARNESS: &str = "claude";
 ///
 /// `claude` maps to `None` so the launch stays **byte-identical** to today's
 /// default — no `--agent` is passed and workmux uses its own configured default
-/// agent. Every other harness forwards its own name as the workmux agent (so
-/// `--harness pi` runs `workmux add -a pi`; workmux must have that agent
-/// configured). `None` is also the fallback for an unrecognised name, but
-/// callers validate against [`KNOWN_HARNESSES`] before reaching here.
+/// agent. **Every other name** — including one this build does not recognise —
+/// forwards verbatim as the workmux agent (so `--harness pi` runs
+/// `workmux add -a pi`; workmux must have that agent configured).
+///
+/// The unknown case forwards rather than falling back to `None` **on purpose**:
+/// the supervisor's retry path reads `manifest.harness` and passes it here, and
+/// a value written by a newer build (or hand-edited) must NEVER silently
+/// re-launch a run under claude. Forwarding an unknown agent lets workmux fail
+/// loudly instead — the "retry never silently drops back to claude" guarantee.
+/// The `run create` path validates against [`KNOWN_HARNESSES`] before it ever
+/// reaches here, so a fresh run's known name is the common case.
 #[must_use]
 pub fn workmux_agent(harness: &str) -> Option<&str> {
-    match harness {
-        "claude" => None,
-        other if KNOWN_HARNESSES.contains(&other) => Some(other),
-        _ => None,
+    if harness == "claude" {
+        None
+    } else {
+        Some(harness)
     }
 }
 

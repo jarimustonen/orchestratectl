@@ -677,6 +677,18 @@ mod tests {
     }
 
     #[test]
+    fn registry_names_match_known_harnesses() {
+        // `harness::KNOWN_HARNESSES` (the `run create --harness` allow-list) claims
+        // to mirror this registry's adapter names; pin that so the two can't drift.
+        let names: Vec<&str> = registry().iter().map(|a| a.name).collect();
+        assert_eq!(
+            names.as_slice(),
+            crate::harness::KNOWN_HARNESSES,
+            "bakeoff registry names/order must match harness::KNOWN_HARNESSES"
+        );
+    }
+
+    #[test]
     fn binary_available_finds_path_and_missing() {
         let dir = TempDir::new().unwrap();
         let bin = write_exec(dir.path(), "yes-i-exist", "#!/bin/sh\ntrue\n");

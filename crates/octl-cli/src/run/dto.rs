@@ -196,8 +196,9 @@ pub struct ManifestView<'a> {
     pub source_repo: Option<&'a str>,
     pub source_branch: Option<&'a str>,
     pub worktree_root: Option<&'a str>,
-    /// The code-harness this run's worker was launched with (`claude` | `pi` |
-    /// …). `null` for a legacy run created before harness selection existed.
+    /// The code-harness selected for this run's worker (`claude` | `pi` | …),
+    /// recorded at `run create`. `null` for a legacy run created before harness
+    /// selection existed.
     pub harness: Option<&'a str>,
     pub node_count: u32,
     pub open_discussions: u32,
@@ -240,8 +241,9 @@ pub struct RunSummary {
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
-    /// The code-harness this run's worker was launched with (`claude` | `pi` |
-    /// …). `null` for a legacy run created before harness selection existed.
+    /// The code-harness selected for this run's worker (`claude` | `pi` | …),
+    /// recorded at `run create`. `null` for a legacy run created before harness
+    /// selection existed.
     pub harness: Option<String>,
     pub node_count: u32,
     /// Liveness of the run's per-run supervisor. Defaults to the "unknown"
