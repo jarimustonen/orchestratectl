@@ -3,8 +3,9 @@ created: 2026-08-05
 updated: 2026-08-11
 type: improvement
 reporter: jari
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-11
 ---
 
 # doctor: detect orphan companion files (installed by a prior binary, no longer bundled)
