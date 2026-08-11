@@ -1,10 +1,13 @@
 ---
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-11
 type: improvement
-status: open
+status: in-progress
 priority: normal
 related: ['@split-stint-start-handoff']
+commits:
+- hash: '4992356'
+  summary: codex companion resources install to _shared/ with link rewriting
 ---
 
 # Companion skill resources are claude-only; codex flat layout unsupported

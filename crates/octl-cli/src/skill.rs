@@ -103,6 +103,16 @@ fn codex_link_target(filename: &str) -> String {
 /// prompts layout resolves the same reference the per-skill claude layout
 /// does. The rewrite is anchored on the full `](target)` form and is a no-op
 /// for any body that references no companion.
+///
+/// Scope is deliberately the whole catalog, not just the skill being
+/// installed: a skill that links *cross-skill* to another's companion (e.g.
+/// `stint-handoff` → the DAG owned by `stint-start`) must still resolve to the
+/// one shared copy. `claude_link_targets` are distinctive prose strings, so a
+/// global replace never touches an unrelated body — pinned by the
+/// `every_claude_link_target_appears_in_some_skill_body` test. A standalone
+/// install of a cross-linking skill leaves the shared file un-installed until
+/// its owner also lands; that dangles the link exactly as the claude layout
+/// already does (both resolve once both skills are installed).
 fn render_body_for_agent(agent: &str, body: &'static str) -> Cow<'static, str> {
     if agent != "codex" {
         return Cow::Borrowed(body);
@@ -1209,6 +1219,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_claude_link_target_appears_in_some_skill_body() {
+        // The codex rewrite is a literal `](target)` string replacement. If a
+        // companion's `claude_link_target` ever drifts from the actual link
+        // text in the skill bodies (a rename, a reflow), the rewrite silently
+        // no-ops and codex ships a body still pointing at the un-resolvable
+        // claude-layout path. Pin every declared target to real link text so
+        // that drift fails the build instead of shipping a broken prompt.
+        for skill in SKILLS {
+            for r in resources_for(skill.name) {
+                for target in r.claude_link_targets {
+                    let needle = format!("]({target})");
+                    assert!(
+                        SKILLS.iter().any(|s| s.body.contains(&needle)),
+                        "no skill body contains link {needle:?} declared for companion {} of {}",
+                        r.filename,
+                        skill.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn render_body_for_claude_is_byte_identical_and_borrowed() {
+        // The claude layout must be entirely unaffected by the codex rewrite:
+        // every claude body is the embedded source, returned borrowed (no
+        // reallocation, no byte change).
+        for s in SKILLS {
+            let rendered = render_body_for_agent("claude", s.body);
+            assert!(
+                matches!(rendered, Cow::Borrowed(_)),
+                "claude body for {} was reallocated",
+                s.name
+            );
+            assert_eq!(
+                &*rendered, s.body,
+                "claude body for {} was modified",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn render_body_for_codex_rewrites_both_companion_link_forms() {
+        // The owning skill's sibling link and a cross-skill `../owner/` link
+        // both collapse to the single shared `_shared/` target, and neither
+        // claude form survives in the rendered codex body.
+        let start = SKILLS.iter().find(|s| s.name == "stint-start").unwrap();
+        let handoff = SKILLS.iter().find(|s| s.name == "stint-handoff").unwrap();
+        let start_codex = render_body_for_agent("codex", start.body);
+        let handoff_codex = render_body_for_agent("codex", handoff.body);
+
+        assert!(start_codex.contains("](_shared/AGENTS-EXECUTION-DAG.md)"));
+        assert!(!start_codex.contains("](AGENTS-EXECUTION-DAG.md)"));
+        assert!(handoff_codex.contains("](_shared/AGENTS-EXECUTION-DAG.md)"));
+        assert!(!handoff_codex.contains("](../stint-start/AGENTS-EXECUTION-DAG.md)"));
+    }
+
+    #[test]
+    fn render_body_for_codex_without_companion_links_is_noop() {
+        // A codex body that references no companion is returned borrowed and
+        // unchanged — the global rewrite table only touches bodies that carry
+        // a declared link form.
+        let no_links = SKILLS.iter().find(|s| s.name == "worktree-code").unwrap();
+        let rendered = render_body_for_agent("codex", no_links.body);
+        assert!(matches!(rendered, Cow::Borrowed(_)));
+        assert_eq!(&*rendered, no_links.body);
+    }
+
+    #[test]
+    fn codex_companion_path_derives_shared_subdir() {
+        // Default layout: sibling `_shared/` next to the flat prompt file.
+        assert_eq!(
+            codex_companion_path(Path::new("/home/u/.codex/prompts/stint-start.md"), "X.md"),
+            PathBuf::from("/home/u/.codex/prompts/_shared/X.md")
+        );
+        // Nested relative dest.
+        assert_eq!(
+            codex_companion_path(Path::new("out/prompts/s.md"), "X.md"),
+            PathBuf::from("out/prompts/_shared/X.md")
+        );
+        // Bare-relative dest (empty parent): `_shared/` in the current dir,
+        // which is where the flat prompt file itself lands — the rewritten
+        // `_shared/X.md` link resolves relative to it.
+        assert_eq!(
+            codex_companion_path(Path::new("s.md"), "X.md"),
+            PathBuf::from("_shared/X.md")
+        );
     }
 
     #[test]
