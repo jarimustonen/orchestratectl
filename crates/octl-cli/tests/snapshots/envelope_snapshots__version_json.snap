@@ -1,101 +1,102 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
   "schema_version": 1,
   "data": {
-    "version": "0.1.4",
+    "version": "0.1.5",
     "commit": "[COMMIT]",
     "skills": [
       {
         "name": "orchestratectl-overview",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "octl-run-overview",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "octl-spawn-spinoff",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-spinoff",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-code",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-merge",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-orchestrated",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-research",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-make-skill",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-bugfix",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-technical-decision",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-bug-analysis",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "worktree-status",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "stint-start",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "stint-handoff",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "fan-out",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       },
       {
         "name": "orchestrate",
-        "cli_version": "0.1.4",
+        "cli_version": "0.1.5",
         "schema_version": 1
       }
     ],

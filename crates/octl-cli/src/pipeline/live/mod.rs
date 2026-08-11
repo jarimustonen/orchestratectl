@@ -2533,9 +2533,11 @@ fn process_chunk_sequential(
                     push_blocked_chunk(
                         run,
                         chunk,
+                        current_tier,
                         outcome,
                         floor,
                         floor_passed,
+                        None,
                         reason,
                         &wt,
                         &branch,
@@ -2668,9 +2670,11 @@ fn process_chunk_sequential(
                 push_blocked_chunk(
                     run,
                     chunk,
+                    current_tier,
                     outcome,
                     floor,
                     floor_passed,
+                    None,
                     reason,
                     &wt,
                     &branch,
@@ -3616,7 +3620,7 @@ fn preserve_pending_merges(run: &mut Run, plan: &Plan, pending: &VecDeque<WaveBu
 /// wave-boundary breaker) — its worktree/branch hold committed work that never
 /// reached feat, so state-integrity invariant 5 forbids dropping it.
 fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
-    let (outcome, floor, floor_passed, reason, wt, branch) = match &r.outcome {
+    let (outcome, floor, floor_passed, commit, reason, wt, branch) = match &r.outcome {
         WaveBuildOutcome::Blocked {
             outcome,
             floor,
@@ -3629,12 +3633,14 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
             *outcome,
             floor.clone(),
             *floor_passed,
+            None,
             reason.clone(),
             wt.as_path(),
             branch.as_str(),
         ),
         WaveBuildOutcome::Built {
             verdict,
+            commit,
             wt,
             branch,
             ..
@@ -3642,12 +3648,26 @@ fn preserve_wave_build(run: &mut Run, chunk: &Chunk, r: &WaveBuildResult) {
             "committed",
             Some(verdict.clone()),
             Some(true),
+            // The floor-green build's exact oid is known — record it so the
+            // preserved report names the recoverable commit.
+            Some(commit.clone()),
             "wave build preserved before merge".to_string(),
             wt.as_path(),
             branch.as_str(),
         ),
     };
-    push_blocked_chunk(run, chunk, outcome, floor, floor_passed, reason, wt, branch);
+    push_blocked_chunk(
+        run,
+        chunk,
+        r.tier,
+        outcome,
+        floor,
+        floor_passed,
+        commit,
+        reason,
+        wt,
+        branch,
+    );
 }
 
 /// Audit a wave worker's OWN artifact after it hard-errored or panicked mid-attempt
@@ -4193,9 +4213,11 @@ fn upsert_chunk_report(run: &mut Run, report: ChunkReport) {
 fn push_blocked_chunk(
     run: &mut Run,
     chunk: &Chunk,
+    tier: Tier,
     outcome: &str,
     floor: Option<FloorVerdict>,
     floor_passed: Option<bool>,
+    commit: Option<String>,
     reason: String,
     chunk_wt: &Path,
     chunk_branch: &str,
@@ -4207,12 +4229,18 @@ fn push_blocked_chunk(
         ChunkReport {
             id: chunk.id.clone(),
             title: chunk.title.clone(),
-            tier: chunk.tier.wire_name().to_string(),
+            // The tier the chunk actually ran at (promoted/effective), not the
+            // plan-declared `chunk.tier` — a promoted block must not misreport the
+            // tier that produced the preserved work.
+            tier: tier.wire_name().to_string(),
             outcome: outcome.to_string(),
             floor_passed,
             floor,
             merged: false,
-            commit: None,
+            // The floor-gated commit oid when the preserved work committed (a
+            // Built-then-unmerged preservation); `None` when no mergeable commit
+            // exists to name.
+            commit,
             merge_commit: None,
             replayed: false,
             reason: Some(reason),

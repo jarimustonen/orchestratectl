@@ -3827,6 +3827,23 @@ fn wave_hard_error_returns_typed_err_and_leaves_committed_siblings_intact() {
         Some("demo/chunk-c1"),
         "c1's preserved branch must be auditable in the report: {c1:?}"
     );
+    // A Built-then-unmerged preservation records the floor-gated commit oid (not
+    // `None`) and the tier the build actually ran at — so the auditable report names
+    // the exact recoverable commit, not a bare branch. The oid must be the tip of the
+    // preserved branch.
+    let c1_commit = c1
+        .commit
+        .clone()
+        .expect("a preserved Built chunk records its floor-gated commit oid");
+    let branch_tip = git_out(repo.path(), &["rev-parse", "demo/chunk-c1"]);
+    assert_eq!(
+        c1_commit, branch_tip,
+        "the preserved commit oid must be the preserved branch tip: {c1:?}"
+    );
+    assert_eq!(
+        c1.tier, "code",
+        "the preserved report carries the effective build tier: {c1:?}"
+    );
 
     // c1 built floor-green but never merged. Its branch + committed content survive the
     // hard-error teardown (invariant 5: no lost committed work — teardown never deletes
