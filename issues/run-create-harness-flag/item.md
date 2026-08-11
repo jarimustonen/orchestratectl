@@ -5,6 +5,9 @@ type: feature
 status: in-progress
 priority: normal
 labels: [from-homebase-research]
+commits:
+- hash: e145ba5
+  summary: run create --harness flag + precedence + surfacing
 ---
 
 # run create --harness: promote the pi adapter (and others) from bakeoff into real runs

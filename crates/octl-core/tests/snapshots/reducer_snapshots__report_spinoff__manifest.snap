@@ -6,6 +6,7 @@ expression: manifest_v
 {
   "applied_seq": 7,
   "created_at": "<ts>",
+  "harness": null,
   "kind": "spinoff",
   "lifecycle": "autonomous",
   "managed_tmux_session": null,

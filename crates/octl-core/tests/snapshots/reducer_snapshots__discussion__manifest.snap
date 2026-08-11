@@ -6,6 +6,7 @@ expression: mv
 {
   "applied_seq": 4,
   "created_at": "<ts>",
+  "harness": null,
   "kind": "code",
   "lifecycle": "interactive",
   "managed_tmux_session": null,
