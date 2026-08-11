@@ -6,31 +6,42 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-10 (round 2 today: v0.1.5 SHIPPED — 3 reliability fixes + integration-collision caught by the gate)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-11 (3 reliability fixes landed UNRELEASED on `main`; pi.dev harness migration prioritized as GLOBAL HEAD)
 
-**✅ LATEST (2026-08-10 round 2 — read first).** One `/stint-start` round: **3 planned units landed on `main`,
-all reviewed+green, self-merged first spawn (no deaths):** `supervisor-dies-before-worker-node` ✅ (fixed),
-`run-wait-still` ✅ (fixed), `wave-terminal-worker-own-artifact-unaudited` ✅ (done). **The integrated gate then
-caught a latent collision** (KEY LEARNING #NEW below) → a 4th integration-fix spinoff landed it green.
-**v0.1.5 FULLY SHIPPED** across all 3 channels: crates.io (`octl-core`→`orchestratectl`), GitHub Release
-**v0.1.5** (aarch64-mac + x86_64/aarch64-linux binaries + installer), Homebrew tap **0.1.5**
-(`brew upgrade jarimustonen/orchestratectl/orchestratectl`). Release CI green (4m36s, no `hauis` git-400).
-`main` clean, 0 unpushed, `v0.1.5` tagged, no worktrees, local binary **0.1.5** (`doctor` 0 fail / 0 warn, 690 ok).
+**✅ LATEST (2026-08-11 — read first).** One `/stint-start` round, **B‖D‖E parallel, 3 headless spinoffs, all
+reviewed (/llm-review + /assess-findings) + green, landed first spawn (no deaths):** `push-blocked-chunk-tier-and-commit-audit`
+✅ (done), `supervisorview-conflates-states` ✅ (done), `skill-companion-codex-layout` ✅ (done). Integrated gate
+green (fmt/clippy/`cargo test --workspace`, 0 failures). Local rebuild redeployed, `doctor` 0 fail / 0 warn (707 ok).
+**NO RELEASE this round (Jari's call — `/stint-handoff` without release):** the 3 fixes + the version-snapshot CI-red
+fix are **UNRELEASED on `main`** on top of shipped **0.1.5**. Next user-facing cut = **v0.1.6** (CHANGELOG
+`[Unreleased]` is empty — author entries at cut time; release is fully autonomous per policy). `main` clean.
+⚠️ **NOTE: `main` has UNPUSHED commits + unreleased work** — a `git push` keeps origin in sync (always allowed);
+publishing them is the v0.1.6 cut whenever warranted.
 
 **What the 3 fixes do:**
-- `supervisor-dies-before-worker-node` — a stillborn run (supervisor died before node `n-0001`; 0 nodes, 0
-  commits) is now flagged `pending (stillborn)` in `run list` (it already surfaced in `run wait`/`run show`;
-  `run list` was the last silent-`pending` surface). **NOTE the re-scope:** the issue's proposed "supervisor
-  retry on node creation" rested on a misread — for a *top-level* worker the supervisor is spawned AFTER
-  `node.created`, so there's nothing to retry there; the stillborn shape comes from `create.sh` failing (or
-  `run create` being killed) before `node.created`. Read path only; no reducer/schema/lock write.
-- `run-wait-still` — `run wait`/`run show` now detect an *orphaned mid-run* run (node_count>0, dead supervisor,
-  pending|running, idle past a 15-min grace) and settle promptly with a per-kind reason + `run reattach`
-  remediation, instead of blocking the full timeout. The sibling the stillborn fix scoped out (that was
-  node_count==0). Read-time only; shared lock preserved.
-- `wave-terminal-worker-own-artifact-unaudited` — a wave-build worker that commits then panics/errors now has
-  its own branch named + audited (audit-only `branch_preserved` ChunkReport, contents not vouched-for) across
-  the `catch_unwind` boundary, instead of orphaned (inv-5 gap closed).
+- `push-blocked-chunk-tier-and-commit-audit` (Lane B) — `push_blocked_chunk` **and** the crash/panic audit path now
+  record the **promoted/effective** tier (not the plan-declared one) + the **commit OID** of committed-but-blocked
+  work; threaded the oid through BuildAttempt/ChunkAttempt/WaveBuildOutcome::Blocked; promotion regression test added.
+- `supervisorview-conflates-states` (Lane E) — `run show`/`run list` no longer collapse supervisor conditions: a
+  wire-level `SupervisorState` enum (**alive | dead | not-recorded | unreadable | unknown**), `alive` kept as a
+  back-compat boolean. **Closed a real probe read-then-stat TOCTOU** (the /llm-review panel flagged it unanimously)
+  and stopped indeterminate states (Unreadable/Unknown) from driving stillborn/orphaned verdicts (new
+  `presumed_working()` predicate) — so an unreadable pid file can't mislead a reattach/cancel decision.
+- `skill-companion-codex-layout` (Lane D) — companion resources now install for the **codex flat layout** (shared
+  `~/.codex/prompts/_shared/` subdir; per-skill claude-layout companion links rewritten to `_shared/…`), claude
+  layout provably byte-for-byte unchanged (`Cow::Borrowed`); drift-guard test suite pins the rewrite invariants.
+  Follow-up filed by its review: `doctor-codex-companion-coverage` (Lane D).
+
+**Bonus (CI-red cleared) + hygiene:** two workers refreshed the stale 0.1.4→0.1.5 `version_text` snapshot, which
+**fixed the pre-existing main-wide CI red** — closed `version-envelopes-snapshot` (fixed) and its duplicate
+`stale-version-envelope-snapshot` (both were the same 0.1.5-bump stale snapshot filed by parallel sessions). Also
+removed a stray `envelope_snapshots__version_text.snap.new` the codex worker committed by accident (commit 2ca29ee).
+
+**Why `run-create-harness-flag` (pi.dev) is now the GLOBAL HEAD (Jari 2026-08-11).** Migrate autonomous worker runs
+from hardcoded Claude Code to the **pi.dev harness**. The pi adapter already WORKS (`bakeoff-aider-pi-live-fail`
+fixed, pi 0.82 live-verified); the only missing piece is wiring `--harness` into `run create` so autonomous kinds
+(spinoff/research/…) launch pi-driven workers. See `run-create-harness-flag` for the full spec (flag > env > config
+precedence, per-kind default, `run show/list --json` surfacing, skill/agent-tool translation shim).
 
 **KEY LEARNING #NEW (canonical) — "disjoint lanes" is a PREDICTION, not a guarantee; the integrated gate is
 non-optional.** The DAG put `supervisor-dies-before-worker-node` in Lane A (supervise/*) and `run-wait-still`
@@ -93,7 +104,7 @@ local binary 0.1.5 (`doctor` 0/0).**
 
 ---
 
-## Execution DAG (2026-08-10)
+## Execution DAG (2026-08-11)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -108,7 +119,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: push-blocked-chunk-tier-and-commit-audit (Lane B — concrete pipeline audit bug, continues the wave-audit thread. Other actionable heads: Lane E supervisorview-conflates-states, Lane D skill-companion-codex-layout, Lane A supervisor-spawn-fails-silently-at-run-create)   ← start here on resume
+GLOBAL HEAD-OF-LINE: run-create-harness-flag (Lane B — PRIORITY OVERRIDE, Jari 2026-08-11: pi.dev harness migration. The pi adapter already works (bakeoff live-verified, pi 0.82) — this only WIRES `run create --harness pi` so autonomous runs launch pi-driven workers instead of hardcoded claude. NOTE collision: create.sh w/ Lane A — don't spawn while a Lane A create.sh worktree is live. Other actionable heads: Lane B mechanical ▶ dreadfully-dirty-pain, Lane E count-jsons-swallows-io, Lane D doctor-orphan-companion-files, Lane A supervisor-spawn-fails-silently-at-run-create)   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
@@ -132,27 +143,25 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ▶ push-blocked-chunk-tier-and-commit-audit (F6 — push_blocked_chunk records plan-declared tier not the promoted one + omits commit OID; pre-existing)
-    dreadfully-dirty-pain                    (carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
+  ◀ run-create-harness-flag                  ◀ PRIORITIZED (pi.dev, Jari 2026-08-11) — `run create --harness` promotes the pi adapter (+ others) from bakeoff into real runs; touches harness/* — collision: create.sh w/ Lane A.
+  ▶ dreadfully-dirty-pain                    (mechanical Lane B head; carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
     practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
     pipeline-breaker-inflight-and-opus-metering
     pipeline-drop-primitive-underspecified
-    run-create-harness-flag                  (feature: `run create --harness` promotes the pi adapter (+ others) from bakeoff into real runs; touches harness/* — collision: create.sh w/ Lane A)
     pipeline-tiered-triage                   (in-progress; deferred self-disagreement trigger)
 
 LANE C — workmux vendoring — COMPLETE (empty; multiplexer + git-worktree wrapper both vendored & landed 2026-08-10)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ skill-companion-codex-layout           (skill.rs: companion resources are claude-only; codex flat layout unsupported — both filed by the split-stint worker)
-    doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up)
+  ▶ doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up)
+    doctor-codex-companion-coverage         (skill.rs: doctor + prune do not cover codex skills or _shared companions; filed by the codex-companion-layout worker's /llm-review — natural pair w/ doctor-orphan-companion-files)
     skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
 LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ supervisorview-conflates-states          (NEW; run show/list SupervisorView conflates absent/dead/unreadable/unprobed supervisor states — run-show follow-up)
-    count-jsons-swallows-io                  (NEW; `run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
+  ▶ count-jsons-swallows-io                  (`run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
@@ -289,6 +298,23 @@ as right-only (0 left-only — no worker-filed issues); dropped all 3. Heads adv
 **Then v0.1.5 FULLY SHIPPED** (crates.io `octl-core`→`orchestratectl`, `v0.1.5` tag → Release CI green 4m36s,
 Homebrew tap 0.1.5). Local rebuild redeployed, `doctor` 0 fail / 0 warn (690 ok). No worktrees remain. DAG
 driftless at wrap.
+**Round executed 2026-08-11 (B‖D‖E parallel, 3 headless spinoffs — NO release this round, Jari's call):**
+landed `push-blocked-chunk-tier-and-commit-audit` (done; push_blocked_chunk + crash-audit paths record the
+promoted/effective tier + the commit OID of committed-but-blocked work; promotion regression test),
+`supervisorview-conflates-states` (done; wire-level `SupervisorState` enum alive|dead|not-recorded|unreadable|unknown
+on `run show`/`list`, `alive` kept back-compat; closed a real probe read-then-stat TOCTOU the /llm-review panel
+flagged unanimously; indeterminate states no longer drive stillborn/orphaned verdicts), `skill-companion-codex-layout`
+(done; codex flat-layout companions install to `~/.codex/prompts/_shared/` w/ link rewrites, claude layout
+byte-for-byte unchanged, drift-guard test suite). All 3 reviewed (/llm-review + /assess-findings) + green, landed
+first spawn — no deaths. **Bonus:** two workers refreshed the stale 0.1.4→0.1.5 version snapshot, which
+fixed the **pre-existing main-wide CI red** — closed `version-envelopes-snapshot` (fixed) + `stale-version-envelope-snapshot`
+(duplicate). Removed a stray `envelope_snapshots__version_text.snap.new` a worker committed by accident (commit 2ca29ee).
+Integrated gate green (fmt/clippy/`cargo test --workspace`, 0 failures). Local rebuild redeployed, `doctor` 0 fail /
+0 warn (707 ok). Dropped the 3 landed; `comm -3` add: `doctor-codex-companion-coverage` (Lane D, worker follow-up).
+Heads advanced: Lane B ▶ `dreadfully-dirty-pain` (◀ `run-create-harness-flag` PRIORITIZED for pi.dev), Lane D ▶
+`doctor-orphan-companion-files`, Lane E ▶ `count-jsons-swallows-io`; Lane A unchanged. **NO RELEASE cut** — the 3
+fixes + snapshot fix are UNRELEASED on `main` on top of shipped 0.1.5; next cut is v0.1.6 (CHANGELOG `[Unreleased]`
+still empty — author the entries at cut time). No worktrees remain. DAG driftless at wrap.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:

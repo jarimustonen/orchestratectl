@@ -2,8 +2,9 @@
 created: 2026-08-11
 updated: 2026-08-11
 type: bug
-status: open
+status: duplicate
 priority: high
+closed: 2026-08-11
 ---
 
 # version_text snapshot stale on 0.1.5 — CI red on main
