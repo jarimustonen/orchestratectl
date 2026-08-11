@@ -2,8 +2,9 @@
 created: 2026-08-11
 updated: 2026-08-11
 type: feature
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-11
 ---
 
 # Dual-home skills into pi.dev's skill dir (~/.pi/agent/skills)
