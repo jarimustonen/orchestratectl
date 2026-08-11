@@ -157,7 +157,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             // is advisory.
             let stillborn = crate::run::stalled::is_stillborn(
                 m.status,
-                supervisor.alive,
+                // Only a *confirmed* not-running supervisor flags a run stillborn;
+                // an `Unreadable`/`Unknown` (indeterminate) state must not, or we
+                // recreate the conflation this DTO change fixes.
+                supervisor.presumed_working(),
                 m.node_count,
                 m.created_at,
                 m.updated_at,

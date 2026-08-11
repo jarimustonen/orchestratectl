@@ -118,13 +118,16 @@ impl SupervisorView {
     /// - no file on disk → `NotRecorded`
     /// - file present but unreadable / unparseable → `Unreadable`
     ///
-    /// Single-file read (the pid file is CLI-owned and does not route through
-    /// the run-state projection guards), so it needs no shared lock: it never
-    /// participates in a multi-projection decision.
+    /// The absent-vs-unreadable distinction comes from a **single** `open()`
+    /// (via [`pid_file::classify_pid_record`]), so it cannot race the file
+    /// being created or removed between two syscalls, and a real I/O error is
+    /// never misread as "no supervisor". Single-file read (the pid file is
+    /// CLI-owned and does not route through the run-state projection guards),
+    /// so it needs no shared lock: it never participates in a multi-projection
+    /// decision.
     pub fn probe(paths: &RunPaths) -> Self {
-        let path = paths.supervisor_pid();
-        match pid_file::read_pid_record(&path) {
-            Some((pid, start_time)) => {
+        match pid_file::classify_pid_record(&paths.supervisor_pid()) {
+            pid_file::PidRecord::Present { pid, start_time } => {
                 let state = if pid_file::pid_live_with_identity(pid, start_time) {
                     SupervisorState::Alive
                 } else {
@@ -132,17 +135,8 @@ impl SupervisorView {
                 };
                 Self::new(Some(pid), state)
             }
-            // `read_pid_record` swallows absent vs. present-but-unreadable into
-            // one `None`. Disambiguate by asking whether *anything* is at the
-            // path (a symlink counts as present → `Unreadable`, since the read
-            // rejects it): present → `Unreadable`, absent → `NotRecorded`.
-            None => {
-                if pid_file::pid_file_present(&path) {
-                    Self::new(None, SupervisorState::Unreadable)
-                } else {
-                    Self::new(None, SupervisorState::NotRecorded)
-                }
-            }
+            pid_file::PidRecord::Absent => Self::new(None, SupervisorState::NotRecorded),
+            pid_file::PidRecord::Unreadable => Self::new(None, SupervisorState::Unreadable),
         }
     }
 
@@ -152,6 +146,25 @@ impl SupervisorView {
     /// the flattened summary row; see `run/show.rs`.)
     fn unknown() -> Self {
         Self::new(None, SupervisorState::Unknown)
+    }
+
+    /// The value to feed the stall detectors' `supervisor_alive` parameter
+    /// ([`crate::run::stalled::is_stillborn`] / [`stall_kind`]).
+    ///
+    /// `true` when the supervisor is running OR its state is *indeterminate*
+    /// (`Unreadable` / `Unknown` — we cannot prove it is not running, so it must
+    /// NOT trigger a stillborn/orphaned diagnosis and its `run reattach` hint);
+    /// `false` only when the supervisor is *confirmed not running* (`Dead`, or
+    /// `NotRecorded` — the latter IS the stillborn signal). This is the fix for
+    /// the conflation issue one layer down: an unreadable pid file used to read
+    /// `alive: false` and so could mislead a recovery decision.
+    ///
+    /// [`stall_kind`]: crate::run::stalled::stall_kind
+    pub fn presumed_working(&self) -> bool {
+        !matches!(
+            self.state,
+            SupervisorState::Dead | SupervisorState::NotRecorded
+        )
     }
 }
 
@@ -451,6 +464,66 @@ mod tests {
                 !SupervisorView::new(None, state).alive,
                 "{state:?} must not read alive"
             );
+        }
+    }
+
+    /// A symlink planted where the pid file belongs is rejected by the
+    /// `O_NOFOLLOW` open and classified `Unreadable` (present but untrustworthy),
+    /// NOT `NotRecorded` — the security-relevant case the single-open classifier
+    /// preserves.
+    #[test]
+    #[cfg(unix)]
+    fn supervisor_probe_symlink_is_unreadable() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path().join("01arz3ndektsv4rrffq69g5fav");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let paths = RunPaths::new(run_dir, "01arz3ndektsv4rrffq69g5fav").unwrap();
+
+        // Point supervisor.pid at an otherwise-valid target via a symlink.
+        let target = dir.path().join("elsewhere.pid");
+        std::fs::write(&target, format!("{}", std::process::id())).unwrap();
+        std::os::unix::fs::symlink(&target, paths.supervisor_pid()).unwrap();
+
+        let v = SupervisorView::probe(&paths);
+        assert_eq!(v.state, SupervisorState::Unreadable);
+        assert_eq!(v.pid, None);
+        assert!(!v.alive);
+    }
+
+    /// `presumed_working` is the value fed to the stall detectors: `false`
+    /// (flaggable) only for the *confirmed* not-running states `Dead` /
+    /// `NotRecorded`; `true` (suppress the diagnosis) for the running `Alive`
+    /// and the *indeterminate* `Unreadable` / `Unknown` — so an unreadable pid
+    /// file can never mislead a stillborn/orphaned recovery decision.
+    #[test]
+    fn presumed_working_suppresses_indeterminate_states() {
+        let flaggable = |s| !SupervisorView::new(None, s).presumed_working();
+        assert!(!flaggable(SupervisorState::Alive));
+        assert!(flaggable(SupervisorState::Dead));
+        assert!(flaggable(SupervisorState::NotRecorded));
+        assert!(
+            !flaggable(SupervisorState::Unreadable),
+            "Unreadable is indeterminate: must NOT flag stillborn/orphaned"
+        );
+        assert!(
+            !flaggable(SupervisorState::Unknown),
+            "Unknown is indeterminate: must NOT flag stillborn/orphaned"
+        );
+    }
+
+    /// The wire spelling of every `SupervisorState` variant is pinned (a rename
+    /// is a wire-contract change, not a silent refactor).
+    #[test]
+    fn supervisor_state_wire_spellings() {
+        for (state, wire) in [
+            (SupervisorState::Alive, "alive"),
+            (SupervisorState::Dead, "dead"),
+            (SupervisorState::NotRecorded, "not-recorded"),
+            (SupervisorState::Unreadable, "unreadable"),
+            (SupervisorState::Unknown, "unknown"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), json!(wire));
         }
     }
 }

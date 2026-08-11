@@ -407,7 +407,9 @@ fn current_settle(
             status: m.status,
             stall: stall_kind(
                 m.status,
-                supervisor.alive,
+                // Indeterminate supervisor states must not settle a wait as
+                // stalled — see `SupervisorView::presumed_working`.
+                supervisor.presumed_working(),
                 m.node_count,
                 m.created_at,
                 m.updated_at,

@@ -228,15 +228,58 @@ pub fn read_pid_record(path: &Path) -> Option<(u32, Option<u64>)> {
     Some((pid, start_time))
 }
 
-/// Whether *something* exists at `path`, regardless of whether it is a
-/// readable pid record. Used to disambiguate the two `None` outcomes of
-/// [`read_pid_record`]: an absent file (no supervisor recorded) from a file
-/// that is present but unreadable/unparseable (I/O error, garbage, or a
-/// symlink the read path rejects). Uses `symlink_metadata` so a symlink
-/// planted where the pid file belongs counts as "present" (the read closes it
-/// with `ELOOP`, so it is present-but-unreadable, not absent).
-pub fn pid_file_present(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
+/// The three ways reading a supervisor pid file can resolve, classified from a
+/// **single** `open()` so the absent-vs-unreadable distinction comes from the
+/// actual error the open produced — not from a second `stat` that can race the
+/// file being created or removed in between (and that would otherwise fold
+/// `EACCES`/`EIO`/`ELOOP` into "absent"). Consumed by
+/// [`SupervisorView::probe`](crate::run::dto::SupervisorView::probe).
+pub enum PidRecord {
+    /// No file at the path (`open` returned `ENOENT`): no supervisor recorded —
+    /// never launched, or cleanly torn down (the pid file is removed on a clean
+    /// exit). These two are indistinguishable at this layer.
+    Absent,
+    /// A file is there but could not be turned into a valid record: `open`
+    /// failed for a non-`ENOENT` reason (`ELOOP` from a rejected symlink,
+    /// `EACCES`, `EIO`, …), the read failed, or the contents did not parse to a
+    /// valid in-range pid. Distinct from `Absent`: something is present, we
+    /// just cannot trust it.
+    Unreadable,
+    /// A valid record: `(pid, start_time)`, with `start_time` `None` for a
+    /// legacy single-integer file. Same parse rules as [`read_pid_record`].
+    Present { pid: u32, start_time: Option<u64> },
+}
+
+/// Classify `<run-dir>/supervisor.pid` from one `open()`. See [`PidRecord`] for
+/// why this must not be a read-then-`stat` pair. Mirrors [`read_pid_string`]'s
+/// `O_NOFOLLOW` open (a planted symlink fails with `ELOOP` → `Unreadable`,
+/// never followed) and [`read_pid_record`]'s parse (first token is the pid, an
+/// optional second token the start-time).
+pub fn classify_pid_record(path: &Path) -> PidRecord {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    octl_core::nofollow(&mut opts);
+    let mut f = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::NotFound => return PidRecord::Absent,
+        // ELOOP (symlink), EACCES, EIO, ENOTDIR, … — present but untrustworthy.
+        Err(_) => return PidRecord::Unreadable,
+    };
+    let mut s = String::new();
+    if f.read_to_string(&mut s).is_err() {
+        return PidRecord::Unreadable;
+    }
+    let mut it = s.split_whitespace();
+    let Some(pid) = it.next().and_then(|t| t.parse::<u32>().ok()) else {
+        return PidRecord::Unreadable;
+    };
+    // Reject an out-of-range pid (see `to_pid_t`) before it can reach any
+    // `kill()` cast downstream.
+    if to_pid_t(pid).is_none() {
+        return PidRecord::Unreadable;
+    }
+    let start_time = it.next().and_then(|t| t.parse::<u64>().ok());
+    PidRecord::Present { pid, start_time }
 }
 
 /// Liveness check for a recorded supervisor PID that additionally

@@ -140,7 +140,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // mid-run with ≥1 node, idle past the grace (issue `run-wait-still`).
         let stall = crate::run::stalled::stall_kind(
             manifest.status,
-            supervisor.alive,
+            // Indeterminate (`Unreadable`/`Unknown`) supervisor states must not
+            // drive a stillborn/orphaned verdict — see `presumed_working`.
+            supervisor.presumed_working(),
             manifest.node_count,
             manifest.created_at,
             manifest.updated_at,
@@ -294,10 +296,9 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     None => println!("supervisor:    (dead)"),
                 },
                 SupervisorState::NotRecorded => println!("supervisor:    (none recorded)"),
-                SupervisorState::Unreadable => println!(
-                    "supervisor:    (pid file unreadable — inspect `{}/supervisor.pid`)",
-                    payload.manifest.run_id
-                ),
+                SupervisorState::Unreadable => {
+                    println!("supervisor:    (pid file present but unreadable — inspect supervisor.pid under the run directory)");
+                }
                 SupervisorState::Unknown => println!("supervisor:    (not probed)"),
             }
             if let Some(line) =
