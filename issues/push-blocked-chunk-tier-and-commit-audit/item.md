@@ -2,11 +2,14 @@
 created: 2026-08-06
 updated: 2026-08-11
 type: task
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: b3fd826
   summary: push_blocked_chunk records effective tier + commit oid
+- hash: 610b330
+  summary: record commit oid for all committed-but-blocked preservations + effective tier in audit_terminal_worker_artifact + promotion regression test
+closed: 2026-08-11
 ---
 
 # push_blocked_chunk records plan tier not actual promoted tier, omits commit OID
