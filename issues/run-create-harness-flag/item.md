@@ -2,12 +2,17 @@
 created: 2026-08-10
 updated: 2026-08-11
 type: feature
-status: in-progress
+status: done
 priority: normal
 labels: [from-homebase-research]
 commits:
 - hash: e145ba5
   summary: run create --harness flag + precedence + surfacing
+- hash: 5d7f119
+  summary: accept reducer snapshots for additive harness field
+- hash: cb0268f
+  summary: apply llm-review findings (8 FIX)
+closed: 2026-08-11
 ---
 
 # run create --harness: promote the pi adapter (and others) from bakeoff into real runs
