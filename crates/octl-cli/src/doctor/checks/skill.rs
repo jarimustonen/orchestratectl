@@ -108,6 +108,27 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
                 let companion_path = skill_dir.join(companion.filename);
                 out.push(check_companion(name, &companion, &companion_path, binary));
             }
+
+            // `skill.orphan.<name>.<file>` — a companion the skill's
+            // provenance marker records as orchestratectl-managed but the
+            // current binary no longer bundles: installed by a prior binary,
+            // dropped by this one, lingering as a stale sibling. Distinct from
+            // the `skill.sync.<name>.<file>` cases above (those audit
+            // companions this binary DOES ship). The fix is a forced
+            // re-install, whose prune loop removes the orphan file; we surface
+            // it as a WARN rather than fixing autonomously (deletion stays with
+            // the explicit install path, symmetric with `skill.orphan.<name>`).
+            for filename in skill::orphan_companions(name, skill_dir) {
+                let orphan_path = skill_dir.join(&filename);
+                out.push(CheckResult::warn(
+                    format!("skill.orphan.{name}.{filename}"),
+                    format!(
+                        "companion '{filename}' for skill '{name}' at {} is orchestratectl-managed but the current binary no longer bundles it (de-registered)",
+                        orphan_path.display()
+                    ),
+                    format!("orchestratectl skill install {name} --force"),
+                ));
+            }
         }
     }
 
@@ -141,11 +162,11 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
 /// the message names which way it drifted. The id embeds the filename so the
 /// offending companion is unambiguous.
 ///
-/// Note: only companions the *current* binary bundles are audited (the
+/// Note: this audits only companions the *current* binary bundles (the
 /// forward direction). A companion a prior binary installed but this one no
-/// longer ships is not detected here — that orphan-companion sweep needs a
-/// managed-file manifest + `skill install` prune support; see the
-/// `doctor-orphan-companion-files` follow-up.
+/// longer ships is an ORPHAN, detected separately by the
+/// `skill.orphan.<name>.<file>` pass in [`check`] (backed by the provenance
+/// marker's `companion:` records + `skill::orphan_companions`).
 fn check_companion(
     skill_name: &str,
     companion: &skill::CompanionSource,

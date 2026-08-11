@@ -1,9 +1,9 @@
 ---
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-11
 type: improvement
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 ---
 

@@ -168,6 +168,69 @@ fn skill_install_with_default_paths_writes_under_home() {
 }
 
 #[test]
+fn skill_install_force_prunes_orphan_companion_file() {
+    // A prior binary installed `stint-start` with an extra companion the
+    // current binary no longer ships. It survives on disk and its
+    // provenance marker still records it. A `--force` re-install must remove
+    // the orphan file and report it under `pruned_companions`, while leaving
+    // the still-bundled companion(s) in place.
+    let home = mk_home();
+    // First install lays down the skill dir + marker.
+    let first = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(first.status.success(), "first install failed: {first:?}");
+
+    let skill_dir = home.path().join(".claude/skills/stint-start");
+    let marker = skill_dir.join(".orchestratectl-managed");
+    let orphan = skill_dir.join("OLD-COMPANION.md");
+
+    // Simulate the prior binary: drop the orphan file and record it in the
+    // marker alongside whatever the marker already holds.
+    std::fs::write(&orphan, "stale companion\n").expect("write orphan");
+    let mut marker_body = std::fs::read_to_string(&marker).expect("read marker");
+    marker_body.push_str("companion: OLD-COMPANION.md\n");
+    std::fs::write(&marker, marker_body).expect("append marker");
+    // Sanity: the real bundled companion is present and stays present.
+    let real_companion = skill_dir.join("AGENTS-EXECUTION-DAG.md");
+    assert!(
+        real_companion.exists(),
+        "bundled companion missing after install"
+    );
+
+    // Forced re-install prunes the orphan.
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "force reinstall failed: {out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned: Vec<&str> = v["data"]["pruned_companions"]
+        .as_array()
+        .expect("pruned_companions array")
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    assert_eq!(pruned, vec!["stint-start/OLD-COMPANION.md"]);
+    assert!(!orphan.exists(), "orphan companion not removed by --force");
+    assert!(real_companion.exists(), "bundled companion wrongly removed");
+    // The rewritten marker no longer records the pruned orphan.
+    let marker_after = std::fs::read_to_string(&marker).expect("read marker after");
+    assert!(
+        !marker_after.contains("OLD-COMPANION.md"),
+        "marker still records the pruned orphan: {marker_after:?}"
+    );
+}
+
+#[test]
 fn skill_install_agent_all_installs_to_both_default_paths() {
     let home = mk_home();
     let out = bin(&home)

@@ -514,6 +514,53 @@ fn companion_local_edit_warns_even_when_version_matches() {
 }
 
 #[test]
+fn orphan_companion_warns_distinctly_and_spares_unrecorded_file() {
+    let env = setup();
+    install_bundled(&env, "stint-start");
+    let skill_dir = env.home.path().join(".claude/skills/stint-start");
+    let marker = skill_dir.join(".orchestratectl-managed");
+
+    // Simulate a prior binary that shipped an extra companion this one
+    // dropped: the file lingers and the marker still records it as managed.
+    std::fs::write(skill_dir.join("OLD-COMPANION.md"), "stale\n").unwrap();
+    let mut marker_body = std::fs::read_to_string(&marker).unwrap();
+    marker_body.push_str("companion: OLD-COMPANION.md\n");
+    std::fs::write(&marker, marker_body).unwrap();
+    // A file the user dropped in, never recorded by any marker.
+    std::fs::write(skill_dir.join("my-note.md"), "mine\n").unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+
+    // The orphan is a distinct finding, separate from the forward
+    // skill.sync.<name>.<file> checks.
+    let c = find_check(checks, "skill.orphan.stint-start.OLD-COMPANION.md");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("de-registered"));
+    assert!(c["fix_suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("skill install stint-start --force"));
+
+    // The still-bundled companion stays OK, and the user's unrecorded file
+    // is never flagged as an orphan.
+    let sync = find_check(checks, COMPANION_ID);
+    assert_eq!(sync["status"], "ok");
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.stint-start.my-note.md"),
+        "an unrecorded user file must not be flagged as an orphan companion"
+    );
+    // An orphan-companion WARN never flips the exit code.
+    assert!(out.status.success());
+}
+
+#[test]
 fn fix_reinstalls_drifted_companion() {
     let env = setup();
     install_bundled(&env, "stint-start");

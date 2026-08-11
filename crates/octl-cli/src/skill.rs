@@ -391,6 +391,12 @@ struct InstallPayload {
     /// pruned from `~/.claude/skills/`. Empty in every install form except
     /// the full-catalog default-path claude install (see `cmd_install`).
     pruned: Vec<String>,
+    /// Orphan companion files this `--force` install removed: companions a
+    /// prior binary recorded in a still-registered skill's provenance marker
+    /// that the current binary no longer bundles. Reported as
+    /// `<skill>/<filename>` so the offending sibling is unambiguous. Empty
+    /// unless a default-path claude `--force` install found stale companions.
+    pruned_companions: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -677,10 +683,72 @@ pub fn cmd_install(
     // fatal rather than silent: without it a genuine orphan would never be
     // recognised as managed. Deduplicated because `--agent all` and the
     // install-all form can enumerate the same dir once per skill.
+    //
+    // The marker also records the exact companion files this binary wrote
+    // (`companion:` lines), so a later binary that drops a companion can
+    // recognise the lingering file as an ORPHAN it once managed rather than
+    // as a user's own note. Before rewriting the marker we read the copy the
+    // prior binary left, diff its recorded companions against what this
+    // binary bundles, and act on the leftover ORPHANS:
+    //
+    // - `--force`: remove the orphan companion file (the redeploy intends the
+    //   on-disk catalog to mirror the binary) and drop it from the marker.
+    // - non-`--force`: leave the file in place but CARRY IT FORWARD in the new
+    //   marker, so `doctor` still recognises it as an orphan (and can suggest
+    //   the `--force` fix). Rewriting the marker without it would forget the
+    //   file forever while it lingers on disk.
     mark_dirs.sort();
     mark_dirs.dedup();
+    let mut pruned_companions: Vec<String> = Vec::new();
     for (skill_name, dir) in &mark_dirs {
-        write_marker(&dir.join(MANAGED_MARKER_FILENAME), skill_name)?;
+        let marker_path = dir.join(MANAGED_MARKER_FILENAME);
+        let bundled: Vec<&'static str> = resources_for(skill_name)
+            .iter()
+            .map(|r| r.filename)
+            .collect();
+        // Start the new record with everything this binary bundles, then
+        // reconcile the companions the prior marker recorded.
+        let mut recorded: Vec<String> = bundled.iter().copied().map(String::from).collect();
+        for prev in read_managed_companions(&marker_path) {
+            if bundled.iter().any(|b| *b == prev) {
+                continue; // still bundled — already in `recorded`
+            }
+            // A managed companion this binary no longer ships: an orphan.
+            let orphan_path = dir.join(&prev);
+            // Only ever touch a regular file we actually wrote — never follow a
+            // symlink or recurse into a directory squatting at that name.
+            let is_regular =
+                fs::symlink_metadata(&orphan_path).is_ok_and(|m| m.file_type().is_file());
+            if !is_regular {
+                // Nothing safe to clean and nothing on disk to keep tracking:
+                // drop it from the marker.
+                continue;
+            }
+            if force {
+                match fs::remove_file(&orphan_path) {
+                    Ok(()) => {
+                        all_warnings.push(format!(
+                            "skill_companion_pruned: removed orphan companion '{prev}' for skill '{skill_name}' at {}",
+                            orphan_path.display()
+                        ));
+                        pruned_companions.push(format!("{skill_name}/{prev}"));
+                        // dropped from `recorded` → no longer tracked
+                    }
+                    Err(e) => {
+                        all_warnings.push(format!(
+                            "skill_companion_prune_failed: could not remove orphan companion '{prev}' for skill '{skill_name}' at {}: {e}",
+                            orphan_path.display()
+                        ));
+                        recorded.push(prev); // still on disk — keep it tracked
+                    }
+                }
+            } else {
+                recorded.push(prev); // preserve tracking for doctor
+            }
+        }
+        recorded.sort();
+        recorded.dedup();
+        write_marker(&marker_path, skill_name, &recorded)?;
     }
 
     // Prune de-registered managed skills. Scoped to the full-catalog
@@ -724,7 +792,11 @@ pub fn cmd_install(
         }
     }
 
-    let payload = InstallPayload { installed, pruned };
+    let payload = InstallPayload {
+        installed,
+        pruned,
+        pruned_companions,
+    };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, spec, &all_warnings)?;
@@ -735,6 +807,9 @@ pub fn cmd_install(
             }
             for name in &payload.pruned {
                 println!("pruned {name} (de-registered)");
+            }
+            for entry in &payload.pruned_companions {
+                println!("pruned {entry} (orphan companion)");
             }
             output::emit_text_warnings(&all_warnings);
         }
@@ -1023,12 +1098,16 @@ fn is_managed_skill_dir(dir: &Path) -> bool {
 /// Write (or overwrite) the provenance marker for skill `skill_name` at
 /// `path`. The recorded `skill_name` is what `is_managed_skill_dir` binds
 /// against, so a copied-and-renamed skill is never mistaken for an orphan.
+/// `companions` are the companion filenames this install manages in the
+/// directory, each recorded on its own `companion:` line so a later binary
+/// that drops one can recognise the leftover file as an orphan it once
+/// installed (see `orphan_companions` and the `cmd_install` prune loop).
 /// The parent directory already exists (the SKILL.md write created it), so
 /// this is a plain overwrite; the marker is always ours. If a symlink is
 /// squatting at the marker path we unlink it first so `fs::write` cannot
 /// clobber the link's target (an arbitrary-file overwrite within the
 /// user's permissions).
-fn write_marker(path: &Path, skill_name: &str) -> Result<(), CliError> {
+fn write_marker(path: &Path, skill_name: &str, companions: &[String]) -> Result<(), CliError> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         if meta.file_type().is_symlink() {
             fs::remove_file(path).map_err(|e| {
@@ -1043,13 +1122,15 @@ fn write_marker(path: &Path, skill_name: &str) -> Result<(), CliError> {
             })?;
         }
     }
-    fs::write(
-        path,
-        format!(
-            "managed-by: orchestratectl\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\n"
-        ),
-    )
-    .map_err(|e| {
+    let mut body = format!(
+        "managed-by: orchestratectl\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\n"
+    );
+    for companion in companions {
+        body.push_str("companion: ");
+        body.push_str(companion);
+        body.push('\n');
+    }
+    fs::write(path, body).map_err(|e| {
         CliError::system(
             "marker_write_failed",
             format!(
@@ -1118,6 +1199,48 @@ pub fn managed_orphans() -> Vec<(String, PathBuf)> {
     };
     let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
     managed_orphan_dirs(&root, &registered)
+}
+
+/// The companion filenames a provenance marker records as managed (the
+/// `companion:` lines). Empty when the marker is unreadable or records
+/// none. Blank values are dropped. Sibling of the `skill_name:`/stamp
+/// parsing in `is_managed_skill_dir`, but for the companion sub-records.
+fn read_managed_companions(marker_path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(marker_path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("companion:"))
+        .map(|rest| rest.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Companion files recorded as managed in `<skill_dir>`'s provenance marker
+/// that the current binary no longer bundles AND that still exist on disk —
+/// the orphan companions a prior binary installed and this one dropped.
+/// Filenames only (sorted, deduped); the caller joins `skill_dir` to report
+/// or remove them. Consumed by the `skill.orphan.<name>.<file>` doctor
+/// check. A still-bundled companion is never returned (it is audited by the
+/// `skill.sync.<name>.<file>` forward check instead), and a user's own file
+/// that the marker never recorded is never returned (that is what keeps this
+/// from false-positiving on a hand-dropped note). Presence is probed with
+/// `symlink_metadata` so a planted symlink is not followed.
+pub fn orphan_companions(skill_name: &str, skill_dir: &Path) -> Vec<String> {
+    let bundled: HashSet<&str> = resources_for(skill_name)
+        .iter()
+        .map(|r| r.filename)
+        .collect();
+    let marker_path = skill_dir.join(MANAGED_MARKER_FILENAME);
+    let mut orphans: Vec<String> = read_managed_companions(&marker_path)
+        .into_iter()
+        .filter(|name| !bundled.contains(name.as_str()))
+        .filter(|name| fs::symlink_metadata(skill_dir.join(name)).is_ok())
+        .collect();
+    orphans.sort();
+    orphans.dedup();
+    orphans
 }
 
 /// Empty parent from `PathBuf::parent()` means a bare relative filename
@@ -1411,6 +1534,93 @@ mod tests {
             codex_companion_path(Path::new("s.md"), "X.md"),
             PathBuf::from("_shared/X.md")
         );
+    }
+
+    #[test]
+    fn write_marker_records_companions_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(MANAGED_MARKER_FILENAME);
+        write_marker(
+            &marker,
+            "stint-start",
+            &["A.md".to_string(), "B.md".to_string()],
+        )
+        .unwrap();
+        let recorded = read_managed_companions(&marker);
+        assert_eq!(recorded, vec!["A.md".to_string(), "B.md".to_string()]);
+        // A markerless dir records nothing.
+        assert!(read_managed_companions(&dir.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn orphan_companions_flags_dropped_but_not_bundled() {
+        // Simulate a prior binary that installed `stint-start` with an extra
+        // companion `OLD-COMPANION.md` this binary no longer ships, alongside
+        // the still-bundled real one. The dropped file lingers on disk and the
+        // marker still records it.
+        let skill = "stint-start";
+        let bundled: Vec<&str> = resources_for(skill).iter().map(|r| r.filename).collect();
+        assert!(
+            !bundled.is_empty(),
+            "test assumes stint-start ships >=1 companion"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        // Marker records both the still-bundled companions AND the orphan.
+        let mut recorded: Vec<String> = bundled.iter().copied().map(String::from).collect();
+        recorded.push("OLD-COMPANION.md".to_string());
+        write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &recorded).unwrap();
+        // Both files present on disk.
+        for f in &bundled {
+            fs::write(dir.path().join(f), "x").unwrap();
+        }
+        fs::write(dir.path().join("OLD-COMPANION.md"), "stale").unwrap();
+
+        let orphans = orphan_companions(skill, dir.path());
+        assert_eq!(
+            orphans,
+            vec!["OLD-COMPANION.md".to_string()],
+            "only the dropped-but-recorded companion is an orphan"
+        );
+    }
+
+    #[test]
+    fn orphan_companions_ignores_unrecorded_user_file() {
+        // A file a user dropped into the managed dir that the marker never
+        // recorded must NOT be flagged — that is the false-positive the
+        // marker-based design exists to avoid.
+        let skill = "stint-start";
+        let bundled: Vec<String> = resources_for(skill)
+            .iter()
+            .map(|r| r.filename.to_string())
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        // Marker records only the bundled companions (a clean install).
+        write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &bundled).unwrap();
+        // User drops their own note — never recorded in the marker.
+        fs::write(dir.path().join("my-note.md"), "mine").unwrap();
+
+        assert!(
+            orphan_companions(skill, dir.path()).is_empty(),
+            "an unrecorded user file is not an orphan"
+        );
+    }
+
+    #[test]
+    fn orphan_companions_ignores_recorded_but_absent_file() {
+        // The marker records an orphan whose file was already removed: nothing
+        // to clean, so it is not reported (a WARN with no fixable target would
+        // be noise).
+        let skill = "stint-start";
+        let bundled: Vec<String> = resources_for(skill)
+            .iter()
+            .map(|r| r.filename.to_string())
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let mut recorded = bundled.clone();
+        recorded.push("GONE.md".to_string());
+        write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &recorded).unwrap();
+        // `GONE.md` is NOT written to disk.
+        assert!(orphan_companions(skill, dir.path()).is_empty());
     }
 
     #[test]
