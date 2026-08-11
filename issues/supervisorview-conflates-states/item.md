@@ -2,13 +2,16 @@
 created: 2026-08-10
 updated: 2026-08-11
 type: improvement
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: e0f8594
   summary: distinguish SupervisorView states (alive/dead/not-recorded/unreadable)
 - hash: 927e4cf
   summary: close probe TOCTOU + stop indeterminate states driving stall verdicts (llm-review F1/F2/F3)
+- hash: 62ae6a5
+  summary: refresh version envelope snapshots to 0.1.5 (unblock green gate)
+closed: 2026-08-11
 ---
 
 # run show/list: SupervisorView conflates absent/dead/unreadable/unprobed states

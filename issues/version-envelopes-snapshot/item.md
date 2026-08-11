@@ -2,8 +2,12 @@
 created: 2026-08-11
 updated: 2026-08-11
 type: bug
-status: open
+status: fixed
 priority: normal
+commits:
+- hash: 62ae6a5
+  summary: refresh version envelope snapshots to 0.1.5
+closed: 2026-08-11
 ---
 
 # version_envelopes snapshot stale after bump to 0.1.5
