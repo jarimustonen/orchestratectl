@@ -151,8 +151,144 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
     }
 
     check_codex(binary, &mut out);
+    check_pi(binary, &mut out);
 
     out
+}
+
+/// pi.dev mirror coverage — the `skill.sync.<name>.pi` / `skill.orphan.<name>.pi`
+/// mirror of the claude checks above, keyed to the pi mirror paths
+/// (`~/.pi/agent/skills/<name>/SKILL.md`).
+///
+/// GATED on the out-of-band pi provenance record: the pi dir carries no in-dir
+/// `.orchestratectl-managed` marker (the `pidev-dual-home-skills` contract
+/// forbids one), so the record `<root>/state/pi-installed-skills.json` is the
+/// SOLE source of truth for which pi mirrors orchestratectl wrote. An empty
+/// record (a host that never dual-homed into pi, or `HOME` unset) yields no pi
+/// checks and keeps a pi-less tree 0-warn — and, crucially, a user's own
+/// hand-authored pi skill is never recorded, so it is never flagged.
+///
+/// ALL pi arms are advisory — NO autonomous `FixAction::InstallSkill`. Unlike
+/// the claude check, the pi OLDER-drift case does NOT attach the fix: the
+/// applier runs `skill install <name> --force`, which dual-homes and would
+/// force-overwrite the CLAUDE copy too, so autofixing pi drift could silently
+/// downgrade a deliberately newer/edited claude copy (whose own check refused an
+/// autonomous fix). Symmetric with the codex checks, which omit the fix for the
+/// same cross-target reason. Deletion + binary upgrades likewise belong to the
+/// explicit install path (see `assessment-pi-lifecycle`, review finding C).
+fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
+    let managed = skill::pi_managed_skills();
+    if managed.is_empty() {
+        return;
+    }
+
+    let catalog: std::collections::HashSet<&str> =
+        skill::bundled_skill_names().into_iter().collect();
+
+    for m in &managed {
+        let name = m.name.as_str();
+        // Record-sourced names are validated as a single normal path component
+        // before being joined into a filesystem path — a corrupt/hand-edited key
+        // like `"../../x"` is skipped, never resolved (review finding E; same
+        // guard the prune path applies).
+        if !skill::is_simple_skill_name(name) {
+            continue;
+        }
+        let Some(path) = skill::pi_default_path(name) else {
+            continue;
+        };
+
+        if !catalog.contains(name) {
+            // Recorded but de-registered: an orphan, but only if the mirror is
+            // still on disk (a record whose file was already removed is nothing
+            // to flag). `symlink_metadata` so a planted symlink is not followed.
+            if std::fs::symlink_metadata(&path).is_ok() {
+                out.push(CheckResult::warn(
+                    format!("skill.orphan.{name}.pi"),
+                    format!(
+                        "pi skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                        path.display()
+                    ),
+                    "orchestratectl skill install --force",
+                ));
+            }
+            continue;
+        }
+
+        let id = format!("skill.sync.{name}.pi");
+        let suggest = format!("orchestratectl skill install {name} --force");
+
+        if !path.exists() {
+            out.push(CheckResult::warn(
+                id,
+                format!("pi skill '{name}' is not installed at {}", path.display()),
+                suggest,
+            ));
+            continue;
+        }
+
+        match skill::read_on_disk_cli_version(&path)
+            .as_deref()
+            .and_then(|v| compare(v, binary).map(|o| (v, o)))
+        {
+            Some((_, Ordering::Equal)) => {
+                // Version-in-sync: use the recorded content hash to catch a
+                // same-version local edit (the pi mirror is byte-identical to
+                // what we wrote, so any divergence is an edit).
+                match skill::file_sha256(&path) {
+                    Some(h) if h == m.sha256 => out.push(CheckResult::ok(
+                        id,
+                        format!("pi skill '{name}' in sync at cli_version {binary}"),
+                    )),
+                    Some(_) => out.push(CheckResult::warn(
+                        id,
+                        format!(
+                            "pi skill '{name}' differs from the copy orchestratectl wrote while its cli_version matches binary {binary} (possible local edits)"
+                        ),
+                        suggest,
+                    )),
+                    None => out.push(CheckResult::warn(
+                        id,
+                        format!("pi skill '{name}' is unreadable at {}", path.display()),
+                        suggest,
+                    )),
+                }
+            }
+            Some((v, Ordering::Less)) => {
+                // Advisory only — NO autonomous `FixAction::InstallSkill`. That
+                // applier runs `skill install <name> --force`, which dual-homes
+                // and would force-overwrite the CLAUDE copy too: if that copy is
+                // deliberately newer/edited (its own check refuses an autonomous
+                // fix), autofixing pi drift here would silently downgrade it.
+                // Symmetric with the codex checks, which omit the fix for the
+                // same cross-target reason (review C, `assessment-pi-lifecycle`).
+                out.push(CheckResult::warn(
+                    id,
+                    format!("pi skill '{name}' is cli_version {v}, binary is {binary}"),
+                    suggest,
+                ));
+            }
+            Some((v, Ordering::Greater)) => {
+                out.push(CheckResult::warn(
+                    id,
+                    format!(
+                        "pi skill '{name}' on disk is cli_version {v}, newer than binary {binary}"
+                    ),
+                    "upgrade the orchestratectl binary to match the installed skill",
+                ));
+            }
+            None => {
+                out.push(CheckResult::warn(
+                    id,
+                    format!(
+                        "pi skill '{name}' has an unreadable/unparseable cli_version at {}",
+                        path.display()
+                    ),
+                    suggest,
+                ));
+            }
+        }
+    }
 }
 
 /// Codex flat-layout coverage — the `skill.sync.codex.*` /

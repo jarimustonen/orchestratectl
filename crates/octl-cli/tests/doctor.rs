@@ -249,6 +249,128 @@ fn skill_orphan_warns_only_for_managed_deregistered_dir() {
     assert!(out.status.success(), "warnings must not fail the run");
 }
 
+/// Seed a pi mirror `SKILL.md` at `~/.pi/agent/skills/<name>/` with the given
+/// `cli_version`, plus a provenance record entry naming it managed. The recorded
+/// hash is arbitrary — the drift/orphan checks exercised here never require a
+/// hash match (only the Equal-version OK arm does, which is covered by the
+/// install-then-doctor test).
+fn seed_pi_mirror(env: &Env, name: &str, cli_version: &str) {
+    let dir = env.home.path().join(".pi/agent/skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: test\ncli_version: \"{cli_version}\"\nschema_version: 1\n---\nbody\n"
+        ),
+    )
+    .unwrap();
+
+    let record = env.orch.join("state").join("pi-installed-skills.json");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    let mut prov: Value = std::fs::read_to_string(&record)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({ "schema_version": 1, "skills": {} }));
+    prov["skills"][name] =
+        serde_json::json!({ "sha256": "0".repeat(64), "cli_version": cli_version });
+    std::fs::write(&record, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
+}
+
+#[test]
+fn pi_sync_drift_warns_with_install_suggestion() {
+    // A recorded pi mirror older than the binary → WARN keyed `skill.sync.
+    // <name>.pi`, with the same forced-reinstall suggestion as the claude check.
+    let env = setup();
+    seed_pi_mirror(&env, "octl-run-overview", "0.0.0");
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.sync.octl-run-overview.pi");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("0.0.0"));
+    assert!(c["fix_suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("skill install octl-run-overview --force"));
+    assert!(out.status.success(), "warnings must not fail the run");
+}
+
+#[test]
+fn pi_orphan_warns_for_managed_deregistered_mirror() {
+    // A pi mirror the provenance record names but the catalog no longer ships →
+    // WARN keyed `skill.orphan.<name>.pi`. A pi mirror the record does NOT name
+    // (a user's own pi skill) is never recorded, hence never flagged.
+    let env = setup();
+    seed_pi_mirror(&env, "gone-skill", "0.0.1");
+    // A user's own pi skill: on disk but NOT in the provenance record.
+    let user = env.home.path().join(".pi/agent/skills/my-pi-skill");
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(user.join("SKILL.md"), "---\nname: my-pi-skill\n---\n").unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.orphan.gone-skill.pi");
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("de-registered"));
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.my-pi-skill.pi"),
+        "an unrecorded user pi skill must not be flagged as an orphan"
+    );
+    assert!(out.status.success(), "warnings must not fail the run");
+}
+
+#[test]
+fn pi_checks_absent_without_provenance_record() {
+    // No provenance record (a host that never dual-homed into pi) → no pi checks
+    // at all, keeping a pi-less tree free of pi noise.
+    let env = setup();
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"].as_str().unwrap().split('.').next_back() == Some("pi")),
+        "no pi checks should be emitted without a provenance record"
+    );
+}
+
+#[test]
+fn pi_in_sync_after_install_is_ok() {
+    // End-to-end: a real `skill install` writes the pi mirror AND its provenance
+    // (correct content hash), so `doctor` reports the pi mirror in sync — proving
+    // the OK arm's hash-match path against real bytes.
+    let env = setup();
+    assert!(bin(&env)
+        .args(["skill", "install", "octl-run-overview"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.sync.octl-run-overview.pi");
+    assert_eq!(c["status"], "ok", "pi mirror should be in sync: {c}");
+}
+
 #[test]
 fn fix_reinstalls_drifted_skill() {
     let env = setup();

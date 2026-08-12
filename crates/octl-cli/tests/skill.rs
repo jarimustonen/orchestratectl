@@ -1357,3 +1357,235 @@ fn skill_install_over_older_companion_upgrades_without_force() {
         "companion was not upgraded to the binary version"
     );
 }
+
+// --- pi.dev mirror lifecycle (out-of-band provenance) --------------------
+//
+// `ORCHESTRATECTL_HOME` and `HOME` both point at the tempdir root here (see
+// `bin`), so the provenance record lands at `<home>/state/pi-installed-
+// skills.json` and pi mirrors at `<home>/.pi/agent/skills/<name>/`.
+
+/// Path to the out-of-band pi provenance record for this test home.
+fn pi_provenance_path(home: &TempDir) -> PathBuf {
+    home.path().join("state").join("pi-installed-skills.json")
+}
+
+fn read_provenance(home: &TempDir) -> Value {
+    let body = std::fs::read_to_string(pi_provenance_path(home)).expect("provenance record");
+    serde_json::from_str(&body).expect("provenance json")
+}
+
+#[test]
+fn skill_install_writes_pi_provenance_record() {
+    // Every pi mirror install records the skill's name + content hash in the
+    // out-of-band provenance record — the sole signal later prune/doctor keys on.
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let prov = read_provenance(&home);
+    assert_eq!(prov["schema_version"], 1);
+    let rec = &prov["skills"]["stint-start"];
+    assert!(rec.is_object(), "stint-start not recorded: {prov}");
+    let sha = rec["sha256"].as_str().expect("sha256");
+    assert_eq!(sha.len(), 64, "sha256 must be 32-byte hex");
+    assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(
+        rec["cli_version"].as_str().unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Seed a fake de-registered pi mirror by CLONING a real skill's just-written
+/// pi mirror bytes + recorded hash under a name (`gone-skill`) not in the
+/// catalog. Reusing a real skill's (bytes, hash) pair means the test needs no
+/// sha256 implementation of its own. Returns the seeded mirror path.
+fn seed_deregistered_pi_mirror(home: &TempDir, fake: &str, diverge: bool) -> PathBuf {
+    // A real install first, so both the provenance record and a real pi mirror
+    // (whose bytes hash to the recorded value) exist to clone from.
+    assert!(bin(home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let real_mirror = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
+    let real_bytes = std::fs::read(&real_mirror).unwrap();
+
+    let mut prov = read_provenance(home);
+    let recorded_hash = prov["skills"]["stint-start"]["sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Write the fake mirror. If `diverge`, its bytes differ from the recorded
+    // hash (simulating a user edit); otherwise they are our exact copy.
+    let fake_dir = home.path().join(".pi/agent/skills").join(fake);
+    std::fs::create_dir_all(&fake_dir).unwrap();
+    let fake_mirror = fake_dir.join("SKILL.md");
+    if diverge {
+        std::fs::write(&fake_mirror, b"user has taken this over\n").unwrap();
+    } else {
+        std::fs::write(&fake_mirror, &real_bytes).unwrap();
+    }
+
+    // Record the fake skill with the recorded hash of the pristine copy.
+    prov["skills"][fake] = serde_json::json!({
+        "sha256": recorded_hash,
+        "cli_version": "0.0.1",
+    });
+    std::fs::write(
+        pi_provenance_path(home),
+        serde_json::to_string_pretty(&prov).unwrap(),
+    )
+    .unwrap();
+
+    fake_mirror
+}
+
+#[test]
+fn skill_install_force_prunes_deregistered_pi_mirror() {
+    // A pi mirror the record names but the catalog no longer ships is pruned by
+    // the full-catalog --force install — keyed on the provenance record, and
+    // only when the on-disk bytes still hash to the recorded value.
+    let home = mk_home();
+    let fake_mirror = seed_deregistered_pi_mirror(&home, "gone-skill", false);
+    assert!(fake_mirror.exists());
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all --force failed: {out:?}");
+
+    assert!(!fake_mirror.exists(), "de-registered pi mirror not pruned");
+    assert!(
+        !fake_mirror.parent().unwrap().exists(),
+        "emptied per-skill dir should be cleaned up"
+    );
+    // Dropped from the provenance record.
+    let prov = read_provenance(&home);
+    assert!(
+        prov["skills"].get("gone-skill").is_none(),
+        "gone-skill still tracked: {prov}"
+    );
+    // Reported + warned.
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned: Vec<&str> = v["data"]["pruned"]
+        .as_array()
+        .expect("pruned")
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(pruned.contains(&"gone-skill"), "pruned: {pruned:?}");
+    let warnings = v["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("pi_mirror_pruned")
+                && w.as_str().unwrap().contains("gone-skill")),
+        "expected pi_mirror_pruned warning; got {warnings:?}"
+    );
+}
+
+#[test]
+fn skill_install_force_preserves_diverged_pi_mirror() {
+    // A de-registered pi mirror the user has EDITED (bytes no longer hash to the
+    // recorded value) is never deleted — orchestratectl relinquishes management
+    // instead, leaving the file and dropping it from the record.
+    let home = mk_home();
+    let fake_mirror = seed_deregistered_pi_mirror(&home, "gone-skill", true);
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all --force failed: {out:?}");
+
+    assert!(
+        fake_mirror.exists(),
+        "a user-edited (diverged) pi mirror must NOT be deleted"
+    );
+    let prov = read_provenance(&home);
+    assert!(
+        prov["skills"].get("gone-skill").is_none(),
+        "diverged mirror should be dropped from tracking"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let warnings = v["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("pi_mirror_diverged")),
+        "expected pi_mirror_diverged warning; got {warnings:?}"
+    );
+    // Never reported as pruned.
+    let pruned = v["data"]["pruned"].as_array().expect("pruned");
+    assert!(!pruned.iter().any(|p| p == "gone-skill"));
+}
+
+#[test]
+fn skill_install_fails_closed_on_corrupt_pi_provenance() {
+    // A corrupt provenance record must NOT be silently laundered to empty and
+    // overwritten (which would erase tracking for every managed pi mirror). The
+    // install fails closed, before any file is written, with an actionable code.
+    let home = mk_home();
+    std::fs::create_dir_all(home.path().join("state")).unwrap();
+    std::fs::write(pi_provenance_path(&home), "{ this is not json").unwrap();
+    // A skill that would otherwise be installed — prove nothing lands.
+    let claude = home.path().join(".claude/skills/stint-start/SKILL.md");
+
+    let out = bin(&home)
+        .args(["skill", "install", "stint-start", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(
+        !out.status.success(),
+        "corrupt record must fail the install"
+    );
+    // Error envelope is emitted on stderr.
+    let v: Value = serde_json::from_slice(&out.stderr).expect("json");
+    assert_eq!(v["error"]["code"], "pi_provenance_corrupt");
+    assert!(
+        !claude.exists(),
+        "no file should be written when the record is rejected pre-write"
+    );
+}
+
+#[test]
+fn skill_install_without_force_does_not_prune_pi_mirror() {
+    // Prune is gated on --force, symmetric with the claude dir prune: a plain
+    // full-catalog install never deletes a pi mirror as a side effect. Seeded
+    // manually (no prior real install) so the plain full-catalog install below
+    // is a clean first install rather than an overwrite. The seeded hash is
+    // arbitrary — a non-force run never inspects it (prune is force-gated).
+    let home = mk_home();
+    let fake_dir = home.path().join(".pi/agent/skills/gone-skill");
+    std::fs::create_dir_all(&fake_dir).unwrap();
+    let fake_mirror = fake_dir.join("SKILL.md");
+    std::fs::write(&fake_mirror, b"stale de-registered body\n").unwrap();
+    std::fs::create_dir_all(home.path().join("state")).unwrap();
+    std::fs::write(
+        pi_provenance_path(&home),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "skills": { "gone-skill": { "sha256": "deadbeef", "cli_version": "0.0.1" } },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install-all failed: {out:?}");
+    assert!(fake_mirror.exists(), "pi prune ran without --force");
+    // Still tracked (union-merge preserves the prior record entry).
+    let prov = read_provenance(&home);
+    assert!(prov["skills"].get("gone-skill").is_some());
+}

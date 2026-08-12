@@ -8,15 +8,17 @@
 //! version with the CLI. See `AGENTS-AI-FIRST-CLI.md` §15-§17.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::error::CliError;
+use crate::home;
 use crate::output::{self, OutputFormat, OutputSpec};
 
 /// One embedded skill: name and full SKILL.md text. The description is
@@ -572,6 +574,21 @@ pub fn cmd_install(
         ));
     }
 
+    // Whether this install dual-homes into pi — the same condition that pushes
+    // the pi `PlanItem`s below. When it does, load AND validate the out-of-band
+    // provenance record NOW, before any file is written, so a corrupt or
+    // future-schema record fails the install fast rather than after mutating the
+    // tree (review finding A). The loaded record is threaded to the pi lifecycle
+    // block after the writes land.
+    let pi_dual_home = dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All);
+    let mut pi_provenance: Option<(PathBuf, PiProvenance)> = None;
+    if pi_dual_home {
+        if let Some(record_path) = pi_provenance_path() {
+            let prov = load_pi_provenance_for_write(&record_path)?;
+            pi_provenance = Some((record_path, prov));
+        }
+    }
+
     // Build the full plan first, then preflight, then write. This avoids
     // the partial-install retry trap where one of N writes succeeds and a
     // re-run hits refused_overwrite on a different path than the original
@@ -685,6 +702,11 @@ pub fn cmd_install(
     all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
+    // pi mirrors actually written this run: (skill name, content hash,
+    // cli_version). Only files the write loop persisted are recorded in the
+    // provenance record below — a `skipped` (present, non-force, divergent) pi
+    // mirror was NOT written, so we carry its prior record forward untouched.
+    let mut pi_written: Vec<(&'static str, String, String)> = Vec::new();
     for item in plan {
         // A pi mirror that preflight chose to leave in place (present, no
         // --force) is skipped outright — NOT written and NOT reported as
@@ -702,6 +724,11 @@ pub fn cmd_install(
         // window. (Review finding #1.)
         let allow_overwrite = preflight_result.overwrite_allowed.contains(&item.path);
         write_atomic(&item.path, &item.content, allow_overwrite)?;
+        if item.agent == "pi" {
+            let cli_version = parse_frontmatter_field(&item.content, "cli_version")
+                .unwrap_or_else(|| CLI_VERSION.to_string());
+            pi_written.push((item.name, sha256_hex(item.content.as_bytes()), cli_version));
+        }
         installed.push(InstalledFile {
             name: item.name,
             agent: item.agent,
@@ -934,6 +961,91 @@ pub fn cmd_install(
             write_codex_marker(&marker_path, &prompts, &companions)?;
         }
     }
+
+    // pi.dev mirror lifecycle (out-of-band provenance). Maintained whenever
+    // this install dual-homed into pi — i.e. the same condition `cmd_install`
+    // used to push the pi `PlanItem`s (default path, claude-format target).
+    // Two steps, both keyed SOLELY on the out-of-band record (the pi dir has no
+    // in-dir marker):
+    //
+    //   1. Record every pi mirror we just wrote (union-merged with the prior
+    //      record so a targeted single-skill install never forgets the rest of
+    //      the managed set — symmetric with the codex marker union).
+    //   2. On the full-catalog `--force` redeploy (the same gate as the claude
+    //      prune), prune pi mirrors of de-registered skills — but only ones the
+    //      record names AND whose on-disk bytes still hash to the recorded value
+    //      (strong evidence it is our unmodified copy). A user-taken-over or
+    //      hand-authored pi dir is never recorded, so it is not touched.
+    //
+    // Like the claude/codex marker updates, the record read-modify-write is
+    // unlocked: two concurrent `skill install` runs can lose one another's
+    // additions (parity debt, not introduced here). Mutation commands are not
+    // meant to run concurrently — see `crates/octl-cli/AGENTS.md`.
+    if let Some((record_path, mut prov)) = pi_provenance {
+        prov.schema_version = PI_PROVENANCE_SCHEMA_VERSION;
+        for (name, hash, ver) in &pi_written {
+            prov.skills.insert(
+                (*name).to_string(),
+                PiSkillRecord {
+                    sha256: hash.clone(),
+                    cli_version: ver.clone(),
+                },
+            );
+        }
+
+        if prune_eligible {
+            let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
+            // De-registered names the record still tracks — the only prune
+            // candidates. Collected first (from `BTreeMap::keys`, so sorted +
+            // deterministic) so we don't mutate `prov.skills` while iterating it.
+            let orphan_names: Vec<String> = prov
+                .skills
+                .keys()
+                .filter(|n| !registered.contains(n.as_str()))
+                .cloned()
+                .collect();
+            for orphan in orphan_names {
+                // Never let a record-sourced key that is not a single normal path
+                // component reach the filesystem (review finding E). It stays in
+                // the record (inert — doctor skips it too) but is never acted on.
+                if !is_simple_skill_name(&orphan) {
+                    all_warnings.push(format!(
+                        "pi_provenance_bad_name: ignoring pi provenance entry '{orphan}' (not a simple skill name)"
+                    ));
+                    continue;
+                }
+                // `orphan` came straight from `prov.skills.keys()`, so the entry
+                // is present — index directly rather than a fallible get that
+                // could silently pass an empty hash to the prune.
+                let recorded_hash = prov.skills[&orphan].sha256.clone();
+                match prune_pi_mirror(&orphan, &recorded_hash, &mut all_warnings) {
+                    PiPruneOutcome::Removed => {
+                        pruned.push(orphan.clone());
+                        prov.skills.remove(&orphan);
+                    }
+                    // Stop tracking it — either nothing safe is on disk to
+                    // delete (absent / symlink / dir), or the on-disk copy
+                    // diverged from what we wrote (the user has taken it over,
+                    // so we leave it in place and relinquish management rather
+                    // than delete a file we no longer recognise as ours).
+                    PiPruneOutcome::Dropped | PiPruneOutcome::Diverged => {
+                        prov.skills.remove(&orphan);
+                    }
+                    // Delete failed (still on disk): keep tracking so a later
+                    // redeploy retries and `doctor` still flags it.
+                    PiPruneOutcome::Kept => {}
+                }
+            }
+        }
+
+        write_pi_provenance(&record_path, &prov)?;
+    }
+
+    // De-registered skills can be pruned from more than one layout (claude,
+    // codex, pi) in a single `--force` redeploy, each pushing the same name here.
+    // Deduplicate so the `pruned` payload is a set (review finding B).
+    pruned.sort();
+    pruned.dedup();
 
     let payload = InstallPayload {
         installed,
@@ -1254,6 +1366,241 @@ pub fn codex_managed_companions() -> Vec<String> {
     v
 }
 
+// ---------------------------------------------------------------------------
+// pi.dev mirror lifecycle (out-of-band provenance).
+//
+// The pi mirror (`~/.pi/agent/skills/<name>/SKILL.md`, written by `cmd_install`)
+// deliberately carries NO in-dir `.orchestratectl-managed` marker — the
+// `pidev-dual-home-skills` contract forbids one so the pi corpus stays a pure
+// skill-body mirror. Without an in-dir provenance signal we cannot tell an
+// orchestratectl-written pi dir from a user's own hand-authored pi skill, so a
+// naive "pi orphan" prune/warn would false-positive on every user skill.
+//
+// The provenance therefore lives OUT-OF-BAND, in a single JSON record under the
+// orchestratectl state root (`<root>/state/pi-installed-skills.json`), keyed by
+// skill name → the content hash + `cli_version` we last wrote. It is the SOLE
+// authority for two safety-critical decisions:
+//
+//   - prune (issue task 2): a pi mirror is a prune candidate only if its name is
+//     recorded here AND the on-disk bytes still hash to the recorded value (proof
+//     it is our unmodified copy). A user-taken-over or hand-authored pi dir is
+//     never recorded, so it is never touched.
+//   - `doctor` drift (issue task 3): the recorded set gates the `skill.sync.
+//     <name>.pi` / `skill.orphan.<name>.pi` checks, so a host that never dual-
+//     homed into pi emits no pi checks and stays 0-warn.
+
+/// Schema version of the pi provenance record. Bumped independently of the
+/// SKILL.md and envelope schema versions if the record's shape ever changes.
+const PI_PROVENANCE_SCHEMA_VERSION: u32 = 1;
+
+/// One pi mirror orchestratectl wrote: the content hash + `cli_version` of the
+/// `SKILL.md` bytes last persisted to `~/.pi/agent/skills/<name>/SKILL.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PiSkillRecord {
+    /// Lowercase-hex SHA-256 of the `SKILL.md` bytes we wrote. Divergence from
+    /// the on-disk bytes means the user (or a newer/older binary) has since
+    /// changed the file — the prune path refuses to delete such a copy.
+    sha256: String,
+    /// The `cli_version` frontmatter of the bytes we wrote, retained for
+    /// human/debug inspection of the record and possible future use. `doctor`
+    /// classifies drift from the ON-DISK `cli_version` (more accurate than the
+    /// last-written one), so it does not read this field today.
+    cli_version: String,
+}
+
+/// The out-of-band pi provenance record: which pi mirrors orchestratectl wrote
+/// and their content hash + version. A `BTreeMap` keeps the on-disk JSON
+/// deterministic (sorted keys) so a redeploy that changes nothing produces
+/// byte-identical output.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PiProvenance {
+    schema_version: u32,
+    skills: BTreeMap<String, PiSkillRecord>,
+}
+
+/// Lowercase-hex SHA-256 of `bytes`. Used to fingerprint a pi `SKILL.md` for
+/// the provenance record and to verify a prune candidate is still our copy.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Root of the pi.dev skill-mirror layout (`~/.pi/agent/skills`). `None` when
+/// `HOME` is unset. Sibling of [`claude_skills_root`]; the pi prune uses it to
+/// assert a per-skill dir it is about to `remove_dir` really sits directly under
+/// the corpus root before touching it.
+fn pi_skills_root() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".pi/agent/skills"))
+}
+
+/// Default pi mirror path for a skill (`~/.pi/agent/skills/<name>/SKILL.md`).
+/// `None` when `HOME` is unset. Used by `doctor` to locate the on-disk pi copy
+/// to compare against the binary, and by the prune path to resolve a
+/// de-registered mirror.
+pub fn pi_default_path(name: &str) -> Option<PathBuf> {
+    default_path("pi", name).ok()
+}
+
+/// True when `name` is a single normal path component — no `/`, no `.`/`..`, not
+/// absolute, not empty. Every real catalog skill name has this shape. The
+/// provenance record is persisted, mutable JSON: a corrupt/hand-edited key like
+/// `"../../.bashrc"` or an absolute path deserialized and then `join`ed into a
+/// filesystem path would let the prune/doctor act OUTSIDE the pi corpus (the one
+/// `record-key → fs-path → remove_file` path that has no other binding check —
+/// claude/codex instead enumerate real directory entries, which are
+/// single-component for free). Validating here gives the pi path the same rigor
+/// as `managed_orphan_dirs` (review finding E). Non-matching names are skipped,
+/// never acted on.
+pub fn is_simple_skill_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
+}
+
+/// Path to the single out-of-band pi provenance record
+/// (`<orchestratectl-root>/state/pi-installed-skills.json`). `None` when the
+/// root cannot be resolved (neither `$ORCHESTRATECTL_HOME` nor `$HOME` set).
+/// Deliberately rooted at the orchestratectl STATE dir, not `~/.pi` — the pi
+/// corpus must stay a pure body mirror with no orchestratectl bookkeeping in it.
+fn pi_provenance_path() -> Option<PathBuf> {
+    home::root_dir()
+        .ok()
+        .map(|root| root.join("state").join("pi-installed-skills.json"))
+}
+
+/// LENIENT read for the READ-ONLY doctor path: a missing, unreadable,
+/// unparseable, OR future-schema record yields an empty [`PiProvenance`], so
+/// `doctor` simply emits no pi checks rather than auditing a record it cannot
+/// trust. NEVER use this on the install mutation path — that must fail loudly
+/// instead of laundering a corrupt record into an empty one it then overwrites
+/// (see [`load_pi_provenance_for_write`]).
+fn read_pi_provenance(path: &Path) -> PiProvenance {
+    let Ok(body) = fs::read_to_string(path) else {
+        return PiProvenance::default();
+    };
+    match serde_json::from_str::<PiProvenance>(&body) {
+        Ok(p) if p.schema_version <= PI_PROVENANCE_SCHEMA_VERSION => p,
+        _ => PiProvenance::default(),
+    }
+}
+
+/// STRICT load for the install MUTATION path. Distinguishes:
+///
+///   - absent (`NotFound`) → `Ok(default)` — a first install starts fresh.
+///   - unreadable / unparseable / `schema_version` NEWER than this binary
+///     understands → `Err`.
+///
+/// so an install NEVER silently launders a corrupt or future-schema record into
+/// an empty one and then overwrites it — which would erase tracking for EVERY
+/// other managed pi mirror (the record is the sole authority; there is no in-dir
+/// fallback). The record is loaded and validated BEFORE any file is written, so
+/// a corrupt record fails the install fast rather than after mutating the tree
+/// (review finding A). The trusted state root does not rescue this: a partial
+/// write (power loss / ENOSPC mid-persist), a version rollback, or a manual edit
+/// are all ordinary causes.
+fn load_pi_provenance_for_write(path: &Path) -> Result<PiProvenance, CliError> {
+    let body = match fs::read_to_string(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(PiProvenance::default()),
+        Err(e) => {
+            return Err(CliError::system(
+                "pi_provenance_unreadable",
+                format!(
+                    "could not read pi provenance record {}: {e}; back it up and remove it to re-initialise",
+                    path.display()
+                ),
+            ))
+        }
+    };
+    let prov: PiProvenance = serde_json::from_str(&body).map_err(|e| {
+        CliError::system(
+            "pi_provenance_corrupt",
+            format!(
+                "pi provenance record {} is not valid JSON ({e}); refusing to overwrite it (that would erase tracking for every managed pi mirror). Back it up and remove it to re-initialise.",
+                path.display()
+            ),
+        )
+    })?;
+    if prov.schema_version > PI_PROVENANCE_SCHEMA_VERSION {
+        return Err(CliError::system(
+            "pi_provenance_schema_too_new",
+            format!(
+                "pi provenance record {} uses schema {} but this binary understands only {}; refusing to overwrite it. Upgrade orchestratectl.",
+                path.display(),
+                prov.schema_version,
+                PI_PROVENANCE_SCHEMA_VERSION
+            ),
+        ));
+    }
+    Ok(prov)
+}
+
+/// Write the pi provenance record atomically. The `state/` dir is created if
+/// absent. `write_atomic` with `force = true` renames a fresh tempfile over the
+/// destination, which atomically replaces whatever name is there — including a
+/// squatting symlink — with the regular file, so no symlink target is ever
+/// clobbered. A write failure is fatal to the install (symmetric with the
+/// claude/codex marker writes): without a current record a genuine pi orphan is
+/// never recognised.
+fn write_pi_provenance(path: &Path, prov: &PiProvenance) -> Result<(), CliError> {
+    let body = serde_json::to_string_pretty(prov).map_err(|e| {
+        CliError::system(
+            "pi_provenance_serialize_failed",
+            format!("could not serialize pi provenance record: {e}"),
+        )
+    })?;
+    write_atomic(path, &body, true)
+}
+
+/// The skill names the pi provenance record lists as orchestratectl-managed,
+/// each with its recorded content hash (sorted by name). Empty
+/// when `HOME`/root is unset or the record is absent — precisely the signal
+/// that orchestratectl does not manage a pi mirror on this host, so `doctor`
+/// emits no pi checks. Consumed by the `skill.sync.<name>.pi` /
+/// `skill.orphan.<name>.pi` doctor checks.
+pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
+    let Some(path) = pi_provenance_path() else {
+        return Vec::new();
+    };
+    let prov = read_pi_provenance(&path);
+    let mut out: Vec<PiManagedSkill> = prov
+        .skills
+        .into_iter()
+        .map(|(name, rec)| PiManagedSkill {
+            name,
+            sha256: rec.sha256,
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// One managed pi mirror surfaced to `doctor`: the skill name plus the content
+/// hash orchestratectl recorded when it last wrote the mirror. The hash lets the
+/// drift check detect a same-version local edit (on-disk bytes no longer match
+/// what we wrote) without holding the bundled body. (The record also carries the
+/// written `cli_version`, but the doctor reads the on-disk `cli_version` for a
+/// more accurate drift classification, so it is not surfaced here.)
+pub struct PiManagedSkill {
+    pub name: String,
+    pub sha256: String,
+}
+
+/// SHA-256 (lowercase hex) of the file at `path`, or `None` if it cannot be
+/// read. Exposed for `doctor` to compare an on-disk pi `SKILL.md` against the
+/// hash the provenance record holds.
+pub fn file_sha256(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|b| sha256_hex(&b))
+}
+
 /// True when `dir` is a claude-layout skill directory that orchestratectl
 /// installed. The guard is deliberately strict — its `true` is the SOLE
 /// authorization for a recursive `remove_dir_all`, so it must never yield
@@ -1469,6 +1816,115 @@ fn prune_codex_file(
         Err(e) => {
             warnings.push(format!("{failed_warning} at {}: {e}", path.display()));
             CodexPruneOutcome::Kept
+        }
+    }
+}
+
+/// What [`prune_pi_mirror`] did with a de-registered pi mirror, so the caller
+/// can keep the provenance record in step: `Removed` (our unmodified copy,
+/// deleted → drop it + report it pruned), `Dropped` (nothing safe on disk to
+/// delete → stop tracking), `Diverged` (on-disk bytes no longer match what we
+/// wrote → the user owns it now, leave it + stop tracking), or `Kept` (delete
+/// failed → still on disk → keep tracking so a later redeploy retries).
+enum PiPruneOutcome {
+    Removed,
+    Dropped,
+    Diverged,
+    Kept,
+}
+
+/// Prune the pi mirror for a de-registered skill `name`, keyed SOLELY on the
+/// out-of-band provenance record (the pi dir carries no in-dir marker). Safety
+/// is layered exactly like the claude/codex orphan prunes:
+///
+///   - Resolve `~/.pi/agent/skills/<name>/SKILL.md`; a `HOME`-unset root yields
+///     `Dropped` (nothing we can locate).
+///   - `symlink_metadata` (never follows a link): only a REGULAR file is a
+///     candidate — a symlink or a directory squatting at that name is left
+///     untouched (`Dropped`), so a planted link can never redirect the delete.
+///   - Content identity: the on-disk bytes must hash to `recorded_hash`. A
+///     mismatch means the user (or another binary) changed the file since we
+///     wrote it — we refuse to delete it and relinquish management
+///     (`Diverged`).
+///   - Only then remove the `SKILL.md` we wrote, and best-effort remove the now-
+///     empty per-skill dir (never a recursive `remove_dir_all`, since the dir
+///     may hold a user file we did not create).
+fn prune_pi_mirror(name: &str, recorded_hash: &str, warnings: &mut Vec<String>) -> PiPruneOutcome {
+    let Some(path) = pi_default_path(name) else {
+        return PiPruneOutcome::Dropped;
+    };
+    prune_pi_mirror_at(
+        name,
+        &path,
+        pi_skills_root().as_deref(),
+        recorded_hash,
+        warnings,
+    )
+}
+
+/// Path-taking core of [`prune_pi_mirror`], split out so the safety logic is
+/// unit-testable against a tempdir without touching `$HOME`. `skills_root` is
+/// the expected pi corpus root; the empty-dir cleanup only fires when the
+/// mirror's parent is exactly `<skills_root>/<name>/` (see the caller's doc for
+/// the layered safety contract).
+fn prune_pi_mirror_at(
+    name: &str,
+    path: &Path,
+    skills_root: Option<&Path>,
+    recorded_hash: &str,
+    warnings: &mut Vec<String>,
+) -> PiPruneOutcome {
+    let is_regular = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
+    if !is_regular {
+        return PiPruneOutcome::Dropped;
+    }
+    let on_disk_hash = match fs::read(path) {
+        Ok(bytes) => sha256_hex(&bytes),
+        Err(e) => {
+            warnings.push(format!(
+                "pi_mirror_prune_failed: could not read de-registered pi mirror '{name}' at {}: {e}",
+                path.display()
+            ));
+            return PiPruneOutcome::Kept;
+        }
+    };
+    if on_disk_hash != recorded_hash {
+        warnings.push(format!(
+            "pi_mirror_diverged: de-registered pi mirror '{name}' at {} was modified since orchestratectl wrote it; leaving it in place and no longer tracking it",
+            path.display()
+        ));
+        return PiPruneOutcome::Diverged;
+    }
+    match fs::remove_file(path) {
+        Ok(()) => {
+            // Best-effort: remove the now-orphaned per-skill dir if it is empty.
+            // We only ever wrote `SKILL.md` into it, but a user may have added
+            // their own sibling — `remove_dir` (non-recursive) fails on a
+            // non-empty dir, so a user file is preserved and the dir left be.
+            // Guarded on the parent sitting DIRECTLY under the pi skills root
+            // (`<root>/<name>/`), so even an unexpected `pi_default_path` result
+            // can never point `remove_dir` at an arbitrary directory — the pi
+            // analogue of claude's `is_managed_skill_dir` name-binding (review
+            // finding D). `remove_dir` is non-recursive regardless.
+            if let (Some(parent), Some(root)) = (path.parent(), skills_root) {
+                if parent.parent() == Some(root)
+                    && parent.file_name().and_then(|n| n.to_str()) == Some(name)
+                {
+                    let _ = fs::remove_dir(parent);
+                }
+            }
+            warnings.push(format!(
+                "pi_mirror_pruned: removed de-registered pi mirror '{name}' at {}",
+                path.display()
+            ));
+            PiPruneOutcome::Removed
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "pi_mirror_prune_failed: could not remove de-registered pi mirror '{name}' at {}: {e}",
+                path.display()
+            ));
+            PiPruneOutcome::Kept
         }
     }
 }
@@ -2048,5 +2504,234 @@ mod tests {
     fn parse_description_returns_none_when_field_absent() {
         let body = "---\nname: foo\nversion: 1\n---\n";
         assert_eq!(parse_description(body), None);
+    }
+
+    #[test]
+    fn sha256_hex_is_deterministic_and_lowercase() {
+        let a = sha256_hex(b"hello");
+        assert_eq!(a, sha256_hex(b"hello"));
+        assert_ne!(a, sha256_hex(b"world"));
+        assert_eq!(a.len(), 64);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Known vector for "hello".
+        assert_eq!(
+            a,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn pi_provenance_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("pi-installed-skills.json");
+        let mut prov = PiProvenance {
+            schema_version: PI_PROVENANCE_SCHEMA_VERSION,
+            skills: BTreeMap::new(),
+        };
+        prov.skills.insert(
+            "stint-start".to_string(),
+            PiSkillRecord {
+                sha256: sha256_hex(b"body-a"),
+                cli_version: "0.1.7".to_string(),
+            },
+        );
+        // Parent dir does not exist yet — the write must create `state/`.
+        write_pi_provenance(&path, &prov).unwrap();
+        let read_back = read_pi_provenance(&path);
+        assert_eq!(read_back.schema_version, PI_PROVENANCE_SCHEMA_VERSION);
+        assert_eq!(
+            read_back
+                .skills
+                .get("stint-start")
+                .map(|r| r.sha256.clone()),
+            Some(sha256_hex(b"body-a"))
+        );
+    }
+
+    #[test]
+    fn read_pi_provenance_tolerates_missing_and_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing file → empty default.
+        let missing = dir.path().join("nope.json");
+        assert!(read_pi_provenance(&missing).skills.is_empty());
+        // Unparseable content → empty default (err toward NOT managing).
+        let garbage = dir.path().join("garbage.json");
+        fs::write(&garbage, "{ not json").unwrap();
+        assert!(read_pi_provenance(&garbage).skills.is_empty());
+        // Future-schema record → lenient reader treats it as empty (doctor
+        // must not audit a record a newer binary wrote).
+        let future = dir.path().join("future.json");
+        fs::write(&future, r#"{"schema_version":999,"skills":{}}"#).unwrap();
+        assert!(read_pi_provenance(&future).skills.is_empty());
+    }
+
+    #[test]
+    fn load_pi_provenance_for_write_fails_closed_on_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        // Missing → Ok(empty): a first install starts fresh.
+        let missing = dir.path().join("nope.json");
+        assert!(load_pi_provenance_for_write(&missing)
+            .unwrap()
+            .skills
+            .is_empty());
+        // Unparseable → Err (never launder + overwrite, which would erase all
+        // tracking).
+        let garbage = dir.path().join("garbage.json");
+        fs::write(&garbage, "{ not json").unwrap();
+        let err = load_pi_provenance_for_write(&garbage).unwrap_err();
+        assert_eq!(err.code, "pi_provenance_corrupt");
+        // Future schema → Err (an older binary must not downgrade-overwrite it).
+        let future = dir.path().join("future.json");
+        fs::write(&future, r#"{"schema_version":999,"skills":{}}"#).unwrap();
+        let err = load_pi_provenance_for_write(&future).unwrap_err();
+        assert_eq!(err.code, "pi_provenance_schema_too_new");
+    }
+
+    #[test]
+    fn is_simple_skill_name_rejects_traversal_and_absolute() {
+        assert!(is_simple_skill_name("stint-start"));
+        assert!(is_simple_skill_name("worktree-code"));
+        assert!(!is_simple_skill_name("../../.bashrc"));
+        assert!(!is_simple_skill_name("a/b"));
+        assert!(!is_simple_skill_name("/etc/passwd"));
+        assert!(!is_simple_skill_name(".."));
+        assert!(!is_simple_skill_name(""));
+    }
+
+    #[test]
+    fn write_pi_provenance_replaces_squatting_symlink() {
+        // A symlink squatting at the record path must be replaced by the atomic
+        // rename, never followed to clobber its target.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("victim.txt");
+        fs::write(&target, "precious").unwrap();
+        let record = dir.path().join("pi-installed-skills.json");
+        std::os::unix::fs::symlink(&target, &record).unwrap();
+
+        let prov = PiProvenance {
+            schema_version: PI_PROVENANCE_SCHEMA_VERSION,
+            skills: BTreeMap::new(),
+        };
+        write_pi_provenance(&record, &prov).unwrap();
+
+        // The victim is untouched; the record path is now a regular file.
+        assert_eq!(fs::read_to_string(&target).unwrap(), "precious");
+        assert!(fs::symlink_metadata(&record).unwrap().file_type().is_file());
+    }
+
+    #[test]
+    fn prune_pi_mirror_removes_our_unmodified_copy_and_empty_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md");
+        let body = b"---\nname: old-skill\n---\nbody\n";
+        fs::write(&mirror, body).unwrap();
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(body),
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Removed));
+        assert!(!mirror.exists(), "mirror file must be gone");
+        assert!(
+            !skill_dir.exists(),
+            "empty per-skill dir must be cleaned up"
+        );
+        assert!(warnings[0].starts_with("pi_mirror_pruned:"));
+    }
+
+    #[test]
+    fn prune_pi_mirror_preserves_dir_with_user_sibling() {
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md");
+        let body = b"our body\n";
+        fs::write(&mirror, body).unwrap();
+        // A user-added sibling in the same dir.
+        fs::write(skill_dir.join("notes.md"), "mine").unwrap();
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(body),
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Removed));
+        assert!(!mirror.exists(), "our SKILL.md is removed");
+        assert!(skill_dir.exists(), "non-empty dir is preserved");
+        assert!(skill_dir.join("notes.md").exists(), "user sibling survives");
+    }
+
+    #[test]
+    fn prune_pi_mirror_refuses_diverged_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let mirror = root.path().join("SKILL.md");
+        fs::write(&mirror, b"user has edited this").unwrap();
+
+        let mut warnings = Vec::new();
+        // Recorded hash is of the ORIGINAL body we wrote, which no longer matches.
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(b"original body"),
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Diverged));
+        assert!(
+            mirror.exists(),
+            "a diverged (user-owned) copy is NOT deleted"
+        );
+        assert!(warnings[0].starts_with("pi_mirror_diverged:"));
+    }
+
+    #[test]
+    fn prune_pi_mirror_drops_absent_symlink_and_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let mut warnings = Vec::new();
+
+        // Absent path.
+        let absent = root.path().join("gone/SKILL.md");
+        assert!(matches!(
+            prune_pi_mirror_at("gone", &absent, Some(root.path()), "anyhash", &mut warnings),
+            PiPruneOutcome::Dropped
+        ));
+
+        // A directory squatting where SKILL.md should be is never removed.
+        let squat = root.path().join("squat");
+        fs::create_dir_all(&squat).unwrap();
+        assert!(matches!(
+            prune_pi_mirror_at("squat", &squat, Some(root.path()), "anyhash", &mut warnings),
+            PiPruneOutcome::Dropped
+        ));
+        assert!(squat.is_dir(), "a squatting dir must be left intact");
+
+        // A symlink at the mirror path is never followed/deleted.
+        let real = root.path().join("real.md");
+        fs::write(&real, b"body").unwrap();
+        let link = root.path().join("link-SKILL.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(matches!(
+            prune_pi_mirror_at(
+                "linked",
+                &link,
+                Some(root.path()),
+                &sha256_hex(b"body"),
+                &mut warnings
+            ),
+            PiPruneOutcome::Dropped
+        ));
+        assert!(link.exists(), "the symlink is left intact");
+        assert!(real.exists(), "the symlink target is untouched");
     }
 }
