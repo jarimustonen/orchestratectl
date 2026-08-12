@@ -119,7 +119,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: arch-lifecycle-map-rootcause (Lane F — the ARCHITECTURE RE-EXAMINATION is now the priority thread. ~57% of open issues + 58% of bugs cluster in the supervisor/agent-lifecycle core; hypothesis: the supervisor INFERS a distributed process's state from indirect signals (pid × pane × branch × report) → combinatorial edge cases patching can't shrink. So we STOP patching the core and REVIEW it first.) Phase-1 runs read-only in PARALLEL with arch-feature-usage-audit + arch-supervision-alternatives. Non-core lanes proceed alongside: Lane B pi.dev (harness-pi-skill-shim) + pipeline, Lane D skill. ⚠️ Lane A (supervise core) + Lane E (run/* read surface) are ⛔ GATED behind ◆ DECISION-2 — do NOT spawn new cluster-A/B fixes until the harden-vs-rearchitect ADR lands; the in-flight agent-skips is the LAST one allowed through (→ ⬆ v0.1.7).   ← start here on resume
+GLOBAL HEAD-OF-LINE: arch-lifecycle-map-rootcause (Lane F — the ARCHITECTURE RE-EXAMINATION is now the priority thread. ~57% of open issues + 58% of bugs cluster in the supervisor/agent-lifecycle core; hypothesis: the supervisor INFERS a distributed process's state from indirect signals (pid × pane × branch × report) → combinatorial edge cases patching can't shrink. So we STOP patching the core and REVIEW it first.) Phase-1 runs read-only in PARALLEL with arch-feature-usage-audit + arch-supervision-alternatives. Non-core lanes proceed alongside: Lane B pi.dev (harness-pi-skill-shim) + pipeline, Lane D skill. ⚠️ Lane A (supervise core) + Lane E (run/* read surface) are ⛔ GATED behind ◆ DECISION-2 — do NOT spawn new cluster-A/B fixes until the harden-vs-rearchitect ADR lands; the now-landed agent-skips was the LAST one allowed through (→ ⬆ v0.1.7, ready to cut).   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ★ PRIORITY
 Phase 1 (read-only research — PARALLEL-SAFE: disjoint output files under issues/lifecycle-architecture-review/, no code edits):
@@ -131,9 +131,12 @@ Phase 2 (needs all three phase-1 docs):
 Phase 3 (THE decision):
     arch-decision-rearchitect-vs-harden    after arch-redesign-design-session (needs the chosen design) — ADR via /worktree-technical-decision; harden vs re-architect; GATES ◆ DECISION-2
 
-LANE A — supervise/agent-lifecycle CORE (cluster A, 23 issues)  ⛔ GATED behind ◆ DECISION-2
+LANE A — supervise/agent-lifecycle CORE (cluster A, 25 issues)  ⛔ GATED behind ◆ DECISION-2
 (do NOT spawn new fixes here until the ADR decides disposition — listed in full so nothing is outside the DAG)
-    agent-skips-run-merge-idle-pending      [IN-FLIGHT — the LAST one allowed through; on landing → ⬆ v0.1.7]
+(NB: the just-landed agent-skips fix immediately spawned 3 MORE cluster-A refinements — idle-unmerged-{monotonic-clock,process-tree-cpu,e2e-preservation-test} — a textbook illustration of why we're reviewing this subsystem instead of patching it)
+    idle-unmerged-monotonic-clock           (filed by the agent-skips fix; CPU clock should use a monotonic Instant for elapsed time — cluster-A refinement)
+    idle-unmerged-process-tree-cpu          (filed by the agent-skips fix; sum PROCESS-TREE CPU, not just the agent PID, so buffered child work isn't misread as idle)
+    idle-unmerged-e2e-preservation-test     (filed by the agent-skips fix; e2e test that a synthesized idle-unmerged report preserves branch+worktree through cleanup)
     worker-process-hang                     (in-progress; WHY the pid exits is agent-runtime scope, parked)
     supervisor-stall-detection              (stalled:false through a multi-hour silent hang; run wait 6h default too long)
     supervisor-spawn-fails-silently-at-run-create   (#4 stateful load-trigger; investigative, no repro; RESILIENCE half of KEY LEARNING #2)
@@ -187,7 +190,7 @@ LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ D
 ◆ DECISION-1 — after arch-feature-usage-audit lands: decide which unused features/surfaces to DEPRECATE or REMOVE (drag reduction). Jari (2026-08-12) actively expects unused options here — bias toward cutting; may fire EARLY (does not wait for the full ADR). May obsolete Lane A/B issues + spawn removal work.
 ◆ DECISION-2 — after arch-decision-rearchitect-vs-harden lands (the ADR): disposition of EVERY Lane A + Lane E issue — keep-and-fix / defer / OBSOLETE-as-subsumed / re-scope. This is the "what do we do with the open issues" checkpoint; it GATES Lanes A + E.
 
-⬆ RELEASE v0.1.7 — agent-skips-run-merge-idle-pending (+ already-landed ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage). Cut once agent-skips lands + integrated gate green (clears the CI-red docs job for users).
+⬆ RELEASE v0.1.7 — READY TO CUT: agent-skips-run-merge-idle-pending + ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage all LANDED on main, integrated gate green (1265 passed / 0 failed). Unreleased on top of 0.1.5→0.1.6. Cut on resume (Wave 1); clears the CI-red docs job for users.
 ⬆ RELEASE v0.2.0 — pi.dev harness milestone: harness-pi-skill-shim + workmux-pi-agent-preset + config-subcommand + pidev-pi-skill-lifecycle (on top of 0.1.6's --harness + dual-home). Cut when the pi.dev thread runs one autonomous kind pi start→merge→report end-to-end.
 ⬆ RELEASE (gated on ◆ DECISION-2) — lifecycle release: bundles the harden fixes OR ships the re-architecture per the ADR; version TBD (0.3.0 if re-architect).
 Cadence: release whenever a wave lands shippable user-facing work (operating policy — release often, fully autonomous).
@@ -196,7 +199,7 @@ Cadence: release whenever a wave lands shippable user-facing work (operating pol
 
 **Epics (not lane nodes):** `code-pipeline` — parent of the Lane B `pipeline-*` work;
 `lifecycle-architecture-review` — parent of **Lane F** (the architecture re-examination).
-**Nothing is outside the DAG.** Every active non-epic issue (44 as of 2026-08-12) sits in a
+**Nothing is outside the DAG.** Every active non-epic issue (46 as of 2026-08-12) sits in a
 lane above — verified drift-clean by the `comm -3` check. No `deferred`-parked items. The full
 open list is `issuectl ls --status open`; `issuectl ls --status open --json | jq length` should
 equal the lane-node count.
