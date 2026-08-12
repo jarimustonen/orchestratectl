@@ -3,7 +3,7 @@ created: 2026-07-26
 updated: 2026-08-12
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: high
 related: ['@supervisor-stuck-pending-after-self-merge', '@spinoff-must-submit-node-report']
 commits:
@@ -13,6 +13,7 @@ commits:
   summary: order idle-unmerged probe cheap-first
 - hash: 51a0410
   summary: apply /llm-review findings — conflicting-branch terminalize, CPU third clock, git-log ref fix
+closed: 2026-08-12
 ---
 
 _Source: orchestratectl technical-decision run (agent closing contract)_
