@@ -231,6 +231,132 @@ fn skill_install_force_prunes_orphan_companion_file() {
 }
 
 #[test]
+fn codex_install_writes_provenance_marker() {
+    // A default `--agent codex` install must drop the single shared codex
+    // marker recording the installed prompt(s) + companion(s) — the signal
+    // later pruning + doctor coverage key on.
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--agent",
+            "codex",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "codex install failed: {out:?}");
+
+    // The flat prompt + shared companion landed.
+    assert!(home.path().join(".codex/prompts/stint-start.md").exists());
+    assert!(home
+        .path()
+        .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
+        .exists());
+    // The marker records the prompt and the companion.
+    let marker = home
+        .path()
+        .join(".codex/prompts/_shared/.orchestratectl-managed");
+    let body = std::fs::read_to_string(&marker).expect("codex marker not written");
+    assert!(
+        body.contains("managed-by: orchestratectl"),
+        "marker: {body}"
+    );
+    assert!(body.contains("prompt: stint-start"), "marker: {body}");
+    assert!(
+        body.contains("companion: AGENTS-EXECUTION-DAG.md"),
+        "marker: {body}"
+    );
+}
+
+#[test]
+fn codex_force_prunes_orphan_prompt_and_companion() {
+    // A prior binary installed a codex prompt + `_shared/` companion this
+    // binary no longer ships; both linger on disk and the shared marker still
+    // records them. A full-catalog `--force` install must remove BOTH and
+    // report them (prompt under `pruned`, companion as `_shared/<file>` under
+    // `pruned_companions`), while leaving the still-bundled companion in place.
+    let home = mk_home();
+    // Full-catalog codex install lays down the flat prompts + shared marker.
+    let first = bin(&home)
+        .args(["skill", "install", "--agent", "codex", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(
+        first.status.success(),
+        "first codex install failed: {first:?}"
+    );
+
+    let prompts = home.path().join(".codex/prompts");
+    let shared = prompts.join("_shared");
+    let marker = shared.join(".orchestratectl-managed");
+    // Simulate the prior binary: a de-registered prompt + a de-registered
+    // shared companion, both recorded in the marker.
+    let orphan_prompt = prompts.join("gone-skill.md");
+    let orphan_companion = shared.join("OLD-SHARED.md");
+    std::fs::write(&orphan_prompt, "stale prompt\n").unwrap();
+    std::fs::write(&orphan_companion, "stale shared\n").unwrap();
+    let mut marker_body = std::fs::read_to_string(&marker).unwrap();
+    marker_body.push_str("prompt: gone-skill\n");
+    marker_body.push_str("companion: OLD-SHARED.md\n");
+    std::fs::write(&marker, marker_body).unwrap();
+    // The still-bundled companion is present and must survive.
+    let real_companion = shared.join("AGENTS-EXECUTION-DAG.md");
+    assert!(real_companion.exists(), "bundled codex companion missing");
+
+    let out = bin(&home)
+        .args([
+            "skill", "install", "--agent", "codex", "--force", "--output", "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "force codex reinstall failed: {out:?}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned: Vec<&str> = v["data"]["pruned"]
+        .as_array()
+        .expect("pruned array")
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    assert!(
+        pruned.contains(&"gone-skill"),
+        "prompt not pruned: {pruned:?}"
+    );
+    let pruned_companions: Vec<&str> = v["data"]["pruned_companions"]
+        .as_array()
+        .expect("pruned_companions array")
+        .iter()
+        .map(|e| e.as_str().unwrap())
+        .collect();
+    assert!(
+        pruned_companions.contains(&"_shared/OLD-SHARED.md"),
+        "companion not pruned: {pruned_companions:?}"
+    );
+
+    assert!(!orphan_prompt.exists(), "orphan codex prompt not removed");
+    assert!(
+        !orphan_companion.exists(),
+        "orphan codex companion not removed"
+    );
+    assert!(
+        real_companion.exists(),
+        "bundled codex companion wrongly removed"
+    );
+    // The rewritten marker no longer records either pruned orphan.
+    let marker_after = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        !marker_after.contains("gone-skill") && !marker_after.contains("OLD-SHARED.md"),
+        "marker still records a pruned orphan: {marker_after:?}"
+    );
+}
+
+#[test]
 fn skill_install_agent_all_installs_to_both_default_paths() {
     let home = mk_home();
     let out = bin(&home)

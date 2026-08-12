@@ -593,6 +593,168 @@ fn fix_reinstalls_drifted_companion() {
     );
 }
 
+// ---- codex flat-layout coverage ----
+
+const CODEX_PROMPT_REL: &str = ".codex/prompts/stint-start.md";
+const CODEX_COMPANION_REL: &str = ".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md";
+const CODEX_MARKER_REL: &str = ".codex/prompts/_shared/.orchestratectl-managed";
+const CODEX_SKILL_ID: &str = "skill.sync.codex.stint-start";
+const CODEX_COMPANION_ID: &str = "skill.sync.codex._shared.AGENTS-EXECUTION-DAG.md";
+
+/// Install a bundled skill to the codex flat layout through the real
+/// `skill install --agent codex` path, so codex checks see byte-identical
+/// on-disk copies and the shared provenance marker exists.
+fn install_bundled_codex(env: &Env, name: &str) {
+    let out = bin(env)
+        .args([
+            "--output", "json", "skill", "install", name, "--agent", "codex",
+        ])
+        .output()
+        .expect("spawn codex install");
+    assert!(out.status.success(), "codex install {name} failed: {out:?}");
+}
+
+#[test]
+fn codex_skill_and_companion_in_sync_after_install_are_ok() {
+    let env = setup();
+    install_bundled_codex(&env, "stint-start");
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let skill = find_check(checks, CODEX_SKILL_ID);
+    assert_eq!(skill["status"], "ok", "codex skill in sync: {skill:?}");
+    let companion = find_check(checks, CODEX_COMPANION_ID);
+    assert_eq!(
+        companion["status"], "ok",
+        "codex companion in sync: {companion:?}"
+    );
+    // A green codex tree never carries an orphan finding for a bundled item.
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.codex._shared.AGENTS-EXECUTION-DAG.md"),
+        "still-bundled codex companion must not be flagged as an orphan"
+    );
+    assert!(out.status.success());
+}
+
+#[test]
+fn codex_checks_absent_without_marker() {
+    // A claude-only install (no codex marker) must emit NO codex checks, so a
+    // claude-primary tree stays free of spurious codex warnings.
+    let env = setup();
+    install_bundled(&env, "stint-start");
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    assert!(
+        !checks.iter().any(
+            |c| c["id"].as_str().unwrap().starts_with("skill.sync.codex")
+                || c["id"].as_str().unwrap().starts_with("skill.orphan.codex")
+        ),
+        "codex checks must be gated on the codex provenance marker"
+    );
+}
+
+#[test]
+fn codex_skill_drift_warns() {
+    let env = setup();
+    install_bundled_codex(&env, "stint-start");
+    // Roll the codex prompt back to an older cli_version (frontmatter only —
+    // the version check reads it directly).
+    std::fs::write(
+        env.home.path().join(CODEX_PROMPT_REL),
+        "---\nname: stint-start\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nbody\n",
+    )
+    .unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, CODEX_SKILL_ID);
+    assert_eq!(c["status"], "warn");
+    assert!(c["message"].as_str().unwrap().contains("0.0.0"));
+    assert!(c["fix_suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("--agent codex --force"));
+    // Codex drift carries no autonomous fix (InstallSkill is claude-scoped).
+    let out2 = bin(&env)
+        .args(["--output", "json", "doctor", "--fix", "--dry-run"])
+        .output()
+        .expect("spawn");
+    let v2: Value = serde_json::from_slice(&out2.stdout).expect("json");
+    let would = v2["would"].as_array().expect("would array");
+    assert!(
+        !would.iter().any(|w| w["check_id"] == CODEX_SKILL_ID),
+        "codex drift must not be an autonomous fix: {would:?}"
+    );
+    assert!(out.status.success());
+}
+
+#[test]
+fn codex_orphan_prompt_and_companion_warn() {
+    let env = setup();
+    install_bundled_codex(&env, "stint-start");
+    let marker = env.home.path().join(CODEX_MARKER_REL);
+    let prompts = env.home.path().join(".codex/prompts");
+    let shared = prompts.join("_shared");
+
+    // Simulate a prior binary: a de-registered prompt + shared companion,
+    // both recorded in the marker and lingering on disk.
+    std::fs::write(prompts.join("gone-skill.md"), "stale\n").unwrap();
+    std::fs::write(shared.join("OLD-SHARED.md"), "stale\n").unwrap();
+    let mut body = std::fs::read_to_string(&marker).unwrap();
+    body.push_str("prompt: gone-skill\n");
+    body.push_str("companion: OLD-SHARED.md\n");
+    std::fs::write(&marker, body).unwrap();
+    // A user's own prompt the marker never recorded must NOT be flagged.
+    std::fs::write(prompts.join("my-own.md"), "mine\n").unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+
+    let prompt_orphan = find_check(checks, "skill.orphan.codex.gone-skill");
+    assert_eq!(prompt_orphan["status"], "warn");
+    assert!(prompt_orphan["message"]
+        .as_str()
+        .unwrap()
+        .contains("de-registered"));
+    let companion_orphan = find_check(checks, "skill.orphan.codex._shared.OLD-SHARED.md");
+    assert_eq!(companion_orphan["status"], "warn");
+
+    // The still-bundled skill + companion stay OK; the user's own prompt is
+    // never flagged as an orphan.
+    assert_eq!(find_check(checks, CODEX_SKILL_ID)["status"], "ok");
+    assert_eq!(find_check(checks, CODEX_COMPANION_ID)["status"], "ok");
+    assert!(
+        !checks
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.codex.my-own"),
+        "an unrecorded user prompt must not be flagged as a codex orphan"
+    );
+    // Codex-side companion + prompt orphans are just companions/prompts; the
+    // marker guard proves the file is untouched.
+    assert!(env.home.path().join(CODEX_COMPANION_REL).exists());
+    // Orphan WARNs never flip the exit code.
+    assert!(out.status.success());
+}
+
 /// Write a schema-valid manifest so the orphan-supervisor test exercises
 /// only the data-integrity path (and schema.runs stays OK for that run).
 fn write_minimal_manifest(run_dir: &Path, run_id: &str) {

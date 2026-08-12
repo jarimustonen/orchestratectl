@@ -335,6 +335,14 @@ pub fn claude_default_path(name: &str) -> Option<PathBuf> {
     default_path("claude", name).ok()
 }
 
+/// Default `codex` install path for a skill (`~/.codex/prompts/<name>.md`).
+/// `None` when `HOME` is unset. The codex layout is FLAT — a skill is a
+/// single top-level prompt file, not a per-skill directory. Used by
+/// `doctor` to locate the on-disk codex copy to compare against the binary.
+pub fn codex_default_path(name: &str) -> Option<PathBuf> {
+    default_path("codex", name).ok()
+}
+
 /// Read the `cli_version` frontmatter field from an on-disk SKILL.md.
 /// `None` when the file is unreadable or has no parseable `cli_version`.
 pub fn read_on_disk_cli_version(path: &Path) -> Option<String> {
@@ -371,6 +379,30 @@ pub fn companion_sources(name: &str) -> Vec<CompanionSource> {
             bundled_body: r.body,
         })
         .collect()
+}
+
+/// Every companion resource any bundled skill ships, deduplicated by
+/// filename. Consumed by the codex `doctor` checks: the codex `_shared/`
+/// dir is a single shared location every skill's companion lands in, so a
+/// companion still referenced by at least one bundled skill is "still
+/// bundled" (audited by the forward `skill.sync.codex._shared.<file>`
+/// check) rather than an orphan. Sorted by filename for deterministic
+/// output.
+pub fn all_companion_sources() -> Vec<CompanionSource> {
+    let mut seen: HashSet<&'static str> = HashSet::new();
+    let mut out: Vec<CompanionSource> = Vec::new();
+    for skill in SKILLS {
+        for r in resources_for(skill.name) {
+            if seen.insert(r.filename) {
+                out.push(CompanionSource {
+                    filename: r.filename,
+                    bundled_body: r.body,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.filename.cmp(b.filename));
+    out
 }
 
 #[derive(Serialize)]
@@ -792,6 +824,117 @@ pub fn cmd_install(
         }
     }
 
+    // Codex flat-layout provenance + prune. Codex's prompts dir is flat (no
+    // per-skill directory), so a single shared marker at
+    // `_shared/.orchestratectl-managed` records which prompts + companions
+    // orchestratectl installed there — the only signal that makes codex-side
+    // pruning + orphan detection safe. Maintained whenever the codex layout
+    // is installed to its DEFAULT path (never for a caller-managed `--dest`).
+    // The marker MERGES with any prior record (union) so a targeted
+    // single-skill install never forgets the rest of the managed set. Orphan
+    // pruning (removing a de-registered prompt/companion) is gated to the
+    // full-catalog `--force` redeploy, symmetric with the claude dir prune
+    // above; a plain `skill install` never deletes anything as a side effect.
+    let codex_default = dest.is_none() && matches!(agent, AgentTarget::Codex | AgentTarget::All);
+    if codex_default {
+        if let (Some(prompts_root), Some(shared_root)) = (codex_prompts_root(), codex_shared_root())
+        {
+            let marker_path = shared_root.join(MANAGED_MARKER_FILENAME);
+
+            // Everything this install just wrote to the codex layout: one
+            // prompt per skill, plus every companion those skills bundle.
+            let mut recorded_prompts: HashSet<String> =
+                skills.iter().map(|s| s.name.to_string()).collect();
+            let mut recorded_companions: HashSet<String> = skills
+                .iter()
+                .flat_map(|s| resources_for(s.name))
+                .map(|r| r.filename.to_string())
+                .collect();
+            // Union with the prior marker so a targeted install (or a prune
+            // that must recognise a de-registered entry) keeps the full set.
+            recorded_prompts.extend(read_marker_records(&marker_path, "prompt"));
+            recorded_companions.extend(read_marker_records(&marker_path, "companion"));
+
+            let codex_prune_eligible = name.is_none() && force;
+            if codex_prune_eligible {
+                let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
+                let bundled_companions: HashSet<&str> = SKILLS
+                    .iter()
+                    .flat_map(|s| resources_for(s.name))
+                    .map(|r| r.filename)
+                    .collect();
+
+                // Orphan codex prompts: recorded but no longer in the catalog.
+                let orphan_prompts: Vec<String> = recorded_prompts
+                    .iter()
+                    .filter(|p| !registered.contains(p.as_str()))
+                    .cloned()
+                    .collect();
+                for orphan in orphan_prompts {
+                    let prompt_path = prompts_root.join(format!("{orphan}.md"));
+                    match prune_codex_file(
+                        &prompt_path,
+                        &format!("skill_pruned: removed de-registered managed codex prompt '{orphan}'"),
+                        &format!("skill_prune_failed: could not remove de-registered codex prompt '{orphan}'"),
+                        &mut all_warnings,
+                    ) {
+                        CodexPruneOutcome::Removed => {
+                            pruned.push(orphan.clone());
+                            recorded_prompts.remove(&orphan);
+                        }
+                        CodexPruneOutcome::Dropped => {
+                            recorded_prompts.remove(&orphan);
+                        }
+                        CodexPruneOutcome::Kept => {}
+                    }
+                }
+
+                // Orphan codex companions: recorded but no bundled skill ships
+                // them any more (the last referrer was removed).
+                let orphan_companions: Vec<String> = recorded_companions
+                    .iter()
+                    .filter(|c| !bundled_companions.contains(c.as_str()))
+                    .cloned()
+                    .collect();
+                for orphan in orphan_companions {
+                    let companion_path = shared_root.join(&orphan);
+                    match prune_codex_file(
+                        &companion_path,
+                        &format!("skill_companion_pruned: removed orphan codex companion '_shared/{orphan}'"),
+                        &format!("skill_companion_prune_failed: could not remove orphan codex companion '_shared/{orphan}'"),
+                        &mut all_warnings,
+                    ) {
+                        CodexPruneOutcome::Removed => {
+                            pruned_companions.push(format!("{CODEX_SHARED_SUBDIR}/{orphan}"));
+                            recorded_companions.remove(&orphan);
+                        }
+                        CodexPruneOutcome::Dropped => {
+                            recorded_companions.remove(&orphan);
+                        }
+                        CodexPruneOutcome::Kept => {}
+                    }
+                }
+            }
+
+            // Persist the reconciled marker. Create `_shared/` first: a codex
+            // install of a companion-less skill would not otherwise materialise
+            // it, but we still need the marker for later pruning of the flat
+            // prompt file. A marker-write failure is fatal (like the claude
+            // marker): without it a genuine orphan is never recognised.
+            let mut prompts: Vec<String> = recorded_prompts.into_iter().collect();
+            prompts.sort();
+            let mut companions: Vec<String> = recorded_companions.into_iter().collect();
+            companions.sort();
+            fs::create_dir_all(&shared_root).map_err(|e| {
+                CliError::system(
+                    "create_dir_failed",
+                    format!("could not create {}: {}", shared_root.display(), e),
+                )
+            })?;
+            write_codex_marker(&marker_path, &prompts, &companions)?;
+        }
+    }
+
     let payload = InstallPayload {
         installed,
         pruned,
@@ -1054,6 +1197,63 @@ pub fn claude_skills_root() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".claude/skills"))
 }
 
+/// Root of the codex flat prompts layout (`~/.codex/prompts`), where each
+/// skill installs as a single top-level `<name>.md`. `None` when `HOME` is
+/// unset. Both the codex prune path and the `skill.orphan.codex.*` doctor
+/// check resolve prompt files against this root.
+pub fn codex_prompts_root() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".codex/prompts"))
+}
+
+/// The codex shared-companion dir (`~/.codex/prompts/_shared`). `None` when
+/// `HOME` is unset. Holds the `_shared/<file>` companions AND the single
+/// codex provenance marker.
+pub fn codex_shared_root() -> Option<PathBuf> {
+    codex_prompts_root().map(|p| p.join(CODEX_SHARED_SUBDIR))
+}
+
+/// Path to the single codex provenance marker
+/// (`~/.codex/prompts/_shared/.orchestratectl-managed`). `None` when `HOME`
+/// is unset. Codex's prompts dir is flat, so — unlike claude's per-skill
+/// directory marker — ONE shared marker records every prompt + companion
+/// orchestratectl installed there. Its presence is what makes codex-side
+/// pruning + orphan detection safe: a user's own prompt of the same name is
+/// never recorded, so it is never touched.
+fn codex_marker_path() -> Option<PathBuf> {
+    codex_shared_root().map(|p| p.join(MANAGED_MARKER_FILENAME))
+}
+
+/// Codex prompt names the shared provenance marker records as
+/// orchestratectl-managed (sorted, deduped). Empty when `HOME` is unset or
+/// the marker is absent/unreadable — which is precisely the signal that
+/// orchestratectl does not manage codex on this host (e.g. a claude-only
+/// install), so `doctor` emits no codex checks and a claude-primary tree
+/// stays 0-warn.
+pub fn codex_managed_prompts() -> Vec<String> {
+    let Some(marker) = codex_marker_path() else {
+        return Vec::new();
+    };
+    let mut v = read_marker_records(&marker, "prompt");
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Companion filenames the shared codex provenance marker records as
+/// managed — the `_shared/<file>` companions orchestratectl installed
+/// (sorted, deduped). Empty under the same conditions as
+/// [`codex_managed_prompts`].
+pub fn codex_managed_companions() -> Vec<String> {
+    let Some(marker) = codex_marker_path() else {
+        return Vec::new();
+    };
+    let mut v = read_marker_records(&marker, "companion");
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// True when `dir` is a claude-layout skill directory that orchestratectl
 /// installed. The guard is deliberately strict — its `true` is the SOLE
 /// authorization for a recursive `remove_dir_all`, so it must never yield
@@ -1108,20 +1308,7 @@ fn is_managed_skill_dir(dir: &Path) -> bool {
 /// clobber the link's target (an arbitrary-file overwrite within the
 /// user's permissions).
 fn write_marker(path: &Path, skill_name: &str, companions: &[String]) -> Result<(), CliError> {
-    if let Ok(meta) = fs::symlink_metadata(path) {
-        if meta.file_type().is_symlink() {
-            fs::remove_file(path).map_err(|e| {
-                CliError::system(
-                    "marker_write_failed",
-                    format!(
-                        "could not clear stale marker symlink {}: {}",
-                        path.display(),
-                        e
-                    ),
-                )
-            })?;
-        }
-    }
+    clear_marker_symlink(path)?;
     let mut body = format!(
         "managed-by: orchestratectl\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\n"
     );
@@ -1140,6 +1327,64 @@ fn write_marker(path: &Path, skill_name: &str, companions: &[String]) -> Result<
             ),
         )
     })
+}
+
+/// Write (or overwrite) the SINGLE codex provenance marker at `path`
+/// (`~/.codex/prompts/_shared/.orchestratectl-managed`). Unlike the claude
+/// per-skill marker, this one records the flat layout's whole managed set:
+/// a `prompt:` line per installed codex skill and a `companion:` line per
+/// installed `_shared/<file>`. That is the only signal that makes codex
+/// pruning safe (a user's own prompt is never listed). A squatting symlink
+/// is unlinked first so `fs::write` cannot clobber the link's target.
+fn write_codex_marker(
+    path: &Path,
+    prompts: &[String],
+    companions: &[String],
+) -> Result<(), CliError> {
+    clear_marker_symlink(path)?;
+    let mut body = format!("managed-by: orchestratectl\ncli_version: {CLI_VERSION}\n");
+    for prompt in prompts {
+        body.push_str("prompt: ");
+        body.push_str(prompt);
+        body.push('\n');
+    }
+    for companion in companions {
+        body.push_str("companion: ");
+        body.push_str(companion);
+        body.push('\n');
+    }
+    fs::write(path, body).map_err(|e| {
+        CliError::system(
+            "marker_write_failed",
+            format!(
+                "could not write codex provenance marker {}: {}",
+                path.display(),
+                e
+            ),
+        )
+    })
+}
+
+/// If a symlink squats at the marker `path`, unlink it so a subsequent
+/// `fs::write` cannot clobber the link's target (an arbitrary-file
+/// overwrite within the user's permissions). A regular file is left for the
+/// write to overwrite in place — the marker is always ours.
+fn clear_marker_symlink(path: &Path) -> Result<(), CliError> {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            fs::remove_file(path).map_err(|e| {
+                CliError::system(
+                    "marker_write_failed",
+                    format!(
+                        "could not clear stale marker symlink {}: {}",
+                        path.display(),
+                        e
+                    ),
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Scan `skills_root` for managed skill directories whose name is NOT in
@@ -1189,6 +1434,45 @@ fn managed_orphan_dirs(skills_root: &Path, registered: &HashSet<&str>) -> Vec<(S
     orphans
 }
 
+/// What [`prune_codex_file`] did with an orphan file, so the caller can
+/// keep the marker's recorded set in step: `Removed` (deleted → drop it +
+/// report it pruned), `Dropped` (nothing safe on disk to delete → stop
+/// tracking it), or `Kept` (delete failed → still on disk → keep tracking).
+enum CodexPruneOutcome {
+    Removed,
+    Dropped,
+    Kept,
+}
+
+/// Delete one orphaned codex file (a de-registered prompt or companion),
+/// mirroring the claude orphan-companion prune's safety: only ever remove a
+/// REGULAR file we manage — never follow a symlink or recurse into a
+/// directory squatting at that name. An absent/symlink/dir target yields
+/// `Dropped` (nothing to clean, so stop tracking it); a successful unlink
+/// yields `Removed`; a failed unlink warns and yields `Kept` so the marker
+/// keeps tracking the still-present file.
+fn prune_codex_file(
+    path: &Path,
+    removed_warning: &str,
+    failed_warning: &str,
+    warnings: &mut Vec<String>,
+) -> CodexPruneOutcome {
+    let is_regular = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
+    if !is_regular {
+        return CodexPruneOutcome::Dropped;
+    }
+    match fs::remove_file(path) {
+        Ok(()) => {
+            warnings.push(format!("{removed_warning} at {}", path.display()));
+            CodexPruneOutcome::Removed
+        }
+        Err(e) => {
+            warnings.push(format!("{failed_warning} at {}: {e}", path.display()));
+            CodexPruneOutcome::Kept
+        }
+    }
+}
+
 /// Managed-but-de-registered skill directories under the claude install
 /// root, as `(name, path)` pairs sorted by name. Consumed by the
 /// `skill.orphan.*` doctor check. Empty when `HOME` is unset or the root
@@ -1206,14 +1490,23 @@ pub fn managed_orphans() -> Vec<(String, PathBuf)> {
 /// none. Blank values are dropped. Sibling of the `skill_name:`/stamp
 /// parsing in `is_managed_skill_dir`, but for the companion sub-records.
 fn read_managed_companions(marker_path: &Path) -> Vec<String> {
+    read_marker_records(marker_path, "companion")
+}
+
+/// The trimmed values of every `<key>:` line in a marker file (blanks
+/// dropped). Shared by the claude marker's `companion:` reader and the
+/// codex marker's `prompt:` / `companion:` readers, so all three parse the
+/// same line shape identically. Unreadable / absent marker → empty.
+fn read_marker_records(marker_path: &Path, key: &str) -> Vec<String> {
     let Ok(content) = fs::read_to_string(marker_path) else {
         return Vec::new();
     };
+    let prefix = format!("{key}:");
     content
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("companion:"))
+        .filter_map(|line| line.trim().strip_prefix(prefix.as_str()))
         .map(|rest| rest.trim().to_string())
-        .filter(|name| !name.is_empty())
+        .filter(|value| !value.is_empty())
         .collect()
 }
 
@@ -1621,6 +1914,90 @@ mod tests {
         write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &recorded).unwrap();
         // `GONE.md` is NOT written to disk.
         assert!(orphan_companions(skill, dir.path()).is_empty());
+    }
+
+    #[test]
+    fn codex_marker_records_prompts_and_companions_read_back() {
+        // The single codex marker records both `prompt:` and `companion:`
+        // lines; each key's reader returns only its own records.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(MANAGED_MARKER_FILENAME);
+        write_codex_marker(
+            &marker,
+            &["stint-start".to_string(), "worktree-code".to_string()],
+            &["AGENTS-EXECUTION-DAG.md".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            read_marker_records(&marker, "prompt"),
+            vec!["stint-start".to_string(), "worktree-code".to_string()]
+        );
+        assert_eq!(
+            read_marker_records(&marker, "companion"),
+            vec!["AGENTS-EXECUTION-DAG.md".to_string()]
+        );
+        // An absent marker records nothing for either key.
+        let missing = dir.path().join("nope");
+        assert!(read_marker_records(&missing, "prompt").is_empty());
+        assert!(read_marker_records(&missing, "companion").is_empty());
+    }
+
+    #[test]
+    fn all_companion_sources_dedupes_by_filename() {
+        // Every declared companion filename is unique and the list is sorted;
+        // the shared `_shared/` layout depends on one entry per filename.
+        let sources = all_companion_sources();
+        let mut names: Vec<&str> = sources.iter().map(|c| c.filename).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            names, sorted,
+            "companion sources must be sorted by filename"
+        );
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            sources.len(),
+            "companion filenames must be unique across skills"
+        );
+        // stint-start's companion is present (guards the doctor codex checks
+        // have at least one companion to audit).
+        assert!(sources
+            .iter()
+            .any(|c| c.filename == "AGENTS-EXECUTION-DAG.md"));
+    }
+
+    #[test]
+    fn prune_codex_file_outcomes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut warnings: Vec<String> = Vec::new();
+
+        // A regular file is removed.
+        let regular = dir.path().join("gone.md");
+        fs::write(&regular, "stale").unwrap();
+        assert!(matches!(
+            prune_codex_file(&regular, "removed", "failed", &mut warnings),
+            CodexPruneOutcome::Removed
+        ));
+        assert!(!regular.exists(), "file must be gone after Removed");
+        assert!(warnings[0].starts_with("removed at "));
+
+        // An absent file yields Dropped (nothing to clean).
+        let absent = dir.path().join("never.md");
+        assert!(matches!(
+            prune_codex_file(&absent, "removed", "failed", &mut warnings),
+            CodexPruneOutcome::Dropped
+        ));
+
+        // A directory squatting at the path is never removed (Dropped, not a
+        // recursive delete).
+        let squat = dir.path().join("squat.md");
+        fs::create_dir(&squat).unwrap();
+        assert!(matches!(
+            prune_codex_file(&squat, "removed", "failed", &mut warnings),
+            CodexPruneOutcome::Dropped
+        ));
+        assert!(squat.is_dir(), "a squatting dir must be left intact");
     }
 
     #[test]

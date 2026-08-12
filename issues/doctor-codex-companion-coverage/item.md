@@ -1,9 +1,10 @@
 ---
 created: 2026-08-11
-updated: 2026-08-11
+updated: 2026-08-12
 type: improvement
-status: open
+status: done
 priority: normal
+closed: 2026-08-12
 ---
 
 # doctor + prune do not cover codex skills or _shared companions

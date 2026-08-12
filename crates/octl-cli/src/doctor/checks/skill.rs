@@ -150,7 +150,223 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
         ));
     }
 
+    check_codex(binary, &mut out);
+
     out
+}
+
+/// Codex flat-layout coverage — the `skill.sync.codex.*` /
+/// `skill.orphan.codex.*` mirror of the claude checks above, keyed to the
+/// codex paths (`~/.codex/prompts/<name>.md` and the shared companions in
+/// `~/.codex/prompts/_shared/<file>`).
+///
+/// The whole section is GATED on orchestratectl actually managing codex on
+/// this host: the shared provenance marker records which prompts +
+/// companions we installed, so an absent marker (e.g. a claude-only
+/// install, where codex is a secondary export the user never targeted)
+/// yields no codex checks and keeps a claude-primary tree 0-warn. The
+/// marker's recorded set is also the source of truth for what "should" be
+/// present, so a bundled skill the user simply chose not to install to
+/// codex is never flagged.
+///
+/// Codex drift carries NO autonomous `--fix`: the `FixAction::InstallSkill`
+/// applier re-runs `skill install <name> --force`, which targets the claude
+/// (+ pi) layout, not codex. A codex re-install needs `--agent codex`/`all`,
+/// so we surface the suggestion and leave the deletion/reinstall to the
+/// explicit install path (symmetric with the claude orphan checks, which are
+/// advisory too).
+fn check_codex(binary: &str, out: &mut Vec<CheckResult>) {
+    let managed_prompts = skill::codex_managed_prompts();
+    let managed_companions = skill::codex_managed_companions();
+    if managed_prompts.is_empty() && managed_companions.is_empty() {
+        return;
+    }
+
+    let catalog: std::collections::HashSet<&str> =
+        skill::bundled_skill_names().into_iter().collect();
+
+    // Codex skill sync (recorded ∩ catalog) + orphan (recorded ∖ catalog).
+    for name in &managed_prompts {
+        let Some(path) = skill::codex_default_path(name) else {
+            continue;
+        };
+        if catalog.contains(name.as_str()) {
+            let id = format!("skill.sync.codex.{name}");
+            let suggest = format!("orchestratectl skill install {name} --agent codex --force");
+            if !path.exists() {
+                out.push(CheckResult::warn(
+                    id,
+                    format!(
+                        "codex skill '{name}' is not installed at {}",
+                        path.display()
+                    ),
+                    suggest,
+                ));
+                continue;
+            }
+            match skill::read_on_disk_cli_version(&path)
+                .as_deref()
+                .and_then(|v| compare(v, binary).map(|o| (v, o)))
+            {
+                Some((_, Ordering::Equal)) => out.push(CheckResult::ok(
+                    id,
+                    format!("codex skill '{name}' in sync at cli_version {binary}"),
+                )),
+                Some((v, Ordering::Less)) => out.push(CheckResult::warn(
+                    id,
+                    format!("codex skill '{name}' is cli_version {v}, binary is {binary}"),
+                    suggest,
+                )),
+                Some((v, Ordering::Greater)) => out.push(CheckResult::warn(
+                    id,
+                    format!(
+                        "codex skill '{name}' on disk is cli_version {v}, newer than binary {binary}"
+                    ),
+                    "upgrade the orchestratectl binary to match the installed skill",
+                )),
+                None => out.push(CheckResult::warn(
+                    id,
+                    format!(
+                        "codex skill '{name}' has an unreadable/unparseable cli_version at {}",
+                        path.display()
+                    ),
+                    suggest,
+                )),
+            }
+        } else {
+            // Recorded but de-registered: an orphan, but only if the flat
+            // prompt file is still on disk (a marker record whose file was
+            // already removed is nothing to flag).
+            if std::fs::symlink_metadata(&path).is_ok() {
+                out.push(CheckResult::warn(
+                    format!("skill.orphan.codex.{name}"),
+                    format!(
+                        "codex skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                        path.display()
+                    ),
+                    "orchestratectl skill install --agent codex --force",
+                ));
+            }
+        }
+    }
+
+    // Codex companion sync + orphan, resolved against the shared `_shared/`
+    // dir. Companions are byte-identical to the bundled source (only skill
+    // bodies get the codex link rewrite), so the same content-identity check
+    // the claude companions use applies.
+    let Some(shared_root) = skill::codex_shared_root() else {
+        return;
+    };
+    let bundled: std::collections::HashSet<&str> = skill::all_companion_sources()
+        .iter()
+        .map(|c| c.filename)
+        .collect();
+    for companion in skill::all_companion_sources() {
+        if !managed_companions.iter().any(|c| c == companion.filename) {
+            continue; // codex does not manage this companion here
+        }
+        let path = shared_root.join(companion.filename);
+        out.push(check_codex_companion(&companion, &path, binary));
+    }
+    for filename in &managed_companions {
+        if bundled.contains(filename.as_str()) {
+            continue; // still bundled → audited by the sync check above
+        }
+        let path = shared_root.join(filename);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            out.push(CheckResult::warn(
+                format!("skill.orphan.codex._shared.{filename}"),
+                format!(
+                    "codex companion '_shared/{filename}' at {} is orchestratectl-managed but no bundled skill references it any more (de-registered)",
+                    path.display()
+                ),
+                "orchestratectl skill install --agent codex --force",
+            ));
+        }
+    }
+}
+
+/// Audit one codex `_shared/<file>` companion against the binary's bundled
+/// copy. Content identity is the in-sync signal (a freshly installed
+/// companion is byte-identical); on a difference, classify by the declared
+/// `cli_version` with the same drift model as the claude companion check.
+/// No autonomous fix (see [`check_codex`]).
+fn check_codex_companion(
+    companion: &skill::CompanionSource,
+    path: &std::path::Path,
+    binary: &str,
+) -> CheckResult {
+    let filename = companion.filename;
+    let id = format!("skill.sync.codex._shared.{filename}");
+    let suggest = "orchestratectl skill install --agent codex --force".to_string();
+
+    let on_disk = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "codex companion '_shared/{filename}' is not installed at {}",
+                    path.display()
+                ),
+                suggest,
+            );
+        }
+        Err(e) => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "codex companion '_shared/{filename}' is unreadable at {}: {e}",
+                    path.display()
+                ),
+                suggest,
+            );
+        }
+    };
+
+    if on_disk == companion.bundled_body {
+        return CheckResult::ok(
+            id,
+            format!(
+                "codex companion '_shared/{filename}' matches the bundled content for binary {binary}"
+            ),
+        );
+    }
+
+    match skill::cli_version_of(&on_disk)
+        .as_deref()
+        .and_then(|v| compare(v, binary).map(|o| (v, o)))
+    {
+        Some((v, Ordering::Less)) => CheckResult::warn(
+            id,
+            format!(
+                "codex companion '_shared/{filename}' is cli_version {v}, binary is {binary}"
+            ),
+            suggest,
+        ),
+        Some((v, Ordering::Greater)) => CheckResult::warn(
+            id,
+            format!(
+                "codex companion '_shared/{filename}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
+            ),
+            "upgrade the orchestratectl binary, or reinstall with --agent codex --force to restore the bundled companion",
+        ),
+        Some((_, Ordering::Equal)) => CheckResult::warn(
+            id,
+            format!(
+                "codex companion '_shared/{filename}' differs from the bundled copy while its cli_version matches binary {binary} (possible local edits)"
+            ),
+            suggest,
+        ),
+        None => CheckResult::warn(
+            id,
+            format!(
+                "codex companion '_shared/{filename}' differs from the bundled copy and declares no parseable cli_version at {}",
+                path.display()
+            ),
+            suggest,
+        ),
+    }
 }
 
 /// Audit one companion resource against the binary's bundled copy. Content
