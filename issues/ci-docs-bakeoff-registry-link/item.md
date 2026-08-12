@@ -2,9 +2,10 @@
 created: 2026-08-12
 updated: 2026-08-12
 type: bug
-status: in-progress
+status: fixed
 priority: high
 labels: [ci]
+closed: 2026-08-12
 ---
 
 # CI docs job red: unresolved intra-doc link `bakeoff::registry`
