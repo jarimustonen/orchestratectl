@@ -2,10 +2,11 @@
 created: 2026-08-12
 updated: 2026-08-12
 type: task
-status: open
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 deliverable: issues/lifecycle-architecture-review/alternatives.md
+closed: 2026-08-12
 ---
 
 # Survey alternative supervision architectures

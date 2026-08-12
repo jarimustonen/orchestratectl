@@ -2,9 +2,10 @@
 created: 2026-08-12
 updated: 2026-08-12
 type: task
-status: open
+status: done
 priority: high
 epic: lifecycle-architecture-review
+closed: 2026-08-12
 ---
 
 # Map the lifecycle subsystem + bug taxonomy + shared root cause
