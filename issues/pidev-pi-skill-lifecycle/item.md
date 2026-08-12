@@ -1,9 +1,13 @@
 ---
 created: 2026-08-11
-updated: 2026-08-11
+updated: 2026-08-12
 type: improvement
-status: open
+status: done
 priority: normal
+closed: 2026-08-12
+commits:
+- hash: 8943e2f
+  summary: pi mirror lifecycle — provenance record + prune + doctor drift
 ---
 
 # Pi skill lifecycle: prune orphans + doctor drift check via out-of-band provenance
