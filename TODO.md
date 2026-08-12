@@ -6,42 +6,34 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-11 (3 reliability fixes landed UNRELEASED on `main`; pi.dev harness migration prioritized as GLOBAL HEAD)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-12 (v0.1.6 SHIPPED; v0.1.7 ready to cut; **BIG PIVOT: architecture re-examination is now the GLOBAL HEAD**)
 
-**✅ LATEST (2026-08-11 — read first).** One `/stint-start` round, **B‖D‖E parallel, 3 headless spinoffs, all
-reviewed (/llm-review + /assess-findings) + green, landed first spawn (no deaths):** `push-blocked-chunk-tier-and-commit-audit`
-✅ (done), `supervisorview-conflates-states` ✅ (done), `skill-companion-codex-layout` ✅ (done). Integrated gate
-green (fmt/clippy/`cargo test --workspace`, 0 failures). Local rebuild redeployed, `doctor` 0 fail / 0 warn (707 ok).
-**NO RELEASE this round (Jari's call — `/stint-handoff` without release):** the 3 fixes + the version-snapshot CI-red
-fix are **UNRELEASED on `main`** on top of shipped **0.1.5**. Next user-facing cut = **v0.1.6** (CHANGELOG
-`[Unreleased]` is empty — author entries at cut time; release is fully autonomous per policy). `main` clean.
-⚠️ **NOTE: `main` has UNPUSHED commits + unreleased work** — a `git push` keeps origin in sync (always allowed);
-publishing them is the v0.1.6 cut whenever warranted.
+**✅ LATEST (2026-08-12 — read first).** Two `/stint-start` rounds + a strategic pivot.
+- **Round 1 (pi.dev migration, 3 headless spinoffs, all reviewed + green, first spawn):** `pidev-dual-home-skills`
+  (URGENT — `skill install` dual-homes each `SKILL.md` into `~/.pi/agent/skills/<name>/` for pi.dev discovery, claude
+  path byte-for-byte unchanged), `run-create-harness-flag` (`run create --harness <name>`; flag>env>config>default;
+  autonomous kinds can default to **pi**, claude stays default; surfaced in `run show`/`list --json`),
+  `doctor-orphan-companion-files` (doctor detects + prune removes orphan companions). **→ v0.1.6 FULLY SHIPPED**
+  (crates.io `octl-core`→`orchestratectl`, `v0.1.6` tag → Release CI green, Homebrew tap 0.1.6). CHANGELOG finalized.
+- **Round 2 (3 headless spinoffs, all landed first spawn, integrated gate 1265/0):** `ci-docs-bakeoff-registry-link`
+  (cleared a main CI-red rustdoc `bakeoff::registry` link), `doctor-codex-companion-coverage` (doctor/prune cover codex
+  + `_shared`), `agent-skips-run-merge-idle-pending` (HIGH — root cause: the idle-TUI's CPU render-loop trickle
+  perpetually re-stamped the "activity" clock so the idle-unmerged net could NEVER fire; fixed by rate-gating the CPU
+  clock; 4-model /llm-review applied). **→ v0.1.7 READY TO CUT (Wave 1)** — all 3 landed on `main`, UNRELEASED on top
+  of 0.1.6. `main` clean, 0 unpushed. Local binary **0.1.6**, `doctor` 0/0 (dual-homes to `~/.pi` live).
 
-**What the 3 fixes do:**
-- `push-blocked-chunk-tier-and-commit-audit` (Lane B) — `push_blocked_chunk` **and** the crash/panic audit path now
-  record the **promoted/effective** tier (not the plan-declared one) + the **commit OID** of committed-but-blocked
-  work; threaded the oid through BuildAttempt/ChunkAttempt/WaveBuildOutcome::Blocked; promotion regression test added.
-- `supervisorview-conflates-states` (Lane E) — `run show`/`run list` no longer collapse supervisor conditions: a
-  wire-level `SupervisorState` enum (**alive | dead | not-recorded | unreadable | unknown**), `alive` kept as a
-  back-compat boolean. **Closed a real probe read-then-stat TOCTOU** (the /llm-review panel flagged it unanimously)
-  and stopped indeterminate states (Unreadable/Unknown) from driving stillborn/orphaned verdicts (new
-  `presumed_working()` predicate) — so an unreadable pid file can't mislead a reattach/cancel decision.
-- `skill-companion-codex-layout` (Lane D) — companion resources now install for the **codex flat layout** (shared
-  `~/.codex/prompts/_shared/` subdir; per-skill claude-layout companion links rewritten to `_shared/…`), claude
-  layout provably byte-for-byte unchanged (`Cow::Borrowed`); drift-guard test suite pins the rewrite invariants.
-  Follow-up filed by its review: `doctor-codex-companion-coverage` (Lane D).
-
-**Bonus (CI-red cleared) + hygiene:** two workers refreshed the stale 0.1.4→0.1.5 `version_text` snapshot, which
-**fixed the pre-existing main-wide CI red** — closed `version-envelopes-snapshot` (fixed) and its duplicate
-`stale-version-envelope-snapshot` (both were the same 0.1.5-bump stale snapshot filed by parallel sessions). Also
-removed a stray `envelope_snapshots__version_text.snap.new` the codex worker committed by accident (commit 2ca29ee).
-
-**Why `run-create-harness-flag` (pi.dev) is now the GLOBAL HEAD (Jari 2026-08-11).** Migrate autonomous worker runs
-from hardcoded Claude Code to the **pi.dev harness**. The pi adapter already WORKS (`bakeoff-aider-pi-live-fail`
-fixed, pi 0.82 live-verified); the only missing piece is wiring `--harness` into `run create` so autonomous kinds
-(spinoff/research/…) launch pi-driven workers. See `run-create-harness-flag` for the full spec (flag > env > config
-precedence, per-kind default, `run show/list --json` surfacing, skill/agent-tool translation shim).
+**🧭 THE PIVOT (Jari, 2026-08-12) — STOP patching the lifecycle core; RE-EXAMINE the architecture.** A bug-cluster
+analysis of all 44 open issues showed **~57% (and 58% of bugs) concentrate in one subsystem: supervisor / agent
+lifecycle / liveness / teardown.** Within it the same root cause recurs — the supervisor **INFERS** a distributed
+process's state from indirect signals (`pid × pane × branch × report`), so every new signal-combination is a new
+edge case and patching never shrinks the list (the agent-skips fix above *immediately spawned 3 more* cluster-A
+follow-ups — textbook). **Jari also flagged: actual usage is NARROW — some options likely aren't needed** (drag).
+Response: filed epic **`lifecycle-architecture-review`** + 5 tasks (**Lane F**, now the GLOBAL HEAD) — map+root-cause,
+feature-usage/drag audit (HIGH, bias-to-cut), alternatives survey → design session WITH Jari → an ADR
+(harden vs re-architect). **Lanes A (26, supervisor core) + E (3, run-show DTO) are ⛔ GATED behind ◆ DECISION-2** —
+no new cluster-A/B fixes until the ADR decides each issue's disposition. Non-core lanes (B pi.dev/pipeline, D skill)
+proceed in parallel. The full plan (all 47 issues in lanes, ◆ decision points, ⬆ release nodes, next-waves) is the
+DAG + Wave plan below.
 
 **KEY LEARNING #NEW (canonical) — "disjoint lanes" is a PREDICTION, not a guarantee; the integrated gate is
 non-optional.** The DAG put `supervisor-dies-before-worker-node` in Lane A (supervise/*) and `run-wait-still`
@@ -53,6 +45,15 @@ post-round `cargo test --workspace` on integrated `main` caught it immediately; 
 bool from the single `stall` source of truth. **Lesson:** a lane assignment predicts *likely*-touched files; a
 fix can legitimately land elsewhere. Never skip the integrated gate for "independent" parallel units, and when
 two units might both touch the `run show` / `RunSummary` DTO surface, prefer sequencing them.
+
+**KEY LEARNING #4 (canonical) — when a subsystem's bugs are COMBINATORIAL, stop patching and review the architecture.**
+The supervisor/agent-lifecycle core accreted ~25 open issues because it INFERS a distributed process's state from
+indirect signals (`pid × pane × branch × report`); each fix closes one signal-combination and reveals the next
+(the agent-skips CPU-clock fix spawned 3 more idle-unmerged follow-ups the same day). A per-bug loop can't shrink a
+combinatorial edge-case space — the honest move is to review the model (inference-by-polling vs. protocol/state-machine
+where the worker self-reports transitions) and to audit whether narrow real usage even needs all the surface. This is
+why Lanes A + E are gated behind the architecture ADR (◆ DECISION-2) instead of being worked head-by-head. Corollary
+for triage: a cluster where ">half the open issues share a root cause" is an architecture signal, not a backlog.
 
 **KEY LEARNING #1 (canonical) — RUSTSEC-2026-0009 vs MSRV 1.85 is a standing conflict.** The `time` crate's
 stack-exhaustion DoS advisory is fixed only in `time ≥0.3.47`, but **every `time ≥0.3.47` requires rustc 1.88**
@@ -80,27 +81,27 @@ preserved branch (review → adopt → complete → merge), NOT hand-merge of un
 Heavy-LLM units legitimately take **54–96 min**; a long run is not a hang. (This round: all 8 units landed on
 first spawn, no deaths.)
 
-**RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all at **0.1.5** (fully coherent). CHANGELOG
-`[Unreleased]` is now **empty** (everything folded into the dated `[0.1.5]`). **Release autonomy REAFFIRMED by
-Jari (2026-08-10): cut releases autonomously at the right moments — DON'T ask, DON'T re-confirm.** This is
-already the operating policy (release fully autonomous, `main`-push always allowed, `pull→rebase→push` always
-allowed — root `AGENTS.md`); honor it without a permission prompt. The `hauis`-runner git-400 recurrence
-playbook is in `peculiarly-madly-sneeze` (closed) if binary/brew 400s again.
+**RELEASE STATE.** crates.io + GitHub binaries + Homebrew tap all coherent at **0.1.6** (shipped this session).
+CHANGELOG `[Unreleased]` is **empty** (everything folded into dated `[0.1.6]`). **v0.1.7 is READY TO CUT but
+UNRELEASED** on top of 0.1.6: `agent-skips-run-merge-idle-pending` + `ci-docs-bakeoff-registry-link` +
+`doctor-codex-companion-coverage` all landed, integrated gate green (1265/0) — author its CHANGELOG entries at cut
+time. **Release autonomy (Jari): cut autonomously at the right moments — DON'T ask, DON'T re-confirm** (release fully
+autonomous, `main`-push always allowed, `pull→rebase→push` always allowed — root `AGENTS.md`). Two-crate order stays
+`octl-core`→`orchestratectl` (pin `=<version>`); the ossctl `release` engine is UNPROVEN here (0.1.1–0.1.6 were all
+hand-cut: bump `Cargo.toml` workspace version + octl-cli's octl-core pin + CHANGELOG in one `release: vX.Y.Z` commit,
+push, `cargo publish` both, tag `vX.Y.Z` → Release CI on `hauis`). ⚠️ **Bumping the version restales the
+`envelope_snapshots__version_{text,json,jsonl}` insta snapshots** — regenerate them in the release commit (strip
+insta's volatile `assertion_line:` header). `hauis`-runner git-400 playbook: `peculiarly-madly-sneeze` (closed).
 
-**NEXT — resume with `/stint-start`, execute the DAG below.** `GLOBAL HEAD-OF-LINE` is now
-**`push-blocked-chunk-tier-and-commit-audit`** (Lane B, F6 — a concrete pipeline audit bug continuing the
-wave-audit thread just advanced by `wave-terminal-worker-own-artifact-unaudited`). Practical *actionable*
-heads, disjoint + parallel-safe: Lane E **`supervisorview-conflates-states`** + `count-jsons-swallows-io`
-(run-show hardening, low-risk), Lane D **`skill-companion-codex-layout`** (layout decision, low urgency),
-Lane A **`supervisor-spawn-fails-silently-at-run-create`** (the resilience half of KEY LEARNING #2 —
-investigative, no repro; `worker-process-hang` is in-progress/agent-runtime scope, parked;
-`peculiarly-cheerful-mine` is **design-first** (LockedRun+append, inv 1-2) → better as `/worktree-code`).
-**Lane C stays EMPTY** (workmux vendoring complete). **Lane D still carries `collision: bundled-skill
-snapshot`** on `spinoff-skill-stale-preview-banner`. **⚠️ Watch the run-show/DTO collision surface** (KEY
-LEARNING #NEW): Lane E run-show items + any Lane A fix that touches `run list`/`run show`/`RunSummary` can
-collide — sequence them if both are in a wave. Recompute the head at pick time from live `issuectl` status;
-merge the DAG at Phase 0/handoff. No worktrees remain; **`main` clean, 0 unpushed, `v0.1.5` tagged + shipped,
-local binary 0.1.5 (`doctor` 0/0).**
+**NEXT — resume with `/stint-start`; the GLOBAL HEAD is the ARCHITECTURE RE-EXAMINATION (Lane F).** Wave 1: cut
+**v0.1.7** first, then spawn the **Lane F Phase-1 trio in parallel** (`arch-lifecycle-map-rootcause` ∥
+`arch-feature-usage-audit` ∥ `arch-supervision-alternatives` — all `/worktree-research`, read-only + disjoint output
+files, so safe to parallelize despite sharing a lane) alongside one **Lane B pi.dev** (`harness-pi-skill-shim`) and
+one **Lane D** (`pidev-pi-skill-lifecycle`) unit. **Do NOT spawn any Lane A / Lane E work** — they are ⛔ gated behind
+◆ DECISION-2 (the harden-vs-rearchitect ADR). Full sequencing + the ◆ decision points + ⬆ release nodes are in the
+DAG + **Wave plan** below. Recompute heads at pick time from live `issuectl` status; the DAG is drift-clean at wrap
+(46 active issues, all in lanes, nothing outside). No worktrees remain; **`main` clean, 0 unpushed, local binary 0.1.6
+(`doctor` 0/0)**.
 
 ---
 
@@ -131,9 +132,10 @@ Phase 2 (needs all three phase-1 docs):
 Phase 3 (THE decision):
     arch-decision-rearchitect-vs-harden    after arch-redesign-design-session (needs the chosen design) — ADR via /worktree-technical-decision; harden vs re-architect; GATES ◆ DECISION-2
 
-LANE A — supervise/agent-lifecycle CORE (cluster A, 25 issues)  ⛔ GATED behind ◆ DECISION-2
+LANE A — supervise/agent-lifecycle CORE (cluster A, 26 issues)  ⛔ GATED behind ◆ DECISION-2
 (do NOT spawn new fixes here until the ADR decides disposition — listed in full so nothing is outside the DAG)
 (NB: the just-landed agent-skips fix immediately spawned 3 MORE cluster-A refinements — idle-unmerged-{monotonic-clock,process-tree-cpu,e2e-preservation-test} — a textbook illustration of why we're reviewing this subsystem instead of patching it)
+    merge-report-schema-lenience            (a typo in an ADVISORY report field — `spinoff_proposals` alias `title`/`detail` vs schema `proposed_title`/`rationale` — makes `run merge` REJECT the whole report and BLOCK the real code merge → run stuck pending; recurred across 2 workers. Evidence for the arch review of the terminal-report contract; FAST-TRACK candidate at ◆ DECISION-2 — independent of the inference model, low-risk merge-first-then-validate fix)
     idle-unmerged-monotonic-clock           (filed by the agent-skips fix; CPU clock should use a monotonic Instant for elapsed time — cluster-A refinement)
     idle-unmerged-process-tree-cpu          (filed by the agent-skips fix; sum PROCESS-TREE CPU, not just the agent PID, so buffered child work isn't misread as idle)
     idle-unmerged-e2e-preservation-test     (filed by the agent-skips fix; e2e test that a synthesized idle-unmerged report preserves branch+worktree through cleanup)
@@ -199,7 +201,7 @@ Cadence: release whenever a wave lands shippable user-facing work (operating pol
 
 **Epics (not lane nodes):** `code-pipeline` — parent of the Lane B `pipeline-*` work;
 `lifecycle-architecture-review` — parent of **Lane F** (the architecture re-examination).
-**Nothing is outside the DAG.** Every active non-epic issue (46 as of 2026-08-12) sits in a
+**Nothing is outside the DAG.** Every active non-epic issue (47 as of 2026-08-12) sits in a
 lane above — verified drift-clean by the `comm -3` check. No `deferred`-parked items. The full
 open list is `issuectl ls --status open`; `issuectl ls --status open --json | jq length` should
 equal the lane-node count.
@@ -366,6 +368,16 @@ Heads advanced: Lane B ▶ `dreadfully-dirty-pain` (◀ `run-create-harness-flag
 `doctor-orphan-companion-files`, Lane E ▶ `count-jsons-swallows-io`; Lane A unchanged. **NO RELEASE cut** — the 3
 fixes + snapshot fix are UNRELEASED on `main` on top of shipped 0.1.5; next cut is v0.1.6 (CHANGELOG `[Unreleased]`
 still empty — author the entries at cut time). No worktrees remain. DAG driftless at wrap.
+**Session executed 2026-08-12 (2 rounds + architecture pivot):** R1 landed `pidev-dual-home-skills` (urgent) +
+`run-create-harness-flag` + `doctor-orphan-companion-files` → **v0.1.6 FULLY SHIPPED**. R2 landed
+`ci-docs-bakeoff-registry-link` (CI-red) + `doctor-codex-companion-coverage` + `agent-skips-run-merge-idle-pending`
+(HIGH, CPU-rate-gate) → **v0.1.7 ready-to-cut (unreleased)**. Integrated gate green (1265/0). Then Jari's **architecture
+pivot**: bug-cluster analysis (~57% in the lifecycle core) → filed epic `lifecycle-architecture-review` + 5 tasks
+(**Lane F**, new GLOBAL HEAD). **DAG fully restructured**: all 46 active issues placed in lanes (nothing outside,
+drift-clean), **◆ decision nodes** (DECISION-1 dead-weight cut, DECISION-2 cluster-A/E disposition) + **⬆ release
+nodes** (v0.1.7, v0.2.0, gated) + a 4-wave plan added. Lanes A (25) + E (3) **gated behind ◆ DECISION-2**. Dropped
+the 6 landed this session; `comm -3` add: the 3 `idle-unmerged-*` follow-ups the agent-skips fix spawned (Lane A,
+gated). `arch-feature-usage-audit` bumped HIGH per Jari's narrow-usage steer (bias-to-cut).
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
@@ -408,22 +420,13 @@ still empty — author the entries at cut time). No worktrees remain. DAG driftl
 
 ---
 
-## Adjacent open backlog (NOT this workstream — orchestratectl-core bugs)
+## Adjacent open backlog
 
-The supervisor/lifecycle reliability cluster is now **largely cured** across the
-2026-07-25→27 stints (creation-path, teardown, child-supervisor, interactive watchdog,
-recoverability + bounded auto-retry all ✅ — see the Continue-here block). **Still open**
-on the core side: `supervisor-spawn-fails-silently-at-run-create` (#4 load-trigger only),
-`run-create-back-to-back-no-supervisor`, `agent-skips-run-merge-idle-pending`,
-`child-supervisor-spawn-exhaustion-lifecycle`, `worker-process-hang` (in-progress),
-`capture-agent-output-to-run-dir` (pane-id follow-up),
-`landing-signal-reliable-after-rebase`,
-`orchestrate-integration-branch-no-worktree-merge-fails`,
-`reattach-does-not-bootstrap-crashed-at-creation-run`, `notify-run-level-summary`,
-`no-completion-notification-to-parent`, plus the v0.2 carry-overs
-(`cancel-dead-supervisor-recovery`, `legacy-pid-identity-check`,
-`teardown-gate-trust-and-lifecycle`, `vendor-workmux-multiplexer`,
-`workmux-extract-libs`). `issuectl ls --status open` for the live list.
+**Nothing is parked outside the DAG anymore.** As of the 2026-08-12 pivot every active
+non-epic issue lives in a lane in the Execution DAG above (the supervisor/lifecycle
+reliability cluster is now **Lane A**, gated behind ◆ DECISION-2; the run-show DTO bugs are
+**Lane E**, also gated). Use `issuectl ls --status open` for the live list and the `comm -3`
+drift check for reconciliation.
 
 ---
 
