@@ -248,13 +248,22 @@ const NO_WORKER_REASON: &str = "no-worker-node";
 /// which the supervisor stops waiting and terminalizes the run to a recoverable
 /// failed state a conductor can salvage.
 ///
-/// Chosen generously (30 min) and measured from the LATER of the branch-tip
-/// commit time and the pane-transcript mtime (see
-/// [`cleanup::node_idle_unmerged`]), so a legitimately long-running agent — heavy
+/// Measured from the LATEST of the branch-tip commit time, the pane-transcript
+/// mtime, and the CPU-activity clock (see [`cleanup::node_idle_unmerged`] and
+/// [`cpu_activity_clock`]), so a legitimately long-running agent — heavy
 /// `/llm-review` units run 54–96 min — is never tripped as long as it is still
-/// committing OR still emitting pane output. Overridable via
-/// [`IDLE_UNMERGED_ENV`]; tests set `0` to fire on the first quiet tick.
-const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(1800);
+/// committing, still emitting pane output, OR still burning real CPU.
+///
+/// Chosen at 15 min (reopen 2026-08-11): the original 30 min was, in practice,
+/// long enough that a watching conductor always intervened by hand first, so the
+/// net never actually bounded a real stall — the run leaked a live supervisor +
+/// tmux window + worktree, and a `run wait` caller got nothing, for the whole
+/// window. 15 min still sits comfortably above any realistic all-clocks-quiet
+/// stretch of genuine work (a `cargo test` / slow model consult streams to the
+/// pane or burns CPU throughout), but halves the leak/stall window so the net is
+/// a useful backstop rather than a formality. Overridable via [`IDLE_UNMERGED_ENV`];
+/// tests set `0` to fire on the first quiet tick.
+const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(900);
 
 /// Env override for [`IDLE_UNMERGED_THRESHOLD`] (whole seconds; unparseable →
 /// default).
@@ -266,6 +275,23 @@ const IDLE_UNMERGED_ENV: &str = "OCTL_IDLE_UNMERGED_SECS";
 /// `run wait` can tell "agent skipped its close" from a genuine failure or a
 /// human-needed tie.
 const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
+
+/// Idle-trickle floor for the CPU activity clock ([`cpu_activity_clock`]), in
+/// centiseconds of CPU per wall-clock second (100 == one core running flat out).
+/// The agent process's cumulative CPU must advance FASTER than this since the
+/// clock's baseline to count as activity.
+///
+/// An idle claude TUI still runs an event/render loop (cursor blink, periodic
+/// refresh) that trickles a few centiseconds of CPU over many seconds — far under
+/// this 5% floor — so it no longer perpetually refreshes the clock and defeats the
+/// net (issue `agent-skips-run-merge-idle-pending`, reopen 2026-08-11). Real
+/// in-process agent work (parsing large tool output, the reasoning loop between
+/// calls) sits far above it, so a genuinely busy-but-silent agent PROCESS is still
+/// held off — preserving the false-positive guard the CPU clock was added for.
+/// (Note `ps -o time` measures only the agent PID's own CPU, not its children, so
+/// a CPU-bound *subprocess* never advances this clock regardless of the floor; that
+/// case is covered by the pane clock, which the subprocess's streamed output bumps.)
+const CPU_ACTIVE_FLOOR_CENTIS_PER_SEC: i64 = 5;
 
 /// The effective idle-unmerged threshold, honoring [`IDLE_UNMERGED_ENV`].
 fn idle_unmerged_threshold() -> Duration {
@@ -280,33 +306,66 @@ fn idle_unmerged_threshold() -> Duration {
 
 /// The idle-unmerged safety net's third activity clock (issue
 /// `agent-skips-run-merge-idle-pending`): the Unix time at which `node_id`'s
-/// agent process was last seen to have advanced its cumulative CPU time.
+/// agent process was last seen to be genuinely BUSY on-CPU (not merely ticking).
 ///
 /// `cpu_now` is the current cumulative CPU time (centiseconds, from
-/// [`watchdog::pid_cpu_time_centis`]); `map` remembers `(last observed CPU,
-/// Unix time of the last change)` per node across ticks. On the first
-/// observation the baseline is seeded to `now_unix` (assume active), so a
-/// just-observed node is never immediately judged idle. On later ticks the
-/// stored change-time only advances when the CPU total moves — so an agent
-/// busy but silent (CPU climbing, no commits, no pane output) keeps a fresh
-/// clock and is never tripped, while a genuinely idle agent (CPU flat) lets the
-/// clock go stale and the net eventually fire.
+/// [`watchdog::pid_cpu_time_centis`]); `map` remembers `(baseline CPU
+/// centiseconds, baseline Unix time, last-active Unix time)` per node across
+/// ticks. On the first observation the baseline is seeded to `now_unix` (assume
+/// active), so a just-observed node is never immediately judged idle.
+///
+/// **Rate-gated, not any-delta** (reopen 2026-08-11). The earlier version stamped
+/// the clock "active" on ANY increase in cumulative CPU. But a claude agent
+/// sitting idle in its live TUI — the reopened failure shape (work done, unsent
+/// text in the input box) — is NOT a zero-CPU process: its terminal event/render
+/// loop (cursor blink, periodic refresh) trickles a few centiseconds of CPU over
+/// many seconds. Under any-delta that trickle perpetually re-stamped the clock, so
+/// `last_activity = max(commit, pane, cpu)` never aged past the threshold and the
+/// net could NEVER fire for the exact case it exists to catch. Here CPU only
+/// counts as activity when it advances FASTER than [`CPU_ACTIVE_FLOOR_CENTIS_PER_SEC`]
+/// since the baseline (`d_cpu ≥ floor × elapsed`). A trickling idle loop stays
+/// under the floor, so the baseline holds while the measured rate stays low and
+/// the clock ages out; genuine in-process work sits far above it, re-stamping the
+/// clock and holding the net off — preserving the busy-but-silent false-positive
+/// guard the CPU clock was added for. Measuring the rate against a baseline that
+/// only resets when we stamp active (rather than every tick) keeps a coarse
+/// whole-second `ps` reading from reading one accumulated +1s jump as a momentary
+/// spike of activity.
 ///
 /// Returns `None` when `cpu_now` is `None` (CPU unreadable) so the caller simply
 /// omits this clock and falls back to the commit + pane clocks — never firing on
 /// the *absence* of a CPU reading.
 fn cpu_activity_clock(
-    map: &mut std::collections::BTreeMap<String, (u64, i64)>,
+    map: &mut std::collections::BTreeMap<String, (u64, i64, i64)>,
     node_id: &str,
     cpu_now: Option<u64>,
     now_unix: i64,
 ) -> Option<i64> {
     let cpu = cpu_now?;
-    let entry = map.entry(node_id.to_string()).or_insert((cpu, now_unix));
-    if entry.0 != cpu {
-        *entry = (cpu, now_unix);
+    // (baseline_cpu, baseline_unix, last_active_unix).
+    let entry = map
+        .entry(node_id.to_string())
+        .or_insert((cpu, now_unix, now_unix));
+    let (base_cpu, base_t, _) = *entry;
+    let dt = now_unix.saturating_sub(base_t);
+    let d_cpu = cpu.saturating_sub(base_cpu);
+    // Busy when cumulative CPU has advanced faster than the idle-trickle floor
+    // since the baseline. Until wall time has elapsed we cannot compute a rate;
+    // a same-tick re-sample with any positive delta is conservatively active so
+    // we never spuriously age the clock on a zero-width window.
+    let active = if dt <= 0 {
+        d_cpu > 0
+    } else {
+        i128::from(d_cpu) >= i128::from(CPU_ACTIVE_FLOOR_CENTIS_PER_SEC) * i128::from(dt)
+    };
+    if active {
+        // Stamp active now and reset the baseline so the next window measures the
+        // rate afresh from here.
+        *entry = (cpu, now_unix, now_unix);
     }
-    Some(entry.1)
+    // Otherwise leave the baseline in place: a slow trickle keeps accumulating
+    // against a fixed origin, so its measured rate stays low and the clock ages.
+    Some(entry.2)
 }
 
 /// Max attempts to fire the `--notify` completion hook before the supervisor
@@ -618,12 +677,13 @@ pub fn dispatch(
 
     // Per-node cumulative-CPU-time tracker for the idle-unmerged safety net's
     // third activity clock (issue `agent-skips-run-merge-idle-pending`). Maps a
-    // node id to `(last observed CPU centiseconds, Unix time of the last change)`
-    // so `cpu_activity_clock` can tell a busy-but-silent agent (CPU advancing)
-    // from a genuinely idle one (CPU flat). In-memory only: on a restart the
+    // node id to `(baseline CPU centiseconds, baseline Unix time, last-active Unix
+    // time)` so `cpu_activity_clock` can tell a busy-but-silent agent (CPU rate
+    // above the trickle floor) from a genuinely idle one (CPU flat OR merely
+    // trickling from an idle TUI render loop). In-memory only: on a restart the
     // baseline re-seeds to "active now", conservatively delaying the net by at
     // most one idle window rather than mis-firing.
-    let mut cpu_activity: std::collections::BTreeMap<String, (u64, i64)> =
+    let mut cpu_activity: std::collections::BTreeMap<String, (u64, i64, i64)> =
         std::collections::BTreeMap::new();
 
     // Per-node `pipe-pane` failure counter driving bounded capture retry
@@ -2709,7 +2769,7 @@ fn watchdog_tick(
     paths: &RunPaths,
     half_state_streak: &mut std::collections::BTreeMap<String, u32>,
     retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
-    cpu_activity: &mut std::collections::BTreeMap<String, (u64, i64)>,
+    cpu_activity: &mut std::collections::BTreeMap<String, (u64, i64, i64)>,
 ) -> Result<(), CliError> {
     let now = Utc::now();
     let now_instant = Instant::now();
@@ -4503,23 +4563,107 @@ mod tests {
         let _ = wt;
     }
 
-    /// `cpu_activity_clock`: first observation seeds "active now"; a changed CPU
-    /// total advances the change-time; a flat total keeps the old change-time (so
-    /// the clock ages and eventually lets the net fire); an unreadable CPU
-    /// (`None`) contributes no clock at all.
+    /// `cpu_activity_clock` (rate-gated, reopen 2026-08-11): first observation
+    /// seeds "active now"; a flat total keeps the old active-time; a SLOW TRICKLE
+    /// (below the 5-centis/s floor) does NOT count as activity, so the clock ages
+    /// and eventually lets the net fire; a FAST BURST (above the floor) re-stamps
+    /// the clock and resets the baseline; an unreadable CPU (`None`) contributes
+    /// no clock at all.
     #[test]
     fn cpu_activity_clock_tracks_changes() {
         let mut map = std::collections::BTreeMap::new();
         // First observation at t=100 → seeded to now (assume active).
         assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 100), Some(100));
-        // Same CPU total at t=200 → change-time stays 100 (idle since 100).
+        // Flat total at t=200 → active-time stays 100 (idle since 100).
         assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 200), Some(100));
-        // CPU advanced at t=300 → change-time jumps to 300 (active).
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(60), 300), Some(300));
-        // Flat again at t=400 → stays 300.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(60), 400), Some(300));
+        // +1 centis over 200 wall-seconds (0.005 centis/s ≪ 5) → a trickle, NOT
+        // activity: baseline holds at (50, 100), active-time stays 100. The
+        // any-delta predecessor returned 300 here and defeated the net.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(51), 300), Some(100));
+        // +549 centis over the 301 s since the baseline (≈1.8 centis/s per second,
+        // ≥ 5×… no): 550 vs 5×301=1505 → still under floor, stays 100.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 401), Some(100));
+        // A genuine burst: +5000 centis over the 500 s since baseline = 10 centis/s
+        // ≥ 5 → active, re-stamps and resets the baseline to (5050, 600).
+        assert_eq!(
+            cpu_activity_clock(&mut map, "n", Some(5050), 600),
+            Some(600)
+        );
+        // Flat again at t=700 → stays 600.
+        assert_eq!(
+            cpu_activity_clock(&mut map, "n", Some(5050), 700),
+            Some(600)
+        );
         // Unreadable CPU → no clock contributed (fall back to other clocks).
-        assert_eq!(cpu_activity_clock(&mut map, "n", None, 500), None);
+        assert_eq!(cpu_activity_clock(&mut map, "n", None, 800), None);
+    }
+
+    /// Regression for the reopened missed-detection window (issue
+    /// `agent-skips-run-merge-idle-pending`, 2026-08-11): an autonomous agent that
+    /// committed then went idle in its LIVE TUI is not a zero-CPU process — its
+    /// event/render loop trickles a little CPU every tick. Under the old any-delta
+    /// CPU clock that trickle perpetually re-stamped the clock, so `last_activity`
+    /// never aged and the net could NEVER fire. Simulate that exact tick sequence
+    /// and assert (a) the CPU clock now ages out past the threshold, and (b)
+    /// composed into `node_idle_unmerged` (stale commit, no pane transcript) the
+    /// net FIRES — whereas a genuinely busy agent's fast CPU growth still vetoes it.
+    #[test]
+    fn cpu_trickle_idle_tui_ages_out_and_net_fires() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Ancient commit; no `agent.log` → commit + pane clocks are both stale, so
+        // only the CPU clock can hold the net off.
+        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
+        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, 1, "spinoff", "autonomous");
+        let n = n0001(&paths);
+        let git = cleanup::git_bin();
+        let threshold = 900i64;
+
+        // Simulate 40 min of an idle TUI: one tick every 30 s, CPU trickling up by
+        // 2 centis each tick (≈0.067 centis/s ≪ the 5-centis/s floor). `start` is a
+        // far-future clock so the ancient 2020 commit tip reads as long-stale.
+        let mut map = std::collections::BTreeMap::new();
+        let start = 4_000_000_000i64;
+        let mut cpu = 500u64;
+        let mut clock = start;
+        let mut now = start;
+        for i in 0..80 {
+            now = start + i * 30;
+            cpu += 2;
+            clock = cpu_activity_clock(&mut map, "n-0001", Some(cpu), now).unwrap();
+        }
+        // The clock aged: it is stuck near the start, not tracking `now`.
+        assert!(
+            now - clock >= threshold,
+            "an idle-TUI CPU trickle must let the clock age past the threshold (now={now}, clock={clock})"
+        );
+        // Composed with the stale commit / absent pane clocks, the net FIRES.
+        assert!(
+            cleanup::node_idle_unmerged(&paths, &n, &git, now, threshold, Some(clock)).is_some(),
+            "idle-TUI trickle must no longer defeat the idle-unmerged net"
+        );
+
+        // Contrast: a genuinely busy agent (CPU +1000 centis every 30 s tick = full
+        // core) keeps the clock fresh, so the net stays vetoed.
+        let mut busy_map = std::collections::BTreeMap::new();
+        let mut busy_cpu = 500u64;
+        let mut busy_clock = start;
+        let mut busy_now = start;
+        for i in 0..80 {
+            busy_now = start + i * 30;
+            busy_cpu += 3000;
+            busy_clock =
+                cpu_activity_clock(&mut busy_map, "n-0001", Some(busy_cpu), busy_now).unwrap();
+        }
+        assert!(
+            busy_now - busy_clock < threshold,
+            "a busy agent's CPU clock must stay fresh (now={busy_now}, clock={busy_clock})"
+        );
+        assert!(
+            cleanup::node_idle_unmerged(&paths, &n, &git, busy_now, threshold, Some(busy_clock))
+                .is_none(),
+            "a busy-but-silent agent must still be vetoed"
+        );
+        let _ = (repo, wt);
     }
 
     // --- Bounded auto-retry on empty-handed agent-died (issue
