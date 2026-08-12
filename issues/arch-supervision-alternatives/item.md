@@ -5,6 +5,7 @@ type: task
 status: open
 priority: normal
 epic: lifecycle-architecture-review
+deliverable: issues/lifecycle-architecture-review/alternatives.md
 ---
 
 # Survey alternative supervision architectures
