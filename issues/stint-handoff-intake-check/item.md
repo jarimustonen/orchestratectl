@@ -4,6 +4,9 @@ updated: 2026-08-12
 type: feature
 status: in-progress
 priority: normal
+commits:
+- hash: 3a1a033eview fixes
+  summary: ack-admits-label + DAG active-set gate + detection precision
 ---
 
 # stint-handoff: end-of-stint intake check — surface new bugs, fold approved into next-stint agenda

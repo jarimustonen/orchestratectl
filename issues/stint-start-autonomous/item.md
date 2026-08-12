@@ -5,6 +5,9 @@ type: feature
 status: in-progress
 priority: normal
 related: ['@stint-handoff-intake-check']
+commits:
+- hash: 3a1a033eview fixes
+  summary: cold-start branch + autonomy hard-stops + lifecycle wording
 ---
 
 # stint-start: maximally autonomous — no questions, resume straight from handoff-prepared state
