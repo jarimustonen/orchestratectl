@@ -86,12 +86,14 @@ CHANGELOG `[Unreleased]` is **empty** (everything folded into dated `[0.1.6]`). 
 UNRELEASED** on top of 0.1.6: `agent-skips-run-merge-idle-pending` + `ci-docs-bakeoff-registry-link` +
 `doctor-codex-companion-coverage` all landed, integrated gate green (1265/0) — author its CHANGELOG entries at cut
 time. **Release autonomy (Jari): cut autonomously at the right moments — DON'T ask, DON'T re-confirm** (release fully
-autonomous, `main`-push always allowed, `pull→rebase→push` always allowed — root `AGENTS.md`). Two-crate order stays
-`octl-core`→`orchestratectl` (pin `=<version>`); the ossctl `release` engine is UNPROVEN here (0.1.1–0.1.6 were all
-hand-cut: bump `Cargo.toml` workspace version + octl-cli's octl-core pin + CHANGELOG in one `release: vX.Y.Z` commit,
-push, `cargo publish` both, tag `vX.Y.Z` → Release CI on `hauis`). ⚠️ **Bumping the version restales the
-`envelope_snapshots__version_{text,json,jsonl}` insta snapshots** — regenerate them in the release commit (strip
-insta's volatile `assertion_line:` header). `hauis`-runner git-400 playbook: `peculiarly-madly-sneeze` (closed).
+autonomous, `main`-push always allowed, `pull→rebase→push` always allowed — root `AGENTS.md`). **We are RETIRING hand-cut releases** (Jari, 2026-08-12 — fix it, don't document the workaround): the fix is
+filed as `release-rust-workspace-multicrate` in **~/Sources/ossctl** (make `ossctl release` handle the
+dependency-ordered two-crate publish + version bump + snapshot regen). **Prefer closing that over cutting more by
+hand.** Until it lands, v0.1.7 is cut the same TEMPORARY way 0.1.1–0.1.6 were: two-crate order
+`octl-core`→`orchestratectl` (pin `=<version>`) — one `release: vX.Y.Z` commit bumping `Cargo.toml` workspace version
++ octl-cli's octl-core pin + CHANGELOG (+ regenerate the restaled `envelope_snapshots__version_{text,json,jsonl}`
+insta snapshots, stripping insta's volatile `assertion_line:` header), push, `cargo publish` both, tag `vX.Y.Z` →
+Release CI on `hauis`. `hauis`-runner git-400 playbook: `peculiarly-madly-sneeze` (closed).
 
 **NEXT — resume with `/stint-start`; the GLOBAL HEAD is the ARCHITECTURE RE-EXAMINATION (Lane F).** Wave 1: cut
 **v0.1.7** first, then spawn the **Lane F Phase-1 trio in parallel** (`arch-lifecycle-map-rootcause` ∥
