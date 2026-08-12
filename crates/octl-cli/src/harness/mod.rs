@@ -45,7 +45,7 @@ pub(crate) mod support;
 
 /// The canonical set of harness adapter names, in registry order. Single source
 /// of truth for a valid `run create --harness <name>` (and `harness bakeoff
-/// --only <name>`) value; mirrors [`bakeoff::registry`]'s adapter names.
+/// --only <name>`) value; mirrors `bakeoff::registry`'s adapter names.
 pub const KNOWN_HARNESSES: &[&str] = &["aider", "claude", "claude-deepseek", "pi"];
 
 /// The built-in default harness when no flag / env / config selects one. Claude
