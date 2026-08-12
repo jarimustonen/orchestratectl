@@ -254,16 +254,19 @@ const NO_WORKER_REASON: &str = "no-worker-node";
 /// `/llm-review` units run 54–96 min — is never tripped as long as it is still
 /// committing, still emitting pane output, OR still burning real CPU.
 ///
-/// Chosen at 15 min (reopen 2026-08-11): the original 30 min was, in practice,
-/// long enough that a watching conductor always intervened by hand first, so the
-/// net never actually bounded a real stall — the run leaked a live supervisor +
-/// tmux window + worktree, and a `run wait` caller got nothing, for the whole
-/// window. 15 min still sits comfortably above any realistic all-clocks-quiet
-/// stretch of genuine work (a `cargo test` / slow model consult streams to the
-/// pane or burns CPU throughout), but halves the leak/stall window so the net is
-/// a useful backstop rather than a formality. Overridable via [`IDLE_UNMERGED_ENV`];
+/// Kept at 30 min. The reopen 2026-08-11 root cause was NOT the threshold but the
+/// CPU clock, which perpetually re-stamped itself on an idle TUI's render-loop
+/// trickle so the net could never fire at ANY window (fixed in [`cpu_activity_clock`]).
+/// A tempting follow-on was to halve this to 15 min so the net fires before a
+/// watching conductor intervenes by hand — but `ps -o time` is PID-only (a
+/// CPU-bound child is invisible) and child stdout is often block-buffered off a
+/// TTY, so a silent `cargo test` / `cargo build` / slow model call can keep ALL
+/// three clocks quiet for well over 15 min while the agent legitimately works.
+/// Terminalizing those is worse than a slower backstop, and the CPU fix already
+/// removes the never-fire bug, so the reduction is not needed for correctness.
+/// Operators who want a tighter bound can still lower it via [`IDLE_UNMERGED_ENV`];
 /// tests set `0` to fire on the first quiet tick.
-const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(900);
+const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(1800);
 
 /// Env override for [`IDLE_UNMERGED_THRESHOLD`] (whole seconds; unparseable →
 /// default).
@@ -278,8 +281,8 @@ const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
 
 /// Idle-trickle floor for the CPU activity clock ([`cpu_activity_clock`]), in
 /// centiseconds of CPU per wall-clock second (100 == one core running flat out).
-/// The agent process's cumulative CPU must advance FASTER than this since the
-/// clock's baseline to count as activity.
+/// The agent process's cumulative CPU must advance at least this fast (over the
+/// clock's current window) to count as activity.
 ///
 /// An idle claude TUI still runs an event/render loop (cursor blink, periodic
 /// refresh) that trickles a few centiseconds of CPU over many seconds — far under
@@ -290,8 +293,24 @@ const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
 /// held off — preserving the false-positive guard the CPU clock was added for.
 /// (Note `ps -o time` measures only the agent PID's own CPU, not its children, so
 /// a CPU-bound *subprocess* never advances this clock regardless of the floor; that
-/// case is covered by the pane clock, which the subprocess's streamed output bumps.)
+/// case is covered by the pane clock, which the subprocess's streamed output bumps,
+/// and by the deliberately generous [`IDLE_UNMERGED_THRESHOLD`]. Summing the process
+/// tree is a tracked follow-up.)
 const CPU_ACTIVE_FLOOR_CENTIS_PER_SEC: i64 = 5;
+
+/// The CPU-activity clock measures its rate over a window no older than this
+/// (issue `agent-skips-run-merge-idle-pending`, reopen 2026-08-11). Without a cap
+/// the baseline would only move when activity was stamped, so after a long idle a
+/// genuine CPU burst would have to overcome an ever-growing "rate deficit"
+/// (`d_cpu ≥ floor × dt` against the WHOLE idle window) before registering as
+/// active — potentially long enough that the net terminalizes an agent that has
+/// just resumed real work. Sliding the baseline forward once the window reaches
+/// this age (without stamping active) bounds burst-recognition latency to this
+/// many seconds while still letting a steady idle trickle stay under the floor
+/// over every window. 90 s is short enough to catch a resuming agent well inside
+/// the idle threshold, long enough that coarse whole-second `ps` quanta average
+/// out below the floor.
+const CPU_BASELINE_WINDOW_SECS: i64 = 90;
 
 /// The effective idle-unmerged threshold, honoring [`IDLE_UNMERGED_ENV`].
 fn idle_unmerged_threshold() -> Duration {
@@ -322,49 +341,68 @@ fn idle_unmerged_threshold() -> Duration {
 /// many seconds. Under any-delta that trickle perpetually re-stamped the clock, so
 /// `last_activity = max(commit, pane, cpu)` never aged past the threshold and the
 /// net could NEVER fire for the exact case it exists to catch. Here CPU only
-/// counts as activity when it advances FASTER than [`CPU_ACTIVE_FLOOR_CENTIS_PER_SEC`]
-/// since the baseline (`d_cpu ≥ floor × elapsed`). A trickling idle loop stays
-/// under the floor, so the baseline holds while the measured rate stays low and
-/// the clock ages out; genuine in-process work sits far above it, re-stamping the
-/// clock and holding the net off — preserving the busy-but-silent false-positive
-/// guard the CPU clock was added for. Measuring the rate against a baseline that
-/// only resets when we stamp active (rather than every tick) keeps a coarse
-/// whole-second `ps` reading from reading one accumulated +1s jump as a momentary
-/// spike of activity.
+/// counts as activity when it advances at least [`CPU_ACTIVE_FLOOR_CENTIS_PER_SEC`]
+/// per second over the clock's current window (`d_cpu ≥ floor × elapsed`). A
+/// trickling idle loop stays under the floor, so the baseline holds while the
+/// measured rate stays low and the clock ages out; genuine in-process work sits
+/// far above it, re-stamping the clock and holding the net off — preserving the
+/// busy-but-silent false-positive guard the CPU clock was added for. The window is
+/// bounded to [`CPU_BASELINE_WINDOW_SECS`] (see there) so a burst after a long idle
+/// is recognized promptly rather than fighting an unbounded rate deficit.
 ///
-/// Returns `None` when `cpu_now` is `None` (CPU unreadable) so the caller simply
-/// omits this clock and falls back to the commit + pane clocks — never firing on
-/// the *absence* of a CPU reading.
+/// Robustness cases (all found in review of the reopen fix):
+/// - `cpu_now == None` (CPU unreadable): EVICT the entry and return `None`, so a
+///   later readable sample re-seeds a fresh baseline rather than comparing a
+///   post-outage reading against a pre-outage one across a huge gap.
+/// - `cpu < baseline` (PID recycled, process re-spawned for this node, or the
+///   cumulative counter reset): reseed active-now — a lower total is a NEW process,
+///   never proof of idleness.
+/// - `dt <= 0` (two samples in the same whole `ps`/wall second, or a backward clock
+///   step): make NO determination — leave the baseline and `last_active` untouched.
+///   Stamping active here on any positive delta would let a same-second re-tick with
+///   an idle trickle perpetually re-stamp the clock and defeat the net.
 fn cpu_activity_clock(
     map: &mut std::collections::BTreeMap<String, (u64, i64, i64)>,
     node_id: &str,
     cpu_now: Option<u64>,
     now_unix: i64,
 ) -> Option<i64> {
-    let cpu = cpu_now?;
+    let Some(cpu) = cpu_now else {
+        // Unreadable: drop any stale baseline so the next readable sample re-seeds.
+        map.remove(node_id);
+        return None;
+    };
     // (baseline_cpu, baseline_unix, last_active_unix).
     let entry = map
         .entry(node_id.to_string())
         .or_insert((cpu, now_unix, now_unix));
-    let (base_cpu, base_t, _) = *entry;
+    let (base_cpu, base_t, last_active) = *entry;
+    // A cumulative total that went DOWN is a different process for this node id —
+    // treat it as freshly active rather than (via saturating_sub → 0) permanently
+    // idle.
+    if cpu < base_cpu {
+        *entry = (cpu, now_unix, now_unix);
+        return Some(now_unix);
+    }
     let dt = now_unix.saturating_sub(base_t);
     let d_cpu = cpu.saturating_sub(base_cpu);
-    // Busy when cumulative CPU has advanced faster than the idle-trickle floor
-    // since the baseline. Until wall time has elapsed we cannot compute a rate;
-    // a same-tick re-sample with any positive delta is conservatively active so
-    // we never spuriously age the clock on a zero-width window.
-    let active = if dt <= 0 {
-        d_cpu > 0
-    } else {
-        i128::from(d_cpu) >= i128::from(CPU_ACTIVE_FLOOR_CENTIS_PER_SEC) * i128::from(dt)
-    };
+    // Busy when cumulative CPU advanced at least the floor over the window. A
+    // zero-width or backward window (`dt <= 0`) is too short to compute a rate:
+    // make no determination (never stamp active on a trickle).
+    let active =
+        dt > 0 && i128::from(d_cpu) >= i128::from(CPU_ACTIVE_FLOOR_CENTIS_PER_SEC) * i128::from(dt);
     if active {
         // Stamp active now and reset the baseline so the next window measures the
         // rate afresh from here.
         *entry = (cpu, now_unix, now_unix);
+    } else if dt >= CPU_BASELINE_WINDOW_SECS {
+        // Slide the baseline forward WITHOUT stamping active, bounding the window so
+        // a later burst is measured against a recent origin. `last_active` is
+        // preserved, so a steady idle trickle still ages the clock out.
+        *entry = (cpu, now_unix, last_active);
     }
-    // Otherwise leave the baseline in place: a slow trickle keeps accumulating
-    // against a fixed origin, so its measured rate stays low and the clock ages.
+    // Otherwise (idle, window not yet full) leave the baseline in place: the trickle
+    // keeps accumulating against a fixed origin, so its measured rate stays low.
     Some(entry.2)
 }
 
@@ -4564,38 +4602,96 @@ mod tests {
     }
 
     /// `cpu_activity_clock` (rate-gated, reopen 2026-08-11): first observation
-    /// seeds "active now"; a flat total keeps the old active-time; a SLOW TRICKLE
-    /// (below the 5-centis/s floor) does NOT count as activity, so the clock ages
-    /// and eventually lets the net fire; a FAST BURST (above the floor) re-stamps
-    /// the clock and resets the baseline; an unreadable CPU (`None`) contributes
-    /// no clock at all.
+    /// seeds "active now"; an idle window slides the baseline forward but keeps the
+    /// old active-time; a SLOW TRICKLE (below the 5-centis/s floor) does NOT count
+    /// as activity, so the clock ages and eventually lets the net fire; a genuine
+    /// BURST (rate ≥ floor over the window) re-stamps the clock and resets the
+    /// baseline; a cumulative total that went DOWN reseeds active-now (new process);
+    /// an unreadable CPU (`None`) evicts the entry.
     #[test]
     fn cpu_activity_clock_tracks_changes() {
         let mut map = std::collections::BTreeMap::new();
         // First observation at t=100 → seeded to now (assume active).
         assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 100), Some(100));
-        // Flat total at t=200 → active-time stays 100 (idle since 100).
+        // Flat total at t=200: dt=100 ≥ window(90) → baseline slides to (50, 200)
+        // but active-time stays 100 (idle since 100).
         assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 200), Some(100));
-        // +1 centis over 200 wall-seconds (0.005 centis/s ≪ 5) → a trickle, NOT
-        // activity: baseline holds at (50, 100), active-time stays 100. The
-        // any-delta predecessor returned 300 here and defeated the net.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(51), 300), Some(100));
-        // +549 centis over the 301 s since the baseline (≈1.8 centis/s per second,
-        // ≥ 5×… no): 550 vs 5×301=1505 → still under floor, stays 100.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 401), Some(100));
-        // A genuine burst: +5000 centis over the 500 s since baseline = 10 centis/s
-        // ≥ 5 → active, re-stamps and resets the baseline to (5050, 600).
-        assert_eq!(
-            cpu_activity_clock(&mut map, "n", Some(5050), 600),
-            Some(600)
+        // +1 centis over the 50 s since the slid baseline (0.02 centis/s ≪ 5) → a
+        // trickle, NOT activity; window not yet full so the baseline holds at
+        // (50, 200), active-time stays 100. The any-delta predecessor stamped active
+        // here and defeated the net.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(51), 250), Some(100));
+        // +550 centis over the 100 s since baseline (5.5 centis/s ≥ 5) → a genuine
+        // burst: active, re-stamps and resets the baseline to (600, 300).
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 300), Some(300));
+        // Flat again at t=400: dt=100 ≥ window → baseline slides to (600, 400),
+        // active-time stays 300.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 400), Some(300));
+        // Cumulative total DROPS (PID recycled / re-spawn) → reseed active-now.
+        assert_eq!(cpu_activity_clock(&mut map, "n", Some(10), 450), Some(450));
+        // Unreadable CPU → entry evicted, no clock contributed (fall back to others).
+        assert_eq!(cpu_activity_clock(&mut map, "n", None, 500), None);
+        assert!(
+            !map.contains_key("n"),
+            "a None reading must evict the baseline"
         );
-        // Flat again at t=700 → stays 600.
+    }
+
+    /// Edge cases the review of the reopen fix surfaced: a zero-width window (two
+    /// samples in the same whole second) or a backward clock step must make NO
+    /// determination — never stamp active on a trickle (which would defeat the net);
+    /// and after an unreadable gap the next reading re-seeds a fresh baseline rather
+    /// than comparing across the outage.
+    #[test]
+    fn cpu_activity_clock_edge_cases() {
+        let mut map = std::collections::BTreeMap::new();
+        // Seed active-now at t=100.
+        assert_eq!(cpu_activity_clock(&mut map, "e", Some(50), 100), Some(100));
+        // Same whole second (dt=0) with a +2 trickle → NOT active; active-time
+        // stays 100. The any-delta predecessor stamped active on any positive delta.
+        assert_eq!(cpu_activity_clock(&mut map, "e", Some(52), 100), Some(100));
+        // Clock steps BACKWARD (dt<0) with a further CPU bump → still no stamp.
+        assert_eq!(cpu_activity_clock(&mut map, "e", Some(60), 95), Some(100));
+        // Unreadable → evict.
+        assert_eq!(cpu_activity_clock(&mut map, "e", None, 200), None);
+        // A later reading re-seeds active-now (not compared against a stale baseline
+        // across the gap, which a huge dt would otherwise pass on any delta).
         assert_eq!(
-            cpu_activity_clock(&mut map, "n", Some(5050), 700),
-            Some(600)
+            cpu_activity_clock(&mut map, "e", Some(9999), 205),
+            Some(205)
         );
-        // Unreadable CPU → no clock contributed (fall back to other clocks).
-        assert_eq!(cpu_activity_clock(&mut map, "n", None, 800), None);
+    }
+
+    /// Deficit fix (review finding #2): after a long idle, a genuine CPU burst must
+    /// be recognized promptly, not have to overcome an unbounded `d_cpu ≥ floor×dt`
+    /// deficit measured against the whole idle window. Idle for 15 min at a trickle,
+    /// then one full-core tick; the burst (3000 centis over 30 s) is active against
+    /// the bounded recent window — even though 3000 < 5×930 = 4650, which an
+    /// unbounded baseline would have missed, leaving the clock stuck and risking a
+    /// mid-work terminalization.
+    #[test]
+    fn cpu_burst_after_long_idle_is_recognized() {
+        let mut map = std::collections::BTreeMap::new();
+        // Seed idle at t=0.
+        assert_eq!(cpu_activity_clock(&mut map, "b", Some(0), 0), Some(0));
+        // 30 idle ticks (every 30 s → t=900), CPU trickling +1 per tick.
+        let mut cpu = 0u64;
+        let mut clock = 0;
+        for i in 1..=30 {
+            cpu += 1;
+            clock = cpu_activity_clock(&mut map, "b", Some(cpu), i * 30).unwrap();
+        }
+        assert_eq!(
+            clock, 0,
+            "a 15-min idle trickle keeps the clock aged at the start"
+        );
+        // A full-core burst on the next tick: +3000 centis over 30 s.
+        cpu += 3000;
+        let after = cpu_activity_clock(&mut map, "b", Some(cpu), 930).unwrap();
+        assert_eq!(
+            after, 930,
+            "a genuine burst after a long idle must re-stamp the clock, not fight a deficit"
+        );
     }
 
     /// Regression for the reopened missed-detection window (issue
