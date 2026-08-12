@@ -92,6 +92,16 @@ Same flag rules as `worktree-spinoff` — `--kind research`,
 `--title`, and `--task`/`--prompt-file` required; `--source-branch`
 defaults to the current branch. Output defaults to `--output jsonl`.
 
+**`--harness pi` is supported for research.** A pi worker is
+AGENTS.md-native and has none of Claude's Skill/Agent tools or
+`/worktree-*` slash commands, so when the resolved harness is `pi` the
+CLI auto-prepends a short translation preamble to the worker's prompt
+(mapping the `/worktree-merge` close to the plain `orchestratectl run
+merge` bash, telling it to skip `/llm-review` and sub-agents). You do
+not need to hand-translate the brief — write it as usual. This is the
+only autonomous kind translated for pi so far; other kinds still assume
+a Claude worker.
+
 ### 4. Success envelope
 
 ```json

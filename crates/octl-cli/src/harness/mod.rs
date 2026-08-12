@@ -39,6 +39,7 @@ pub mod bakeoff;
 pub mod claude;
 pub mod conformance;
 pub mod pi;
+pub mod prompt;
 pub mod select;
 pub mod stub;
 pub(crate) mod support;

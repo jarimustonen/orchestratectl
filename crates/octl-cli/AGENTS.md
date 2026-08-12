@@ -59,8 +59,32 @@ pure, unit-tested resolver; `resolve` supplies the ambient config+env.
 NOT wired: the `CodeHarness::run_chunk` in-process contract (bakeoff/pipeline) is a
 *synchronous* seam and is unrelated to the detached-tmux worker launch — do not try
 to route `run create` through it. `--harness pi` requires a `pi` agent configured
-in workmux; the Claude-flavored bundled-SKILL prompt translation for a pi worker is
-a separate follow-up (`run create --harness` lands the launch selector only).
+in workmux.
+
+## pi worker-prompt translation shim (`harness::prompt`)
+
+A worker's prompt is the `--task` brief materialized verbatim to
+`<run-dir>/prompt.md` and handed to the agent via `create.sh` → `workmux add -P`.
+Those briefs are Claude-Code-flavored (Skill/Agent tools, sub-agents, MCP,
+`/worktree-*` / `/llm-*` slash commands) — none of which the `pi` agent has (pi is
+AGENTS.md-native). `harness::prompt::worker_prompt_preamble(harness, kind, run_id)`
+returns an optional operating-note **preamble** that `run create` (`create.rs`,
+`resolve_prompt_file`) prepends before the brief when a harness needs the
+translation. The preamble maps the Claude-only references to their bash/CLI
+equivalent (the `/worktree-merge` close → the exact `orchestratectl run merge`
+bash; `/llm-review` / sub-agents → skip) so a pi worker can complete the loop.
+Because the preamble is generated in-process — unlike the static bundled SKILLs —
+it templates the **exact run id** into the closing call (quoted heredoc), so the pi
+worker runs a literal `orchestratectl run merge <run-id>` with no
+`ls ~/.orchestratectl/runs | grep` discovery to get wrong.
+
+Scope is deliberately **narrow: only `(pi, research)` is translated end-to-end**
+(the issue's done bar — one autonomous kind working). Every other `(harness, kind)`
+pair returns `None`, so the claude path is byte-identical and un-shimmed pi kinds
+(spinoff, code, …) are left untranslated as an explicit follow-up — extending the
+shim is a one-arm change in `worker_prompt_preamble`. A `--prompt-file` is used
+as-is when there is no preamble (caller keeps ownership); with a preamble the
+derived prompt is written into the run dir so the caller's file is never mutated.
 
 ## Shelling out to `claude -p` (pipeline spec/verify + harness adapters)
 
