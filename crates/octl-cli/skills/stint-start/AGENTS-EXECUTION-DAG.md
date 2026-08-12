@@ -87,31 +87,40 @@ UNLANED — confirmed no shared hot files, run anytime (one slug per line):
 `stint-handoff`). This is a stateful **merge**, not a rewrite: preserve the existing lane
 assignment, order, and `collision:` tags; only reconcile the *set* of issues.
 
-- Fetch the **active set** = every issue whose `issuectl` status is **non-terminal**.
-  For the default schema that's `--status open` **unioned with** `--status in-progress`
-  (`open` alone silently drops every live worktree's issue); add `--status testing` or
-  any other non-terminal status the project's issue schema defines. Absence from the
-  active set means "not active", not proof of "done" — only a terminal status drops a
-  line.
-- **Drop** DAG node lines whose slug is not in the active set (landed / renamed / closed).
+- Fetch the **active set** = every issue whose `issuectl` status is **non-terminal**
+  AND which is not held out of the plan by a lifecycle label (`deferred` or
+  `needs-triage`). For the default schema the status part is `--status open` **unioned
+  with** `--status in-progress` (`open` alone silently drops every live worktree's issue);
+  add `--status testing` or any other non-terminal status the project's issue schema
+  defines. Absence from the active set means "not active", not proof of "done" — only a
+  terminal status drops a line.
+  - **`needs-triage` (untriaged intake) is NOT in the active set** — an intake bug the bot
+    filed is `open` and non-terminal, but it has not been admitted to the plan yet.
+    Excluding it here is what makes the handoff's human-ack gate real: without it, this
+    merge would silently sweep every unacked intake bug into a lane. `/stint-handoff`
+    admits an acked item by removing `needs-triage` (so it *enters* the active set); until
+    then it stays out of the DAG entirely (not even in `## Adjacent backlog`).
+- **Drop** DAG node lines whose slug is not in the active set (landed / renamed / closed /
+  still `needs-triage`).
 - **Add** active issues missing from the DAG into their lane. Assign the lane by which
   hot-file family the fix touches; if you **can't tell**, sequence it conservatively in
   the most-likely lane — do **not** default to `UNLANED`, which asserts *touches no hot
   file* (parallel-safe). Park `deferred`-labelled issues under `## Adjacent backlog`
   **outside** the `<!-- execution-dag:end -->` delimiter, not in a lane. A fast scoped
   drift check (extracts only the leading node slug per line, ignores prose/tags, and
-  drops deferred from the active side):
+  drops deferred + still-untriaged intake from the active side):
   ```bash
   comm -3 \
     <( { issuectl --json ls --status open; issuectl --json ls --status in-progress; } \
-         | jq -r '.[] | select(.type != "epic" and (((.labels // []) | index("deferred")) | not)) | .slug' \
+         | jq -r '.[] | select(.type != "epic" and (((.labels // []) | index("deferred")) | not) and (((.labels // []) | index("needs-triage")) | not)) | .slug' \
          | sort -u ) \
     <( sed -n '/execution-dag:begin/,/execution-dag:end/p' TODO.md \
          | sed -nE 's/^[[:space:]]+(▶[[:space:]]*)?([a-z0-9][a-z0-9-]*)([[:space:]].*)?$/\2/p' \
          | sort -u )
   ```
-  (Epics and `deferred` issues aren't lane nodes, so they're excluded from the active
-  side. Left-only = active issues missing from a lane; right-only = stale DAG lines.)
+  (Epics, `deferred`, and still-`needs-triage` intake issues aren't lane nodes, so they're
+  excluded from the active side. Left-only = active issues missing from a lane; right-only
+  = stale DAG lines.)
 - **Validate:** every `after`/`blocked_by` target resolves to a real issue; no
   self-dep; no cycle. A dangling or cyclic edge **invalidates the DAG** — surface it and
   repair it before selecting or spawning any DAG-picked work; never render a wrong head
@@ -125,10 +134,10 @@ assignment, order, and `collision:` tags; only reconcile the *set* of issues.
 
 **Head-of-line (compute on read, never trust the printed `▶`):**
 
-- An issue is **eligible** iff it is in the active set, is **not** `deferred`-labelled, is
-  **not already** `in-progress` and has **no launched-but-unsettled run** this round (a
-  worktree already has it), and every `blocked_by` target is **delivered** — `status ∈
-  {fixed, done}`. Any **other** terminal status (`wontfix` / `obsolete` /
+- An issue is **eligible** iff it is in the active set (which already excludes `deferred`
+  and still-`needs-triage` intake), is **not already** `in-progress` and has **no
+  launched-but-unsettled run** this round (a worktree already has it), and every
+  `blocked_by` target is **delivered** — `status ∈ {fixed, done}`. Any **other** terminal status (`wontfix` / `obsolete` /
   `cannot-reproduce` / `duplicate`) does **not** satisfy the dependency (the code was never
   built) — the dependent stays blocked; flag it to the user.
 - `head(lane)` = the first eligible issue in that lane's order.

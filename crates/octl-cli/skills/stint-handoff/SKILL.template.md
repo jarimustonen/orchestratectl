@@ -1,6 +1,6 @@
 ---
 name: stint-handoff
-description: "Terminal wrap of a work-session (työrupeama, 'stint'): surface any newly-arrived intake items and fold the human-approved ones into the next stint's agenda, then update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. This is the human-in-the-loop gate of the stint loop, so the light 'are there new bugs?' check lives here. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT deep bug triage (that is `/triage-bugs`; this is a LIGHT surface-and-fold only); NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
+description: "Terminal wrap of a work-session (työrupeama, 'stint'): surface any newly-arrived intake items and fold the human-approved ones into the next stint's agenda, then update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. Because this is the human-in-the-loop gate of the stint loop, the light new-intake surfacing lives here (a quick listing folded into the agenda — not on-demand bug triage). Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT deep bug triage (that is `/triage-bugs`; this is a LIGHT surface-and-fold only); NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -58,21 +58,45 @@ improvising the merge from memory.
    its output feeds that build.
    - **Detect (read-only).** Query the repo's *own* issue queue for newly-arrived,
      still-untriaged intake items — the queue is the source of truth; do **not** push any
-     gateway/collision logic into `issuectl`, just read it. Signals to match (use what the
-     repo uses): status `untriaged` / label `needs-triage` or `via:telegram`, and the
-     bot-filed slug shapes `intake-bug-<repo>-<hash>` / `tg-bug-*`. E.g.
-     `issuectl --json list --status untriaged` (and/or `--label needs-triage`). If the
-     project doesn't use intake or the queue is empty, this step is a fast **no-op** — say
-     "no new intake" and move on.
+     gateway/collision logic into `issuectl`, just read it. The predicate is exactly
+     `/triage-bugs`': **open** AND label **`via:telegram`** (the bot files with
+     `--provenance telegram`, the primary robust signal) AND label **`needs-triage`** (the
+     lifecycle label marking the still-untriaged ones). The slug shapes
+     `intake-bug-<repo>-<hash>` / `tg-bug-*` are an optional sanity check **only** — never
+     use them to *exclude* a correctly-labelled issue (the scheme may shift). E.g.
+     `issuectl --json list --status open --label via:telegram`, then keep the ones still
+     labelled `needs-triage`. (Don't key on a `status` value beyond `open` — intake
+     lifecycle lives in labels, not the status enum.) A **successful** query returning
+     nothing (or a project that doesn't use intake) is a fast **no-op** — say "no new
+     intake" and move on; but if `issuectl` errors or the result may be incomplete, do
+     **not** report "no new intake" — surface the failure instead.
    - **List — LIGHT only.** Present each new item as a single line: `- <title> — <one-line>
-     (<slug>)`. No deep per-item analysis, no code reading — the human asks interactively
-     for more on any item he cares about, or defers a deep pass to `/triage-bugs`.
+     (<slug>)`, where `<one-line>` is the issue's title / summary field — no generated
+     analysis, no code reading. The human asks interactively for more on any item he cares
+     about, or defers a deep pass to `/triage-bugs`.
    - **Ack + fold (human-gated, no silent auto-promotion).** Ask conversationally which
-     items should enter the next stint (ideally a single "klar"-style ack promotes the
-     shown set). Fold **only the acked** items into the agenda you build in step 2 — add
-     them to the `## 🔄 Continue here` block and insert them into the execution DAG as
-     normal active issues (in a lane per the hot-file rules), so the next `/stint-start`
-     picks them up with zero further input. Nothing is promoted without the human's ack.
+     items should enter the next stint. Require an **unambiguous** ack — a bare "klar"
+     promotes the shown set only when it hasn't changed since you listed it; a partial or
+     vague reply ("do the first two", "looks fine") must be confirmed against exact slugs
+     before you treat it as approval. For **each acked** item:
+     1. **Admit it out of the untriaged set** — the ack *is* the fix-now decision, so
+        remove its intake hold: `issuectl label <slug> --remove needs-triage` (an item
+        still labelled `needs-triage` is not "normal planned work" and would re-nag every
+        handoff). This is the only reason step 3 commits rewritten issue files.
+     2. **Skip duplicates** — if the slug is already a DAG node or clearly duplicates an
+        issue already in the plan, don't re-fold it (close it as a duplicate or just note
+        "already planned"); folding is idempotent by slug.
+     3. **Fold it** into the agenda you build in step 2 — add it to the `## 🔄 Continue
+        here` block and insert it into the execution DAG. To place a **lane** you may read
+        the item's issue body (`issuectl show <slug>` — issue metadata, which is not the
+        forbidden "code reading") to see which hot-file family it likely touches; if you
+        still can't tell, **sequence it conservatively** (its own lane, or the most-likely
+        lane) — never default to `UNLANED`, which asserts it touches no hot file.
+     **Un-acked items:** leave them untouched at `needs-triage` (they re-surface next
+     handoff — that is intended; the human can instead say "defer" →
+     `issuectl label <slug> --remove needs-triage --add deferred`, or "not a bug" →
+     `issuectl close <slug> --status wontfix`). If nothing is acked, fold zero and proceed
+     to step 2. Nothing is promoted without the human's ack.
 2. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so a
    fresh agent can resume from `jatketaan @TODO.md` — where the round left off, what's
    landed, what prod is running, and what's next. **In the same edit, merge the execution

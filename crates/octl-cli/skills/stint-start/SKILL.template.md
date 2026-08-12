@@ -122,6 +122,15 @@ deploys (see Phase 3), (c) the transition to handoff/wrap-up, which is a separat
 (`/stint-handoff`) you propose and run only on the user's go. The product-owner status
 report (Phase 4) is **output, not a question** — always deliver it.
 
+"Prefer best-judgment and proceed" governs **reversible scheduling / implementation-detail**
+choices only. It never overrides these hard stops — halt or pause, don't guess:
+- a **missing green-gate or migration command** for work that needs it (don't skip the gate);
+- a **deploy target/autonomy** that `AGENTS.md` leaves ambiguous (Phase 3's rule wins);
+- an **ambiguous file collision** — sequence the units, never guess parallel (Phase 1);
+- the **landing-verification** warning — a `landed`/manual-check disagreement blocks, and
+  `landed_method: unverified` is never grounds to auto-respawn or auto-deploy;
+- **cold start** with no prepared plan (Phase 1) — a single planning pass, not invention.
+
 ## Phases
 
 ### Phase 0 — Orient (bootstrap)
@@ -157,7 +166,22 @@ The work-list is **already prepared** — take it from the handoff-built `## �
 here` block + the execution DAG (which includes any intake items the human acked and
 folded in at `/stint-handoff`). Fold in the `$ARGUMENTS` focus hint and any items the
 user explicitly names this round, but do **not** re-ask the user to confirm the plan the
-handoff already supplied. Then:
+handoff already supplied.
+
+- **Cold start (no prepared state).** "Trust the prepared state" assumes there *is* one.
+  If the `## 🔄 Continue here` block or the DAG is **missing or empty** (a fresh clone,
+  the repo's first run, or a stint that never reached handoff), do **not** invent a plan
+  and do **not** silently treat the entire open backlog as this round's agenda. Bootstrap
+  it: the Phase-0 DAG merge already built the active set from live `issuectl` status, so
+  orient from that computed ready frontier, state plainly that no prepared narrative
+  exists, and — since there is no human-vetted plan to trust — do a single planning pass
+  with the user before spawning. This is a legitimate pause (a genuine fork the handoff
+  could not have resolved), not a violation of the autonomy posture.
+- A **deliberately empty** prepared agenda (handoff ran, acked nothing, no active work) is
+  not a cold start — report "no ready work" and skip spawn/deploy rather than manufacturing
+  units from the backlog.
+
+Then:
 
 - **Decompose** into independent worktree units.
 - **Resolve file collisions — this *is* the lane assignment.** Units that touch the
@@ -244,8 +268,9 @@ git** before counting it toward the deploy pile:
     fold this in; until it ships, retry-with-harvest is the manual stand-in).
 - **Never write status into the DAG** — not even a spawn breadcrumb (that would leave
   `TODO.md` dirty across the phase and pollute the drift check). The worktree owns the
-  issue lifecycle (`triaged` → `in-progress` → `fixed`); if the DAG also wrote status it
-  would race those updates. Track which units you've launched this round in **conductor
+  issue status lifecycle (`in-progress` → terminal `fixed`/`done`); any intake lifecycle
+  label was already resolved at handoff (an admitted item no longer carries
+  `needs-triage`). If the DAG also wrote status it would race those updates. Track which units you've launched this round in **conductor
   memory** (the recorded run ids), not in the file. Pick the next unit by **recomputing**
   the head-of-line from live `issuectl` status (see the shared
   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md)), never from the printed `▶`.
