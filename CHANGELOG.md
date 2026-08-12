@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-12
+
+### Fixed
+
+- **An agent that ends its session without calling `run merge` no longer strands the run `pending` with committed-but-unmerged work (`agent-skips-run-merge-idle-pending`).** Root cause: the idle-TUI's CPU render-loop trickle perpetually re-stamped the supervisor's "activity" clock, so the idle-unmerged safety net could never fire. The CPU-activity clock is now rate-gated, so a genuinely idle agent that committed work but skipped the merge is detected and its branch + worktree preserved for recovery instead of looking indefinitely busy. (4-model `/llm-review` applied.)
+- **`doctor` / `prune` now cover codex skills and their `_shared` companion files (`doctor-codex-companion-coverage`).** The sync / orphan / prune diagnostics extend to the codex flat layout and the shared companion subdir, so a drifted or orphaned codex companion is surfaced and prunable on par with the claude layout.
+- **Cleared a main-wide CI-red rustdoc break in the docs job (`ci-docs-bakeoff-registry-link`).** A broken intra-doc link `[bakeoff::registry]` is demoted to a code span, so the docs job (and the users who build docs) is green again.
+
 ## [0.1.6] - 2026-08-11
 
 ### Added
