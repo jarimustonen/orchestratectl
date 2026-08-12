@@ -119,65 +119,106 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: ci-docs-bakeoff-registry-link (Lane D — CI docs job RED on main: unresolved intra-doc link `bakeoff::registry`; clear it first to unblock CI). Then high-pri Lane A agent-skips-run-merge-idle-pending (branch has work, main does not — supervisor safety-net, design-sensitive → review-mandated). pi.dev thread continues in Lane B (harness-pi-skill-shim, workmux-pi-agent-preset, config-subcommand). ⚠️ Lane A supervisor fixes × Lane E run/show bugs (node-show-null-report, run-show-null-worktree-path) can collide on the run-show/RunSummary surface — sequence, don't parallelize (KEY LEARNING #NEW).   ← start here on resume
+GLOBAL HEAD-OF-LINE: arch-lifecycle-map-rootcause (Lane F — the ARCHITECTURE RE-EXAMINATION is now the priority thread. ~57% of open issues + 58% of bugs cluster in the supervisor/agent-lifecycle core; hypothesis: the supervisor INFERS a distributed process's state from indirect signals (pid × pane × branch × report) → combinatorial edge cases patching can't shrink. So we STOP patching the core and REVIEW it first.) Phase-1 runs read-only in PARALLEL with arch-feature-usage-audit + arch-supervision-alternatives. Non-core lanes proceed alongside: Lane B pi.dev (harness-pi-skill-shim) + pipeline, Lane D skill. ⚠️ Lane A (supervise core) + Lane E (run/* read surface) are ⛔ GATED behind ◆ DECISION-2 — do NOT spawn new cluster-A/B fixes until the harden-vs-rearchitect ADR lands; the in-flight agent-skips is the LAST one allowed through (→ ⬆ v0.1.7).   ← start here on resume
 
-LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
-    worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
-  ▶ agent-skips-run-merge-idle-pending     (HIGH; reopened 2026-08-11 — spinoff ends session without `run merge`, branch has completed work but main does not; supervisor safety-net is the fix; DESIGN-SENSITIVE (inv-5 teardown gating) → review-mandated. ⚠️ collision risk w/ Lane E run/show — don't parallelize)
-    supervisor-stall-detection             (bug; supervisor reports stalled:false through a multi-hour silent agent hang; run wait default 6h timeout too long to surface it — watchdog/stall detection)
-    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; the RESILIENCE half of KEY LEARNING #2 now that the surfacing half shipped in 0.1.5)
-    peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption; DESIGN-FIRST candidate)
-    moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up; STUB — needs scoping)
-    uncommonly-fuzzy-swing                   (spinoff blocked on USER INPUT at a genuine fork must propagate to the parent agent (with delay) → surfaced to user, not a silent multi-hour block; round-3 finding; relates to no-completion-notification-to-parent + notify-run-level-summary)
-    idle-empty-handed-alive-agent-hangs             (follow-up of idle-unmerged net — empty-handed alive-agent variant)
-    watchdog-tick-verdict-refactor                  (follow-up of idle-unmerged net — watchdog tick refactor)
-    watchdog-pane-aware-liveness                    (follow-up of A1 pane_id capture)
-    code-run-inject-no-selfmerge                    (follow-up of interactive-code — code-inject the no-self-merge rule)
-    interactive-merge-audit-marker                  (follow-up of interactive-code — audit marker for human-confirmed merge)
-    child-supervisor-spawn-exhaustion-lifecycle
+LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ★ PRIORITY
+Phase 1 (read-only research — PARALLEL-SAFE: disjoint output files under issues/lifecycle-architecture-review/, no code edits):
+  ▶ arch-lifecycle-map-rootcause           (high; map the run/supervisor/agent lifecycle end-to-end + taxonomy of the ~24 cluster-A/B issues by signal-combination + root-cause inference-vs-protocol → analysis.md)
+    arch-feature-usage-audit               (used vs maintained-dead-weight drag inventory across the 9 run-kinds, pipeline/wave, bakeoff/multi-harness, discussions → feature-audit.md)
+    arch-supervision-alternatives          (survey protocol/state-machine, exit-code+FIFO, event-sourced/lease vs the polling-watchdog → alternatives.md)
+Phase 2 (needs all three phase-1 docs):
+    arch-redesign-design-session           after arch-lifecycle-map-rootcause, arch-feature-usage-audit, arch-supervision-alternatives (needs the evidence base) — facilitated /llm-workshop WITH Jari; simplest architecture that collapses cluster A → design.md
+Phase 3 (THE decision):
+    arch-decision-rearchitect-vs-harden    after arch-redesign-design-session (needs the chosen design) — ADR via /worktree-technical-decision; harden vs re-architect; GATES ◆ DECISION-2
+
+LANE A — supervise/agent-lifecycle CORE (cluster A, 23 issues)  ⛔ GATED behind ◆ DECISION-2
+(do NOT spawn new fixes here until the ADR decides disposition — listed in full so nothing is outside the DAG)
+    agent-skips-run-merge-idle-pending      [IN-FLIGHT — the LAST one allowed through; on landing → ⬆ v0.1.7]
+    worker-process-hang                     (in-progress; WHY the pid exits is agent-runtime scope, parked)
+    supervisor-stall-detection              (stalled:false through a multi-hour silent hang; run wait 6h default too long)
+    supervisor-spawn-fails-silently-at-run-create   (#4 stateful load-trigger; investigative, no repro; RESILIENCE half of KEY LEARNING #2)
     run-create-back-to-back-no-supervisor
     reattach-does-not-bootstrap-crashed-at-creation-run
-    autoretry-crash-consistency
+    child-supervisor-spawn-exhaustion-lifecycle
     cancel-dead-supervisor-recovery
     legacy-pid-identity-check
+    autoretry-crash-consistency
+    idle-empty-handed-alive-agent-hangs
+    watchdog-pane-aware-liveness
+    watchdog-tick-verdict-refactor
     teardown-gate-trust-and-lifecycle
+    moderately-macabre-self
+    peculiarly-cheerful-mine                (orchestrate driver HEARTBEAT/lease; needs LockedRun+append inv 1-2; DESIGN-FIRST)
+    uncommonly-fuzzy-swing                  (spinoff blocked-on-user-input must propagate to parent, not silently block)
     no-completion-notification-to-parent
     notify-run-level-summary
+    code-run-inject-no-selfmerge
+    interactive-merge-audit-marker
+    run-salvage-command                     (recover a dead agent's stranded work — the salvage command)
+    orchestrate-integration-branch-no-worktree-merge-fails
 
-LANE B — pipeline/* + floor/* + harness/*
-  ▶ harness-pi-skill-shim                    (pi worker bundled-SKILL prompt translation shim; deferred follow-up of run-create-harness-flag — the shim it scoped out; harness/*)
-    workmux-pi-agent-preset                  (workmux pi agent preset for `--harness pi`; harness/spawn preset; pi.dev thread)
-    config-subcommand                        (config subcommand: `config path` + `config show --json`; surfaces the harness config precedence; touches config.rs — pairs w/ harness-flag config layer)
-    dreadfully-dirty-pain                    (mechanical Lane B head; carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
-    practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
+LANE B — pipeline/* + harness/* (NOT lifecycle core — proceeds in parallel with Lane F)
+· pi.dev sub-thread (→ ⬆ v0.2.0):
+  ▶ harness-pi-skill-shim                   (pi worker SKILL translation shim; harness/* — unblocked now ci-docs landed)
+    workmux-pi-agent-preset                 (workmux pi agent preset for `--harness pi`)
+    config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
+· pipeline sub-thread:
+    dreadfully-dirty-pain                   (mechanical wave-build rebase-and-fix; wave-promotion follow-up)
+    practically-exclusive-celery            (meter agent usage before a wave-build worker panic)
     pipeline-hardening
-    pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
+    pipeline-run-create-wiring              collision: create.sh
     pipeline-breaker-inflight-and-opus-metering
     pipeline-drop-primitive-underspecified
-    pipeline-tiered-triage                   (in-progress; deferred self-disagreement trigger)
+    pipeline-tiered-triage                  (in-progress; deferred self-disagreement trigger)
 
-LANE C — workmux vendoring — COMPLETE (empty; multiplexer + git-worktree wrapper both vendored & landed 2026-08-10)
+LANE C — workmux vendoring — COMPLETE (empty; landed 2026-08-10)
 
-LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ▶ ci-docs-bakeoff-registry-link           (GLOBAL HEAD — CI docs job RED on main: unresolved rustdoc intra-doc link `bakeoff::registry`; one-line doc-comment fix in harness/bakeoff; clears main CI red)
-    pidev-pi-skill-lifecycle                (skill.rs: pi skill lifecycle — prune orphans + doctor drift check via out-of-band provenance; pi-side analogue of doctor-orphan-companion-files; pairs w/ doctor-codex-companion-coverage)
-    doctor-codex-companion-coverage         (skill.rs: doctor + prune do not cover codex skills or _shared companions; filed by the codex-companion-layout worker's /llm-review; sequence — same skill.rs as pidev-pi-skill-lifecycle)
-    skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
-    spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
+LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — proceeds)
+  ▶ pidev-pi-skill-lifecycle               (skill.rs: pi skill prune-orphans + doctor drift via out-of-band provenance)
+    skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink)
+    spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
 
-LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence) ⚠️ collides w/ Lane A supervisor fixes on run-show/RunSummary — don't parallelize A×E
-  ▶ node-show-null-report                    (bug; `node show` returns null report after spinoff self-merge — report is in nodes/<node>.json last_report; run/node-show)
-    run-show-null-worktree-path              (bug; `run show` reports null worktree_path/source_branch for a live pending run; run/show)
-    count-jsons-swallows-io                  (`run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
-    run-salvage-command
-    orchestrate-integration-branch-no-worktree-merge-fails
+LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ DECISION-2
+(part of the lifecycle-state review — hold; listed so nothing is outside the DAG)
+    node-show-null-report                   (node show null report after self-merge — report is in nodes/<node>.json last_report)
+    run-show-null-worktree-path             (run show null worktree_path/source_branch for a live pending run)
+    count-jsons-swallows-io                 (run show count_jsons swallows a filesystem read error as a false 0)
+
+◆ DECISION-1 — after arch-feature-usage-audit lands: decide which unused features/surfaces to DEPRECATE or REMOVE (drag reduction). May obsolete Lane A/B issues + spawn removal work.
+◆ DECISION-2 — after arch-decision-rearchitect-vs-harden lands (the ADR): disposition of EVERY Lane A + Lane E issue — keep-and-fix / defer / OBSOLETE-as-subsumed / re-scope. This is the "what do we do with the open issues" checkpoint; it GATES Lanes A + E.
+
+⬆ RELEASE v0.1.7 — agent-skips-run-merge-idle-pending (+ already-landed ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage). Cut once agent-skips lands + integrated gate green (clears the CI-red docs job for users).
+⬆ RELEASE v0.2.0 — pi.dev harness milestone: harness-pi-skill-shim + workmux-pi-agent-preset + config-subcommand + pidev-pi-skill-lifecycle (on top of 0.1.6's --harness + dual-home). Cut when the pi.dev thread runs one autonomous kind pi start→merge→report end-to-end.
+⬆ RELEASE (gated on ◆ DECISION-2) — lifecycle release: bundles the harden fixes OR ships the re-architecture per the ADR; version TBD (0.3.0 if re-architect).
+Cadence: release whenever a wave lands shippable user-facing work (operating policy — release often, fully autonomous).
 ```
 <!-- execution-dag:end -->
 
-**Epic (not a lane node):** `code-pipeline` — parent of the Lane B `pipeline-*` work.
-**Adjacent backlog / deferred:** none currently parked. (`peculiarly-madly-sneeze` — the `hauis`
-runner git-400 that blocked binary/brew releases — was root-caused and **closed** this session; see
-the Continue-here banner.) The full open list is `issuectl ls --status open`.
+**Epics (not lane nodes):** `code-pipeline` — parent of the Lane B `pipeline-*` work;
+`lifecycle-architecture-review` — parent of **Lane F** (the architecture re-examination).
+**Nothing is outside the DAG.** Every active non-epic issue (44 as of 2026-08-12) sits in a
+lane above — verified drift-clean by the `comm -3` check. No `deferred`-parked items. The full
+open list is `issuectl ls --status open`; `issuectl ls --status open --json | jq length` should
+equal the lane-node count.
+
+### Wave plan (next waves — planned into lanes)
+
+- **Wave 1 (immediate, on resume):** cut **⬆ v0.1.7** the moment the in-flight `agent-skips`
+  lands + integrated gate is green (clears the CI-red docs job for users). Then spawn **Lane F
+  Phase-1 trio in parallel** — `arch-lifecycle-map-rootcause` ∥ `arch-feature-usage-audit` ∥
+  `arch-supervision-alternatives` (all `/worktree-research`, **read-only, disjoint output files
+  → safe to parallelize despite one lane**) — alongside one **Lane B pi.dev** unit
+  (`harness-pi-skill-shim`) and one **Lane D** unit (`pidev-pi-skill-lifecycle`). **NO new Lane A
+  / Lane E spawns** (⛔ gated behind ◆ DECISION-2).
+- **Wave 2:** once the Phase-1 trio lands, run **Lane F Phase-2** `arch-redesign-design-session`
+  — a facilitated `/llm-workshop` **with Jari** (interactive, not headless). Continue the Lane B
+  pi.dev + pipeline and Lane D threads in parallel.
+- **Wave 3:** **Lane F Phase-3** `arch-decision-rearchitect-vs-harden` → the ADR → **◆ DECISION-2**
+  (re-triage all Lane A + Lane E issues: keep / defer / obsolete / re-scope). Cut **⬆ v0.2.0**
+  when the pi.dev thread completes end-to-end. Fire **◆ DECISION-1** after
+  `arch-feature-usage-audit` (deprecate/remove dead-weight).
+- **Wave 4+:** execute the ◆ DECISION-2 outcome (harden the surviving Lane A/E issues, or the
+  re-architecture campaign via `/orchestrate`), then the gated lifecycle release.
 
 **Parallelism rule of thumb:** ≤1 live worktree per lane. Cross-lane, several heads can run
 at once — e.g. Lane A + B + C heads — except a head carrying `collision: <file>` must not
