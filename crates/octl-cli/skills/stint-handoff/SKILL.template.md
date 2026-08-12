@@ -1,6 +1,6 @@
 ---
 name: stint-handoff
-description: "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), then hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
+description: "Terminal wrap of a work-session (työrupeama, 'stint'): surface any newly-arrived intake items and fold the human-approved ones into the next stint's agenda, then update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. This is the human-in-the-loop gate of the stint loop, so the light 'are there new bugs?' check lives here. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT deep bug triage (that is `/triage-bugs`; this is a LIGHT surface-and-fold only); NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -52,31 +52,55 @@ improvising the merge from memory.
    the current `TODO.md` handoff block and, if the block will state deployment state, the
    project's live-version check — write "unverified" rather than guessing if you can't
    confirm it.
-1. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so a
+1. **Intake check — surface new bugs, fold approved into the next agenda.** This is the
+   human-in-the-loop gate of the stint loop: nothing else invokes triage, so filed intake
+   items would otherwise pile up untriaged. Do it *before* the agenda build in step 2 so
+   its output feeds that build.
+   - **Detect (read-only).** Query the repo's *own* issue queue for newly-arrived,
+     still-untriaged intake items — the queue is the source of truth; do **not** push any
+     gateway/collision logic into `issuectl`, just read it. Signals to match (use what the
+     repo uses): status `untriaged` / label `needs-triage` or `via:telegram`, and the
+     bot-filed slug shapes `intake-bug-<repo>-<hash>` / `tg-bug-*`. E.g.
+     `issuectl --json list --status untriaged` (and/or `--label needs-triage`). If the
+     project doesn't use intake or the queue is empty, this step is a fast **no-op** — say
+     "no new intake" and move on.
+   - **List — LIGHT only.** Present each new item as a single line: `- <title> — <one-line>
+     (<slug>)`. No deep per-item analysis, no code reading — the human asks interactively
+     for more on any item he cares about, or defers a deep pass to `/triage-bugs`.
+   - **Ack + fold (human-gated, no silent auto-promotion).** Ask conversationally which
+     items should enter the next stint (ideally a single "klar"-style ack promotes the
+     shown set). Fold **only the acked** items into the agenda you build in step 2 — add
+     them to the `## 🔄 Continue here` block and insert them into the execution DAG as
+     normal active issues (in a lane per the hot-file rules), so the next `/stint-start`
+     picks them up with zero further input. Nothing is promoted without the human's ack.
+2. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so a
    fresh agent can resume from `jatketaan @TODO.md` — where the round left off, what's
    landed, what prod is running, and what's next. **In the same edit, merge the execution
-   DAG one last time**: drop only terminal issues, add active/non-terminal ones, refresh
-   the date stamp, and set the `GLOBAL HEAD-OF-LINE`. This is the same merge — the active-set
-   fetch, drop/add rules, the `comm -3` drift check, edge validation, and head recompute
-   are all in the shared
+   DAG one last time**: drop only terminal issues, add active/non-terminal ones (including
+   any intake items acked in step 1), refresh the date stamp, and set the `GLOBAL
+   HEAD-OF-LINE`. This is the same merge — the active-set fetch, drop/add rules, the
+   `comm -3` drift check, edge validation, and head recompute are all in the shared
    [`AGENTS-EXECUTION-DAG.md`](../stint-start/AGENTS-EXECUTION-DAG.md) § *Execution DAG
    (the convention)* — so the next resume opens onto an accurate graph.
-2. **Commit the `TODO.md` handoff + DAG update immediately, on its own** — `git add
+3. **Commit the `TODO.md` handoff + DAG update immediately, on its own** — `git add
    TODO.md` (plus any issue files `issuectl` rewrote — name the exact paths, not `git add
    -A`) and commit *before* the next step, so it doesn't get folded into `/wrap-up`'s
    mixed commit or left dangling.
-3. **`/wrap-up`** — it will *present proposed* `AGENTS.md` / issue / preference changes
+4. **`/wrap-up`** — it will *present proposed* `AGENTS.md` / issue / preference changes
    and ask before writing; don't assume it committed unless it reports saved changes.
-4. **Test-account reset.** If the project's `AGENTS.md` / `TODO.md` declares a
+5. **Test-account reset.** If the project's `AGENTS.md` / `TODO.md` declares a
    **test-account reset preference** (so testing starts from a known state), do it or
    remind the user. If the project declares none, skip this step.
-5. **Verify terminal state.** Run `git status --short`. The handoff commit from step 2
+6. **Verify terminal state.** Run `git status --short`. The handoff commit from step 3
    should be in; if `/wrap-up` wrote approved files without committing, follow its commit
    contract (or ask the user) — do not declare the handoff complete while main is left
    dirty. This is what lets the next agent resume from a clean tree.
 
 ## Non-goals
 
+- **Not deep bug triage** — the intake check (step 1) is a LIGHT surface-and-fold only
+  (title + one-line + slug, human-gated). Deep per-item analysis, reproduction, and code
+  reading stay in `/triage-bugs`; the human can ask for more on any item interactively.
 - **Not the round engine** — it does not pull, plan, spawn worktrees, or deploy; that is
   `/stint-start`.
 - **Not a bare `/wrap-up`** — this first updates the `TODO.md` handoff block and merges

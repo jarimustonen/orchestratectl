@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The stint loop now surfaces and folds in new bugs at handoff, and `/stint-start` just resumes from that prepared agenda (`stint-handoff-intake-check` + `stint-start-autonomous`).** `/stint-handoff` gains a light intake-check step at its human-in-the-loop gate: it detects newly-arrived, still-untriaged intake items in the repo's own issue queue (`untriaged` / `needs-triage` / `via:telegram`, `intake-bug-*` / `tg-bug-*` slugs), lists them one line each (title + one-line + slug — no deep analysis), and on the human's ack folds the chosen items into the next stint's `## 🔄 Continue here` block + execution DAG. No silent auto-promotion; a no-op when there's no intake queue. In turn `/stint-start` is tightened to be maximally autonomous — it trusts the handoff-prepared agenda, consumes the DAG as its plan, and no longer expects the user to hand it triaged bug slugs mid-start.
+
 ## [0.1.7] - 2026-08-12
 
 ### Fixed
