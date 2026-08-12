@@ -3,7 +3,7 @@ created: 2026-08-12
 updated: 2026-08-12
 type: task
 status: open
-priority: normal
+priority: high
 epic: lifecycle-architecture-review
 ---
 

@@ -124,7 +124,7 @@ GLOBAL HEAD-OF-LINE: arch-lifecycle-map-rootcause (Lane F — the ARCHITECTURE R
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ★ PRIORITY
 Phase 1 (read-only research — PARALLEL-SAFE: disjoint output files under issues/lifecycle-architecture-review/, no code edits):
   ▶ arch-lifecycle-map-rootcause           (high; map the run/supervisor/agent lifecycle end-to-end + taxonomy of the ~24 cluster-A/B issues by signal-combination + root-cause inference-vs-protocol → analysis.md)
-    arch-feature-usage-audit               (used vs maintained-dead-weight drag inventory across the 9 run-kinds, pipeline/wave, bakeoff/multi-harness, discussions → feature-audit.md)
+    arch-feature-usage-audit               (HIGH — Jari flagged 2026-08-12: actual usage is NARROW, some options likely unneeded. Ground the audit in Jari's REAL use set, then flag every unused kind/flag/subsystem as a removal candidate w/ its drag cost. BIAS TOWARD CUTTING. Suspects: 9 run-kinds, code-pipeline/wave-build, bakeoff, discussions → feature-audit.md; feeds ◆ DECISION-1)
     arch-supervision-alternatives          (survey protocol/state-machine, exit-code+FIFO, event-sourced/lease vs the polling-watchdog → alternatives.md)
 Phase 2 (needs all three phase-1 docs):
     arch-redesign-design-session           after arch-lifecycle-map-rootcause, arch-feature-usage-audit, arch-supervision-alternatives (needs the evidence base) — facilitated /llm-workshop WITH Jari; simplest architecture that collapses cluster A → design.md
@@ -184,7 +184,7 @@ LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ D
     run-show-null-worktree-path             (run show null worktree_path/source_branch for a live pending run)
     count-jsons-swallows-io                 (run show count_jsons swallows a filesystem read error as a false 0)
 
-◆ DECISION-1 — after arch-feature-usage-audit lands: decide which unused features/surfaces to DEPRECATE or REMOVE (drag reduction). May obsolete Lane A/B issues + spawn removal work.
+◆ DECISION-1 — after arch-feature-usage-audit lands: decide which unused features/surfaces to DEPRECATE or REMOVE (drag reduction). Jari (2026-08-12) actively expects unused options here — bias toward cutting; may fire EARLY (does not wait for the full ADR). May obsolete Lane A/B issues + spawn removal work.
 ◆ DECISION-2 — after arch-decision-rearchitect-vs-harden lands (the ADR): disposition of EVERY Lane A + Lane E issue — keep-and-fix / defer / OBSOLETE-as-subsumed / re-scope. This is the "what do we do with the open issues" checkpoint; it GATES Lanes A + E.
 
 ⬆ RELEASE v0.1.7 — agent-skips-run-merge-idle-pending (+ already-landed ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage). Cut once agent-skips lands + integrated gate green (clears the CI-red docs job for users).
