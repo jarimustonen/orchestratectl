@@ -104,7 +104,7 @@ local binary 0.1.5 (`doctor` 0/0).**
 
 ---
 
-## Execution DAG (2026-08-11)
+## Execution DAG (2026-08-12)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -119,11 +119,13 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: run-create-harness-flag (Lane B — PRIORITY OVERRIDE, Jari 2026-08-11: pi.dev harness migration. The pi adapter already works (bakeoff live-verified, pi 0.82) — this only WIRES `run create --harness pi` so autonomous runs launch pi-driven workers instead of hardcoded claude. NOTE collision: create.sh w/ Lane A — don't spawn while a Lane A create.sh worktree is live. Other actionable heads: Lane B mechanical ▶ dreadfully-dirty-pain, Lane E count-jsons-swallows-io, Lane D doctor-orphan-companion-files, Lane A supervisor-spawn-fails-silently-at-run-create)   ← start here on resume
+GLOBAL HEAD-OF-LINE: ci-docs-bakeoff-registry-link (Lane D — CI docs job RED on main: unresolved intra-doc link `bakeoff::registry`; clear it first to unblock CI). Then high-pri Lane A agent-skips-run-merge-idle-pending (branch has work, main does not — supervisor safety-net, design-sensitive → review-mandated). pi.dev thread continues in Lane B (harness-pi-skill-shim, workmux-pi-agent-preset, config-subcommand). ⚠️ Lane A supervisor fixes × Lane E run/show bugs (node-show-null-report, run-show-null-worktree-path) can collide on the run-show/RunSummary surface — sequence, don't parallelize (KEY LEARNING #NEW).   ← start here on resume
 
 LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     worker-process-hang                      (in-progress; now unblocked — capture landed; but WHY pid exits is agent-runtime scope)
-  ▶ supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; the RESILIENCE half of KEY LEARNING #2 now that the surfacing half shipped in 0.1.5)
+  ▶ agent-skips-run-merge-idle-pending     (HIGH; reopened 2026-08-11 — spinoff ends session without `run merge`, branch has completed work but main does not; supervisor safety-net is the fix; DESIGN-SENSITIVE (inv-5 teardown gating) → review-mandated. ⚠️ collision risk w/ Lane E run/show — don't parallelize)
+    supervisor-stall-detection             (bug; supervisor reports stalled:false through a multi-hour silent agent hang; run wait default 6h timeout too long to surface it — watchdog/stall detection)
+    supervisor-spawn-fails-silently-at-run-create   (high; #4 stateful load-trigger only — no repro, investigative; the RESILIENCE half of KEY LEARNING #2 now that the surfacing half shipped in 0.1.5)
     peculiarly-cheerful-mine                 (orchestrate driver HEARTBEAT/lease — generalizes the shipped read-time stall hint to the 4 shapes it can't catch; needs LockedRun+append (inv 1-2); follow-up of peculiarly-muddled-caption; DESIGN-FIRST candidate)
     moderately-macabre-self                  (verify reciprocal parent/child relationship before cross-run supervisor ops; typed-selector review follow-up; STUB — needs scoping)
     uncommonly-fuzzy-swing                   (spinoff blocked on USER INPUT at a genuine fork must propagate to the parent agent (with delay) → surfaced to user, not a silent multi-hour block; round-3 finding; relates to no-completion-notification-to-parent + notify-run-level-summary)
@@ -143,8 +145,10 @@ LANE A — supervise/* + reducer/schema (create.sh, run/spawn.rs, capture.rs)
     notify-run-level-summary
 
 LANE B — pipeline/* + floor/* + harness/*
-  ◀ run-create-harness-flag                  ◀ PRIORITIZED (pi.dev, Jari 2026-08-11) — `run create --harness` promotes the pi adapter (+ others) from bakeoff into real runs; touches harness/* — collision: create.sh w/ Lane A.
-  ▶ dreadfully-dirty-pain                    (mechanical Lane B head; carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
+  ▶ harness-pi-skill-shim                    (pi worker bundled-SKILL prompt translation shim; deferred follow-up of run-create-harness-flag — the shim it scoped out; harness/*)
+    workmux-pi-agent-preset                  (workmux pi agent preset for `--harness pi`; harness/spawn preset; pi.dev thread)
+    config-subcommand                        (config subcommand: `config path` + `config show --json`; surfaces the harness config precedence; touches config.rs — pairs w/ harness-flag config layer)
+    dreadfully-dirty-pain                    (mechanical Lane B head; carry stale wave-build diff + findings into rebase-and-fix re-brief; wave-promotion follow-up)
     practically-exclusive-celery             (meter agent usage spent before a wave-build worker panic; wave-promotion follow-up)
     pipeline-hardening
     pipeline-run-create-wiring               collision: create.sh   (shares w/ Lane A capture)
@@ -155,14 +159,16 @@ LANE B — pipeline/* + floor/* + harness/*
 LANE C — workmux vendoring — COMPLETE (empty; multiplexer + git-worktree wrapper both vendored & landed 2026-08-10)
 
 LANE D — workflow/skill (skill prose + skill registry; sequence, touches bundled-skill catalog)
-  ◀ pidev-dual-home-skills                   ◀ URGENT (Jari 2026-08-11): `skill install` must dual-home each SKILL.md into `~/.pi/agent/skills/<name>/` (pi.dev harness discovery) in addition to `~/.claude/skills/`, vendored-filtering-aware, claude path unchanged. touches skill.rs — collision w/ doctor-orphan-companion-files (sequence, same file).
-  ▶ doctor-orphan-companion-files           (skill.rs: doctor should also detect ORPHAN companions — files a prior binary installed but this binary no longer bundles; doctor-skill-companion-sync follow-up; sequenced AFTER pidev-dual-home-skills — same skill.rs)
-    doctor-codex-companion-coverage         (skill.rs: doctor + prune do not cover codex skills or _shared companions; filed by the codex-companion-layout worker's /llm-review — natural pair w/ doctor-orphan-companion-files)
+  ▶ ci-docs-bakeoff-registry-link           (GLOBAL HEAD — CI docs job RED on main: unresolved rustdoc intra-doc link `bakeoff::registry`; one-line doc-comment fix in harness/bakeoff; clears main CI red)
+    pidev-pi-skill-lifecycle                (skill.rs: pi skill lifecycle — prune orphans + doctor drift check via out-of-band provenance; pi-side analogue of doctor-orphan-companion-files; pairs w/ doctor-codex-companion-coverage)
+    doctor-codex-companion-coverage         (skill.rs: doctor + prune do not cover codex skills or _shared companions; filed by the codex-companion-layout worker's /llm-review; sequence — same skill.rs as pidev-pi-skill-lifecycle)
     skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink — refused_overwrite; prune/handle the stale symlink first)
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md still carries a "NOT IMPLEMENTED" preview banner — prose fix)
 
-LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence)
-  ▶ count-jsons-swallows-io                  (`run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
+LANE E — run/* CLI surface (touch run/*, not supervise core; lower collision, still sequence) ⚠️ collides w/ Lane A supervisor fixes on run-show/RunSummary — don't parallelize A×E
+  ▶ node-show-null-report                    (bug; `node show` returns null report after spinoff self-merge — report is in nodes/<node>.json last_report; run/node-show)
+    run-show-null-worktree-path              (bug; `run show` reports null worktree_path/source_branch for a live pending run; run/show)
+    count-jsons-swallows-io                  (`run show` count_jsons silently returns 0 on a filesystem read failure — should surface the IO error, not a false 0; run-show follow-up)
     run-salvage-command
     orchestrate-integration-branch-no-worktree-merge-fails
 ```
