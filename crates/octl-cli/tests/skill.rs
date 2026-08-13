@@ -706,22 +706,31 @@ fn skill_install_default_dual_homes_into_pi() {
         "pi mirror must be byte-identical to the claude SKILL.md"
     );
 
-    // Vendored filter: only SKILL.md is mirrored into pi — companion
-    // resources (stint-start ships AGENTS-EXECUTION-DAG.md) stay claude-only.
+    // Companion resources mirror into the pi per-skill dir as byte-identical
+    // siblings of SKILL.md (stint-start ships AGENTS-EXECUTION-DAG.md), exactly
+    // as they do for claude — so a skill that STOPS on a missing companion does
+    // not abort under pi (issue support-pi-dev).
+    let claude_companion = home
+        .path()
+        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
+    let pi_companion = home
+        .path()
+        .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md");
     assert!(
-        home.path()
-            .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md")
-            .exists(),
+        claude_companion.exists(),
         "companion missing from claude dir"
     );
     assert!(
-        !home
-            .path()
-            .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md")
-            .exists(),
-        "companion must NOT be mirrored into the pi dir"
+        pi_companion.exists(),
+        "companion must be mirrored into the pi dir"
     );
-    // The pi mirror is not a managed claude dir — no provenance marker.
+    assert_eq!(
+        std::fs::read(&claude_companion).unwrap(),
+        std::fs::read(&pi_companion).unwrap(),
+        "pi companion must be byte-identical to the claude companion"
+    );
+    // The pi mirror is still not a managed claude dir — no in-dir provenance
+    // marker (lifecycle is keyed on the out-of-band record instead).
     assert!(
         !home
             .path()
@@ -730,6 +739,148 @@ fn skill_install_default_dual_homes_into_pi() {
             .is_file(),
         "pi mirror must not carry the claude provenance marker"
     );
+
+    // The companion is tracked in the out-of-band provenance record under its
+    // owning skill, so `doctor` and the de-registration prune can see it.
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(env_orch_state_record(&home)).expect("provenance record"),
+    )
+    .expect("record json");
+    assert!(
+        record["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].is_string(),
+        "companion hash must be recorded under its owning skill: {record}"
+    );
+}
+
+#[test]
+fn skill_install_force_reconciles_dropped_pi_companion() {
+    // A pi companion a prior binary recorded that the current binary no longer
+    // bundles must be removed on a --force install and dropped from the record —
+    // otherwise the `skill.orphan.<name>.pi.<file>` doctor warning it raises would
+    // be unfixable (issue support-pi-dev, review finding F1).
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let pi_dir = home.path().join(".pi/agent/skills/stint-start");
+    let record_path = env_orch_state_record(&home);
+
+    // Simulate a prior binary having installed an extra companion the current
+    // binary no longer ships. Give it the SAME bytes (and thus the same recorded
+    // hash) as the real companion so reconciliation recognises it as our copy.
+    let real = pi_dir.join("AGENTS-EXECUTION-DAG.md");
+    let real_bytes = std::fs::read(&real).unwrap();
+    let orphan = pi_dir.join("OLD-COMPANION.md");
+    std::fs::write(&orphan, &real_bytes).unwrap();
+
+    let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    let real_hash = prov["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].clone();
+    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] = real_hash;
+    std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
+
+    // A --force redeploy reconciles the dropped companion.
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "force redeploy failed: {out:?}");
+
+    assert!(
+        !orphan.exists(),
+        "dropped pi companion must be removed on --force"
+    );
+    assert!(real.exists(), "the still-bundled companion is kept");
+
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let pruned_companions: Vec<&str> = v["data"]["pruned_companions"]
+        .as_array()
+        .expect("pruned_companions array")
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(
+        pruned_companions.contains(&"stint-start/OLD-COMPANION.md"),
+        "orphan pi companion must be reported: {pruned_companions:?}"
+    );
+
+    // The record no longer tracks it → the doctor loop is now cleared.
+    let after: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert!(
+        after["skills"]["stint-start"]["companions"]
+            .get("OLD-COMPANION.md")
+            .is_none(),
+        "reconciled companion must be dropped from the record: {after}"
+    );
+    assert!(
+        after["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].is_string(),
+        "the bundled companion stays tracked"
+    );
+}
+
+#[test]
+fn skill_install_force_relinquishes_diverged_dropped_pi_companion() {
+    // A dropped pi companion whose on-disk bytes DON'T match the recorded hash
+    // (user-edited since we wrote it) must be LEFT on disk but dropped from
+    // tracking on --force — we relinquish a copy we no longer recognise rather
+    // than delete it (review finding F1 relinquish arm).
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let pi_dir = home.path().join(".pi/agent/skills/stint-start");
+    let record_path = env_orch_state_record(&home);
+    let orphan = pi_dir.join("OLD-COMPANION.md");
+    std::fs::write(&orphan, "user has since edited this\n").unwrap();
+    let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    // A recorded hash that does NOT match the on-disk bytes.
+    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] =
+        serde_json::json!("00000000000000000000000000000000000000000000000000000000deadbeef");
+    std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
+
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "stint-start",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "install failed: {out:?}");
+    assert!(
+        orphan.exists(),
+        "a companion whose bytes don't match the record is left on disk"
+    );
+    let after: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    assert!(
+        after["skills"]["stint-start"]["companions"]
+            .get("OLD-COMPANION.md")
+            .is_none(),
+        "a diverged orphan is relinquished (dropped from tracking): {after}"
+    );
+}
+
+/// Path to the out-of-band pi provenance record under the test's orchestratectl
+/// state root. `bin` sets `ORCHESTRATECTL_HOME` to the tempdir root, so the
+/// record resolves to `<home>/state/pi-installed-skills.json`.
+fn env_orch_state_record(home: &tempfile::TempDir) -> std::path::PathBuf {
+    home.path().join("state/pi-installed-skills.json")
 }
 
 #[test]
@@ -1387,7 +1538,9 @@ fn skill_install_writes_pi_provenance_record() {
         .success());
 
     let prov = read_provenance(&home);
-    assert_eq!(prov["schema_version"], 1);
+    // v2: the record schema was bumped when the per-skill `companions` map was
+    // added, so an older binary refuses (rather than silently drops) the field.
+    assert_eq!(prov["schema_version"], 2);
     let rec = &prov["skills"]["stint-start"];
     assert!(rec.is_object(), "stint-start not recorded: {prov}");
     let sha = rec["sha256"].as_str().expect("sha256");

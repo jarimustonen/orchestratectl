@@ -3,8 +3,10 @@ created: 2026-08-13
 updated: 2026-08-13
 type: bug
 reporter: jari
-status: open
+status: fixed
 priority: high
+closed: 2026-08-13
+closed_by: agent-spinoff
 ---
 
 # Support pi.dev skill installs with companions
@@ -87,3 +89,9 @@ orchestratectl skill install stint-start \
 ```
 
 Testing this against a temp directory showed that `--dest` does copy the companion next to `SKILL.md`, so the missing piece is an explicit pi.dev agent target plus doctor coverage.
+
+## Resolution
+
+### 2026-08-13T12:23:28Z · @agent-spinoff
+
+pi.dev skill install now mirrors companion resources as siblings of the pi SKILL.md (byte-identical, per-skill dir like claude, no link rewrite), with out-of-band provenance tracking (companions map, schema v2), --force reconciliation of dropped companions, prune (companions-first, defer-on-failure), and doctor coverage (skill.sync/skill.orphan .pi.<file>). Verified: skill install --force installs the companion + doctor reports all skill.sync.* ok. Reviewed via /llm-review (4 models) + /assess-findings: 9 FIX applied, F11 spun off (pi-provenance-flat-file-model), 3 dropped.

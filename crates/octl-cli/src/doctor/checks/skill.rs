@@ -190,15 +190,32 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
         // Record-sourced names are validated as a single normal path component
         // before being joined into a filesystem path — a corrupt/hand-edited key
         // like `"../../x"` is skipped, never resolved (review finding E; same
-        // guard the prune path applies).
+        // guard the prune path applies). Unlike the prune path (which stays
+        // silent), doctor SURFACES the corrupt entry — it is the diagnostic
+        // command, so a record no one can act on must be visible (review finding
+        // F7). The name is never joined into a path.
         if !skill::is_simple_skill_name(name) {
+            out.push(CheckResult::warn(
+                "skill.provenance.pi",
+                format!(
+                    "pi provenance record contains an invalid skill name {name:?}; the record is corrupt and should be repaired"
+                ),
+                "back up and remove the pi provenance record (state/pi-installed-skills.json) to re-initialise",
+            ));
             continue;
         }
         let Some(path) = skill::pi_default_path(name) else {
             continue;
         };
 
-        if !catalog.contains(name) {
+        // Still-registered check is case-insensitive as well as exact, symmetric
+        // with `managed_orphan_dirs` / the pi prune: on a case-insensitive
+        // filesystem (APFS) a corrupt record key that is a case variant of a
+        // registered skill must NOT be flagged as a de-registered orphan (review
+        // finding F5).
+        let registered_now =
+            catalog.contains(name) || catalog.iter().any(|c| c.eq_ignore_ascii_case(name));
+        if !registered_now {
             // Recorded but de-registered: an orphan, but only if the mirror is
             // still on disk (a record whose file was already removed is nothing
             // to flag). `symlink_metadata` so a planted symlink is not followed.
@@ -225,6 +242,59 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                 suggest,
             ));
             continue;
+        }
+
+        // Companion resources mirrored beside the pi `SKILL.md` (pi uses a
+        // per-skill dir like claude, so companions are plain siblings). Audited
+        // here — only reached once the pi `SKILL.md` exists (the not-installed
+        // arm above `continue`s; a reinstall restores the companions with it),
+        // symmetric with the claude/codex companion checks. `skill.sync.<name>.
+        // pi.<file>` (forward drift vs the bundled body) then `skill.orphan.
+        // <name>.pi.<file>` (a companion the record tracks that the binary no
+        // longer bundles).
+        if let Some(pi_dir) = path.parent() {
+            // Bind the bundled companion set once (each `companion_sources` call
+            // allocates a fresh Vec). `companion.filename` is a compile-time
+            // `EmbeddedResource` constant, so — unlike the record-sourced orphan
+            // filenames below — it needs no path-component validation before the
+            // join.
+            let sources = skill::companion_sources(name);
+            let bundled: std::collections::HashSet<&str> =
+                sources.iter().map(|c| c.filename).collect();
+            for companion in &sources {
+                let companion_path = pi_dir.join(companion.filename);
+                out.push(check_pi_companion(name, companion, &companion_path, binary));
+            }
+            for filename in &m.companions {
+                if bundled.contains(filename.as_str()) {
+                    continue; // still bundled → audited by the forward check above
+                }
+                // Record-sourced filename → guard as a single path component
+                // before joining (same rigor as the skill-name guard above).
+                // Surface a corrupt entry rather than hiding it (review finding
+                // F7); the invalid name is never joined into a path.
+                if !skill::is_simple_skill_name(filename) {
+                    out.push(CheckResult::warn(
+                        "skill.provenance.pi",
+                        format!(
+                            "pi provenance record lists an invalid companion filename {filename:?} for skill '{name}'; the record is corrupt and should be repaired"
+                        ),
+                        "back up and remove the pi provenance record (state/pi-installed-skills.json) to re-initialise",
+                    ));
+                    continue;
+                }
+                let orphan_path = pi_dir.join(filename);
+                if std::fs::symlink_metadata(&orphan_path).is_ok() {
+                    out.push(CheckResult::warn(
+                        format!("skill.orphan.{name}.pi.{filename}"),
+                        format!(
+                            "pi companion '{filename}' for skill '{name}' at {} is orchestratectl-managed but the current binary no longer bundles it (de-registered)",
+                            orphan_path.display()
+                        ),
+                        format!("orchestratectl skill install {name} --force"),
+                    ));
+                }
+            }
         }
 
         match skill::read_on_disk_cli_version(&path)
@@ -288,6 +358,93 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                 ));
             }
         }
+    }
+}
+
+/// Audit one pi companion sibling (`~/.pi/agent/skills/<name>/<file>`) against
+/// the binary's bundled copy. Content identity is the in-sync signal (a freshly
+/// installed companion is byte-identical to the embedded source); on a
+/// difference, classify by the declared `cli_version` with the same drift model
+/// as the claude/codex companion checks. Advisory only — NO autonomous
+/// `FixAction`, for the same cross-target reason as the pi `SKILL.md` arm: the
+/// applier runs `skill install <name> --force`, which dual-homes and would
+/// force-overwrite the claude copy too.
+fn check_pi_companion(
+    skill_name: &str,
+    companion: &skill::CompanionSource,
+    path: &std::path::Path,
+    binary: &str,
+) -> CheckResult {
+    let filename = companion.filename;
+    let id = format!("skill.sync.{skill_name}.pi.{filename}");
+    let suggest = format!("orchestratectl skill install {skill_name} --force");
+
+    let on_disk = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "pi companion '{filename}' for skill '{skill_name}' is not installed at {}",
+                    path.display()
+                ),
+                suggest,
+            );
+        }
+        Err(e) => {
+            return CheckResult::warn(
+                id,
+                format!(
+                    "pi companion '{filename}' for skill '{skill_name}' is unreadable at {}: {e}",
+                    path.display()
+                ),
+                suggest,
+            );
+        }
+    };
+
+    if on_disk == companion.bundled_body {
+        return CheckResult::ok(
+            id,
+            format!(
+                "pi companion '{filename}' for skill '{skill_name}' matches the bundled content for binary {binary}"
+            ),
+        );
+    }
+
+    match skill::cli_version_of(&on_disk)
+        .as_deref()
+        .and_then(|v| compare(v, binary).map(|o| (v, o)))
+    {
+        Some((v, Ordering::Less)) => CheckResult::warn(
+            id,
+            format!(
+                "pi companion '{filename}' for skill '{skill_name}' is cli_version {v}, binary is {binary}"
+            ),
+            suggest,
+        ),
+        Some((v, Ordering::Greater)) => CheckResult::warn(
+            id,
+            format!(
+                "pi companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
+            ),
+            "upgrade the orchestratectl binary to match the installed skill",
+        ),
+        Some((_, Ordering::Equal)) => CheckResult::warn(
+            id,
+            format!(
+                "pi companion '{filename}' for skill '{skill_name}' differs from the bundled copy while its cli_version matches binary {binary} (possible local edits)"
+            ),
+            suggest,
+        ),
+        None => CheckResult::warn(
+            id,
+            format!(
+                "pi companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares no parseable cli_version at {}",
+                path.display()
+            ),
+            suggest,
+        ),
     }
 }
 

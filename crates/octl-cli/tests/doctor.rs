@@ -372,6 +372,124 @@ fn pi_in_sync_after_install_is_ok() {
 }
 
 #[test]
+fn pi_companion_in_sync_after_install_is_ok() {
+    // End-to-end: installing a skill that ships a companion (stint-start →
+    // AGENTS-EXECUTION-DAG.md) mirrors the companion into the pi dir and records
+    // it, so `doctor` reports `skill.sync.<name>.pi.<file>` OK against real bytes.
+    let env = setup();
+    assert!(bin(&env)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.sync.stint-start.pi.AGENTS-EXECUTION-DAG.md");
+    assert_eq!(c["status"], "ok", "pi companion should be in sync: {c}");
+}
+
+#[test]
+fn pi_companion_missing_after_install_warns() {
+    // The reported bug: SKILL.md present but the companion absent. After a real
+    // install, delete only the pi companion — `doctor` must WARN
+    // `skill.sync.<name>.pi.<file>` (not installed), never report all-clear.
+    let env = setup();
+    assert!(bin(&env)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    std::fs::remove_file(
+        env.home
+            .path()
+            .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md"),
+    )
+    .unwrap();
+
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.sync.stint-start.pi.AGENTS-EXECUTION-DAG.md");
+    assert_eq!(c["status"], "warn", "missing pi companion must warn: {c}");
+    assert!(c["message"].as_str().unwrap().contains("not installed"));
+    assert!(c["fix_suggestion"]
+        .as_str()
+        .unwrap()
+        .contains("skill install stint-start --force"));
+    assert!(out.status.success(), "warnings must not fail the run");
+}
+
+#[test]
+fn pi_orphan_companion_flagged_then_cleared_by_force() {
+    // A pi companion the record tracks that the binary no longer bundles is
+    // flagged as skill.orphan.<name>.pi.<file>; a --force reinstall reconciles it
+    // (removes file + record entry) so the warning clears — the loop is fixable
+    // (review finding F1).
+    let env = setup();
+    assert!(bin(&env)
+        .args(["skill", "install", "stint-start"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let pi_dir = env.home.path().join(".pi/agent/skills/stint-start");
+    let record_path = env.orch.join("state").join("pi-installed-skills.json");
+
+    // Give the orphan the SAME bytes/hash as the real companion so the --force
+    // reconcile recognises it as our copy and removes it.
+    let real = pi_dir.join("AGENTS-EXECUTION-DAG.md");
+    let real_bytes = std::fs::read(&real).unwrap();
+    std::fs::write(pi_dir.join("OLD-COMPANION.md"), &real_bytes).unwrap();
+    let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    let real_hash = prov["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].clone();
+    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] = real_hash;
+    std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
+
+    // doctor flags the orphan companion.
+    let out = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let checks = v["data"]["checks"].as_array().unwrap();
+    let c = find_check(checks, "skill.orphan.stint-start.pi.OLD-COMPANION.md");
+    assert_eq!(
+        c["status"], "warn",
+        "orphan pi companion must be flagged: {c}"
+    );
+
+    // A --force reinstall clears it.
+    assert!(bin(&env)
+        .args(["skill", "install", "stint-start", "--force"])
+        .output()
+        .expect("spawn")
+        .status
+        .success());
+    let out2 = bin(&env)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn");
+    let v2: Value = serde_json::from_slice(&out2.stdout).expect("json");
+    let checks2 = v2["data"]["checks"].as_array().unwrap();
+    assert!(
+        !checks2
+            .iter()
+            .any(|c| c["id"] == "skill.orphan.stint-start.pi.OLD-COMPANION.md"),
+        "the orphan warning must be gone after a --force reinstall"
+    );
+}
+
+#[test]
 fn fix_reinstalls_drifted_skill() {
     let env = setup();
     install_skill(&env, "octl-run-overview", "0.0.0");

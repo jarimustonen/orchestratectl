@@ -631,6 +631,7 @@ pub fn cmd_install(
                             agent: agent_name,
                             path: sibling_path(&path, resource.filename),
                             content: Cow::Borrowed(resource.body),
+                            pi_companion_of: None,
                         });
                     }
                 }
@@ -641,6 +642,7 @@ pub fn cmd_install(
                             agent: agent_name,
                             path: codex_companion_path(&path, resource.filename),
                             content: Cow::Borrowed(resource.body),
+                            pi_companion_of: None,
                         });
                     }
                 }
@@ -652,6 +654,7 @@ pub fn cmd_install(
                 agent: agent_name,
                 path,
                 content,
+                pi_companion_of: None,
             });
         }
 
@@ -664,32 +667,41 @@ pub fn cmd_install(
         // only the target). This is an ADDITIONAL target that never alters
         // the claude write.
         //
-        // Vendored filter: mirror ONLY `SKILL.md`, never companion
-        // resources — matching homebase `dotfiles link`, which copies just
-        // the skill body into the pi corpus. Skipped for a custom `--dest`
-        // (caller-managed path) and for `--agent codex` alone (codex is not
-        // a claude-format consumer; pi mirrors the claude corpus).
+        // pi uses a PER-SKILL directory, exactly like claude (unlike codex's
+        // flat prompts dir), so companion resources install as plain siblings
+        // of the pi `SKILL.md` — byte-identical to the claude copy, with NO
+        // link rewrite: the body's `](AGENTS-EXECUTION-DAG.md)` sibling link
+        // (and `stint-handoff`'s cross-skill `](../stint-start/…)` link)
+        // resolves against the mirrored sibling just as it does under claude.
+        // Mirroring the companion is what keeps a skill that STOPS on a missing
+        // companion (e.g. `stint-start`) from aborting under pi (issue
+        // `support-pi-dev`). Skipped for a custom `--dest` (caller-managed
+        // path) and for `--agent codex` alone (codex is not a claude-format
+        // consumer; pi mirrors the claude corpus).
         //
-        // Consequence (accepted, review finding F3): a skill body whose
-        // prose links to a companion (e.g. `stint-start` →
-        // `AGENTS-EXECUTION-DAG.md`) leaves that markdown link dangling in
-        // the pi copy, since the companion is not mirrored. This is
-        // reference prose, not an execution target — pi resolves bare
-        // `/name` and `/skill:name` via its injected available-skills list,
-        // so the dangling link degrades only inline reading, never
-        // invocation. Rewriting it would require a codex-style pass that
-        // violates the byte-identity requirement, so it is left as-is.
-        //
-        // The pi mirror is intentionally UNMANAGED: no `.orchestratectl-
-        // managed` marker and no prune (that machinery stays claude-scoped).
-        // Orphan cleanup + doctor drift-detection for pi need an out-of-band
-        // provenance record and are tracked as `pidev-pi-skill-lifecycle`.
+        // The pi mirror is intentionally UNMANAGED in-tree: no `.orchestratectl-
+        // managed` marker (the pi corpus stays a pure body mirror). Its
+        // lifecycle — orphan prune + `doctor` drift for both the `SKILL.md`
+        // and its companions — is keyed on the out-of-band provenance record
+        // (`state/pi-installed-skills.json`); see the pi block after the write
+        // loop and `PiSkillRecord`.
         if dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All) {
+            let pi_skill_path = default_path("pi", skill.name)?;
+            for resource in resources_for(skill.name) {
+                plan.push(PlanItem {
+                    name: resource.filename,
+                    agent: "pi",
+                    path: sibling_path(&pi_skill_path, resource.filename),
+                    content: Cow::Borrowed(resource.body),
+                    pi_companion_of: Some(skill.name),
+                });
+            }
             plan.push(PlanItem {
                 name: skill.name,
                 agent: "pi",
-                path: default_path("pi", skill.name)?,
+                path: pi_skill_path,
                 content: Cow::Borrowed(skill.body),
+                pi_companion_of: None,
             });
         }
     }
@@ -702,11 +714,12 @@ pub fn cmd_install(
     all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
-    // pi mirrors actually written this run: (skill name, content hash,
-    // cli_version). Only files the write loop persisted are recorded in the
-    // provenance record below — a `skipped` (present, non-force, divergent) pi
-    // mirror was NOT written, so we carry its prior record forward untouched.
-    let mut pi_written: Vec<(&'static str, String, String)> = Vec::new();
+    // pi files actually written this run. Only files the write loop persisted
+    // are recorded in the provenance record below — a `skipped` (present,
+    // non-force, divergent) pi file was NOT written, so we carry its prior
+    // record forward untouched. A `SKILL.md` write and a companion write are
+    // recorded distinctly so the companion lands under its owning skill.
+    let mut pi_written: Vec<PiWrite> = Vec::new();
     for item in plan {
         // A pi mirror that preflight chose to leave in place (present, no
         // --force) is skipped outright — NOT written and NOT reported as
@@ -725,9 +738,25 @@ pub fn cmd_install(
         let allow_overwrite = preflight_result.overwrite_allowed.contains(&item.path);
         write_atomic(&item.path, &item.content, allow_overwrite)?;
         if item.agent == "pi" {
-            let cli_version = parse_frontmatter_field(&item.content, "cli_version")
-                .unwrap_or_else(|| CLI_VERSION.to_string());
-            pi_written.push((item.name, sha256_hex(item.content.as_bytes()), cli_version));
+            let hash = sha256_hex(item.content.as_bytes());
+            match item.pi_companion_of {
+                None => {
+                    let cli_version = parse_frontmatter_field(&item.content, "cli_version")
+                        .unwrap_or_else(|| CLI_VERSION.to_string());
+                    pi_written.push(PiWrite::Skill {
+                        name: item.name,
+                        hash,
+                        cli_version,
+                    });
+                }
+                Some(owner) => {
+                    pi_written.push(PiWrite::Companion {
+                        owner,
+                        filename: item.name,
+                        hash,
+                    });
+                }
+            }
         }
         installed.push(InstalledFile {
             name: item.name,
@@ -983,13 +1012,65 @@ pub fn cmd_install(
     // meant to run concurrently — see `crates/octl-cli/AGENTS.md`.
     if let Some((record_path, mut prov)) = pi_provenance {
         prov.schema_version = PI_PROVENANCE_SCHEMA_VERSION;
-        for (name, hash, ver) in &pi_written {
-            prov.skills.insert(
-                (*name).to_string(),
-                PiSkillRecord {
-                    sha256: hash.clone(),
-                    cli_version: ver.clone(),
-                },
+        // SKILL.md writes first (create/refresh the record IN PLACE, preserving
+        // any companion sub-records already tracked), then companion writes file
+        // under their owning skill. A companion whose owner was neither written
+        // this run nor already recorded has no record to attach to and is
+        // skipped (the rare hand-authored-pi-dir edge) rather than minting a
+        // record with an empty `sha256`.
+        for w in &pi_written {
+            if let PiWrite::Skill {
+                name,
+                hash,
+                cli_version,
+            } = w
+            {
+                let rec = prov.skills.entry((*name).to_string()).or_default();
+                rec.sha256.clone_from(hash);
+                rec.cli_version.clone_from(cli_version);
+            }
+        }
+        for w in &pi_written {
+            if let PiWrite::Companion {
+                owner,
+                filename,
+                hash,
+            } = w
+            {
+                if let Some(rec) = prov.skills.get_mut(*owner) {
+                    rec.companions.insert((*filename).to_string(), hash.clone());
+                } else {
+                    // The companion file was written but its owner skill has no
+                    // record to attach to (owner `SKILL.md` skipped/absent AND
+                    // never previously recorded — the rare hand-authored / reset
+                    // pi-dir edge). Do NOT silently drop it: surface the untracked
+                    // write so a `doctor`/operator can reconcile it, rather than
+                    // leaving a file orchestratectl wrote with no provenance trail
+                    // (review finding F4). Structural fix — flat per-file
+                    // provenance — is tracked as `pi-provenance-flat-file-model`.
+                    all_warnings.push(format!(
+                        "pi_companion_unrecorded: wrote pi companion '{filename}' for skill '{owner}' but no provenance record exists for it; it will not be tracked or pruned (reinstall the skill with --force to record it)"
+                    ));
+                }
+            }
+        }
+
+        // Reconcile each STILL-REGISTERED installed skill's recorded companions
+        // against what this binary now bundles: a companion a prior binary
+        // mirrored that the current one dropped is an orphan. Without this, the
+        // `skill.orphan.<name>.pi.<file>` doctor check would flag a state its only
+        // suggested fix (`skill install <name> --force`) could never clear — a
+        // permanent unfixable warning loop (review finding F1). Mirrors the claude
+        // `mark_dirs` companion reconciliation. De-registered skills are handled
+        // by the prune block below; this handles skills that survive but shed a
+        // companion.
+        for skill in &skills {
+            reconcile_pi_companions(
+                skill.name,
+                &mut prov,
+                force,
+                &mut pruned_companions,
+                &mut all_warnings,
             );
         }
 
@@ -998,10 +1079,18 @@ pub fn cmd_install(
             // De-registered names the record still tracks — the only prune
             // candidates. Collected first (from `BTreeMap::keys`, so sorted +
             // deterministic) so we don't mutate `prov.skills` while iterating it.
+            // The registered check is case-insensitive as well as exact, symmetric
+            // with `managed_orphan_dirs`: on a case-insensitive filesystem (APFS) a
+            // corrupt record key that is a case variant of a registered skill would
+            // otherwise resolve to that skill's live dir and, if the hash matched,
+            // delete a registered mirror (review finding F5).
             let orphan_names: Vec<String> = prov
                 .skills
                 .keys()
-                .filter(|n| !registered.contains(n.as_str()))
+                .filter(|n| {
+                    !registered.contains(n.as_str())
+                        && !registered.iter().any(|r| r.eq_ignore_ascii_case(n))
+                })
                 .cloned()
                 .collect();
             for orphan in orphan_names {
@@ -1017,8 +1106,13 @@ pub fn cmd_install(
                 // `orphan` came straight from `prov.skills.keys()`, so the entry
                 // is present — index directly rather than a fallible get that
                 // could silently pass an empty hash to the prune.
-                let recorded_hash = prov.skills[&orphan].sha256.clone();
-                match prune_pi_mirror(&orphan, &recorded_hash, &mut all_warnings) {
+                let record = prov.skills[&orphan].clone();
+                match prune_pi_mirror(
+                    &orphan,
+                    &record.sha256,
+                    &record.companions,
+                    &mut all_warnings,
+                ) {
                     PiPruneOutcome::Removed => {
                         pruned.push(orphan.clone());
                         prov.skills.remove(&orphan);
@@ -1111,6 +1205,11 @@ struct PlanItem {
     /// embedded source verbatim); owned when a codex body needed companion
     /// links rewritten (see `render_body_for_agent`).
     content: Cow<'static, str>,
+    /// For a pi companion mirror only: the owning skill's name, so the
+    /// out-of-band provenance record files the companion hash under its skill.
+    /// `None` for every `SKILL.md` item and every non-pi item (claude/codex
+    /// companions are tracked by their own in-tree markers, not this field).
+    pi_companion_of: Option<&'static str>,
 }
 
 /// Resolve a companion resource's destination: a file named `filename` in
@@ -1140,6 +1239,7 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
         agent,
         path,
         content,
+        ..
     } in plan
     {
         if !seen.insert(path.as_path()) {
@@ -1391,11 +1491,21 @@ pub fn codex_managed_companions() -> Vec<String> {
 
 /// Schema version of the pi provenance record. Bumped independently of the
 /// SKILL.md and envelope schema versions if the record's shape ever changes.
-const PI_PROVENANCE_SCHEMA_VERSION: u32 = 1;
+///
+/// **v2** added the per-skill `companions` map. The bump is deliberate even
+/// though the field is `serde(default)` (so this binary reads a v1 record
+/// fine): keeping it v1 would let an OLDER binary read the new record, silently
+/// drop the unknown `companions` field on its next rewrite, and — because it
+/// still saw schema 1 — accept and overwrite it, erasing companion tracking for
+/// every mirror. Writing v2 makes that older binary reject the record via
+/// `load_pi_provenance_for_write`'s `schema_too_new` guard (fail closed) instead
+/// of laundering the field away. The `<=` load check keeps old v1 records
+/// readable here.
+const PI_PROVENANCE_SCHEMA_VERSION: u32 = 2;
 
 /// One pi mirror orchestratectl wrote: the content hash + `cli_version` of the
 /// `SKILL.md` bytes last persisted to `~/.pi/agent/skills/<name>/SKILL.md`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct PiSkillRecord {
     /// Lowercase-hex SHA-256 of the `SKILL.md` bytes we wrote. Divergence from
     /// the on-disk bytes means the user (or a newer/older binary) has since
@@ -1406,6 +1516,18 @@ struct PiSkillRecord {
     /// classifies drift from the ON-DISK `cli_version` (more accurate than the
     /// last-written one), so it does not read this field today.
     cli_version: String,
+    /// Companion resources mirrored beside this skill's pi `SKILL.md`
+    /// (`~/.pi/agent/skills/<name>/<file>`), keyed filename → lowercase-hex
+    /// SHA-256 of the bytes we wrote. Empty for skills that ship no companion.
+    /// Lets the prune path clean a de-registered skill's companions (verifying
+    /// each is still our unmodified copy) and `doctor` recognise a dropped
+    /// companion as an orphan — symmetric with the claude marker's `companion:`
+    /// records. `serde(default)` keeps a v1 record (no companion tracking)
+    /// readable; the schema is bumped to v2 on write so an older binary refuses
+    /// it rather than silently dropping this field (see
+    /// `PI_PROVENANCE_SCHEMA_VERSION`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    companions: BTreeMap<String, String>,
 }
 
 /// The out-of-band pi provenance record: which pi mirrors orchestratectl wrote
@@ -1457,6 +1579,11 @@ pub fn pi_default_path(name: &str) -> Option<PathBuf> {
 /// single-component for free). Validating here gives the pi path the same rigor
 /// as `managed_orphan_dirs` (review finding E). Non-matching names are skipped,
 /// never acted on.
+///
+/// Reused for record-sourced companion FILENAMES too (e.g. `AGENTS-EXECUTION-
+/// DAG.md`): the contract is the same "single normal path component", so the
+/// name reads skill-specific but the check is exactly what a companion filename
+/// needs before it is joined into a per-skill dir.
 pub fn is_simple_skill_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
     matches!(
@@ -1574,9 +1701,14 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
     let mut out: Vec<PiManagedSkill> = prov
         .skills
         .into_iter()
-        .map(|(name, rec)| PiManagedSkill {
-            name,
-            sha256: rec.sha256,
+        .map(|(name, rec)| {
+            let mut companions: Vec<String> = rec.companions.into_keys().collect();
+            companions.sort();
+            PiManagedSkill {
+                name,
+                sha256: rec.sha256,
+                companions,
+            }
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1592,6 +1724,12 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
 pub struct PiManagedSkill {
     pub name: String,
     pub sha256: String,
+    /// Companion filenames the provenance record lists as mirrored beside this
+    /// skill's pi `SKILL.md` (sorted). Used by `doctor` to detect a companion
+    /// the binary dropped but the record still tracks (`skill.orphan.<name>.pi.
+    /// <file>`); the forward drift check compares on-disk companions to the
+    /// bundled bodies directly, so it does not need this list.
+    pub companions: Vec<String>,
 }
 
 /// SHA-256 (lowercase hex) of the file at `path`, or `None` if it cannot be
@@ -1820,6 +1958,24 @@ fn prune_codex_file(
     }
 }
 
+/// One pi file the install's write loop actually persisted this run, tagged so
+/// the provenance update files it correctly: a `SKILL.md` (recorded under the
+/// skill name) or a companion (recorded in its owning skill's `companions` map).
+/// Only persisted files appear here — a `skipped` (present, non-force) pi file
+/// is absent, so its prior record is carried forward untouched.
+enum PiWrite {
+    Skill {
+        name: &'static str,
+        hash: String,
+        cli_version: String,
+    },
+    Companion {
+        owner: &'static str,
+        filename: &'static str,
+        hash: String,
+    },
+}
+
 /// What [`prune_pi_mirror`] did with a de-registered pi mirror, so the caller
 /// can keep the provenance record in step: `Removed` (our unmodified copy,
 /// deleted → drop it + report it pruned), `Dropped` (nothing safe on disk to
@@ -1845,11 +2001,26 @@ enum PiPruneOutcome {
 ///   - Content identity: the on-disk bytes must hash to `recorded_hash`. A
 ///     mismatch means the user (or another binary) changed the file since we
 ///     wrote it — we refuse to delete it and relinquish management
-///     (`Diverged`).
+///     (`Diverged`), leaving the whole dir (companions included) to the user.
+///   - Then remove each recorded companion sibling that is still our unmodified
+///     copy (same regular-file + hash-match guards) FIRST, so a de-registered
+///     skill's `AGENTS-EXECUTION-DAG.md`-style companion does not linger and
+///     block the empty-dir cleanup; a diverged or user companion is left in
+///     place. If ANY companion delete fails while its file is still present, the
+///     whole prune returns `Kept` WITHOUT removing the `SKILL.md`, so the next
+///     redeploy retries the entire prune from a consistent state rather than
+///     stranding companions behind an already-deleted body (review finding F3).
 ///   - Only then remove the `SKILL.md` we wrote, and best-effort remove the now-
 ///     empty per-skill dir (never a recursive `remove_dir_all`, since the dir
-///     may hold a user file we did not create).
-fn prune_pi_mirror(name: &str, recorded_hash: &str, warnings: &mut Vec<String>) -> PiPruneOutcome {
+///     may hold a user file we did not create). Companions are cleaned even when
+///     the `SKILL.md` is already absent (a prior partial prune), so they are
+///     never stranded.
+fn prune_pi_mirror(
+    name: &str,
+    recorded_hash: &str,
+    companions: &BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> PiPruneOutcome {
     let Some(path) = pi_default_path(name) else {
         return PiPruneOutcome::Dropped;
     };
@@ -1858,6 +2029,7 @@ fn prune_pi_mirror(name: &str, recorded_hash: &str, warnings: &mut Vec<String>) 
         &path,
         pi_skills_root().as_deref(),
         recorded_hash,
+        companions,
         warnings,
     )
 }
@@ -1872,47 +2044,76 @@ fn prune_pi_mirror_at(
     path: &Path,
     skills_root: Option<&Path>,
     recorded_hash: &str,
+    companions: &BTreeMap<String, String>,
     warnings: &mut Vec<String>,
 ) -> PiPruneOutcome {
     let is_regular = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
-    if !is_regular {
-        return PiPruneOutcome::Dropped;
-    }
-    let on_disk_hash = match fs::read(path) {
-        Ok(bytes) => sha256_hex(&bytes),
-        Err(e) => {
-            warnings.push(format!(
-                "pi_mirror_prune_failed: could not read de-registered pi mirror '{name}' at {}: {e}",
-                path.display()
-            ));
-            return PiPruneOutcome::Kept;
+
+    // Verify the `SKILL.md` is our unmodified copy BEFORE mutating anything. A
+    // diverged body means the user owns the dir now — leave everything, including
+    // companions, and relinquish tracking. An unreadable regular body defers the
+    // whole prune (`Kept`) for a retry.
+    if is_regular {
+        match fs::read(path) {
+            Ok(bytes) => {
+                if sha256_hex(&bytes) != recorded_hash {
+                    warnings.push(format!(
+                        "pi_mirror_diverged: de-registered pi mirror '{name}' at {} was modified since orchestratectl wrote it; leaving it in place and no longer tracking it",
+                        path.display()
+                    ));
+                    return PiPruneOutcome::Diverged;
+                }
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "pi_mirror_prune_failed: could not read de-registered pi mirror '{name}' at {}: {e}",
+                    path.display()
+                ));
+                return PiPruneOutcome::Kept;
+            }
         }
-    };
-    if on_disk_hash != recorded_hash {
-        warnings.push(format!(
-            "pi_mirror_diverged: de-registered pi mirror '{name}' at {} was modified since orchestratectl wrote it; leaving it in place and no longer tracking it",
-            path.display()
-        ));
-        return PiPruneOutcome::Diverged;
+    }
+
+    // Prune recorded companions FIRST (before the `SKILL.md`), so a failure or
+    // crash here leaves the body in place and the next redeploy retries the whole
+    // prune rather than seeing an absent body, returning early, and stranding the
+    // companions untracked. The filename is validated as a single normal path
+    // component before it reaches `join` → `remove_file`, so a corrupt record key
+    // can never escape the per-skill dir.
+    let mut any_companion_kept = false;
+    if let Some(dir) = path.parent() {
+        for (filename, chash) in companions {
+            if !is_simple_skill_name(filename) {
+                warnings.push(format!(
+                    "pi_provenance_bad_name: ignoring pi companion entry '{filename}' for skill '{name}' (not a simple filename)"
+                ));
+                continue;
+            }
+            if matches!(
+                prune_pi_companion(name, &dir.join(filename), chash, warnings),
+                PiCompanionOutcome::Kept
+            ) {
+                any_companion_kept = true;
+            }
+        }
+    }
+    // A companion whose delete failed while still on disk keeps the whole record:
+    // do not delete the body yet, so a later redeploy retries and `doctor` keeps
+    // flagging the leftover through the still-present record.
+    if any_companion_kept {
+        return PiPruneOutcome::Kept;
+    }
+
+    // The body. If it is not our regular file (absent / symlink / squatting dir),
+    // there is nothing safe to delete for the body — companions above are handled,
+    // so best-effort clean the now-possibly-empty dir and drop tracking.
+    if !is_regular {
+        remove_empty_pi_skill_dir(path.parent(), skills_root, name);
+        return PiPruneOutcome::Dropped;
     }
     match fs::remove_file(path) {
         Ok(()) => {
-            // Best-effort: remove the now-orphaned per-skill dir if it is empty.
-            // We only ever wrote `SKILL.md` into it, but a user may have added
-            // their own sibling — `remove_dir` (non-recursive) fails on a
-            // non-empty dir, so a user file is preserved and the dir left be.
-            // Guarded on the parent sitting DIRECTLY under the pi skills root
-            // (`<root>/<name>/`), so even an unexpected `pi_default_path` result
-            // can never point `remove_dir` at an arbitrary directory — the pi
-            // analogue of claude's `is_managed_skill_dir` name-binding (review
-            // finding D). `remove_dir` is non-recursive regardless.
-            if let (Some(parent), Some(root)) = (path.parent(), skills_root) {
-                if parent.parent() == Some(root)
-                    && parent.file_name().and_then(|n| n.to_str()) == Some(name)
-                {
-                    let _ = fs::remove_dir(parent);
-                }
-            }
+            remove_empty_pi_skill_dir(path.parent(), skills_root, name);
             warnings.push(format!(
                 "pi_mirror_pruned: removed de-registered pi mirror '{name}' at {}",
                 path.display()
@@ -1925,6 +2126,204 @@ fn prune_pi_mirror_at(
                 path.display()
             ));
             PiPruneOutcome::Kept
+        }
+    }
+}
+
+/// Best-effort removal of a now-orphaned per-skill pi dir if it is empty. We only
+/// ever wrote `SKILL.md` + our companions into it, but a user may have added
+/// their own sibling (or a diverged companion may remain) — `remove_dir`
+/// (non-recursive) fails on a non-empty dir, so anything we did not clean is
+/// preserved and the dir left be. Guarded on `parent` sitting DIRECTLY under the
+/// pi skills root (`<root>/<name>/`), so even an unexpected `pi_default_path`
+/// result can never point `remove_dir` at an arbitrary directory — the pi
+/// analogue of claude's `is_managed_skill_dir` name-binding (review finding D).
+fn remove_empty_pi_skill_dir(parent: Option<&Path>, skills_root: Option<&Path>, name: &str) {
+    if let (Some(parent), Some(root)) = (parent, skills_root) {
+        if parent.parent() == Some(root)
+            && parent.file_name().and_then(|n| n.to_str()) == Some(name)
+        {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+}
+
+/// What [`prune_pi_companion`] did with ONE recorded companion sibling, so the
+/// caller can decide whether the enclosing prune must defer: `Removed` (our
+/// unmodified copy, deleted), `Absent` (nothing on disk), `NonRegular` (a
+/// symlink / squatting dir left in place), `Diverged` (a user-edited copy left
+/// in place), or `Kept` (delete failed while the file is still present → the
+/// caller must NOT delete the body yet, so a later redeploy retries).
+#[derive(PartialEq, Eq)]
+enum PiCompanionOutcome {
+    Removed,
+    Absent,
+    NonRegular,
+    Diverged,
+    Kept,
+}
+
+/// Best-effort removal of ONE recorded pi companion sibling during a
+/// de-registered skill's prune. Mirrors the SKILL.md safety: only a REGULAR
+/// file whose bytes hash to `recorded_hash` is deleted — a symlink, a squatting
+/// dir, an unreadable file, or a user-edited copy is left untouched (and thus
+/// keeps the parent dir non-empty so `remove_dir` spares it). Warnings narrate
+/// every case where a file is LEFT behind (a squatting non-regular path, a
+/// diverged copy, or a failed delete) so a leftover is visible; a plain-absent
+/// companion is silent (nothing to narrate). Returns the outcome so the caller
+/// can defer the body delete on `Kept`.
+fn prune_pi_companion(
+    skill: &str,
+    path: &Path,
+    recorded_hash: &str,
+    warnings: &mut Vec<String>,
+) -> PiCompanionOutcome {
+    match fs::symlink_metadata(path) {
+        Err(_) => return PiCompanionOutcome::Absent,
+        Ok(m) if !m.file_type().is_file() => {
+            warnings.push(format!(
+                "pi_companion_left: companion of de-registered pi skill '{skill}' at {} is not a regular file (symlink or directory); leaving it in place",
+                path.display()
+            ));
+            return PiCompanionOutcome::NonRegular;
+        }
+        Ok(_) => {}
+    }
+    match fs::read(path) {
+        Ok(bytes) if sha256_hex(&bytes) == recorded_hash => match fs::remove_file(path) {
+            Ok(()) => {
+                warnings.push(format!(
+                    "pi_companion_pruned: removed companion of de-registered pi skill '{skill}' at {}",
+                    path.display()
+                ));
+                PiCompanionOutcome::Removed
+            }
+            Err(e) => {
+                warnings.push(format!(
+                    "pi_companion_prune_failed: could not remove companion of de-registered pi skill '{skill}' at {}: {e}",
+                    path.display()
+                ));
+                PiCompanionOutcome::Kept
+            }
+        },
+        Ok(_) => {
+            warnings.push(format!(
+                "pi_companion_diverged: companion of de-registered pi skill '{skill}' at {} was modified since orchestratectl wrote it; leaving it in place",
+                path.display()
+            ));
+            PiCompanionOutcome::Diverged
+        }
+        Err(e) => {
+            warnings.push(format!(
+                "pi_companion_prune_failed: could not read companion of de-registered pi skill '{skill}' at {}: {e}",
+                path.display()
+            ));
+            PiCompanionOutcome::Kept
+        }
+    }
+}
+
+/// Reconcile ONE still-registered skill's recorded pi companions against what
+/// this binary now bundles: a companion a prior binary mirrored that the current
+/// one no longer ships is an orphan. Without this, the `skill.orphan.<name>.pi.
+/// <file>` doctor check would flag a state its only suggested fix (`skill install
+/// <name> --force`) could never clear — a permanent, unfixable warning loop
+/// (review finding F1). Symmetric with the claude `mark_dirs` companion
+/// reconciliation, but keyed on the out-of-band record (no in-dir marker):
+///
+///   - non-`--force`: the stale entry is LEFT in the record so `doctor` keeps
+///     surfacing it (and its `--force` fix now genuinely clears it).
+///   - `--force`: remove the on-disk file only when it is our unmodified copy
+///     (regular + hash match); report it in `pruned_companions` and drop it from
+///     the record. A diverged / non-regular / absent file is left on disk but
+///     dropped from tracking (we relinquish a copy we no longer recognise). A
+///     failed delete keeps the entry tracked so a later redeploy retries.
+fn reconcile_pi_companions(
+    skill_name: &str,
+    prov: &mut PiProvenance,
+    force: bool,
+    pruned_companions: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(rec) = prov.skills.get_mut(skill_name) else {
+        return;
+    };
+    let Some(dir) = pi_default_path(skill_name).and_then(|p| p.parent().map(Path::to_path_buf))
+    else {
+        return;
+    };
+    reconcile_pi_companions_at(skill_name, rec, &dir, force, pruned_companions, warnings);
+}
+
+/// Path-taking core of [`reconcile_pi_companions`], split out so the logic is
+/// unit-testable against a tempdir without touching `$HOME`. `dir` is the pi
+/// per-skill directory the companions live in.
+fn reconcile_pi_companions_at(
+    skill_name: &str,
+    rec: &mut PiSkillRecord,
+    dir: &Path,
+    force: bool,
+    pruned_companions: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let bundled: HashSet<&str> = resources_for(skill_name)
+        .iter()
+        .map(|r| r.filename)
+        .collect();
+    let stale: Vec<String> = rec
+        .companions
+        .keys()
+        .filter(|f| !bundled.contains(f.as_str()))
+        .cloned()
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    // Non-force: keep every stale entry so `doctor` keeps flagging it; the
+    // `--force` fix it suggests is what actually clears it.
+    if !force {
+        return;
+    }
+    for filename in stale {
+        if !is_simple_skill_name(&filename) {
+            warnings.push(format!(
+                "pi_provenance_bad_name: ignoring pi companion entry '{filename}' for skill '{skill_name}' (not a simple filename)"
+            ));
+            rec.companions.remove(&filename);
+            continue;
+        }
+        let recorded_hash = rec.companions[&filename].clone();
+        let path = dir.join(&filename);
+        let is_our_copy = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
+            && fs::read(&path).is_ok_and(|b| sha256_hex(&b) == recorded_hash);
+        if is_our_copy {
+            match fs::remove_file(&path) {
+                Ok(()) => {
+                    warnings.push(format!(
+                        "skill_companion_pruned: removed orphan pi companion '{filename}' for skill '{skill_name}' at {}",
+                        path.display()
+                    ));
+                    pruned_companions.push(format!("{skill_name}/{filename}"));
+                    rec.companions.remove(&filename);
+                }
+                Err(e) => {
+                    // Still on disk — keep tracking so a later redeploy retries and
+                    // `doctor` keeps flagging it.
+                    warnings.push(format!(
+                        "skill_companion_prune_failed: could not remove orphan pi companion '{filename}' for skill '{skill_name}' at {}: {e}",
+                        path.display()
+                    ));
+                }
+            }
+        } else {
+            // Absent / non-regular / diverged: not our unmodified copy. Leave any
+            // file in place and relinquish tracking rather than delete something we
+            // no longer recognise as ours.
+            warnings.push(format!(
+                "pi_companion_relinquished: orphan pi companion '{filename}' for skill '{skill_name}' at {} is not our unmodified copy; no longer tracking it",
+                path.display()
+            ));
+            rec.companions.remove(&filename);
         }
     }
 }
@@ -2535,6 +2934,7 @@ mod tests {
             PiSkillRecord {
                 sha256: sha256_hex(b"body-a"),
                 cli_version: "0.1.7".to_string(),
+                companions: BTreeMap::new(),
             },
         );
         // Parent dir does not exist yet — the write must create `state/`.
@@ -2636,6 +3036,7 @@ mod tests {
             &mirror,
             Some(root.path()),
             &sha256_hex(body),
+            &BTreeMap::new(),
             &mut warnings,
         );
         assert!(matches!(outcome, PiPruneOutcome::Removed));
@@ -2645,6 +3046,261 @@ mod tests {
             "empty per-skill dir must be cleaned up"
         );
         assert!(warnings[0].starts_with("pi_mirror_pruned:"));
+    }
+
+    #[test]
+    fn prune_pi_mirror_removes_recorded_companions_then_empty_dir() {
+        // A de-registered skill's recorded companions are removed alongside its
+        // SKILL.md so the per-skill dir empties out. A companion that has since
+        // diverged from what we wrote is LEFT in place (and keeps the dir).
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md");
+        let body = b"---\nname: old-skill\n---\nbody\n";
+        fs::write(&mirror, body).unwrap();
+        let comp_body = b"companion payload\n";
+        fs::write(skill_dir.join("AGENTS-EXECUTION-DAG.md"), comp_body).unwrap();
+        // A second recorded companion the user has since edited: must survive.
+        fs::write(skill_dir.join("EDITED.md"), b"user changed this").unwrap();
+
+        let mut companions = BTreeMap::new();
+        companions.insert("AGENTS-EXECUTION-DAG.md".to_string(), sha256_hex(comp_body));
+        companions.insert("EDITED.md".to_string(), sha256_hex(b"original edited body"));
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(body),
+            &companions,
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Removed));
+        assert!(!mirror.exists(), "SKILL.md removed");
+        assert!(
+            !skill_dir.join("AGENTS-EXECUTION-DAG.md").exists(),
+            "our unmodified companion is removed"
+        );
+        assert!(
+            skill_dir.join("EDITED.md").exists(),
+            "a diverged companion is preserved"
+        );
+        // The dir is NOT empty (the diverged companion remains), so it survives.
+        assert!(skill_dir.exists(), "dir with a surviving companion is kept");
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("pi_companion_pruned:")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("pi_companion_diverged:")));
+    }
+
+    #[test]
+    fn prune_pi_mirror_removes_all_matching_companions_and_empty_dir() {
+        // When every recorded companion is our unmodified copy, both it and the
+        // SKILL.md are removed and the now-empty dir is cleaned up.
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md");
+        let body = b"body\n";
+        fs::write(&mirror, body).unwrap();
+        let c1 = b"c1\n";
+        let c2 = b"c2\n";
+        fs::write(skill_dir.join("A.md"), c1).unwrap();
+        fs::write(skill_dir.join("B.md"), c2).unwrap();
+        let mut companions = BTreeMap::new();
+        companions.insert("A.md".to_string(), sha256_hex(c1));
+        companions.insert("B.md".to_string(), sha256_hex(c2));
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(body),
+            &companions,
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Removed));
+        assert!(!skill_dir.exists(), "fully-cleaned dir must be removed");
+    }
+
+    #[test]
+    fn prune_pi_mirror_cleans_companions_when_skill_md_absent() {
+        // A prior partial prune left the SKILL.md gone but a recorded companion
+        // behind. The prune must still clean the companion (never strand it) and
+        // remove the now-empty dir, returning Dropped.
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md"); // never written — absent
+        let comp = b"companion\n";
+        fs::write(skill_dir.join("C.md"), comp).unwrap();
+        let mut companions = BTreeMap::new();
+        companions.insert("C.md".to_string(), sha256_hex(comp));
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            "irrelevant-body-hash",
+            &companions,
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Dropped));
+        assert!(
+            !skill_dir.join("C.md").exists(),
+            "recorded companion cleaned even with an absent SKILL.md"
+        );
+        assert!(!skill_dir.exists(), "now-empty dir removed");
+        assert!(warnings
+            .iter()
+            .any(|w| w.starts_with("pi_companion_pruned:")));
+    }
+
+    #[test]
+    fn prune_pi_mirror_diverged_body_leaves_companions_untouched() {
+        // A user-edited SKILL.md transfers the whole dir to the user: companions
+        // are NOT inspected or removed, and the outcome is Diverged.
+        let root = tempfile::tempdir().unwrap();
+        let skill_dir = root.path().join("old-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let mirror = skill_dir.join("SKILL.md");
+        fs::write(&mirror, b"user edited body").unwrap();
+        let comp = b"companion\n";
+        fs::write(skill_dir.join("C.md"), comp).unwrap();
+        let mut companions = BTreeMap::new();
+        companions.insert("C.md".to_string(), sha256_hex(comp));
+
+        let mut warnings = Vec::new();
+        let outcome = prune_pi_mirror_at(
+            "old-skill",
+            &mirror,
+            Some(root.path()),
+            &sha256_hex(b"the body we originally wrote"),
+            &companions,
+            &mut warnings,
+        );
+        assert!(matches!(outcome, PiPruneOutcome::Diverged));
+        assert!(mirror.exists(), "diverged body is left in place");
+        assert!(
+            skill_dir.join("C.md").exists(),
+            "companions are left untouched when the body diverged"
+        );
+    }
+
+    #[test]
+    fn reconcile_pi_companions_force_removes_dropped_companion() {
+        // A still-registered skill whose record tracks a companion the binary no
+        // longer bundles: under --force the orphan file is removed and dropped
+        // from the record; a still-bundled companion is left tracked.
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        // stint-start ships AGENTS-EXECUTION-DAG.md; OLD.md is the dropped one.
+        let dag = b"dag body\n";
+        let old = b"old body\n";
+        fs::write(dir.join("AGENTS-EXECUTION-DAG.md"), dag).unwrap();
+        fs::write(dir.join("OLD.md"), old).unwrap();
+
+        let mut rec = PiSkillRecord {
+            sha256: sha256_hex(b"skill body"),
+            cli_version: CLI_VERSION.to_string(),
+            companions: BTreeMap::new(),
+        };
+        rec.companions
+            .insert("AGENTS-EXECUTION-DAG.md".to_string(), sha256_hex(dag));
+        rec.companions.insert("OLD.md".to_string(), sha256_hex(old));
+
+        let mut pruned = Vec::new();
+        let mut warnings = Vec::new();
+        reconcile_pi_companions_at(
+            "stint-start",
+            &mut rec,
+            dir,
+            true,
+            &mut pruned,
+            &mut warnings,
+        );
+
+        assert_eq!(pruned, vec!["stint-start/OLD.md".to_string()]);
+        assert!(
+            rec.companions.contains_key("AGENTS-EXECUTION-DAG.md"),
+            "still-bundled companion stays tracked"
+        );
+        assert!(
+            !rec.companions.contains_key("OLD.md"),
+            "dropped companion is removed from the record"
+        );
+        assert!(
+            !dir.join("OLD.md").exists(),
+            "orphan file removed on --force"
+        );
+        assert!(
+            dir.join("AGENTS-EXECUTION-DAG.md").exists(),
+            "bundled companion file left in place"
+        );
+    }
+
+    #[test]
+    fn reconcile_pi_companions_non_force_keeps_orphan_tracked() {
+        // Without --force the stale companion is LEFT tracked so `doctor` keeps
+        // flagging it (its --force fix is what clears it).
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        fs::write(dir.join("OLD.md"), b"old\n").unwrap();
+
+        let mut rec = PiSkillRecord {
+            sha256: sha256_hex(b"body"),
+            cli_version: CLI_VERSION.to_string(),
+            companions: BTreeMap::new(),
+        };
+        rec.companions
+            .insert("OLD.md".to_string(), sha256_hex(b"old\n"));
+
+        let mut pruned = Vec::new();
+        let mut warnings = Vec::new();
+        reconcile_pi_companions_at(
+            "stint-start",
+            &mut rec,
+            dir,
+            false,
+            &mut pruned,
+            &mut warnings,
+        );
+
+        assert!(pruned.is_empty(), "non-force prunes nothing");
+        assert!(
+            rec.companions.contains_key("OLD.md"),
+            "orphan stays tracked without --force"
+        );
+        assert!(dir.join("OLD.md").exists(), "orphan file left on disk");
+    }
+
+    #[test]
+    fn pi_provenance_v1_record_reads_and_upgrades_to_v2() {
+        // A v1 record (no `companions` field) reads with an empty companions map
+        // (serde default), and a fresh write stamps the current schema (v2).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("pi-installed-skills.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"skills":{"stint-start":{"sha256":"aa","cli_version":"0.1.0"}}}"#,
+        )
+        .unwrap();
+        let mut prov = load_pi_provenance_for_write(&path).unwrap();
+        assert_eq!(prov.schema_version, 1, "read preserves the on-disk version");
+        assert!(prov.skills["stint-start"].companions.is_empty());
+        // A write stamps the current (v2) schema.
+        prov.schema_version = PI_PROVENANCE_SCHEMA_VERSION;
+        write_pi_provenance(&path, &prov).unwrap();
+        let reread: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reread["schema_version"], 2);
     }
 
     #[test]
@@ -2664,6 +3320,7 @@ mod tests {
             &mirror,
             Some(root.path()),
             &sha256_hex(body),
+            &BTreeMap::new(),
             &mut warnings,
         );
         assert!(matches!(outcome, PiPruneOutcome::Removed));
@@ -2685,6 +3342,7 @@ mod tests {
             &mirror,
             Some(root.path()),
             &sha256_hex(b"original body"),
+            &BTreeMap::new(),
             &mut warnings,
         );
         assert!(matches!(outcome, PiPruneOutcome::Diverged));
@@ -2703,7 +3361,14 @@ mod tests {
         // Absent path.
         let absent = root.path().join("gone/SKILL.md");
         assert!(matches!(
-            prune_pi_mirror_at("gone", &absent, Some(root.path()), "anyhash", &mut warnings),
+            prune_pi_mirror_at(
+                "gone",
+                &absent,
+                Some(root.path()),
+                "anyhash",
+                &BTreeMap::new(),
+                &mut warnings
+            ),
             PiPruneOutcome::Dropped
         ));
 
@@ -2711,7 +3376,14 @@ mod tests {
         let squat = root.path().join("squat");
         fs::create_dir_all(&squat).unwrap();
         assert!(matches!(
-            prune_pi_mirror_at("squat", &squat, Some(root.path()), "anyhash", &mut warnings),
+            prune_pi_mirror_at(
+                "squat",
+                &squat,
+                Some(root.path()),
+                "anyhash",
+                &BTreeMap::new(),
+                &mut warnings
+            ),
             PiPruneOutcome::Dropped
         ));
         assert!(squat.is_dir(), "a squatting dir must be left intact");
@@ -2727,6 +3399,7 @@ mod tests {
                 &link,
                 Some(root.path()),
                 &sha256_hex(b"body"),
+                &BTreeMap::new(),
                 &mut warnings
             ),
             PiPruneOutcome::Dropped
