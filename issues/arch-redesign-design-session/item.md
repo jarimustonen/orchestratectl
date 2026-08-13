@@ -1,11 +1,12 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: task
-status: open
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 labels: [decision-prep]
+closed: 2026-08-13
 ---
 
 # Facilitated redesign session — simplest architecture that collapses cluster A
