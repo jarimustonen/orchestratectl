@@ -1,10 +1,12 @@
 ---
 created: 2026-07-26
-updated: 2026-07-26
+updated: 2026-08-13
 type: improvement
-status: open
+status: obsolete
 priority: normal
 related: ['@child-supervisor-spawn-unconfirmed-no-retry']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # Child-supervisor spawn: propagate exhausted-retry to run lifecycle + unify spawn-state enum
@@ -18,3 +20,9 @@ Follow-up from child-supervisor-spawn-unconfirmed-no-retry (the Starting/Failed 
 2. **Unify spawned_children + child_spawns into one Running|Starting|Failed enum.** Two disjoint maps with a convention-enforced invariant is a smell (Opus). Bigger blast radius: spawned_children is persisted (u32) and read by the no-worker guard + shutdown-signal union, so this is a serialization + multi-reader change. Defer until the lifecycle work above is in.
 
 Lower-priority notes from the same review (accept-as-is unless they bite): blocking CHILD_DIR_WAIT (5s) on the retry path is a no-op in practice (dir already exists by retry time); TOCTOU pid-read-vs-fork is mitigated by the child's claim_pid_atomic flock; retry backoff has no jitter.
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+Child-supervisor spawning is the cut orchestrate/orchestrated topology; fan-out is one run with N nodes — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

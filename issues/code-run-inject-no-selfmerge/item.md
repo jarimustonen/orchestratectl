@@ -1,11 +1,13 @@
 ---
 created: 2026-07-28
-updated: 2026-07-28
+updated: 2026-08-13
 type: improvement
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 related: ['@interactive-code-run-self-merged']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # Code-inject the no-self-merge prohibition into every code-run spawn prompt
@@ -21,3 +23,9 @@ Proposal: append an IMMUTABLE policy block in code (run/spawn.rs prompt assembly
 Also consider (openai finding 5, larger/likely-wontfix): a trusted, commit-bound approval mechanism (approval event bound to run+node+reviewed OID, emitted by a host/UI action outside the agent's tool authority) is the only thing that would make human review an actual invariant rather than an agent-behaviour convention. Record as the known architectural limitation.
 
 Acceptance: every code-run prompt.md ends with the fixed prohibition regardless of brief content; a test asserts it on the materialized prompt.
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+The code kind + its SKILLs are removed; interactive runs let the human own the merge — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

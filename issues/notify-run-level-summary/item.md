@@ -1,10 +1,11 @@
 ---
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-08-13
 type: improvement
 status: open
 priority: normal
 related: ['@no-completion-notification-to-parent']
+labels: [keep-0.2]
 ---
 
 # Run-level completion summary for --notify (multi-node runs)
@@ -36,3 +37,9 @@ bugfix, …) but empty or misleading for multi-node runs:
 
 Scope: single-node runs (this issue's target) are unaffected. Defer until a
 multi-node `--notify` consumer actually exists.
+
+## Decisions
+
+### 2026-08-13T11:10:42Z · @adr-decision-2
+
+KEEP-and-fix: Fan-out + notify survive; a run-level multi-node completion summary applies. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

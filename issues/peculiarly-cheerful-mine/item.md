@@ -1,9 +1,10 @@
 ---
 created: 2026-08-06
-updated: 2026-08-06
+updated: 2026-08-13
 type: improvement
 status: open
 priority: normal
+labels: [defer-0.2.1]
 ---
 
 # orchestrate driver heartbeat for broader stall/liveness detection
@@ -36,3 +37,9 @@ A real fix needs an explicit orchestrator ownership/lease signal projected throu
 - Emitting `stalled_since` (a timestamp) rather than a bare bool so tooling can grade severity.
 
 These must go through `LockedRun` + `append_and_apply_*` (state-integrity invariants 1-2) since they persist new state — unlike the parent fix, which was purely read-time.
+
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: An explicit driver heartbeat/lease is the protocol path itself — deferred with it. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

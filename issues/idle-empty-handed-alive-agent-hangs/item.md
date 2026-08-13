@@ -1,11 +1,13 @@
 ---
 created: 2026-07-28
-updated: 2026-07-28
+updated: 2026-08-13
 type: improvement
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 related: ['@agent-skips-run-merge-idle-pending']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # Empty-handed idle alive agent still hangs pending
@@ -36,3 +38,9 @@ Osui **kahdesti** samaan tehtävään reaalityössä, juuri kuten issue kuvaa (a
 - **Hypoteesi:** iso tiedosto + monta hajautettua editiä → agentti loop/stall per-edit
   full-reread-kuviossa. Empty-handed idle net (tämä issue) olisi napannut molemmat
   hukkaan menneet tunnit ~thresholdin kohdalla resurssivuodon estäen.
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+Subsumed by A1 exit shim (exit 0 + no merge -> attention-required) + A5 bounded visibility — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

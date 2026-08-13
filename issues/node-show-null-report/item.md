@@ -1,10 +1,11 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: bug
 reporter: jari
 status: open
 priority: normal
+labels: [keep-0.2]
 ---
 
 # node show returns null report after spinoff self-merge (report is in nodes/<node>.json last_report)
@@ -42,3 +43,9 @@ Low — the data isn't lost, and `run wait` folds the report `summary` into its 
 ## Environment
 
 orchestratectl 0.1.5 (commit 4baffdd1). Reproduced on 3 separate completed spinoff runs in one session.
+
+## Decisions
+
+### 2026-08-13T11:10:43Z · @adr-decision-2
+
+KEEP-and-fix: The terminal-report surface survives; reading last_report correctly is a model-independent read bug. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

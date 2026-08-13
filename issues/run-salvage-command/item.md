@@ -1,11 +1,12 @@
 ---
 created: 2026-07-26
-updated: 2026-07-31
+updated: 2026-08-13
 type: feature
 reporter: claude-code
 status: open
 priority: normal
 related: ['@agent-death-strands-recoverable-work']
+labels: [rescope-0.2]
 ---
 
 # orchestratectl run salvage: recover a dead agent's stranded work
@@ -38,4 +39,9 @@ Orphan-reconcile gap (observed 2026-07-31 stint): a recoverable branch preserved
 ### 2026-07-31T18:32:41Z · @claude
 
 Second real data point (ossctl stint #6, 2026-07-31): during a live /orchestrate campaign (prose-skills, 7 orchestrated children), the last-in-line child f-changelog committed complete green work (1 commit: SKILL.template.md + skill.rs CATALOG row) but its run stayed 'pending' — event log showed only run.created→supervisor.attached, NO run-merge attempt logged. Its branch was forked from main while 5 siblings advanced the integration branch, so its CATALOG row collided as a skill.rs union conflict. The /stint conductor manually salvaged: git merge of the child branch into the integration branch, union-resolve skill.rs (keep all rows), re-run green gate (fmt/clippy/261 tests incl §17 lockstep), commit. Reinforces this issue: (1) 'run salvage' would automate exactly this; (2) it is an ORCHESTRATED child, so the 'multi-node / orchestrate-child recoverability surfacing' bullet applies — run show/run wait surfaced no recoverability signal. NB: agent-skips-run-merge-idle-pending (fixed 2026-07-28) is the idle-unmerged net that should terminalize this; unclear whether it fired before the manual salvage — worth a maintainer check that the net covers orchestrated children forked from a since-moved base.
+
+### 2026-08-13T11:10:43Z · @adr-decision-2
+
+RE-SCOPE: Becomes the fenced manual resume/finish skill (A3) — generalized from dead-branch salvage to live-worktree resume: fence the stuck agent, then drive run merge from the worktree's git state or launch one fresh agent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
 

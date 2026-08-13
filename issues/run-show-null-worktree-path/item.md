@@ -1,10 +1,10 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: bug
 status: open
 priority: normal
-labels: [observability]
+labels: [observability, keep-0.2]
 ---
 
 # run show reports null worktree_path/source_branch for a live pending run
@@ -30,3 +30,9 @@ Spawn any `--kind spinoff`, then `orchestratectl run show <id> --output json` wh
 
 ## Env
 orchestratectl 0.1.5.
+
+## Decisions
+
+### 2026-08-13T11:10:42Z · @adr-decision-2
+
+KEEP-and-fix: A5 REQUIRES run show to expose the worktree path for attention-required runs — the fix becomes mandatory. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

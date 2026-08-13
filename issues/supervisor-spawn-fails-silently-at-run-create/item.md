@@ -1,9 +1,10 @@
 ---
 created: 2026-07-22
-updated: 2026-07-25
+updated: 2026-08-13
 type: bug
 status: open
 priority: high
+labels: [defer-0.2.1]
 ---
 
 # run create: supervisor spawn fails silently (agent never launches, status stuck pending, no stderr log)
@@ -278,3 +279,8 @@ Confirmation ambiguity (suggested-fix #1 / finding F4b) is now resolved by the r
 
 Leaving THIS tracker open for the stateful-trigger concern (#4) — the load-dependent conditions under which the spawn originally misbehaved — which the readiness pipe does not itself address.
 
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: Supervisor-existence inference (HIGH); the lease makes a missing/dead supervisor self-evident. Severity carried to 0.2.1. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

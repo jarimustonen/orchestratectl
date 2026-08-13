@@ -1,9 +1,10 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: feature
 status: open
 priority: normal
+labels: [keep-0.2]
 ---
 
 # run merge should not block a clean merge on a malformed advisory report field
@@ -31,3 +32,9 @@ orchestratectl run merge <run-id> --report-file f.json
 # where f.json has spinoff_proposals: [{ "title": "...", "detail": "..." }]
 # → error.code schema_violation, merge NOT performed, node stays live/pending
 ```
+
+## Decisions
+
+### 2026-08-13T11:10:42Z · @adr-decision-2
+
+KEEP-and-fix: The terminal-report contract survives; merge-first-then-validate is the fast-track, low-risk fix. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

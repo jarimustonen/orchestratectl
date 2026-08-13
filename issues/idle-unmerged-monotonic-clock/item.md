@@ -1,10 +1,12 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: improvement
-status: open
+status: obsolete
 priority: normal
 related: ['@agent-skips-run-merge-idle-pending']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # idle-unmerged CPU clock: monotonic Instant for elapsed time
@@ -18,3 +20,9 @@ _Source: crates/octl-cli/src/supervise/mod.rs::cpu_activity_clock_
 Robust fix: carry a monotonic `std::time::Instant` per node for elapsed-time math and derive Unix time only for interop with commit/file mtimes.
 
 Low priority — the current wall-clock handling is defensive, not incorrect. Surfaced by /llm-review (OpenAI #5) of the reopen fix for `agent-skips-run-merge-idle-pending`.
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+The three-clock idle-unmerged synthesizer is deleted by the thin model — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

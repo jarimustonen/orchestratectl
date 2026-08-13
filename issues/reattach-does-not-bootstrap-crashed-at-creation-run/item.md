@@ -1,11 +1,12 @@
 ---
 created: 2026-07-18
-updated: 2026-07-18
+updated: 2026-08-13
 type: bug
 reporter: jari
 status: open
 priority: normal
 related: ['@cancel-dead-supervisor-recovery']
+labels: [defer-0.2.1]
 ---
 
 # run reattach does not bootstrap a child that crashed at creation (0 nodes)
@@ -35,3 +36,9 @@ The reattach-doesn't-bootstrap symptom was observed **once**, over a ~50s window
 Non-blocking for v0.1.0; a headless fan-out just needs the cancel+respawn workaround.
 
 Claude-Session: https://claude.ai/code/session_01HWgHqnKFzZxoP82XzN6a5q
+
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: Supervisor-existence bucket — resolved by the lease/reattach protocol. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

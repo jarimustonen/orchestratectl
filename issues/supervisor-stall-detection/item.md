@@ -1,9 +1,10 @@
 ---
 created: 2026-08-11
-updated: 2026-08-11
+updated: 2026-08-13
 type: bug
 status: open
 priority: normal
+labels: [defer-0.2.1]
 ---
 
 # supervisor reports stalled:false through a multi-hour silent agent hang; run wait default timeout (6h) is too long to surface it
@@ -26,3 +27,9 @@ A supervisor should detect an agent that has emitted **no events for N minutes**
 
 ## Repro
 Any worker that wedges early (before its first commit) — e.g. a hung network call — reproduces the false `stalled: false`. Filed from the ossctl 0.3.0 cut session.
+
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: Supervisor-liveness bucket — a silent-hang is detected by the supervisor lease. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

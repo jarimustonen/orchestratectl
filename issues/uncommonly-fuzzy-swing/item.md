@@ -1,9 +1,10 @@
 ---
 created: 2026-08-10
-updated: 2026-08-10
+updated: 2026-08-13
 type: feature
 status: open
 priority: high
+labels: [defer-0.2.1]
 ---
 
 # Spinoff blocked on user input at a genuine fork must propagate to the parent agent, not silently block
@@ -72,3 +73,8 @@ recovery is NOT the intended resolution and is deliberately not being enshrined 
 standing guidance — this issue is the fix. Supersedes the previously-considered "spinoff
 prompt must forbid interactive blocking" framing (that is point 4 above).
 
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: blocked->parent propagation (HIGH) is a missing protocol transition — the self-report plugin makes it trivial. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

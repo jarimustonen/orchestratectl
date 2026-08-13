@@ -1,12 +1,12 @@
 ---
 created: 2026-07-03
-updated: 2026-07-03
+updated: 2026-08-13
 type: improvement
 reporter: jari
 status: open
 priority: normal
-labels: [supervisor, followup]
-related: ["@blocked-report-deletes-branch"]
+labels: [supervisor, followup, rescope-0.2]
+related: ['@blocked-report-deletes-branch']
 ---
 
 # Harden teardown-gate trust boundary + preserved-worktree lifecycle
@@ -77,3 +77,9 @@ The blocked / unmerged path intentionally leaves the worktree registered in
 Raw review corpus: `history/review-blocked-report-deletes-branch-raw.txt`
 (gitignored). Consensus top finding (source-relative check) was already
 implemented in `498cf5d`.
+
+## Decisions
+
+### 2026-08-13T11:10:43Z · @adr-decision-2
+
+RE-SCOPE: The teardown gate survives (invariant 5), but the report-shape trust decision is re-framed by the A6 typed-outcome table + A1 exit shim. Re-target the hardening at the typed-outcome gate rather than report-payload inference. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

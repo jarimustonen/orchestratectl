@@ -1,11 +1,13 @@
 ---
 created: 2026-07-26
-updated: 2026-07-26
+updated: 2026-08-13
 type: improvement
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 related: ['@autoretry-agent-died-worker']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # Crash-consistency hardening for agent-died auto-retry (durable retry-pending marker + CAS branch deletion)
@@ -25,3 +27,9 @@ Follow-up from autoretry-agent-died-worker's /llm-review (history/review-autoret
 4. spawn_failures durability across restart. In-memory counter; a supervisor that repeatedly crashes AND has broken create.sh could re-attempt the spawn budget each restart. Persist it (or the retry phase) alongside retry_attempts.
 
 None are data-loss or unbounded-loop in the landed design; crash-consistency/robustness refinements only.
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+The agent-died auto-retry synthesizer is deleted; A1/A6 -> non-zero exit is a told 'failed' (preserve branch), no retry loop — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

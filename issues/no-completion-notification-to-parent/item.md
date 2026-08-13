@@ -1,11 +1,11 @@
 ---
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-08-13
 type: bug
 reporter: jari
 status: open
 priority: normal
-labels: [supervisor]
+labels: [supervisor, keep-0.2]
 commits:
 - hash: b56368d
   summary: run create --notify completion hook + skill docs
@@ -84,3 +84,9 @@ Recommend: verify the fix covers ALL autonomous kinds (spinoff, code, research, 
 ## Reopen Notes — 2026-07-24
 
 _Add rationale for reopening here._
+
+## Decisions
+
+### 2026-08-13T11:10:42Z · @adr-decision-2
+
+KEEP-and-fix: The notify back-channel survives; multi-child robustness still wanted. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).

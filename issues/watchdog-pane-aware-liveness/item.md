@@ -1,9 +1,11 @@
 ---
 created: 2026-07-27
-updated: 2026-07-27
+updated: 2026-08-13
 type: improvement
-status: open
+status: obsolete
 priority: normal
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # Watchdog liveness should key off pane_id in split interactive windows
@@ -21,3 +23,9 @@ When `TmuxIdentity.pane_id` is present, probe pane existence (and that the pane 
 
 ## Where
 `crates/octl-cli/src/supervise/watchdog.rs`; `TmuxIdentity` already carries `pane_id` (`crates/octl-core/src/schema.rs`).
+
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+The tmux pane-aware/tri-state liveness matrix is deleted as a primary signal — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

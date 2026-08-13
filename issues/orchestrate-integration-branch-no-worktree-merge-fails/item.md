@@ -1,11 +1,13 @@
 ---
 created: 2026-07-22
-updated: 2026-07-22
+updated: 2026-08-13
 type: bug
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 related: ['@agent-died-merge-no-teardown-interactive']
+closed: 2026-08-13
+closed_by: adr-decision-2
 ---
 
 # orchestrate: integration branch created without a worktree → child run merge fails with merge_failed
@@ -81,3 +83,8 @@ real guard.
   in a worktree. Worth having the dry-run surface this so the failure is caught
   before the child has committed.
 
+## Resolution
+
+### 2026-08-13T11:10:20Z · @adr-decision-2
+
+orchestrate + its integration-branch machinery are removed — ADR 0001 (thin supervisor). See docs/decisions/0001-thin-supervisor-vs-harden.md

@@ -1,9 +1,10 @@
 ---
 created: 2026-07-25
-updated: 2026-08-05
+updated: 2026-08-13
 type: bug
 status: open
 priority: normal
+labels: [defer-0.2.1]
 ---
 
 # Second of two back-to-back 'run create' calls left supervisor-less (pid null, no worker node)
@@ -61,3 +62,8 @@ Two things worth noting against the earlier resolution comment:
 
 Suggested direction (still no in-process race to fix): make the zombie self-healing or self-evident without operator archaeology — e.g. a `pending` run whose manifest has no supervisor and whose age exceeds the startup timeout could be reaped/failed by the next `run list`/`run show`, or `run create` could fork the supervisor detached and return fast so the caller's own timeout can't straddle the spawn. The current reliable workaround for agents: run `run create` **backgrounded** (not foreground) so a harness/Bash timeout never interrupts setup.
 
+## Decisions
+
+### 2026-08-13T11:10:30Z · @adr-decision-2
+
+DEFER-to-0.2.1: Supervisor-existence bucket — resolved by the lease. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
