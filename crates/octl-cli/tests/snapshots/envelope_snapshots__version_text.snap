@@ -2,7 +2,7 @@
 source: crates/octl-cli/tests/envelope_snapshots.rs
 expression: value
 ---
-orchestratectl 0.1.7
+orchestratectl 0.1.8
 commit:                  [COMMIT]
 envelope schema:         1
 supported envelopes:     1
