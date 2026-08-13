@@ -6,9 +6,42 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-12 (v0.1.7 SHIPPED; **Wave 1 delivered; DECISION-1 DECIDED → target-state-0.2.md; NEXT = the design session**)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-13 (**DESIGN SESSION DONE → design.md; DECISION-2 DECIDED (thin model); NEXT = the ADR, then execution**)
 
-**✅ LATEST (2026-08-12 — read first).** Wave 1 of the architecture re-examination shipped, then a
+**✅ LATEST (2026-08-13 — read first).** The Lane F Phase-2 **design session** ran (facilitated
+`/llm-workshop` WITH Jari + a 3-model expert critique) and settled all 5 `target-state-0.2.md` open
+questions → **`issues/lifecycle-architecture-review/design.md`** (committed 8e9c9f3, pushed).
+**◆ DECISION-2 is DECIDED: the thin supervisor model.**
+- **Core:** `run merge` = the only *success* completion truth; delete the pid×pane×branch×clock
+  inference. **A1 (the key hardening):** a launcher shim captures the worker's TRUE exit status →
+  "died vs finished" becomes a *told fact*, not a guess; exit-0-without-merge → `attention-required`
+  (manual finish), never auto-failed. Plus bounded merge-transaction recovery (A2), a fenced manual
+  resume/finish skill that BYPASSES a stuck agent (A3), a fixed post-death grace — not an activity
+  clock (A4), bounded visibility + per-node `run cancel` for fan-out (A5), a typed outcome table (A6).
+- **Protocol (worker self-report + lease) DEFERRED to 0.2.1 as a pi.dev plugin** — not cut. Because
+  pi.dev becomes the harness we actually run, self-reporting lives in ONE place (the harness), not
+  sprinkled across SKILLs.
+- **Engine end-state:** 9 kinds → **2 topologies** (`spinoff` + `fan-out`) + `--interactive` flag +
+  thin exec-able recipe skills over one generic spinoff engine (bugfix/adr/research/make-skill = thin
+  recipes; the KIND dies, the recipe lives). Harness: **pi.dev universal default (as config, not an
+  engine coupling), claude interactive-only opt-in.** `--interactive` = supervisor hands off entirely
+  (no auto-teardown, dead pid ignored). Migration: clean break + doctor prunes install-surface,
+  preserves run history (read-only legacy decoder). 2 watched risks (web-default exfil; big-bang).
+- All 3 critique models verdict "revise → direction sound, negative-case mechanics were underspecified"
+  → A1–A6 folded in. `arch-redesign-design-session` closed done. `main` clean, 0 unpushed, binary 0.1.7.
+
+**⏭ NEXT = the ADR (Jari's call — next stint, fresh context).** `arch-decision-rearchitect-vs-harden`
+via `/worktree-technical-decision`: record `design.md` as the ADR + do **◆ DECISION-2** per-issue
+re-triage of Lanes A + E (design.md §9 has the predicted mapping — many OBSOLETE once the cuts land).
+Then execution starts with the subtractive cuts (bugfix-kind, `harness bakeoff`, pipeline — lowest risk).
+**⚠ URGENT — surface FIRST at next stint-start (unverified, check live):** `signal-exit-143-regression`
+[HIGH] claims **CI RED on main** (SIGTERM exits 512 not 143) — model-independent, NOT gated by
+DECISION-2 → verify + fast-track fix regardless of the ADR. Also `support-pi-dev` [HIGH] (pi.dev
+skill-install companions), on the pi.dev thread toward 0.2.
+
+**— historical below (this session's earlier waves + canonical KEY LEARNINGs, still load-bearing) —**
+
+Wave 1 of the architecture re-examination shipped, then a
 full **DECISION-1** co-design with Jari in the PO review.
 - **v0.1.7 FULLY SHIPPED** (crates.io `octl-core`→`orchestratectl`, `v0.1.7` tag → Release CI green all jobs,
   Homebrew tap 0.1.7): `agent-skips-run-merge-idle-pending` + `ci-docs-bakeoff-registry-link` +
@@ -114,8 +147,8 @@ hand.** Until it lands, v0.1.7 is cut the same TEMPORARY way 0.1.1–0.1.6 were:
 insta snapshots, stripping insta's volatile `assertion_line:` header), push, `cargo publish` both, tag `vX.Y.Z` →
 Release CI on `hauis`. `hauis`-runner git-400 playbook: `peculiarly-madly-sneeze` (closed).
 
-**NEXT — the DESIGN SESSION (Lane F Phase 2, GLOBAL HEAD), continuing directly per Jari ("jatketaan suunnittelulla").**
-`arch-redesign-design-session` — a facilitated `/llm-workshop` **WITH Jari** (interactive, not headless). Its input is
+**✅ DONE 2026-08-13 — the DESIGN SESSION (Lane F Phase 2) — see the LATEST block at top; output `design.md`, DECISION-2 = thin model.**
+`arch-redesign-design-session` — a facilitated `/llm-workshop` **WITH Jari** (interactive, not headless). Its input was
 **`target-state-0.2.md`** (DECISION-1 outcome + the design philosophy + the 5 open questions) plus the three Phase-1
 reports (`analysis.md` / `feature-audit.md` / `alternatives.md`). It settles: workflow packaging (skills vs
 prompt-fragments), how far to collapse research/technical-decision, and **the surviving supervisor core's model** —
@@ -128,7 +161,7 @@ stint's focus. DAG drift-clean at wrap (42 active issues, all in lanes, nothing 
 
 ---
 
-## Execution DAG (2026-08-12)
+## Execution DAG (2026-08-13)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -143,18 +176,18 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: arch-redesign-design-session (Lane F Phase 2 — the DESIGN SESSION, facilitated /llm-workshop WITH Jari, continuing directly. Phase 1 is COMPLETE: all 3 research docs landed. ◆ DECISION-1 is DECIDED (target-state-0.2.md) — the cut/keep/reframe is set; the design session settles workflow packaging + the surviving supervisor core's model (thin vs protocol vs FIFO = DECISION-2). Its input: target-state-0.2.md + analysis.md + feature-audit.md + alternatives.md.) ⚠️ Lane A (supervise core) + Lane E (run/* read surface) still ⛔ GATED behind ◆ DECISION-2; many will OBSOLETE once DECISION-1's cuts remove their surface — formal re-triage at DECISION-2 after the ADR. NB: several Lane A/B items now sit in cut-territory per target-state-0.2.md (pipeline/*, orchestrate/interactive-code/discussion-machinery items) — do NOT start new fixes on them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: arch-decision-rearchitect-vs-harden (Lane F Phase 3 — the ADR. Phase 2 DESIGN SESSION is COMPLETE (2026-08-13) → design.md; ◆ DECISION-2 DECIDED = the THIN supervisor model + A1–A6 hardenings; protocol deferred to 0.2.1 as a pi.dev plugin. The ADR records design.md + does the per-issue re-triage of Lanes A + E (design.md §9 = predicted mapping). Run via /worktree-technical-decision, next stint per Jari.) ⚠️ Lane A (supervise core) + Lane E (run/* read surface) still ⛔ GATED behind the ADR — EXCEPT signal-exit-143-regression (CI-red, model-independent, NOT gated — fast-track). Many Lane A/E issues OBSOLETE once design.md's cuts land — formal re-triage at DECISION-2/the ADR. NB: pipeline/* + orchestrate/interactive-code/discussion-machinery items are CUT-territory — do NOT start new fixes on them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ★ PRIORITY
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md all landed; the 3 research issues closed done. ◆ DECISION-1 decided from them → target-state-0.2.md.
-Phase 2 (input ready — the 3 docs + target-state-0.2.md):
-  ▶ arch-redesign-design-session           facilitated /llm-workshop WITH Jari (interactive, not headless); settle workflow packaging (skills vs prompt-fragments) + how far research/technical-decision collapse + the surviving supervisor-core model → design.md. Frame + philosophy + open questions in target-state-0.2.md.
-Phase 3 (THE decision):
-    arch-decision-rearchitect-vs-harden    after arch-redesign-design-session (needs the chosen design) — ADR via /worktree-technical-decision; harden vs re-architect; GATES ◆ DECISION-2
+Phase 2 — COMPLETE (2026-08-13): arch-redesign-design-session (facilitated /llm-workshop WITH Jari + 3-model critique) → design.md. ◆ DECISION-2 DECIDED = thin model. Closed done.
+Phase 3 (THE decision — GLOBAL HEAD):
+  ▶ arch-decision-rearchitect-vs-harden    ADR via /worktree-technical-decision; records design.md (thin model = clean-slate-model/keep-primitives hybrid) + per-issue re-triage of Lanes A+E; GATES ◆ DECISION-2. Then execution starts (subtractive cuts first).
 
 LANE A — supervise/agent-lifecycle CORE (cluster A, 26 issues)  ⛔ GATED behind ◆ DECISION-2
 (do NOT spawn new fixes here until the ADR decides disposition — listed in full so nothing is outside the DAG)
 (NB: the just-landed agent-skips fix immediately spawned 3 MORE cluster-A refinements — idle-unmerged-{monotonic-clock,process-tree-cpu,e2e-preservation-test} — a textbook illustration of why we're reviewing this subsystem instead of patching it)
+    signal-exit-143-regression              ⚠ CI-RED [HIGH], NOT GATED — SIGTERM exits 512 not 143 (signal_exit_codes_and_payload test); model-independent, fix regardless of the ADR. FAST-TRACK at next stint-start (verify main CI first).
     merge-report-schema-lenience            (a typo in an ADVISORY report field — `spinoff_proposals` alias `title`/`detail` vs schema `proposed_title`/`rationale` — makes `run merge` REJECT the whole report and BLOCK the real code merge → run stuck pending; recurred across 2 workers. Evidence for the arch review of the terminal-report contract; FAST-TRACK candidate at ◆ DECISION-2 — independent of the inference model, low-risk merge-first-then-validate fix)
     idle-unmerged-monotonic-clock           (filed by the agent-skips fix; CPU clock should use a monotonic Instant for elapsed time — cluster-A refinement)
     idle-unmerged-process-tree-cpu          (filed by the agent-skips fix; sum PROCESS-TREE CPU, not just the agent PID, so buffered child work isn't misread as idle)
@@ -183,8 +216,9 @@ LANE A — supervise/agent-lifecycle CORE (cluster A, 26 issues)  ⛔ GATED behi
     orchestrate-integration-branch-no-worktree-merge-fails
 
 LANE B — pipeline/* + harness/* (NOT lifecycle core — proceeds in parallel with Lane F)
-· pi.dev sub-thread (→ ⬆ v0.2.0) — the FORWARD bet, KEEP + grow (claude+pi):
-  ▶ workmux-pi-agent-preset                 (workmux pi agent preset for `--harness pi`)
+· pi.dev sub-thread (→ ⬆ v0.2.0) — the FORWARD bet, KEEP + grow (claude+pi; pi.dev is the 0.2 default harness per design.md):
+  ▶ support-pi-dev                          [HIGH] pi.dev skill installs with companions — pi.dev thread toward 0.2 (surface early)
+    workmux-pi-agent-preset                 (workmux pi agent preset for `--harness pi`)
     config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
 · pipeline sub-thread — ⛔ CUT-TERRITORY per ◆ DECISION-1 (pipeline/floor + harness bakeoff/conformance/aider/deepseek are removal-bound; target-state-0.2.md). Do NOT start new fixes; these will be OBSOLETED as the removal work is scoped by the design session. Listed so nothing is outside the DAG:
     dreadfully-dirty-pain                   (mechanical wave-build rebase-and-fix; wave-promotion follow-up)
@@ -200,6 +234,11 @@ LANE C — workmux vendoring — COMPLETE (empty; landed 2026-08-10)
 LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — proceeds)
   ▶ skill-install-force-symlink            (skill.rs: install --force aborts on a pre-existing symlink)
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
+    consult-failure-hard-fail              (a failed/partial consult review inside a worktree must be a HARD failure, not silently passed)
+    stint-skills-drop-intake-specifics     (remove project-specific intake concepts leaked into stint-handoff + AGENTS-EXECUTION-DAG.md — keep the stint skills generic/OSS)
+    stint-handoff-intake-check      [wip]  (in-progress; stint-handoff end-of-stint intake check — surface new bugs into next-stint agenda)
+    stint-start-autonomous          [wip]  (in-progress; stint-start maximally autonomous — resume straight from handoff state, no questions)
+    bundled-orchestrate-skill              CUT-territory (orchestrate skill description exceeds pi limit — but /orchestrate is being REMOVED per DECISION-1; likely obsoleted, don't fix ahead of the cut)
 
 LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ DECISION-2
 (part of the lifecycle-state review — hold; listed so nothing is outside the DAG)
@@ -208,7 +247,7 @@ LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ D
     count-jsons-swallows-io                 (run show count_jsons swallows a filesystem read error as a false 0)
 
 ◆ DECISION-1 — ✅ DECIDED 2026-08-12 (with Jari, PO review) → target-state-0.2.md. The cut/keep/reframe is set: cut orchestrate/orchestrated, code, bugfix/make-skill (as kinds), pipeline/floor, harness bakeoff/conformance/trait/aider/deepseek, mid-run discussion/spinoff-proposal machinery; interactivity → a flag; workflows → skills/fragments; spinoff always headless. Exact removal work is scoped by the design session (design-first per Jari — not filed as granular deletes yet). Obsoletes large parts of Lanes A/B(pipeline)/E at DECISION-2.
-◆ DECISION-2 — after arch-decision-rearchitect-vs-harden lands (the ADR): disposition of EVERY Lane A + Lane E issue — keep-and-fix / defer / OBSOLETE-as-subsumed / re-scope. Now framed against target-state-0.2.md (many obsolete once their surface is cut). GATES Lanes A + E.
+◆ DECISION-2 — ✅ MODEL DECIDED 2026-08-13 → design.md (the THIN supervisor model + A1–A6). The ADR (arch-decision-rearchitect-vs-harden) now just RECORDS it and does the per-issue re-triage of EVERY Lane A + Lane E issue — keep-and-fix / defer / OBSOLETE-as-subsumed / re-scope (design.md §9 = predicted mapping: idle-unmerged-*/git-reconcile/tmux-tri-state/lifecycle-rebasing/most-Lane-E → OBSOLETE; merge-report-schema-lenience → fast-track keep; run-salvage → the manual resume skill; peculiarly-cheerful-mine/uncommonly-fuzzy-swing/supervisor-liveness → defer to 0.2.1 plugin). Still GATES Lanes A + E until the ADR lands (except signal-exit-143-regression, CI-red not-gated).
 
 ⬆ RELEASE v0.1.7 — ✅ SHIPPED 2026-08-12 (crates.io octl-core→orchestratectl, v0.1.7 tag → Release CI green all jobs, Homebrew tap 0.1.7): agent-skips-run-merge-idle-pending + ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage.
 ⬆ RELEASE v0.2.0 — THE SIMPLIFICATION + pi.dev (Jari's call — one release, no separate 0.3): the DECISION-1 cuts + the chosen supervisor-core model (from the design→ADR) + the pi.dev thread (workmux-pi-agent-preset + config-subcommand, on 0.1.7's --harness + dual-home). Breaking CLI change (kinds/flags/subcommands removed) — likely a clean break (single-user); confirm at design.
@@ -218,10 +257,11 @@ Cadence: release whenever a wave lands shippable user-facing work (operating pol
 
 **Epics (not lane nodes):** `code-pipeline` — parent of the Lane B `pipeline-*` work;
 `lifecycle-architecture-review` — parent of **Lane F** (the architecture re-examination).
-**Nothing is outside the DAG.** Every active non-epic issue (42 as of 2026-08-12, after Wave 1's
-5 landed) sits in a lane above — verified drift-clean by the `comm -3` check. No `deferred`-parked
-items. The full open list is `issuectl ls --status open`; `issuectl ls --status open --json | jq
-length` should equal the lane-node count.
+**Nothing is outside the DAG.** Every active non-epic issue (44 as of 2026-08-13, after the design
+session closed +1 and 7 parallel-session issues were laned) sits in a lane above — verified
+drift-clean by the `comm -3` check. No `deferred`-parked items. The full open list is `issuectl ls
+--status open`; `issuectl ls --status open --json | jq 'map(select(.type!="epic"))|length'` should
+equal the lane-node count.
 
 ### Wave plan (next waves — planned into lanes)
 
@@ -407,6 +447,18 @@ discussion/spinoff machinery; interactivity→flag; workflows→skills/fragments
 simplification + pi.dev; design philosophy = clean-slate-model/keep-primitives, told-not-guessed). GLOBAL HEAD →
 `arch-redesign-design-session` (Phase 2, next stint). Lane B/D heads advanced; pipeline sub-thread flagged
 cut-territory. Lanes A/E unchanged (gated; obsolete-bound at DECISION-2).
+**Design session executed 2026-08-13 (Lane F Phase 2 — interactive, no worktree):** ran the facilitated
+`/llm-workshop` WITH Jari, settled all 5 target-state-0.2.md open questions, then a 3-model expert critique
+(gemini-3.1-pro/gpt-5.6-sol/deepseek-v4-pro, all "revise") whose findings A1–A6 folded in → `design.md`
+(committed 8e9c9f3, pushed). **◆ DECISION-2 = the thin supervisor model** (`run merge`-only truth + exit-status
+launcher shim + fenced manual resume + typed outcome table; protocol deferred to 0.2.1 as a pi.dev plugin;
+engine → 2 topologies + `--interactive` flag + thin recipes; pi.dev universal default; clean-break migration).
+Closed `arch-redesign-design-session` done; **Phase 2 COMPLETE, GLOBAL HEAD → Phase 3 `arch-decision-rearchitect-vs-harden`**
+(the ADR, next stint per Jari). `comm -3` drift: dropped the 1 closed; found 7 left-only new issues from parallel
+sessions → laned them — `signal-exit-143-regression` (Lane A, ⚠ CI-RED HIGH, NOT gated, fast-track),
+`support-pi-dev` (Lane B pi.dev head, HIGH), `consult-failure-hard-fail` + `stint-skills-drop-intake-specifics`
++ `stint-handoff-intake-check` [wip] + `stint-start-autonomous` [wip] + `bundled-orchestrate-skill` (cut-territory)
+(Lane D). 44 active issues, drift-clean at wrap. No worktrees remain; `main` clean, 0 unpushed, binary 0.1.7.
 
 ### What landed in the PRIOR (T6 + resilience) session — historical reference (all on `main`, green, `doctor` 0/0)
 - **Pipeline T6 complete:** `pipeline-fix-loop` ✅, `pipeline-tiered-triage` ✅ (in-progress:
