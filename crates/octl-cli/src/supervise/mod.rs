@@ -462,6 +462,45 @@ extern "C" fn handle_term_signal(sig: libc::c_int) {
     let _ = SIGNAL_RECEIVED.compare_exchange(0, sig, Ordering::SeqCst, Ordering::SeqCst);
 }
 
+/// Human name for a termination signal number, `"unknown"` for anything else.
+/// Shared by the §7.8 signal-exit paths (boot short-circuit + loop epilogue).
+fn term_signal_name(sig: libc::c_int) -> &'static str {
+    match sig {
+        libc::SIGINT => "SIGINT",
+        libc::SIGTERM => "SIGTERM",
+        _ => "unknown",
+    }
+}
+
+/// The §7.8 signal-exit tail shared by the loop epilogue and the boot-window
+/// short-circuit (`signal-exit-143-regression`): log the shutdown breadcrumb,
+/// flush stdout + the buffered tracing log, and exit 130 (SIGINT) / 143
+/// (SIGTERM). Never returns. Callers MUST emit `supervisor.exited` and remove
+/// the pid file BEFORE calling this — `process::exit` runs no destructors.
+fn finish_signal_exit(run_id: &str, our_pid: u32, signal_num: libc::c_int) -> ! {
+    use std::io::Write as _;
+    // Operational breadcrumb: record *why* the supervisor stopped in the process
+    // log. `supervisor.exited` lives in events.jsonl, so an operator scanning
+    // only the JSONL tracing log would otherwise see the supervisor just go
+    // silent. (It also doubles as the last-event-before-flush the SIGTERM-flush
+    // test asserts on, but it earns its place on operational grounds alone.)
+    info!(
+        target: "orchestratectl::supervise",
+        run_id = %run_id,
+        pid = our_pid,
+        signal = term_signal_name(signal_num),
+        "supervisor received termination signal; flushing logs and exiting"
+    );
+    // `process::exit` bypasses the `LogGuard`'s `Drop`, so the buffered tracing
+    // events this supervisor emitted (boot + per-tick + the line above) would be
+    // lost. Drain them to disk first — the same flush-on-exit contract
+    // `event tail`'s signal path uses (see `issues/log-guard-flush-on-process-exit`).
+    let _ = std::io::stdout().flush();
+    crate::cli::flush_logs();
+    let code = if signal_num == libc::SIGINT { 130 } else { 143 };
+    std::process::exit(code);
+}
+
 /// Install SIGINT/SIGTERM handlers via `sigaction`. Fatal on failure: a
 /// supervisor that cannot trap signals cannot honor §7.8's clean-shutdown
 /// contract (emit `supervisor.exited`, remove its PID file).
@@ -569,6 +608,27 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     // here returns `supervisor_already_running` and exits.
     pid_file::claim_pid_atomic(&paths, our_pid)?;
 
+    // Test-only barrier: hold the boot right after the pid-file claim (the
+    // readiness signal a test polls on) until a termination signal is observed,
+    // so a SIGINT/SIGTERM delivered right after the pid file appears PROVABLY
+    // lands in the boot window that the short-circuit below handles — a fixed
+    // sleep could expire under a descheduled test and let the signal land in the
+    // loop instead, silently passing even against the buggy code. Guards the
+    // §7.8 exit-code contract for a signal received during boot
+    // (`signal-exit-143-regression`). Bounded by a hard cap so the hook cannot
+    // wedge boot indefinitely even if misused (the env var also being present
+    // in a production environment must not hang the supervisor). Never set in
+    // production.
+    if let Ok(raw) = std::env::var("OCTL_TEST_SLOW_BOOT") {
+        if let Ok(max_ms) = raw.parse::<u64>() {
+            const BOOT_BARRIER_CAP_MS: u64 = 10_000;
+            let deadline = Instant::now() + Duration::from_millis(max_ms.min(BOOT_BARRIER_CAP_MS));
+            while SIGNAL_RECEIVED.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
     // From here the pid file is OURS. If any later boot step fails, remove it
     // before returning so a failed boot does not leave a stale pid record
     // masquerading as a live supervisor (the next `claim` would rely on
@@ -659,30 +719,11 @@ pub fn dispatch(
     // On failure we tell the parent the specific reason (a bare pipe EOF would
     // otherwise read as an unexplained death) and propagate.
     let boot = match boot_supervisor(&run_id) {
-        Ok(b) => {
-            // A termination signal arriving during boot would set the flag but
-            // not stop init; the loop's first tick then exits immediately.
-            // Confirming boot in that window would tell the parent "running"
-            // about a supervisor already shutting down. Report it as a boot
-            // failure and release the pid file instead.
-            if SIGNAL_RECEIVED.load(Ordering::SeqCst) != 0 {
-                readiness.error(
-                    "terminated_during_boot",
-                    "termination signal received during supervisor boot",
-                );
-                pid_file::remove_if_owner(&b.pid_path, b.our_pid);
-                return Err(CliError::system(
-                    "terminated_during_boot",
-                    format!(
-                        "supervisor for run {run_id} received a termination signal during boot"
-                    ),
-                ));
-            }
-            // Init complete and the pid file is claimed + durable. Confirm boot
-            // to the parent BEFORE the (potentially long-blocking) loop.
-            readiness.ready(b.our_pid);
-            b
-        }
+        // Readiness is confirmed (or the boot-signal case handled) AFTER the
+        // destructure below — see the `boot_signal` short-circuit — so a
+        // termination signal that landed during boot drives a §7.8 shutdown
+        // rather than a false "ready".
+        Ok(b) => b,
         Err(e) => {
             readiness.error(&e.code, &e.message);
             return Err(e);
@@ -697,6 +738,38 @@ pub fn dispatch(
         mut own_tail,
         mut child_tails,
     } = boot;
+
+    // Boot-window signal short-circuit (`signal-exit-143-regression`). A
+    // SIGINT/SIGTERM delivered AFTER the handlers were installed and the pid
+    // file was claimed, but before we confirm readiness, must honor §7.8 — exit
+    // 130/143 with a `supervisor.exited{reason:"signal"}` event — NOT bail via
+    // the old `terminated_during_boot` System error (exit 2). We do the terminal
+    // work here rather than falling through into the loop so a supervisor that
+    // is only going to shut down never runs the loop-setup side effects
+    // (quarantine sweep, child reseed, state mutation) and the exit code cannot
+    // depend on any of that setup succeeding. The event append + pid removal
+    // happen BEFORE `readiness.error`, so the parent unblocks only once our
+    // terminal state is durable on disk (no parent/supervisor teardown race).
+    let boot_signal = SIGNAL_RECEIVED.load(Ordering::SeqCst);
+    if boot_signal != 0 {
+        let _ = append_and_apply_event(
+            &paths,
+            "supervisor.exited",
+            None,
+            None,
+            json!({"pid": our_pid, "reason": "signal", "signal": term_signal_name(boot_signal)}),
+        )
+        .map_err(from_core);
+        pid_file::remove_if_owner(&pid_path, our_pid);
+        readiness.error(
+            "terminated_during_boot",
+            "termination signal received during supervisor boot",
+        );
+        finish_signal_exit(&run_id, our_pid, boot_signal);
+    }
+    // Init complete and no signal is pending: confirm boot to the parent BEFORE
+    // the (potentially long-blocking) loop.
+    readiness.ready(our_pid);
 
     // Per-node count of consecutive ticks a node has presented the
     // `TmuxGone` half-state. §7.5 requires half-states to "resolve via
@@ -1483,34 +1556,11 @@ pub fn dispatch(
     // §7.8: a signal-terminated supervisor exits 130 (SIGINT) / 143
     // (SIGTERM), not 0, so wrappers/tests can detect signal termination.
     // We've already flushed the exit event, removed the PID file, and
-    // emitted output, so bypassing destructors here is safe — but flush
-    // stdout explicitly first, since `process::exit` skips the buffered
-    // writer's drop.
+    // emitted output; `finish_signal_exit` logs the breadcrumb, flushes, and
+    // `process::exit`s the contractual code (shared with the boot-window
+    // short-circuit so the two exit paths cannot drift).
     if signal_num != 0 {
-        use std::io::Write as _;
-        // Operational breadcrumb: record *why* the supervisor stopped in the
-        // process log. `supervisor.exited` lives in events.jsonl, so an
-        // operator scanning only the JSONL tracing log would otherwise see the
-        // supervisor just go silent. (It also doubles as the
-        // last-event-before-flush that the SIGTERM-flush test asserts on, but
-        // it earns its place on operational grounds alone.)
-        info!(
-            target: "orchestratectl::supervise",
-            run_id = %run_id,
-            pid = our_pid,
-            signal = signal_name.unwrap_or("unknown"),
-            "supervisor received termination signal; flushing logs and exiting"
-        );
-        // `process::exit` bypasses the `LogGuard`'s `Drop`, so the buffered
-        // tracing events this supervisor emitted (boot + per-tick + the line
-        // above) would be lost. Drain them to disk first — the same
-        // flush-on-exit contract `event tail`'s signal path uses (see
-        // `issues/log-guard-flush-on-process-exit`). Done after the
-        // envelope/stdout so it is the last act before exiting.
-        let _ = std::io::stdout().flush();
-        crate::cli::flush_logs();
-        let code = if signal_num == libc::SIGINT { 130 } else { 143 };
-        std::process::exit(code);
+        finish_signal_exit(&run_id, our_pid, signal_num);
     }
     Ok(())
 }

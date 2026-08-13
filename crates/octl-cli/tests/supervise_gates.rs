@@ -1281,6 +1281,86 @@ fn sigterm_flushes_buffered_supervisor_logs() {
     );
 }
 
+/// `signal-exit-143-regression`: a SIGTERM/SIGINT delivered DURING boot — after
+/// the pid file is claimed (the readiness signal a test/parent polls on) but
+/// before the supervisor confirms readiness — must still honor §7.8 (exit
+/// 143/130 with a `supervisor.exited{reason:"signal"}` event), NOT bail out via
+/// the old `terminated_during_boot` error path (which returned
+/// `ExitKind::System` = exit 2). This was the intermittent CI failure: under
+/// `--release` load the boot window widened enough that the SIGTERM landed
+/// mid-boot and the supervisor exited 2 (`unix_wait_status(512)`) instead of 143.
+///
+/// `OCTL_TEST_SLOW_BOOT` is a bounded barrier that holds boot right after the pid
+/// claim UNTIL a termination signal is observed, so the signal is *proven* to
+/// land in the boot-window branch — a plain sleep could expire under a
+/// descheduled test and let the signal hit the loop instead, passing even
+/// against the buggy code.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn signal_during_boot_exits_143() {
+    use std::io::Read;
+    for (sig, code, name) in [("TERM", 143, "SIGTERM"), ("INT", 130, "SIGINT")] {
+        let home = TestHome::new();
+        let run_id = create_run(&home, "spinoff", "sig-boot");
+        // The barrier parks boot in the pid-claimed-but-not-yet-ready window;
+        // the 5s cap is a safety bound (the signal below releases it far sooner).
+        let mut child = bin(&home)
+            .env("OCTL_TEST_SLOW_BOOT", "5000")
+            .args(["supervise", &run_id])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn supervisor");
+        let pid_file = run_dir(&home, &run_id).join("supervisor.pid");
+        assert!(
+            poll_until(POLL_DEADLINE, || pid_file.exists()),
+            "{name}: supervisor did not claim pid file in time: {}",
+            pid_file.display()
+        );
+        let rc = unsafe { libc::kill(child.id() as i32, sig_num(sig)) };
+        assert_eq!(
+            rc,
+            0,
+            "{name}: kill({sig}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(s) = child.try_wait().expect("try_wait") {
+                break s;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{name}: supervisor did not exit within 10s of a boot-window {sig}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(
+            status.code(),
+            Some(code),
+            "boot-window {name} must exit {code}, got {status:?}"
+        );
+        assert!(
+            !pid_file.exists(),
+            "{name}: supervisor.pid must be removed on a boot-window signal exit"
+        );
+        let events = run_dir(&home, &run_id).join("events.jsonl");
+        let mut s = String::new();
+        std::fs::File::open(&events)
+            .unwrap()
+            .read_to_string(&mut s)
+            .unwrap();
+        let exited = s
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|v| v["kind"] == "supervisor.exited")
+            .expect("supervisor.exited present even on a boot-window signal");
+        assert_eq!(exited["data"]["reason"], "signal");
+        assert_eq!(exited["data"]["signal"], name);
+    }
+}
+
 /// F15 lock-aware watchdog: when a node already carries a real
 /// `last_report`, the watchdog must DEFER to it and not synthesize a second
 /// terminal `node.report`, even though the agent PID is dead. Regression for
