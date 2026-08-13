@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-08-13
+
+### Fixed
+
+- **A SIGINT/SIGTERM during supervisor boot now exits with the correct signal code (`signal-exit-143-regression`).** A signal arriving after the supervisor claimed its pid but before readiness took a `terminated_during_boot` path and exited 2 instead of the §7.8-mandated 143 (SIGTERM) / 130 (SIGINT) — an intermittent CI-red that surfaced only under `--release` load. A dedicated boot-signal short-circuit now emits `supervisor.exited`, removes the pid, records the readiness error after durable cleanup, and exits via the shared signal-exit path; a deterministic slow-boot barrier test pins SIGTERM→143 / SIGINT→130 and fails against the pre-fix code. (4-model `/llm-review` + `/assess-findings`.)
+- **pi.dev skill installs now include each skill's companion files (`support-pi-dev`).** The pi.dev skill mirror wrote `SKILL.md` but dropped its sibling companion resources (e.g. `AGENTS-EXECUTION-DAG.md`), so `/stint-start` aborted with ENOENT under the pi harness. Companions are now mirrored byte-identically into the per-skill dir alongside `SKILL.md` (matching the claude layout, no link rewrite), with companion provenance (schema v2), `--force` reconciliation of dropped companions, companions-first prune, and `doctor` coverage. (4-model `/llm-review` + `/assess-findings`.)
+
 ### Changed
 
 - **The stint loop now surfaces and folds in new bugs at handoff, and `/stint-start` just resumes from that prepared agenda (`stint-handoff-intake-check` + `stint-start-autonomous`).** `/stint-handoff` gains a light intake-check step at its human-in-the-loop gate: it detects newly-arrived, still-untriaged intake items in the repo's own issue queue (open + `via:telegram` + `needs-triage`, matching `/triage-bugs`' predicate), lists them one line each (title + one-line + slug — no deep analysis), and on the human's ack **admits** the chosen items (removes the `needs-triage` hold) and folds them into the next stint's `## 🔄 Continue here` block + execution DAG. The human gate is enforced by excluding still-`needs-triage` intake from the DAG's active set (parallel to `deferred`), so unacked items are never silently scheduled and simply re-surface next handoff. No silent auto-promotion; a no-op when there's no intake queue. In turn `/stint-start` is tightened to be maximally autonomous — it trusts the handoff-prepared agenda, consumes the DAG as its plan, no longer expects the user to hand it triaged bug slugs mid-start, and gains an explicit cold-start branch plus autonomy hard-stops so "just go" never overrides deploy/green-gate/collision/landing safety.
