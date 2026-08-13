@@ -187,7 +187,7 @@ Phase 3 (THE decision — GLOBAL HEAD):
 LANE A — supervise/agent-lifecycle CORE (cluster A, 26 issues)  ⛔ GATED behind ◆ DECISION-2
 (do NOT spawn new fixes here until the ADR decides disposition — listed in full so nothing is outside the DAG)
 (NB: the just-landed agent-skips fix immediately spawned 3 MORE cluster-A refinements — idle-unmerged-{monotonic-clock,process-tree-cpu,e2e-preservation-test} — a textbook illustration of why we're reviewing this subsystem instead of patching it)
-    signal-exit-143-regression              ⚠ CI-RED [HIGH], NOT GATED — SIGTERM exits 512 not 143 (signal_exit_codes_and_payload test); model-independent, fix regardless of the ADR. FAST-TRACK at next stint-start (verify main CI first).
+    signal-exit-143-regression              ⚠ [HIGH], NOT GATED — intermittent: SIGTERM exits 512 (exit-2) not 143. VERIFIED 2026-08-13: latest 3 main CI runs GREEN, test passes both ubuntu+macos — so it's a RACE under --release load (per the issue's own diagnosis), not a hard red. FAST-TRACK a determinism hardening (bound the wait, assert on the signal path); model-independent.
     merge-report-schema-lenience            (a typo in an ADVISORY report field — `spinoff_proposals` alias `title`/`detail` vs schema `proposed_title`/`rationale` — makes `run merge` REJECT the whole report and BLOCK the real code merge → run stuck pending; recurred across 2 workers. Evidence for the arch review of the terminal-report contract; FAST-TRACK candidate at ◆ DECISION-2 — independent of the inference model, low-risk merge-first-then-validate fix)
     idle-unmerged-monotonic-clock           (filed by the agent-skips fix; CPU clock should use a monotonic Instant for elapsed time — cluster-A refinement)
     idle-unmerged-process-tree-cpu          (filed by the agent-skips fix; sum PROCESS-TREE CPU, not just the agent PID, so buffered child work isn't misread as idle)
@@ -236,8 +236,6 @@ LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — procee
     spinoff-skill-stale-preview-banner     collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
     consult-failure-hard-fail              (a failed/partial consult review inside a worktree must be a HARD failure, not silently passed)
     stint-skills-drop-intake-specifics     (remove project-specific intake concepts leaked into stint-handoff + AGENTS-EXECUTION-DAG.md — keep the stint skills generic/OSS)
-    stint-handoff-intake-check      [wip]  (in-progress; stint-handoff end-of-stint intake check — surface new bugs into next-stint agenda)
-    stint-start-autonomous          [wip]  (in-progress; stint-start maximally autonomous — resume straight from handoff state, no questions)
     bundled-orchestrate-skill              CUT-territory (orchestrate skill description exceeds pi limit — but /orchestrate is being REMOVED per DECISION-1; likely obsoleted, don't fix ahead of the cut)
 
 LANE E — run/* read surface (cluster B, run-state DTO)  ⛔ GATED behind ◆ DECISION-2

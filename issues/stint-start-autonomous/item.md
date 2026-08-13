@@ -1,13 +1,15 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: feature
-status: in-progress
+status: done
 priority: normal
 related: ['@stint-handoff-intake-check']
 commits:
 - hash: 3a1a033eview fixes
   summary: cold-start branch + autonomy hard-stops + lifecycle wording
+closed: 2026-08-13
+closed_by: stint-orchestrator
 ---
 
 # stint-start: maximally autonomous — no questions, resume straight from handoff-prepared state
@@ -44,3 +46,9 @@ prepared state and run. The two ship together.
 
 ## Cross-repo
 Design home: homebase `issues/stint-intake-lifecycle` (epic `stint-management-layer`).
+
+## Resolution
+
+### 2026-08-13T11:02:16Z · @stint-orchestrator
+
+Work landed at 148ac4b (feature) + 3a1a033 (fixes); stint-start now resumes autonomously from handoff state — verified live this round. Worker skipped its own close; closing as orchestration bookkeeping.

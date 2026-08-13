@@ -1,12 +1,14 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-13
 type: feature
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: 3a1a033eview fixes
   summary: ack-admits-label + DAG active-set gate + detection precision
+closed: 2026-08-13
+closed_by: stint-orchestrator
 ---
 
 # stint-handoff: end-of-stint intake check — surface new bugs, fold approved into next-stint agenda
@@ -48,3 +50,9 @@ Add a step to `/stint-handoff`, at the human-interaction point, that:
 Design home: homebase `issues/stint-intake-lifecycle` (epic `stint-management-layer`).
 Related homebase: `wrapup-enqueue-intake`, `triage-bugs` skill. Generic across
 projects — reads repo specifics from the project's own AGENTS.md/TODO.md.
+
+## Resolution
+
+### 2026-08-13T11:02:16Z · @stint-orchestrator
+
+Work landed at 148ac4b (feature) + 3a1a033 (llm-skill-review fixes); stint-handoff now surfaces+folds intake. Worker skipped its own close (commit 5dfc57d added a commits: block but left status in-progress); closing as orchestration bookkeeping.
