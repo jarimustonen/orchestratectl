@@ -508,3 +508,4 @@ touching the reducer, lock layer, `supervise/`, or the pipeline modules
 ## Piialiisan bugiraportit
 
 - [ ] 🐛 Piialiisan bugiraportti: Auto-land an idle spinoff whose work is committed and merges cleanly — jari via Telegram ([`intake-feature-orchestratectl-0c37ae4b9e84`](issues/intake-feature-orchestratectl-0c37ae4b9e84/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: run show --output json surfaces terminal report as "none"; report lives… — jari via Telegram ([`intake-feature-orchestratectl-302ab43b3efd`](issues/intake-feature-orchestratectl-302ab43b3efd/item.md))
