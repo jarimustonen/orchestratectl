@@ -2,8 +2,9 @@
 created: 2026-08-14
 updated: 2026-08-14
 type: task
-status: in-progress
+status: done
 priority: normal
+closed: 2026-08-14
 ---
 
 # declare release.bump_hook for version-snapshot regen (ossctl --bump readiness for 0.2.0)
