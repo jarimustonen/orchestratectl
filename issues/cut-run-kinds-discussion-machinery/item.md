@@ -2,7 +2,7 @@
 created: 2026-08-14
 updated: 2026-08-14
 type: task
-status: in-progress
+status: done
 priority: high
 epic: lifecycle-architecture-review
 labels: [architecture]
@@ -17,6 +17,9 @@ commits:
   summary: changelog + doc cleanup; obsoleted bundled-orchestrate-skill
 - hash: aa8925b
   summary: review fixes — enforce read-only Kind::Unknown (guard + fail-closed data_kind) + tests
+- hash: '3680451'
+  summary: switch supervise-test orchestrate fixtures to fan-out
+closed: 2026-08-14
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery
