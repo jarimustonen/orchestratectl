@@ -173,7 +173,7 @@ stint's focus. DAG drift-clean at wrap (42 active issues, all in lanes, nothing 
 
 ---
 
-## Execution DAG (2026-08-14)
+## Execution DAG (2026-08-14b)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -188,7 +188,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: the-next-cut (0.2 EXECUTION — pipeline/harness cut LANDED 2026-08-14. NEXT = remove run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff-proposal machinery. NOT YET FILED — file the granular cut issue at /stint-start, then execute behind the integrated gate. Riskier than the pipeline cut: touches supervise/* (kind-derived lifecycle inference collapses when Lifecycle::Interactive empties) + the skill bundle → SEQUENCED, not parallel with skill.rs work.) NB: Lanes A + E are UN-gated but most survivors are DEFER-to-0.2.1; don't pull them ahead of the cuts. After the cuts: the thin-supervisor build (A1 exit-status shim / A6 typed outcomes / A3 manual resume / --interactive), then cut v0.2.0.   ← start here on resume
+GLOBAL HEAD-OF-LINE: cut-run-kinds-discussion-machinery (0.2 EXECUTION — pipeline/harness cut LANDED 2026-08-14. NEXT (FILED 2026-08-14, IN FLIGHT this round) = remove run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff-proposal machinery. Executing behind the integrated gate. Riskier than the pipeline cut: touches supervise/* (kind-derived lifecycle inference collapses when Lifecycle::Interactive empties) + the skill bundle → SEQUENCED, run SOLO, not parallel with skill.rs work.) NB: Lanes A + E are UN-gated but most survivors are DEFER-to-0.2.1; don't pull them ahead of the cuts. After the cuts: the thin-supervisor build (A1 exit-status shim / A6 typed outcomes / A3 manual resume / --interactive), then cut v0.2.0.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -215,7 +215,7 @@ LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and
 LANE B — pipeline/* + harness/* + pi.dev (→ ⬆ v0.2.0)
 · 0.2 CUTS (execution — the subtractive deletions, most bisectable, land first behind the integrated gate):
   STEP 1 — cut-pipeline-floor-harness-heavy ✅ LANDED 2026-08-14 (~26.5k LOC: pipeline/floor + harness heavy layer gone, light claude+pi launcher kept; obsoleted 7 pipeline/harness fix issues).
-  ▶ STEP 2 (NEXT — file at /stint-start) — remove run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff-proposal machinery. Touches supervise/* (kind-derived lifecycle inference collapses) + the skill bundle → SEQUENCED (not parallel with Lane D skill.rs). Obsoletes bundled-orchestrate-skill.
+  ▶ STEP 2 — cut-run-kinds-discussion-machinery (FILED 2026-08-14, IN FLIGHT) — remove run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff-proposal machinery (KEEP terminal-report discussion_items[]/spinoff_proposals[]). Touches supervise/* (kind-derived lifecycle inference collapses) + the skill bundle → SEQUENCED, run SOLO (not parallel with Lane D skill.rs). Obsoletes bundled-orchestrate-skill.
 · pi.dev sub-thread (KEEP + grow — pi.dev is the 0.2 default harness per design.md):
   ▶ workmux-pi-agent-preset                 (workmux pi agent preset for `--harness pi`)
     config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
