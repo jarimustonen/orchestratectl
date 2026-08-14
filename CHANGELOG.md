@@ -15,6 +15,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Bundled stint/orchestrate skills: an `in-progress` issue is now a resumable head-of-line candidate, not excluded (`stint-head-of-line-in-progress-eligible`).** The execution-DAG eligibility rule no longer drops `in-progress` issues (`in-progress` means *started*, not *being worked right now*); the DAG is consulted only when nothing is actively running, so such an issue is surfaced for resumption. Double-work prevention moves entirely to the caller's reserve-at-launch guard. Mirrors issuectl's `dag-inprogress-is-spawnable`.
 - **pi.dev skill-mirror provenance moves to a flat per-file model (schema v3) (`pi-provenance-flat-file-model`).** Each mirrored file (`SKILL.md` + every companion) is tracked individually rather than in a bundled per-skill record, with a read/upgrade path from v2. `--force` reconciliation, companions-first prune, and `doctor` coverage are preserved.
 
 ### Added
