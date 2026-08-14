@@ -763,8 +763,8 @@ fn replay_unapplied(paths: &RunPaths, events_path: &Path) -> Result<()> {
 /// fields while moving only the watermark forward. Caller holds the [`RunLock`].
 ///
 /// This is also the single point that persists the manifest's denormalized
-/// counters (`node_count`, `open_discussions`, `pending_spinoffs`). They are
-/// **derived**, not incremented: [`derive_counters`] recomputes them from the
+/// `node_count` counter. It is **derived**, not incremented: [`derive_counters`]
+/// recomputes it from the
 /// projection directories — which, because the caller commits an event's
 /// projection ops *before* calling this, already reflect event `seq`. Pinning
 /// the counters to the watermark advance is what makes them undriftable: even
@@ -778,8 +778,6 @@ fn advance_applied_seq(paths: &RunPaths, seq: u64) -> Result<()> {
         if m.applied_seq < seq {
             let counters = derive_counters(paths)?;
             m.node_count = counters.node_count;
-            m.open_discussions = counters.open_discussions;
-            m.pending_spinoffs = counters.pending_spinoffs;
             m.applied_seq = seq;
             write_manifest(paths, &m)?;
         }
@@ -1763,44 +1761,46 @@ mod tests {
         // defend against ids read from `events.jsonl` that bypass the CLI
         // validators — a corrupt log, a restored backup, or a future writer.
         // We craft a log straight onto disk (skipping the append gate) holding
-        // two poison `discussion.opened` lines and one good one, then drive a
-        // catch-up replay and assert: nothing escapes the run dir, the poison
-        // events are skipped (not fatal), and the good event still applies.
+        // two poison `child.spawned` lines (a traversal-laden and an empty
+        // `child_run_id`) and one good one, then drive a catch-up replay and
+        // assert: the poison events are skipped (not fatal) and the good event
+        // still applies (its child ref lands on the parent node).
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
         bootstrap_live_node(&paths); // applied_seq == 2, node n-0001 live
 
-        // seq 3 — a traversal-laden id; seq 4 — an empty id. Both fail their
-        // strict `parse_str`, so `reduce_event_to_ops` rejects them. seq 5 —
-        // a well-formed id that must be applied despite the poison lines
-        // preceding it. All three raw appends share one held lock.
+        // seq 3 — a traversal-laden `child_run_id`; seq 4 — an empty one. Both
+        // fail their strict `parse_str`, so `reduce_event_to_ops` rejects them.
+        // seq 5 — a well-formed pair that must be applied despite the poison
+        // lines preceding it. All three raw appends share one held lock.
+        let child_run = "02jxsnap000000000000000000";
         RunLock::with_lock(&paths, |lock| {
             append_event_with_seq(
                 lock,
                 &paths,
                 3,
-                "discussion.opened",
+                "child.spawned",
                 Some(&nid("n-0001")),
                 None,
-                json!({ "discussion_id": "../escape", "node_id": "n-0001", "topic": "evil" }),
+                json!({ "child_run_id": "../escape", "child_node_id": "n-0001" }),
             )?;
             append_event_with_seq(
                 lock,
                 &paths,
                 4,
-                "discussion.opened",
+                "child.spawned",
                 Some(&nid("n-0001")),
                 None,
-                json!({ "discussion_id": "", "node_id": "n-0001", "topic": "evil" }),
+                json!({ "child_run_id": "", "child_node_id": "n-0001" }),
             )?;
             append_event_with_seq(
                 lock,
                 &paths,
                 5,
-                "discussion.opened",
+                "child.spawned",
                 Some(&nid("n-0001")),
                 None,
-                json!({ "discussion_id": "d-abcdefghij", "node_id": "n-0001", "topic": "ok" }),
+                json!({ "child_run_id": child_run, "child_node_id": "n-0001" }),
             )
         })
         .unwrap();
@@ -1810,39 +1810,26 @@ mod tests {
         // error here would brick every future append on the run).
         replay_unapplied(&paths, &paths.events()).expect("poison lines skipped, not fatal");
 
-        // The good discussion landed.
-        let good = crate::projections::read_discussion_opt(
-            &paths,
-            &crate::schema::DiscussionId::parse_str("d-abcdefghij").unwrap(),
-        )
-        .unwrap();
-        assert!(good.is_some(), "the valid discussion was applied");
-
-        // Nothing escaped: `discussions/../escape.json` would have resolved to
-        // `<run>/escape.json` — it must not exist — and the discussions dir
-        // holds exactly the one good file (the two poison ids wrote nothing).
-        assert!(
-            !paths.root.join("escape.json").exists(),
-            "traversal must not have written outside discussions/"
-        );
-        let entries: Vec<_> = std::fs::read_dir(paths.discussions_dir())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
+        // The good child.spawned landed: the parent node carries exactly one
+        // child ref, and the two poison ids added nothing.
+        let parent = crate::read_node(&paths, &nid("n-0001")).unwrap();
         assert_eq!(
-            entries,
-            vec!["d-abcdefghij.json".to_string()],
-            "only the good discussion file exists; poison ids joined no path"
+            parent.children.len(),
+            1,
+            "only the good child ref was applied; poison ids added none"
+        );
+        assert_eq!(parent.children[0].run_id.as_str(), child_run);
+        assert!(
+            !paths.root.join("escape").exists(),
+            "traversal id must never have been joined onto a path"
         );
 
-        // The watermark jumped past the skipped seqs to the applied good event,
-        // and the derived counter reflects the single real discussion.
+        // The watermark jumped past the skipped seqs to the applied good event.
         let m = crate::read_manifest(&paths).unwrap();
         assert_eq!(
             m.applied_seq, 5,
             "watermark advanced past the skipped poison"
         );
-        assert_eq!(m.open_discussions, 1, "only the good discussion is counted");
     }
 
     #[test]
@@ -1886,61 +1873,9 @@ mod tests {
     }
 
     #[test]
-    fn open_discussions_desync_heals_on_replay() {
-        // The decrement variant of the same hazard: a `discussion.resolved`
-        // whose projection landed (the discussion is `Resolved` on disk) but
-        // whose manifest decrement was lost. The old `saturating_sub` was
-        // unreachable on replay (the reducer short-circuits the already-resolved
-        // discussion), so the count stayed too high; deriving heals it.
-        let tmp = TempDir::new().unwrap();
-        let paths = fresh_run(&tmp);
-        bootstrap_live_node(&paths); // applied_seq == 2
-        append_and_apply_event(
-            &paths,
-            "discussion.opened",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "d-fxtrdscssn", "node_id": "n-0001", "topic": "x" }),
-        )
-        .unwrap(); // seq 3 → open_discussions == 1
-        append_and_apply_event(
-            &paths,
-            "discussion.resolved",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "d-fxtrdscssn", "resolution": "drop" }),
-        )
-        .unwrap(); // seq 4 → discussion Resolved, open_discussions == 0
-        let mut m = crate::read_manifest(&paths).unwrap();
-        assert_eq!(m.open_discussions, 0, "precondition: resolve decremented");
-
-        // Simulate the resolve's manifest write being lost: the discussion is
-        // Resolved on disk, but the manifest still counts it as open and the
-        // watermark sits before the resolve at seq 4.
-        m.open_discussions = 1;
-        m.applied_seq = 3;
-        write_manifest(&paths, &m).unwrap();
-
-        append_and_apply_event(
-            &paths,
-            "run.status",
-            None,
-            None,
-            json!({ "status": "running" }),
-        )
-        .unwrap();
-        assert_eq!(
-            crate::read_manifest(&paths).unwrap().open_discussions,
-            0,
-            "open_discussions converged after the resolved discussion was re-folded"
-        );
-    }
-
-    #[test]
     fn full_replay_does_not_double_count_any_counter() {
         // Idempotence across a full from-scratch replay: re-folding every event
-        // must re-derive the same totals, never accumulate. Covers all three
-        // counters at once (node, discussion, spinoff).
+        // must re-derive the same total, never accumulate. Covers `node_count`.
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
         bootstrap_live_node(&paths);
@@ -1952,46 +1887,15 @@ mod tests {
             json!({ "kind": "spinoff" }),
         )
         .unwrap();
-        append_and_apply_event(
-            &paths,
-            "discussion.opened",
-            Some(&nid("n-0001")),
-            None,
-            json!({ "discussion_id": "d-fxtrdscssn", "node_id": "n-0001", "topic": "x" }),
-        )
-        .unwrap();
-        append_and_apply_event(
-            &paths,
-            "spinoff.proposed",
-            Some(&nid("n-0001")),
-            None,
-            json!({
-                "proposal_id": "s-fxtrspnoff",
-                "proposed_title": "t",
-                "proposed_kind": "spinoff",
-                "node_id": "n-0001",
-            }),
-        )
-        .unwrap();
         let before = crate::read_manifest(&paths).unwrap();
-        assert_eq!(
-            (
-                before.node_count,
-                before.open_discussions,
-                before.pending_spinoffs
-            ),
-            (2, 1, 1),
-            "precondition: two nodes, one open discussion, one pending spinoff"
-        );
+        assert_eq!(before.node_count, 2, "precondition: two nodes");
 
         // Reset the watermark to force a full idempotent replay of the whole log
         // on the next append (the legacy-migration path), and deliberately
-        // corrupt every counter so a heal is observable.
+        // corrupt the counter so a heal is observable.
         let mut m = before;
         m.applied_seq = 0;
         m.node_count = 99;
-        m.open_discussions = 99;
-        m.pending_spinoffs = 99;
         write_manifest(&paths, &m).unwrap();
         append_and_apply_event(
             &paths,
@@ -2004,13 +1908,8 @@ mod tests {
 
         let after = crate::read_manifest(&paths).unwrap();
         assert_eq!(
-            (
-                after.node_count,
-                after.open_discussions,
-                after.pending_spinoffs
-            ),
-            (2, 1, 1),
-            "counters re-derived to the true totals — no double-count across full replay"
+            after.node_count, 2,
+            "counter re-derived to the true total — no double-count across full replay"
         );
     }
 

@@ -5,7 +5,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::schema::{DiscussionId, NodeId, ProposalId, RunId};
+use crate::schema::{NodeId, RunId};
 
 /// Apply `O_NOFOLLOW` to `opts` on Unix, so opening an existing symlink at the
 /// path's *final* component fails atomically (`ELOOP`) instead of following it.
@@ -185,32 +185,6 @@ impl RunPaths {
         self.nodes_dir().join(format!("{}.json", node_id.as_str()))
     }
 
-    /// Path to the `discussions/` directory.
-    pub fn discussions_dir(&self) -> PathBuf {
-        self.root.join("discussions")
-    }
-
-    /// Path to a single discussion file (`discussions/<id>.json`).
-    ///
-    /// Takes a validated [`DiscussionId`], so the result can never escape
-    /// `discussions/`.
-    pub fn discussion(&self, id: &DiscussionId) -> PathBuf {
-        self.discussions_dir().join(format!("{}.json", id.as_str()))
-    }
-
-    /// Path to the `spinoffs/` directory.
-    pub fn spinoffs_dir(&self) -> PathBuf {
-        self.root.join("spinoffs")
-    }
-
-    /// Path to a single spin-off proposal file (`spinoffs/<id>.json`).
-    ///
-    /// Takes a validated [`ProposalId`], so the result can never escape
-    /// `spinoffs/`.
-    pub fn spinoff(&self, id: &ProposalId) -> PathBuf {
-        self.spinoffs_dir().join(format!("{}.json", id.as_str()))
-    }
-
     /// Path to the supervisor pid file (`supervisor.pid`).
     pub fn supervisor_pid(&self) -> PathBuf {
         self.root.join("supervisor.pid")
@@ -230,7 +204,7 @@ impl RunPaths {
 ///
 /// Takes a validated [`RunId`] so this run-level path constructor cannot be
 /// handed a `..` or absolute component — closing the same traversal vector the
-/// per-run [`RunPaths`] helpers close for node/discussion/spinoff ids.
+/// per-run [`RunPaths`] helpers close for node ids.
 pub fn run_dir(root: &Path, run_id: &RunId) -> PathBuf {
     root.join("runs").join(run_id.as_str())
 }

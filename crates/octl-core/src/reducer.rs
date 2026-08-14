@@ -25,7 +25,7 @@
 //! ## Manifest counters are derived, not folded
 //!
 //! The reducers here deliberately do **not** touch the manifest's denormalized
-//! counters (`node_count`, `open_discussions`, `pending_spinoffs`). Those are
+//! `node_count` counter. It is
 //! recomputed from the projection directories by
 //! [`derive_counters`](crate::projections), invoked from
 //! [`advance_applied_seq`](crate::events) at the
@@ -52,13 +52,9 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::paths::RunPaths;
-use crate::projections::{
-    read_discussion_opt, read_manifest_opt, read_node_opt, read_spinoff_opt, write_discussion,
-    write_manifest, write_node, write_spinoff,
-};
+use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::schema::{
-    ChildRef, Discussion, DiscussionId, DiscussionStatus, Event, IdValidationError, Kind,
-    Lifecycle, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal, SpinoffStatus, Status,
+    ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId, RunId, Status,
     TmuxIdentity, STATE_SCHEMA_VERSION,
 };
 
@@ -110,26 +106,6 @@ fn opt_node_id(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result
     }
 }
 
-/// Resolve a required `NodeId` from event-data field `field`, falling back to
-/// the envelope's top-level `node_id`. Used where the node reference may appear
-/// either in `data` or on the envelope (discussion/spinoff `node_id`).
-fn want_node_id_with_fallback(
-    events_path: &Path,
-    ev: &Event,
-    d: &Value,
-    field: &str,
-) -> Result<NodeId> {
-    let s = d
-        .get(field)
-        .and_then(Value::as_str)
-        .or(ev.node_id.as_ref().map(NodeId::as_str))
-        .ok_or_else(|| Error::CorruptEventLog {
-            path: events_path.to_path_buf(),
-            reason: format!("event seq={} kind={} missing `{field}`", ev.seq, ev.kind),
-        })?;
-    NodeId::parse_str(s).map_err(|e| corrupt_id(events_path, ev, &e))
-}
-
 fn data_kind(v: &Value) -> Option<Kind> {
     serde_json::from_value(v.clone()).ok()
 }
@@ -157,23 +133,6 @@ fn want_str<'a>(events_path: &Path, ev: &Event, d: &'a Value, field: &str) -> Re
                 ev.seq, ev.kind
             ),
         })
-}
-
-/// Read an optional string field with strict typing: missing/null → `None`,
-/// JSON string → `Some(s)`, anything else → `CorruptEventLog`. Prevents
-/// the reducer from silently dropping non-string payload values.
-fn optional_str(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result<Option<String>> {
-    match d.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(Error::CorruptEventLog {
-            path: events_path.to_path_buf(),
-            reason: format!(
-                "event seq={} kind={} `{field}` must be a JSON string or null",
-                ev.seq, ev.kind
-            ),
-        }),
-    }
 }
 
 /// Read an optional boolean field with strict typing: missing/null → `None`,
@@ -260,10 +219,6 @@ pub(crate) enum ProjectionOp {
     Manifest(Manifest),
     /// Write a node projection.
     Node(Node),
-    /// Write a discussion projection.
-    Discussion(Discussion),
-    /// Write a spinoff-proposal projection.
-    Spinoff(SpinoffProposal),
 }
 
 /// Commit a planned batch of projection writes, in order.
@@ -278,8 +233,6 @@ pub(crate) fn commit_ops(paths: &RunPaths, ops: Vec<ProjectionOp>) -> Result<()>
         match op {
             ProjectionOp::Manifest(m) => write_manifest(paths, &m)?,
             ProjectionOp::Node(n) => write_node(paths, &n)?,
-            ProjectionOp::Discussion(d) => write_discussion(paths, &d)?,
-            ProjectionOp::Spinoff(s) => write_spinoff(paths, &s)?,
         }
     }
     Ok(())
@@ -325,11 +278,6 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.status" => reduce_node_status(paths, ev),
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
-        "discussion.opened" => reduce_discussion_opened(paths, ev),
-        "discussion.resolved" => reduce_discussion_resolved(paths, ev),
-        "spinoff.proposed" => reduce_spinoff_proposed(paths, ev),
-        "spinoff.approved" => reduce_spinoff_approved(paths, ev),
-        "spinoff.rejected" => reduce_spinoff_rejected(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
         "supervisor.attached" => reduce_supervisor_attached(paths, ev),
         "supervisor.cursor_advanced" => reduce_supervisor_cursor_advanced(paths, ev),
@@ -402,8 +350,6 @@ fn op_path(paths: &RunPaths, op: &ProjectionOp) -> PathBuf {
     match op {
         ProjectionOp::Manifest(_) => paths.manifest(),
         ProjectionOp::Node(n) => paths.node(&n.node_id),
-        ProjectionOp::Discussion(d) => paths.discussion(&d.discussion_id),
-        ProjectionOp::Spinoff(s) => paths.spinoff(&s.proposal_id),
     }
 }
 
@@ -545,8 +491,6 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .map(str::to_string),
         harness: d.get("harness").and_then(Value::as_str).map(str::to_string),
         node_count: 0,
-        open_discussions: 0,
-        pending_spinoffs: 0,
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,
     };
@@ -946,194 +890,6 @@ fn report_terminal_status(events_path: &Path, ev: &Event) -> Result<Status> {
             ))),
         }
     }
-}
-
-fn reduce_discussion_opened(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
-    let events_path = paths.events();
-    let d = &ev.data;
-    let discussion_id = DiscussionId::parse_str(want_str(&events_path, ev, d, "discussion_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    if read_discussion_opt(paths, &discussion_id)?.is_some() {
-        return Ok(vec![]);
-    }
-    let node_id = want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
-    let options = d
-        .get("options")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let disc = Discussion {
-        schema_version: STATE_SCHEMA_VERSION,
-        discussion_id,
-        run_id: paths.run_id.clone(),
-        node_id,
-        opened_at: ev.ts,
-        severity: d
-            .get("severity")
-            .and_then(Value::as_str)
-            .unwrap_or("discuss")
-            .to_string(),
-        topic: want_str(&events_path, ev, d, "topic")?.to_string(),
-        context: d.get("context").and_then(Value::as_str).map(str::to_string),
-        options,
-        status: DiscussionStatus::Open,
-        resolution: None,
-        note: None,
-        resolved_at: None,
-    };
-    let mut ops = vec![ProjectionOp::Discussion(disc)];
-    if let Some(mut m) = read_manifest_opt(paths)? {
-        // `open_discussions` is derived in `advance_applied_seq`, not bumped
-        // here — see the module note. Only the timestamp is refreshed.
-        m.updated_at = ev.ts;
-        ops.push(ProjectionOp::Manifest(m));
-    }
-    Ok(ops)
-}
-
-fn reduce_discussion_resolved(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
-    let events_path = paths.events();
-    let id = DiscussionId::parse_str(want_str(&events_path, ev, &ev.data, "discussion_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    let mut disc = match read_discussion_opt(paths, &id)? {
-        Some(d) => d,
-        None => return Ok(vec![]),
-    };
-    if matches!(disc.status, DiscussionStatus::Resolved) {
-        return Ok(vec![]);
-    }
-    disc.status = DiscussionStatus::Resolved;
-    // `discussion.resolved` must carry a string `resolution` — without
-    // one, the projection would advance to `Resolved` with `resolution:
-    // null`, which is a corrupt domain state. Reject at the reducer
-    // boundary so any writer (CLI, future supervisor, manual `event
-    // create`) is held to the same contract.
-    disc.resolution = Some(want_str(&events_path, ev, &ev.data, "resolution")?.to_string());
-    disc.note = optional_str(&events_path, ev, &ev.data, "note")?;
-    disc.resolved_at = Some(ev.ts);
-    let mut ops = vec![ProjectionOp::Discussion(disc)];
-    if let Some(mut m) = read_manifest_opt(paths)? {
-        // `open_discussions` is derived in `advance_applied_seq`, not
-        // decremented here — see the module note. The old `saturating_sub`
-        // could strand a too-high count if this resolve's manifest write was
-        // lost to a crash and the replay then short-circuited on the
-        // already-`Resolved` discussion. Only the timestamp is refreshed.
-        m.updated_at = ev.ts;
-        ops.push(ProjectionOp::Manifest(m));
-    }
-    Ok(ops)
-}
-
-fn reduce_spinoff_proposed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
-    let events_path = paths.events();
-    let d = &ev.data;
-    let proposal_id = ProposalId::parse_str(want_str(&events_path, ev, d, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    if read_spinoff_opt(paths, &proposal_id)?.is_some() {
-        return Ok(vec![]);
-    }
-    let proposed_kind =
-        data_kind(d.get("proposed_kind").unwrap_or(&Value::Null)).ok_or_else(|| {
-            Error::CorruptEventLog {
-                path: events_path.clone(),
-                reason: format!(
-                    "event seq={} kind=spinoff.proposed missing/invalid `proposed_kind`",
-                    ev.seq
-                ),
-            }
-        })?;
-    let node_id = want_node_id_with_fallback(&events_path, ev, d, "node_id")?;
-    let s = SpinoffProposal {
-        schema_version: STATE_SCHEMA_VERSION,
-        proposal_id,
-        run_id: paths.run_id.clone(),
-        node_id,
-        proposed_at: ev.ts,
-        proposed_title: want_str(&events_path, ev, d, "proposed_title")?.to_string(),
-        proposed_kind,
-        rationale: d
-            .get("rationale")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        status: SpinoffStatus::Proposed,
-        accepted_as_issue_slug: None,
-        rejected_reason: None,
-        resolved_at: None,
-    };
-    let mut ops = vec![ProjectionOp::Spinoff(s)];
-    if let Some(mut m) = read_manifest_opt(paths)? {
-        // `pending_spinoffs` is derived in `advance_applied_seq`, not bumped
-        // here — see the module note. Only the timestamp is refreshed.
-        m.updated_at = ev.ts;
-        ops.push(ProjectionOp::Manifest(m));
-    }
-    Ok(ops)
-}
-
-fn reduce_spinoff_approved(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
-    let events_path = paths.events();
-    let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    let mut s = match read_spinoff_opt(paths, &id)? {
-        Some(s) => s,
-        None => return Ok(vec![]),
-    };
-    if matches!(s.status, SpinoffStatus::Approved | SpinoffStatus::Rejected) {
-        return Ok(vec![]);
-    }
-    s.status = SpinoffStatus::Approved;
-    s.accepted_as_issue_slug = ev
-        .data
-        .get("issue_slug")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    s.resolved_at = Some(ev.ts);
-    let mut ops = vec![ProjectionOp::Spinoff(s)];
-    if let Some(mut m) = read_manifest_opt(paths)? {
-        // `pending_spinoffs` is derived in `advance_applied_seq`, not
-        // decremented here — see the module note. The old `saturating_sub`
-        // could strand a too-high count if this resolution's manifest write was
-        // lost to a crash and the replay then short-circuited on the
-        // already-settled proposal. Only the timestamp is refreshed.
-        m.updated_at = ev.ts;
-        ops.push(ProjectionOp::Manifest(m));
-    }
-    Ok(ops)
-}
-
-fn reduce_spinoff_rejected(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
-    let events_path = paths.events();
-    let id = ProposalId::parse_str(want_str(&events_path, ev, &ev.data, "proposal_id")?)
-        .map_err(|e| corrupt_id(&events_path, ev, &e))?;
-    let mut s = match read_spinoff_opt(paths, &id)? {
-        Some(s) => s,
-        None => return Ok(vec![]),
-    };
-    if matches!(s.status, SpinoffStatus::Approved | SpinoffStatus::Rejected) {
-        return Ok(vec![]);
-    }
-    s.status = SpinoffStatus::Rejected;
-    s.rejected_reason = ev
-        .data
-        .get("reason")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    s.resolved_at = Some(ev.ts);
-    let mut ops = vec![ProjectionOp::Spinoff(s)];
-    if let Some(mut m) = read_manifest_opt(paths)? {
-        // `pending_spinoffs` is derived in `advance_applied_seq`, not
-        // decremented here — see the module note. The old `saturating_sub`
-        // could strand a too-high count if this resolution's manifest write was
-        // lost to a crash and the replay then short-circuited on the
-        // already-settled proposal. Only the timestamp is refreshed.
-        m.updated_at = ev.ts;
-        ops.push(ProjectionOp::Manifest(m));
-    }
-    Ok(ops)
 }
 
 fn reduce_child_spawned(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
@@ -1822,11 +1578,7 @@ mod tests {
     fn projection_inodes(paths: &RunPaths) -> std::collections::BTreeMap<PathBuf, u64> {
         use std::os::unix::fs::MetadataExt;
         let mut consider = vec![paths.manifest()];
-        for dir in [
-            paths.nodes_dir(),
-            paths.discussions_dir(),
-            paths.spinoffs_dir(),
-        ] {
+        for dir in [paths.nodes_dir()] {
             if let Ok(rd) = std::fs::read_dir(&dir) {
                 for ent in rd.flatten() {
                     let p = ent.path();
@@ -1887,7 +1639,7 @@ mod tests {
 
     /// Drive every event kind through a dependency-ordered lifecycle on real
     /// runs, asserting plan/apply parity at each step. Covers the writing kinds
-    /// (run/node/discussion/spinoff/supervisor/child) in states where they
+    /// (run/node/supervisor/child) in states where they
     /// project, plus the no-op kinds (audit records, `supervisor.exited`,
     /// terminal-guarded transitions) where both the plan and the apply touch
     /// nothing.
@@ -1901,8 +1653,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let paths = RunPaths::new(dir, run_id).unwrap();
         let nid = || Some(NodeId::parse_str("n-0001").unwrap());
-        let disc_id = "d-pqrstuvwxy";
-        let prop_id = "s-spinaaaaaa";
         let child = "02jxsnap000000000000000000";
 
         // Helper to build a fresh envelope at a monotonic seq.
@@ -1957,49 +1707,6 @@ mod tests {
                 "node.status",
                 nid(),
                 serde_json::json!({ "status": "running" }),
-            ),
-            true,
-        );
-        // discussion.opened → discussions/<id>.json + manifest.json
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "discussion.opened",
-                None,
-                serde_json::json!({ "discussion_id": disc_id, "node_id": "n-0001", "topic": "t" }),
-            ),
-            true,
-        );
-        // discussion.resolved → discussions/<id>.json + manifest.json
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "discussion.resolved",
-                None,
-                serde_json::json!({ "discussion_id": disc_id, "resolution": "keep" }),
-            ),
-            true,
-        );
-        // spinoff.proposed → spinoffs/<id>.json + manifest.json
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "spinoff.proposed",
-                None,
-                serde_json::json!({
-                    "proposal_id": prop_id, "node_id": "n-0001",
-                    "proposed_title": "p", "proposed_kind": "spinoff"
-                }),
-            ),
-            true,
-        );
-        // spinoff.approved → spinoffs/<id>.json + manifest.json
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "spinoff.approved",
-                None,
-                serde_json::json!({ "proposal_id": prop_id, "issue_slug": "x" }),
             ),
             true,
         );
@@ -2059,30 +1766,5 @@ mod tests {
         ] {
             assert_plan_matches_apply(&paths, &at(kind, None, serde_json::json!({})), false);
         }
-
-        // spinoff.rejected needs its own un-settled proposal — exercise it on a
-        // second proposal id so the approve above doesn't shadow it.
-        let prop2 = "s-spinbbbbbb";
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "spinoff.proposed",
-                None,
-                serde_json::json!({
-                    "proposal_id": prop2, "node_id": "n-0001",
-                    "proposed_title": "p2", "proposed_kind": "spinoff"
-                }),
-            ),
-            true,
-        );
-        assert_plan_matches_apply(
-            &paths,
-            &at(
-                "spinoff.rejected",
-                None,
-                serde_json::json!({ "proposal_id": prop2, "reason": "no" }),
-            ),
-            true,
-        );
     }
 }

@@ -3,8 +3,8 @@
 
 use insta::assert_json_snapshot;
 use octl_core::{
-    append_and_apply_event, ensure_root, read_discussion_opt, read_manifest, read_node_opt,
-    read_spinoff_opt, run_dir, DiscussionId, NodeId, ProposalId, RunId, RunPaths,
+    append_and_apply_event, ensure_root, read_manifest, read_node_opt, run_dir, NodeId, RunId,
+    RunPaths,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -113,6 +113,9 @@ fn run_node_report_spinoff_flow() {
         Some("n-0001"),
         json!({ "status": "running" }),
     );
+    // The terminal `node.report` still rides the `discussion_items` /
+    // `spinoff_proposals` fields (kept by the 0.2 cut — only the MID-RUN
+    // discussion/spinoff-proposal machinery was removed).
     h.append(
         "node.report",
         Some("n-0001"),
@@ -128,87 +131,11 @@ fn run_node_report_spinoff_flow() {
             "wrap_up_recommendations": []
         }),
     );
-    h.append(
-        "spinoff.proposed",
-        Some("n-0001"),
-        json!({
-            "proposal_id": "s-fxtrspnoff",
-            "proposed_title": "drop legacy cookie path",
-            "proposed_kind": "spinoff",
-            "rationale": "would tidy the auth surface",
-            "node_id": "n-0001",
-        }),
-    );
-    h.append(
-        "spinoff.approved",
-        Some("n-0001"),
-        json!({
-            "proposal_id": "s-fxtrspnoff",
-            "issue_slug": "drop-legacy-cookie-path",
-        }),
-    );
 
     snapshot_run(&h, "report_spinoff", &[("n0001", "n-0001")]);
-    let s = read_spinoff_opt(&h.paths, &ProposalId::parse_str("s-fxtrspnoff").unwrap())
-        .unwrap()
-        .unwrap();
-    let v = redact_times(serde_json::to_value(&s).unwrap());
-    assert_json_snapshot!("report_spinoff__spinoff", v);
 
-    // Sanity: run_id was carried through to all artifacts.
-    assert_eq!(s.run_id.as_str(), run_id);
-}
-
-#[test]
-fn discussion_open_and_resolve() {
-    let mut h = Harness::new();
-
-    h.append(
-        "run.created",
-        None,
-        json!({
-            "kind": "code",
-            "lifecycle": "interactive",
-            "title": "auth refactor",
-        }),
-    );
-    h.append(
-        "node.created",
-        Some("n-0001"),
-        json!({
-            "kind": "code",
-            "task": "rewrite auth middleware",
-        }),
-    );
-    h.append(
-        "discussion.opened",
-        Some("n-0001"),
-        json!({
-            "discussion_id": "d-fxtrdscssn",
-            "node_id": "n-0001",
-            "topic": "should we drop the legacy cookie path?",
-            "severity": "discuss",
-            "options": ["keep", "drop", "feature-flag"],
-            "context": "the legacy path predates the session-token rework",
-        }),
-    );
-    h.append(
-        "discussion.resolved",
-        Some("n-0001"),
-        json!({
-            "discussion_id": "d-fxtrdscssn",
-            "resolution": "drop",
-        }),
-    );
-
-    let d = read_discussion_opt(&h.paths, &DiscussionId::parse_str("d-fxtrdscssn").unwrap())
-        .unwrap()
-        .unwrap();
-    let v = redact_times(serde_json::to_value(&d).unwrap());
-    assert_json_snapshot!("discussion__resolved", v);
-    let m = read_manifest(&h.paths).unwrap();
-    let mv = redact_times(serde_json::to_value(&m).unwrap());
-    assert_json_snapshot!("discussion__manifest", mv);
+    // Sanity: run_id was carried through to the manifest.
+    assert_eq!(read_manifest(&h.paths).unwrap().run_id.as_str(), run_id);
 }
 
 #[test]
@@ -219,7 +146,7 @@ fn child_spawned_records_parent_child_link() {
         "run.created",
         None,
         json!({
-            "kind": "orchestrated",
+            "kind": "fan-out",
             "lifecycle": "autonomous",
             "title": "epic foo",
         }),
@@ -228,7 +155,7 @@ fn child_spawned_records_parent_child_link() {
         "node.created",
         Some("n-0001"),
         json!({
-            "kind": "orchestrated",
+            "kind": "fan-out",
             "task": "drive epic foo",
         }),
     );

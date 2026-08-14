@@ -1,10 +1,9 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
-assertion_line: 78
 expression: manifest_v
 ---
 {
-  "applied_seq": 7,
+  "applied_seq": 5,
   "created_at": "<ts>",
   "harness": null,
   "kind": "spinoff",
@@ -12,10 +11,8 @@ expression: manifest_v
   "managed_tmux_session": null,
   "node_count": 1,
   "notify_cmd": null,
-  "open_discussions": 0,
   "parent_node_id": null,
   "parent_run_id": null,
-  "pending_spinoffs": 0,
   "run_id": "01jxsnap000000000000000000",
   "schema_version": 1,
   "source_branch": null,

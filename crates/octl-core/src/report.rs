@@ -294,10 +294,13 @@ fn validate_spinoff_proposals(v: Option<&Value>) -> Result<(), ReportValidationE
             .and_then(Value::as_str)
             .ok_or(ReportValidationError::SpinoffProposalKindNotString { index: i })?;
         // Reject unknown kinds at the boundary so the supervisor never
-        // has to translate a generic `CorruptEventLog` for the user.
-        // Mirrors the `Kind` enum's `rename_all = "kebab-case"` serde
-        // routing.
-        if serde_json::from_value::<Kind>(Value::String(kind_str.to_string())).is_err() {
+        // has to translate a generic `CorruptEventLog` for the user. The
+        // accepted set is the enum's *creatable* wire names — the read-only
+        // `Kind::Unknown` catch-all is deliberately excluded (a proposal must
+        // name a live kind), so this checks membership rather than round-tripping
+        // through serde (which would silently map any unknown string to
+        // `Kind::Unknown`).
+        if !Kind::WIRE_NAMES.contains(&kind_str) {
             return Err(ReportValidationError::SpinoffProposalKindUnknown {
                 index: i,
                 kind: kind_str.to_string(),
@@ -374,7 +377,7 @@ mod tests {
                 {"topic": "naming", "severity": "discuss", "options": ["a", "b"]},
             ],
             "spinoff_proposals": [
-                {"proposed_title": "follow-up", "proposed_kind": "code", "rationale": "later"},
+                {"proposed_title": "follow-up", "proposed_kind": "spinoff", "rationale": "later"},
             ],
             "wrap_up_recommendations": ["rebase", "squash"],
         });
@@ -529,17 +532,7 @@ mod tests {
         assert_eq!(err.expected(), Some(json!(crate::schema::Kind::WIRE_NAMES)));
         assert_eq!(
             err.expected(),
-            Some(json!([
-                "code",
-                "spinoff",
-                "orchestrated",
-                "research",
-                "technical-decision",
-                "make-skill",
-                "fan-out",
-                "bugfix",
-                "orchestrate",
-            ]))
+            Some(json!(["spinoff", "research", "technical-decision", "fan-out"]))
         );
     }
 

@@ -1,6 +1,5 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
-assertion_line: 260
 expression: v
 ---
 {
@@ -18,7 +17,7 @@ expression: v
       "run_id": "01jxche0000000000000000000"
     }
   ],
-  "kind": "orchestrated",
+  "kind": "fan-out",
   "last_processed_report_seq_by_child": {},
   "last_report": null,
   "node_id": "n-0001",

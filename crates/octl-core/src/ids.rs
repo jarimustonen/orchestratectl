@@ -11,13 +11,3 @@ pub fn new_run_id() -> String {
 pub fn format_node_id(n: u32) -> String {
     format!("n-{n:04}")
 }
-
-/// Generate a new `d-<ULID>` discussion ID.
-pub fn new_discussion_id() -> String {
-    format!("d-{}", Ulid::new().to_string().to_lowercase())
-}
-
-/// Generate a new `s-<ULID>` spinoff proposal ID.
-pub fn new_proposal_id() -> String {
-    format!("s-{}", Ulid::new().to_string().to_lowercase())
-}

@@ -2,8 +2,8 @@
 //!
 //! Each `read_*` here reads exactly one file and is coherent on its own (atomic
 //! rename — see [`crate::atomic`]). A caller that reads **several** files as one
-//! logical view (e.g. `manifest.json` together with the `nodes/`,
-//! `discussions/`, or `spinoffs/` projection set, whose denormalized counters
+//! logical view (e.g. `manifest.json` together with the `nodes/` projection
+//! set, whose denormalized counters
 //! the reducer updates in the same locked mutation) must wrap the whole scan in
 //! [`crate::RunLock::with_shared_lock`] (`LOCK_SH`). That excludes the reducer's
 //! exclusive lock for the scan's duration, so the reader observes one committed
@@ -15,10 +15,7 @@ use std::path::{Path, PathBuf};
 use crate::atomic::write_json_atomic;
 use crate::error::{Error, Result};
 use crate::paths::{reject_symlink, RunPaths};
-use crate::schema::{
-    Discussion, DiscussionId, DiscussionStatus, Manifest, Node, NodeId, ProposalId, RunId,
-    SpinoffProposal, SpinoffStatus, SUPPORTED_STATE_SCHEMAS,
-};
+use crate::schema::{Manifest, Node, NodeId, RunId, SUPPORTED_STATE_SCHEMAS};
 
 /// Resolve a projection file path while rejecting a symlinked run root, the
 /// symlinked subdir, or a symlinked file before the caller opens it — so a
@@ -60,28 +57,6 @@ fn checked_manifest(paths: &RunPaths) -> Result<PathBuf> {
 /// `nodes/<id>.json` path with run-root, `nodes/`, and file symlink guards.
 fn checked_node(paths: &RunPaths, id: &NodeId) -> Result<PathBuf> {
     checked_file(paths, paths.nodes_dir(), "nodes", paths.node(id), "node")
-}
-
-/// `discussions/<id>.json` path with run-root, `discussions/`, and file guards.
-fn checked_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<PathBuf> {
-    checked_file(
-        paths,
-        paths.discussions_dir(),
-        "discussions",
-        paths.discussion(id),
-        "discussion",
-    )
-}
-
-/// `spinoffs/<id>.json` path with run-root, `spinoffs/`, and file guards.
-fn checked_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<PathBuf> {
-    checked_file(
-        paths,
-        paths.spinoffs_dir(),
-        "spinoffs",
-        paths.spinoff(id),
-        "spinoff",
-    )
 }
 
 /// Read `path` into bytes with `O_NOFOLLOW`: a projection file replaced by a
@@ -245,89 +220,13 @@ pub fn write_node(paths: &RunPaths, n: &Node) -> Result<()> {
     write_json_atomic(&p, n)
 }
 
-/// Read and schema-validate one discussion. Errors if it is missing.
-pub fn read_discussion(paths: &RunPaths, id: &DiscussionId) -> Result<Discussion> {
-    let p = checked_discussion(paths, id)?;
-    let d: Discussion = read_json(&p)?;
-    check_schema(&p, d.schema_version)?;
-    check_key(&p, "discussion", id.as_str(), d.discussion_id.as_str())?;
-    check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
-    Ok(d)
-}
-
-/// Read and schema-validate one discussion, returning `None` if absent.
-///
-/// A present discussion whose body id or `run_id` does not match where it lives
-/// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
-pub fn read_discussion_opt(paths: &RunPaths, id: &DiscussionId) -> Result<Option<Discussion>> {
-    let p = checked_discussion(paths, id)?;
-    match read_json_opt::<Discussion>(&p)? {
-        Some(d) => {
-            check_schema(&p, d.schema_version)?;
-            check_key(&p, "discussion", id.as_str(), d.discussion_id.as_str())?;
-            check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
-            Ok(Some(d))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Atomically write a discussion file, keyed by its `discussion_id`.
-///
-/// `pub(crate)`: see [`write_manifest`].
-pub(crate) fn write_discussion(paths: &RunPaths, d: &Discussion) -> Result<()> {
-    let p = checked_discussion(paths, &d.discussion_id)?;
-    check_run_id(&p, "discussion_run_id", &paths.run_id, &d.run_id)?;
-    write_json_atomic(&p, d)
-}
-
-/// Read and schema-validate one spin-off proposal. Errors if it is missing.
-pub fn read_spinoff(paths: &RunPaths, id: &ProposalId) -> Result<SpinoffProposal> {
-    let p = checked_spinoff(paths, id)?;
-    let s: SpinoffProposal = read_json(&p)?;
-    check_schema(&p, s.schema_version)?;
-    check_key(&p, "spinoff", id.as_str(), s.proposal_id.as_str())?;
-    check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
-    Ok(s)
-}
-
-/// Read and schema-validate one spin-off proposal, returning `None` if absent.
-///
-/// A present proposal whose body id or `run_id` does not match where it lives
-/// is an error, not `None`: `_opt` covers a missing file, not a corrupt one.
-pub fn read_spinoff_opt(paths: &RunPaths, id: &ProposalId) -> Result<Option<SpinoffProposal>> {
-    let p = checked_spinoff(paths, id)?;
-    match read_json_opt::<SpinoffProposal>(&p)? {
-        Some(s) => {
-            check_schema(&p, s.schema_version)?;
-            check_key(&p, "spinoff", id.as_str(), s.proposal_id.as_str())?;
-            check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
-            Ok(Some(s))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Atomically write a spin-off proposal file, keyed by its `proposal_id`.
-///
-/// `pub(crate)`: see [`write_manifest`].
-pub(crate) fn write_spinoff(paths: &RunPaths, s: &SpinoffProposal) -> Result<()> {
-    let p = checked_spinoff(paths, &s.proposal_id)?;
-    check_run_id(&p, "spinoff_run_id", &paths.run_id, &s.run_id)?;
-    write_json_atomic(&p, s)
-}
-
 /// The manifest's denormalized counters, recomputed from projection state.
 ///
-/// Returned by [`derive_counters`] as a single snapshot of the `nodes/`,
-/// `discussions/`, and `spinoffs/` directories.
+/// Returned by [`derive_counters`] as a single snapshot of the `nodes/`
+/// directory.
 pub(crate) struct DerivedCounters {
     /// Number of node projection files.
     pub node_count: u32,
-    /// Number of discussions whose status is [`DiscussionStatus::Open`].
-    pub open_discussions: u32,
-    /// Number of spin-off proposals whose status is [`SpinoffStatus::Proposed`].
-    pub pending_spinoffs: u32,
 }
 
 /// Recompute the manifest's denormalized counters directly from the projection
@@ -338,13 +237,9 @@ pub(crate) struct DerivedCounters {
 /// `manifest-counter-desync`): [`crate::events::advance_applied_seq`] calls this
 /// whenever it advances the `applied_seq` watermark, so the counters persisted
 /// alongside the watermark always equal a fresh count of the projection state
-/// as it stands *after* an event's projection writes are committed. The old
-/// incremental path could strand a stale counter forever — if a projection
-/// write landed but the follow-on `manifest.json` write did not, the crash-
-/// replay re-folded the event, hit the reducer's "already exists / already
-/// terminal" idempotency guard, and skipped the counter mutation that never
-/// happened. Deriving the counts removes the delta entirely: drift is
-/// impossible because nothing is ever incremented.
+/// as it stands *after* an event's projection writes are committed. Deriving the
+/// counts removes any delta: drift is impossible because nothing is ever
+/// incremented.
 ///
 /// Counting is best-effort under corruption: a directory that does not exist
 /// counts as empty, and a projection file that fails to read or parse is
@@ -355,8 +250,6 @@ pub(crate) struct DerivedCounters {
 pub(crate) fn derive_counters(paths: &RunPaths) -> Result<DerivedCounters> {
     Ok(DerivedCounters {
         node_count: count_node_files(paths)?,
-        open_discussions: count_open_discussions(paths)?,
-        pending_spinoffs: count_pending_spinoffs(paths)?,
     })
 }
 
@@ -406,57 +299,6 @@ fn count_node_files(paths: &RunPaths) -> Result<u32> {
     Ok(n)
 }
 
-/// Count discussions whose status is [`DiscussionStatus::Open`]. Status lives in
-/// the file body, so each candidate is read; an unreadable/corrupt file is
-/// skipped (best-effort — see [`derive_counters`]).
-fn count_open_discussions(paths: &RunPaths) -> Result<u32> {
-    let dir = paths.discussions_dir();
-    let Some(entries) = open_projection_dir(&dir)? else {
-        return Ok(0);
-    };
-    let mut n: u32 = 0;
-    for ent in entries {
-        let ent = ent.map_err(|e| Error::io(&dir, e))?;
-        let Some(stem) = projection_id_stem(&ent) else {
-            continue;
-        };
-        let Ok(id) = DiscussionId::parse_str(&stem) else {
-            continue;
-        };
-        if let Ok(Some(d)) = read_discussion_opt(paths, &id) {
-            if matches!(d.status, DiscussionStatus::Open) {
-                n = n.saturating_add(1);
-            }
-        }
-    }
-    Ok(n)
-}
-
-/// Count spin-off proposals whose status is [`SpinoffStatus::Proposed`]. See
-/// [`count_open_discussions`] for the read/skip contract.
-fn count_pending_spinoffs(paths: &RunPaths) -> Result<u32> {
-    let dir = paths.spinoffs_dir();
-    let Some(entries) = open_projection_dir(&dir)? else {
-        return Ok(0);
-    };
-    let mut n: u32 = 0;
-    for ent in entries {
-        let ent = ent.map_err(|e| Error::io(&dir, e))?;
-        let Some(stem) = projection_id_stem(&ent) else {
-            continue;
-        };
-        let Ok(id) = ProposalId::parse_str(&stem) else {
-            continue;
-        };
-        if let Ok(Some(s)) = read_spinoff_opt(paths, &id) {
-            if matches!(s.status, SpinoffStatus::Proposed) {
-                n = n.saturating_add(1);
-            }
-        }
-    }
-    Ok(n)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,8 +318,6 @@ mod tests {
         let dir = tmp.path().join("run");
         let paths = RunPaths::new(&dir, RUN).unwrap();
         std::fs::create_dir_all(paths.nodes_dir()).unwrap();
-        std::fs::create_dir_all(paths.discussions_dir()).unwrap();
-        std::fs::create_dir_all(paths.spinoffs_dir()).unwrap();
         (tmp, paths)
     }
 
@@ -504,41 +344,6 @@ mod tests {
         })
     }
 
-    fn discussion_json(discussion_id: &str, run_id: &str) -> Value {
-        json!({
-            "schema_version": STATE_SCHEMA_VERSION,
-            "discussion_id": discussion_id,
-            "run_id": run_id,
-            "node_id": "n-0001",
-            "opened_at": "2026-06-12T00:00:00Z",
-            "severity": "normal",
-            "topic": "fixture",
-            "context": null,
-            "options": [],
-            "status": "open",
-            "resolution": null,
-            "note": null,
-            "resolved_at": null
-        })
-    }
-
-    fn spinoff_json(proposal_id: &str, run_id: &str) -> Value {
-        json!({
-            "schema_version": STATE_SCHEMA_VERSION,
-            "proposal_id": proposal_id,
-            "run_id": run_id,
-            "node_id": "n-0001",
-            "proposed_at": "2026-06-12T00:00:00Z",
-            "proposed_title": "fixture",
-            "proposed_kind": "spinoff",
-            "rationale": null,
-            "status": "proposed",
-            "accepted_as_issue_slug": null,
-            "rejected_reason": null,
-            "resolved_at": null
-        })
-    }
-
     fn manifest_json(run_id: &str) -> Value {
         json!({
             "schema_version": STATE_SCHEMA_VERSION,
@@ -553,8 +358,6 @@ mod tests {
             "source_branch": null,
             "worktree_root": null,
             "node_count": 0,
-            "open_discussions": 0,
-            "pending_spinoffs": 0,
             "parent_run_id": null,
             "parent_node_id": null
         })
@@ -563,12 +366,6 @@ mod tests {
     fn write_raw(path: &Path, v: &Value) {
         std::fs::write(path, serde_json::to_vec(v).unwrap()).unwrap();
     }
-
-    // Two valid 26-char Crockford ULID bodies differing in the last char —
-    // used as the "requested key" vs "mis-filed body" pair for discussions and
-    // spinoffs (the prefix is supplied per type).
-    const ULID_A: &str = "01arz3ndektsv4rrffq69g5fav";
-    const ULID_B: &str = "01arz3ndektsv4rrffq69g5faw";
 
     // --- derived counters --------------------------------------------------
 
@@ -584,26 +381,6 @@ mod tests {
             &paths.node(&NodeId::parse_str("n-0002").unwrap()),
             &node_json("n-0002", RUN),
         );
-        // Two discussions: only the open one counts toward `open_discussions`.
-        let d_open = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        let d_resolved = DiscussionId::parse_str(&format!("d-{ULID_B}")).unwrap();
-        write_raw(
-            &paths.discussion(&d_open),
-            &discussion_json(d_open.as_str(), RUN),
-        );
-        let mut dr = discussion_json(d_resolved.as_str(), RUN);
-        dr["status"] = json!("resolved");
-        write_raw(&paths.discussion(&d_resolved), &dr);
-        // Two spinoffs: only the proposed one is pending.
-        let s_pending = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        let s_done = ProposalId::parse_str(&format!("s-{ULID_B}")).unwrap();
-        write_raw(
-            &paths.spinoff(&s_pending),
-            &spinoff_json(s_pending.as_str(), RUN),
-        );
-        let mut sd = spinoff_json(s_done.as_str(), RUN);
-        sd["status"] = json!("approved");
-        write_raw(&paths.spinoff(&s_done), &sd);
 
         // Junk that must be ignored: a non-`json` file, a `json` file whose stem
         // is not a valid id, and a hidden tempfile mimicking an in-flight atomic
@@ -614,28 +391,6 @@ mod tests {
 
         let c = derive_counters(&paths).unwrap();
         assert_eq!(c.node_count, 2);
-        assert_eq!(c.open_discussions, 1);
-        assert_eq!(c.pending_spinoffs, 1);
-    }
-
-    #[test]
-    fn derive_counters_skips_unreadable_files_rather_than_erroring() {
-        // Best-effort under corruption: a garbage file at a valid id path must
-        // not brick the count (which would brick every future append).
-        let (_tmp, paths) = setup();
-        write_raw(
-            &paths.node(&NodeId::parse_str("n-0001").unwrap()),
-            &node_json("n-0001", RUN),
-        );
-        let d = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        std::fs::write(paths.discussion(&d), b"{ not valid json").unwrap();
-
-        let c = derive_counters(&paths).unwrap();
-        assert_eq!(c.node_count, 1);
-        assert_eq!(
-            c.open_discussions, 0,
-            "the unreadable discussion is skipped, not counted, and does not error"
-        );
     }
 
     #[test]
@@ -644,12 +399,9 @@ mod tests {
         let dir = tmp.path().join("run");
         std::fs::create_dir_all(&dir).unwrap();
         let paths = RunPaths::new(&dir, RUN).unwrap();
-        // No nodes/ discussions/ spinoffs/ subdirectories exist.
+        // No nodes/ subdirectory exists.
         let c = derive_counters(&paths).unwrap();
-        assert_eq!(
-            (c.node_count, c.open_discussions, c.pending_spinoffs),
-            (0, 0, 0)
-        );
+        assert_eq!(c.node_count, 0);
     }
 
     // --- read side: body id must equal the requested filename key ---------
@@ -706,100 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn read_discussion_rejects_body_id_mismatch() {
-        let (_tmp, paths) = setup();
-        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.discussion(&requested),
-            &discussion_json(&format!("d-{ULID_B}"), RUN),
-        );
-        assert!(matches!(
-            read_discussion(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "discussion", expected_id, body_id, .. })
-                if expected_id == format!("d-{ULID_A}") && body_id == format!("d-{ULID_B}")
-        ));
-    }
-
-    #[test]
-    fn read_discussion_opt_rejects_body_id_mismatch() {
-        let (_tmp, paths) = setup();
-        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.discussion(&requested),
-            &discussion_json(&format!("d-{ULID_B}"), RUN),
-        );
-        assert!(matches!(
-            read_discussion_opt(&paths, &requested),
-            Err(Error::CorruptProjection {
-                kind: "discussion",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn read_discussion_rejects_foreign_run_id() {
-        let (_tmp, paths) = setup();
-        let requested = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.discussion(&requested),
-            &discussion_json(&format!("d-{ULID_A}"), FOREIGN_RUN),
-        );
-        assert!(matches!(
-            read_discussion(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id, .. })
-                if expected_id == RUN && body_id == FOREIGN_RUN
-        ));
-    }
-
-    #[test]
-    fn read_spinoff_rejects_body_id_mismatch() {
-        let (_tmp, paths) = setup();
-        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.spinoff(&requested),
-            &spinoff_json(&format!("s-{ULID_B}"), RUN),
-        );
-        assert!(matches!(
-            read_spinoff(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "spinoff", expected_id, body_id, .. })
-                if expected_id == format!("s-{ULID_A}") && body_id == format!("s-{ULID_B}")
-        ));
-    }
-
-    #[test]
-    fn read_spinoff_opt_rejects_body_id_mismatch() {
-        let (_tmp, paths) = setup();
-        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.spinoff(&requested),
-            &spinoff_json(&format!("s-{ULID_B}"), RUN),
-        );
-        assert!(matches!(
-            read_spinoff_opt(&paths, &requested),
-            Err(Error::CorruptProjection {
-                kind: "spinoff",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn read_spinoff_rejects_foreign_run_id() {
-        let (_tmp, paths) = setup();
-        let requested = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        write_raw(
-            &paths.spinoff(&requested),
-            &spinoff_json(&format!("s-{ULID_A}"), FOREIGN_RUN),
-        );
-        assert!(matches!(
-            read_spinoff(&paths, &requested),
-            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id, .. })
-                if expected_id == RUN && body_id == FOREIGN_RUN
-        ));
-    }
-
-    #[test]
     fn read_manifest_rejects_foreign_run_id() {
         // The manifest is keyed by its directory, so a foreign-run manifest
         // restored into this run's dir is the same class of corruption.
@@ -848,50 +506,6 @@ mod tests {
         let n: Node = serde_json::from_value(node_json("n-0001", RUN)).unwrap();
         write_node(&paths, &n).unwrap();
         assert!(paths.node(&n.node_id).exists());
-    }
-
-    #[test]
-    fn write_discussion_rejects_foreign_run_id() {
-        let (_tmp, paths) = setup();
-        let d: Discussion =
-            serde_json::from_value(discussion_json(&format!("d-{ULID_A}"), FOREIGN_RUN)).unwrap();
-        assert!(matches!(
-            write_discussion(&paths, &d),
-            Err(Error::CorruptProjection { kind: "discussion_run_id", expected_id, body_id, .. })
-                if expected_id == RUN && body_id == FOREIGN_RUN
-        ));
-        assert!(!paths.discussion(&d.discussion_id).exists());
-    }
-
-    #[test]
-    fn write_discussion_accepts_matching_run_id() {
-        let (_tmp, paths) = setup();
-        let d: Discussion =
-            serde_json::from_value(discussion_json(&format!("d-{ULID_A}"), RUN)).unwrap();
-        write_discussion(&paths, &d).unwrap();
-        assert!(paths.discussion(&d.discussion_id).exists());
-    }
-
-    #[test]
-    fn write_spinoff_rejects_foreign_run_id() {
-        let (_tmp, paths) = setup();
-        let s: SpinoffProposal =
-            serde_json::from_value(spinoff_json(&format!("s-{ULID_A}"), FOREIGN_RUN)).unwrap();
-        assert!(matches!(
-            write_spinoff(&paths, &s),
-            Err(Error::CorruptProjection { kind: "spinoff_run_id", expected_id, body_id, .. })
-                if expected_id == RUN && body_id == FOREIGN_RUN
-        ));
-        assert!(!paths.spinoff(&s.proposal_id).exists());
-    }
-
-    #[test]
-    fn write_spinoff_accepts_matching_run_id() {
-        let (_tmp, paths) = setup();
-        let s: SpinoffProposal =
-            serde_json::from_value(spinoff_json(&format!("s-{ULID_A}"), RUN)).unwrap();
-        write_spinoff(&paths, &s).unwrap();
-        assert!(paths.spinoff(&s.proposal_id).exists());
     }
 
     #[test]
@@ -975,88 +589,6 @@ mod tests {
             ),
             other => panic!("expected Error::Io(ELOOP), got {other:?}"),
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn read_discussion_rejects_symlinked_discussions_dir() {
-        use std::os::unix::fs::symlink;
-        let (tmp, paths) = setup();
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::remove_dir(paths.discussions_dir()).unwrap();
-        symlink(&outside, paths.discussions_dir()).unwrap();
-        let id = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        write_raw(
-            &outside.join(format!("d-{ULID_A}.json")),
-            &discussion_json(&format!("d-{ULID_A}"), RUN),
-        );
-        assert!(matches!(
-            read_discussion(&paths, &id),
-            Err(Error::SymlinkSubdir {
-                name: "discussions",
-                ..
-            })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn read_discussion_rejects_symlinked_discussion_file() {
-        use std::os::unix::fs::symlink;
-        let (tmp, paths) = setup();
-        let id = DiscussionId::parse_str(&format!("d-{ULID_A}")).unwrap();
-        let target = tmp.path().join("evil-discussion.json");
-        write_raw(&target, &discussion_json(&format!("d-{ULID_A}"), RUN));
-        symlink(&target, paths.discussion(&id)).unwrap();
-        assert!(matches!(
-            read_discussion(&paths, &id),
-            Err(Error::SymlinkStateFile {
-                name: "discussion",
-                ..
-            })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn read_spinoff_rejects_symlinked_spinoffs_dir() {
-        use std::os::unix::fs::symlink;
-        let (tmp, paths) = setup();
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::remove_dir(paths.spinoffs_dir()).unwrap();
-        symlink(&outside, paths.spinoffs_dir()).unwrap();
-        let id = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        write_raw(
-            &outside.join(format!("s-{ULID_A}.json")),
-            &spinoff_json(&format!("s-{ULID_A}"), RUN),
-        );
-        assert!(matches!(
-            read_spinoff(&paths, &id),
-            Err(Error::SymlinkSubdir {
-                name: "spinoffs",
-                ..
-            })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn read_spinoff_rejects_symlinked_spinoff_file() {
-        use std::os::unix::fs::symlink;
-        let (tmp, paths) = setup();
-        let id = ProposalId::parse_str(&format!("s-{ULID_A}")).unwrap();
-        let target = tmp.path().join("evil-spinoff.json");
-        write_raw(&target, &spinoff_json(&format!("s-{ULID_A}"), RUN));
-        symlink(&target, paths.spinoff(&id)).unwrap();
-        assert!(matches!(
-            read_spinoff(&paths, &id),
-            Err(Error::SymlinkStateFile {
-                name: "spinoff",
-                ..
-            })
-        ));
     }
 
     #[cfg(unix)]

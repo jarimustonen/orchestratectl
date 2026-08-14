@@ -3,8 +3,7 @@
 //! See `issues/orchestratectl-mvp/design.md` for the canonical schema and
 //! protocol references. This crate provides:
 //!
-//! - The on-disk schema types ([`Manifest`], [`Node`], [`Event`],
-//!   [`Discussion`], [`SpinoffProposal`]).
+//! - The on-disk schema types ([`Manifest`], [`Node`], [`Event`]).
 //! - Atomic write helpers ([`atomic`]) and per-run advisory `flock`
 //!   ([`RunLock`]).
 //! - The canonical mutation entry point
@@ -43,7 +42,7 @@ pub use events::{
     find_prior_with_key, quarantine_corrupt_lines, quarantine_corrupt_lines_unlocked,
     read_all_events, recover_last_seq, AppendOutcome, AppendResult, PriorEvent, Quarantine,
 };
-pub use ids::{format_node_id, new_discussion_id, new_proposal_id, new_run_id};
+pub use ids::{format_node_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};
 pub use paths::{nofollow, run_dir, validate_run_id, RunPaths};
 pub use plan::{
@@ -52,15 +51,13 @@ pub use plan::{
     PROVENANCE_REQUIRED_SCHEMA, SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
 };
 pub use projections::{
-    read_discussion, read_discussion_opt, read_manifest, read_manifest_opt, read_node,
-    read_node_opt, read_spinoff, read_spinoff_opt, write_node,
+    read_manifest, read_manifest_opt, read_node, read_node_opt, write_node,
 };
 pub use reducer::{plan_projections, VIA_EXPLICIT_MERGE};
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
-    is_run_id_prefix, ChildRef, Discussion, DiscussionId, DiscussionStatus, Event,
-    IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId, ProposalId, RunId, SpinoffProposal,
-    SpinoffStatus, Status, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
+    is_run_id_prefix, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId,
+    RunId, Status, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,

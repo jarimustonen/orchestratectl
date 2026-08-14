@@ -36,45 +36,9 @@ pub fn is_run_id_prefix(s: &str) -> bool {
         && matches!(s.as_bytes().first(), Some(b'0'..=b'7'))
 }
 
-/// True iff every byte of `s` is an RFC 4648 base32 character, lowercase
-/// (`a-z` and `2-7`). Distinct from Crockford in both directions: it *includes*
-/// `i`/`l`/`o`/`u` and *excludes* `0`/`1`/`8`/`9`. This is the alphabet of the
-/// 10-char deterministic-id (`x-<sha-prefix>`) form the supervisor emits — see
-/// `octl_cli::supervise::reducer::base32_lower_10`.
-fn all_rfc4648_base32_lower(s: &str) -> bool {
-    s.bytes()
-        .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
-}
-
-/// True iff `body` is a canonical [`DiscussionId`] / [`ProposalId`] body: the
-/// *syntactic* union of the two shapes real generators use.
-///
-/// 1. A 26-char lowercase Crockford base32 string — the `d-<ulid>` / `s-<ulid>`
-///    shape from [`crate::new_discussion_id`] / [`crate::new_proposal_id`].
-/// 2. A 10-char RFC 4648 base32 lowercase string (`a-z2-7`) — the
-///    deterministic-id (`x-<sha-prefix>`) shape the supervisor emits.
-///
-/// This is a length+charset check, not proof a value was actually emitted by a
-/// generator. Two deliberate looseness notes:
-/// - The 10-char arm accepts any RFC 4648 base32 string (e.g. `zzzzzzzzzz`),
-///   not only sha-derived ones — the supervisor's digest prefix is itself
-///   uniform over that alphabet, so there is no charset rule that separates
-///   "real" from "syntactically possible" output.
-/// - The 26-char arm checks the Crockford charset only; unlike [`RunId`] it does
-///   *not* enforce the first-char `0..=7` ULID-timestamp bound. Tightening
-///   [`RunId`]/[`NodeId`] is out of scope for this validator (it would also
-///   reject the looser ULID-shaped fixtures the suite still uses); the goal here
-///   is just to reject the previously-accepted-but-impossible loose forms — any
-///   body length other than 10 or 26, a 10-char body carrying `0`/`1`/`8`/`9`,
-///   or a 26-char body carrying `i`/`l`/`o`/`u`.
-fn is_canonical_disc_or_proposal_body(body: &str) -> bool {
-    (body.len() == 26 && all_crockford_lower(body))
-        || (body.len() == 10 && all_rfc4648_base32_lower(body))
-}
-
 /// Error returned when a typed identifier fails parse-time validation.
 ///
-/// Every [`RunId`], [`NodeId`], [`DiscussionId`], and [`ProposalId`] is
+/// Every [`RunId`] and [`NodeId`] is
 /// constructed only through its `parse_str` constructor (or the equivalent
 /// validating `Deserialize`), so any value that reaches a path helper has
 /// already been checked for prefix, charset, and length. This is the
@@ -264,99 +228,34 @@ impl NodeId {
     }
 }
 
-id_newtype! {
-    /// A validated discussion identifier: `d-` followed by exactly one of the
-    /// two canonical bodies a generator emits — a 26-char lowercase Crockford
-    /// base32 ULID (`d-<ulid>`) or a 10-char RFC 4648 base32 lowercase string
-    /// (`d-<sha-prefix>`, the deterministic-id form). See
-    /// [`is_canonical_disc_or_proposal_body`](crate::schema).
-    DiscussionId
-}
-
-impl DiscussionId {
-    /// Accepted-shape hint shared by every rejection.
-    const EXPECTED: &'static str =
-        "d- followed by a 26-char lowercase Crockford ULID or a 10-char RFC 4648 base32 lowercase id (a-z2-7)";
-
-    /// Parse and validate a `discussion_id`. Requires the `d-` prefix followed
-    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`](crate::schema).
-    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
-        let body = s.strip_prefix("d-").ok_or(IdValidationError::WrongPrefix {
-            kind: "discussion",
-            expected: Self::EXPECTED,
-        })?;
-        if is_canonical_disc_or_proposal_body(body) {
-            Ok(Self(s.to_string()))
-        } else {
-            Err(IdValidationError::InvalidFormat {
-                kind: "discussion",
-                value: s.to_string(),
-                expected: Self::EXPECTED,
-            })
-        }
-    }
-}
-
-id_newtype! {
-    /// A validated spin-off proposal identifier: `s-` followed by exactly one
-    /// of the two canonical bodies a generator emits — a 26-char lowercase
-    /// Crockford base32 ULID (`s-<ulid>`) or a 10-char RFC 4648 base32 lowercase
-    /// string (`s-<sha-prefix>`, the deterministic-id form). See
-    /// [`is_canonical_disc_or_proposal_body`](crate::schema).
-    ProposalId
-}
-
-impl ProposalId {
-    /// Accepted-shape hint shared by every rejection.
-    const EXPECTED: &'static str =
-        "s- followed by a 26-char lowercase Crockford ULID or a 10-char RFC 4648 base32 lowercase id (a-z2-7)";
-
-    /// Parse and validate a `proposal_id`. Requires the `s-` prefix followed
-    /// by exactly one canonical body — see [`is_canonical_disc_or_proposal_body`](crate::schema).
-    pub fn parse_str(s: &str) -> Result<Self, IdValidationError> {
-        let body = s.strip_prefix("s-").ok_or(IdValidationError::WrongPrefix {
-            kind: "spinoff",
-            expected: Self::EXPECTED,
-        })?;
-        if is_canonical_disc_or_proposal_body(body) {
-            Ok(Self(s.to_string()))
-        } else {
-            Err(IdValidationError::InvalidFormat {
-                kind: "spinoff",
-                value: s.to_string(),
-                expected: Self::EXPECTED,
-            })
-        }
-    }
-}
-
 /// The run/node kind enum (design.md §1.2).
 ///
-/// All 8 kinds are active in MVP.
+/// The 0.2 subtractive cut removed the `code`, `orchestrate`, `orchestrated`,
+/// `bugfix`, and `make-skill` kinds (the interactive + DAG-driver topologies and
+/// the two phantom variants that were behaviourally `Spinoff`). The surviving
+/// kinds are all autonomous. [`Kind::Unknown`] is a read-only catch-all so a
+/// legacy on-disk run recorded under a since-removed kind still deserializes —
+/// `doctor` / `run list` report it, never delete it (ADR §D7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
-    /// Interactive, human-reviewed coding worktree (`/worktree-code`).
-    Code,
     /// Autonomous fire-and-forget task that merges itself back (`/worktree-spinoff`).
     Spinoff,
-    /// Orchestrated worker reporting to an orchestrator (`/worktree-orchestrated`).
-    Orchestrated,
     /// Autonomous multi-source research worktree (`/worktree-research`).
     Research,
     /// Drives one architectural decision to an ADR (`/worktree-technical-decision`).
     TechnicalDecision,
-    /// Authors a new Claude Code skill (`/worktree-make-skill`).
-    MakeSkill,
     /// Parallel fan-out of many identical units (`/fan-out`).
     FanOut,
-    /// End-to-end bug investigate-fix-review worktree (`/worktree-bugfix`).
-    Bugfix,
-    /// Top-level DAG driver run (`/orchestrate`). Coordinates `Kind::Orchestrated`
-    /// child workers. Has no worktree of its own — the orchestrator agent runs
-    /// in the user's main conversation and uses the run dir only to host the
-    /// event log, manifest, and final hierarchical report.
-    Orchestrate,
+    /// A kind this build no longer models — a legacy run recorded on disk under a
+    /// kind removed in the 0.2 cut (`code` / `orchestrate` / `orchestrated` /
+    /// `bugfix` / `make-skill`), or any future/unknown wire value. Read-only:
+    /// `#[serde(other)]` maps every unrecognized kind here so `doctor` / `run
+    /// list` can still surface such a run rather than faulting on it (ADR §D7).
+    /// It is NEVER a creatable kind — it is absent from [`Kind::WIRE_NAMES`], so
+    /// no CLI surface or report validator accepts it as input.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Kind {
@@ -370,49 +269,37 @@ impl Kind {
     #[must_use]
     pub const fn wire_name(self) -> &'static str {
         match self {
-            Kind::Code => "code",
             Kind::Spinoff => "spinoff",
-            Kind::Orchestrated => "orchestrated",
             Kind::Research => "research",
             Kind::TechnicalDecision => "technical-decision",
-            Kind::MakeSkill => "make-skill",
             Kind::FanOut => "fan-out",
-            Kind::Bugfix => "bugfix",
-            Kind::Orchestrate => "orchestrate",
+            Kind::Unknown => "unknown",
         }
     }
 
-    /// Every kind's kebab-case wire name, in declaration order. Single
-    /// source of truth for "the set of accepted kinds" — see [`Kind::wire_name`].
+    /// Every *creatable* kind's kebab-case wire name, in declaration order.
+    /// Single source of truth for "the set of accepted kinds" — see
+    /// [`Kind::wire_name`]. Excludes [`Kind::Unknown`], which is a read-only
+    /// catch-all, never a valid input.
     pub const WIRE_NAMES: &'static [&'static str] = &[
-        Kind::Code.wire_name(),
         Kind::Spinoff.wire_name(),
-        Kind::Orchestrated.wire_name(),
         Kind::Research.wire_name(),
         Kind::TechnicalDecision.wire_name(),
-        Kind::MakeSkill.wire_name(),
         Kind::FanOut.wire_name(),
-        Kind::Bugfix.wire_name(),
-        Kind::Orchestrate.wire_name(),
     ];
 
-    /// Default lifecycle for a kind (design.md §7.4). `code` is
-    /// interactive (human-driven inside tmux); every other MVP kind is
-    /// autonomous (agent runs to completion, watchdog adjudicates).
+    /// Default lifecycle for a kind (design.md §7.4). Every surviving kind is
+    /// autonomous (agent runs to completion, watchdog adjudicates) — the 0.2 cut
+    /// removed the interactive kinds, emptying `Lifecycle::Interactive`.
+    /// [`Kind::Unknown`] (a legacy on-disk run) reads as autonomous too; it is
+    /// never freshly supervised, so the value only ever feeds read-only display.
     pub fn lifecycle(self) -> Lifecycle {
         match self {
-            // `Code` is human-driven inside tmux. `Orchestrate` is also
-            // interactive in the sense that the orchestrator agent runs in
-            // the user's main conversation — there is no detached worker
-            // for the watchdog to adjudicate, only the children it spawns.
-            Kind::Code | Kind::Orchestrate => Lifecycle::Interactive,
             Kind::Spinoff
-            | Kind::Orchestrated
             | Kind::Research
             | Kind::TechnicalDecision
-            | Kind::MakeSkill
             | Kind::FanOut
-            | Kind::Bugfix => Lifecycle::Autonomous,
+            | Kind::Unknown => Lifecycle::Autonomous,
         }
     }
 
@@ -422,23 +309,17 @@ impl Kind {
     /// kinds eligible for the supervisor's bounded auto-retry on an empty-handed
     /// `agent-died` (issue `autoretry-agent-died-worker`).
     ///
-    /// Excludes:
-    /// - `Code` / `Orchestrate` (interactive — a human drives; never force-retry);
-    /// - `FanOut` (a multi-unit driver — its driver node has no agent of its own);
-    /// - `Orchestrated` (a DAG child — its PARENT supervisor owns its retry policy,
-    ///   so retrying it independently would desync the parent's child bookkeeping).
+    /// Excludes `FanOut` (a multi-unit driver — its driver node has no agent of
+    /// its own) and [`Kind::Unknown`] (a legacy on-disk run, never freshly
+    /// supervised).
     ///
     /// The exhaustive `match` fails to compile when a new `Kind` is added, forcing
     /// a deliberate eligibility decision rather than a silent default.
     #[must_use]
     pub fn is_autonomous_single_node_worker(self) -> bool {
         match self {
-            Kind::Spinoff
-            | Kind::Research
-            | Kind::TechnicalDecision
-            | Kind::MakeSkill
-            | Kind::Bugfix => true,
-            Kind::Code | Kind::Orchestrate | Kind::FanOut | Kind::Orchestrated => false,
+            Kind::Spinoff | Kind::Research | Kind::TechnicalDecision => true,
+            Kind::FanOut | Kind::Unknown => false,
         }
     }
 }
@@ -488,28 +369,6 @@ impl Status {
     pub fn is_terminal(self) -> bool {
         matches!(self, Status::Done | Status::Failed | Status::Cancelled)
     }
-}
-
-/// Discussion lifecycle status (design.md §1.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DiscussionStatus {
-    /// Awaiting a decision.
-    Open,
-    /// A choice has been recorded; the run may proceed.
-    Resolved,
-}
-
-/// Spin-off proposal status (design.md §1.5, §7.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SpinoffStatus {
-    /// Suggested by an agent, awaiting human triage.
-    Proposed,
-    /// Accepted; typically promoted to a tracked issue.
-    Approved,
-    /// Declined, with a reason recorded.
-    Rejected,
 }
 
 /// `manifest.json` (design.md §1.2).
@@ -590,10 +449,6 @@ pub struct Manifest {
     pub harness: Option<String>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
-    /// Count of currently open discussions (denormalized counter).
-    pub open_discussions: u32,
-    /// Count of currently pending spin-off proposals (denormalized counter).
-    pub pending_spinoffs: u32,
     /// Run that spawned this run, if it is itself a child.
     pub parent_run_id: Option<RunId>,
     /// Node in the parent run that spawned this run, if any.
@@ -756,71 +611,6 @@ impl TmuxIdentity {
     }
 }
 
-/// `discussions/<discussion-id>.json` (design.md §1.5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Discussion {
-    /// State-schema version this file was written with.
-    pub schema_version: u32,
-    /// Unique discussion identifier. Validated on read; this is the
-    /// projection's filename key, so it can never name a path outside
-    /// `discussions/`.
-    pub discussion_id: DiscussionId,
-    /// Run this discussion belongs to. Validated on read.
-    pub run_id: RunId,
-    /// Node that opened the discussion. Validated on read.
-    pub node_id: NodeId,
-    /// When the discussion was opened.
-    pub opened_at: DateTime<Utc>,
-    /// Severity tag (e.g. `critical`, `normal`) driving alerting.
-    pub severity: String,
-    /// Short summary of what needs deciding.
-    pub topic: String,
-    /// Optional longer context for the decision.
-    pub context: Option<String>,
-    /// Candidate choices offered to the resolver.
-    #[serde(default)]
-    pub options: Vec<String>,
-    /// Open vs resolved.
-    pub status: DiscussionStatus,
-    /// The chosen resolution, once resolved.
-    pub resolution: Option<String>,
-    /// Free-form note accompanying the resolution.
-    #[serde(default)]
-    pub note: Option<String>,
-    /// When the discussion was resolved, if it has been.
-    pub resolved_at: Option<DateTime<Utc>>,
-}
-
-/// `spinoffs/<proposal-id>.json` (design.md §1.5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpinoffProposal {
-    /// State-schema version this file was written with.
-    pub schema_version: u32,
-    /// Unique proposal identifier. Validated on read; this is the projection's
-    /// filename key, so it can never name a path outside `spinoffs/`.
-    pub proposal_id: ProposalId,
-    /// Run this proposal belongs to. Validated on read.
-    pub run_id: RunId,
-    /// Node that proposed the spin-off. Validated on read.
-    pub node_id: NodeId,
-    /// When the proposal was made.
-    pub proposed_at: DateTime<Utc>,
-    /// Suggested title for the spun-off work.
-    pub proposed_title: String,
-    /// Suggested kind for the spun-off run.
-    pub proposed_kind: Kind,
-    /// Why the agent proposed this spin-off.
-    pub rationale: Option<String>,
-    /// Proposed / approved / rejected.
-    pub status: SpinoffStatus,
-    /// Issue slug the proposal was promoted to, once approved.
-    pub accepted_as_issue_slug: Option<String>,
-    /// Reason recorded when the proposal is rejected.
-    pub rejected_reason: Option<String>,
-    /// When the proposal was approved or rejected, if it has been.
-    pub resolved_at: Option<DateTime<Utc>>,
-}
-
 /// One event-log line (design.md §1.4).
 ///
 /// `run_id` / `node_id` are the typed id newtypes, so deserializing an
@@ -882,16 +672,10 @@ mod tests {
 
     /// The bounded auto-retry eligibility gate (issue `autoretry-agent-died-worker`)
     /// must include exactly the autonomous single-node worker kinds and exclude
-    /// interactive kinds, the fan-out driver, and the DAG child.
+    /// the fan-out driver (and the read-only `Unknown` catch-all).
     #[test]
     fn autonomous_single_node_worker_set_is_exact() {
-        for k in [
-            Kind::Spinoff,
-            Kind::Research,
-            Kind::TechnicalDecision,
-            Kind::MakeSkill,
-            Kind::Bugfix,
-        ] {
+        for k in [Kind::Spinoff, Kind::Research, Kind::TechnicalDecision] {
             assert!(
                 k.is_autonomous_single_node_worker(),
                 "{k:?} should be retry-eligible"
@@ -899,15 +683,36 @@ mod tests {
             assert_eq!(k.lifecycle(), Lifecycle::Autonomous);
         }
         for k in [
-            Kind::Code,         // interactive — a human drives
-            Kind::Orchestrate,  // interactive driver
-            Kind::FanOut,       // multi-unit driver
-            Kind::Orchestrated, // DAG child — parent owns its retry policy
+            Kind::FanOut,  // multi-unit driver
+            Kind::Unknown, // legacy on-disk run — never freshly supervised
         ] {
             assert!(
                 !k.is_autonomous_single_node_worker(),
                 "{k:?} must NOT be retry-eligible"
             );
+        }
+    }
+
+    /// A legacy run recorded under a since-removed kind must still deserialize
+    /// to the read-only [`Kind::Unknown`] catch-all rather than faulting the
+    /// read — the ADR §D7 "report, never delete" contract for the on-disk
+    /// evidence corpus. Every creatable kind still round-trips to itself.
+    #[test]
+    fn removed_kinds_deserialize_to_unknown() {
+        for removed in ["code", "orchestrate", "orchestrated", "bugfix", "make-skill"] {
+            let kind: Kind = serde_json::from_value(Value::String(removed.to_string()))
+                .expect("a removed kind must still deserialize, not fault");
+            assert_eq!(kind, Kind::Unknown, "{removed:?} should map to Unknown");
+        }
+        // A wholly unknown value maps there too (forward-compat).
+        assert_eq!(
+            serde_json::from_value::<Kind>(Value::String("future-kind".into())).unwrap(),
+            Kind::Unknown
+        );
+        // The surviving kinds are unaffected.
+        for &name in Kind::WIRE_NAMES {
+            let kind: Kind = serde_json::from_value(Value::String(name.to_string())).unwrap();
+            assert_ne!(kind, Kind::Unknown, "{name:?} must not fold to Unknown");
         }
     }
 
@@ -1040,108 +845,12 @@ mod id_tests {
     }
 
     #[test]
-    fn discussion_id_accepts_both_canonical_forms_and_rejects_malformed() {
-        let gen = crate::new_discussion_id();
-        assert!(
-            DiscussionId::parse_str(&gen).is_ok(),
-            "generator must validate: {gen}"
-        );
-        // 26-char lowercase Crockford ULID form.
-        assert!(DiscussionId::parse_str("d-01arz3ndektsv4rrffq69g5fav").is_ok());
-        // 10-char RFC 4648 base32 deterministic-id form (contains i/l/o/u and
-        // 2-7), which the supervisor actually emits — must validate.
-        assert!(DiscussionId::parse_str("d-ilou234567").is_ok());
-        assert!(DiscussionId::parse_str("d-abcdefghij").is_ok());
-        // A 10-char body of all-`z` is a legitimate RFC 4648 base32 string
-        // (`z` is in `a-z2-7`), so it is accepted — same class as `ilou234567`.
-        // The issue's success-criteria example listing `d-zzzzzzzzzz` among
-        // "now-invalid" forms is imprecise: it IS canonical RFC 4648 base32 and
-        // there is no charset-based rule that rejects it without also rejecting
-        // the supervisor's real deterministic ids.
-        assert!(DiscussionId::parse_str("d-zzzzzzzzzz").is_ok());
-        assert!(matches!(
-            DiscussionId::parse_str("s-0123456789"),
-            Err(IdValidationError::WrongPrefix { .. })
-        ));
-        for bad in [
-            "d-0123456789",                   // 10 chars but `0`/`1` ∉ RFC 4648 base32
-            "d-short",                        // body < 10
-            "d-abcdefghijk",                  // 11 chars — between the two forms
-            "d-01arz3ndektsv4rrffq69g5fa",    // 25 chars — one short of a ULID
-            "d-0123456789012345678901234567", // body > 26
-            "d-01arz3ndeilov4rrffq69g5fav",   // 26 chars but carries `i`/`l`/`o` ∉ Crockford
-            "d-ABCDEFGHIJ",                   // uppercase not allowed
-            "d-abc_def012",                   // `_` outside both alphabets
-            "d-",                             // empty body
-        ] {
-            assert!(
-                matches!(
-                    DiscussionId::parse_str(bad),
-                    Err(IdValidationError::InvalidFormat { .. })
-                ),
-                "expected InvalidFormat: {bad:?}",
-            );
-        }
-        for bad in TRAVERSAL_VECTORS {
-            assert!(
-                DiscussionId::parse_str(bad).is_err(),
-                "traversal not rejected: {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn proposal_id_accepts_both_canonical_forms_and_rejects_malformed() {
-        let gen = crate::new_proposal_id();
-        assert!(
-            ProposalId::parse_str(&gen).is_ok(),
-            "generator must validate: {gen}"
-        );
-        // 26-char lowercase Crockford ULID form.
-        assert!(ProposalId::parse_str("s-01arz3ndektsv4rrffq69g5fav").is_ok());
-        // 10-char RFC 4648 base32 deterministic-id form (the supervisor's
-        // actual output); `u` is valid RFC 4648 base32.
-        assert!(ProposalId::parse_str("s-uuuuuuuuuu").is_ok());
-        assert!(matches!(
-            ProposalId::parse_str("d-0123456789"),
-            Err(IdValidationError::WrongPrefix { .. })
-        ));
-        for bad in [
-            "s-0123456789",                 // 10 chars but `0`/`1` ∉ RFC 4648 base32
-            "s-short",                      // body < 10
-            "s-abcdefghijk",                // 11 chars — between the two forms
-            "s-01arz3ndeilov4rrffq69g5fav", // 26 chars but carries `i`/`l`/`o` ∉ Crockford
-            "s-ABCDEFGHIJ",                 // uppercase not allowed
-            "s-abc.def012",                 // `.` outside both alphabets
-            "s-",                           // empty body
-        ] {
-            assert!(
-                matches!(
-                    ProposalId::parse_str(bad),
-                    Err(IdValidationError::InvalidFormat { .. })
-                ),
-                "expected InvalidFormat: {bad:?}",
-            );
-        }
-        for bad in TRAVERSAL_VECTORS {
-            assert!(
-                ProposalId::parse_str(bad).is_err(),
-                "traversal not rejected: {bad:?}"
-            );
-        }
-    }
-
-    #[test]
     fn deserialize_rejects_malformed_ids() {
         // The validating Deserialize impl is the on-read guard: a tampered
         // projection file whose key no longer validates must fail to parse.
         assert!(serde_json::from_str::<NodeId>("\"n-0001\"").is_ok());
         assert!(serde_json::from_str::<NodeId>("\"../../etc\"").is_err());
-        assert!(serde_json::from_str::<DiscussionId>("\"d-../escape\"").is_err());
-        // Canonical 10-char RFC 4648 base32 body deserializes; the old
-        // loose-charset `s-0123456789` (carries `0`/`1`) no longer does.
-        assert!(serde_json::from_str::<ProposalId>("\"s-abcdefghij\"").is_ok());
-        assert!(serde_json::from_str::<ProposalId>("\"s-0123456789\"").is_err());
+        assert!(serde_json::from_str::<NodeId>("\"n-../escape\"").is_err());
     }
 
     #[test]

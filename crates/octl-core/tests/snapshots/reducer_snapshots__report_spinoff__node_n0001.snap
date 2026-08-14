@@ -1,6 +1,5 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
-assertion_line: 83
 expression: v
 ---
 {
