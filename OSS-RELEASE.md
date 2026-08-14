@@ -7,7 +7,12 @@ targets:
   - {ecosystem: rust, package: orchestratectl, registry: crates.io, adapter: cargo-publish}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
-release: {model: gated, layout: single}
+release: {model: gated, layout: single, bump_hook: "INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots"}
+distribution:
+  adapter: cargo-dist
+  installers: [shell, homebrew]
+  homebrew_tap: jarimustonen/homebrew-orchestratectl
+  platforms: [aarch64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
 provenance_level: keyless
 dependency_bot: dependabot
 health_badges: [ci, registry, license]
@@ -64,15 +69,35 @@ docs_site: none
   2. **Refresh the `version_*` insta snapshots** — the `version` command output is
      snapshotted (`crates/octl-cli/tests/snapshots/envelope_snapshots__version_{text,json,jsonl}.snap`),
      so those fixtures bake in the literal crate version and go stale on a bump.
-     Re-accept them and re-run the suite:
+     This step is now **automated** at cut time by the declared `release.bump_hook`
+     (see below) — no manual accept is needed on a `ossctl release cut --bump …`.
+     To do it by hand (e.g. a manual bump outside the engine), run the same hook:
      ```bash
-     cargo insta test --accept -p orchestratectl   # or the find/mv accept loop
+     INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
      cargo test --workspace
      ```
   Skipping step 2 turned `main` CI red *after* the v0.1.8 tag was already cut (the
   local integrated gate ran before the bump). The `version-snapshots` CI job and
   `scripts/check-version-snapshots.sh` now fail loudly on this mismatch — run the
   script locally after any bump for a fast pre-publish check.
+- **`release.bump_hook` — auto-regenerate the `version_*` snapshots on a `--bump` cut.**
+  ossctl 0.5.0's `release cut --bump major|minor|patch` bumps `[workspace.package]
+  version`, rewrites the intra-workspace `=<ver>` pin, refreshes `Cargo.lock`,
+  finalizes the CHANGELOG, then runs the contract's `release.bump_hook` (`sh -c`, cwd
+  = repo root, AFTER the version edit) and **folds its file changes into the bump
+  commit**. The declared hook is:
+  ```
+  INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
+  ```
+  `INSTA_UPDATE=always` makes `insta` rewrite the mismatched snapshots **in place** and
+  pass (exit 0) — dependency-free (does NOT require `cargo-insta`, which is not present
+  in the cut/CI environment) and needs no `.snap.new` find/mv accept loop. Scoped to the
+  `envelope_snapshots` test — the only one that embeds the crate version — so a version
+  bump only rewrites the three `version_{text,json,jsonl}` snapshots and nothing else. It
+  never edits `[workspace.package] version`, so it satisfies the executor's post-hook
+  guard (the cut **fails closed** if the hook exits non-zero or leaves the version
+  altered). Validated against ossctl 0.5.0 (`contract validate` + `release plan --bump
+  minor`) and by a scratch 0.1.8→0.2.0 bump whose diff was exactly the three snapshots.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
   cannot be undone — a version can be yanked but never re-used or overwritten. Verify both
   crates' `version`/dependency pins before the first publish.
