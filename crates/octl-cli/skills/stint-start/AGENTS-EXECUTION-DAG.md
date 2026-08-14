@@ -135,15 +135,27 @@ assignment, order, and `collision:` tags; only reconcile the *set* of issues.
 **Head-of-line (compute on read, never trust the printed `▶`):**
 
 - An issue is **eligible** iff it is in the active set (which already excludes `deferred`
-  and still-`needs-triage` intake), is **not already** `in-progress` and has **no
-  launched-but-unsettled run** this round (a worktree already has it), and every
-  `blocked_by` target is **delivered** — `status ∈ {fixed, done}`. Any **other** terminal status (`wontfix` / `obsolete` /
+  and still-`needs-triage` intake) and every `blocked_by` target is **delivered** —
+  `status ∈ {fixed, done}`. Any **other** terminal status (`wontfix` / `obsolete` /
   `cannot-reproduce` / `duplicate`) does **not** satisfy the dependency (the code was never
   built) — the dependent stays blocked; flag it to the user.
+- **`in-progress` does NOT exclude an issue — surface it, aggressively.** `in-progress`
+  means STARTED, not "being worked right now": the status alone does not prove a live run
+  currently owns the issue. A started-but-unfinished issue with no launched-but-unsettled
+  run this round is exactly a **resumable candidate** to pick back up — never a reason to
+  skip it. Double-work prevention is **not**
+  the eligibility rule; it is the caller's **reserve-at-launch / claim** responsibility: a
+  run launched **this round** holds its issue (and its collision files) until it settles,
+  even before its first commit flips the issue to `in-progress` (see the spawnable rule
+  below and `stint-start` Phase 2 — reserve at launch, not at first commit). That guard,
+  not the head-of-line predicate, is what prevents two workers grabbing the same issue.
 - `head(lane)` = the first eligible issue in that lane's order.
-- A head is **spawnable** iff none of its collision files (its lane's hot-file family + any
-  `collision:` tag) is held by a live *or* launched-but-unsettled run (see `stint-start`
-  Phase 2 (Orchestrate) — reserve at launch, not at first commit).
+- A head is **spawnable** iff no launched-but-unsettled run **this round** already covers
+  its issue AND none of its collision files (its lane's hot-file family + any `collision:`
+  tag) is held by a live *or* launched-but-unsettled run (see `stint-start` Phase 2
+  (Orchestrate) — reserve at launch, not at first commit). This is the sole double-work
+  guard: an already-`in-progress` issue with no launched-but-unsettled run this round is a
+  resumable head, so it *is* spawnable (you resume it).
 - `GLOBAL HEAD-OF-LINE` = pick among spawnable heads: an explicit handoff "start here"
   first, else highest `issuectl` priority, else the top-most lane in the file (then its
   first eligible item), else slug order.

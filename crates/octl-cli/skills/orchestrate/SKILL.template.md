@@ -197,8 +197,19 @@ Record the branch in `report.yaml`'s top-level metadata.
 
 While there are features not yet `done` or `failed`:
 
-1. Find every feature whose `depends_on` set is fully `done` and that
-   is not currently `running`.
+1. Find every feature whose `depends_on` set is fully `done` and that is
+   not held by a **launched-but-unsettled child** this campaign (one you
+   launched and have not yet seen settle, including one reconstructed by
+   `run reattach`). A feature is spawnable whenever no unsettled child
+   currently covers it — *started* is not the exclusion. A feature whose
+   child crashed or settled without merging is **started but not covered**,
+   so it is a **resumable** candidate to surface and hand to the recovery
+   rules below, never one to skip because it once began. Double-spawn is
+   prevented by the **launch reservation** — you hold a feature the moment
+   its `run create` returns — not by reading a started status as a permanent
+   claim. (The stable `--idempotency-key <campaign-slug>-<feature-id>-v1`
+   makes a re-issued create idempotent; it does not replace the versioned
+   `-r2` retry the recovery rules use for a terminally-failed child.)
 2. Up to the parallelism cap, spawn one child per ready feature:
 
    ```

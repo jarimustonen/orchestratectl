@@ -65,7 +65,11 @@ the DAG merge from memory.
   status. You **merge** it (drop only terminal issues, add active/non-terminal ones, keep
   the existing plan) — you never regenerate it from scratch. The head-of-line ("what's next") is **computed
   on read** by joining the DAG's lane order with live `issuectl` status; the printed
-  `▶` marker is only a snapshot. Full convention in the shared
+  `▶` marker is only a snapshot. An `in-progress` issue is **not** excluded from the
+  head-of-line — in-progress means *started*, not *being worked right now*, so a started
+  issue with no launched-but-unsettled run this round is a **resumable** candidate to
+  surface, not skip (double-work is prevented by reserving at launch — see Phase 2 — not by
+  the eligibility rule). Full convention in the shared
   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md). Editing the DAG is orchestration,
   not product code — do it in this session.
 - **Autonomous spinoffs run headless.** Every self-merging spinoff you spawn directly
