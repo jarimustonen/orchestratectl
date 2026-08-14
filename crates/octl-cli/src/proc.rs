@@ -36,6 +36,10 @@ pub struct CappedStream {
     pub bytes: Vec<u8>,
     /// `true` if the child produced more than `cap` bytes and the tail was
     /// dropped. Callers should warn and treat the bytes as a prefix only.
+    /// Retained as part of the capture contract even though the sole production
+    /// reader (the removed `spinoff approve` issuectl shell-out) is gone; still
+    /// asserted by this module's tests.
+    #[allow(dead_code)]
     pub truncated: bool,
 }
 

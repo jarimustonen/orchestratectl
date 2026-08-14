@@ -876,7 +876,7 @@ type WriteFingerprint = (u64, i64, i64, u64);
 fn projection_inodes(run_dir: &Path) -> std::collections::BTreeMap<String, WriteFingerprint> {
     use std::os::unix::fs::MetadataExt;
     let mut consider = vec![run_dir.join("manifest.json")];
-    for sub in ["nodes", "discussions", "spinoffs"] {
+    for sub in ["nodes"] {
         if let Ok(rd) = std::fs::read_dir(run_dir.join(sub)) {
             for ent in rd.flatten() {
                 let p = ent.path();
@@ -913,7 +913,7 @@ fn dry_run_projections_match_real_apply_writes() {
     let run_id = create_run(&home);
     let run_dir = home.path().join("runs").join(&run_id);
 
-    // Seed a node so the discussion event below references real state.
+    // Seed a first node so the run has real projection state.
     let nc = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
     run_ok(bin(&home).args([
         "--output",
@@ -929,11 +929,11 @@ fn dry_run_projections_match_real_apply_writes() {
         nc.to_str().unwrap(),
     ]));
 
-    let disc = write_json(
-        &home,
-        "disc.json",
-        json!({ "discussion_id": "d-parityaaaa", "node_id": "n-0001", "topic": "t" }),
-    );
+    // A second `node.created` plans BOTH the new node projection AND the manifest
+    // (node_count is a derived manifest counter), so the plan and the real apply
+    // — which also rewrites the manifest to advance the applied-seq watermark —
+    // touch the same file set.
+    let nc2 = write_json(&home, "nc2.json", json!({"kind": "spinoff"}));
 
     // 1. Dry-run reports the projections the reducer plans.
     let v = run_ok(bin(&home).args([
@@ -943,9 +943,11 @@ fn dry_run_projections_match_real_apply_writes() {
         "create",
         &run_id,
         "--kind",
-        "discussion.opened",
+        "node.created",
+        "--node-id",
+        "n-0002",
         "--from-file",
-        disc.to_str().unwrap(),
+        nc2.to_str().unwrap(),
         "--dry-run",
     ]));
     let mut planned: Vec<String> = v["data"]["projections"]
@@ -955,7 +957,7 @@ fn dry_run_projections_match_real_apply_writes() {
         .map(|p| p.as_str().unwrap().to_string())
         .collect();
     planned.sort();
-    assert!(!planned.is_empty(), "discussion.opened must plan writes");
+    assert!(!planned.is_empty(), "node.created must plan writes");
 
     // 2. Real apply — diff projection inodes to learn what was actually written.
     let before = projection_inodes(&run_dir);
@@ -966,9 +968,11 @@ fn dry_run_projections_match_real_apply_writes() {
         "create",
         &run_id,
         "--kind",
-        "discussion.opened",
+        "node.created",
+        "--node-id",
+        "n-0002",
         "--from-file",
-        disc.to_str().unwrap(),
+        nc2.to_str().unwrap(),
     ]));
     let after = projection_inodes(&run_dir);
     let mut touched: Vec<String> = after
@@ -1182,35 +1186,6 @@ fn run_created_kind_is_forbidden_via_event_create() {
 }
 
 #[test]
-fn path_traversal_in_data_discussion_id_rejected() {
-    let home = TempDir::new().unwrap();
-    let run_id = create_run(&home);
-    let p = write_json(
-        &home,
-        "evil.json",
-        json!({
-            "discussion_id": "../../etc/passwd",
-            "node_id": "n-0001",
-            "topic": "x",
-            "severity": "discuss",
-        }),
-    );
-    let (code, err) = run_fail(bin(&home).args([
-        "--output",
-        "json",
-        "event",
-        "create",
-        &run_id,
-        "--kind",
-        "discussion.opened",
-        "--from-file",
-        p.to_str().unwrap(),
-    ]));
-    assert_eq!(code, 1);
-    assert_eq!(err["error"]["code"], "invalid_id");
-}
-
-#[test]
 fn from_file_size_cap_enforced() {
     let home = TempDir::new().unwrap();
     let run_id = create_run(&home);
@@ -1301,67 +1276,4 @@ fn node_id_rejected_for_run_status() {
     ]));
     assert_eq!(code, 1);
     assert_eq!(err["error"]["code"], "unexpected_flag");
-}
-
-#[test]
-fn discussion_opened_updates_manifest_and_writes_discussion_file() {
-    let home = TempDir::new().unwrap();
-    let run_id = create_run(&home);
-
-    // Need a node first so the reducer has somewhere to anchor.
-    let nc = write_json(&home, "nc.json", json!({"kind": "spinoff"}));
-    run_ok(bin(&home).args([
-        "--output",
-        "json",
-        "event",
-        "create",
-        &run_id,
-        "--kind",
-        "node.created",
-        "--node-id",
-        "n-0001",
-        "--from-file",
-        nc.to_str().unwrap(),
-    ]));
-
-    let disc = write_json(
-        &home,
-        "disc.json",
-        json!({
-            "discussion_id": "d-testevent2",
-            "node_id": "n-0001",
-            "topic": "should we X?",
-            "severity": "discuss"
-        }),
-    );
-    let v = run_ok(bin(&home).args([
-        "--output",
-        "json",
-        "event",
-        "create",
-        &run_id,
-        "--kind",
-        "discussion.opened",
-        "--from-file",
-        disc.to_str().unwrap(),
-    ]));
-    let projs = v["data"]["projections"].as_array().unwrap();
-    assert!(projs
-        .iter()
-        .any(|p| p.as_str() == Some("discussions/d-testevent2.json")));
-    assert!(projs.iter().any(|p| p.as_str() == Some("manifest.json")));
-
-    let disc_path = home
-        .path()
-        .join("runs")
-        .join(&run_id)
-        .join("discussions")
-        .join("d-testevent2.json");
-    assert!(disc_path.exists());
-
-    let manifest: Value = serde_json::from_slice(
-        &std::fs::read(home.path().join("runs").join(&run_id).join("manifest.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(manifest["open_discussions"].as_u64().unwrap(), 1);
 }

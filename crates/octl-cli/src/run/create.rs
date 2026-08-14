@@ -146,28 +146,20 @@ enum SupervisorField {
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 enum KindStr {
-    Code,
     Spinoff,
-    Orchestrated,
     Research,
     TechnicalDecision,
-    MakeSkill,
     FanOut,
-    Bugfix,
-    Orchestrate,
+    Unknown,
 }
 impl From<Kind> for KindStr {
     fn from(k: Kind) -> Self {
         match k {
-            Kind::Code => KindStr::Code,
             Kind::Spinoff => KindStr::Spinoff,
-            Kind::Orchestrated => KindStr::Orchestrated,
             Kind::Research => KindStr::Research,
             Kind::TechnicalDecision => KindStr::TechnicalDecision,
-            Kind::MakeSkill => KindStr::MakeSkill,
             Kind::FanOut => KindStr::FanOut,
-            Kind::Bugfix => KindStr::Bugfix,
-            Kind::Orchestrate => KindStr::Orchestrate,
+            Kind::Unknown => KindStr::Unknown,
         }
     }
 }
@@ -240,16 +232,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // without a real create.sh available. The env var implies
     // `--skip-materialize` and is set by the `bin()` helper in
     // `tests/`. Production callers never set it.
-    // `Kind::Orchestrate` is the top-level DAG driver — the orchestrator
-    // agent runs in the user's main conversation, not in a detached
-    // worktree, so there is nothing for `create.sh` to materialize and
-    // nothing for the watchdog to supervise. Force-skip materialization
-    // for this kind so the driver run is just a run dir + event log +
-    // manifest, ready for the orchestrator to append decisions and spawn
-    // `Kind::Orchestrated` children that reference it.
-    let skip_materialize = args.skip_materialize
-        || args.kind == Kind::Orchestrate
-        || std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok();
+    let skip_materialize =
+        args.skip_materialize || std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok();
     let prompt_source = if skip_materialize {
         None
     } else {
@@ -304,10 +288,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 lifecycle: lifecycle_for(args.kind),
                 parent_run_id: parent_run_id.as_deref(),
                 parent_node_id: parent_node_id.as_deref(),
-                // An orchestrate driver always carries its `n-0001` driver node,
-                // so a replay can truthfully report it. Worker replays don't
-                // re-read their node here, so they stay `None` (unchanged).
-                node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
+                // Worker replays don't re-read their node here, so it stays `None`.
+                node_id: None,
                 spawn: None,
                 supervisor_pid: None,
                 idempotent_replay: Some(true),
@@ -382,7 +364,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                         lifecycle,
                         parent_run_id: parent_run_id.as_deref(),
                         parent_node_id: parent_node_id.as_deref(),
-                        node_id: (args.kind == Kind::Orchestrate).then_some("n-0001"),
+                        node_id: None,
                         spawn: None,
                         supervisor_pid: None,
                         idempotent_replay: Some(true),
@@ -513,30 +495,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
-    // Orchestrate driver: synthesize the `n-0001` driver node. The
-    // orchestrator agent runs in the user's main conversation (no worktree
-    // to materialize), but children spawned via `--kind orchestrated` REQUIRE
-    // a `--parent-node-id`. Without a node on disk the orchestrator would have
-    // to guess that id. Emitting `node.created` here makes `n-0001` the
-    // discoverable, programmatic answer: it lands in the envelope's `node_id`,
-    // bumps `manifest.node_count` to 1, and shows up in `node list`. The node
-    // carries no tmux/branch/pid metadata — it is the DAG root, not a worker.
-    let driver_node_id = if args.kind == Kind::Orchestrate {
-        octl_core::append_and_apply_event(
-            &paths,
-            "node.created",
-            Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
-            None,
-            json!({
-                "kind": kind_kebab(args.kind),
-                "task": args.task,
-            }),
-        )
-        .map_err(from_core)?;
-        Some("n-0001")
-    } else {
-        None
-    };
+    // The 0.2 cut removed the `orchestrate` DAG-driver kind, so no run
+    // synthesizes a driver node here — every surviving kind is a single worker
+    // whose node is created by `create.sh` (or the skeleton below).
+    let driver_node_id: Option<&str> = None;
 
     // Emit `child.spawned` on the parent's log. This is what makes the parent
     // supervisor discover and adopt the child (§7.2). It is emitted only once
@@ -582,41 +544,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // materialization (see `reserve` above), same as the materialized path.
         emit_child_spawned()?;
         // Commit point for a CHILD: run dir + `child.spawned` are durable, so a
-        // keyed retry must replay rather than re-spawn. Disarm the guard (no-op
-        // for a top-level orchestrate driver, already disarmed after run.created).
+        // keyed retry must replay rather than re-spawn. Disarm the guard.
         if is_child {
             if let Some(g) = reservation.as_mut() {
                 g.disarm();
             }
         }
-        // The orchestrate DRIVER has no worktree to materialize, but it STILL
-        // needs a supervisor: its `--kind orchestrated` children are
-        // parent-pointed and delegate child-supervisor creation to the parent
-        // supervisor (single-arbiter, design §7.2). Without a driver supervisor
-        // nobody adopts `child.spawned`, forks the child supervisor, consumes
-        // the child's terminal `node.report`, rolls the child up to `done`, or
-        // tears down its worktree + tmux window — every orchestrated child
-        // hangs in `pending` forever (issue orchestrated-children-hang-pending).
-        // Spawn it here, mirroring the materialized top-level path below.
-        //
-        // The test-only skip hatches still produce a pure skeleton with NO
-        // supervisor: `--skip-materialize` and `OCTL_TEST_SKIP_MATERIALIZE`
-        // both mean "no real spawn", so an in-process unit test never boots a
-        // detached supervisor it would have to reap. Production orchestrate
-        // drivers set neither, so they get the real supervisor.
-        let spawn_driver_supervisor = args.kind == Kind::Orchestrate
-            && !is_child
-            && !args.skip_materialize
-            && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_err();
-        // The idempotency key was already reserved before materialization
-        // began (see `reserve` above), so the run is durably keyed here: if the
-        // supervisor fails to confirm, a keyed retry replays THIS run rather
-        // than minting a duplicate.
-        let supervisor_pid = if spawn_driver_supervisor {
-            Some(spawn_supervisor_or_fail(&paths, &run_id)?)
-        } else {
-            None
-        };
+        // A `--skip-materialize` / `OCTL_TEST_SKIP_MATERIALIZE` run is a pure
+        // skeleton with NO supervisor (the only kind that needed a supervisor on
+        // this path was the removed `orchestrate` driver).
         return emit(EmitInput {
             run_id: &run_id,
             dir: child_dir.display().to_string(),
@@ -626,7 +562,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             parent_node_id: parent_node_id.as_deref(),
             node_id: driver_node_id,
             spawn: None,
-            supervisor_pid,
+            supervisor_pid: None,
             idempotent_replay: None,
             dry_run: None,
             spec: args.spec,
@@ -1033,18 +969,12 @@ struct EmitInput<'a> {
 }
 
 fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
-    let supervisor = match (i.supervisor_pid, i.dry_run, i.idempotent_replay, i.kind) {
-        (Some(pid), _, _, _) => SupervisorField::Pid(pid),
-        (None, Some(true), _, _) => SupervisorField::Note("not-spawned-dry-run"),
-        (None, _, Some(true), _) => SupervisorField::Note("recorded-on-prior-run"),
-        // Orchestrate driver runs in the user's main conversation — there
-        // is no detached worker for a supervisor to watch. Children
-        // (`Kind::Orchestrated`) spawn their own supervisors.
-        (None, _, _, Kind::Orchestrate) => {
-            SupervisorField::Note("orchestrator-in-main-conversation")
-        }
+    let supervisor = match (i.supervisor_pid, i.dry_run, i.idempotent_replay) {
+        (Some(pid), _, _) => SupervisorField::Pid(pid),
+        (None, Some(true), _) => SupervisorField::Note("not-spawned-dry-run"),
+        (None, _, Some(true)) => SupervisorField::Note("recorded-on-prior-run"),
         // Child-spawn: parent supervisor handles supervisor creation.
-        (None, _, _, _) => SupervisorField::Note("delegated-to-parent-supervisor"),
+        (None, _, _) => SupervisorField::Note("delegated-to-parent-supervisor"),
     };
     let payload = CreatedPayload {
         run_id: i.run_id,
@@ -1114,8 +1044,8 @@ mod tests {
 
     #[test]
     fn derive_branch_empty_title_uses_kind() {
-        let b = derive_branch_name(Kind::Bugfix, "01JX1234567890ABCDE", "   !!!  ");
-        assert!(b.ends_with("bugfix"));
+        let b = derive_branch_name(Kind::Research, "01JX1234567890ABCDE", "   !!!  ");
+        assert!(b.ends_with("research"));
     }
 
     #[test]

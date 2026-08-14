@@ -50,9 +50,7 @@ pub use plan::{
     Chunk, Feature, Plan, PlanValidationError, Tier, PLAN_SCHEMA_VERSION, PLAN_V3_JSON_SCHEMA,
     PROVENANCE_REQUIRED_SCHEMA, SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
 };
-pub use projections::{
-    read_manifest, read_manifest_opt, read_node, read_node_opt, write_node,
-};
+pub use projections::{read_manifest, read_manifest_opt, read_node, read_node_opt, write_node};
 pub use reducer::{plan_projections, VIA_EXPLICIT_MERGE};
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{

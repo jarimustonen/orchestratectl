@@ -699,7 +699,13 @@ mod tests {
     /// evidence corpus. Every creatable kind still round-trips to itself.
     #[test]
     fn removed_kinds_deserialize_to_unknown() {
-        for removed in ["code", "orchestrate", "orchestrated", "bugfix", "make-skill"] {
+        for removed in [
+            "code",
+            "orchestrate",
+            "orchestrated",
+            "bugfix",
+            "make-skill",
+        ] {
             let kind: Kind = serde_json::from_value(Value::String(removed.to_string()))
                 .expect("a removed kind must still deserialize, not fault");
             assert_eq!(kind, Kind::Unknown, "{removed:?} should map to Unknown");

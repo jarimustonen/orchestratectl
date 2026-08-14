@@ -4,7 +4,6 @@ mod cli;
 // Currently read only for the `run create --harness` default; a missing/empty
 // file is the common case and yields the built-in defaults.
 mod config;
-mod discussion;
 mod doctor;
 mod error;
 mod event;
@@ -27,7 +26,6 @@ mod output;
 mod proc;
 mod run;
 mod skill;
-mod spinoff;
 mod supervise;
 
 use std::process::ExitCode;

@@ -176,7 +176,7 @@ fn create_dry_run_does_not_touch_filesystem() {
 #[test]
 fn create_child_dry_run_is_unsupported() {
     let home = TestHome::new();
-    let parent = create(&home, "orchestrated", "parent");
+    let parent = create(&home, "fan-out", "parent");
     let (code, v) = run_fail(bin(&home).args([
         "--output",
         "json",
@@ -199,7 +199,7 @@ fn create_child_dry_run_is_unsupported() {
 #[test]
 fn create_child_writes_child_spawned_to_parent_events() {
     let home = TestHome::new();
-    let parent = create(&home, "orchestrated", "parent");
+    let parent = create(&home, "fan-out", "parent");
     let v = run_ok(bin(&home).args([
         "--output",
         "json",
@@ -245,72 +245,6 @@ fn create_child_writes_child_spawned_to_parent_events() {
             v["kind"] == "run.created"
         }),
         "child missing run.created: {child_events}"
-    );
-}
-
-#[test]
-fn orchestrate_driver_exposes_discoverable_node_id() {
-    let home = TestHome::new();
-
-    // 1. Creating an orchestrate driver returns its driver node id in the
-    //    envelope — no guessing required.
-    let v = run_ok(bin(&home).args([
-        "--output",
-        "json",
-        "run",
-        "create",
-        "--kind",
-        "orchestrate",
-        "--title",
-        "campaign",
-    ]));
-    let driver = v["data"]["run_id"].as_str().unwrap().to_string();
-    assert_eq!(v["data"]["node_id"], "n-0001");
-    assert_eq!(v["data"]["kind"], "orchestrate");
-    assert_eq!(v["data"]["supervisor"], "orchestrator-in-main-conversation");
-
-    // 2. The driver node is real on disk: run show counts it.
-    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &driver]));
-    assert_eq!(v["data"]["manifest"]["node_count"], 1);
-    assert_eq!(v["data"]["counts"]["nodes"], 1);
-
-    // 3. node list surfaces exactly the driver node.
-    let v = run_ok(bin(&home).args(["--output", "json", "node", "list", &driver]));
-    let nodes = v["data"]["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0]["node_id"], "n-0001");
-    assert_eq!(nodes[0]["kind"], "orchestrate");
-
-    // 4. A child spawn pointed at the discovered node id succeeds — the
-    //    whole reason the node has to exist.
-    let v = run_ok(bin(&home).args([
-        "--output",
-        "json",
-        "run",
-        "create",
-        "--kind",
-        "orchestrated",
-        "--title",
-        "feature-a",
-        "--parent-run-id",
-        &driver,
-        "--parent-node-id",
-        "n-0001",
-    ]));
-    let child = v["data"]["run_id"].as_str().unwrap().to_string();
-    assert_eq!(v["data"]["parent_run_id"], driver);
-    assert_eq!(v["data"]["parent_node_id"], "n-0001");
-
-    // The parent's event log records the child.spawned under the driver node.
-    let parent_events =
-        std::fs::read_to_string(home.path().join("runs").join(&driver).join("events.jsonl"))
-            .expect("driver events readable");
-    assert!(
-        parent_events.lines().any(|l| {
-            let ev: Value = serde_json::from_str(l).unwrap();
-            ev["kind"] == "child.spawned" && ev["data"]["child_run_id"] == child
-        }),
-        "driver events missing child.spawned for {child}: {parent_events}"
     );
 }
 
@@ -697,7 +631,7 @@ fn reattach_missing_run_returns_run_not_found() {
 fn list_filters_by_kind_and_status() {
     let home = TestHome::new();
     let a = create(&home, "spinoff", "a");
-    let _b = create(&home, "orchestrated", "b");
+    let _b = create(&home, "research", "b");
 
     let v = run_ok(bin(&home).args(["--output", "json", "run", "list", "--kind", "spinoff"]));
     let runs = v["data"]["runs"].as_array().unwrap();

@@ -472,7 +472,7 @@ fn blocked_report_preserves_branch_and_worktree_e2e() {
                 "run",
                 "create",
                 "--kind",
-                "bugfix",
+                "spinoff",
                 "--headless",
                 "--title",
                 "e2e-blocked",

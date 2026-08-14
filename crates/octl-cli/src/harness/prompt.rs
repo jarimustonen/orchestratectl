@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn claude_never_gets_a_preamble() {
-        for kind in [Kind::Research, Kind::Spinoff, Kind::Code] {
+        for kind in [Kind::Research, Kind::Spinoff, Kind::FanOut] {
             assert!(
                 worker_prompt_preamble("claude", kind, RUN_ID).is_none(),
                 "claude must pass the prompt through unchanged for {kind:?}"
@@ -197,7 +197,7 @@ mod tests {
         // The shim is deliberately narrow: only research is translated end-to-end.
         // Other pi kinds return None (documented out-of-scope) rather than a
         // half-applied translation.
-        for kind in [Kind::Spinoff, Kind::Code] {
+        for kind in [Kind::Spinoff, Kind::FanOut] {
             assert!(
                 worker_prompt_preamble("pi", kind, RUN_ID).is_none(),
                 "only research is in scope for the pi shim, not {kind:?}"

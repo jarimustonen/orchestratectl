@@ -68,8 +68,6 @@ struct LandingFields {
 #[derive(Serialize)]
 struct Counts {
     nodes: u64,
-    discussions: u64,
-    spinoffs: u64,
 }
 
 pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
@@ -85,8 +83,6 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         };
         let counts = Counts {
             nodes: count_jsons(&paths.nodes_dir()),
-            discussions: count_jsons(&paths.discussions_dir()),
-            spinoffs: count_jsons(&paths.spinoffs_dir()),
         };
         // Probe supervisor liveness INSIDE the shared-lock window so it is read
         // in the same critical section as `manifest.status`, letting a caller
@@ -123,21 +119,14 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         } else {
             None
         };
-        // Computed stall hint (issue `peculiarly-muddled-caption`): derived
-        // purely from the manifest status/kind + the driver node's
-        // status/children/`updated_at`, which we already hold under the shared
-        // lock — no event/reducer/schema path is touched. Decided here, inside
-        // the lock, so it is one consistent snapshot with `manifest.status`.
-        // `run show` reads the reporting/driver node `n-0001` (there is no
-        // per-node selector on this verb), so `node` is always the driver node.
-        let now = chrono::Utc::now();
-        let stalled_orchestrate =
-            crate::run::stalled::is_stalled(manifest.status, manifest.kind, node.as_ref(), now);
         // Supervisor-death stall verdict over the same shared-lock snapshot —
         // `manifest.status` + the supervisor liveness probe above + the manifest
         // counters/timestamps. `Stillborn` = died before creating `n-0001`
         // (issue `run-wait-stillborn-run-not-detected`); `Orphaned` = died
         // mid-run with ≥1 node, idle past the grace (issue `run-wait-still`).
+        // (The 0.2 cut removed the orchestrate-driver "never driven" stall shape
+        // along with the `orchestrate` kind.)
+        let now = chrono::Utc::now();
         let stall = crate::run::stalled::stall_kind(
             manifest.status,
             // Indeterminate (`Unreadable`/`Unknown`) supervisor states must not
@@ -148,14 +137,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             manifest.updated_at,
             now,
         );
-        // A dead-supervisor verdict (stillborn/orphaned) takes precedence over
-        // the orchestrate-undriven hint when both could apply: the supervisor
-        // being provably dead is the more actionable signal.
-        let stalled = stall.is_some() || stalled_orchestrate;
+        let stalled = stall.is_some();
         // Idle minutes for the human message, only meaningful when stalled. Both
         // supervisor-death shapes clock idle from `manifest.updated_at` (they
-        // have no live driver node to read); the orchestrate stall reads the
-        // driver node's `updated_at`.
+        // have no live driver node to read).
         // Clamp to 0: clock skew or a future timestamp must never print a
         // negative "idle -3 min" in the human hint.
         let stalled_idle_min = if stall.is_some() {
@@ -164,9 +149,6 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     .num_minutes()
                     .max(0),
             )
-        } else if stalled {
-            node.as_ref()
-                .map(|n| now.signed_duration_since(n.updated_at).num_minutes().max(0))
         } else {
             None
         };
@@ -281,8 +263,6 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("created_at:    {}", payload.manifest.created_at);
             println!("updated_at:    {}", payload.manifest.updated_at);
             println!("nodes:         {}", payload.counts.nodes);
-            println!("discussions:   {}", payload.counts.discussions);
-            println!("spinoffs:      {}", payload.counts.spinoffs);
             match payload.summary.supervisor.state {
                 SupervisorState::Alive => match payload.summary.supervisor.pid {
                     Some(pid) => println!("supervisor:    pid {pid} (alive)"),

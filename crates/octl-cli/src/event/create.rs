@@ -22,8 +22,7 @@ use octl_core::{ensure_root, AppendOutcome, Event, NodeId, RunLock, RunPaths};
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::{
-    from_core, parse_discussion_id, parse_node_id, parse_proposal_id, parse_run_id,
-    require_nonempty, run_paths_from_cli_arg,
+    from_core, parse_node_id, parse_run_id, require_nonempty, run_paths_from_cli_arg,
 };
 
 pub struct Args<'a> {
@@ -71,11 +70,6 @@ const ALLOWED_KINDS: &[&str] = &[
     "node.created",
     "node.status",
     "node.report",
-    "discussion.opened",
-    "discussion.resolved",
-    "spinoff.proposed",
-    "spinoff.approved",
-    "spinoff.rejected",
     "child.spawned",
     "supervisor.attached",
     "supervisor.cursor_advanced",
@@ -117,19 +111,9 @@ fn requires_node_id(kind: &str) -> bool {
     )
 }
 
-/// Kinds that may legitimately reference a node but don't require it
-/// (e.g. `discussion.opened` accepts `node_id` either at the top level
-/// or inside `data`).
+/// Kinds that may legitimately reference a node but don't require it.
 fn allows_node_id(kind: &str) -> bool {
     requires_node_id(kind)
-        || matches!(
-            kind,
-            "discussion.opened"
-                | "discussion.resolved"
-                | "spinoff.proposed"
-                | "spinoff.approved"
-                | "spinoff.rejected"
-        )
 }
 
 /// The projection files this event will touch, asked of the reducer itself via
@@ -193,25 +177,6 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
                     format!("--node-id ({top}) does not match data.node_id ({s})"),
                 ));
             }
-        }
-    }
-    if matches!(kind, "discussion.opened" | "discussion.resolved") {
-        if let Some(v) = data.get("discussion_id") {
-            let s = v.as_str().ok_or_else(|| {
-                CliError::user("invalid_data_id", "data.discussion_id must be a string")
-            })?;
-            parse_discussion_id(s)?;
-        }
-    }
-    if matches!(
-        kind,
-        "spinoff.proposed" | "spinoff.approved" | "spinoff.rejected"
-    ) {
-        if let Some(v) = data.get("proposal_id") {
-            let s = v.as_str().ok_or_else(|| {
-                CliError::user("invalid_data_id", "data.proposal_id must be a string")
-            })?;
-            parse_proposal_id(s)?;
         }
     }
     if kind == "child.spawned" {

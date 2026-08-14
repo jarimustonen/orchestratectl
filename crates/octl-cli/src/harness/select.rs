@@ -222,9 +222,9 @@ mod tests {
         assert_eq!(research.name, "pi");
         assert_eq!(research.source, HarnessSource::File);
         // A kind with no per-kind entry falls back to the section default.
-        let code = resolve_with(Kind::Code, None, None, &c).unwrap();
-        assert_eq!(code.name, "claude");
-        assert_eq!(code.source, HarnessSource::File);
+        let other = resolve_with(Kind::Spinoff, None, None, &c).unwrap();
+        assert_eq!(other.name, "claude");
+        assert_eq!(other.source, HarnessSource::File);
     }
 
     #[test]

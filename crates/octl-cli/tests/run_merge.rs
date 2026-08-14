@@ -117,21 +117,12 @@ fn successful_merge_submits_explicit_merge_report() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "code", "merge-ok");
-    forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
+    let run_id = create_run(&home, "spinoff", "merge-ok");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    // A `code` run is interactive: the human's `/worktree-merge` supplies
-    // `--confirm-interactive` (issue `interactive-code-run-self-merged`).
     let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--source",
-        "main",
-        "--confirm-interactive",
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
     assert_eq!(v["data"]["merged"], true);
     assert_eq!(v["data"]["branch"], "wt/test-x");
@@ -214,8 +205,8 @@ fn non_success_report_file_is_rejected() {
         r#"{"success": false, "summary": "blocked"}"#,
         r#"{"success": true, "cancelled": true, "summary": "cancelled"}"#,
     ] {
-        let run_id = create_run(&home, "code", "reject-nonsuccess");
-        forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/foo");
+        let run_id = create_run(&home, "spinoff", "reject-nonsuccess");
+        forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/foo");
         let report = scratch.path().join("bad-report.json");
         std::fs::write(&report, body).unwrap();
         let merge_sh = fake_merge_sh(scratch.path(), 0, "");
@@ -231,7 +222,6 @@ fn non_success_report_file_is_rejected() {
                 "main",
                 // Confirm the interactive merge so the report-shape gate — not
                 // the interactive-confirmation gate — is what rejects the body.
-                "--confirm-interactive",
                 "--report-file",
                 report.to_str().unwrap(),
             ])
@@ -298,20 +288,13 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "code", "merge-fail");
-    forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
+    let run_id = create_run(&home, "spinoff", "merge-fail");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "Error: rebase conflict");
     let out = bin(&home)
         .env("OCTL_MERGE_SH", &merge_sh)
-        .args([
-            "--output",
-            "json",
-            "run",
-            "merge",
-            &run_id,
-            "--confirm-interactive",
-        ])
+        .args(["--output", "json", "run", "merge", &run_id])
         .output()
         .expect("spawn");
     assert!(!out.status.success(), "merge failure must exit non-zero");
@@ -327,20 +310,17 @@ fn failed_merge_surfaces_error_and_writes_no_report() {
 }
 
 /// `--dry-run` resolves inputs and reports the planned merge without invoking
-/// the backend or appending any event. It is a read-only preview with no merge
-/// and no report, so the `code`-run confirmation gate does NOT apply: a bare
-/// `--dry-run` on a `code` run succeeds WITHOUT `--confirm-interactive` (the gate
-/// only guards a real merge — issue `interactive-code-run-self-merged`).
+/// the backend or appending any event — a read-only preview with no merge and
+/// no report.
 #[test]
 fn dry_run_resolves_without_side_effects() {
     let home = TestHome::new();
     let scratch = TempDir::new().unwrap();
     let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "code", "merge-dry");
-    forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
+    let run_id = create_run(&home, "spinoff", "merge-dry");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
 
     let merge_sh = fake_merge_sh(scratch.path(), 1, "should never run");
-    // No `--confirm-interactive`: a dry-run of a `code` run must not require it.
     let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
         "--output",
         "json",
@@ -707,8 +687,8 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
-    let run_id = create_run(&home, "code", "swallowed-merge");
-    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+    let run_id = create_run(&home, "spinoff", "swallowed-merge");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
     // Watchdog false positive: the node is terminalized as agent-died BEFORE the
     // merge. Pre-fix the reducer would swallow the explicit-merge report; now it
@@ -722,14 +702,7 @@ fn merge_adopts_swallowed_report_and_defers_teardown() {
 
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--source",
-        "main",
-        "--confirm-interactive",
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
     assert_eq!(v["data"]["merged"], true);
@@ -770,21 +743,14 @@ fn merge_defers_to_supervisor_when_report_adopted() {
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
-    let run_id = create_run(&home, "code", "adopted-merge");
-    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+    let run_id = create_run(&home, "spinoff", "adopted-merge");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
     // No pre-terminalization: the node is live, so the explicit-merge report is
     // adopted and a supervisor owns teardown.
     let merge_sh = fake_merge_sh(scratch.path(), 0, "");
     let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--source",
-        "main",
-        "--confirm-interactive",
+        "--output", "json", "run", "merge", &run_id, "--source", "main",
     ]));
 
     assert_eq!(v["data"]["merged"], true);
@@ -814,8 +780,8 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
     let scratch = TempDir::new().unwrap();
     let gitroot = TempDir::new().unwrap();
     let (repo, wt) = init_repo_with_worktree(gitroot.path());
-    let run_id = create_run(&home, "code", "swallowed-merge-fail");
-    forge_worker_node(&home, &run_id, "code", &wt, "wt/foo");
+    let run_id = create_run(&home, "spinoff", "swallowed-merge-fail");
+    forge_worker_node(&home, &run_id, "spinoff", &wt, "wt/foo");
 
     // Pre-terminalize the node so its report would be swallowed on a *successful*
     // merge — but here the merge itself fails.
@@ -830,14 +796,7 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
     let out = bin(&home)
         .env("OCTL_MERGE_SH", &merge_sh)
         .args([
-            "--output",
-            "json",
-            "run",
-            "merge",
-            &run_id,
-            "--source",
-            "main",
-            "--confirm-interactive",
+            "--output", "json", "run", "merge", &run_id, "--source", "main",
         ])
         .output()
         .expect("spawn");
@@ -850,148 +809,6 @@ fn failed_merge_on_preterminal_node_reclaims_nothing() {
         branch_exists(&repo, "wt/foo"),
         "a failed merge must not reclaim the branch"
     );
-}
-
-// --- Interactive-run merge gate (issue `interactive-code-run-self-merged`) ---
-//
-// An interactive (`code`) run is human-reviewed: only the reviewer merges it via
-// `/worktree-merge`, never the coding agent. A real bug had an interactive run
-// self-merge to `done` and tear its worktree down with no human merge and no
-// review pause, because the agent ran a bare `run merge` on itself. The gate
-// below refuses that bare merge; the human's `/worktree-merge` carries
-// `--confirm-interactive`.
-
-/// A `code` (interactive) run refuses a bare `run merge`: no confirmation flag
-/// means the caller is presumed to be the coding agent self-merging, which
-/// bypasses the human review gate. The refusal is pre-merge — the backend never
-/// runs and NO terminal report is appended, so the run stays live for the human.
-#[test]
-fn interactive_run_merge_without_confirmation_is_refused() {
-    let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "code", "no-selfmerge");
-    forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
-
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let out = bin(&home)
-        .env("OCTL_MERGE_SH", &merge_sh)
-        .args([
-            "--output", "json", "run", "merge", &run_id, "--source", "main",
-        ])
-        .output()
-        .expect("spawn");
-
-    assert!(
-        !out.status.success(),
-        "an interactive run must refuse a bare (unconfirmed) merge"
-    );
-    let err: Value = serde_json::from_slice(&out.stderr).expect("stderr is JSON envelope");
-    assert_eq!(
-        err["error"]["code"], "interactive_merge_requires_confirmation",
-        "body: {err}"
-    );
-
-    // The gate is pre-merge: the backend never ran and no terminal report exists,
-    // so the branch/worktree survive and the run is still awaiting the human.
-    assert!(
-        !scratch.path().join("merge.log").exists(),
-        "the merge backend must NOT run when the interactive gate refuses"
-    );
-    let events = run_dir(&home, &run_id).join("events.jsonl");
-    assert_eq!(
-        node_reports(&events).len(),
-        0,
-        "no explicit-merge report may be appended for an unconfirmed interactive merge"
-    );
-}
-
-/// The human path: `--confirm-interactive` lets a `code` run merge, submitting
-/// the terminal `explicit-merge` report exactly as before the gate existed.
-#[test]
-fn interactive_run_merge_with_confirmation_proceeds() {
-    let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "code", "human-merge");
-    forge_worker_node(&home, &run_id, "code", worktree.path(), "wt/test-x");
-
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--source",
-        "main",
-        "--confirm-interactive",
-    ]));
-    assert_eq!(v["data"]["merged"], true);
-
-    let events = run_dir(&home, &run_id).join("events.jsonl");
-    let reports = node_reports(&events);
-    assert_eq!(
-        reports.len(),
-        1,
-        "the confirmed merge submits one terminal report"
-    );
-    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
-}
-
-/// Autonomous kinds are unaffected: a `spinoff` self-merges with NO
-/// confirmation flag (the gate is scoped to `Kind::Code` only).
-#[test]
-fn autonomous_run_merge_needs_no_confirmation() {
-    let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "spinoff", "auto-merge");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
-
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output", "json", "run", "merge", &run_id, "--source", "main",
-    ]));
-    assert_eq!(
-        v["data"]["merged"], true,
-        "an autonomous kind self-merges without --confirm-interactive"
-    );
-    let events = run_dir(&home, &run_id).join("events.jsonl");
-    assert_eq!(node_reports(&events).len(), 1);
-}
-
-/// `--confirm-interactive` is an inert no-op on an autonomous kind: passing it to
-/// a `spinoff` merge behaves identically to omitting it (merges, one report). The
-/// `worktree-merge` skill passes the flag unconditionally, so this pins that the
-/// flag never perturbs an autonomous self-merge.
-#[test]
-fn autonomous_run_merge_accepts_confirmation_flag_as_noop() {
-    let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
-    let worktree = TempDir::new().unwrap();
-    let run_id = create_run(&home, "spinoff", "auto-merge-flag");
-    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
-
-    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
-    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
-        "--output",
-        "json",
-        "run",
-        "merge",
-        &run_id,
-        "--source",
-        "main",
-        "--confirm-interactive",
-    ]));
-    assert_eq!(
-        v["data"]["merged"], true,
-        "an autonomous kind merges the same whether or not the flag is present"
-    );
-    let events = run_dir(&home, &run_id).join("events.jsonl");
-    let reports = node_reports(&events);
-    assert_eq!(reports.len(), 1);
-    assert_eq!(reports[0]["data"]["via"], "explicit-merge");
 }
 
 // --- Concurrent self-merge race (issue `concurrent-self-merge-race`) ---
@@ -1301,22 +1118,5 @@ fn downstream_exit_75_is_not_merge_in_progress() {
         node_reports(&events).len(),
         0,
         "a failed merge writes no report"
-    );
-}
-
-/// The human's sanctioned merge path — the bundled `worktree-merge` skill — MUST
-/// pass `--confirm-interactive`, or a `code`-run merge driven through it would
-/// hit the gate and fail. Cheap regression insurance against silently dropping
-/// the flag from the skill template.
-#[test]
-fn worktree_merge_skill_passes_confirm_interactive() {
-    let template = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("skills/worktree-merge/SKILL.template.md");
-    let body = std::fs::read_to_string(&template)
-        .unwrap_or_else(|e| panic!("read {}: {e}", template.display()));
-    assert!(
-        body.contains("--confirm-interactive"),
-        "worktree-merge SKILL must pass --confirm-interactive so the human's \
-         `code`-run merge clears the interactive gate"
     );
 }

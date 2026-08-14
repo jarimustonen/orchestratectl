@@ -173,7 +173,7 @@ default = "pi"
 
 [harness.per_kind]
 research = "pi"
-code = "claude"
+spinoff = "claude"
 "#,
         );
         let cfg = Config::load_from(&p).unwrap();
@@ -183,7 +183,7 @@ code = "claude"
             Some("pi")
         );
         assert_eq!(
-            cfg.harness.per_kind.get("code").map(String::as_str),
+            cfg.harness.per_kind.get("spinoff").map(String::as_str),
             Some("claude")
         );
     }

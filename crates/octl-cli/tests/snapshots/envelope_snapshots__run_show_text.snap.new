@@ -1,0 +1,15 @@
+---
+source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
+expression: value
+---
+run-id:        [RUN_ID]
+title:         seed-run
+status:        pending
+landed:        false (unverified)
+kind:          spinoff
+lifecycle:     autonomous
+created_at:    [TS]
+updated_at:    [TS]
+nodes:         1
+supervisor:    (none recorded)

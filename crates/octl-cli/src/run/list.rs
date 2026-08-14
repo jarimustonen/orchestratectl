@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, read_node_opt, Kind, NodeId, RunLock, RunPaths, Status};
+use octl_core::{read_manifest_opt, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -123,17 +123,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // pair must not straddle a reducer's status rollup + pid-file removal
         // (see show.rs). Costs one extra pid-file read per run; negligible for
         // realistic run counts.
-        // Compute the `stalled` hint (issue `peculiarly-muddled-caption`) under
-        // the SAME shared lock as the manifest so the node's
-        // status/children/`updated_at` and the manifest form one consistent
-        // snapshot that cannot straddle a reducer write. Read-only: touches no
+        // Compute the `stillborn` hint under the SAME shared lock as the manifest
+        // so the manifest and the pid probe form one consistent snapshot that
+        // cannot straddle a reducer write. Read-only: touches no
         // event/reducer/schema path.
-        //
-        // The extra `n-0001` read is gated on `pending` + `orchestrate`: only a
-        // pending orchestrate run can be a stall candidate, so terminal runs and
-        // every other kind pay no extra I/O — and, critically, a corrupt/
-        // unreadable `n-0001` in an unrelated run can no longer abort the whole
-        // listing (the read only runs for the narrow candidate set).
         let scanned = RunLock::with_shared_lock(&paths.lock(), || {
             let Some(m) = read_manifest_opt(&paths)? else {
                 return Ok(None);
@@ -165,35 +158,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 m.created_at,
                 m.updated_at,
             ) && now.signed_duration_since(m.created_at) > stillborn_grace;
-            // The orchestrate-driver idle stall is a distinct shape (a driver
-            // node exists — `node_count >= 1` — so it can never overlap the
-            // stillborn zero-node case) and needs the extra `n-0001` read,
-            // still gated on `pending` + `orchestrate` so terminal runs and
-            // other kinds pay no extra I/O. Skipped once `stillborn` holds — a
-            // zero-node run has no driver node to read.
-            let stalled_orchestrate =
-                if !stillborn && m.status == Status::Pending && m.kind == Kind::Orchestrate {
-                    let driver_id = NodeId::parse_str(crate::run::stalled::DRIVER_NODE_ID)
-                        .expect("DRIVER_NODE_ID is a valid node id");
-                    crate::run::stalled::is_stalled(
-                        m.status,
-                        m.kind,
-                        read_node_opt(&paths, &driver_id)?.as_ref(),
-                        now,
-                    )
-                } else {
-                    false
-                };
-            Ok(Some((m, supervisor, stalled_orchestrate, stillborn)))
+            Ok(Some((m, supervisor, stillborn)))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stalled_orchestrate, stillborn) = match scanned {
+        let (m, supervisor, stillborn) = match scanned {
             Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
-        // `stalled` is the umbrella "pending but visibly not progressing" hint
-        // (either shape); `stillborn` is the specific never-started variant.
-        let stalled = stalled_orchestrate || stillborn;
+        // `stalled` is the "pending but visibly not progressing" hint; since the
+        // 0.2 cut removed the orchestrate driver (the only other stall shape),
+        // it is now exactly the never-started `stillborn` variant.
+        let stalled = stillborn;
         // Shape the manifest into its wire DTO once, then filter on the
         // canonical kebab strings it carries — the DTO's `From` renders
         // `kind` / `status` through the `run/mod.rs` helpers rather than

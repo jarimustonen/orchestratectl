@@ -532,7 +532,12 @@ mod tests {
         assert_eq!(err.expected(), Some(json!(crate::schema::Kind::WIRE_NAMES)));
         assert_eq!(
             err.expected(),
-            Some(json!(["spinoff", "research", "technical-decision", "fan-out"]))
+            Some(json!([
+                "spinoff",
+                "research",
+                "technical-decision",
+                "fan-out"
+            ]))
         );
     }
 

@@ -42,8 +42,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Lifecycle,
-    Node, NodeId, RunLock, RunPaths, Status,
+    append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Node,
+    NodeId, RunLock, RunPaths, Status,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -1125,14 +1125,11 @@ pub fn dispatch(
                             &ev.data,
                             &mut state,
                         ) {
-                            Ok(Some(c)) => {
+                            Ok(Some(())) => {
                                 info!(
                                     target: "orchestratectl::supervise",
                                     child = %cid,
                                     seq = ev.seq,
-                                    discussions = c.emitted_discussions.len(),
-                                    spinoffs = c.emitted_spinoffs.len(),
-                                    skipped = c.skipped_already_present,
                                     "consumed node.report"
                                 );
                                 entry.terminal = true;
@@ -1148,9 +1145,9 @@ pub fn dispatch(
                                 // before THIS report's seq so the report (and
                                 // only it onward) is retried on a later tick
                                 // instead of being silently lost
-                                // (at-least-once). Re-emitting already-written
-                                // discussions/spinoffs is safe: the reducer
-                                // skips any deterministic ID already on disk.
+                                // (at-least-once). Re-consuming an already-
+                                // advanced report is safe: the cursor guard
+                                // makes it an idempotent no-op.
                                 warn!(
                                     target: "orchestratectl::supervise",
                                     child = %cid,
@@ -1405,9 +1402,11 @@ pub fn dispatch(
                             notified = true;
                         }
                     }
-                    let warranted = m.kind.lifecycle() == Lifecycle::Autonomous
-                        || cleanup::any_node_merged_explicitly(&paths);
-                    if !cleaned && warranted {
+                    // Every surviving kind is autonomous (the 0.2 cut removed the
+                    // interactive kinds whose human-owned windows this gate used
+                    // to protect via `any_node_merged_explicitly`), so terminal
+                    // teardown is always warranted now.
+                    if !cleaned {
                         cleanup::cleanup_terminal_nodes(&paths);
                         // After the node windows are closed, tear down the
                         // managed `--headless` session if this run owned one and
@@ -2393,13 +2392,11 @@ struct RetryPark {
     spawn_failures: u32,
 }
 
-/// Whether a node is retry-eligible: an autonomous, top-level, single-node worker
-/// kind (never interactive, never a DAG child, never a driver). See
+/// Whether a node is retry-eligible: a top-level, single-node worker kind
+/// (never a DAG child, never a driver). See
 /// [`octl_core::Kind::is_autonomous_single_node_worker`].
 fn retry_eligible_kind(n: &Node) -> bool {
-    n.kind.lifecycle() == Lifecycle::Autonomous
-        && n.kind.is_autonomous_single_node_worker()
-        && n.parent_node_id.is_none()
+    n.kind.is_autonomous_single_node_worker() && n.parent_node_id.is_none()
 }
 
 /// Drive the bounded auto-retry state machine for every parked node whose backoff
@@ -2964,14 +2961,13 @@ fn watchdog_tick(
         candidates.iter().map(|(id, ..)| id.clone()).collect();
 
     for (node_id, nid, n, probe) in candidates {
-        // Lifecycle-aware liveness. For AUTONOMOUS nodes the recorded agent_pid is
-        // authoritative (a dead single fire-and-forget process is genuinely dead).
-        // For INTERACTIVE nodes a human may quit and restart the agent (or it
-        // re-execs on update/compaction) while the tmux window and their work live
-        // on, so a bare PID probe fires a false `agent-died`; there the window is
-        // the liveness signal (issue `agent-died-merge-no-teardown-interactive`).
-        let interactive = n.kind.lifecycle() == Lifecycle::Interactive;
-        let v = watchdog::check_liveness_for_lifecycle(&probe, &tmux_snapshot, interactive);
+        // Liveness. Every surviving kind is autonomous (the 0.2 cut removed the
+        // interactive `code`/`orchestrate` kinds), so the recorded agent_pid is
+        // always authoritative — a dead single fire-and-forget process is
+        // genuinely dead. The `interactive` axis of the watchdog is therefore
+        // always `false` now; it is kept as a parameter (not deleted) so the
+        // liveness probe's shape is unchanged for the surviving path.
+        let v = watchdog::check_liveness_for_lifecycle(&probe, &tmux_snapshot, false);
         // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
         // recycled is unambiguous), but require a short retry streak for
         // the `TmuxGone` half-state so a transient `tmux list-windows`
@@ -2994,16 +2990,15 @@ fn watchdog_tick(
         // whether the branch has already merged into the run's source (with a clean
         // worktree). If so, the work landed: the authoritative terminal outcome is
         // SUCCESS, not a false `failed`/`branch_preserved` and not an endless
-        // `pending`. Gated PER NODE on the node's own lifecycle — autonomous kinds
-        // self-merge fire-and-forget; interactive kinds keep human-owned windows.
+        // `pending`. Every surviving kind is autonomous (self-merges
+        // fire-and-forget), so the only gate is "no terminal report yet".
         // This first probe is OUTSIDE the run lock (git is slow); it is RE-VERIFIED
         // under the lock before synthesis to close the probe→synthesis TOCTOU (a
         // live agent could move its branch in between). `node_branch_merged_to_source`
         // is conservative — it requires the branch to have advanced FORWARD past its
         // recorded fork point AND the worktree to be clean, so a fresh/rewound agent
         // or one with live uncommitted work is never reconciled or torn down.
-        let reconcile_eligible =
-            n.kind.lifecycle() == Lifecycle::Autonomous && n.last_report.is_none();
+        let reconcile_eligible = n.last_report.is_none();
         let reconcile_probe =
             reconcile_eligible && cleanup::node_branch_merged_to_source(paths, &n, &git);
 
@@ -3222,18 +3217,13 @@ fn watchdog_tick(
         //
         // Gated on ALL of: liveness ALIVE (a DEAD agent's committed work is already
         // salvaged by the death path above — never double-handle), NOT already
-        // merged (the reconcile path owns that), no terminal report yet, and an
-        // AUTONOMOUS lifecycle. Interactive `code`/`orchestrate` runs are EXEMPT — a
-        // human owns their merge (`interactive-code-run-self-merged`); they keep
-        // idling for `/worktree-merge`. The idle + clean-worktree + committed-work
-        // checks (and the long-working-agent guard) live in
-        // `cleanup::node_idle_unmerged`; the third (CPU) activity clock is sampled
-        // here since it needs cross-tick state.
-        if matches!(v, watchdog::Liveness::Alive)
-            && !reconcile_probe
-            && n.last_report.is_none()
-            && n.kind.lifecycle() == Lifecycle::Autonomous
-        {
+        // merged (the reconcile path owns that), and no terminal report yet.
+        // (The 0.2 cut removed the interactive kinds, so there is no
+        // human-owned-merge lifecycle to exempt here anymore.) The idle +
+        // clean-worktree + committed-work checks (and the long-working-agent
+        // guard) live in `cleanup::node_idle_unmerged`; the third (CPU) activity
+        // clock is sampled here since it needs cross-tick state.
+        if matches!(v, watchdog::Liveness::Alive) && !reconcile_probe && n.last_report.is_none() {
             let threshold = idle_unmerged_threshold().as_secs() as i64;
             // Third activity clock: sample the agent's cumulative CPU time and
             // fold the last-change timestamp into the idle verdict, so an agent
@@ -3643,9 +3633,9 @@ mod tests {
         // A child (has a parent) is never independently retried.
         n.parent_node_id = Some(NodeId::parse_str("n-0002").unwrap());
         assert!(!retry_eligible_kind(&n), "a DAG child is not eligible");
-        // Interactive kind is never force-retried.
-        let code = minimal_node(Kind::Code);
-        assert!(!retry_eligible_kind(&code));
+        // A multi-unit driver (fan-out) has no agent of its own to retry.
+        let driver = minimal_node(Kind::FanOut);
+        assert!(!retry_eligible_kind(&driver));
     }
 
     /// End-to-end reconcile of the failure path: a child forked long ago whose
@@ -4252,10 +4242,11 @@ mod tests {
     //
     // The complement of the reconcile tests above: the branch is committed and
     // cleanly mergeable but NOT merged, the agent is ALIVE (idle shell), and no
-    // terminal report ever landed. The safety net must terminalize an AUTONOMOUS
-    // run to a recoverable failed state, EXEMPT an interactive one, and NOT trip a
-    // still-working agent. They serialize on `octl_watchdog_grace` (grace 0) and
-    // set the process-global `OCTL_IDLE_UNMERGED_SECS`.
+    // terminal report ever landed. The safety net must terminalize the run to a
+    // recoverable failed state and NOT trip a still-working agent. (The 0.2 cut
+    // removed the interactive kinds, so there is no exempt lifecycle left.) They
+    // serialize on `octl_watchdog_grace` (grace 0) and set the process-global
+    // `OCTL_IDLE_UNMERGED_SECS`.
 
     /// Init a repo on `main`, fork `wt/foo`, commit work in it, but DO NOT merge
     /// into `main` — the committed-but-unmerged state. `commit_date`, when given,
@@ -4423,49 +4414,6 @@ mod tests {
         // No `via` marker → the cleanup gate PRESERVES the branch/worktree for
         // salvage (invariant #5), rather than force-deleting it.
         assert!(report.get("via").is_none(), "recoverable, not a merge");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// An INTERACTIVE (`code`) run is EXEMPT: even committed + idle + unmerged, the
-    /// human owns the merge (`interactive-code-run-self-merged`). The safety net
-    /// must synthesize NO report and leave the node live for `/worktree-merge`.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_exempts_interactive_idle_unmerged() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_unmerged_repo(&tmp);
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "code", "interactive");
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        assert!(
-            n.last_report.is_none(),
-            "an interactive run must keep idling for the human merge, not be terminalized"
-        );
-        assert!(!n.status.is_terminal(), "node stays live");
 
         let _ = alive.kill();
         let _ = alive.wait();

@@ -6,7 +6,7 @@
 //! the supervisor's PID-liveness check passes.
 //!
 //! Coverage:
-//! - All 8 kinds spawn cleanly and produce the expected node + payload.
+//! - All surviving kinds spawn cleanly and produce the expected node + payload.
 //! - create.sh exit 2 → orchestratectl exit 2 with envelope code
 //!   prefix `create_sh_error_`.
 //! - Missing `--task`/`--prompt-file` is a structured user error.
@@ -22,16 +22,7 @@ use tempfile::TempDir;
 mod common;
 use common::TestHome;
 
-const KINDS: &[&str] = &[
-    "code",
-    "spinoff",
-    "orchestrated",
-    "research",
-    "technical-decision",
-    "make-skill",
-    "fan-out",
-    "bugfix",
-];
+const KINDS: &[&str] = &["spinoff", "research", "technical-decision", "fan-out"];
 
 fn write_fake_create_sh(dir: &TempDir, stdout: &str, exit_code: i32) -> PathBuf {
     let path = dir.path().join("fake-create.sh");
@@ -458,22 +449,27 @@ fn task_writes_prompt_file_in_run_dir() {
     assert_eq!(prompt, "investigate the bug");
 }
 
-/// Spawn a top-level `--kind orchestrate` driver run and return its run id.
-/// The driver is skip-materialize (no create.sh, no supervisor — it runs in
-/// the user's main conversation), so it makes a clean parent for child-spawn
-/// tests without booting any process.
-fn spawn_parent_orchestrate(home: &TempDir, script: &std::path::Path) -> String {
-    let v = run_ok(bin(home, script).args([
+/// Spawn a top-level `--kind fan-out` driver run as a skeleton and return its
+/// run id. `OCTL_TEST_SKIP_MATERIALIZE` skips create.sh and the supervisor, so
+/// it makes a clean parent for child-spawn tests without booting any process.
+/// The parent has no `n-0001` node, but a child's `child.spawned` still lands on
+/// the parent's log regardless (the reducer just no-ops the child-ref fold when
+/// the parent node is absent), which is all these tests inspect.
+fn spawn_parent_fanout(home: &TempDir) -> String {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
+    let v = run_ok(c.args([
         "--output",
         "json",
         "run",
         "create",
         "--kind",
-        "orchestrate",
+        "fan-out",
         "--title",
         "driver",
         "--task",
-        "drive the dag",
+        "drive the fan-out",
     ]));
     v["data"]["run_id"].as_str().unwrap().to_string()
 }
@@ -493,13 +489,12 @@ fn count_child_spawned(home: &TempDir, run_id: &str) -> usize {
 #[test]
 fn failed_child_spawn_leaves_no_phantom_child() {
     // Regression for `failed-spawn-leaves-phantom-child`: a create.sh failure
-    // during an orchestrated child spawn must be transactional — no
-    // `child.spawned` on the parent and no child run dir left behind in
-    // `pending`. (Before the fix, the parent log carried a child.spawned and a
-    // 0-node phantom child sat in `pending` forever.)
+    // during a child spawn must be transactional — no `child.spawned` on the
+    // parent and no child run dir left behind in `pending`. (Before the fix, the
+    // parent log carried a child.spawned and a 0-node phantom child sat in
+    // `pending` forever.)
     let home = TestHome::new();
-    let ok_script = write_fake_create_sh(&home, &fake_success_stdout("orchestrate", 0), 0);
-    let parent = spawn_parent_orchestrate(&home, &ok_script);
+    let parent = spawn_parent_fanout(&home);
 
     // A create.sh that fails the way the original bug did (exit 2, error
     // envelope on stderr) instead of materializing the child.
@@ -526,7 +521,7 @@ fn failed_child_spawn_leaves_no_phantom_child() {
         "run",
         "create",
         "--kind",
-        "orchestrated",
+        "fan-out",
         "--title",
         "doomed child",
         "--task",
@@ -565,17 +560,16 @@ fn failed_child_spawn_leaves_no_phantom_child() {
 
 #[test]
 fn successful_child_spawn_emits_child_spawned() {
-    // Regression guard for the happy path: a successful orchestrated child
-    // spawn still emits exactly one `child.spawned` on the parent, the child
-    // run is materialized (node.created + autonomous lifecycle), and the child
-    // run dir exists.
+    // Regression guard for the happy path: a successful child spawn still emits
+    // exactly one `child.spawned` on the parent, the child run is materialized
+    // (node.created + autonomous lifecycle), and the child run dir exists.
     let home = TestHome::new();
     let script = write_fake_create_sh(
         &home,
-        &fake_success_stdout("orchestrated", std::process::id()),
+        &fake_success_stdout("fan-out", std::process::id()),
         0,
     );
-    let parent = spawn_parent_orchestrate(&home, &script);
+    let parent = spawn_parent_fanout(&home);
 
     let v = run_ok(bin(&home, &script).args([
         "--output",
@@ -583,7 +577,7 @@ fn successful_child_spawn_emits_child_spawned() {
         "run",
         "create",
         "--kind",
-        "orchestrated",
+        "fan-out",
         "--title",
         "live child",
         "--task",
@@ -613,7 +607,7 @@ fn successful_child_spawn_emits_child_spawned() {
         "expected one child.spawned: {parent_events}"
     );
     assert_eq!(spawned[0]["data"]["child_run_id"], child_run_id);
-    assert_eq!(spawned[0]["data"]["child_kind"], "orchestrated");
+    assert_eq!(spawned[0]["data"]["child_kind"], "fan-out");
     assert_eq!(spawned[0]["node_id"], "n-0001");
 
     // The child run is materialized: its dir exists and carries node.created.

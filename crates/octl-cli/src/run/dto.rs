@@ -201,8 +201,6 @@ pub struct ManifestView<'a> {
     /// selection existed.
     pub harness: Option<&'a str>,
     pub node_count: u32,
-    pub open_discussions: u32,
-    pub pending_spinoffs: u32,
     pub parent_run_id: Option<&'a RunId>,
     pub parent_node_id: Option<&'a NodeId>,
 }
@@ -223,8 +221,6 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             worktree_root: m.worktree_root.as_deref(),
             harness: m.harness.as_deref(),
             node_count: m.node_count,
-            open_discussions: m.open_discussions,
-            pending_spinoffs: m.pending_spinoffs,
             parent_run_id: m.parent_run_id.as_ref(),
             parent_node_id: m.parent_node_id.as_ref(),
         }
@@ -350,8 +346,6 @@ mod tests {
             notify_cmd: None,
             harness: None,
             node_count: 0,
-            open_discussions: 0,
-            pending_spinoffs: 0,
             parent_run_id: None,
             parent_node_id: None,
         }
@@ -377,8 +371,6 @@ mod tests {
                 "worktree_root": null,
                 "harness": null,
                 "node_count": 0,
-                "open_discussions": 0,
-                "pending_spinoffs": 0,
                 "parent_run_id": null,
                 "parent_node_id": null,
             })

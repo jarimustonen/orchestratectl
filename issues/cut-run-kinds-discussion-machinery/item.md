@@ -6,6 +6,9 @@ status: in-progress
 priority: high
 epic: lifecycle-architecture-review
 labels: [architecture]
+commits:
+- hash: 95d9c25
+  summary: core cut — kinds + mid-run discussion/spinoff machinery removed
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery

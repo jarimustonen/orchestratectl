@@ -22,40 +22,30 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
-use octl_core::{
-    is_run_id_prefix, DiscussionId, IdValidationError, Kind, Lifecycle, NodeId, ProposalId, RunId,
-    RunPaths,
-};
+use octl_core::{is_run_id_prefix, IdValidationError, Kind, Lifecycle, NodeId, RunId, RunPaths};
 
 use crate::error::CliError;
 use crate::output::OutputSpec;
 
+/// The creatable run kinds accepted by `run create --kind`. The 0.2 cut removed
+/// `code` / `orchestrate` / `orchestrated` / `bugfix` / `make-skill`; the
+/// read-only [`Kind::Unknown`] catch-all is deliberately not an input.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
 pub enum KindArg {
-    Code,
     Spinoff,
-    Orchestrated,
     Research,
     TechnicalDecision,
-    MakeSkill,
     FanOut,
-    Bugfix,
-    Orchestrate,
 }
 
 impl From<KindArg> for Kind {
     fn from(k: KindArg) -> Self {
         match k {
-            KindArg::Code => Kind::Code,
             KindArg::Spinoff => Kind::Spinoff,
-            KindArg::Orchestrated => Kind::Orchestrated,
             KindArg::Research => Kind::Research,
             KindArg::TechnicalDecision => Kind::TechnicalDecision,
-            KindArg::MakeSkill => Kind::MakeSkill,
             KindArg::FanOut => Kind::FanOut,
-            KindArg::Bugfix => Kind::Bugfix,
-            KindArg::Orchestrate => Kind::Orchestrate,
         }
     }
 }
@@ -180,15 +170,6 @@ pub enum RunAction {
         /// a minimal `{success, summary}` report.
         #[arg(long)]
         report_file: Option<std::path::PathBuf>,
-        /// Human-reviewer acknowledgement, required to merge a `code` run (the
-        /// `/worktree-merge` workflow supplies it). No-op for other kinds.
-        ///
-        /// Hidden from `--help`: a `code` run's whole purpose is the human review
-        /// gate before landing, so the coding agent must NOT discover and pass
-        /// this to self-merge (issue `interactive-code-run-self-merged`). The
-        /// human's path documents it in the `worktree-merge` skill.
-        #[arg(long, hide = true)]
-        confirm_interactive: bool,
         /// Resolve inputs and report the planned merge without running it
         /// or appending any event.
         #[arg(long)]
@@ -298,14 +279,12 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source,
             node_id,
             report_file,
-            confirm_interactive,
             dry_run,
         } => merge::run(merge::Args {
             run_id,
             source,
             node_id,
             report_file,
-            confirm_interactive,
             dry_run,
             spec,
             warnings,
@@ -610,31 +589,12 @@ pub fn parse_node_id(value: &str) -> Result<NodeId, CliError> {
     NodeId::parse_str(value).map_err(|e| invalid_id(value, &e))
 }
 
-/// Validate a `discussion_id` clap argument into a typed [`DiscussionId`].
-pub fn parse_discussion_id(value: &str) -> Result<DiscussionId, CliError> {
-    DiscussionId::parse_str(value).map_err(|e| invalid_id(value, &e))
-}
-
-/// Validate a `proposal_id` clap argument into a typed [`ProposalId`].
-pub fn parse_proposal_id(value: &str) -> Result<ProposalId, CliError> {
-    ProposalId::parse_str(value).map_err(|e| invalid_id(value, &e))
-}
-
-/// Render a `Kind` as its canonical kebab-case wire string. Single
-/// source of truth shared by every verb so create/list/show/json/text
-/// stay aligned and adding a new kind only requires editing here.
+/// Render a `Kind` as its canonical kebab-case wire string. Delegates to
+/// [`Kind::wire_name`] — the single source of truth — so create/list/show/json/
+/// text stay aligned with the enum (including the read-only `unknown` catch-all
+/// a legacy on-disk run decodes to).
 pub fn kind_kebab(k: Kind) -> &'static str {
-    match k {
-        Kind::Code => "code",
-        Kind::Spinoff => "spinoff",
-        Kind::Orchestrated => "orchestrated",
-        Kind::Research => "research",
-        Kind::TechnicalDecision => "technical-decision",
-        Kind::MakeSkill => "make-skill",
-        Kind::FanOut => "fan-out",
-        Kind::Bugfix => "bugfix",
-        Kind::Orchestrate => "orchestrate",
-    }
+    k.wire_name()
 }
 
 pub fn lifecycle_kebab(l: Lifecycle) -> &'static str {

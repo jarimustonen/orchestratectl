@@ -72,16 +72,6 @@ enum Command {
         #[command(subcommand)]
         action: crate::node::NodeAction,
     },
-    /// List, show, or resolve discussions for a run.
-    Discussion {
-        #[command(subcommand)]
-        action: crate::discussion::DiscussionAction,
-    },
-    /// List, approve, or reject spin-off proposals on a run.
-    Spinoff {
-        #[command(subcommand)]
-        action: crate::spinoff::SpinoffAction,
-    },
     /// Long-lived per-run supervisor: tail-follow events, watchdog
     /// agents, consume child `node.report` events with deterministic-
     /// ID dedup. Re-enters the same binary; `run reattach` invokes it.
@@ -236,10 +226,6 @@ pub fn run() -> ExitCode {
         Command::Run { action } => crate::run::dispatch(action, output, &logging_warnings),
         Command::Event { action } => crate::event::dispatch(action, output, &logging_warnings),
         Command::Node { action } => crate::node::dispatch(action, output, &logging_warnings),
-        Command::Discussion { action } => {
-            crate::discussion::dispatch(action, output, &logging_warnings)
-        }
-        Command::Spinoff { action } => crate::spinoff::dispatch(action, output, &logging_warnings),
         Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
         // `doctor` owns its exit code directly: §18 requires exit 1 on any
         // `fail` *without* an error envelope (the report on stdout is the
