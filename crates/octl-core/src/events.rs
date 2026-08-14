@@ -664,8 +664,8 @@ where
 ///
 /// A *parse-valid* event whose payload is semantically corrupt is skipped the
 /// same way (with a `warn`), rather than hard-erroring. The dangerous subclass
-/// is an event carrying an embedded id (`discussion_id`, `proposal_id`,
-/// `child_run_id`, `child_node_id`) that fails its strict `parse_str` and would
+/// is an event carrying an embedded id (`child_run_id`, `child_node_id`) that
+/// fails its strict `parse_str` and would
 /// otherwise be joined onto a path — the reducer's independent second line of
 /// defense against a corrupt log, a restored backup, or a future writer that
 /// bypasses the CLI validators (issue `reducer-path-traversal-defense`). Such
@@ -676,7 +676,8 @@ where
 /// Skipping it converges the projection to the largest safe subset and never
 /// joins a tainted id onto a path (the typed-id constructors already make
 /// traversal structurally impossible — a `"../escape"` id never parses into a
-/// [`DiscussionId`], so it can never reach `discussions/<id>.json`). The append
+/// [`RunId`](crate::RunId) / [`NodeId`](crate::NodeId), so it can never reach
+/// `nodes/<id>.json`). The append
 /// *gate* stays fail-closed: [`reduce_event_to_ops`] rejects such an event
 /// before it is ever written, so a sanctioned log never reaches this branch and
 /// re-reducing real events on replay is a clean idempotent no-op. A genuine I/O

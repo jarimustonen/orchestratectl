@@ -2890,7 +2890,10 @@ mod tests {
         // A codex body that references no companion is returned borrowed and
         // unchanged — the global rewrite table only touches bodies that carry
         // a declared link form.
-        let no_links = SKILLS.iter().find(|s| s.name == "worktree-code").unwrap();
+        let no_links = SKILLS
+            .iter()
+            .find(|s| s.name == "octl-spawn-spinoff")
+            .unwrap();
         let rendered = render_body_for_agent("codex", no_links.body);
         assert!(matches!(rendered, Cow::Borrowed(_)));
         assert_eq!(&*rendered, no_links.body);

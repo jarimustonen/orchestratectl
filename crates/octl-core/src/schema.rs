@@ -51,15 +51,14 @@ pub enum IdValidationError {
     /// wrong length or used characters outside the permitted charset.
     #[error("invalid {kind} id {value:?}: expected {expected}")]
     InvalidFormat {
-        /// Which id type rejected the value (`run`, `node`, `discussion`, `spinoff`).
+        /// Which id type rejected the value (`run`, `node`).
         kind: &'static str,
         /// The offending raw value.
         value: String,
         /// Human-readable description of the accepted shape (e.g. `n-NNNN`).
         expected: &'static str,
     },
-    /// The value did not start with the id type's required prefix
-    /// (`n-`, `d-`, `s-`).
+    /// The value did not start with the id type's required prefix (`n-`).
     #[error("invalid {kind} id: wrong prefix, expected {expected}")]
     WrongPrefix {
         /// Which id type rejected the value.
@@ -70,7 +69,7 @@ pub enum IdValidationError {
 }
 
 impl IdValidationError {
-    /// The id type that rejected the value (`run`, `node`, `discussion`, `spinoff`).
+    /// The id type that rejected the value (`run`, `node`).
     pub fn kind(&self) -> &'static str {
         match self {
             Self::InvalidFormat { kind, .. } | Self::WrongPrefix { kind, .. } => kind,
@@ -94,20 +93,16 @@ impl IdValidationError {
 /// newtype supplies its own `parse_str` in a separate `impl` block.
 ///
 /// `Ord` / `PartialOrd` are derived, so they forward to the inner `String`'s
-/// ordering — i.e. plain `&str` byte comparison. For the fixed-width ULID forms
-/// ([`RunId`], and the 26-char arm of `DiscussionId`/`ProposalId`) this
-/// preserves the natural time ordering ULIDs encode in their lexical sort.
+/// ordering — i.e. plain `&str` byte comparison. For the fixed-width ULID form
+/// ([`RunId`]) this preserves the natural time ordering ULIDs encode in their
+/// lexical sort.
 ///
-/// CAVEAT — this ordering is lexical, *not* numeric or semantic:
-/// - [`NodeId`] is `n-` + a variable-width number, so once the counter grows a
-///   digit the byte order diverges from the numeric order: `n-10000 < n-9999`.
-///   Do not sort `NodeId`s expecting ascending node number; parse the body if
-///   you need that.
-/// - `DiscussionId`/`ProposalId` mix a 26-char and a 10-char form, so ordering
-///   across the two forms is arbitrary, not creation order.
+/// CAVEAT — this ordering is lexical, *not* numeric or semantic: [`NodeId`] is
+/// `n-` + a variable-width number, so once the counter grows a digit the byte
+/// order diverges from the numeric order: `n-10000 < n-9999`. Do not sort
+/// `NodeId`s expecting ascending node number; parse the body if you need that.
 ///
-/// The trait is provided for `BTreeMap`/`BTreeSet` keys and stable sorts, not
-/// as a claim of meaningful order for these two types.
+/// The trait is provided for `BTreeMap`/`BTreeSet` keys and stable sorts.
 macro_rules! id_newtype {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*

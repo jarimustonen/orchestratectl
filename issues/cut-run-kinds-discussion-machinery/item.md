@@ -11,6 +11,8 @@ commits:
   summary: core cut — kinds + mid-run discussion/spinoff machinery removed
 - hash: b72e7d8
   summary: CLI cut — modules, dispatch, lifecycle inference, tests
+- hash: b1b6b6d
+  summary: skills + snapshots
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery

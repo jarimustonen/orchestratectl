@@ -25,13 +25,13 @@ use octl_core::Status;
 /// - `status == Pending` — the run never advanced past creation. A terminal or
 ///   `running` manifest is not stillborn (it started).
 /// - the supervisor is **not alive** — the actor that would create `n-0001` and
-///   roll the run up is dead (or was never recorded). This is the crucial
-///   difference from [`is_stalled`]: there the supervisor is *alive* but idle,
-///   so a grace window is needed to tell "slow" from "dead"; here the
-///   supervisor is confirmed dead, which is unambiguous and needs no grace.
-/// - `node_count == 0` — not a single worker node was ever created. This also
-///   makes the check kind-agnostic: a `--kind orchestrate` run whose driver
-///   node was never even created is stillborn by the same logic, while a run
+///   roll the run up is dead (or was never recorded). The supervisor being
+///   confirmed dead is unambiguous and needs no grace window (unlike
+///   [`is_orphaned`], where the supervisor is alive-but-idle and a grace window
+///   tells "slow" from "dead").
+/// - `node_count == 0` — not a single worker node was ever created. This makes
+///   the check kind-agnostic: a run whose worker node was never even created is
+///   stillborn by the same logic, while a run
 ///   that got as far as `n-0001` is excluded (it started).
 /// - `updated_at == created_at` — no manifest-bumping event has been applied
 ///   since creation, so there has been zero forward progress.
@@ -59,7 +59,7 @@ use octl_core::Status;
 /// because a `node_count > 0` pending/running run is also the shape of a
 /// healthy working run.
 ///
-/// Like [`is_stalled`], this is a **computed** read-time hint over the manifest
+/// Like [`is_orphaned`], this is a **computed** read-time hint over the manifest
 /// (plus a single-file supervisor-pid probe) — it touches no
 /// event-append / reducer / schema path.
 #[must_use]
@@ -111,8 +111,8 @@ pub const ORPHAN_GRACE: Duration = Duration::minutes(15);
 ///   producing them, so a stale manifest clock alongside a dead supervisor is
 ///   the stranded signature. The grace window is the crucial guard against a
 ///   transient dead-read: a supervisor caught mid-reattach/restart (pid file
-///   momentarily absent) whose clock is still fresh is NOT flagged, mirroring
-///   the orchestrate-stall grace ([`is_stalled`]). Unlike [`is_stillborn`],
+///   momentarily absent) whose clock is still fresh is NOT flagged. Unlike
+///   [`is_stillborn`],
 ///   which can key off the exact `updated_at == created_at` never-progressed
 ///   signature and needs no grace, a mid-run orphan has a moving clock and so
 ///   REQUIRES the idle window to tell "just now" from "long dead".

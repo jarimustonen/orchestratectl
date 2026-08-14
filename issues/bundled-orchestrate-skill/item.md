@@ -1,9 +1,10 @@
 ---
 created: 2026-08-13
-updated: 2026-08-13
+updated: 2026-08-14
 type: bug
-status: open
+status: wontfix
 priority: normal
+closed: 2026-08-14
 ---
 
 # Bundled orchestrate skill description exceeds pi limit
@@ -28,3 +29,9 @@ The installed `~/.pi/agent/skills/orchestrate/SKILL.md` and `~/.claude/skills/or
 ## Comments
 
 This appears to originate from orchestratectl's bundled skill template rather than homebase symlinked skills. Homebase-local YAML errors were fixed separately.
+
+## Resolution
+
+### 2026-08-14T13:46:07Z · @issuectl
+
+Obsoleted by cut-run-kinds-discussion-machinery: the /orchestrate bundled skill was removed in the 0.2 subtractive cut, so its pi description-length concern no longer applies.
