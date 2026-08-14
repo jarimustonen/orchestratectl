@@ -934,3 +934,50 @@ fn cancel_does_not_over_report_already_terminal_node() {
         &vec![Value::from("n-0001")]
     );
 }
+
+/// A run recorded under a kind removed in the 0.2 cut (e.g. `code`) still
+/// decodes read-only (`Kind::Unknown`) so `run list` / `run show` REPORT it
+/// (ADR §D7 — the on-disk evidence corpus is never faulted or deleted), but
+/// every MUTATING verb refuses it with `legacy_run_read_only`, so its manifest
+/// is never rewritten (which would overwrite the legacy kind with `"unknown"`
+/// and destroy provenance).
+#[test]
+fn legacy_removed_kind_run_is_read_only() {
+    let home = TestHome::new();
+    let run_id = create(&home, "spinoff", "will-be-legacied");
+
+    // Forge a legacy on-disk run: rewrite the manifest's kind to a removed one.
+    let manifest_path = home.path().join("runs").join(&run_id).join("manifest.json");
+    let mut m: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    m["kind"] = json!("code");
+    std::fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
+
+    // READ paths still work — the run is reported, decoded as the read-only
+    // `unknown` kind, never faulted.
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let row = v["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run_id)
+        .expect("legacy run still listed");
+    assert_eq!(row["kind"], "unknown");
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(v["data"]["manifest"]["kind"], "unknown");
+
+    // MUTATING verbs refuse it — no manifest rewrite, no corruption.
+    let (code, err) = run_fail(bin(&home).args(["--output", "json", "run", "cancel", &run_id]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "legacy_run_read_only");
+
+    let (code, err) = run_fail(bin(&home).args(["--output", "json", "run", "merge", &run_id]));
+    assert_eq!(code, 1);
+    assert_eq!(err["error"]["code"], "legacy_run_read_only");
+
+    // The forged kind survived on disk — the refused mutations never rewrote it.
+    let after: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        after["kind"], "code",
+        "legacy kind provenance must be preserved"
+    );
+}

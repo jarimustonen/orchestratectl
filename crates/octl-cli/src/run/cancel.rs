@@ -42,8 +42,12 @@ pub fn run(
     // manifest read fails with a NotFound I/O error, which the match below maps
     // back to the same `run_not_found` envelope so the race can't leak an
     // `io_error`.
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
-        return Err(run_not_found(run_id));
+    match read_manifest_opt(&paths).map_err(from_core)? {
+        None => return Err(run_not_found(run_id)),
+        // A run recorded under a removed kind is read-only (ADR §D7) — refuse
+        // before `cancel_run` appends its cancel events and rewrites the
+        // manifest (which would overwrite the legacy kind with `"unknown"`).
+        Some(m) => crate::run::reject_legacy_kind(m.kind, paths.run_id.as_str())?,
     }
 
     let outcome = match cancel_run(&paths, note) {

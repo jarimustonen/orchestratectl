@@ -597,6 +597,33 @@ pub fn kind_kebab(k: Kind) -> &'static str {
     k.wire_name()
 }
 
+/// Refuse a MUTATING operation on a run recorded under a kind removed in the 0.2
+/// cut ([`Kind::Unknown`] — `code`, `orchestrate`, `orchestrated`, `bugfix`,
+/// `make-skill`, or any future/unknown wire value).
+///
+/// Such a run stays decodable so `run list` / `run show` / `doctor` can REPORT
+/// it (ADR §D7 — the on-disk evidence corpus is never deleted), but it is
+/// **read-only**: mutating it would append to its event log and rewrite
+/// `manifest.json`, and because `Kind::Unknown` re-serializes to `"unknown"`
+/// that write would destroy the original kind provenance the corpus preserves.
+/// Refusing here makes "read-only" an enforced invariant rather than a
+/// convention. Callers guard before their first append (merge / cancel /
+/// supervise).
+pub fn reject_legacy_kind(kind: Kind, run_id: &str) -> Result<(), CliError> {
+    if kind == Kind::Unknown {
+        return Err(CliError::user(
+            "legacy_run_read_only",
+            format!(
+                "run {run_id} was recorded under a run kind removed in 0.2 and is read-only — \
+                 inspect it with `run show` / `run list` / `doctor`, but it cannot be mutated \
+                 (merged, cancelled, or supervised)"
+            ),
+        )
+        .with_invalid_value(run_id));
+    }
+    Ok(())
+}
+
 pub fn lifecycle_kebab(l: Lifecycle) -> &'static str {
     match l {
         Lifecycle::Autonomous => "autonomous",

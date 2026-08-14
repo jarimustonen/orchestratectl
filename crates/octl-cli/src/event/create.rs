@@ -98,7 +98,10 @@ const FORBIDDEN_KINDS_FOR_EVENT_CREATE: &[&str] = &["run.created", "node.report"
 const MAX_FROM_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Kinds where the reducer requires a top-level `node_id` to be useful.
-/// Without it, the append succeeds but the reducer silently no-ops.
+/// Without it, the append succeeds but the reducer silently no-ops. Since the
+/// 0.2 cut removed the discussion/spinoff kinds (the only ones that *allowed* a
+/// node id without requiring it), every node-referencing kind now requires it —
+/// so this is also the "allows a node id" set.
 fn requires_node_id(kind: &str) -> bool {
     matches!(
         kind,
@@ -109,11 +112,6 @@ fn requires_node_id(kind: &str) -> bool {
             | "supervisor.attached"
             | "supervisor.cursor_advanced"
     )
-}
-
-/// Kinds that may legitimately reference a node but don't require it.
-fn allows_node_id(kind: &str) -> bool {
-    requires_node_id(kind)
 }
 
 /// The projection files this event will touch, asked of the reducer itself via
@@ -162,7 +160,7 @@ fn projected_paths(
 /// never sees `discussion_id: "../../etc"` and the projection write
 /// path can't escape the run dir.
 fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Result<(), CliError> {
-    // `data.node_id` may appear on any kind that `allows_node_id`. If
+    // `data.node_id` may appear on any kind that `requires_node_id`. If
     // it's a string, sanitize it and reject any disagreement with the
     // top-level `--node-id`.
     if let Some(v) = data.get("node_id") {
@@ -238,7 +236,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // accepting it would let callers paper over a typo (writing
     // `--kind run.status --node-id n-0001` and then wondering why the
     // node didn't change).
-    if args.node_id.is_some() && !allows_node_id(kind) {
+    if args.node_id.is_some() && !requires_node_id(kind) {
         let offending = args.node_id.as_deref().unwrap_or("");
         return Err(CliError::user(
             "unexpected_flag",

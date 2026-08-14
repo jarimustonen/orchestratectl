@@ -106,8 +106,24 @@ fn opt_node_id(events_path: &Path, ev: &Event, d: &Value, field: &str) -> Result
     }
 }
 
+/// Parse a `kind` value from event `data` for a NEW append, failing closed on
+/// anything not a live, creatable kind.
+///
+/// `Kind`'s `#[serde(other)]` catch-all means every unrecognized string —
+/// a removed kind (`code`, `orchestrate`, …), a typo, or a future kind —
+/// deserializes to [`Kind::Unknown`] rather than erroring. That read-only
+/// catch-all exists so `run list` / `doctor` can decode a legacy on-disk run
+/// (ADR §D7); it must NOT let a garbage `kind` slip through the append gate as
+/// though it were valid. Mapping `Unknown` back to `None` keeps the reducer's
+/// `run.created` / `node.created` / `child.spawned` validation fail-closed, as
+/// it was before the 0.2 cut added the catch-all. (Legacy runs are never
+/// re-created through this path — their manifest/nodes already exist on disk and
+/// are read directly, not replayed from a fresh `*.created`.)
 fn data_kind(v: &Value) -> Option<Kind> {
-    serde_json::from_value(v.clone()).ok()
+    match serde_json::from_value::<Kind>(v.clone()) {
+        Ok(Kind::Unknown) | Err(_) => None,
+        Ok(k) => Some(k),
+    }
 }
 
 fn data_status(v: &Value) -> Option<Status> {
@@ -1564,6 +1580,44 @@ mod tests {
             reduce_event_to_ops(&paths, &ev2),
             Err(Error::CorruptEventLog { .. })
         ));
+    }
+
+    /// The append gate stays fail-closed after the 0.2 cut added
+    /// `Kind`'s `#[serde(other)]` catch-all: a `run.created` / `node.created`
+    /// whose `kind` is a removed kind (`code`, …) or plain garbage must still be
+    /// rejected as `CorruptEventLog`, NOT silently accepted as `Kind::Unknown`.
+    /// (Legacy runs are never re-created through the reducer — their manifest is
+    /// read directly from disk via the permissive `Kind::Unknown` decode.)
+    #[test]
+    fn removed_or_garbage_kind_in_created_events_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        for bad in ["code", "orchestrate", "bugfix", "make-skill", "garbage"] {
+            let mut ev = event(run_id);
+            ev.kind = "run.created".into();
+            ev.node_id = None;
+            ev.data = serde_json::json!({ "kind": bad, "lifecycle": "autonomous", "title": "t" });
+            assert!(
+                matches!(
+                    reduce_event_to_ops(&paths, &ev),
+                    Err(Error::CorruptEventLog { .. })
+                ),
+                "run.created with kind {bad:?} must be rejected, not folded to Unknown"
+            );
+        }
+
+        // A surviving creatable kind still folds cleanly (guards against a
+        // false positive that rejects everything).
+        let mut ok = event(run_id);
+        ok.kind = "run.created".into();
+        ok.node_id = None;
+        ok.data = serde_json::json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" });
+        assert!(reduce_event_to_ops(&paths, &ok).is_ok());
     }
 
     /// Snapshot every projection file under `paths` to a `path → inode` map.

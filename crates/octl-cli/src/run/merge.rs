@@ -163,6 +163,11 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 .with_invalid_value(&run_id)
         })?;
 
+    // A run recorded under a removed kind is read-only (ADR §D7) — refuse before
+    // any merge/append so we never rewrite its manifest (and destroy its
+    // provenance) or self-merge a legacy human-reviewed `code` run.
+    crate::run::reject_legacy_kind(manifest.kind, &run_id)?;
+
     let node = read_node_opt(&paths, &node_id)
         .map_err(from_core)?
         .ok_or_else(|| {

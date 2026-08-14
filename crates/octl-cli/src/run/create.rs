@@ -495,10 +495,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
-    // The 0.2 cut removed the `orchestrate` DAG-driver kind, so no run
-    // synthesizes a driver node here — every surviving kind is a single worker
-    // whose node is created by `create.sh` (or the skeleton below).
-    let driver_node_id: Option<&str> = None;
+    // The 0.2 cut removed the `orchestrate` DAG-driver kind — the only kind that
+    // synthesized its own `n-0001` driver node here. Every surviving kind's node
+    // is materialized by `create.sh` (a `fan-out` driver's included), so the
+    // envelope carries no synthesized node id (`None`) on this path.
 
     // Emit `child.spawned` on the parent's log. This is what makes the parent
     // supervisor discover and adopt the child (§7.2). It is emitted only once
@@ -560,7 +560,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             lifecycle,
             parent_run_id: parent_run_id.as_deref(),
             parent_node_id: parent_node_id.as_deref(),
-            node_id: driver_node_id,
+            node_id: None,
             spawn: None,
             supervisor_pid: None,
             idempotent_replay: None,

@@ -13,6 +13,8 @@ commits:
   summary: CLI cut — modules, dispatch, lifecycle inference, tests
 - hash: b1b6b6d
   summary: skills + snapshots
+- hash: bcb9147
+  summary: changelog + doc cleanup; obsoleted bundled-orchestrate-skill
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery

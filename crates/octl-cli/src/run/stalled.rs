@@ -25,10 +25,11 @@ use octl_core::Status;
 /// - `status == Pending` — the run never advanced past creation. A terminal or
 ///   `running` manifest is not stillborn (it started).
 /// - the supervisor is **not alive** — the actor that would create `n-0001` and
-///   roll the run up is dead (or was never recorded). The supervisor being
-///   confirmed dead is unambiguous and needs no grace window (unlike
-///   [`is_orphaned`], where the supervisor is alive-but-idle and a grace window
-///   tells "slow" from "dead").
+///   roll the run up is dead (or was never recorded). Combined with the exact
+///   `updated_at == created_at` never-progressed signature below, this is
+///   unambiguous and needs no grace window (unlike [`is_orphaned`], whose
+///   moving manifest clock forces a grace window to tell a *transient* dead-read
+///   — a supervisor mid-reattach/restart — from a genuinely stranded run).
 /// - `node_count == 0` — not a single worker node was ever created. This makes
 ///   the check kind-agnostic: a run whose worker node was never even created is
 ///   stillborn by the same logic, while a run

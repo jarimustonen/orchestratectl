@@ -581,14 +581,34 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
     // The supervised run id is always a full ULID; parse to the typed id and take
     // the exact path — the supervisor never fuzzy-resolves.
     let paths = run_paths_exact(root.as_path(), &parse_run_id(run_id)?)?;
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
-        return Err(CliError {
-            kind: ExitKind::User,
-            code: "run_not_found".into(),
-            message: format!("no run with id {run_id}"),
-            invalid_value: Some(run_id.to_string()),
-            expected: None,
-        });
+    match read_manifest_opt(&paths).map_err(from_core)? {
+        None => {
+            return Err(CliError {
+                kind: ExitKind::User,
+                code: "run_not_found".into(),
+                message: format!("no run with id {run_id}"),
+                invalid_value: Some(run_id.to_string()),
+                expected: None,
+            });
+        }
+        // A run recorded under a kind removed in 0.2 is read-only (ADR §D7): do
+        // not supervise it. Running the watchdog would append events + rewrite
+        // its manifest (destroying the legacy kind provenance), and — because
+        // such a run decodes as autonomous — could tear down work the removed
+        // interactive lifecycle used to protect. Refused BEFORE `claim_pid_atomic`
+        // so no pid file is left behind. A freshly `run create`d run is always a
+        // surviving kind; only a manual `supervise` / `run reattach` reaches here.
+        Some(m) if m.kind == octl_core::Kind::Unknown => {
+            return Err(CliError::user(
+                "legacy_run_read_only",
+                format!(
+                    "run {run_id} was recorded under a run kind removed in 0.2 and is read-only — \
+                     it is reported by `run list` / `doctor` but not supervised"
+                ),
+            )
+            .with_invalid_value(run_id));
+        }
+        Some(_) => {}
     }
 
     let pid_path = paths.supervisor_pid();
