@@ -36,6 +36,14 @@ improvising the merge from memory.
   (drop only terminal issues, add active/non-terminal ones, keep the existing lane order),
   exactly the Phase-0 merge `stint-start` runs at the start of a round. Regenerating from
   scratch risks dropping a `collision:` edge.
+- **Scrutinise spin-off quality before folding.** When review-generated spin-offs (from
+  `/llm-review`, a review panel, or an `/assess-findings` cascade) come up for folding into
+  the next stint's agenda, weigh each one critically against real value before promoting it
+  — do **not** admit them as given. Early-maturity review passes tend to over-produce
+  low-value "find something to polish" suggestions, and in practice a large majority of such
+  cascade spin-offs get dropped as `wontfix` rather than kept. This holds every stint: the
+  human-in-the-loop fold (step 1's "Ack + fold") is exactly where a marginal suggestion
+  should be dropped, not admitted.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 - **Propose, don't presume.** `/wrap-up` presents proposed `AGENTS.md`/issue/preference
   changes and asks before writing; don't assume it committed unless it reports saved
