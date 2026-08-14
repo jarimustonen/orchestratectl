@@ -515,3 +515,7 @@ The 5 state-integrity invariants and the `/stint` operating policy (deploy /
 green-gate / hot files) live in the root `CLAUDE.md` / `AGENTS.md`. Read them before
 touching the reducer, lock layer, `supervise/`, or the pipeline modules
 (`harness/`, `floor/`, `pipeline/`).
+
+## Piialiisan bugiraportit
+
+- [ ] 🐛 Piialiisan bugiraportti: Auto-land an idle spinoff whose work is committed and merges cleanly — jari via Telegram ([`intake-feature-orchestratectl-0c37ae4b9e84`](issues/intake-feature-orchestratectl-0c37ae4b9e84/item.md))

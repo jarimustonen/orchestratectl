@@ -1,0 +1,28 @@
+---
+created: 2026-08-14
+updated: 2026-08-14
+type: feature
+reporter: jari
+status: open
+priority: normal
+labels:
+- via:agent-homebase-wrapup
+- needs-triage
+---
+
+# Auto-land an idle spinoff whose work is committed and merges cleanly
+
+## Description
+
+Auto-land an idle spinoff whose work is committed and merges cleanly
+
+Observed 2x on 2026-08-13: an autonomous spinoff committed complete work that merges
+cleanly but the agent went idle without calling run merge. The supervisor terminalizes the
+run failed + recoverable (agent-idle-unmerged, "land it with run merge"), but landing then
+requires a manual orchestratectl run merge <id>.
+
+Idea: when the recoverable state is unambiguous (branch present, merges_cleanly true,
+unmerged_commits > 0, agent idle > threshold), AUTO-land it (submit minimal terminal report
++ merge) or add run merge --recover-idle / a config opt-in, instead of manual recovery.
+Reduces babysitting of fire-and-forget spinoffs. Low priority; a larger arch refactor is in
+flight there - reconcile rather than land a competing change.
