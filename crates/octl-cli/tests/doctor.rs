@@ -451,8 +451,10 @@ fn pi_orphan_companion_flagged_then_cleared_by_force() {
     let real_bytes = std::fs::read(&real).unwrap();
     std::fs::write(pi_dir.join("OLD-COMPANION.md"), &real_bytes).unwrap();
     let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    let real_hash = prov["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].clone();
-    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] = real_hash;
+    let real_hash =
+        prov["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].clone();
+    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] =
+        serde_json::json!({ "sha256": real_hash, "kind": "companion" });
     std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
 
     // doctor flags the orphan companion.

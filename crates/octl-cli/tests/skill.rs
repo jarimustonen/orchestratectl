@@ -747,8 +747,16 @@ fn skill_install_default_dual_homes_into_pi() {
     )
     .expect("record json");
     assert!(
-        record["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].is_string(),
+        record["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].is_string(),
         "companion hash must be recorded under its owning skill: {record}"
+    );
+    assert_eq!(
+        record["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["kind"], "companion",
+        "companion file recorded with kind=companion: {record}"
+    );
+    assert_eq!(
+        record["skills"]["stint-start"]["files"]["SKILL.md"]["kind"], "skill",
+        "body file recorded with kind=skill: {record}"
     );
 }
 
@@ -778,8 +786,10 @@ fn skill_install_force_reconciles_dropped_pi_companion() {
     std::fs::write(&orphan, &real_bytes).unwrap();
 
     let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    let real_hash = prov["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].clone();
-    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] = real_hash;
+    let real_hash =
+        prov["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].clone();
+    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] =
+        serde_json::json!({ "sha256": real_hash, "kind": "companion" });
     std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
 
     // A --force redeploy reconciles the dropped companion.
@@ -817,13 +827,13 @@ fn skill_install_force_reconciles_dropped_pi_companion() {
     // The record no longer tracks it → the doctor loop is now cleared.
     let after: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
     assert!(
-        after["skills"]["stint-start"]["companions"]
+        after["skills"]["stint-start"]["files"]
             .get("OLD-COMPANION.md")
             .is_none(),
         "reconciled companion must be dropped from the record: {after}"
     );
     assert!(
-        after["skills"]["stint-start"]["companions"]["AGENTS-EXECUTION-DAG.md"].is_string(),
+        after["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].is_string(),
         "the bundled companion stays tracked"
     );
 }
@@ -847,8 +857,10 @@ fn skill_install_force_relinquishes_diverged_dropped_pi_companion() {
     std::fs::write(&orphan, "user has since edited this\n").unwrap();
     let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
     // A recorded hash that does NOT match the on-disk bytes.
-    prov["skills"]["stint-start"]["companions"]["OLD-COMPANION.md"] =
-        serde_json::json!("00000000000000000000000000000000000000000000000000000000deadbeef");
+    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] = serde_json::json!({
+        "sha256": "00000000000000000000000000000000000000000000000000000000deadbeef",
+        "kind": "companion"
+    });
     std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
 
     let out = bin(&home)
@@ -869,7 +881,7 @@ fn skill_install_force_relinquishes_diverged_dropped_pi_companion() {
     );
     let after: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
     assert!(
-        after["skills"]["stint-start"]["companions"]
+        after["skills"]["stint-start"]["files"]
             .get("OLD-COMPANION.md")
             .is_none(),
         "a diverged orphan is relinquished (dropped from tracking): {after}"
@@ -1538,14 +1550,15 @@ fn skill_install_writes_pi_provenance_record() {
         .success());
 
     let prov = read_provenance(&home);
-    // v2: the record schema was bumped when the per-skill `companions` map was
-    // added, so an older binary refuses (rather than silently drops) the field.
-    assert_eq!(prov["schema_version"], 2);
+    // v3: the record schema was bumped when it flattened to the per-file `files`
+    // map, so an older binary refuses (rather than silently drops) the field.
+    assert_eq!(prov["schema_version"], 3);
     let rec = &prov["skills"]["stint-start"];
     assert!(rec.is_object(), "stint-start not recorded: {prov}");
-    let sha = rec["sha256"].as_str().expect("sha256");
+    let sha = rec["files"]["SKILL.md"]["sha256"].as_str().expect("sha256");
     assert_eq!(sha.len(), 64, "sha256 must be 32-byte hex");
     assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(rec["files"]["SKILL.md"]["kind"], "skill");
     assert_eq!(
         rec["cli_version"].as_str().unwrap(),
         env!("CARGO_PKG_VERSION")
@@ -1570,7 +1583,7 @@ fn seed_deregistered_pi_mirror(home: &TempDir, fake: &str, diverge: bool) -> Pat
     let real_bytes = std::fs::read(&real_mirror).unwrap();
 
     let mut prov = read_provenance(home);
-    let recorded_hash = prov["skills"]["stint-start"]["sha256"]
+    let recorded_hash = prov["skills"]["stint-start"]["files"]["SKILL.md"]["sha256"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1586,10 +1599,11 @@ fn seed_deregistered_pi_mirror(home: &TempDir, fake: &str, diverge: bool) -> Pat
         std::fs::write(&fake_mirror, &real_bytes).unwrap();
     }
 
-    // Record the fake skill with the recorded hash of the pristine copy.
+    // Record the fake skill with the recorded hash of the pristine copy (flat
+    // per-file shape: the body is the `SKILL.md` file entry).
     prov["skills"][fake] = serde_json::json!({
-        "sha256": recorded_hash,
         "cli_version": "0.0.1",
+        "files": { "SKILL.md": { "sha256": recorded_hash, "kind": "skill" } },
     });
     std::fs::write(
         pi_provenance_path(home),
