@@ -6,6 +6,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+> **0.2.0 in progress — breaking.** Entries below accumulate toward the 0.2 simplification release
+> (per `docs/decisions/0001-thin-supervisor-vs-harden.md`); they include breaking CLI removals.
+
+### Removed
+
+- **0.2 simplification — first subtractive cut: the code-pipeline subsystem and the harness heavy layer are gone (`cut-pipeline-floor-harness-heavy`).** ~26.5k LOC removed: `pipeline`/`floor` and the experimental harness layer (`harness bakeoff`, `harness conformance`, the `CodeHarness` trait, and the `aider` + `claude-deepseek` adapters). The light `--harness claude|pi` launcher is unchanged and still selects the worker harness. **Breaking:** the `harness bakeoff` / `harness conformance` and pipeline subcommands no longer exist. Supersedes 7 now-obsolete pipeline/harness fix issues.
+
+### Changed
+
+- **pi.dev skill-mirror provenance moves to a flat per-file model (schema v3) (`pi-provenance-flat-file-model`).** Each mirrored file (`SKILL.md` + every companion) is tracked individually rather than in a bundled per-skill record, with a read/upgrade path from v2. `--force` reconciliation, companions-first prune, and `doctor` coverage are preserved.
+
+### Added
+
+- **CI guard: version snapshots must match the crate version (`release-version-snapshot-refresh`).** `scripts/check-version-snapshots.sh` fails loudly when the `version_*` insta snapshots drift from `[workspace.package] version`, wired as a fast dependency-free `version-snapshots` CI job — so a version bump can no longer silently leave stale snapshots and turn `main` red after the release tag is cut (as happened for v0.1.8). The release mechanics doc now names the snapshot-refresh step.
+
 ## [0.1.8] - 2026-08-13
 
 ### Fixed
