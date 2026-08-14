@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
-assertion_line: 233
 expression: value
 ---
 {
@@ -34,15 +33,11 @@ expression: value
       "worktree_root": null,
       "harness": "claude",
       "node_count": 1,
-      "open_discussions": 0,
-      "pending_spinoffs": 0,
       "parent_run_id": null,
       "parent_node_id": null
     },
     "counts": {
-      "nodes": 1,
-      "discussions": 0,
-      "spinoffs": 0
+      "nodes": 1
     },
     "landed": false,
     "landed_method": "unverified"

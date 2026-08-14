@@ -9,6 +9,8 @@ labels: [architecture]
 commits:
 - hash: 95d9c25
   summary: core cut — kinds + mid-run discussion/spinoff machinery removed
+- hash: b72e7d8
+  summary: CLI cut — modules, dispatch, lifecycle inference, tests
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery

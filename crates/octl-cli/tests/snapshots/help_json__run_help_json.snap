@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
 expression: value
 ---
 {

@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
 expression: value
 ---
 {
@@ -202,15 +201,10 @@ expression: value
         "deprecated": false,
         "defaults": [],
         "accepted_values": [
-          "code",
           "spinoff",
-          "orchestrated",
           "research",
           "technical-decision",
-          "make-skill",
-          "fan-out",
-          "bugfix",
-          "orchestrate"
+          "fan-out"
         ],
         "accepts_file_paths": false,
         "conflicts_with": [],

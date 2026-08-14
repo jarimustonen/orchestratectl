@@ -181,22 +181,9 @@ const SKILLS: &[EmbeddedSkill] = &[
         path_in_repo: "crates/octl-cli/skills/worktree-spinoff/SKILL.template.md",
     },
     EmbeddedSkill {
-        name: "worktree-code",
-        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-code/SKILL.md")),
-        path_in_repo: "crates/octl-cli/skills/worktree-code/SKILL.template.md",
-    },
-    EmbeddedSkill {
         name: "worktree-merge",
         body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-merge/SKILL.md")),
         path_in_repo: "crates/octl-cli/skills/worktree-merge/SKILL.template.md",
-    },
-    EmbeddedSkill {
-        name: "worktree-orchestrated",
-        body: include_str!(concat!(
-            env!("OUT_DIR"),
-            "/skills/worktree-orchestrated/SKILL.md"
-        )),
-        path_in_repo: "crates/octl-cli/skills/worktree-orchestrated/SKILL.template.md",
     },
     EmbeddedSkill {
         name: "worktree-research",
@@ -205,19 +192,6 @@ const SKILLS: &[EmbeddedSkill] = &[
             "/skills/worktree-research/SKILL.md"
         )),
         path_in_repo: "crates/octl-cli/skills/worktree-research/SKILL.template.md",
-    },
-    EmbeddedSkill {
-        name: "worktree-make-skill",
-        body: include_str!(concat!(
-            env!("OUT_DIR"),
-            "/skills/worktree-make-skill/SKILL.md"
-        )),
-        path_in_repo: "crates/octl-cli/skills/worktree-make-skill/SKILL.template.md",
-    },
-    EmbeddedSkill {
-        name: "worktree-bugfix",
-        body: include_str!(concat!(env!("OUT_DIR"), "/skills/worktree-bugfix/SKILL.md")),
-        path_in_repo: "crates/octl-cli/skills/worktree-bugfix/SKILL.template.md",
     },
     EmbeddedSkill {
         name: "worktree-technical-decision",
@@ -259,11 +233,6 @@ const SKILLS: &[EmbeddedSkill] = &[
         name: "fan-out",
         body: include_str!(concat!(env!("OUT_DIR"), "/skills/fan-out/SKILL.md")),
         path_in_repo: "crates/octl-cli/skills/fan-out/SKILL.template.md",
-    },
-    EmbeddedSkill {
-        name: "orchestrate",
-        body: include_str!(concat!(env!("OUT_DIR"), "/skills/orchestrate/SKILL.md")),
-        path_in_repo: "crates/octl-cli/skills/orchestrate/SKILL.template.md",
     },
 ];
 

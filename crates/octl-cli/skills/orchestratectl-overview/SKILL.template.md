@@ -46,8 +46,8 @@ If `schema_version` is a value you do not recognise, refuse to proceed
   — discover, stream, and persist the operating manual for each
   workflow.
 - `orchestratectl run create --kind <kind> --title "..." --task "..."`
-  — start a new run (kinds: `worktree-code`, `spinoff`, `fan-out`,
-  `orchestrate`). The brief is `--task "<inline>"` or, for a long brief,
+  — start a new run (kinds: `spinoff`, `research`, `technical-decision`,
+  `fan-out`). The brief is `--task "<inline>"` or, for a long brief,
   `--prompt-file <path>` — there is no `--prompt` flag. See the
   `octl-spawn-spinoff` skill for the spinoff specifics.
 - `orchestratectl run list` / `run show <id>` — inspect runs. See the
@@ -71,12 +71,6 @@ If `schema_version` is a value you do not recognise, refuse to proceed
   every run); the binary rejects any other shape. Never invent a slug
   like `n-driver-001` — discover the id from `run create`'s `node_id`
   field or from `node list`.
-- `orchestratectl discussion list` / `discussion resolve` —
-  human-blocking decisions a worker raised; agents resolve these
-  before the run can continue.
-- `orchestratectl spinoff list` / `spinoff approve` / `spinoff reject`
-  — spin-off proposals from worker runs that need a human sign-off
-  before becoming real runs.
 
 ## Canonical cycle: create → supervise → collect reports
 
@@ -85,8 +79,8 @@ The flow every workflow follows:
 1. **Create**: `orchestratectl run create --kind <kind> --title
    "<title>" --task "<the brief>"` returns a `data` payload with
    `run_id`, `kind`, and `lifecycle` (the kind's classification —
-   `autonomous` or `interactive`, not a progress value). The run's
-   progress starts at `status: pending`, read later via `run show`.
+   always `autonomous` for the surviving kinds, not a progress value).
+   The run's progress starts at `status: pending`, read later via `run show`.
 2. **Supervise**: a background supervisor process picks the run up and
    drives the worker agent(s). State transitions land in the run's
    event log; `run show <id>` reads them.
@@ -95,17 +89,15 @@ The flow every workflow follows:
    proposals, discussion items, wrap-up recommendations) — usually as
    part of its `run merge` closing step, which merges the branch and
    submits the report in one call. The orchestrator reads these via
-   `node show` and `discussion list`.
+   `node show`.
 
 Two distinct fields, two distinct meanings — do not conflate them:
 
 - **`lifecycle`** carries the run's *classification*, derived from its
-  kind and fixed for the run's whole life: `autonomous` (spinoff,
-  fan-out, research, bugfix, technical-decision, make-skill,
-  orchestrated — runs to completion unattended) or `interactive`
-  (`code`, `orchestrate` — human-driven in a tmux window). It is **not**
-  a progress signal: a brand-new orchestrated child already reads
-  `lifecycle: autonomous`.
+  kind and fixed for the run's whole life. Every surviving kind (spinoff,
+  fan-out, research, technical-decision) is `autonomous` — it runs to
+  completion unattended. It is **not** a progress signal: a brand-new run
+  already reads `lifecycle: autonomous`.
 - **`status`** carries the run's *progress* and is the field to read
   when deciding whether a run is finished: `pending` / `running` /
   `blocked` / `done` / `failed` / `cancelled`. `done`, `failed`, and
@@ -122,9 +114,9 @@ Two distinct fields, two distinct meanings — do not conflate them:
 - **`octl-spawn-spinoff`** — when the user wants to spawn one focused
   autonomous task without interactive review.
 
-If the user asks for behavior these skills do not cover (interactive
-worktree review, fan-out, orchestrate), call `--help` first and report
-back rather than guessing.
+If the user asks for behavior these skills do not cover (fan-out,
+research, technical-decision), call `--help` first and report back rather
+than guessing.
 
 ## Install or upgrade `orchestratectl`
 

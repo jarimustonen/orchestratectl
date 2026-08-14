@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Router for the `/worktree-*` family. Classifies a free-form request into the right variant (`/worktree-code`, `/worktree-spinoff`, `/worktree-orchestrated`, `/worktree-research`, `/worktree-technical-decision`, `/worktree-make-skill`, `/fan-out`, `/orchestrate`) and delegates. Use when the user invokes `/worktree <free-form task>`, `/worktree <issue-slug>`, or `/worktree --flag ... <task>`, or says "spawn a worktree for X", "start a worktree to do Y", "do this in a worktree" without naming a specific variant. Does NOT create worktrees itself; does NOT route to `/worktree-merge` or `/complex-rebase` (those operate on existing worktrees — the user invokes them directly).
+description: Router for the `/worktree-*` family. Classifies a free-form request into the right variant (`/worktree-spinoff`, `/worktree-research`, `/worktree-technical-decision`, `/fan-out`) and delegates. Use when the user invokes `/worktree <free-form task>`, `/worktree <issue-slug>`, or `/worktree --flag ... <task>`, or says "spawn a worktree for X", "start a worktree to do Y", "do this in a worktree" without naming a specific variant. Does NOT create worktrees itself; does NOT route to `/worktree-merge` or `/complex-rebase` (those operate on existing worktrees — the user invokes them directly).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -19,7 +19,7 @@ You classify a free-form worktree request, announce the choice in one line, then
 3. **You never route to `/worktree` (yourself).** No recursion.
 4. **You forward the user's arguments verbatim** to the chosen sibling. Do not strip flags, rephrase the task, summarize, expand, or infer additional context. The user's text + flags become `$ARGUMENTS` for the sibling; flag validation is the sibling's job.
 5. **You delegate exactly once per call.** Pick one sibling, invoke it via the Skill tool, stop. No retry routing, no fallback chain on sibling failure.
-6. **You do not silently fall back to `/worktree-code` on ambiguity.** Clarify in one sentence first — see *Ambiguous input* below.
+6. **You do not silently fall back to the default `/worktree-spinoff` on ambiguity.** Clarify in one sentence first — see *Ambiguous input* below.
 7. **You read only `$ARGUMENTS`.** No `Read`, `Glob`, `Grep`, no issue files, no git state inspection. If routing requires knowing something only the repo can tell you, ask the user.
 
 ## Routing table
@@ -28,16 +28,12 @@ Match `$ARGUMENTS` against the rows top-down; the first row whose signal fires w
 
 | Signal in the user's request | Delegate to |
 |---|---|
-| User invokes with `--report-file <path>` AND `--merge-target <branch>` (orchestrator-managed worker) | `/worktree-orchestrated` |
 | "decide whether X or Y", "make the architectural call", "settle the trade-off", ADR | `/worktree-technical-decision` |
 | "research", "investigate", "survey" a topic of inquiry (multi-source synthesis; **not** a factual lookup, **not** a single-doc summary, **not** a bug to fix, **not** a decision request) | `/worktree-research` |
 | 5+ identical independent units, "fan out", "for every X in <enumerated set>" | `/fan-out` |
-| Heterogeneous features with stated dependencies, DAG, multi-feature campaign with parent integration branch | `/orchestrate` |
-| "author a skill", "create a `/<name>` skill", "build a Claude Code skill" — substantial, composes other skills | `/worktree-make-skill` |
-| "autonomous" AND/OR ("fire and forget" / "self-merging" / "spin off this task") — single focused task, no review expectation | `/worktree-spinoff` |
-| Default: a single coding task; no other signal fires | `/worktree-code` |
+| Default: a single focused task (coding, bugfix, or any autonomous work); no other signal fires | `/worktree-spinoff` |
 
-An issue slug (`intensifier-adjective-noun`, e.g. `extremely-quiet-otter`) with no other directional signal is a coding task → `/worktree-code`.
+An issue slug (`intensifier-adjective-noun`, e.g. `extremely-quiet-otter`) with no other directional signal is a single autonomous task → `/worktree-spinoff`.
 
 ## Out-of-family requests — refuse, do not route
 
@@ -58,7 +54,6 @@ If the request is about managing an existing worktree, looking something up, or 
 
 Two siblings tied on real signals, or no signal fires beyond the default with the task framing genuinely unclear, or the prompt names two routes ("compare options and decide"): ask one conversational sentence and stop. Examples:
 
-- "Do you want this autonomous (`/worktree-spinoff`) or human-reviewed (`/worktree-code`)?"
 - "Is this one task or 5+ similar ones?" (→ `/worktree-spinoff` vs `/fan-out`)
 - "Do you want a survey of options (`/worktree-research`) or a recorded decision (`/worktree-technical-decision`)?"
 
@@ -68,8 +63,8 @@ No `AskUserQuestion` — conversational text only (global CLAUDE.md). After the 
 
 If `$ARGUMENTS` describes something that genuinely doesn't fit any sibling, first ask one sentence: "Is this a one-off, or a workflow you'd want to invoke repeatedly?"
 
-- **One-off** → after the clarification, route to `/worktree-code` (default human-reviewed) or `/worktree-spinoff` (if the user signals autonomy in the reply). Do not propose authoring a skill for a one-off.
-- **Repeatable** → name the two closest siblings, explain in one sentence why each doesn't fit, then suggest `/worktree-make-skill` to author a new `/worktree-<x>` variant. Do not auto-invoke `/worktree-make-skill` — skill authorship is a separate decision.
+- **One-off** → after the clarification, route to `/worktree-spinoff` (the default autonomous worker). Do not propose authoring a skill for a one-off.
+- **Repeatable** → name the two closest siblings, explain in one sentence why each doesn't fit, then suggest authoring a new `/worktree-<x>` variant with `/skill-creator`. Skill authorship is a separate decision — do not auto-invoke it.
 
 ## Announce and delegate
 
@@ -81,7 +76,7 @@ Then invoke that skill via the Skill tool, passing `$ARGUMENTS` verbatim. Exampl
 
 - `Routing to /worktree-research — survey-of-options framing on an inquiry topic.`
 - `Routing to /fan-out — "for every receipt in batch 2026-05" is 8 identical units.`
-- `Routing to /worktree-code — single coding task, default human-reviewed flow.`
+- `Routing to /worktree-spinoff — single focused task, default autonomous flow.`
 
 Keep the line short; the user can interrupt if you misclassified.
 
@@ -91,7 +86,7 @@ Keep the line short; the user can interrupt if you misclassified.
 - Don't write prompt files, task descriptions, or any worktree scaffolding — that's the sibling's job.
 - Don't ideate, expand, or "helpfully" infer additional context about the user's task before forwarding.
 - Don't strip or "normalize" flags. `--with-test-server`, `--review`, `--headless`, `--deepseek-flash`, `--sparse foo,bar`, etc. are sibling-owned; forward as-is and let the sibling reject unknowns.
-- Don't chain siblings ("first `/worktree-research`, then `/orchestrate`"). One delegation per call.
+- Don't chain siblings ("first `/worktree-research`, then `/fan-out`"). One delegation per call.
 - Don't re-route on sibling failure. If the Skill tool surfaces an error, report it to the user — don't pick a second sibling and try again.
 - Don't add `/worktree-merge` or `/complex-rebase` to the routing table even as a "just in case." Both are terminal siblings the user invokes directly.
 - Don't hallucinate sibling names. The routing table is the canonical registry; if your candidate isn't in it, the right answer is *Novel workflow* or *Out-of-family*.

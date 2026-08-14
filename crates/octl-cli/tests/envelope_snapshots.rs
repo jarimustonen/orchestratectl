@@ -291,37 +291,6 @@ fn seed_node(home: &TempDir, run_id: &str) {
     );
 }
 
-fn seed_discussion(home: &TempDir, run_id: &str) {
-    event_create(
-        home,
-        run_id,
-        "discussion.opened",
-        None,
-        json!({
-            "discussion_id": "d-pqrstuvwxy",
-            "node_id": "n-0001",
-            "topic": "seed topic",
-            "severity": "discuss"
-        }),
-    );
-}
-
-fn seed_spinoff(home: &TempDir, run_id: &str) {
-    event_create(
-        home,
-        run_id,
-        "spinoff.proposed",
-        None,
-        json!({
-            "proposal_id": "s-spinaaaaaa",
-            "node_id": "n-0001",
-            "proposed_title": "seed proposal",
-            "proposed_kind": "spinoff",
-            "rationale": "follow-up"
-        }),
-    );
-}
-
 // ----------------------------------------------------------------------
 // version
 // ----------------------------------------------------------------------
@@ -417,7 +386,7 @@ fn run_create_envelopes() {
         "run",
         "create",
         "--kind",
-        "code",
+        "research",
         "--title",
         "dry",
         "--dry-run",
@@ -688,128 +657,4 @@ fn node_envelopes() {
         &rep,
     ]));
     snapshot("node_report_json", &out, &red);
-}
-
-// ----------------------------------------------------------------------
-// discussion
-// ----------------------------------------------------------------------
-
-#[test]
-fn discussion_envelopes() {
-    let home = TempDir::new().unwrap();
-    let run_id = create_run(&home);
-    seed_node(&home, &run_id);
-    seed_discussion(&home, &run_id);
-    let red = redactions(&home, Some(&run_id));
-
-    for (fmt, name) in [
-        ("text", "discussion_list_text"),
-        ("json", "discussion_list_json"),
-        ("jsonl", "discussion_list_jsonl"),
-    ] {
-        let out = ok_stdout(bin(&home).args(["--output", fmt, "discussion", "list", &run_id]));
-        snapshot(name, &out, &red);
-    }
-
-    let out = ok_stdout(bin(&home).args([
-        "--output",
-        "json",
-        "discussion",
-        "show",
-        &run_id,
-        "d-pqrstuvwxy",
-    ]));
-    snapshot("discussion_show_json", &out, &red);
-
-    // Dry-run envelope for `discussion resolve`.
-    let out = ok_stdout(bin(&home).args([
-        "--output",
-        "json",
-        "discussion",
-        "resolve",
-        &run_id,
-        "d-pqrstuvwxy",
-        "--choice",
-        "keep",
-        "--dry-run",
-    ]));
-    snapshot("discussion_resolve_dry_run_json", &out, &red);
-
-    // Validation error (exit 1): unknown discussion id.
-    snapshot(
-        "discussion_show_not_found_error",
-        &err_stderr(
-            bin(&home).args(["discussion", "show", &run_id, "d-nopereport"]),
-            1,
-        ),
-        &red,
-    );
-
-    // Wet (non-dry) `discussion resolve` success envelope — locks the real
-    // write shape. Last, since it flips d-pqrstuvwxy to resolved.
-    let out = ok_stdout(bin(&home).args([
-        "--output",
-        "json",
-        "discussion",
-        "resolve",
-        &run_id,
-        "d-pqrstuvwxy",
-        "--choice",
-        "keep",
-    ]));
-    snapshot("discussion_resolve_json", &out, &red);
-}
-
-// ----------------------------------------------------------------------
-// spinoff
-// ----------------------------------------------------------------------
-
-#[test]
-fn spinoff_envelopes() {
-    let home = TempDir::new().unwrap();
-    let run_id = create_run(&home);
-    seed_node(&home, &run_id);
-    seed_spinoff(&home, &run_id);
-    let red = redactions(&home, Some(&run_id));
-
-    for (fmt, name) in [
-        ("text", "spinoff_list_text"),
-        ("json", "spinoff_list_json"),
-        ("jsonl", "spinoff_list_jsonl"),
-    ] {
-        let out = ok_stdout(bin(&home).args(["--output", fmt, "spinoff", "list", &run_id]));
-        snapshot(name, &out, &red);
-    }
-
-    // Validation error (exit 1): whitespace-only `--reason` rejected (§1
-    // strict validation), with the offending value echoed. Run before the
-    // success case so the proposal is still `pending`.
-    snapshot(
-        "spinoff_reject_empty_reason_error",
-        &err_stderr(
-            bin(&home).args([
-                "spinoff",
-                "reject",
-                &run_id,
-                "s-spinaaaaaa",
-                "--reason",
-                "   ",
-            ]),
-            1,
-        ),
-        &red,
-    );
-
-    // `spinoff reject` success (a local-only write — no issuectl needed).
-    let out = ok_stdout(bin(&home).args([
-        "--output",
-        "json",
-        "spinoff",
-        "reject",
-        &run_id,
-        "s-spinaaaaaa",
-        "--reason",
-        "not now",
-    ]));
-    snapshot("spinoff_reject_json", &out, &red);
 }

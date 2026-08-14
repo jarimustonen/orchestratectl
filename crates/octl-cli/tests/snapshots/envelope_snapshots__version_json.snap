@@ -29,32 +29,12 @@ expression: value
         "schema_version": 1
       },
       {
-        "name": "worktree-code",
-        "cli_version": "0.1.8",
-        "schema_version": 1
-      },
-      {
         "name": "worktree-merge",
         "cli_version": "0.1.8",
         "schema_version": 1
       },
       {
-        "name": "worktree-orchestrated",
-        "cli_version": "0.1.8",
-        "schema_version": 1
-      },
-      {
         "name": "worktree-research",
-        "cli_version": "0.1.8",
-        "schema_version": 1
-      },
-      {
-        "name": "worktree-make-skill",
-        "cli_version": "0.1.8",
-        "schema_version": 1
-      },
-      {
-        "name": "worktree-bugfix",
         "cli_version": "0.1.8",
         "schema_version": 1
       },
@@ -90,11 +70,6 @@ expression: value
       },
       {
         "name": "fan-out",
-        "cli_version": "0.1.8",
-        "schema_version": 1
-      },
-      {
-        "name": "orchestrate",
         "cli_version": "0.1.8",
         "schema_version": 1
       }

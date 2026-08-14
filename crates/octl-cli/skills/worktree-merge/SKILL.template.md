@@ -1,6 +1,6 @@
 ---
 name: worktree-merge
-description: Merge a completed orchestratectl worktree branch back to its source/parent branch and tear the worktree down — branch rebased + merged, terminal `node report` submitted, and the tmux window + worktree + branch removed by the supervisor, all in ONE `orchestratectl run merge` call. Use when the user runs `/worktree-merge` from inside an interactive `/worktree-code` worktree, or when an autonomous worktree (spinoff, research, orchestrated, bugfix, …) reaches its merge-and-report step. Replaces the old two-step `/worktree-merge` + `orchestratectl node report` sequence. For a feature branch and main that have both diverged so far an ordinary rebase fails, recover with `/complex-rebase` then re-run.
+description: Merge a completed orchestratectl worktree branch back to its source/parent branch and tear the worktree down — branch rebased + merged, terminal `node report` submitted, and the tmux window + worktree + branch removed by the supervisor, all in ONE `orchestratectl run merge` call. Use when an autonomous worktree (spinoff, research, technical-decision, or a fan-out unit) reaches its merge-and-report step. Replaces the old two-step `/worktree-merge` + `orchestratectl node report` sequence. For a feature branch and main that have both diverged so far an ordinary rebase fails, recover with `/complex-rebase` then re-run.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -14,8 +14,8 @@ lifecycle:
 
 1. **Rebase + merge** the worktree branch onto its source (via the bundled
    merge backend — the same rebase/`flock`/`workmux merge` mechanics the
-   old homebase `merge.sh` used; concurrent merges from `/fan-out` and
-   `/orchestrate` are still serialized by the cross-worktree lock).
+   old homebase `merge.sh` used; concurrent merges from `/fan-out` units
+   are still serialized by the cross-worktree lock).
 2. **Submit the terminal `node report`** stamped `via: "explicit-merge"`,
    so the per-run supervisor winds the run down.
 3. **Tear down** — the supervisor closes the tmux window, removes the
@@ -31,12 +31,10 @@ it defines the run / supervisor / node vocabulary this skill assumes.
 
 ## When to use
 
-- ✅ The user ran `/worktree-merge` from inside an interactive
-  `/worktree-code` worktree and wants it merged + cleaned up.
-- ✅ An autonomous worktree (spinoff, research, orchestrated, bugfix,
-  technical-decision, make-skill, fan-out unit) has finished its work and
-  committed, and now needs to merge-and-report. The driver/worker skills
-  point here for their closing step.
+- ✅ An autonomous worktree (spinoff, research, technical-decision, or a
+  fan-out unit) has finished its work and committed, and now needs to
+  merge-and-report. The driver/worker skills point here for their closing
+  step.
 - ❌ The branch and its source have diverged so far an ordinary rebase
   cannot reconcile them → run `/complex-rebase` first, then come back.
 - ❌ You are NOT inside a worktree run managed by orchestratectl (no
@@ -101,7 +99,7 @@ JSON
   "options": ["…"]}`.
 - `spinoff_proposals[]` — follow-up work worth spawning. Each:
   `{"proposed_title": "<non-empty>", "proposed_kind":
-  "spinoff|code|research|bugfix|technical-decision|make-skill|fan-out|orchestrated",
+  "spinoff|research|technical-decision|fan-out",
   "rationale": "<why>"}`.
 - `wrap_up_recommendations[]` — array of strings; advice for the caller.
 
@@ -109,25 +107,15 @@ JSON
 
 ```bash
 orchestratectl run merge "$run_id" \
-  --confirm-interactive \
   [--source <branch>] \
   [--report-file /tmp/node-report-${run_id}.json]
 ```
 
 Flag rules:
 
-- `--confirm-interactive` — **always pass it in this skill.** It is the human
-  reviewer's acknowledgement that a `code` run may land; `run merge` requires it
-  for a `code` run and treats it as a no-op for every other kind, so passing it
-  unconditionally is always safe. `/worktree-merge` is the human-driven merge
-  path, which is why it carries the acknowledgement.
-
 - `--source <branch>` — the merge target. Omit it and `run merge` uses the
   run's recorded `source_branch` (the branch the worktree was spawned
-  from — `main` for a `/worktree-code` spawn, the integration branch
-  `orchestrate/<run-id>` for an `/orchestrate` child), falling back to
-  main/master auto-detection. An `/orchestrate` child does NOT need to
-  pass `--source`; the integration branch is already its recorded source.
+  from — usually `main`), falling back to main/master auto-detection.
   Pass `--source` only to override.
 - `--report-file <path>` — the §7.3 payload from step 2. Omit for a
   minimal auto-report.
@@ -161,10 +149,10 @@ ends naturally as the window closes. **Do not** run `tmux kill-window`,
 `git worktree remove`, or `git branch -d` yourself; the supervisor owns
 that teardown.
 
-### 5. Report to the caller (interactive mode)
+### 5. Report to the caller
 
-When a human ran `/worktree-merge`, tell them briefly: the branch merged
-into `<source>`, how many commits, and that the worktree + window are being
+When a human is watching, tell them briefly: the branch merged into
+`<source>`, how many commits, and that the worktree + window are being
 cleaned up automatically. In autonomous/driver mode, there is nothing to
 say — the `node report` IS the structured handoff the caller reads.
 
@@ -200,12 +188,6 @@ Likely codes:
   `report_file_too_large` — the `--report-file` payload is malformed.
   This is caught BEFORE the merge runs, so nothing happened — fix the file
   and re-run.
-- `interactive_merge_requires_confirmation` — the run is an interactive
-  (`code`) run and the merge did not carry `--confirm-interactive`. Add the
-  flag (step 3 shows it) and re-run. If you are the CODING AGENT inside a
-  `/worktree-code` worktree, this is a STOP signal, not a flag to add: an
-  interactive run is landed by the human reviewer, not by you — finish with
-  `/wrap-up` and idle.
 
 ## Following up
 
@@ -247,15 +229,15 @@ the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 ## Examples
 
 ```
-# Interactive: human merges a /worktree-code worktree back to main.
+# Minimal: a spinoff worktree merges back to its recorded source with an
+# auto-generated report.
 short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
 run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
 orchestratectl run merge "$run_id"
 
-# Autonomous: a research worktree merges and delivers a structured report.
+# Structured: a research worktree merges and delivers a §7.3 report.
 orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 
-# Orchestrated child: merges into its integration branch (recorded as the
-# run's source_branch — no --source needed) and reports to the parent.
+# Fan-out unit: merges back into the shared source branch and reports.
 orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 ```
