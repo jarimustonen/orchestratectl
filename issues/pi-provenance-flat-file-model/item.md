@@ -1,9 +1,16 @@
 ---
 created: 2026-08-13
-updated: 2026-08-13
+updated: 2026-08-14
 type: improvement
-status: open
+status: done
 priority: normal
+closed: 2026-08-14
+closed_by: pi-dev-mirror-flat-worktree
+commits:
+- hash: 48ddf73
+  summary: flat per-file pi provenance model (v3)
+- hash: c99a1d0
+  summary: apply /llm-review findings
 ---
 
 # Flat per-file provenance for the pi.dev skill mirror
@@ -49,3 +56,9 @@ Each fix is correct but the model forces them.
 - Preserve every safety invariant (single-path-component validation, regular-file
   + hash check before delete, advisory-only doctor fixes).
 - Symmetric parity with the claude/codex marker lifecycles.
+
+## Resolution
+
+### 2026-08-14T04:59:03Z · @pi-dev-mirror-flat-worktree
+
+Flat per-file pi provenance (v3): PiSkillRecord{cli_version, files:{relpath:{sha256,kind}}}; v1/v2->v3 read/upgrade path via RawPiSkillRecord serde(from) with empty-hash + SKILL.md-alias guards; strict future-schema fail-closed retained. PlanKind replaces pi_companion_of inference; flat per-file prune/reconcile (companions-first, per-file relinquish/retry, NotFound-vs-transient distinction). Doctor coverage preserved (PiManagedSkill.sha256->Option for companion-only records). Green gate + insta snapshots + deploy-verify (clean install and live v2->v3 upgrade both doctor 0/0). 3-model /llm-review triaged in history/review-pi-provenance-flat-file-model.md.
