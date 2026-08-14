@@ -2,8 +2,9 @@
 created: 2026-08-14
 updated: 2026-08-14
 type: improvement
-status: open
+status: done
 priority: normal
+closed: 2026-08-14
 ---
 
 # Release mechanics: version bump must refresh version_* insta snapshots
@@ -21,3 +22,8 @@ During the v0.1.8 release, bumping the workspace version to `0.1.8` left the com
 
 **Acceptance:** the release mechanics doc names the snapshot-refresh step; if the guard is implemented, deliberately bumping the version locally makes the test fail loudly (or auto-pass via redaction) as intended. Green gate.
 
+## Resolution
+
+### 2026-08-14T03:57:57Z · @issuectl
+
+Added the version-bump → refresh version_* snapshots → re-run cargo test step to the release mechanics (OSS-RELEASE.md Release notes, alongside CHANGELOG-finalize; and crates/octl-cli/AGENTS.md insta-loop section). Implemented a loud pre-publish guard: scripts/check-version-snapshots.sh compares the committed version_* snapshots against [workspace.package] version and fails on mismatch, wired as a fast dependency-free 'version-snapshots' CI job. Verified: passes at 0.1.8; a simulated bump to 0.1.9 fails the script and CI. Did not touch envelope_snapshots.rs or tests/snapshots/ (parallel worktree owns those) — redaction deferred as a possible follow-up.

@@ -29,6 +29,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  version-snapshots:
+    name: version-snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Guards against a workspace version bump that forgets to re-accept the
+      # `version_*` insta snapshots (they bake in the literal crate version).
+      # A stale snapshot otherwise only fails the full test job — and, as in the
+      # v0.1.8 release, can slip onto `main` after a tag is cut. This is a
+      # dependency-free grep check, so it flags the mismatch in seconds.
+      - run: ./scripts/check-version-snapshots.sh
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest

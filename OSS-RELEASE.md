@@ -56,6 +56,23 @@ docs_site: none
 - **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
 
 ## Release notes
+- **Bumping the workspace version has TWO in-repo obligations, not one.** After
+  editing `[workspace.package] version` in `Cargo.toml`, do BOTH before tagging:
+  1. **Finalize `CHANGELOG.md`** — move `[Unreleased]` → the dated version header
+     (see the operating-policy "finalize CHANGELOG" step; `/oss-release-cut` runs
+     `oss-changelog --finalize`).
+  2. **Refresh the `version_*` insta snapshots** — the `version` command output is
+     snapshotted (`crates/octl-cli/tests/snapshots/envelope_snapshots__version_{text,json,jsonl}.snap`),
+     so those fixtures bake in the literal crate version and go stale on a bump.
+     Re-accept them and re-run the suite:
+     ```bash
+     cargo insta test --accept -p orchestratectl   # or the find/mv accept loop
+     cargo test --workspace
+     ```
+  Skipping step 2 turned `main` CI red *after* the v0.1.8 tag was already cut (the
+  local integrated gate ran before the bump). The `version-snapshots` CI job and
+  `scripts/check-version-snapshots.sh` now fail loudly on this mismatch — run the
+  script locally after any bump for a fast pre-publish check.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
   cannot be undone — a version can be yanked but never re-used or overwritten. Verify both
   crates' `version`/dependency pins before the first publish.

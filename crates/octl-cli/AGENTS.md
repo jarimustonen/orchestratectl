@@ -26,6 +26,8 @@ cargo test -p octl-cli
 
 Often takes **2–3 rounds** because the first accept-pass reveals further drifts only visible once earlier snapshots settle. Re-run the loop until `cargo test -p octl-cli` is green.
 
+**A workspace version bump is a snapshot change too.** The `version_*` snapshots (`envelope_snapshots__version_{text,json,jsonl}.snap`) bake in the literal crate version, so bumping `[workspace.package] version` in `Cargo.toml` stales them exactly like a CLI-surface edit — run the accept loop above (or `cargo insta test --accept -p orchestratectl`) after the bump, or `cargo test` goes red. `scripts/check-version-snapshots.sh` (also a CI job) fails loudly on a version/snapshot mismatch as a fast pre-publish guard; the release-mechanics obligation is in `OSS-RELEASE.md` alongside the CHANGELOG-finalize step.
+
 ## Skill catalog: edit pin-test explicitly
 
 The bundled-skill list is hardcoded in `tests/skill.rs::skill_list_json_pins_catalog_shape`. When adding or removing a bundled skill, **also edit that test's `vec![...]` literal** — the snapshot loop above will NOT catch it (different test). Forgetting this gives a single failing test on the next run.
