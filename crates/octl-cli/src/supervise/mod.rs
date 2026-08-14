@@ -3680,7 +3680,7 @@ mod tests {
             "run.created",
             None,
             None,
-            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+            json!({ "kind": "fan-out", "lifecycle": "autonomous", "title": "drive" }),
         )
         .unwrap();
 
@@ -3814,7 +3814,7 @@ mod tests {
             "run.created",
             None,
             None,
-            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+            json!({ "kind": "fan-out", "lifecycle": "autonomous", "title": "drive" }),
         )
         .unwrap();
 
@@ -3904,7 +3904,7 @@ mod tests {
             "run.created",
             None,
             None,
-            json!({ "kind": "orchestrate", "lifecycle": "autonomous", "title": "drive" }),
+            json!({ "kind": "fan-out", "lifecycle": "autonomous", "title": "drive" }),
         )
         .unwrap();
 

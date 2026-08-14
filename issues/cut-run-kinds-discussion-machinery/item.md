@@ -15,6 +15,8 @@ commits:
   summary: skills + snapshots
 - hash: bcb9147
   summary: changelog + doc cleanup; obsoleted bundled-orchestrate-skill
+- hash: aa8925b
+  summary: review fixes — enforce read-only Kind::Unknown (guard + fail-closed data_kind) + tests
 ---
 
 # 0.2 subtractive cut: remove run kinds (code/orchestrate/orchestrated/bugfix/make-skill) + mid-run discussion/spinoff machinery
