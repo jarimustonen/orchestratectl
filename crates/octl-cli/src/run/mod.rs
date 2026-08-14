@@ -82,8 +82,8 @@ pub enum RunAction {
         /// Workmux layout name; forwarded to create.sh as `-l <name>`.
         #[arg(long)]
         layout: Option<String>,
-        /// Code harness to launch the worker under: `claude` (default) | `pi` |
-        /// `aider` | `claude-deepseek`. Overrides `ORCHESTRATECTL_HARNESS`, the
+        /// Agent runtime to launch the worker under: `claude` (default) | `pi`.
+        /// Overrides `ORCHESTRATECTL_HARNESS`, the
         /// `config.toml` `[harness]` default, and the built-in default (in that
         /// precedence order). A non-claude harness is forwarded to create.sh as
         /// `--agent <name>` (→ `workmux add -a`), so the selected agent must be

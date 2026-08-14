@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn flag_wins_over_everything() {
-        let c = cfg(Some("aider"), &[("spinoff", "aider")]);
+        let c = cfg(Some("pi"), &[("spinoff", "pi")]);
         let got = resolve_with(Kind::Spinoff, Some("pi"), Some("claude"), &c).unwrap();
         assert_eq!(got.name, "pi");
         assert_eq!(got.source, HarnessSource::Flag);
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn env_wins_over_config_and_default() {
-        let c = cfg(Some("aider"), &[]);
+        let c = cfg(Some("claude"), &[]);
         let got = resolve_with(Kind::Research, None, Some("pi"), &c).unwrap();
         assert_eq!(got.name, "pi");
         assert_eq!(got.source, HarnessSource::Env);

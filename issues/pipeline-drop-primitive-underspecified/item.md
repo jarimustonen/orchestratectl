@@ -1,10 +1,12 @@
 ---
 created: 2026-07-23
-updated: 2026-07-23
+updated: 2026-08-14
 type: improvement
-status: open
+status: obsolete
 priority: normal
 epic: code-pipeline
+closed: 2026-08-14
+closed_by: agent-cut-pipeline-floor-harness-heavy
 ---
 
 # code-pipeline: DROP verdict has no primitive — design §2 vs §8 under-specified
@@ -68,3 +70,8 @@ consequential" language, since there is no primitive to stamp.
 Either way, §2 and §8 must agree. T5 (state machine) should not wire verify
 triage until this is settled, or dismissals will silently escape the tier audit.
 
+## Resolution
+
+### 2026-08-14T04:42:34Z · @agent-cut-pipeline-floor-harness-heavy
+
+Superseded by the 0.2 subtractive cut (cut-pipeline-floor-harness-heavy): the code-pipeline subsystem (pipeline/*, floor/*) and the harness heavy layer (bakeoff/conformance/CodeHarness/aider/claude-deepseek) it targeted were deleted. Nothing left to harden/wire/triage. See docs/decisions/0001-thin-supervisor-vs-harden.md D3.

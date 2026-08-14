@@ -46,9 +46,8 @@ It stubs the two shell-out boundaries through the production override hooks — 
 
 ## `run create --harness` (worker harness selection)
 
-`run create --harness <name>` picks which code harness launches the worker in its
-tmux pane — `claude` (default) | `pi` | `aider` | `claude-deepseek` (the
-`harness::KNOWN_HARNESSES` registry; same names as `harness bakeoff`). The
+`run create --harness <name>` picks which agent runtime launches the worker in its
+tmux pane — `claude` (default) | `pi` (the `harness::KNOWN_HARNESSES` registry). The
 mechanism is deliberately narrow: the resolved harness maps to a **workmux agent**
 (`harness::workmux_agent`) forwarded to `create.sh` as `--agent <name>` (→
 `workmux add -a`). `claude` maps to `None` — no `--agent` is passed, so a default
@@ -67,10 +66,7 @@ the `run.created` event, which also carries `harness_source` for provenance) and
 surfaced on `run show` / `run list --json`. `harness::select::resolve_with` is the
 pure, unit-tested resolver; `resolve` supplies the ambient config+env.
 
-NOT wired: the `CodeHarness::run_chunk` in-process contract (bakeoff/pipeline) is a
-*synchronous* seam and is unrelated to the detached-tmux worker launch — do not try
-to route `run create` through it. `--harness pi` requires a `pi` agent configured
-in workmux.
+`--harness pi` requires a `pi` agent configured in workmux.
 
 ## pi worker-prompt translation shim (`harness::prompt`)
 
@@ -96,16 +92,3 @@ pair returns `None`, so the claude path is byte-identical and un-shimmed pi kind
 shim is a one-arm change in `worker_prompt_preamble`. A `--prompt-file` is used
 as-is when there is no preamble (caller keeps ownership); with a preamble the
 derived prompt is written into the run dir so the caller's file is never mutated.
-
-## Shelling out to `claude -p` (pipeline spec/verify + harness adapters)
-
-`claude -p --output-format json` does **not** emit a single result object — it
-emits a **sequence** of JSON messages, and the FIRST is a `{"type":"system",
-"subtype":"init", …}` banner (session_id, skills, tools, mcp_servers, model, …).
-When parsing the model's answer, select the message whose **`type == "result"`**
-and read its `.result` field; never take "the first JSON object" (that's the init
-banner, and you'll parse the banner as the model's output). This cost three live
-`pipeline run` iterations to diagnose — the spec stage kept reading the init banner
-and the plan was always "missing acceptance". Fixed in
-`src/pipeline/live/providers.rs` (`extract_result_text`); any new code that shells
-to `claude -p` for a structured answer must apply the same selection rule.

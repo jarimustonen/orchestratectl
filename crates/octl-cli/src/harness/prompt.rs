@@ -5,7 +5,7 @@
 //! handed to the agent (`create.sh` → `workmux add -P`). Those briefs are
 //! Claude-Code-flavored: they lean on the Skill tool, sub-agents / the Agent tool,
 //! MCP, and `/worktree-*` / `/llm-*` slash commands — none of which the
-//! [`pi`](super::pi) agent has (pi is AGENTS.md-native, the Agent-Skills standard).
+//! `pi` agent has (pi is AGENTS.md-native, the Agent-Skills standard).
 //! Most of the orchestration is already external — the closing `orchestratectl run
 //! merge` is a plain CLI call — so the gap is narrow: the worker just needs the
 //! Claude-only references mapped to their bash/CLI equivalent so it can complete

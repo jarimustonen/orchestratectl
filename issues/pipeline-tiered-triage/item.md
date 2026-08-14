@@ -1,10 +1,12 @@
 ---
 created: 2026-07-25
-updated: 2026-07-26
+updated: 2026-08-14
 type: task
-status: in-progress
+status: obsolete
 priority: normal
 related: ['@pipeline-walking-skeleton']
+closed: 2026-08-14
+closed_by: agent-cut-pipeline-floor-harness-heavy
 ---
 
 # Pipeline adaptive tier promotion + tiered fast-coordinator triage
@@ -20,3 +22,9 @@ The T5 skeleton runs every chunk at its plan-declared tier and makes each spec/v
 T6 landed: fast-coordinator/decider routing seam (route_proposal reused by TieredOrchestrator + live loop) and adaptive PROMOTE_TIER on repeat-fail (tier ladder code→mid→high via TierHarness, bounded by max_promotions). Routine decisions (RE_CODE, PROMOTE) never hit the decider; consequential (DECLARE_CONVERGED, TRIGGER_RE_SPEC) defer to it and honour an ESCALATE override. Passed multi-model /llm-review; confirmed fixes applied (monotonic attempt-seq preventing promoted-branch collisions, resolver-driven promotion availability, decider-verdict execution for re-spec, validate_for assert).
 
 DEFERRED (issue kept open): (1) verify SELF-DISAGREEMENT as a promotion trigger — design §3/§8 adversarial two-pass verify (find-bugs vs confirm-it-ships) not wired, so promotion fires only on repeat-fail; needs a VerifyProvider disagreement signal (cost-sensitive, overlaps pipeline-circuit-breakers). (2) LiveDecider is a confirming provenance-seam, not a distinct second-opinion Opus call — a real ClaudeDecider is a follow-up. (3) DecisionTrigger has no ChunkFailed/VerifyPassed variant, so the live loop reuses ChunkCommitted/VerifyReport for the decider context.
+
+## Resolution
+
+### 2026-08-14T04:42:34Z · @agent-cut-pipeline-floor-harness-heavy
+
+Superseded by the 0.2 subtractive cut (cut-pipeline-floor-harness-heavy): the code-pipeline subsystem (pipeline/*, floor/*) and the harness heavy layer (bakeoff/conformance/CodeHarness/aider/claude-deepseek) it targeted were deleted. Nothing left to harden/wire/triage. See docs/decisions/0001-thin-supervisor-vs-harden.md D3.

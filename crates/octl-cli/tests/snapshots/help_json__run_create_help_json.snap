@@ -77,7 +77,7 @@ expression: value
         "long": "harness",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Code harness to launch the worker under: `claude` (default) | `pi` | `aider` | `claude-deepseek`. Overrides `ORCHESTRATECTL_HARNESS`, the `config.toml` `[harness]` default, and the built-in default (in that precedence order). A non-claude harness is forwarded to create.sh as `--agent <name>` (→ `workmux add -a`), so the selected agent must be configured in workmux. Recorded on the run and shown by `run show` / `run list --json`",
+        "help": "Agent runtime to launch the worker under: `claude` (default) | `pi`. Overrides `ORCHESTRATECTL_HARNESS`, the `config.toml` `[harness]` default, and the built-in default (in that precedence order). A non-claude harness is forwarded to create.sh as `--agent <name>` (→ `workmux add -a`), so the selected agent must be configured in workmux. Recorded on the run and shown by `run show` / `run list --json`",
         "value_names": [
           "HARNESS"
         ],
