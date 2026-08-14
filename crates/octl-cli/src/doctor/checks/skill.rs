@@ -304,20 +304,28 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
             Some((_, Ordering::Equal)) => {
                 // Version-in-sync: use the recorded content hash to catch a
                 // same-version local edit (the pi mirror is byte-identical to
-                // what we wrote, so any divergence is an edit).
-                match skill::file_sha256(&path) {
-                    Some(h) if h == m.sha256 => out.push(CheckResult::ok(
+                // what we wrote, so any divergence is an edit). When the record
+                // tracks NO body hash (`None` — only companions were recorded,
+                // the body write was skipped), we have nothing to compare
+                // against, so we report version-in-sync rather than fabricating a
+                // "differs" claim about a body we never recorded writing.
+                match (skill::file_sha256(&path), m.sha256.as_deref()) {
+                    (Some(h), Some(recorded)) if h == recorded => out.push(CheckResult::ok(
                         id,
                         format!("pi skill '{name}' in sync at cli_version {binary}"),
                     )),
-                    Some(_) => out.push(CheckResult::warn(
+                    (Some(_), Some(_)) => out.push(CheckResult::warn(
                         id,
                         format!(
                             "pi skill '{name}' differs from the copy orchestratectl wrote while its cli_version matches binary {binary} (possible local edits)"
                         ),
                         suggest,
                     )),
-                    None => out.push(CheckResult::warn(
+                    (Some(_), None) => out.push(CheckResult::ok(
+                        id,
+                        format!("pi skill '{name}' in sync at cli_version {binary}"),
+                    )),
+                    (None, _) => out.push(CheckResult::warn(
                         id,
                         format!("pi skill '{name}' is unreadable at {}", path.display()),
                         suggest,

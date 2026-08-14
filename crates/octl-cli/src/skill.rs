@@ -1135,6 +1135,11 @@ pub fn cmd_install(
     // Deduplicate so the `pruned` payload is a set (review finding B).
     pruned.sort();
     pruned.dedup();
+    // Symmetric with `pruned`: a `<skill>/<file>` entry can be reported by more
+    // than one layout (claude + pi both key companions that way), so normalise
+    // the payload to a set.
+    pruned_companions.sort();
+    pruned_companions.dedup();
 
     let payload = InstallPayload {
         installed,
@@ -1581,6 +1586,7 @@ struct PiSkillRecord {
     /// drift from the ON-DISK `cli_version` (more accurate than the last-written
     /// one), so it does not read this field today. Empty when only a companion
     /// was ever recorded for the skill (the body write was skipped).
+    #[serde(skip_serializing_if = "String::is_empty")]
     cli_version: String,
     /// Every mirrored file, keyed relpath (`SKILL.md` or a companion filename) →
     /// its content hash + kind. The body carries no special status; it is the
@@ -1621,7 +1627,12 @@ impl From<RawPiSkillRecord> for PiSkillRecord {
             };
         }
         let mut files: BTreeMap<String, PiFileRecord> = BTreeMap::new();
-        if let Some(sha256) = raw.sha256 {
+        // Drop an EMPTY legacy body hash rather than minting a fake `SKILL.md`
+        // entry with `sha256: ""` — a pre-flat `pi_companion_unrecorded` edge
+        // (or a hand-edit) could leave one, and an empty-hash body entry would
+        // make `doctor`'s same-version content check spuriously report the real
+        // on-disk body as "differs from the copy orchestratectl wrote".
+        if let Some(sha256) = raw.sha256.filter(|s| !s.is_empty()) {
             files.insert(
                 PI_SKILL_FILENAME.to_string(),
                 PiFileRecord {
@@ -1631,6 +1642,13 @@ impl From<RawPiSkillRecord> for PiSkillRecord {
             );
         }
         for (filename, sha256) in raw.companions {
+            // Same empty-hash guard as the body; also never let a legacy
+            // companion keyed `SKILL.md` (any case) alias/overwrite the body
+            // entry or mis-kind it as a companion (which the prune's
+            // stale-companion path could then delete as the actual body).
+            if sha256.is_empty() || filename.eq_ignore_ascii_case(PI_SKILL_FILENAME) {
+                continue;
+            }
             files.insert(
                 filename,
                 PiFileRecord {
@@ -1840,13 +1858,14 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
         .into_iter()
         .map(|(name, rec)| {
             // The doctor's same-version-edit check compares the on-disk
-            // `SKILL.md` hash against the recorded body hash; surface it (empty
-            // when only a companion was ever recorded — the body write skipped)
-            // alongside the tracked companion relpaths.
-            let sha256 = rec.body_hash().unwrap_or_default().to_string();
+            // `SKILL.md` hash against the recorded body hash. `None` when only a
+            // companion was ever recorded (the body write was skipped) — doctor
+            // must then NOT fabricate a body hash and claim the real on-disk body
+            // "differs from the copy orchestratectl wrote". Companions are
+            // surfaced regardless.
             PiManagedSkill {
                 name,
-                sha256,
+                sha256: rec.body_hash().map(str::to_string),
                 companions: rec.companion_names(),
             }
         })
@@ -1863,7 +1882,11 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
 /// more accurate drift classification, so it is not surfaced here.)
 pub struct PiManagedSkill {
     pub name: String,
-    pub sha256: String,
+    /// The recorded `SKILL.md` body hash, or `None` when the record tracks only
+    /// companions (the body write was skipped). `doctor` skips the same-version
+    /// content-edit sub-check when this is `None` rather than comparing the real
+    /// on-disk body against a fabricated empty hash.
+    pub sha256: Option<String>,
     /// Companion filenames the provenance record lists as mirrored beside this
     /// skill's pi `SKILL.md` (sorted). Used by `doctor` to detect a companion
     /// the binary dropped but the record still tracks (`skill.orphan.<name>.pi.
@@ -2156,9 +2179,11 @@ fn prune_pi_mirror(
     warnings: &mut Vec<String>,
 ) -> PiPruneSummary {
     let Some(dir) = pi_default_path(name).and_then(|p| p.parent().map(Path::to_path_buf)) else {
-        // Cannot locate the mirror (HOME unset). Nothing safe to touch; drop all
-        // tracking so the caller removes the entry.
-        rec.files.clear();
+        // Cannot locate the mirror (HOME unset — usually transient, e.g. a
+        // misconfigured cron/sudo invocation). We cannot prove the files are
+        // gone or diverged, so we must NOT delete tracking: leave `rec.files`
+        // intact so a later run with HOME set can still prune/audit them. The
+        // caller keeps the entry (files non-empty) and reports nothing pruned.
         return PiPruneSummary::default();
     };
     prune_pi_mirror_at(name, &dir, pi_skills_root().as_deref(), rec, warnings)
@@ -2234,9 +2259,25 @@ fn prune_pi_body(
     warnings: &mut Vec<String>,
 ) -> PiCompanionOutcome {
     match fs::symlink_metadata(path) {
-        Err(_) => return PiCompanionOutcome::Absent,
+        // Only a genuine NotFound relinquishes tracking. A transient metadata
+        // error (PermissionDenied, I/O) must NOT be mistaken for absence — that
+        // would permanently drop tracking of a file that may still exist — so it
+        // defers the whole prune (`Kept`) for a retry.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PiCompanionOutcome::Absent,
+        Err(e) => {
+            warnings.push(format!(
+                "pi_mirror_prune_failed: could not inspect de-registered pi mirror '{name}' at {}: {e}",
+                path.display()
+            ));
+            return PiCompanionOutcome::Kept;
+        }
         Ok(m) if !m.file_type().is_file() => {
             // A symlink or squatting dir at the body path: never followed/deleted.
+            // Narrate it (mirrors the companion path) so a leftover is visible.
+            warnings.push(format!(
+                "pi_mirror_left: de-registered pi mirror '{name}' at {} is not a regular file (symlink or directory); leaving it in place",
+                path.display()
+            ));
             return PiCompanionOutcome::NonRegular;
         }
         Ok(_) => {}
@@ -2293,12 +2334,15 @@ fn remove_empty_pi_skill_dir(parent: Option<&Path>, skills_root: Option<&Path>, 
     }
 }
 
-/// What [`prune_pi_companion`] did with ONE recorded companion sibling, so the
-/// caller can decide whether the enclosing prune must defer: `Removed` (our
-/// unmodified copy, deleted), `Absent` (nothing on disk), `NonRegular` (a
-/// symlink / squatting dir left in place), `Diverged` (a user-edited copy left
-/// in place), or `Kept` (delete failed while the file is still present → the
-/// caller must NOT delete the body yet, so a later redeploy retries).
+/// What [`prune_pi_companion`] / [`prune_pi_body`] did with ONE tracked file, so
+/// the flat prune can update the record per file: `Removed` (our unmodified
+/// copy, deleted → drop from tracking), `Absent` (positively `NotFound` → drop),
+/// `NonRegular` (a symlink / squatting dir left in place → drop), `Diverged` (a
+/// user-edited copy left in place → drop), or `Kept` (a metadata/read/delete
+/// error while the file may still be present → KEEP tracking so a later redeploy
+/// retries and `doctor` keeps flagging it). In the flat model a `Kept` companion
+/// no longer defers the body delete — it simply stays tracked (never stranded,
+/// since it remains in the record).
 #[derive(PartialEq, Eq)]
 enum PiCompanionOutcome {
     Removed,
@@ -2324,7 +2368,16 @@ fn prune_pi_companion(
     warnings: &mut Vec<String>,
 ) -> PiCompanionOutcome {
     match fs::symlink_metadata(path) {
-        Err(_) => return PiCompanionOutcome::Absent,
+        // NotFound relinquishes tracking; a transient metadata error keeps the
+        // companion tracked for a retry rather than mistaking it for absence.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return PiCompanionOutcome::Absent,
+        Err(e) => {
+            warnings.push(format!(
+                "pi_companion_prune_failed: could not inspect companion of de-registered pi skill '{skill}' at {}: {e}",
+                path.display()
+            ));
+            return PiCompanionOutcome::Kept;
+        }
         Ok(m) if !m.file_type().is_file() => {
             warnings.push(format!(
                 "pi_companion_left: companion of de-registered pi skill '{skill}' at {} is not a regular file (symlink or directory); leaving it in place",
@@ -2442,8 +2495,35 @@ fn reconcile_pi_companions_at(
         }
         let recorded_hash = rec.files[&filename].sha256.clone();
         let path = dir.join(&filename);
-        let is_our_copy = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
-            && fs::read(&path).is_ok_and(|b| sha256_hex(&b) == recorded_hash);
+        // Classify the on-disk file. A metadata/read ERROR (PermissionDenied,
+        // I/O) is NOT the same as absence or divergence — relinquishing on a
+        // transient error would permanently drop tracking of a file that may
+        // still be ours. So a hard error KEEPS the entry tracked for a retry;
+        // only a positively-determined absent / non-regular / diverged file is
+        // relinquished, and only a verified-our-copy is deleted.
+        enum Classified {
+            OurCopy,
+            NotOurs,
+            Error(std::io::Error),
+        }
+        let classified = match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Classified::NotOurs,
+            Err(e) => Classified::Error(e),
+            Ok(m) if !m.file_type().is_file() => Classified::NotOurs,
+            Ok(_) => match fs::read(&path) {
+                Ok(b) if sha256_hex(&b) == recorded_hash => Classified::OurCopy,
+                Ok(_) => Classified::NotOurs,
+                Err(e) => Classified::Error(e),
+            },
+        };
+        if let Classified::Error(e) = classified {
+            warnings.push(format!(
+                "skill_companion_prune_failed: could not inspect orphan pi companion '{filename}' for skill '{skill_name}' at {}: {e}",
+                path.display()
+            ));
+            continue; // keep the entry tracked so a later redeploy retries
+        }
+        let is_our_copy = matches!(classified, Classified::OurCopy);
         if is_our_copy {
             match fs::remove_file(&path) {
                 Ok(()) => {
@@ -3551,6 +3631,55 @@ mod tests {
             rec.files["AGENTS-EXECUTION-DAG.md"].kind,
             PiFileKind::Companion
         );
+    }
+
+    #[test]
+    fn pi_upgrade_drops_empty_legacy_hashes_and_skill_md_companion() {
+        // A legacy record with an empty body hash must NOT mint a fake `SKILL.md`
+        // entry (which would make doctor spuriously flag the real body as
+        // "differs"); an empty companion hash is dropped; and a legacy companion
+        // keyed `SKILL.md` (any case) must never alias/overwrite the body entry.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pi.json");
+        fs::write(
+            &path,
+            r#"{"schema_version":2,"skills":{"s":{"sha256":"","cli_version":"0.1.0","companions":{"AGENTS-EXECUTION-DAG.md":"aa","EMPTY.md":"","SKILL.md":"bb","skill.md":"cc"}}}}"#,
+        )
+        .unwrap();
+        let prov = load_pi_provenance_for_write(&path).unwrap();
+        let rec = &prov.skills["s"];
+        assert_eq!(
+            rec.body_hash(),
+            None,
+            "empty legacy body hash → no body entry"
+        );
+        assert_eq!(
+            rec.companion_names(),
+            vec!["AGENTS-EXECUTION-DAG.md".to_string()],
+            "empty-hash and SKILL.md-aliasing companions are dropped"
+        );
+    }
+
+    #[test]
+    fn pi_managed_skills_body_hash_is_none_for_companion_only_record() {
+        // A companion-only record (body write skipped) surfaces `sha256: None`
+        // rather than an empty string, so doctor skips the content-edit check.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("pi-installed-skills.json");
+        let mut prov = PiProvenance {
+            schema_version: PI_PROVENANCE_SCHEMA_VERSION,
+            skills: BTreeMap::new(),
+        };
+        prov.skills.insert(
+            "s".to_string(),
+            skill_record("", None, &[("C.md", sha256_hex(b"c"))]),
+        );
+        write_pi_provenance(&path, &prov).unwrap();
+        // Point pi_managed_skills at this record via ORCHESTRATECTL_HOME.
+        let read = read_pi_provenance(&path);
+        let rec = &read.skills["s"];
+        assert_eq!(rec.body_hash(), None);
+        assert_eq!(rec.companion_names(), vec!["C.md".to_string()]);
     }
 
     #[test]
