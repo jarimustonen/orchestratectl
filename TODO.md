@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: attention-required-run-surface (0.2 EXECUTION — A1 thin-exit-status-launcher, A2 merge-transaction-recovery, and A6 typed-supervisor-outcomes LANDED 2026-08-15. Continue the hot Lane A build: A5 attention-required run surface → A3 fenced manual resume-finish skill (= run-salvage-command) → explicit --interactive flag. This is BUILD not delete → still touches supervise/* plus events/reducer/schema/run DTOs, so keep it serialized behind the integrated gate. After the build: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: run-salvage-command (0.2 EXECUTION — A1 thin-exit-status-launcher, A2 merge-transaction-recovery, A6 typed-supervisor-outcomes, and A5 attention-required-run-surface LANDED 2026-08-15. Continue the hot Lane A build: A3 fenced manual resume-finish skill (= run-salvage-command) → explicit --interactive flag → correctness follow-ups as listed. This is BUILD not delete → still touches supervise/* plus events/reducer/schema/run DTOs, so keep it serialized behind the integrated gate. After the build: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -201,8 +201,7 @@ Phase 2 — COMPLETE (2026-08-13): design.md (facilitated /llm-workshop + 3-mode
 Phase 3 — COMPLETE (2026-08-13): arch-decision-rearchitect-vs-harden → ADR docs/decisions/0001; re-triaged all Lane A+E (9 obsoleted). EXECUTION now runs as the cuts below (Lane B pipeline cut = step 1).
 
 LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and-fix / defer-to-0.2.1; the 9 obsoleted lines dropped)
-  ▶ attention-required-run-surface          (A5 — run wait/show/list attention-required visibility + node cancel surface; A1+A2+A6 landed)
-    run-salvage-command                     after attention-required-run-surface (A3 — fenced manual resume/finish skill; existing issue re-scoped by ADR)
+  ▶ run-salvage-command                     (A3 — fenced manual resume/finish skill; existing issue re-scoped by ADR; A1+A2+A5+A6 landed)
     interactive-flag                        after typed-supervisor-outcomes (explicit --interactive how-run state; sequence in Lane A hot cluster)
     non-merge-teardown-dirty-worktree       (0.2 correctness follow-up — preserve dirty worktree / fail closed on non-merge teardown)
     per-node-run                            (A5 follow-up — per-node fan-out cancel, branch-preserving)
