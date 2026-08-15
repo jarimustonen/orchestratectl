@@ -210,6 +210,12 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
 
     let root = crate::home::root_dir()?;
     let paths = run_paths_from_cli_arg(&root, &run_id)?;
+    // `run_id` may have been an unambiguous PREFIX; from here on use the fully
+    // resolved id so the terminal-report idempotency key
+    // (`explicit-merge:{run_id}:{node_id}`) is stable across a prefix invocation
+    // and a later full-id retry — otherwise a crash-retry with the full id would
+    // compute a different key and double-append the report.
+    let run_id = paths.run_id.as_str().to_string();
 
     let manifest = read_manifest_opt(&paths)
         .map_err(from_core)?

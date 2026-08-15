@@ -7,6 +7,9 @@ status: in-progress
 priority: normal
 related: ['@agent-death-strands-recoverable-work']
 labels: [rescope-0.2]
+commits:
+- hash: '8004943'
+  summary: add fenced manual run salvage (A3)
 ---
 
 # orchestratectl run salvage: recover a dead agent's stranded work

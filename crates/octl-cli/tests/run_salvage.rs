@@ -320,6 +320,52 @@ fn refuses_unverifiable_live_worker() {
     let _ = child.wait();
 }
 
+/// A never-started run (pending, worker never got a pid, no worker exit) has no
+/// work to salvage — refuse with a precise reason.
+#[test]
+fn refuses_never_started_pending_run() {
+    let home = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = fresh_run_id();
+    let paths = seed_run(home.path(), &run_id);
+    // Worktree + branch present, but no agent_pid and no worker.exited → NoPid,
+    // and the run is still Pending (default after seed).
+    add_worker_node(&paths, Some(worktree.path()), Some("wt/pending"), json!({}));
+
+    let v = salvage_err(bin(&home).args(["--output", "json", "run", "salvage", &run_id]));
+    assert_eq!(v["error"]["code"], "run_not_started");
+}
+
+/// A `done` run whose worktree still exists (a crash between the merge report and
+/// teardown) points the operator at `run reattach`, not a re-merge.
+#[test]
+fn done_run_with_live_worktree_points_at_reattach() {
+    let home = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = fresh_run_id();
+    let paths = seed_run(home.path(), &run_id);
+    add_worker_node(&paths, Some(worktree.path()), Some("wt/done-wt"), json!({}));
+    append_and_apply_event(
+        &paths,
+        "run.status",
+        None,
+        None,
+        json!({ "status": "done" }),
+    )
+    .unwrap();
+
+    let v = salvage_err(bin(&home).args(["--output", "json", "run", "salvage", &run_id]));
+    assert_eq!(v["error"]["code"], "run_already_terminal");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("run reattach"),
+        "done-with-worktree must point at reattach: {}",
+        v["error"]["message"]
+    );
+}
+
 /// An unknown run id is a friendly `run_not_found`, not a system error.
 #[test]
 fn refuses_unknown_run() {

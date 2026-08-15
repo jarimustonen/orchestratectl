@@ -43,6 +43,31 @@
 //! agent to continue the work instead of merging as-is) is deferred to the
 //! follow-up `run-salvage-fresh` so the 0.2 mechanism stays small and
 //! safe.
+//!
+//! ## Known residuals (0.2) — bounded, not closed
+//!
+//! The fence is a **best-effort process fence, not a durable writer lease**. The
+//! clean writer-ownership answer (a durable, exclusive worktree lease revoked/
+//! claimed under the run lock) is the same lease the design defers to **0.2.1**
+//! (design.md §2.7, the pi.dev plugin). Until then, three windows are bounded but
+//! not eliminated — acceptable for a single-user tool whose *primary* case
+//! (attention-required) has no live worker at all:
+//!
+//! - **Parent-only fence.** `SIGTERM` targets the recorded `agent_pid`, not its
+//!   process group, so an orphaned *child* of the worker (a `git`/formatter/test
+//!   subprocess) could still be touching the worktree when the merge starts.
+//!   Fixing this needs launcher-recorded process-group/session identity — tracked
+//!   in `run-salvage-fresh`.
+//! - **Non-atomic fence→merge.** Identity is re-verified immediately before the
+//!   `SIGTERM` (closing the classify→signal recycle window to ~µs), but the fence
+//!   and the delegated merge do not share one held lock; a worker respawned by an
+//!   external `run reattach` between them is not re-detected. The merge itself is
+//!   still crash-atomic and OID-CAS-guarded.
+//! - **Concurrent salvage.** Two `run salvage` invocations are not mutually
+//!   excluded before the merge; `merge.sh`'s file lock + the merge transaction
+//!   serialize the actual git mutation (one wins, the other gets
+//!   `merge_in_progress`/`merge_source_moved`), so no double-merge, but both may
+//!   redundantly `SIGTERM` the same dying worker.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -102,8 +127,9 @@ enum WorkerState {
     Gone,
     /// The recorded pid is alive AND its start-time identity positively matches —
     /// the original worker is genuinely still running. Safe to `SIGTERM` (behind
-    /// `--fence`).
-    Live { pid: u32 },
+    /// `--fence`). `start_time` is the verified identity, re-checked immediately
+    /// before the signal so a pid recycled between classify and fence is not hit.
+    Live { pid: u32, start_time: u64 },
     /// The recorded pid is alive but its identity cannot be confirmed (no recorded
     /// start-time, or the platform declined to read it) — it *might* be a recycled
     /// pid now owned by an unrelated process. Never fenced: a refusal.
@@ -123,16 +149,36 @@ impl WorkerState {
     }
 }
 
-/// Classify the worker purely from the node's durable facts. Told beats guessed:
-/// a recorded `worker.exited` short-circuits the pid probe entirely (the process
-/// already exited — it can't come back). Only when nothing was told does pid
-/// liveness + the §7.6 start-time identity defense govern, and identity is
-/// *required* to reach [`WorkerState::Live`] so a fence can never signal a
-/// recycled pid owned by someone else.
+/// Classify the worker from the node's durable facts, with OS ground truth
+/// beating a stale told fact for the DESTRUCTIVE fence decision.
+///
+/// Ordering (deliberate — the reverse of a pure "told beats guessed"): a
+/// **positive OS proof that the original worker is still alive** (the recorded
+/// pid is alive AND its recorded start-time identity matches) overrides a
+/// recorded `worker.exited`. A told exit can be stale or wrong (a shim bug, a
+/// premature append, a restored/copied projection); merging over a process the
+/// OS proves is our still-running worker would be silent corruption, so a
+/// confirmed-live identity fails *safe* to [`WorkerState::Live`] and forces the
+/// `--fence` gate (multi-model review consensus).
+///
+/// Only when the OS does NOT positively prove the original is alive do we trust
+/// the told exit ([`WorkerState::Exited`]). Absent a told exit, pid liveness +
+/// the §7.6 start-time identity defense govern, and identity is *required* to
+/// reach `Live` so a fence can never signal a recycled pid owned by someone else.
 fn classify_worker(node: &Node) -> WorkerState {
+    // 1. Positive OS proof the ORIGINAL worker is still alive overrides everything,
+    //    including a (possibly stale/buggy) told `worker.exited`.
+    if let Some(live) = positive_live_identity(node) {
+        return live;
+    }
+    // 2. The OS cannot prove the original is alive. A durable told exit is now
+    //    authoritative — the recorded process exited and cannot come back (a live
+    //    pid at this point is either dead-and-recycled or unverifiable, i.e. NOT
+    //    provably our worker, so trusting the told exit is safe).
     if node.worker_exit.is_some() {
         return WorkerState::Exited;
     }
+    // 3. No told exit: classify from pid state alone.
     let Some(pid_i) = node.agent_pid else {
         return WorkerState::NoPid;
     };
@@ -143,38 +189,71 @@ fn classify_worker(node: &Node) -> WorkerState {
     if !pid_file::pid_alive(pid) {
         return WorkerState::Gone;
     }
-    // Alive. Confirm it is still the ORIGINAL worker via the recorded start-time
-    // (mirrors the watchdog's recycle check: seconds, 1s tolerance).
-    let recorded = node
+    // Alive but not positively identified (step 1 already handled the match case):
+    // either a recycled pid, or the platform won't read the start-time. Both are
+    // unverifiable — never fence them.
+    match node
         .agent_pid_start_time
-        .map(|t| t.timestamp().max(0) as u64);
-    match recorded {
-        Some(expected) => match watchdog::pid_start_time(pid) {
-            // Start-time matches → genuinely the original, live worker.
-            Some(actual) if expected.abs_diff(actual) <= 1 => WorkerState::Live { pid },
-            // Start-time disagrees → the pid was recycled; the original is gone.
-            Some(_) => WorkerState::Gone,
-            // Alive but the platform won't read the start-time → cannot confirm.
-            None => WorkerState::Unverifiable { pid },
-        },
-        // No recorded identity → cannot prove this pid is our worker. Refuse to
-        // fence it (it may be a recycled pid now owned by an unrelated process).
+        .map(|t| t.timestamp().max(0) as u64)
+    {
+        // Recorded identity present but did NOT match in step 1 → recycled → gone.
+        Some(_) => WorkerState::Gone,
+        // No recorded identity → cannot prove this pid is our worker.
         None => WorkerState::Unverifiable { pid },
     }
+}
+
+/// `Some(Live { .. })` iff the OS positively proves the node's recorded worker is
+/// still running: the recorded pid is alive AND its start-time matches the
+/// recorded identity (mirrors the watchdog's recycle check: seconds, 1s
+/// tolerance). `None` for any weaker state (no pid, dead, recycled, or an alive
+/// pid whose identity cannot be read/confirmed).
+fn positive_live_identity(node: &Node) -> Option<WorkerState> {
+    let pid_i = node.agent_pid?;
+    if pid_i <= 0 {
+        return None;
+    }
+    let pid = pid_i as u32;
+    if !pid_file::pid_alive(pid) {
+        return None;
+    }
+    let expected = node
+        .agent_pid_start_time
+        .map(|t| t.timestamp().max(0) as u64)?;
+    let actual = watchdog::pid_start_time(pid)?;
+    (expected.abs_diff(actual) <= 1).then_some(WorkerState::Live {
+        pid,
+        start_time: expected,
+    })
 }
 
 /// `SIGTERM` a verified-live worker and wait (bounded) for it to exit. Returns
 /// `Ok(())` once the process is gone, or a `fence_failed` error if it survives
 /// the grace (so salvage refuses rather than merge out from under a live writer).
-fn fence_worker(pid: u32) -> Result<(), CliError> {
+///
+/// `expected_start` is the worker's verified start-time. It is **re-checked
+/// immediately before the signal**: a pid can be recycled in the window between
+/// [`classify_worker`] and here, and signalling a recycled pid would hit an
+/// unrelated process. If identity no longer holds (recycled, or the process is
+/// already gone), the original worker is confirmed gone and there is nothing to
+/// fence — return `Ok(())` and let the merge proceed on the preserved worktree.
+fn fence_worker(pid: u32, expected_start: u64) -> Result<(), CliError> {
     let Some(pid_t) = pid_file::to_pid_t(pid) else {
-        // Unreachable: `classify_worker` already range-checked the pid via
-        // `pid_alive`, but stay defensive rather than cast a bad pid into kill().
+        // Defensive range guard: `to_pid_t` rejects 0 / out-of-`pid_t`-range so a
+        // corrupt pid can never cast to a negative (group/broadcast) kill target.
         return Err(CliError::system(
             "fence_failed",
             format!("worker pid {pid} is out of range; refusing to signal"),
         ));
     };
+    // Re-verify identity right before the kill — closes the classify→signal
+    // recycle window. A gone/recycled pid means the original is already dead.
+    match watchdog::pid_start_time(pid) {
+        Some(actual) if expected_start.abs_diff(actual) <= 1 => {}
+        // Recycled (mismatch) or gone (None while previously alive): do NOT
+        // signal an unrelated/absent process. The original worker is gone.
+        _ => return Ok(()),
+    }
     // SAFETY: `pid_t` is range-checked (never 0/negative → no group/broadcast
     // target), and SIGTERM is a routine cooperative-termination signal.
     let rc = unsafe { libc::kill(pid_t, libc::SIGTERM) };
@@ -271,14 +350,31 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // Refuse the terminal states there is nothing to salvage from.
     match manifest.status {
-        // Already succeeded — the work is merged and the worktree torn down.
+        // Already succeeded. Two shapes: the normal one (work merged, worktree
+        // torn down → nothing to salvage) and the crash-retry one (a prior
+        // salvage/merge appended the `explicit-merge` report and rolled the run to
+        // Done, but crashed before the supervisor tore the worktree down). Branch
+        // on worktree EXISTENCE, not status alone, mirroring `run merge` — a
+        // surviving worktree means teardown is the outstanding work, which
+        // `run reattach` completes (not a re-merge).
         Status::Done => {
+            let worktree_present = node
+                .as_ref()
+                .and_then(|n| n.worktree_path.as_deref())
+                .is_some_and(|p| Path::new(p).try_exists().unwrap_or(false));
+            let hint = if worktree_present {
+                format!(
+                    " but its worktree still exists — teardown did not finish. Run \
+                     `orchestratectl run reattach {run_id}` to complete it (a re-merge is not \
+                     needed; the work already landed)."
+                )
+            } else {
+                " — its work merged and its worktree was torn down; there is nothing to salvage"
+                    .to_string()
+            };
             return Err(CliError::user(
                 "run_already_terminal",
-                format!(
-                    "run {run_id} is already done — its work merged and its worktree was \
-                     torn down; there is nothing to salvage"
-                ),
+                format!("run {run_id} is already done{hint}"),
             )
             .with_invalid_value(&run_id));
         }
@@ -360,6 +456,24 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // Classify + decide the fence. This is the whole safety gate.
     let worker = classify_worker(&node);
+
+    // Refuse a never-started run: a `Pending` node with no recorded pid AND no
+    // told exit (NoPid implies no `worker.exited` — see `classify_worker`) never
+    // ran a worker, so there is no work to finish. Salvaging it would attempt to
+    // merge an untouched worktree; refuse with a precise reason instead (review
+    // consensus — `Pending` alone was too broad an eligibility gate).
+    if manifest.status == Status::Pending && worker == WorkerState::NoPid {
+        return Err(CliError::user(
+            "run_not_started",
+            format!(
+                "run {run_id} is still pending and its worker never started (no recorded \
+                 agent pid, no worker exit) — there is no work to salvage. Cancel it with \
+                 `orchestratectl run cancel {run_id}` if it is stuck."
+            ),
+        )
+        .with_invalid_value(&run_id));
+    }
+
     let needs_fence = match worker {
         WorkerState::Exited | WorkerState::NoPid | WorkerState::Gone => false,
         WorkerState::Unverifiable { pid } => {
@@ -375,7 +489,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             )
             .with_invalid_value(&run_id));
         }
-        WorkerState::Live { pid } => {
+        WorkerState::Live { pid, .. } => {
             if !args.fence {
                 return Err(CliError::user(
                     "worker_live",
@@ -391,26 +505,40 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     };
 
+    // PRE-FENCE VALIDATION (review consensus — never destroy before validating).
+    // Run the merge in `--dry-run` first: it resolves `--source`, reads and
+    // schema-validates `--report-file`, and refuses a cancelled/legacy run —
+    // WITHOUT mutating anything. A malformed argument thus refuses here, BEFORE
+    // any SIGTERM, instead of killing the worker and only then discovering the
+    // merge cannot proceed. (Recovery-state refusals — `merge_in_progress` /
+    // `merge_recovery_unverifiable` — are still checked inside the real merge, a
+    // narrower post-fence residual.)
+    let preview = merge::execute(&merge::Args {
+        run_id: run_id.clone(),
+        source: args.source.clone(),
+        node_id: None,
+        report_file: args.report_file.clone(),
+        dry_run: true,
+        spec: args.spec,
+        warnings: args.warnings,
+    })?;
+
     // Dry run: report the plan (worker state, whether a fence would fire, the
     // planned merge) without fencing or merging.
     if args.dry_run {
-        let mo = merge::execute(&merge::Args {
-            run_id: run_id.clone(),
-            source: args.source.clone(),
-            node_id: None,
-            report_file: args.report_file.clone(),
-            dry_run: true,
-            spec: args.spec,
-            warnings: args.warnings,
-        })?;
-        let warnings = mo.warnings.clone();
+        let mut warnings = preview.warnings.clone();
+        if let WorkerState::Live { pid, .. } = worker {
+            warnings.push(format!(
+                "would fence worker pid {pid} (SIGTERM) before finishing the run"
+            ));
+        }
         return emit(
             &SalvagePayload {
                 run_id,
                 node_id: node_id.as_str().to_string(),
                 worker_state: worker.wire(),
                 fenced: needs_fence,
-                merge: merge_summary(&mo),
+                merge: merge_summary(&preview),
                 dry_run: true,
             },
             args.spec,
@@ -422,8 +550,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the worktree's git state.
     let mut base_warnings: Vec<String> = args.warnings.to_vec();
     let fenced = if needs_fence {
-        if let WorkerState::Live { pid } = worker {
-            fence_worker(pid)?;
+        if let WorkerState::Live { pid, start_time } = worker {
+            fence_worker(pid, start_time)?;
             base_warnings.push(format!(
                 "fenced worker pid {pid} (SIGTERM) before finishing the run"
             ));
@@ -446,6 +574,21 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         dry_run: false,
         spec: args.spec,
         warnings: &base_warnings,
+    })
+    .map_err(|mut e| {
+        // If the merge fails AFTER we fenced, the operator must know the worker
+        // was already killed (the worktree is preserved — merge failures never
+        // tear down). Without this the error reads as if salvage refused before
+        // touching anything (review finding). Pre-fence merges (never happens on
+        // this branch, but harmless) and non-fence paths add nothing.
+        if fenced {
+            e.message = format!(
+                "{} (NOTE: the prior worker was already fenced/SIGTERM'd; the worktree and \
+                 branch are preserved — resolve the merge and re-run `run salvage`/`run merge`)",
+                e.message
+            );
+        }
+        e
     })?;
     let out_warnings = mo.warnings.clone();
 
@@ -551,10 +694,12 @@ mod tests {
             .expect("spawn sleep")
     }
 
-    /// A recorded `worker.exited` short-circuits everything: the process is gone,
-    /// regardless of any pid (told beats guessed).
+    /// A recorded `worker.exited` is trusted (Exited) when the OS cannot POSITIVELY
+    /// prove the recorded pid is still the original worker — here a live pid but
+    /// with NO recorded start-time, so its identity can't be confirmed (it may be a
+    /// recycled pid). The told exit wins.
     #[test]
-    fn told_exit_is_exited_even_with_live_pid() {
+    fn told_exit_wins_when_live_pid_identity_unprovable() {
         let mut child = spawn_sleeper();
         let exit = WorkerExit {
             code: Some(0),
@@ -563,6 +708,35 @@ mod tests {
         };
         let n = node(Some(child.id() as i32), None, Some(exit));
         assert_eq!(classify_worker(&n), WorkerState::Exited);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// SAFETY OVERRIDE: a recorded `worker.exited` is NOT trusted when the OS
+    /// positively proves the recorded pid is still the original worker (alive AND
+    /// start-time matches). Merging over a provably-live worker would be silent
+    /// corruption, so the told fact is overridden to `Live` (forcing the `--fence`
+    /// gate). Review-consensus fix.
+    #[test]
+    fn live_matching_identity_overrides_a_stale_told_exit() {
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        let st = watchdog::pid_start_time(pid).expect("read child start_time");
+        let recorded = DateTime::from_timestamp(st as i64, 0).unwrap();
+        let exit = WorkerExit {
+            code: Some(0),
+            signal: None,
+            at: Utc::now(),
+        };
+        let n = node(Some(pid as i32), Some(recorded), Some(exit));
+        assert_eq!(
+            classify_worker(&n),
+            WorkerState::Live {
+                pid,
+                start_time: st
+            },
+            "OS proof of a live original worker must override a stale told exit"
+        );
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -604,7 +778,10 @@ mod tests {
 
         assert_eq!(
             classify_worker(&node(Some(pid as i32), Some(recorded), None)),
-            WorkerState::Live { pid }
+            WorkerState::Live {
+                pid,
+                start_time: st
+            }
         );
         assert_eq!(
             classify_worker(&node(Some(pid as i32), None, None)),
@@ -632,11 +809,29 @@ mod tests {
         let mut child = spawn_sleeper();
         let pid = child.id();
         assert!(pid_file::pid_alive(pid));
+        let st = watchdog::pid_start_time(pid).expect("read child start_time");
         let reaper = std::thread::spawn(move || {
             let _ = child.wait();
         });
-        fence_worker(pid).expect("fence succeeds");
+        fence_worker(pid, st).expect("fence succeeds");
         reaper.join().unwrap();
         assert!(!pid_file::pid_alive(pid), "worker must be dead after fence");
+    }
+
+    /// The classify→signal recycle guard: `fence_worker` with an identity that no
+    /// longer matches the live pid must NOT signal it (it may be a recycled,
+    /// unrelated process) — it returns Ok and leaves the process alive.
+    #[test]
+    fn fence_worker_does_not_signal_a_recycled_pid() {
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        // A start-time that cannot match the live child (1970).
+        fence_worker(pid, 1).expect("mismatched identity is a benign no-op");
+        assert!(
+            pid_file::pid_alive(pid),
+            "an identity-mismatched pid must be left untouched"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
