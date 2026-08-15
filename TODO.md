@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: config-subcommand (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups LANDED 2026-08-15; workmux pi preset confirmed obsolete because workmux ships `pi` as a built-in agent. Continue release-blockers: `config-subcommand` and pi skill-warning cleanup. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: stint-skill-desc-over-pi-limit (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups + pi.dev config surface LANDED 2026-08-15/16; workmux pi preset confirmed obsolete because workmux ships `pi` as a built-in agent. Continue release-blocker: trim bundled stint skill descriptions under pi.dev's 1024-char limit. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -220,16 +220,16 @@ LANE B — pipeline/* + harness/* + pi.dev (→ ⬆ v0.2.0)
   STEP 1 — cut-pipeline-floor-harness-heavy ✅ LANDED 2026-08-14 (~26.5k LOC: pipeline/floor + harness heavy layer gone, light claude+pi launcher kept; obsoleted 7 pipeline/harness fix issues).
   STEP 2 — cut-run-kinds-discussion-machinery ✅ LANDED 2026-08-14b — removed run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff machinery (events, reducer projections, DiscussionId/ProposalId, discussions/+spinoffs/ dirs, counters, CLI verbs); collapsed the kind-derived lifecycle inference in supervise/*; removed --confirm-interactive + the code-run merge gate; deleted 5 bundled skills + updated the /worktree router. KEPT terminal-report discussion_items[]/spinoff_proposals[] + surviving spinoff/research/technical-decision/fan-out topologies. Legacy on-disk runs decode read-only (Kind::Unknown), reported-not-deleted (ADR §D7). /llm-review 4-model panel, FIX-class applied (fail-closed data_kind + read-only guard, 2 regression tests). Integrated gate green; obsoleted bundled-orchestrate-skill (wontfix). ⇒ SUBTRACTIVE CUTS COMPLETE.
 · pi.dev sub-thread (KEEP + grow — pi.dev is the 0.2 default harness per design.md):
-  ▶ config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
+    (empty — pi.dev 0.2 thread landed; config-show layered inspection deferred)
 
 LANE C — workmux vendoring — COMPLETE (empty; landed 2026-08-10)
 
 LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — proceeds)
-  ▶ skill-install-force-symlink             (skill.rs: install --force aborts on a pre-existing symlink)
+  ▶ stint-skill-desc-over-pi-limit          (0.2 release-blocker — stint-start/stint-handoff SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load. Trim both SKILL.template.md descriptions ≤1024 keeping trigger phrases; consider a doctor/CI guard.)
+    skill-install-force-symlink             (skill.rs: install --force aborts on a pre-existing symlink)
     spinoff-skill-stale-preview-banner      collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
     consult-failure-hard-fail               (a failed/partial consult review inside a worktree must be a HARD failure, not silently passed)
     stint-skills-drop-intake-specifics      (remove project-specific intake concepts leaked into stint-handoff + AGENTS-EXECUTION-DAG.md — keep the stint skills generic/OSS)
-    stint-skill-desc-over-pi-limit          (NEW 2026-08-15 — stint-start (1211) + stint-handoff (1142) SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load. Trim both SKILL.template.md descriptions ≤1024 keeping trigger phrases; consider a doctor/CI guard. Only 2 bundled skills over; same class as obsoleted bundled-orchestrate-skill.)
 
 LANE E — run/* read surface (cluster B, run-state DTO)  (post-ADR survivors — kept)
     node-show-null-report                   (node show null report after self-merge — report is in nodes/<node>.json last_report)
