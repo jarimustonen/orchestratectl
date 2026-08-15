@@ -2,11 +2,14 @@
 created: 2026-08-11
 updated: 2026-08-16
 type: feature
-status: in-progress
+status: done
 priority: normal
 commits:
 - hash: c58ee69
   summary: 'feat(config): add config path + config show inspection commands'
+- hash: 618d166
+  summary: 'fix(config): apply llm-review localized findings on config show'
+closed: 2026-08-16
 ---
 
 # config subcommand: config path and config show --json
