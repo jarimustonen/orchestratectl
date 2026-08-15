@@ -398,28 +398,74 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     // when the primary gate does not fire. The ancestry check is against the run's
     // source branch, NOT the main worktree's ambient `HEAD` — which may be on any
     // branch when the supervisor ticks.
+    //
+    // The check FAILS CLOSED (issue `non-merge-teardown-dirty-worktree`): if the
+    // rev-list count cannot be computed (a git error / unparseable output), the
+    // teardown preserves rather than proceeds. The older code returned "nothing
+    // unmerged" on a git error and leaned on `git branch -d` to catch it — but the
+    // worktree was still removed on that path, so a transient git failure could
+    // discard a live tree. For teardown, an unverifiable branch is treated exactly
+    // like a provably-unmerged one.
     if !skip_source_check {
         if let (Some(branch), Some(source)) = (n.branch.as_deref(), manifest_source_branch(paths)) {
-            if branch_has_unmerged_commits(repo, &source, branch, git) {
-                record_branch_preserved(
-                    paths,
-                    n,
-                    Some(branch),
-                    worktree_path,
-                    "unmerged commits vs source (no explicit merge)",
-                );
-                return;
+            match branch_unmerged_vs_source(repo, &source, branch, git) {
+                UnmergedCheck::HasUnmerged => {
+                    record_branch_preserved(
+                        paths,
+                        n,
+                        Some(branch),
+                        worktree_path,
+                        "unmerged commits vs source (no explicit merge)",
+                    );
+                    return;
+                }
+                UnmergedCheck::Unverifiable => {
+                    record_branch_preserved(
+                        paths,
+                        n,
+                        Some(branch),
+                        worktree_path,
+                        "unmerged-commit check unavailable (git error; preserving)",
+                    );
+                    return;
+                }
+                UnmergedCheck::NoUnmerged => {}
             }
+        }
+
+        // Dirty-worktree guard (issue `non-merge-teardown-dirty-worktree`): the
+        // source-relative check above protects COMMITTED work, but a
+        // non-explicit-merge teardown (a `run cancel`, a plain success that skipped
+        // `run merge`, a no-report node caught by a cancel) can still reach a
+        // worktree holding UNCOMMITTED staged/modified/untracked edits that
+        // `worktree remove --force` would silently discard. Only a confirmed
+        // explicit `run merge` authorizes forced cleanup. If the tree is dirty — or
+        // its cleanliness cannot be verified (`worktree_is_clean` is conservatively
+        // false on a git error, i.e. fail-closed) — preserve BOTH the worktree and
+        // the branch so the human / salvage skill can pick the edits up. A worktree
+        // whose dir is already gone reads as clean and falls through to the
+        // `cleanup.worktree_missing` audit as before.
+        if !worktree_is_clean(Some(worktree_path), git) {
+            record_branch_preserved(
+                paths,
+                n,
+                n.branch.as_deref(),
+                worktree_path,
+                "uncommitted changes in worktree (no explicit merge)",
+            );
+            return;
         }
     }
 
-    // `--force` so disposable untracked/modified scratch left in the worktree
+    // `--force` so any residual untracked/modified scratch left in the worktree
     // does not refuse removal and orphan the worktree+branch (issue
-    // `supervisor-worktree-remove-no-force`). On the reached-here paths the
-    // branch is either merged (explicit merge) or provably has no unmerged work
-    // vs its source, so anything still in the tree is throwaway. If removal still
-    // fails AND the dir is simply gone (user removed it manually), record a
-    // non-fatal `cleanup.worktree_missing` and continue.
+    // `supervisor-worktree-remove-no-force`). On the reached-here paths the branch
+    // is either merged (explicit merge, which skips the guards above) or the tree
+    // was verified CLEAN and has no unmerged work vs its source (the dirty-worktree
+    // + source-relative guards preserved every other case), so anything still in
+    // the tree is throwaway. If removal still fails AND the dir is simply gone (user
+    // removed it manually), record a non-fatal `cleanup.worktree_missing` and
+    // continue.
     if !remove_worktree(repo, worktree_path, git) && !std::path::Path::new(worktree_path).exists() {
         record_worktree_missing(paths, n, worktree_path);
     }
@@ -428,21 +474,41 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     }
 }
 
-/// True when `branch` has at least one commit not reachable from `source` in
-/// `repo` — i.e. `git -C <repo> rev-list --count <source>..<branch>` is > 0. This
-/// is the source-relative "is there unmerged work?" check the teardown gate uses
+/// The outcome of the source-relative unmerged-work check that gates a
+/// non-explicit-merge teardown ([`branch_unmerged_vs_source`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnmergedCheck {
+    /// `branch` has at least one commit not reachable from `source` — committed
+    /// work a force teardown would strand. Preserve the branch + worktree.
+    HasUnmerged,
+    /// The rev-list count could not be computed (a git error / non-zero exit /
+    /// unparseable output). For teardown this FAILS CLOSED (issue
+    /// `non-merge-teardown-dirty-worktree`): preserve, exactly like `HasUnmerged`,
+    /// rather than risk discarding committed work on a transient git failure.
+    Unverifiable,
+    /// `branch` is provably level with / behind `source` — nothing committed to
+    /// lose. Teardown may proceed (still subject to the dirty-worktree guard).
+    NoUnmerged,
+}
+
+/// The source-relative "is there unmerged work?" check the teardown gate uses
 /// instead of `git branch -d`'s ambient-`HEAD`-relative one (issue
-/// `blocked-report-deletes-branch`).
+/// `blocked-report-deletes-branch`): `git -C <repo> rev-list --count
+/// <source>..<branch>`.
 ///
-/// Conservative on the safe side but NOT paranoid: a git error or unparseable
-/// count returns `false` (treat as "nothing unmerged", proceed to teardown) so a
-/// transient git hiccup does not leak a branch on every tick — the
-/// [`delete_branch`] `-d` fallback still refuses an unmerged branch as the final
-/// backstop. Only a *confirmed* positive count preserves here.
-fn branch_has_unmerged_commits(repo: &str, source: &str, branch: &str, git: &str) -> bool {
-    Git::with_bin(git)
-        .rev_list_count(repo, source, branch)
-        .is_some_and(|count| count > 0)
+/// Both a positive count AND an unverifiable result ([`UnmergedCheck::Unverifiable`])
+/// preserve — the check is fail-closed for teardown (issue
+/// `non-merge-teardown-dirty-worktree`). The earlier form returned a bare `false`
+/// on a git error and proceeded to remove the worktree (leaning on the
+/// [`delete_branch`] `-d` fallback to keep the branch), but that still discarded a
+/// live tree on a transient git hiccup. Only a *confirmed* zero count green-lights
+/// teardown.
+fn branch_unmerged_vs_source(repo: &str, source: &str, branch: &str, git: &str) -> UnmergedCheck {
+    match Git::with_bin(git).rev_list_count(repo, source, branch) {
+        Some(count) if count > 0 => UnmergedCheck::HasUnmerged,
+        Some(_) => UnmergedCheck::NoUnmerged,
+        None => UnmergedCheck::Unverifiable,
+    }
 }
 
 /// A machine-readable recoverability signal for a dead agent's stranded work
@@ -683,7 +749,7 @@ fn manifest_source_repo(paths: &RunPaths) -> Option<String> {
 
 /// The branch the run was started from (`manifest.source_branch`), if recorded.
 /// This is the ref the teardown gate measures "unmerged work" against
-/// ([`branch_has_unmerged_commits`]) — the run's actual base, not the main
+/// ([`branch_unmerged_vs_source`]) — the run's actual base, not the main
 /// worktree's ambient `HEAD`. `None` for a run created without a recorded base,
 /// in which case the source-relative safety net cannot run and teardown falls
 /// through to `delete_branch`'s `-d` backstop.
@@ -999,7 +1065,7 @@ fn remove_worktree(repo: &str, worktree_path: &str, git: &str) -> bool {
 ///   necessary.
 /// - `merged == false` → `-d`, the LAST-resort backstop. On this arm
 ///   [`cleanup_node`] has already preserved a branch with source-unmerged commits
-///   (its stronger, source-relative [`branch_has_unmerged_commits`] check), so a
+///   (its stronger, source-relative [`branch_unmerged_vs_source`] check), so a
 ///   branch reaching here is expected to be clean. `-d` still refuses a branch not
 ///   merged into `HEAD`/upstream, catching the residual case where the source
 ///   check could not run (no `manifest.source_branch`) — it keeps such commits
@@ -1328,9 +1394,16 @@ mod tests {
     }
 
     /// The root-cause regression (`supervisor-worktree-remove-no-force`): an
-    /// untracked scratch file left in the worktree must NOT block teardown. With
-    /// `--force` the worktree dir AND its branch are both removed; without it git
-    /// refused and the cascade orphaned both. Drives real git end-to-end.
+    /// untracked scratch file left in the worktree must NOT block teardown on a
+    /// CONFIRMED explicit merge. With `--force` the worktree dir AND its branch are
+    /// both removed; without it git refused and the cascade orphaned both. Drives
+    /// real git end-to-end.
+    ///
+    /// The scratch here is exercised on the MERGE path deliberately: on a
+    /// non-explicit-merge teardown a dirty tree is now PRESERVED, not force-removed
+    /// (issue `non-merge-teardown-dirty-worktree` — see
+    /// [`dirty_worktree_preserved_on_plain_success`]), so `--force`'s throwaway-
+    /// scratch removal only applies where a `run merge` confirmed the work landed.
     #[test]
     fn worktree_with_untracked_file_is_force_removed_with_branch() {
         let tmp = TempDir::new().unwrap();
@@ -1340,11 +1413,18 @@ mod tests {
         // The exact orphan trigger from the issue: a stray untracked file.
         std::fs::write(wt.join(".report.json"), "scratch").unwrap();
 
-        let n = forge_node(
+        let _ = forge_node(
             &paths,
             "n-0001",
             json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
         );
+        // A confirmed explicit `run merge` authorizes the force teardown.
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": true, "via": "explicit-merge" }),
+        );
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
         // No tmux fields → close_tmux_window is a no-op; `/usr/bin/true` is never
         // actually consulted but satisfies the signature.
         cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
@@ -1674,6 +1754,188 @@ mod tests {
             "a source-merged branch is deleted"
         );
         assert!(events_of_kind(&paths, "cleanup.branch_preserved").is_empty());
+    }
+
+    /// Write an executable fake `git` that always exits non-zero, so a test can
+    /// drive the conservative-on-error (fail-closed) teardown branches.
+    fn failing_git(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let p = dir.join("fake-git.sh");
+        std::fs::write(&p, "#!/bin/sh\nexit 3\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// Record the run's source repo + branch on the manifest (`main`) so the
+    /// source-relative and dirty-worktree teardown guards have a base to measure
+    /// against. Mirrors the inline `run.created` in the source-known tests.
+    fn bootstrap_source_main(paths: &RunPaths, repo: &std::path::Path) {
+        append_and_apply_event(
+            paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "source_repo": repo.to_str().unwrap(),
+                "source_branch": "main",
+            }),
+        )
+        .unwrap();
+    }
+
+    /// THE new data-loss regression (`non-merge-teardown-dirty-worktree`): a
+    /// non-explicit-merge teardown (here a plain `success: true`) whose branch has
+    /// NO committed work ahead of source but whose worktree holds UNCOMMITTED edits
+    /// must PRESERVE both the worktree and the branch — `worktree remove --force`
+    /// would otherwise silently discard the edits. Recorded as
+    /// `cleanup.branch_preserved` with the uncommitted-changes reason.
+    #[test]
+    fn dirty_worktree_preserved_on_plain_success() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // Nothing committed ahead of source, but an uncommitted (untracked) edit
+        // sits in the tree — the exact case the source-relative check misses.
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+        std::fs::write(wt.join("scratch.rs"), "half-done edit").unwrap();
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(wt.exists(), "a dirty worktree must be preserved");
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "its branch must survive too"
+        );
+        assert!(
+            wt.join("scratch.rs").exists(),
+            "the uncommitted edit must not be discarded"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1, "the preservation must be recorded once");
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "uncommitted changes in worktree (no explicit merge)"
+        );
+    }
+
+    /// The same dirty-tree preservation on a `run cancel`, and WITHOUT a recorded
+    /// `source_branch` — proving the dirty-worktree guard is independent of the
+    /// source-relative committed-work check (which cannot run here). A cancel with
+    /// an agent mid-edit must not lose the uncommitted work.
+    #[test]
+    fn dirty_worktree_preserved_on_cancel_without_source() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // no source_branch → committed-work guard can't run
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        std::fs::write(wt.join("scratch.rs"), "mid-edit at cancel").unwrap();
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(
+            &paths,
+            "n-0001",
+            json!({ "success": false, "cancelled": true, "reason": "cancelled by user" }),
+        );
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(wt.exists(), "a dirty worktree must survive a cancel");
+        assert!(branch_exists(&repo, "wt/foo"));
+        assert!(wt.join("scratch.rs").exists());
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "uncommitted changes in worktree (no explicit merge)"
+        );
+    }
+
+    /// Fail-closed on a git error in the source-relative unmerged-commit check
+    /// (`non-merge-teardown-dirty-worktree`): when `rev-list --count` cannot be
+    /// computed, the teardown PRESERVES the worktree + branch rather than proceed
+    /// to remove them. A fully-failing git makes `main_worktree` resolution fall
+    /// back to the recorded `source_repo` and the count return `None`. The old
+    /// behavior treated the error as "nothing unmerged" and removed the worktree.
+    #[test]
+    fn git_error_in_source_check_preserves_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        let fail_git = failing_git(tmp.path());
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &fail_git);
+
+        assert!(
+            wt.exists(),
+            "an unverifiable source check must preserve the worktree"
+        );
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "its branch must survive too"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(
+            evs.len(),
+            1,
+            "the fail-closed preservation must be recorded"
+        );
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "unmerged-commit check unavailable (git error; preserving)"
+        );
+    }
+
+    /// The `UnmergedCheck` classification, asserted directly against real git:
+    /// commits ahead → `HasUnmerged`, level → `NoUnmerged`, git error →
+    /// `Unverifiable` (the fail-closed bucket).
+    #[test]
+    fn branch_unmerged_vs_source_classifies() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let repo_s = repo.to_str().unwrap();
+        // Level with source → NoUnmerged.
+        assert_eq!(
+            branch_unmerged_vs_source(repo_s, "main", "wt/foo", &git_bin()),
+            UnmergedCheck::NoUnmerged
+        );
+        // A commit ahead → HasUnmerged.
+        commit_in_worktree(&wt, "f.rs", "work");
+        assert_eq!(
+            branch_unmerged_vs_source(repo_s, "main", "wt/foo", &git_bin()),
+            UnmergedCheck::HasUnmerged
+        );
+        // A failing git → Unverifiable (fail-closed).
+        let fail_git = failing_git(tmp.path());
+        assert_eq!(
+            branch_unmerged_vs_source(repo_s, "main", "wt/foo", &fail_git),
+            UnmergedCheck::Unverifiable
+        );
     }
 
     /// The typed outcome table (design §2.6) is what `cleanup_node` reads for its
