@@ -3033,11 +3033,34 @@ fn watchdog_tick(
     // auto-terminalize an interactive node. This is a lookup on a TOLD fact
     // (`manifest.lifecycle`), never a re-derivation — do not gate any teardown on
     // a signal cross-product instead.
-    if read_manifest_opt(paths)
-        .ok()
-        .flatten()
-        .is_some_and(|m| m.lifecycle.is_interactive())
-    {
+    //
+    // Scope note: this skips only THIS tick's automatic worker adjudication. The
+    // things an explicit human action still needs — rollup to terminal from an
+    // `explicit-merge`/`cancelled` `node.report`, the typed-outcome teardown, and
+    // `merge_recovery::recover_run` (the crashed-`run merge` self-heal, A2) — all
+    // live in the supervisor loop OUTSIDE `watchdog_tick`, so they remain active
+    // for interactive runs. Keep it that way: do not move merge recovery or rollup
+    // into `watchdog_tick`, or this early return would strand an explicit merge.
+    //
+    // Fail CLOSED, not open: an unreadable/absent manifest returns `Ok(())` (do
+    // nothing this tick), never falling through to the autonomous terminalization
+    // machinery. A transient read error on an interactive run must not trigger the
+    // exact auto-failure this flag exists to prohibit; for an autonomous run it
+    // just defers one tick, retried on the next. Lifecycle is immutable after
+    // create, so the unlocked read is race-free — only the error handling matters.
+    let manifest = match read_manifest_opt(paths) {
+        Ok(Some(m)) => m,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                error = %e,
+                "watchdog could not read manifest; skipping tick (fail-closed)"
+            );
+            return Ok(());
+        }
+    };
+    if manifest.lifecycle.is_interactive() {
         return Ok(());
     }
 
@@ -4157,6 +4180,61 @@ mod tests {
         assert!(
             n.last_report.is_none(),
             "no failed report is synthesized for an interactive run"
+        );
+    }
+
+    /// Interactive POSITIVE path (design.md §6): the watchdog short-circuit must
+    /// NOT block the human's explicit finalize. An `explicit-merge` `node.report`
+    /// terminalizes the node `done` (reducer) and — even though `watchdog_tick` is
+    /// a no-op for interactive — the rollup + typed teardown that live OUTSIDE the
+    /// tick still fire: `rollup_status` rolls the run up to `done` and the node
+    /// classifies as `Merged` → `Teardown::Full`. This is the guard against a
+    /// future refactor that moves rollup/recovery inside the tick and strands an
+    /// interactive merge.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn interactive_run_explicit_merge_still_rolls_up_and_tears_down() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_run_with_lifecycle(&tmp, &repo, &wt, &base, dead_pid(), "interactive");
+
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        // The human ran `run merge`: its terminal explicit-merge report lands.
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid),
+            None,
+            json!({ "success": true, "cancelled": false, "via": "explicit-merge" }),
+        )
+        .unwrap();
+
+        // The tick is a no-op for interactive — it must not error or interfere.
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert_eq!(
+            n.status,
+            Status::Done,
+            "explicit merge terminalizes the node"
+        );
+        // Rollup (supervisor loop, OUTSIDE the tick) still terminalizes the run.
+        assert_eq!(
+            cleanup::rollup_status(&paths, true),
+            Some(Status::Done),
+            "an interactive run's explicit merge must still roll the run up to done"
+        );
+        // And the typed teardown table authorizes the full teardown.
+        let outcome = crate::supervise::outcome::TerminalOutcome::classify(&n).expect("terminal");
+        assert_eq!(outcome, crate::supervise::outcome::TerminalOutcome::Merged);
+        assert_eq!(
+            outcome.teardown(),
+            crate::supervise::outcome::Teardown::Full,
+            "a confirmed interactive merge earns the full teardown"
         );
     }
 

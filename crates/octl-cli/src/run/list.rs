@@ -274,9 +274,10 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                     r.status.clone()
                 };
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     r.run_id,
                     r.kind,
+                    r.lifecycle,
                     status,
                     r.node_count,
                     sup,

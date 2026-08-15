@@ -5,6 +5,11 @@ type: task
 status: in-progress
 priority: high
 epic: lifecycle-architecture-review
+commits:
+- hash: d7b5599
+  summary: 'feat(run): add explicit --interactive how-run flag'
+- hash: e23712a
+  summary: 'fix(run): apply /llm-review findings to interactive flag'
 ---
 
 # Thin supervisor: add explicit interactive flag

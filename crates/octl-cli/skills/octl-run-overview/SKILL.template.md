@@ -67,7 +67,7 @@ by `created_at` (RFC3339).
     "runs": [
       {
         "id": "01HZ...",
-        "kind": "worktree-code | spinoff | fan-out | orchestrate",
+        "kind": "spinoff | research | technical-decision | fan-out",
         "lifecycle": "autonomous | interactive",
         "status": "pending | running | done | failed | cancelled",
         "created_at": "2026-06-12T10:30:00Z",
@@ -80,12 +80,16 @@ by `created_at` (RFC3339).
 
 Fields that drive decisions:
 
-- `kind` — picks the right follow-up command (a `fan-out` resumes
-  differently from a `worktree-code`).
-- `lifecycle` — the run's **category**, derived from `kind`. Always one
-  of `autonomous` (fire-and-forget — spinoff, research, bugfix, …) or
-  `interactive` (`code`, `orchestrate`). It is NOT a progress state and
-  never transitions to a terminal value.
+- `kind` — the run's **topology**; picks the right follow-up command (a
+  `fan-out` resumes differently from a single `spinoff`).
+- `lifecycle` — the run's **how-run category**, set explicitly at
+  `run create` from the `--interactive` flag (NOT derived from `kind`).
+  `autonomous` (the default — fire-and-forget; the supervisor adjudicates
+  exit and tears down) or `interactive` (human-driven — the supervisor
+  never auto-terminalizes; it waits for an explicit `run merge` /
+  `run cancel`, so an interactive run can sit non-terminal indefinitely by
+  design). It is NOT a progress state and never transitions. Read it to
+  know *how* a run is driven; read `status` for whether it is *done*.
 - `status` — the **terminal-progress field**. Values are `pending`,
   `running`, `done`, `failed`, `cancelled`. **Terminal states are
   `done | failed | cancelled`** — once any of those is set the run is
