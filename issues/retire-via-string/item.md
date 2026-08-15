@@ -2,12 +2,15 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 commits:
 - hash: 054dcb2
   summary: 'refactor(via): retire via-string merge authority for typed ReportOrigin'
+- hash: e6b9c12
+  summary: 'fix(via): apply llm-review findings (docs, layering, tests)'
+closed: 2026-08-15
 ---
 
 # Retire the via string in favor of typed ReportOrigin (reducer + node report)
