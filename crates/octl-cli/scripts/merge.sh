@@ -29,6 +29,12 @@ TARGET_BRANCH=""
 # merge lock and refuse (exit 76) if it moved, so the source ref only advances
 # when the recorded transaction still applies.
 EXPECTED_SOURCE_OID=""
+# PID of the `run merge` driver process that spawned us. We are its child but can
+# be orphaned if it is killed (SIGKILL/OOM/tmux teardown) mid-merge. Recovery
+# gates on the driver being dead, so if the driver died we must NOT fast-forward
+# the source ref (recovery would already have classified this as "not landed").
+# Checked immediately before the mutation (design.md §2.1b / A2).
+DRIVER_PID=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -47,6 +53,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --expected-source-oid=*)
             EXPECTED_SOURCE_OID="${1#--expected-source-oid=}"
+            shift
+            ;;
+        --driver-pid)
+            DRIVER_PID="${2:-}"
+            shift 2 || { echo "Error: --driver-pid requires a value" >&2; exit 1; }
+            ;;
+        --driver-pid=*)
+            DRIVER_PID="${1#--driver-pid=}"
             shift
             ;;
         *)
@@ -257,7 +271,9 @@ echo ""
 # expected OID). Exit 76 is distinct from the dirty-tree/conflict failure (1) and
 # the lock-timeout retry (75) so `run merge` can classify it precisely.
 if [[ -n "$EXPECTED_SOURCE_OID" ]]; then
-    if ! ACTUAL_SOURCE_OID=$(git -C "$TARGET_PATH" rev-parse --verify "$TARGET_BRANCH"); then
+    # `--end-of-options` so a target branch legitimately starting with `-` is never
+    # misparsed as a flag (mirrors the Rust `read_oid` hardening; /llm-review).
+    if ! ACTUAL_SOURCE_OID=$(git -C "$TARGET_PATH" rev-parse --verify --end-of-options "$TARGET_BRANCH"); then
         echo "Error: could not resolve target branch '$TARGET_BRANCH' for the compare-and-swap check" >&2
         exit 1
     fi
@@ -276,6 +292,20 @@ COMMIT_COUNT=$(echo "$COMMITS" | grep -c . || echo "0")
 echo "Commits to merge ($COMMIT_COUNT):"
 echo "$COMMITS"
 echo ""
+
+# Orphan-race guard (design.md §2.1b / A2, /llm-review). We are the driver's
+# child; if the driver was killed we may have been orphaned. Recovery gates on the
+# driver being dead — so if the driver is gone, it will (or already did) classify
+# this transaction against the CURRENT source ref. Fast-forwarding now, after the
+# driver died, would move the source out from under a recovery that already read it
+# unmoved and rejected the transaction — stranding the merged work with no report.
+# So bail before the mutation if the driver is no longer alive. This shrinks the
+# orphan window from the whole merge to the gap between this check and the ref
+# update; a durable operation lease (0.2.1) would close it entirely.
+if [[ -n "$DRIVER_PID" ]] && ! kill -0 "$DRIVER_PID" 2>/dev/null; then
+    echo "Error: the run merge driver process ($DRIVER_PID) is no longer alive; aborting before mutating the source ref so crash recovery stays deterministic" >&2
+    exit 1
+fi
 
 echo "Running workmux merge --rebase --into $TARGET_BRANCH..."
 

@@ -6,42 +6,64 @@
 //! `merge.started` event ([`Node::pending_merge`](octl_core::Node)); on a clean
 //! run the terminal `explicit-merge` `node.report` completes the transaction and
 //! clears the record. A crash in between leaves a *pending* transaction, which
-//! this module resolves — **once, by exact OID, against the ONE recorded
-//! transaction**, never a general branch-content heuristic:
+//! this module resolves — **once, against IMMUTABLE OIDs, for the ONE recorded
+//! transaction** (never the mutable worker/source branch tips, never a general
+//! branch scan):
 //!
 //! 1. **Driver-liveness gate.** If the `run merge` process that recorded the
-//!    transaction is still alive (PID + start-time identity), the merge is
-//!    in-flight — leave it. Recovery only fires for a *crashed* driver, so it
-//!    never races a live merge that is about to append its own report.
+//!    transaction is still alive (PID + start-time identity; bounded by a
+//!    staleness window when no start-time was recorded), the merge is in-flight —
+//!    leave it. Recovery only fires for a *crashed* driver, so it never races a
+//!    live merge about to append its own report. (merge.sh also re-checks driver
+//!    liveness right before the ref mutation, bounding the orphan-child window.)
 //! 2. **Compare (the CAS "compare" half).** Read the recorded `source_branch`'s
-//!    current OID. If it is still exactly `expected_source_oid`, the git mutation
-//!    never landed → **reject** (`merge.aborted`), preserving the worker's branch
-//!    and work. This is the merge-start-recorded / no-git-mutation crash window.
-//! 3. **Confirm (source moved).** If the source ref moved off
-//!    `expected_source_oid`, confirm it moved because of *this* worker's work
-//!    using the rebase-robust, git-verified landing check ([`landing_signal`]):
-//!    - git-verified landed → **complete**: append the `explicit-merge`
-//!      `node.report` the crash prevented (the git-mutated / event-not-yet-
-//!      appended crash window). Uses the SAME idempotency key `run merge` uses, so
-//!      a racing retry dedupes.
-//!    - not landed / unverifiable → **fail closed**: source moved for some other
-//!      reason (an unrelated merge, or git could not confirm), so **reject** and
-//!      preserve the work rather than fabricate a completion.
+//!    current OID (`source_now`). If it is still exactly `expected_source_oid`, the
+//!    git mutation never landed → **reject** (`merge.aborted`), preserving the
+//!    worker's branch and work. This is the merge-start-recorded / no-git-mutation
+//!    crash window.
+//! 3. **Confirm (source moved).** If `source_now` moved off `expected_source_oid`,
+//!    confirm the move integrated *this* transaction's recorded work — using the
+//!    rebase-robust, git-verified landing check ([`landing_signal`]) against the
+//!    immutable `worker_oid`:
+//!    - `worker_oid` git-verified integrated into `source_now` AND NOT already
+//!      integrated into `expected_source_oid` → **complete**: append the
+//!      `explicit-merge` `node.report` the crash prevented (the git-mutated /
+//!      event-not-yet-appended window). Same idempotency key `run merge` uses, so a
+//!      racing retry dedupes.
+//!    - provably not integrated, or already present before the move → **reject**
+//!      (fail closed, work preserved).
+//!    - any git read undecidable → **`CannotVerify`**: leave the transaction
+//!      pending; never abort or complete on a guess.
 //!
 //! The git shell-outs run OUTSIDE the run lock (invariant 3); the resolving event
 //! is appended under the exclusive lock after re-verifying the transaction is
-//! still the one we classified (a concurrent retry may have resolved it).
+//! still the one we classified AND the node is still non-terminal (a racing cancel
+//! is resolved by aborting the dangling transaction, not by a dead completion).
+//!
+//! Known residuals (deferred to the 0.2.1 operation lease, design §2.7): the CAS
+//! is check-then-FF under the merge lock, not a single atomic ref update, so a
+//! non-cooperating writer between the check and the FF — or a force-push between
+//! this classify and the append — is not defended; and the orphan-child window is
+//! bounded, not closed.
 
+use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use octl_core::report::validate_report_payload;
 use octl_core::{
-    append_and_apply_idempotent, read_manifest_opt, read_node_opt, AppendOutcome, MergeTxn, NodeId,
-    RunLock, RunPaths, VIA_EXPLICIT_MERGE,
+    append_and_apply_idempotent, read_manifest_opt, read_node_opt, AppendOutcome, LockedRun,
+    MergeTxn, NodeId, RunLock, RunPaths, VIA_EXPLICIT_MERGE,
 };
 
-use crate::run::landed::{landing_signal, LandingInputs};
+use crate::run::landed::{landing_signal, LandedMethod, LandingInputs};
 use crate::supervise::pid_file::pid_live_with_identity;
+
+/// A transaction whose driver PID is still live but carries NO start-time
+/// identity is trusted as an in-flight merge only until this age — past it, a
+/// recycled PID must not strand the transaction forever (a real merge never runs
+/// this long; the merge-lock timeout default is 10 min). With a recorded
+/// start-time the identity check is authoritative and this bound does not apply.
+const DRIVER_STALE_AFTER_MINS: i64 = 30;
 
 /// What recovery did with one pending merge transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,10 +184,8 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
     }
 
     // 2. Driver-liveness gate: a live `run merge` still owns the transaction.
-    if let Some(pid) = txn.driver_pid {
-        if pid > 0 && pid_live_with_identity(pid as u32, txn.driver_pid_start_secs) {
-            return Recovery::DriverAlive;
-        }
+    if driver_is_alive(&txn) {
+        return Recovery::DriverAlive;
     }
 
     // 3. Classify by OID, outside the lock (git must not run under the flock).
@@ -190,33 +210,47 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
         if !still_pending {
             return Ok(Recovery::Superseded);
         }
+        // The node may have terminalized (e.g. a racing `run cancel` → Cancelled)
+        // between the shared-lock classification and here. Appending an
+        // explicit-merge report would be a dead event for a Cancelled node (the
+        // reducer's adoption whitelist excludes Cancelled), leaving `pending_merge`
+        // set and causing infinite re-classification every tick. Resolve the
+        // transaction by ABORTING it instead — that clears `pending_merge` even on a
+        // terminal node (/llm-review finding).
+        if node.status.is_terminal() {
+            abort_txn(
+                paths,
+                lock,
+                node_id,
+                &run_id,
+                &txn.op_id,
+                "node terminalized before recovery could complete",
+            )?;
+            return Ok(Recovery::Superseded);
+        }
         match &verdict {
             Verdict::Complete => {
                 // Append the terminal report the crashed driver would have — same
                 // idempotency key as `run merge`, so a racing retry dedupes.
                 let report = completion_report(&txn);
                 let key = format!("explicit-merge:{run_id}:{node_id}");
-                append_and_apply_idempotent(
+                match append_and_apply_idempotent(
                     paths,
                     lock,
                     "node.report",
                     Some(node_id),
                     &key,
                     |_seq| Ok(report.clone()),
-                )?;
-                Ok(Recovery::Completed)
+                )? {
+                    // A prior event already carries this key with a DIFFERENT payload
+                    // — a real `run merge` report already completed the node. Don't
+                    // claim WE completed it; the node is already terminal.
+                    AppendOutcome::Conflict { .. } => Ok(Recovery::Superseded),
+                    _ => Ok(Recovery::Completed),
+                }
             }
             Verdict::Reject { reason } => {
-                let key = format!("merge-aborted:{run_id}:{node_id}:{}", txn.op_id);
-                let data = json!({ "op_id": txn.op_id, "reason": reason });
-                match append_and_apply_idempotent(
-                    paths,
-                    lock,
-                    octl_core::KIND_MERGE_ABORTED,
-                    Some(node_id),
-                    &key,
-                    |_seq| Ok(data.clone()),
-                )? {
+                match abort_txn(paths, lock, node_id, &run_id, &txn.op_id, reason)? {
                     AppendOutcome::Conflict { .. } => Ok(Recovery::Superseded),
                     _ => Ok(Recovery::Rejected {
                         reason: reason.clone(),
@@ -229,31 +263,91 @@ pub(crate) fn recover_node(paths: &RunPaths, node_id: &NodeId, git: &str) -> Rec
     outcome.unwrap_or(Recovery::CannotVerify)
 }
 
-/// The deterministic, OID-based verdict for a pending transaction.
+/// Whether the `run merge` process that recorded `txn` is still alive and thus
+/// still owns the transaction. Uses the recorded PID + start-time identity; when
+/// no start-time was recorded (platform could not read it), a bare-PID "alive"
+/// verdict is only trusted while the transaction is younger than
+/// [`DRIVER_STALE_AFTER_MINS`], so a recycled PID cannot strand it forever
+/// (/llm-review finding).
+fn driver_is_alive(txn: &MergeTxn) -> bool {
+    let Some(pid) = txn.driver_pid else {
+        return false;
+    };
+    if pid <= 0 || !pid_live_with_identity(pid as u32, txn.driver_pid_start_secs) {
+        return false;
+    }
+    if txn.driver_pid_start_secs.is_some() {
+        // Authoritative identity: a recycled PID would have a different start-time
+        // and already failed `pid_live_with_identity`.
+        return true;
+    }
+    // No identity to rule out PID reuse — trust the bare-PID liveness only within a
+    // bounded window anchored to the transaction's own start.
+    Utc::now().signed_duration_since(txn.started_at) < Duration::minutes(DRIVER_STALE_AFTER_MINS)
+}
+
+/// Append the `merge.aborted` event that resolves (clears) transaction `op_id`,
+/// keyed idempotently. Shared by the reject path and the terminal-node fallback.
+fn abort_txn(
+    paths: &RunPaths,
+    lock: &LockedRun<'_>,
+    node_id: &NodeId,
+    run_id: &str,
+    op_id: &str,
+    reason: &str,
+) -> octl_core::Result<AppendOutcome> {
+    let key = format!("merge-aborted:{run_id}:{node_id}:{op_id}");
+    let data = json!({ "op_id": op_id, "reason": reason });
+    append_and_apply_idempotent(
+        paths,
+        lock,
+        octl_core::KIND_MERGE_ABORTED,
+        Some(node_id),
+        &key,
+        |_seq| Ok(data.clone()),
+    )
+}
+
+/// Tri-state result of the git-verified landing check for one immutable source
+/// OID: the worker's recorded content is integrated, provably absent, or git
+/// could not decide (transient error / branch gone).
+#[derive(PartialEq, Eq)]
+enum Landing {
+    Landed,
+    NotLanded,
+    Unverifiable,
+}
+
+/// The deterministic, OID-based verdict for a pending transaction. All git
+/// evidence is read against IMMUTABLE OIDs — the recorded `expected_source_oid`
+/// and `worker_oid`, and a single pinned `source_now` — never a mutable branch
+/// tip, so the verdict cannot be steered by the worker branch moving after the
+/// transaction was recorded (/llm-review finding).
 ///
 /// - source ref still at `expected_source_oid` → `Reject` (git mutation never
 ///   landed — the no-git-mutation crash window),
-/// - source ref moved AND the worker's content is git-verified integrated →
-///   `Complete` (the git-mutated / event-not-appended crash window),
-/// - source ref moved but the content is not git-verified integrated → `Reject`
-///   (fail closed: an unrelated move, work preserved),
-/// - source ref/repo unreadable → `CannotVerify` (leave pending; don't guess).
+/// - source ref moved AND `worker_oid`'s content is git-verified integrated into
+///   it AND was NOT already integrated into `expected_source_oid` → `Complete`
+///   (the move integrated OUR recorded work — the git-mutated / event-not-appended
+///   window),
+/// - source ref moved but `worker_oid`'s content is provably not integrated, or
+///   was already present before the move → `Reject` (fail closed: unrelated move),
+/// - any git read undecidable → `CannotVerify` (leave pending; never guess).
 fn classify(
     txn: &MergeTxn,
     source_repo: Option<&str>,
     worktree_path: Option<&str>,
     git: &str,
 ) -> Verdict {
-    // The repo to run git in: the durable `source_repo` (survives teardown) or,
-    // as a fallback while it still exists, the worker's worktree (a linked
-    // worktree shares the common git dir, so the source ref resolves there too).
-    let Some(repo) = source_repo.or(worktree_path) else {
-        return Verdict::CannotVerify;
-    };
-    let Some(source_now) = read_oid(git, repo, &txn.source_branch) else {
-        // The source ref could not be read (git error, ref gone). Don't guess.
-        return Verdict::CannotVerify;
-    };
+    // The repo to run git in: the durable `source_repo` (survives teardown), else
+    // the worker's worktree (a linked worktree shares the common git dir). Pick the
+    // first that can actually resolve the source ref, so a stale `source_repo` does
+    // not permanently block recovery when the worktree still works (/llm-review).
+    let (repo, source_now) =
+        match resolve_source(source_repo, worktree_path, &txn.source_branch, git) {
+            Some(v) => v,
+            None => return Verdict::CannotVerify,
+        };
     if source_now == txn.expected_source_oid {
         // Compare failed the CAS: the source ref is still exactly where we left
         // it, so the git mutation never applied. Reject, preserving the work.
@@ -261,26 +355,84 @@ fn classify(
             reason: "source ref unchanged — merge never landed".to_string(),
         };
     }
-    // Source moved. Confirm it moved because of THIS worker's content, using the
-    // same rebase-robust, git-verified landing check `run wait` / `run show` use.
+    // Source moved. Did OUR recorded worker content land BECAUSE of the move?
+    match worker_landed(
+        &repo,
+        &source_now,
+        &txn.worker_oid,
+        txn.base_sha.as_deref(),
+        git,
+    ) {
+        Landing::Unverifiable => Verdict::CannotVerify,
+        Landing::NotLanded => Verdict::Reject {
+            reason: "source ref moved but the worker's recorded work is not integrated".to_string(),
+        },
+        Landing::Landed => {
+            // The content is in `source_now`. Confirm the MOVE integrated it — i.e.
+            // it was NOT already present in `expected_source_oid` — otherwise an
+            // unrelated commit over an already-integrated branch would falsely
+            // complete an empty merge (/llm-review finding).
+            match worker_landed(
+                &repo,
+                &txn.expected_source_oid,
+                &txn.worker_oid,
+                txn.base_sha.as_deref(),
+                git,
+            ) {
+                Landing::Landed => Verdict::Reject {
+                    reason: "worker content was already integrated before the merge; the source \
+                             move was unrelated"
+                        .to_string(),
+                },
+                Landing::NotLanded => Verdict::Complete,
+                Landing::Unverifiable => Verdict::CannotVerify,
+            }
+        }
+    }
+}
+
+/// Resolve the source ref against the first repo that can read it: prefer the
+/// durable `source_repo`, fall back to the worker's worktree. Returns
+/// `(repo, source_oid)` or `None` if neither can resolve the ref.
+fn resolve_source(
+    source_repo: Option<&str>,
+    worktree_path: Option<&str>,
+    source_branch: &str,
+    git: &str,
+) -> Option<(String, String)> {
+    [source_repo, worktree_path]
+        .into_iter()
+        .flatten()
+        .find_map(|repo| read_oid(git, repo, source_branch).map(|oid| (repo.to_string(), oid)))
+}
+
+/// Git-verified landing of the IMMUTABLE `worker_oid` into `source_rev` (also an
+/// immutable OID), bounded by `base_sha`. Rebase-robust (patch-id) via
+/// [`landing_signal`]. `report: None`, so the only verdicts are the authoritative
+/// `GitVerified` (→ `Landed`/`NotLanded`) or `Unverified` (→ `Unverifiable`); a
+/// report-marker can never fabricate a landing here.
+fn worker_landed(
+    repo: &str,
+    source_rev: &str,
+    worker_oid: &str,
+    base_sha: Option<&str>,
+    git: &str,
+) -> Landing {
     let inputs = LandingInputs {
         source_repo: Some(repo),
-        source_branch: Some(&txn.source_branch),
-        worktree_path,
-        branch: Some(&txn.worker_branch),
-        base_sha: txn.base_sha.as_deref(),
+        source_branch: Some(source_rev),
+        // Force git through `source_repo`; never fall back to a mutable worktree.
+        worktree_path: None,
+        branch: Some(worker_oid),
+        base_sha,
         report: None,
     };
     let signal = landing_signal(&inputs, git);
-    // Only a positive GIT-VERIFIED landing completes: a `report-marker` verdict
-    // is not applicable here (there is no terminal report yet — that is exactly
-    // what the crash prevented), and an `unverified` verdict must fail closed.
-    if signal.landed && signal.method == crate::run::landed::LandedMethod::GitVerified {
-        Verdict::Complete
-    } else {
-        Verdict::Reject {
-            reason: "source ref moved but the worker's work is not integrated".to_string(),
-        }
+    match signal.method {
+        LandedMethod::GitVerified if signal.landed => Landing::Landed,
+        LandedMethod::GitVerified => Landing::NotLanded,
+        // `ReportMarker` (impossible with `report: None`) or `Unverified`.
+        _ => Landing::Unverifiable,
     }
 }
 
@@ -296,10 +448,11 @@ fn completion_report(txn: &MergeTxn) -> Value {
         ),
         "via": VIA_EXPLICIT_MERGE,
     });
-    // The reducer validates the terminal outcome; validate the §7.3 shape here
-    // too so a future edit to the payload cannot append an invalid report. This
-    // payload is constant-shaped, so validation never fails at runtime.
-    debug_assert!(validate_report_payload(&report).is_ok());
+    // Validate the §7.3 shape UNCONDITIONALLY (not `debug_assert!`) so a future
+    // edit to this constant-shaped payload cannot silently append an invalid report
+    // in a release build (/llm-review finding). It never fails at runtime today.
+    validate_report_payload(&report)
+        .expect("recovery completion report is a constant, valid §7.3 payload");
     report
 }
 
@@ -566,5 +719,94 @@ mod tests {
         let n = read_node_opt(&paths, &nid).unwrap().unwrap();
         assert_eq!(n.status, Status::Pending);
         assert!(n.pending_merge.is_none());
+    }
+
+    /// Completion is verified against the IMMUTABLE recorded `worker_oid`, not the
+    /// current `worker_branch` tip: even after the worker branch is moved to
+    /// unrelated content, a genuinely-landed transaction still completes.
+    #[test]
+    fn completion_uses_recorded_worker_oid_not_mutable_branch() {
+        let (repo_dir, base, worker_tip) = repo_with_worker();
+        let repo = repo_dir.path();
+        // The merge landed: main FF's to the worker's tip.
+        git(repo, &["merge", "-q", "--ff-only", "wt/worker"]);
+        // Now move wt/worker to a NEW unrelated commit — the recorded worker_oid
+        // must remain the source of truth.
+        git(repo, &["checkout", "-q", "wt/worker"]);
+        std::fs::write(repo.join("h"), "moved\n").unwrap();
+        git(repo, &["add", "h"]);
+        git(repo, &["commit", "-qm", "worker moved on"]);
+        git(repo, &["checkout", "-q", "main"]);
+        assert_ne!(git(repo, &["rev-parse", "wt/worker"]), worker_tip);
+
+        let home = tempfile::TempDir::new().unwrap();
+        let paths = fresh_run(&home, repo);
+        record_txn(&paths, &base, &worker_tip, &base);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        assert_eq!(recover_node(&paths, &nid, &git_bin()), Recovery::Completed);
+        assert_eq!(
+            read_node_opt(&paths, &nid).unwrap().unwrap().status,
+            Status::Done
+        );
+    }
+
+    /// Fail-closed guard: the worker's content was ALREADY integrated into the
+    /// expected source before the transaction (an empty merge). An unrelated source
+    /// move must NOT be read as "our merge landed" — recovery rejects.
+    #[test]
+    fn rejects_when_worker_content_already_in_expected_source() {
+        let (repo_dir, base, worker_tip) = repo_with_worker();
+        let repo = repo_dir.path();
+        // The worker's content is already in main (merged earlier); `expected` is
+        // main AT that point.
+        git(repo, &["merge", "-q", "--ff-only", "wt/worker"]);
+        let expected = git(repo, &["rev-parse", "main"]);
+        assert_eq!(expected, worker_tip);
+        // An unrelated commit then advances main.
+        std::fs::write(repo.join("g"), "unrelated\n").unwrap();
+        git(repo, &["add", "g"]);
+        git(repo, &["commit", "-qm", "unrelated"]);
+
+        let home = tempfile::TempDir::new().unwrap();
+        let paths = fresh_run(&home, repo);
+        // base_sha is the fork point (base) so the delta is bounded to the worker's
+        // own commit; the worker content is already present in `expected`.
+        record_txn(&paths, &expected, &worker_tip, &base);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        let outcome = recover_node(&paths, &nid, &git_bin());
+        assert!(
+            matches!(outcome, Recovery::Rejected { .. }),
+            "content already in expected → no fabricated completion, got {outcome:?}"
+        );
+        assert_eq!(
+            read_node_opt(&paths, &nid).unwrap().unwrap().status,
+            Status::Pending
+        );
+    }
+
+    /// When git cannot be consulted (repo path gone), recovery is `CannotVerify` and
+    /// leaves the transaction pending — it never rejects or completes on a guess.
+    #[test]
+    fn cannot_verify_leaves_transaction_pending() {
+        let (repo_dir, base, worker_tip) = repo_with_worker();
+        let repo = repo_dir.path().to_path_buf();
+        let home = tempfile::TempDir::new().unwrap();
+        let paths = fresh_run(&home, &repo);
+        record_txn(&paths, &base, &worker_tip, &base);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        // Remove the repo so no git read can resolve the source ref.
+        drop(repo_dir);
+
+        assert_eq!(
+            recover_node(&paths, &nid, &git_bin()),
+            Recovery::CannotVerify
+        );
+        assert!(read_node_opt(&paths, &nid)
+            .unwrap()
+            .unwrap()
+            .pending_merge
+            .is_some());
     }
 }

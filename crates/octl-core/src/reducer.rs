@@ -691,6 +691,12 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     n.started_at = Some(ev.ts);
     n.updated_at = ev.ts;
     n.last_report = None;
+    // Drop any in-flight merge transaction from the PREVIOUS attempt: the retry
+    // rewires the node to a new branch/worktree/agent, so a `pending_merge` that
+    // referenced the dead attempt's branch must not carry forward — recovery would
+    // otherwise judge the new attempt from the old worker's merge state (issue
+    // `merge-transaction-recovery`, /llm-review finding).
+    n.pending_merge = None;
     // Clear the previous attempt's told exit fact: the freshly re-spawned worker
     // is a NEW process, so a stale `worker_exit` must not carry over — otherwise
     // the supervisor's told-fact pass would instantly (mis)judge the new attempt
@@ -728,6 +734,14 @@ fn reduce_node_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         return Ok(vec![]);
     }
     n.status = new_status;
+    // A terminal `node.status` (e.g. a watchdog-synthesized failure) ends the
+    // node's lifecycle, so any in-flight merge transaction is moot — clear it so a
+    // `pending_merge` is not stranded on a terminal node (recovery skips terminal
+    // nodes, so an uncleared one would dangle forever). Issue
+    // `merge-transaction-recovery` (/llm-review finding).
+    if new_status.is_terminal() {
+        n.pending_merge = None;
+    }
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -1674,6 +1688,31 @@ mod tests {
         assert!(
             n.pending_merge.is_none(),
             "completed merge clears the transaction"
+        );
+    }
+
+    /// A terminal `node.status` (e.g. a watchdog-synthesized failure) clears any
+    /// in-flight merge transaction, so `pending_merge` is never stranded on a
+    /// terminal node where recovery would refuse to look (/llm-review finding).
+    #[test]
+    fn terminal_node_status_clears_pending_merge() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        apply_event(&paths, &merge_started_event(run_id, 3, "op-1", "aaa")).unwrap();
+        assert!(read_n0001(&paths).pending_merge.is_some());
+
+        let mut status = event(run_id);
+        status.seq = 4;
+        status.kind = "node.status".into();
+        status.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        status.data = serde_json::json!({ "status": "failed" });
+        apply_event(&paths, &status).unwrap();
+        let n = read_n0001(&paths);
+        assert_eq!(n.status, Status::Failed);
+        assert!(
+            n.pending_merge.is_none(),
+            "terminal status clears the transaction"
         );
     }
 

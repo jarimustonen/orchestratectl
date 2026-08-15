@@ -353,23 +353,53 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // already-merged work would fail merge.sh's "refusing to merge into itself" /
     // "0 commits" checks). A rejected/unverifiable prior transaction is cleared and
     // we fall through to a fresh merge. Cheap when nothing is pending.
-    if let merge_recovery::Recovery::Completed =
-        merge_recovery::recover_node(&paths, &node_id, &git)
-    {
-        // The crashed merge is confirmed landed and the node is now terminal.
-        // Ensure a teardown actor and report success without re-running the merge.
-        let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
-        let payload = MergePayload {
-            run_id: &run_id,
-            node_id: node_id.as_str(),
-            branch,
-            source: effective_source.as_deref(),
-            merged: true,
-            report_seq: None,
-            supervisor: Some(outcome),
-            dry_run: None,
-        };
-        return emit(&payload, args.spec, &warnings);
+    match merge_recovery::recover_node(&paths, &node_id, &git) {
+        merge_recovery::Recovery::Completed => {
+            // The crashed merge is confirmed landed and the node is now terminal.
+            // Ensure a teardown actor and report success without re-running the merge.
+            let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+            let payload = MergePayload {
+                run_id: &run_id,
+                node_id: node_id.as_str(),
+                branch,
+                source: effective_source.as_deref(),
+                merged: true,
+                report_seq: None,
+                supervisor: Some(outcome),
+                dry_run: None,
+            };
+            return emit(&payload, args.spec, &warnings);
+        }
+        // A DIFFERENT `run merge` is actively driving a transaction for this node.
+        // Starting a fresh merge would `merge.started`-overwrite its `pending_merge`
+        // and race it (/llm-review finding) — refuse with a retryable error instead.
+        merge_recovery::Recovery::DriverAlive => {
+            return Err(CliError::user(
+                "merge_in_progress",
+                format!(
+                    "another `run merge` is already driving a merge for node {node_id}; \
+                     retry once it finishes"
+                ),
+            )
+            .with_invalid_value(&run_id));
+        }
+        // A prior transaction is pending but git could not be consulted to resolve
+        // it. Overwriting it with a fresh merge could strand a genuinely-landed
+        // merge, so refuse rather than clobber unverifiable recovery state.
+        merge_recovery::Recovery::CannotVerify => {
+            return Err(CliError::system(
+                "merge_recovery_unverifiable",
+                format!(
+                    "a prior merge transaction for node {node_id} could not be verified via git; \
+                     refusing to start a new merge over it — resolve the worktree/source repo and retry"
+                ),
+            ));
+        }
+        // Rejected (prior transaction cleared), Superseded, or NothingPending: safe
+        // to proceed to a fresh merge.
+        merge_recovery::Recovery::Rejected { .. }
+        | merge_recovery::Recovery::Superseded
+        | merge_recovery::Recovery::NothingPending => {}
     }
 
     // Record the merge transaction BEFORE mutating git (design.md §2.1b / A2), so a
@@ -386,7 +416,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         &node,
         effective_source.as_deref(),
         &git,
-    );
+    )?;
 
     // Run the merge. A non-zero exit (conflict, dirty tree, lock timeout)
     // surfaces as a CliError and the report is NOT submitted — the node
@@ -645,11 +675,18 @@ struct MergeStartHandle {
 /// deterministically by OID (design.md §2.1b / A2, issue
 /// `merge-transaction-recovery`).
 ///
-/// Best-effort and non-blocking: returns `None` (and the merge proceeds exactly
-/// as before A2, without CAS or recovery protection) when there is no concrete
-/// source branch to compare against, or git cannot resolve the source/worker OIDs
-/// (a stubbed test git, a torn-down repo). A record failure (lock/IO) is likewise
-/// downgraded to `None` rather than blocking a legitimate merge.
+/// Returns `Ok(None)` — and the merge proceeds exactly as before A2, without CAS
+/// or recovery protection — ONLY in the genuinely-unrecoverable cases: no concrete
+/// source branch to compare against (merge.sh's main/master auto-detect path), or
+/// git cannot resolve the source/worker OIDs (a stubbed test git, a torn-down
+/// repo). In those cases the merge itself would need the same git anyway, so a
+/// missing transaction reflects a repo that recovery could not act on regardless.
+///
+/// A durable-append FAILURE (lock/IO) is NOT downgraded: it returns `Err`, failing
+/// the merge BEFORE any git mutation (/llm-review finding). If the event log cannot
+/// record the transaction, proceeding would reintroduce the exact false-failure this
+/// change eliminates (a crash after the git merge with no recorded transaction to
+/// recover from). Fail closed so the agent backs off and retries.
 fn record_merge_start(
     paths: &octl_core::RunPaths,
     node_id: &NodeId,
@@ -658,15 +695,23 @@ fn record_merge_start(
     node: &Node,
     source_branch: Option<&str>,
     git: &str,
-) -> Option<MergeStartHandle> {
+) -> Result<Option<MergeStartHandle>, CliError> {
     // A concrete source branch is required: it is the ref recovery reads and the
     // CAS compares. Without it (merge.sh's main/master auto-detect path) we cannot
     // record a recoverable transaction, so fall back to the legacy unguarded merge.
-    let source_branch = source_branch?;
-    let expected_source_oid = merge_recovery::read_oid(git, worktree_path, source_branch)?;
+    let Some(source_branch) = source_branch else {
+        return Ok(None);
+    };
+    let Some(expected_source_oid) = merge_recovery::read_oid(git, worktree_path, source_branch)
+    else {
+        return Ok(None);
+    };
     // The worker's tip: prefer the recorded branch, fall back to HEAD.
-    let worker_oid = merge_recovery::read_oid(git, worktree_path, worker_branch)
-        .or_else(|| merge_recovery::read_oid(git, worktree_path, "HEAD"))?;
+    let Some(worker_oid) = merge_recovery::read_oid(git, worktree_path, worker_branch)
+        .or_else(|| merge_recovery::read_oid(git, worktree_path, "HEAD"))
+    else {
+        return Ok(None);
+    };
     let pid = std::process::id();
     let txn = MergeTxn {
         op_id: octl_core::new_op_id(),
@@ -679,27 +724,28 @@ fn record_merge_start(
         driver_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
         started_at: Utc::now(),
     };
-    let data = serde_json::to_value(&txn).ok()?;
-    match append_and_apply_event(
+    let data = serde_json::to_value(&txn)
+        .map_err(|e| CliError::system("merge_txn_serialize_failed", e.to_string()))?;
+    append_and_apply_event(
         paths,
         octl_core::KIND_MERGE_STARTED,
         Some(node_id),
         None,
         data,
-    ) {
-        Ok(_) => Some(MergeStartHandle {
-            op_id: txn.op_id,
-            expected_source_oid,
-        }),
-        Err(e) => {
-            tracing::warn!(
-                target: "orchestratectl::merge",
-                error = %e,
-                "could not record merge.started; proceeding without crash-recovery protection"
-            );
-            None
-        }
-    }
+    )
+    .map_err(|e| {
+        CliError::system(
+            "merge_txn_record_failed",
+            format!(
+                "could not durably record the merge transaction before mutating git ({e}); \
+                 refusing to merge unguarded — retry"
+            ),
+        )
+    })?;
+    Ok(Some(MergeStartHandle {
+        op_id: txn.op_id,
+        expected_source_oid,
+    }))
 }
 
 /// Clear a merge transaction we opened when the merge itself fails (conflict,
@@ -894,6 +940,12 @@ fn run_merge_sh(
     if let Some(oid) = expected_source_oid {
         cmd.arg("--expected-source-oid").arg(oid);
     }
+    // Orphan-race guard (/llm-review finding): merge.sh is our child but survives if
+    // we (the driver) are killed. Pass our PID so merge.sh re-checks our liveness
+    // immediately before the source-ref mutation and aborts if we died — otherwise a
+    // recovery run, seeing the driver dead but the orphaned merge.sh still about to
+    // fast-forward, could reject a merge that then lands, stranding the work.
+    cmd.arg("--driver-pid").arg(std::process::id().to_string());
     cmd.arg(branch);
 
     let output = cmd.output().map_err(|e| {
