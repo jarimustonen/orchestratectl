@@ -2,9 +2,12 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: open
+status: in-progress
 priority: high
 epic: lifecycle-architecture-review
+commits:
+- hash: 404c370
+  summary: 'feat(supervise): typed terminal-outcome table, delete heuristic inference (A6)'
 ---
 
 # Thin supervisor: encode terminal outcomes as a typed table

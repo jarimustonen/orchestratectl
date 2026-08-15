@@ -938,9 +938,17 @@ fn reduce_node_death_observed(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
         Some(n) => n,
         None => return Ok(vec![]),
     };
-    // First-write-wins (monotonic anchor); a terminal node never engages the
-    // backstop, so leave it untouched.
-    if n.first_death_at.is_some() || n.status.is_terminal() {
+    // First-write-wins (monotonic anchor). No-op once the backstop is moot or a
+    // higher-fidelity fact exists — a terminal node, a told `worker.exited`, a
+    // landed report, or an in-flight merge transaction. The supervisor's emitter
+    // already gates on all of these under the exclusive lock; mirroring them here
+    // keeps a from-scratch replay convergent regardless of caller.
+    if n.first_death_at.is_some()
+        || n.status.is_terminal()
+        || n.worker_exit.is_some()
+        || n.last_report.is_some()
+        || n.pending_merge.is_some()
+    {
         return Ok(vec![]);
     }
     n.first_death_at = Some(ev.ts);
@@ -2304,6 +2312,39 @@ mod tests {
             read_node_opt(&paths, &nid).unwrap().unwrap().first_death_at,
             Some(first),
             "first-write-wins: a re-observation must not reset the anchor"
+        );
+    }
+
+    /// `node.death_observed` is a no-op once a higher-fidelity fact exists — here a
+    /// told `worker.exited` — so a from-scratch replay converges to the same state
+    /// the supervisor's lock-guarded emitter would produce (the backstop is moot
+    /// once the shim recorded a real exit). Issue `typed-supervisor-outcomes`.
+    #[test]
+    fn node_death_observed_noop_when_worker_exit_present() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        // A told exit lands first.
+        let mut exit = event(run_id);
+        exit.seq = 3;
+        exit.kind = "worker.exited".into();
+        exit.node_id = Some(nid.clone());
+        exit.data = serde_json::json!({ "exit_code": 0 });
+        apply_event(&paths, &exit).unwrap();
+
+        // A death observation for the same node folds to nothing.
+        let mut death = event(run_id);
+        death.seq = 4;
+        death.kind = "node.death_observed".into();
+        death.node_id = Some(nid.clone());
+        death.data = serde_json::json!({});
+        apply_event(&paths, &death).expect("applies as no-op");
+        assert_eq!(
+            read_node_opt(&paths, &nid).unwrap().unwrap().first_death_at,
+            None,
+            "a told worker.exited makes the crash backstop moot; no anchor recorded"
         );
     }
 

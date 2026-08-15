@@ -2806,10 +2806,21 @@ fn death_grace() -> Duration {
 /// Record the durable first-death anchor for a node whose worker is confirmed
 /// gone with no told `worker.exited` and no merge (design.md §2.1a). Appends
 /// `node.death_observed` under the exclusive run lock, first-write-wins, and only
-/// while the node is still non-terminal AND still has no exit event / report — so
-/// a merge or a told exit that landed in the race window aborts the backstop
-/// before its clock even starts.
-fn record_death_observed(paths: &RunPaths, nid: &NodeId, node_id: &str) {
+/// while the node is still non-terminal AND still has no exit event / report / in
+/// -flight merge AND is still the SAME worker attempt observed dead outside the
+/// lock — so a merge, a told exit, or a `node.retry` that landed in the race
+/// window aborts the backstop before its clock even starts.
+///
+/// `stale_agent_pid` is the `agent_pid` from the outside-lock read; if a
+/// `node.retry` re-spawned the worker in the race window the fresh `agent_pid`
+/// differs and the stale death observation is discarded (it belonged to the dead
+/// attempt, not the fresh one — whose own grace must start from scratch).
+fn record_death_observed(
+    paths: &RunPaths,
+    nid: &NodeId,
+    node_id: &str,
+    stale_agent_pid: Option<i32>,
+) {
     let guard = match RunLock::acquire(&paths.lock()) {
         Ok(g) => g,
         Err(e) => {
@@ -2826,6 +2837,8 @@ fn record_death_observed(paths: &RunPaths, nid: &NodeId, node_id: &str) {
         f.first_death_at.is_none()
             && f.worker_exit.is_none()
             && f.last_report.is_none()
+            && f.pending_merge.is_none()
+            && f.agent_pid == stale_agent_pid
             && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
     });
     if !record {
@@ -2859,17 +2872,25 @@ fn record_death_observed(paths: &RunPaths, nid: &NodeId, node_id: &str) {
 /// Re-reads the node under the exclusive lock and re-verifies the WHOLE backstop
 /// precondition against the fresh projection before appending: still
 /// non-terminal, still no `worker.exited` (a clean/failing exit that landed in
-/// the grace window wins), still no `node.report`. A recoverable-transient
-/// empty-handed death of an autonomous single-node worker is parked for bounded
-/// auto-retry instead of failed. The synthesized report carries `success: false`
-/// and no explicit-merge marker, so invariant 5's teardown gate preserves the
-/// branch + worktree.
+/// the grace window wins), still no `node.report`, still no in-flight
+/// `pending_merge` (an A2 merge transaction — merge recovery owns it; failing
+/// here would clear a recoverable transaction into a false failure), and still
+/// the SAME worker attempt (`agent_pid`) observed dead — a `node.retry` that
+/// re-spawned the worker in the race window aborts the stale verdict. A
+/// recoverable-transient empty-handed death of an autonomous single-node worker
+/// is parked for bounded auto-retry instead of failed. The synthesized report
+/// carries `success: false` and no explicit-merge marker, so invariant 5's
+/// teardown gate preserves the branch + worktree.
+#[allow(clippy::too_many_arguments)] // a private helper with a legitimately wide
+                                     // interface (node identity + stale generation + git + retry state + clock); the
+                                     // alternative — a params struct — adds ceremony without clarifying the one caller.
 fn synthesize_crash_backstop_failure(
     paths: &RunPaths,
     nid: &NodeId,
     node_id: &str,
     v: watchdog::Liveness,
     git: &str,
+    stale_agent_pid: Option<i32>,
     retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
     now_instant: Instant,
 ) {
@@ -2885,18 +2906,21 @@ fn synthesize_crash_backstop_failure(
         }
     };
     let fresh = read_node_opt(paths, nid).ok().flatten();
-    // Grace-window race close: a told exit (clean OR failing) or a report that
-    // landed since the outside-lock scan wins over the pid guess.
+    // Grace-window race close: a told exit (clean OR failing), a report, an
+    // in-flight A2 merge transaction, or a `node.retry` (fresh `agent_pid`) that
+    // landed since the outside-lock scan all win over the stale pid guess.
     let still_synthesizable = fresh.as_ref().is_some_and(|f| {
         f.last_report.is_none()
             && f.worker_exit.is_none()
+            && f.pending_merge.is_none()
+            && f.agent_pid == stale_agent_pid
             && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
     });
     if !still_synthesizable {
         tracing::debug!(
             target: "orchestratectl::supervise",
             node = %node_id,
-            "crash backstop deferred to a told exit / report that landed in the grace window"
+            "crash backstop deferred to a told exit / report / merge / retry that landed in the grace window"
         );
         drop(guard);
         return;
@@ -3144,11 +3168,14 @@ fn watchdog_tick(
             // a non-zero grace the first observation is always within-grace and is
             // recorded + deferred below.
             let anchor = n.first_death_at.unwrap_or(now);
-            let elapsed = now
-                .signed_duration_since(anchor)
-                .to_std()
-                .unwrap_or_default();
-            if elapsed >= death_grace {
+            // Compare in signed `chrono::Duration` so a BACKWARD wall-clock step
+            // (`now < anchor`) reads as negative elapsed → still within grace,
+            // never a spurious immediate fire. (`Duration::to_std()` errors on a
+            // negative span and `unwrap_or_default()` would collapse it to zero,
+            // firing the backstop with no grace — the bug this avoids.)
+            let elapsed = now.signed_duration_since(anchor);
+            let grace = chrono::Duration::from_std(death_grace).unwrap_or(chrono::Duration::MAX);
+            if elapsed >= grace {
                 outcome::DeathObservation::DeadGraceElapsed
             } else {
                 outcome::DeathObservation::DeadWithinGrace
@@ -3169,7 +3196,7 @@ fn watchdog_tick(
             // fires the backstop.
             outcome::LiveVerdict::DeferGrace => {
                 if n.first_death_at.is_none() {
-                    record_death_observed(paths, &nid, &node_id);
+                    record_death_observed(paths, &nid, &node_id, n.agent_pid);
                 }
             }
             // Confirmed dead, grace elapsed, no told exit, no merge: the shim was
@@ -3181,6 +3208,7 @@ fn watchdog_tick(
                     &node_id,
                     v,
                     &git,
+                    n.agent_pid,
                     retry_states,
                     now_instant,
                 );

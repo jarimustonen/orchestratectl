@@ -104,18 +104,21 @@ impl TerminalOutcome {
         let cancelled = report.get("cancelled").and_then(Value::as_bool) == Some(true);
         let is_explicit_merge = report_via(report) == Some(VIA_EXPLICIT_MERGE);
 
-        // Explicit merge: success:true AND via:explicit-merge. Checked first — a
-        // merge marker with success:false (malformed/spoofed) is deliberately NOT
-        // a merge and falls through to the negative arms below, so it never earns
-        // the force teardown on its marker alone.
-        if success == Some(true) && is_explicit_merge {
-            return Some(TerminalOutcome::Merged);
-        }
-        // Cancel: cancelled:true. A `run cancel` report carries no via and
-        // success:false; the reducer rejects the contradiction success:true +
-        // cancelled:true, so this is unambiguous.
+        // Cancel wins over EVERYTHING, checked first. The reducer rejects the
+        // contradiction `success: true` + `cancelled: true` on append, but
+        // `classify` is the teardown authority and must be defensive against a
+        // corrupt/legacy/hand-edited projection: a `cancelled: true` report must
+        // NEVER earn force deletion, even if a spoofed `success:true`/`via` rides
+        // along (design.md §2.6 — cancel is never a teardown authorization).
         if cancelled {
             return Some(TerminalOutcome::Cancelled);
+        }
+        // Explicit merge: success:true AND via:explicit-merge. A merge marker with
+        // success:false (malformed/spoofed) is deliberately NOT a merge and falls
+        // through to the negative arms below, so it never earns the force teardown
+        // on its marker alone.
+        if success == Some(true) && is_explicit_merge {
+            return Some(TerminalOutcome::Merged);
         }
         match success {
             // A negative report that is neither cancel nor merge: a blocked
@@ -369,15 +372,25 @@ mod tests {
     }
 
     /// Cancel wins over a merge marker: a `cancelled: true` report is never
-    /// force-torn-down even if a spoofed `via` rides along.
+    /// force-torn-down even if a spoofed `via` — and even a spoofed
+    /// `success: true` (the reducer rejects that on append, but `classify` is the
+    /// teardown authority and must stay defensive against a corrupt projection) —
+    /// rides along.
     #[test]
     fn cancel_beats_spoofed_merge_marker() {
-        let n = node_with_report(Some(
+        for report in [
             json!({ "success": false, "cancelled": true, "via": "explicit-merge" }),
-        ));
-        let outcome = TerminalOutcome::classify(&n).unwrap();
-        assert_eq!(outcome, TerminalOutcome::Cancelled);
-        assert_eq!(outcome.teardown(), Teardown::SourceRelative);
+            json!({ "success": true, "cancelled": true, "via": "explicit-merge" }),
+        ] {
+            let n = node_with_report(Some(report.clone()));
+            let outcome = TerminalOutcome::classify(&n).unwrap();
+            assert_eq!(outcome, TerminalOutcome::Cancelled, "report: {report}");
+            assert_eq!(
+                outcome.teardown(),
+                Teardown::SourceRelative,
+                "cancel must never force-delete: {report}"
+            );
+        }
     }
 
     /// The live-node table (design §2.6, non-terminal rows): told facts beat the
