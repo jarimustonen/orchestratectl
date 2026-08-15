@@ -135,7 +135,25 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
     // supervisor roll-up and `cancel_node`'s in-lock last-node roll-up can never
     // diverge. `None` on an empty set (a freshly-created run must not vacuously
     // complete) or any live node.
-    let node_statuses = octl_core::read_node_statuses(paths).ok()?;
+    let node_statuses = match octl_core::read_node_statuses(paths) {
+        Ok(s) => s,
+        Err(e) => {
+            // Fail closed: never terminalize a run from an unreadable / corrupt
+            // event log — a wrong roll-up tears the run's worktrees down. But do
+            // NOT drop the error silently: a persistent `CorruptEventLog` (or a
+            // rejected symlinked log) would otherwise leave the run stuck
+            // non-terminal with no diagnostic, indistinguishable from a run that
+            // is legitimately still live. Surface it each tick so an operator can
+            // see why the run is not completing (llm-review finding).
+            warn!(
+                target: "orchestratectl::supervise",
+                run_id = %paths.run_id.as_str(),
+                error = %e,
+                "rollup: cannot read node statuses from the event log; not terminalizing this tick"
+            );
+            return None;
+        }
+    };
     octl_core::aggregate_terminal_status(node_statuses.into_iter().map(|(_, s)| s))
 }
 
@@ -3235,6 +3253,36 @@ mod tests {
         // Sanity: once n-0002 is settled in the log too, the run rolls up.
         report(&paths, "n-0002", json!({ "success": true }));
         assert_eq!(rollup_status(&paths, true), Some(Status::Done));
+    }
+
+    #[test]
+    fn rollup_fails_closed_on_a_corrupt_event_log() {
+        // The `.ok()?` fail-closed contract (llm-review finding): if the log
+        // cannot be read (an interior corrupt line here), rollup_status must
+        // return None — never terminalize a run from an unreadable log, even one
+        // whose readable events all look terminal. Without corruption this run
+        // would roll up to Done; the injected interior garbage line forces None.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        report(&paths, "n-0001", json!({ "success": true }));
+        report(&paths, "n-0002", json!({ "success": true }));
+        // Precondition: with a clean log this rolls up to Done.
+        assert_eq!(rollup_status(&paths, true), Some(Status::Done));
+
+        // Inject an unparseable INTERIOR line (a valid line follows, so it is not
+        // treated as a dropped torn tail) directly into events.jsonl.
+        let events = paths.events();
+        let mut content = std::fs::read_to_string(&events).unwrap();
+        content.push_str("{ this is not a valid event line\n");
+        content.push_str("{\"kind\":\"run.status\",\"data\":{}}\n");
+        std::fs::write(&events, content).unwrap();
+
+        assert_eq!(
+            rollup_status(&paths, true),
+            None,
+            "a corrupt event log must fail closed (no terminalization), not panic"
+        );
     }
 
     // --- Git-reconcile of a self-merged branch (issues `false-failed-after-merge`

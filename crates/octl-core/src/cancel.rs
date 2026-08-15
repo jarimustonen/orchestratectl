@@ -650,10 +650,18 @@ fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
 /// Reads through `RunPaths::checked_events` (a symlinked log is refused) and
 /// shares the crate's streaming torn-tail policy: a crash-truncated final line
 /// is dropped, an interior unparseable line surfaces as
-/// [`Error::CorruptEventLog`], and a missing log yields an empty set. Like the
-/// cancel ledger it never holds the whole log in memory — each line is skimmed
-/// envelope + a few small status fields, never the full `node.report` payload —
-/// so the per-tick cost stays bounded even for a run with hundreds of nodes.
+/// [`Error::CorruptEventLog`], and a missing log yields an empty set.
+///
+/// **Cost.** One streaming pass over the whole log — `O(total events)`, not
+/// `O(nodes)`. Memory stays bounded (each line is skimmed envelope + a few small
+/// status fields, never the full `node.report` payload — a run with hundreds of
+/// nodes and multi-KB reports is scanned without ever holding a report in
+/// memory), but the *work* is linear in the event count, not the node count. A
+/// caller that polls this every tick (the supervisor roll-up) re-reads from byte
+/// 0 each time; at the tool's scale (tens of nodes, hundreds of events,
+/// multi-second ticks) that is negligible, but an incremental fold that resumes
+/// from the last consumed offset would be the optimization if a run's log ever
+/// grows large enough to matter.
 ///
 /// # Errors
 ///
@@ -681,9 +689,21 @@ pub fn read_node_statuses(paths: &RunPaths) -> Result<Vec<(NodeId, Status)>> {
 /// non-terminal. A `node.status` / `node.report` for an id never introduced by a
 /// `node.created` is ignored, exactly as the reducer no-ops a status/report
 /// against a non-existent node. Malformed status fields degrade gracefully (the
-/// node is left at its current status) rather than aborting — the append path
+/// node is left at its current status — for the cancel path that keeps the node
+/// non-terminal, hence cancellable) rather than aborting — the append path
 /// already validates every committed event, so a `None` transition only arises
 /// from a hand-corrupted log.
+///
+/// **`node.retry` is deliberately not folded, and that is exact.** In the reducer
+/// (`reduce_node_retry`) a retry against an already-terminal node is a no-op (a
+/// settled node is frozen) and a retry against a *live* node only rewires it back
+/// to `Pending`. So `node.retry` never crosses the terminal/live boundary in
+/// either direction: a node that is terminal here is terminal in the reducer, and
+/// one that is live here (whatever its exact non-terminal value) is live there.
+/// Since the only consumers ([`read_node_statuses`] → `aggregate_terminal_status`,
+/// and the cancel loop) classify solely on terminal-vs-live, ignoring
+/// `node.retry` derives the same answer the reducer would — it is not a missed
+/// transition.
 #[derive(Default)]
 struct NodeStatusAcc {
     /// Node ids in creation order (re-sorted by numeric suffix at [`finish`]).
