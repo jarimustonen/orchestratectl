@@ -4,6 +4,7 @@ updated: 2026-08-15
 type: feature
 status: open
 priority: normal
+epic: lifecycle-architecture-review
 ---
 
 # run merge should stamp Fixes-Issue trailer into the landing commit
