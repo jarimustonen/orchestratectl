@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: stint-skill-desc-over-pi-limit (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups + pi.dev config surface LANDED 2026-08-15/16; workmux pi preset confirmed obsolete because workmux ships `pi` as a built-in agent. Continue release-blocker: trim bundled stint skill descriptions under pi.dev's 1024-char limit. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: RELEASE-GATE-v0.2.0 (0.2 EXECUTION — thin-supervisor core, selected safety/robustness follow-ups, pi.dev config surface, and pi skill description guard LANDED 2026-08-15/16. Next: integrated green gate, local redeploy/doctor, finalize CHANGELOG, cut and publish v0.2.0. Residual design/lease/cleanup follow-ups are deferred out of 0.2.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin).   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -225,8 +225,7 @@ LANE B — pipeline/* + harness/* + pi.dev (→ ⬆ v0.2.0)
 LANE C — workmux vendoring — COMPLETE (empty; landed 2026-08-10)
 
 LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — proceeds)
-  ▶ stint-skill-desc-over-pi-limit          (0.2 release-blocker — stint-start/stint-handoff SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load. Trim both SKILL.template.md descriptions ≤1024 keeping trigger phrases; consider a doctor/CI guard.)
-    skill-install-force-symlink             (skill.rs: install --force aborts on a pre-existing symlink)
+  ▶ skill-install-force-symlink             (skill.rs: install --force aborts on a pre-existing symlink)
     spinoff-skill-stale-preview-banner      collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
     consult-failure-hard-fail               (a failed/partial consult review inside a worktree must be a HARD failure, not silently passed)
     stint-skills-drop-intake-specifics      (remove project-specific intake concepts leaked into stint-handoff + AGENTS-EXECUTION-DAG.md — keep the stint skills generic/OSS)

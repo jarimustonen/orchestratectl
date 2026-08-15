@@ -2,12 +2,13 @@
 created: 2026-08-15
 updated: 2026-08-16
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [skill]
 commits:
 - hash: ec9da0a
   summary: trim stint SKILL descriptions under pi.dev 1024-char limit + guard test
+closed: 2026-08-16
 ---
 
 # Bundled stint-start/stint-handoff SKILL descriptions exceed pi.dev 1024-char limit
