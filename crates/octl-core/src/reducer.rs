@@ -54,8 +54,8 @@ use crate::error::{Error, Result};
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::schema::{
-    ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId, RunId, Status,
-    TmuxIdentity, WorkerExit, STATE_SCHEMA_VERSION,
+    ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId,
+    Status, TmuxIdentity, WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -295,6 +295,8 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
+        KIND_MERGE_STARTED => reduce_merge_started(paths, ev),
+        KIND_MERGE_ABORTED => reduce_merge_aborted(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
         "supervisor.attached" => reduce_supervisor_attached(paths, ev),
         "supervisor.cursor_advanced" => reduce_supervisor_cursor_advanced(paths, ev),
@@ -616,6 +618,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         last_processed_report_seq_by_child: serde_json::Map::default(),
         retry_attempts: 0,
         worker_exit: None,
+        pending_merge: None,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -802,6 +805,10 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             // (A false watchdog `Failed` is corrected to `Done`; a genuine `Done`
             // stays `Done` with the merge marker adopted so teardown is warranted.)
             n.status = Status::Done;
+            // The merge completed, so any in-flight merge transaction is resolved:
+            // clear it so recovery does not later re-examine a settled node
+            // (issue `merge-transaction-recovery`).
+            n.pending_merge = None;
             n.updated_at = ev.ts;
             return Ok(vec![ProjectionOp::Node(n)]);
         }
@@ -822,6 +829,11 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     let new_status = report_terminal_status(&events_path, ev)?;
     n.last_report = Some(ev.data.clone());
     n.status = new_status;
+    // Any terminal outcome resolves an in-flight merge transaction: a successful
+    // `explicit-merge` report completes it here (the normal, no-crash path), and
+    // any other terminal report ends the node's lifecycle so no merge recovery
+    // should later fire (issue `merge-transaction-recovery`).
+    n.pending_merge = None;
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -882,6 +894,101 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
         signal,
         at: ev.ts,
     });
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// The event kind `run merge` appends BEFORE mutating git to record the
+/// in-flight merge transaction (design.md §2.1b / A2). Its `data` payload is a
+/// serialized [`MergeTxn`]; the reducer folds it onto [`Node::pending_merge`].
+pub const KIND_MERGE_STARTED: &str = "merge.started";
+
+/// The event kind recovery appends when it resolves a pending merge transaction
+/// by REJECTING it — the recorded source ref never moved (the git mutation never
+/// landed), so the worker's branch + work are preserved and the transaction is
+/// cleared. Its `data` carries `op_id` (which transaction) and `reason`.
+pub const KIND_MERGE_ABORTED: &str = "merge.aborted";
+
+/// Fold a `merge.started` event onto [`Node::pending_merge`], recording the
+/// in-flight `run merge` transaction BEFORE the git mutation so a crash between
+/// the git merge and the terminal `explicit-merge` report can be resolved
+/// deterministically by OID (design.md §2.1b / A2, issue
+/// `merge-transaction-recovery`). The reducer deliberately does NOT transition
+/// `status`: recording a transaction is not a terminal outcome.
+///
+/// Payload contract: the `data` is a serialized [`MergeTxn`]; a payload missing
+/// required fields is a corrupt event (the reducer is the canonical gate, so the
+/// append is rejected before any byte is written). The fold is idempotent —
+/// re-folding the same `op_id` on replay is a clean no-op — and last-write-wins
+/// across a fresh attempt's larger `op_id` (each `run merge` re-reads
+/// `expected_source_oid`, so the newest record is authoritative).
+fn reduce_merge_started(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let txn: MergeTxn =
+        serde_json::from_value(ev.data.clone()).map_err(|e| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=merge.started has an invalid MergeTxn payload: {e}",
+                ev.seq
+            ),
+        })?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    // A terminal node has no in-flight merge to track — `run merge` is refused on
+    // a terminal run at the CLI, so this is a dead/duplicate event. Ignore it
+    // (never resurrect the projection).
+    if n.status.is_terminal() {
+        return Ok(vec![]);
+    }
+    // Idempotent: re-folding the SAME transaction on replay must not churn
+    // `updated_at`.
+    if n.pending_merge.as_ref().map(|t| t.op_id.as_str()) == Some(txn.op_id.as_str()) {
+        return Ok(vec![]);
+    }
+    n.pending_merge = Some(Box::new(txn));
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold a `merge.aborted` event, clearing [`Node::pending_merge`] iff it names
+/// the transaction being aborted (`op_id` match). Recovery appends this when it
+/// determines a pending merge's git mutation never landed (the source ref is
+/// still at `expected_source_oid`) or moved unexpectedly — the transaction is
+/// rejected, the worker's branch + work are preserved, and the node stays
+/// whatever non-terminal status it was (a retry may re-attempt the merge).
+///
+/// The `op_id` guard is what keeps this from clobbering a *newer* transaction: a
+/// stale `merge.aborted` for a superseded attempt (a different `op_id`) is a
+/// clean no-op. Deliberately
+/// does NOT transition `status`.
+fn reduce_merge_aborted(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let op_id = ev
+        .data
+        .get("op_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=merge.aborted is missing string `op_id`",
+                ev.seq
+            ),
+        })?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    // Clear only the transaction this event names. A mismatch (already resolved,
+    // or a newer attempt is pending) is a clean no-op.
+    match n.pending_merge.as_ref() {
+        Some(t) if t.op_id == op_id => {}
+        _ => return Ok(vec![]),
+    }
+    n.pending_merge = None;
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -1470,6 +1577,104 @@ mod tests {
         read_node_opt(paths, &NodeId::parse_str("n-0001").unwrap())
             .unwrap()
             .unwrap()
+    }
+
+    fn merge_started_event(run_id: &str, seq: u64, op_id: &str, expected: &str) -> Event {
+        let mut ev = event(run_id);
+        ev.seq = seq;
+        ev.kind = KIND_MERGE_STARTED.into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({
+            "op_id": op_id,
+            "source_branch": "main",
+            "worker_branch": "wt/worker",
+            "expected_source_oid": expected,
+            "worker_oid": "cafebabecafebabecafebabecafebabecafebabe",
+            "base_sha": null,
+            "driver_pid": 4242,
+            "driver_pid_start_secs": null,
+            "started_at": "2026-08-15T00:00:00Z",
+        });
+        ev
+    }
+
+    /// `merge.started` records the in-flight transaction on `pending_merge`
+    /// without transitioning the node's status.
+    #[test]
+    fn merge_started_records_pending_transaction() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+
+        apply_event(&paths, &merge_started_event(run_id, 3, "op-1", "aaa")).unwrap();
+        let n = read_n0001(&paths);
+        assert_eq!(
+            n.status,
+            Status::Pending,
+            "recording a merge is not terminal"
+        );
+        let txn = n.pending_merge.expect("transaction recorded");
+        assert_eq!(txn.op_id, "op-1");
+        assert_eq!(txn.expected_source_oid, "aaa");
+    }
+
+    /// `merge.aborted` clears the pending transaction it names, leaving the node
+    /// live; a stale abort for a different `op_id` is a clean no-op.
+    #[test]
+    fn merge_aborted_clears_matching_transaction_only() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        apply_event(&paths, &merge_started_event(run_id, 3, "op-1", "aaa")).unwrap();
+
+        // A stale abort for a different op_id does nothing.
+        let mut stale = event(run_id);
+        stale.seq = 4;
+        stale.kind = KIND_MERGE_ABORTED.into();
+        stale.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        stale.data = serde_json::json!({ "op_id": "op-OTHER", "reason": "x" });
+        apply_event(&paths, &stale).unwrap();
+        assert!(
+            read_n0001(&paths).pending_merge.is_some(),
+            "stale abort is a no-op"
+        );
+
+        // The matching abort clears it; the node stays live.
+        let mut abort = event(run_id);
+        abort.seq = 5;
+        abort.kind = KIND_MERGE_ABORTED.into();
+        abort.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        abort.data = serde_json::json!({ "op_id": "op-1", "reason": "no mutation" });
+        apply_event(&paths, &abort).unwrap();
+        let n = read_n0001(&paths);
+        assert!(
+            n.pending_merge.is_none(),
+            "matching abort clears the transaction"
+        );
+        assert_eq!(n.status, Status::Pending, "abort does not terminalize");
+    }
+
+    /// A terminal `node.report` (the normal, no-crash completion) clears any
+    /// pending merge transaction.
+    #[test]
+    fn terminal_report_clears_pending_merge() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = seed_run_with_node(&tmp, run_id);
+        apply_event(&paths, &merge_started_event(run_id, 3, "op-1", "aaa")).unwrap();
+
+        let mut report = event(run_id);
+        report.seq = 4;
+        report.kind = "node.report".into();
+        report.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        report.data = serde_json::json!({ "success": true, "via": "explicit-merge" });
+        apply_event(&paths, &report).unwrap();
+        let n = read_n0001(&paths);
+        assert_eq!(n.status, Status::Done);
+        assert!(
+            n.pending_merge.is_none(),
+            "completed merge clears the transaction"
+        );
     }
 
     /// Replaying `supervisor.attached` from scratch reproduces

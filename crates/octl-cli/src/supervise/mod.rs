@@ -1232,6 +1232,17 @@ pub fn dispatch(
         // in-memory.
         capture::capture_tick(&paths, &mut state.captured_armed, &mut capture_attempts);
 
+        // Merge-transaction recovery (design.md §2.1b / A2, issue
+        // `merge-transaction-recovery`). Resolve any crashed `run merge`
+        // transaction — a node with a pending `merge.started` whose driver process
+        // is gone — by exact OID BEFORE the watchdog runs, so a merge that mutated
+        // git but crashed before its terminal report is COMPLETED (not mistaken for
+        // a dead agent and failed), and a merge that never touched git is REJECTED
+        // with its work preserved. Idempotent and a cheap no-op when nothing is
+        // pending; the git shell-outs run under their own shared/exclusive locking
+        // inside `recover_run`, never blocking on the watchdog.
+        crate::run::merge_recovery::recover_run(&paths, &cleanup::git_bin());
+
         // Loop 3: watchdog. We don't yet have a generalized agent
         // registry (that's `all-kinds-spawn`'s territory). The current
         // surface exercises liveness for any node that carries an
@@ -3772,6 +3783,7 @@ mod tests {
             last_processed_report_seq_by_child: serde_json::Map::default(),
             retry_attempts: 0,
             worker_exit: None,
+            pending_merge: None,
         }
     }
 

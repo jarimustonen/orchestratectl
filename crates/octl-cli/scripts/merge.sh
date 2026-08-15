@@ -23,6 +23,12 @@
 set -euo pipefail
 
 TARGET_BRANCH=""
+# The OID the caller (`run merge`) recorded for the target branch BEFORE the
+# merge — the compare half of the compare-and-swap (design.md §2.1b / A2). When
+# set, we verify the target branch is still exactly this OID after taking the
+# merge lock and refuse (exit 76) if it moved, so the source ref only advances
+# when the recorded transaction still applies.
+EXPECTED_SOURCE_OID=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +39,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --target=*)
             TARGET_BRANCH="${1#--target=}"
+            shift
+            ;;
+        --expected-source-oid)
+            EXPECTED_SOURCE_OID="${2:-}"
+            shift 2 || { echo "Error: --expected-source-oid requires a value" >&2; exit 1; }
+            ;;
+        --expected-source-oid=*)
+            EXPECTED_SOURCE_OID="${1#--expected-source-oid=}"
             shift
             ;;
         *)
@@ -232,6 +246,28 @@ fi
 
 echo "Target status: clean"
 echo ""
+
+# Compare-and-swap guard (design.md §2.1b / A2). Now that we hold the merge lock
+# (so no cooperating merge can move the target between this check and the FF
+# below), verify the target branch is still exactly the OID `run merge` recorded
+# before it opened the transaction. If it moved, the recorded transaction no
+# longer applies — a concurrent/non-cooperating writer advanced the target — so
+# refuse the merge (exit 76) rather than fast-forwarding onto an unexpected base.
+# The agent recovers by rebasing and re-running `run merge` (which records a fresh
+# expected OID). Exit 76 is distinct from the dirty-tree/conflict failure (1) and
+# the lock-timeout retry (75) so `run merge` can classify it precisely.
+if [[ -n "$EXPECTED_SOURCE_OID" ]]; then
+    if ! ACTUAL_SOURCE_OID=$(git -C "$TARGET_PATH" rev-parse --verify "$TARGET_BRANCH"); then
+        echo "Error: could not resolve target branch '$TARGET_BRANCH' for the compare-and-swap check" >&2
+        exit 1
+    fi
+    if [[ "$ACTUAL_SOURCE_OID" != "$EXPECTED_SOURCE_OID" ]]; then
+        echo "Error: target branch '$TARGET_BRANCH' moved from the expected $EXPECTED_SOURCE_OID to $ACTUAL_SOURCE_OID since the merge started; refusing to fast-forward onto an unexpected base — rebase and re-run the merge" >&2
+        exit 76
+    fi
+    echo "Compare-and-swap: target at expected $EXPECTED_SOURCE_OID"
+    echo ""
+fi
 
 # Gather commits
 COMMITS=$(git log --oneline "${TARGET_BRANCH}..HEAD")

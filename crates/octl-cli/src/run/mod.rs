@@ -10,6 +10,7 @@ pub mod dto;
 pub mod landed;
 pub mod list;
 pub mod merge;
+pub mod merge_recovery;
 pub mod reattach;
 pub mod show;
 pub mod spawn;

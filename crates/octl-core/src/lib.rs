@@ -42,7 +42,7 @@ pub use events::{
     find_prior_with_key, quarantine_corrupt_lines, quarantine_corrupt_lines_unlocked,
     read_all_events, recover_last_seq, AppendOutcome, AppendResult, PriorEvent, Quarantine,
 };
-pub use ids::{format_node_id, new_run_id};
+pub use ids::{format_node_id, new_op_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};
 pub use paths::{nofollow, run_dir, validate_run_id, RunPaths};
 pub use plan::{
@@ -51,11 +51,11 @@ pub use plan::{
     PROVENANCE_REQUIRED_SCHEMA, SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
 };
 pub use projections::{read_manifest, read_manifest_opt, read_node, read_node_opt, write_node};
-pub use reducer::{plan_projections, VIA_EXPLICIT_MERGE};
+pub use reducer::{plan_projections, KIND_MERGE_ABORTED, KIND_MERGE_STARTED, VIA_EXPLICIT_MERGE};
 pub use report::{validate_report_payload, ReportValidationError};
 pub use schema::{
-    is_run_id_prefix, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId,
-    RunId, Status, WorkerExit, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
+    is_run_id_prefix, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn,
+    Node, NodeId, RunId, Status, WorkerExit, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,

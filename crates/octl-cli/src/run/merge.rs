@@ -44,13 +44,18 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use octl_core::report::validate_report_payload;
 use octl_core::{
-    append_and_apply_event, read_all_events, read_manifest_opt, read_node_opt, Node, RunLock,
+    append_and_apply_event, read_all_events, read_manifest_opt, read_node_opt, MergeTxn, Node,
+    NodeId, RunLock,
 };
+
+use crate::run::merge_recovery;
+use crate::supervise::cleanup::git_bin;
 
 use crate::error::{CliError, ExitKind};
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -80,6 +85,14 @@ const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 /// retryable `merge_in_progress` code is unambiguous. Value is `EX_TEMPFAIL`
 /// (75) from sysexits(3): "temporary failure, the user is invited to retry".
 const MERGE_SH_LOCK_TIMEOUT_EXIT: i32 = 75;
+
+/// The exit status `merge.sh` reserves for a compare-and-swap mismatch — the
+/// target branch moved off the recorded `expected_source_oid` between the moment
+/// `run merge` opened the transaction and the moment merge.sh held the merge lock
+/// (design.md §2.1b / A2). Distinct from the dirty-tree/conflict failure (1) and
+/// the lock-timeout retry (75), so it maps to its own retryable `merge_source_moved`
+/// code: the agent rebases onto the moved source and re-runs `run merge`.
+const MERGE_SH_CAS_MISMATCH_EXIT: i32 = 76;
 
 pub struct Args<'a> {
     pub run_id: String,
@@ -330,14 +343,71 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         return emit(&payload, args.spec, args.warnings);
     }
 
+    let git = git_bin();
+
+    // Recover a prior CRASHED merge transaction for this node before starting a
+    // fresh merge (design.md §2.1b / A2, issue `merge-transaction-recovery`). If a
+    // previous `run merge` recorded `merge.started`, mutated git, then crashed
+    // before appending its terminal report, the worker's work already landed in
+    // source — complete that transaction here instead of re-merging (a re-merge of
+    // already-merged work would fail merge.sh's "refusing to merge into itself" /
+    // "0 commits" checks). A rejected/unverifiable prior transaction is cleared and
+    // we fall through to a fresh merge. Cheap when nothing is pending.
+    if let merge_recovery::Recovery::Completed =
+        merge_recovery::recover_node(&paths, &node_id, &git)
+    {
+        // The crashed merge is confirmed landed and the node is now terminal.
+        // Ensure a teardown actor and report success without re-running the merge.
+        let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+        let payload = MergePayload {
+            run_id: &run_id,
+            node_id: node_id.as_str(),
+            branch,
+            source: effective_source.as_deref(),
+            merged: true,
+            report_seq: None,
+            supervisor: Some(outcome),
+            dry_run: None,
+        };
+        return emit(&payload, args.spec, &warnings);
+    }
+
+    // Record the merge transaction BEFORE mutating git (design.md §2.1b / A2), so a
+    // crash after the git merge but before the terminal report can be recovered
+    // deterministically by OID. Best-effort: if the source ref can't be read (e.g. a
+    // stubbed test git, or no concrete source branch), the transaction is skipped
+    // and the merge proceeds exactly as before — no recovery protection, no behavior
+    // change.
+    let merge_start = record_merge_start(
+        &paths,
+        &node_id,
+        worktree_path,
+        branch,
+        &node,
+        effective_source.as_deref(),
+        &git,
+    );
+
     // Run the merge. A non-zero exit (conflict, dirty tree, lock timeout)
     // surfaces as a CliError and the report is NOT submitted — the node
-    // stays live for the agent to recover and retry.
-    run_merge_sh(
+    // stays live for the agent to recover and retry. The source ref mutation is
+    // guarded by the recorded `expected_source_oid` (compare-and-swap): merge.sh
+    // refuses if the source branch moved since we recorded the transaction.
+    if let Err(e) = run_merge_sh(
         Path::new(worktree_path),
         branch,
         effective_source.as_deref(),
-    )?;
+        merge_start.as_ref().map(|h| h.expected_source_oid.as_str()),
+    ) {
+        // The merge did not complete (conflict, dirty tree, CAS mismatch, lock
+        // timeout). Clear the transaction we opened so a dangling `merge.started`
+        // does not later trip recovery — the work was NOT merged, and the node
+        // stays live for the agent to resolve and retry.
+        if let Some(h) = &merge_start {
+            abort_merge_start(&paths, &node_id, &h.op_id, "merge did not complete");
+        }
+        return Err(e);
+    }
 
     // Merge succeeded: submit the terminal report (built above, stamped with
     // `via: "explicit-merge"`) so the supervisor's cleanup gate extends
@@ -560,6 +630,103 @@ fn ensure_report_consumer(
     (outcome, warnings)
 }
 
+/// A recorded, in-flight merge transaction's identity — what `run merge` needs
+/// to CAS-guard the merge and to abort the transaction if the merge fails.
+struct MergeStartHandle {
+    /// The transaction's unique id, for a targeted `merge.aborted` on failure.
+    op_id: String,
+    /// The source ref OID recorded before the merge — the compare half of the
+    /// compare-and-swap, forwarded to merge.sh.
+    expected_source_oid: String,
+}
+
+/// Record the merge transaction (`merge.started`) BEFORE the git mutation, so a
+/// crash between the git merge and the terminal report can be recovered
+/// deterministically by OID (design.md §2.1b / A2, issue
+/// `merge-transaction-recovery`).
+///
+/// Best-effort and non-blocking: returns `None` (and the merge proceeds exactly
+/// as before A2, without CAS or recovery protection) when there is no concrete
+/// source branch to compare against, or git cannot resolve the source/worker OIDs
+/// (a stubbed test git, a torn-down repo). A record failure (lock/IO) is likewise
+/// downgraded to `None` rather than blocking a legitimate merge.
+fn record_merge_start(
+    paths: &octl_core::RunPaths,
+    node_id: &NodeId,
+    worktree_path: &str,
+    worker_branch: &str,
+    node: &Node,
+    source_branch: Option<&str>,
+    git: &str,
+) -> Option<MergeStartHandle> {
+    // A concrete source branch is required: it is the ref recovery reads and the
+    // CAS compares. Without it (merge.sh's main/master auto-detect path) we cannot
+    // record a recoverable transaction, so fall back to the legacy unguarded merge.
+    let source_branch = source_branch?;
+    let expected_source_oid = merge_recovery::read_oid(git, worktree_path, source_branch)?;
+    // The worker's tip: prefer the recorded branch, fall back to HEAD.
+    let worker_oid = merge_recovery::read_oid(git, worktree_path, worker_branch)
+        .or_else(|| merge_recovery::read_oid(git, worktree_path, "HEAD"))?;
+    let pid = std::process::id();
+    let txn = MergeTxn {
+        op_id: octl_core::new_op_id(),
+        source_branch: source_branch.to_string(),
+        worker_branch: worker_branch.to_string(),
+        expected_source_oid: expected_source_oid.clone(),
+        worker_oid,
+        base_sha: node.base_sha.clone(),
+        driver_pid: Some(pid as i32),
+        driver_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
+        started_at: Utc::now(),
+    };
+    let data = serde_json::to_value(&txn).ok()?;
+    match append_and_apply_event(
+        paths,
+        octl_core::KIND_MERGE_STARTED,
+        Some(node_id),
+        None,
+        data,
+    ) {
+        Ok(_) => Some(MergeStartHandle {
+            op_id: txn.op_id,
+            expected_source_oid,
+        }),
+        Err(e) => {
+            tracing::warn!(
+                target: "orchestratectl::merge",
+                error = %e,
+                "could not record merge.started; proceeding without crash-recovery protection"
+            );
+            None
+        }
+    }
+}
+
+/// Clear a merge transaction we opened when the merge itself fails (conflict,
+/// dirty tree, CAS mismatch, lock timeout), so a dangling `merge.started` does not
+/// later trip recovery. Best-effort: a failure here is only cosmetic — the next
+/// recovery tick would reject the still-pending transaction anyway (the source ref
+/// is unchanged), so we log and move on.
+fn abort_merge_start(paths: &octl_core::RunPaths, node_id: &NodeId, op_id: &str, reason: &str) {
+    let data = json!({ "op_id": op_id, "reason": reason });
+    if let Err(e) = append_and_apply_event(
+        paths,
+        octl_core::KIND_MERGE_ABORTED,
+        Some(node_id),
+        Some(&format!(
+            "merge-aborted:{}:{node_id}:{op_id}",
+            paths.run_id.as_str()
+        )),
+        data,
+    ) {
+        tracing::warn!(
+            target: "orchestratectl::merge",
+            error = %e,
+            "could not record merge.aborted after a failed merge; recovery will clear it"
+        );
+    }
+}
+
 /// The branch a node works on. Prefers the explicit `branch` field; a
 /// well-formed worktree node always has it.
 fn branch_for(node: &Node) -> Option<&str> {
@@ -708,12 +875,24 @@ impl MergeScript {
 /// environment (notably `$TMUX`/`$TMUX_PANE`, which the backend uses to
 /// close the agent's window). On a non-zero exit, the captured stderr
 /// becomes the error message and the report is skipped by the caller.
-fn run_merge_sh(worktree_path: &Path, branch: &str, source: Option<&str>) -> Result<(), CliError> {
+fn run_merge_sh(
+    worktree_path: &Path,
+    branch: &str,
+    source: Option<&str>,
+    expected_source_oid: Option<&str>,
+) -> Result<(), CliError> {
     let script = materialize_merge_sh()?;
     let mut cmd = Command::new(script.path());
     cmd.current_dir(worktree_path);
     if let Some(src) = source {
         cmd.arg("--target").arg(src);
+    }
+    // Compare-and-swap guard (design.md §2.1b / A2): merge.sh verifies the target
+    // branch is still at this OID after acquiring the merge lock, and refuses the
+    // FF if it moved — so the source ref mutation only lands when the compare half
+    // still holds.
+    if let Some(oid) = expected_source_oid {
+        cmd.arg("--expected-source-oid").arg(oid);
     }
     cmd.arg(branch);
 
@@ -767,6 +946,8 @@ fn run_merge_sh(worktree_path: &Path, branch: &str, source: Option<&str>) -> Res
         // failure. See MERGE_SH_LOCK_TIMEOUT_EXIT for why 75 is unambiguous.
         let code = if exit_code == MERGE_SH_LOCK_TIMEOUT_EXIT {
             "merge_in_progress"
+        } else if exit_code == MERGE_SH_CAS_MISMATCH_EXIT {
+            "merge_source_moved"
         } else {
             "merge_failed"
         };

@@ -557,6 +557,85 @@ pub struct Node {
     /// this field existed readable.
     #[serde(default)]
     pub worker_exit: Option<WorkerExit>,
+    /// The in-flight `run merge` transaction for this node, if one has been
+    /// STARTED but not yet completed. `run merge` records a `merge.started`
+    /// event (setting this field) BEFORE it mutates git, because the merge spans
+    /// two durability domains — git refs and the event log — and is not atomic
+    /// across them (design.md §2.1b / A2, issue `merge-transaction-recovery`). A
+    /// crash after the git merge but before the terminal `explicit-merge`
+    /// `node.report` would otherwise strand the work *merged in source* with *no
+    /// merge event* → a false `failed`.
+    ///
+    /// This field is the durable op-log record that lets recovery finish or
+    /// reject that ONE known transaction deterministically, by OID — never a
+    /// general branch-content heuristic. It is set by [`crate::MergeTxn`]-carrying
+    /// `merge.started`, and cleared when the transaction resolves: a terminal
+    /// `node.report` (the merge completed) or a `merge.aborted` (recovery found
+    /// the git mutation never landed). `#[serde(default)]` keeps a node written
+    /// before this field existed readable (`None` — no in-flight merge).
+    ///
+    /// Boxed so the (rare) in-flight transaction does not inflate every `Node` /
+    /// `ProjectionOp` by the full [`MergeTxn`] footprint.
+    #[serde(default)]
+    pub pending_merge: Option<Box<MergeTxn>>,
+}
+
+/// A durable, in-flight `run merge` transaction recorded by `merge.started`
+/// BEFORE the git mutation, and the sole input to deterministic merge-crash
+/// recovery (design.md §2.1b / A2, issue `merge-transaction-recovery`).
+///
+/// `run merge` spans git refs and the event log and is not atomic across them.
+/// Recording the transaction — the exact source ref it will move, the OID it
+/// expects that ref to be at (`expected_source_oid`, the compare half of the
+/// compare-and-swap), and the worker's tip — lets the supervisor (or a retried
+/// `run merge`) resolve the ONE recorded transaction by OID after a crash:
+///
+/// - source ref still at `expected_source_oid` → the mutation never landed →
+///   REJECT (`merge.aborted`), preserving the worker's branch + work.
+/// - source ref moved off `expected_source_oid` AND the worker's content is
+///   integrated (rebase-robust content verification) → COMPLETE (append the
+///   `explicit-merge` `node.report` the crash prevented).
+/// - source ref moved unexpectedly but the worker's content is not integrated →
+///   fail closed (REJECT), preserving the work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeTxn {
+    /// Opaque unique id for this merge attempt. A fresh id per `run merge`
+    /// invocation (each attempt re-reads `expected_source_oid`), so recovery can
+    /// name exactly which transaction it resolved in the `merge.aborted` audit.
+    pub op_id: String,
+    /// The source/target ref this merge moves — `manifest.source_branch`
+    /// (`main`, or an integration branch). Recovery reads this ref's current OID
+    /// to decide the transaction's fate.
+    pub source_branch: String,
+    /// The worker branch whose commits are being merged (`node.branch`). Its
+    /// content is what recovery verifies is integrated into `source_branch`.
+    pub worker_branch: String,
+    /// The OID `source_branch` was at when the transaction was recorded — the
+    /// compare half of the compare-and-swap. If the ref is still here at recovery
+    /// time, the git mutation never landed.
+    pub expected_source_oid: String,
+    /// The worker branch tip at record time. Retained for the audit trail and as
+    /// a secondary landing signal; the authoritative completion check is
+    /// content-based (rebase-robust) against `source_branch`.
+    pub worker_oid: String,
+    /// The worker branch's fork point (`node.base_sha`), used to bound the
+    /// content check to the worker's own commits. `None` when unrecorded.
+    #[serde(default)]
+    pub base_sha: Option<String>,
+    /// PID of the `run merge` process driving the transaction, so recovery can
+    /// tell a still-in-progress merge (driver alive — leave it) from a crashed
+    /// one (driver gone — resolve it), never racing a live merge. `None` when
+    /// unrecorded.
+    #[serde(default)]
+    pub driver_pid: Option<i32>,
+    /// Start time of `driver_pid` in Unix seconds (the same representation the
+    /// pid-file liveness check records), guarding against PID reuse the way the
+    /// agent/supervisor liveness checks do — a recycled PID must not look alive.
+    /// `None` when the platform could not read it.
+    #[serde(default)]
+    pub driver_pid_start_secs: Option<u64>,
+    /// When the transaction was recorded.
+    pub started_at: DateTime<Utc>,
 }
 
 /// The observed exit status of a node's worker process, recorded by the

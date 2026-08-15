@@ -25,6 +25,7 @@ expression: v
   },
   "node_id": "n-0001",
   "parent_node_id": null,
+  "pending_merge": null,
   "retry_attempts": 0,
   "run_id": "01jxsnap000000000000000000",
   "schema_version": 1,
