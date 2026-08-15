@@ -133,10 +133,15 @@ fn forge_worker_node(home: &TempDir, run_id: &str, worktree: &Path, branch: &str
     let node = home.path().join(format!("node-{run_id}.json"));
     std::fs::write(
         &node,
-        format!(
-            r#"{{"kind":"spinoff","task":"x","worktree_path":"{}","branch":"{branch}","tmux_session":"octl","tmux_window_id":"@42"}}"#,
-            worktree.display()
-        ),
+        serde_json::to_vec(&json!({
+            "kind": "spinoff",
+            "task": "x",
+            "worktree_path": worktree.display().to_string(),
+            "branch": branch,
+            "tmux_session": "octl",
+            "tmux_window_id": "@42",
+        }))
+        .unwrap(),
     )
     .unwrap();
     run_ok(bin(home).args([
@@ -195,6 +200,22 @@ fn settle_merged_run(home: &TempDir, title: &str, summary: &str) -> String {
         "--report-file",
         report.to_str().unwrap(),
     ]));
+    // Guard the typed merge-authority path: assert the terminal report `run merge`
+    // wrote actually carries a `RunMerge` origin, not merely a legacy `via` string.
+    // Without this, a regression to via-only stamping would still pass (the helper
+    // honors the legacy fallback) and silently defeat the point of this issue.
+    let events = home.path().join("runs").join(&run_id).join("events.jsonl");
+    let report = std::fs::read_to_string(&events)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["kind"] == "node.report")
+        .expect("a terminal node.report was appended by run merge");
+    assert_eq!(
+        report["data"]["origin"]["kind"], "run-merge",
+        "run merge must stamp a typed RunMerge origin: {report}"
+    );
+
     // `run merge` terminalizes the node but does not roll the run manifest up
     // (no supervisor in this test); stamp the terminal `run.status` explicitly,
     // matching `settle_run`.

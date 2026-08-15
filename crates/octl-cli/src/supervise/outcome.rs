@@ -65,8 +65,10 @@ pub enum Teardown {
 /// [`LiveVerdict`] table governs instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalOutcome {
-    /// `run merge` succeeded: `success: true` with `via: "explicit-merge"`. The
-    /// one success truth. → [`Teardown::Full`].
+    /// `run merge` succeeded: `success: true` authorized by the run-merge path —
+    /// a typed `ReportOrigin::RunMerge` origin, or (for a legacy report with no
+    /// origin field) `via: "explicit-merge"` (issue `retire-via-string`). The one
+    /// success truth. → [`Teardown::Full`].
     Merged,
     /// A blocked handoff: the agent hit a wall and handed committed-but-unmerged
     /// work to a human via a plain `node report` (`success: false`, not

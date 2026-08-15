@@ -14,12 +14,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::reducer::VIA_EXPLICIT_MERGE;
 use crate::schema::Kind;
 
 /// The report-payload key under which a typed [`ReportOrigin`] is serialized
 /// (issue `typed-report-origin`).
 pub const REPORT_ORIGIN_KEY: &str = "origin";
+
+/// The legacy `via` marker `run merge` stamps on the terminal `node.report` it
+/// appends after a clean merge, alongside the typed [`ReportOrigin::RunMerge`].
+/// This is the octl-cli/octl-core contract point: the CLI
+/// (`crates/octl-cli/src/run/merge.rs`) writes it, and — for a legacy on-disk
+/// report carrying NO `origin` field — [`ReportOrigin::report_is_confirmed_merge`]
+/// reads it as the fallback merge signal. Retained for backward compatibility with
+/// pre-typed-origin runs and downgrade-reading older CLIs; the typed origin is the
+/// authority for a report that carries one (issue `retire-via-string`). Lives here
+/// beside [`REPORT_ORIGIN_KEY`] as a wire-protocol constant, and is re-exported at
+/// the crate root (`octl_core::VIA_EXPLICIT_MERGE`) for the CLI writers.
+pub const VIA_EXPLICIT_MERGE: &str = "explicit-merge";
 
 /// The typed provenance of a `node.report` — WHO authored it (issue
 /// `typed-report-origin`).
@@ -70,13 +81,19 @@ pub enum ReportOrigin {
 }
 
 impl ReportOrigin {
-    /// Read the typed origin from a report payload, or `None` when the field is
-    /// absent (a legacy report written before this field existed) or malformed.
+    /// Read the typed origin from a report payload, returning `None` for BOTH an
+    /// absent `origin` field (a legacy report written before this field existed)
+    /// AND a present-but-malformed one (corrupt / hand-edited / a future variant).
     ///
-    /// A malformed `origin` is treated as absent rather than an error: the outcome
-    /// classifier falls back to its conservative legacy string-sniffing path, so a
-    /// corrupt/hand-edited origin can never *fabricate* a more-authoritative
-    /// outcome than the legacy markers already imply.
+    /// IMPORTANT — `None` does NOT mean "fall back to the legacy `via`/`reason`
+    /// string path". That fallback is gated on the `origin` KEY being genuinely
+    /// ABSENT (`report.get(REPORT_ORIGIN_KEY).is_none()`), NOT on this returning
+    /// `None`. A present-but-malformed origin is "typed, but unknown authority":
+    /// it must NEVER re-unlock the forgeable legacy path (a merge on a forged
+    /// `via`, a supervisor failure on a spoofed `reason`). Every consumer
+    /// (`report_is_confirmed_merge`, `supervise::outcome::classify` /
+    /// `is_supervisor_failure`) checks key presence separately for exactly this
+    /// reason — do not collapse the two. See `report_is_confirmed_merge`.
     #[must_use]
     pub fn from_report(report: &Value) -> Option<Self> {
         let raw = report.get(REPORT_ORIGIN_KEY)?;

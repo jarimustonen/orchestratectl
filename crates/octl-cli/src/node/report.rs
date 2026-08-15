@@ -241,7 +241,13 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
 /// [`Agent`]: octl_core::ReportOrigin::Agent
 fn normalize_agent_origin(data: &mut Value) {
     if let Some(obj) = data.as_object_mut() {
-        obj.remove("via");
+        // Strip ONLY the retired merge marker `via: "explicit-merge"` — the one
+        // value an agent could use to forge a merge. Any other `via` value is
+        // harmless (no consumer trusts it) and is left as-is rather than
+        // destroying potential caller telemetry (llm-review).
+        if obj.get("via").and_then(Value::as_str) == Some(octl_core::VIA_EXPLICIT_MERGE) {
+            obj.remove("via");
+        }
     }
     octl_core::ReportOrigin::Agent.stamp(data);
 }
@@ -389,5 +395,18 @@ mod tests {
         );
         // Unrelated fields survive the strip.
         assert_eq!(v.get("summary").and_then(Value::as_str), Some("x"));
+    }
+
+    #[test]
+    fn a_non_merge_via_value_is_preserved() {
+        // Only the retired `via: "explicit-merge"` marker is stripped; any other
+        // `via` value is harmless (no consumer trusts it) and is left intact.
+        let mut v = json!({ "success": true, "via": "some-telemetry" });
+        normalize_agent_origin(&mut v);
+        assert_eq!(v.get("via").and_then(Value::as_str), Some("some-telemetry"));
+        assert_eq!(
+            octl_core::ReportOrigin::from_report(&v),
+            Some(octl_core::ReportOrigin::Agent)
+        );
     }
 }

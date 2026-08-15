@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: 054dcb2
+  summary: 'refactor(via): retire via-string merge authority for typed ReportOrigin'
 ---
 
 # Retire the via string in favor of typed ReportOrigin (reducer + node report)

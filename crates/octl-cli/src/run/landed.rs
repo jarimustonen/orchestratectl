@@ -711,6 +711,12 @@ mod tests {
         assert!(report_has_merge_marker(Some(&json!({
             "success": true, "via": "explicit-merge"
         }))));
+        // A cancelled report with a legacy merge via is NOT a marker — the helper
+        // requires `cancelled` absent/false (tightened from the old `via`-only
+        // check; matches classify's cancel-wins stance, issue `retire-via-string`).
+        assert!(!report_has_merge_marker(Some(&json!({
+            "success": false, "cancelled": true, "reason": "x", "via": "explicit-merge"
+        }))));
         // success:true but a non-merge via is not — including the removed
         // `merge-reconciled` (the git-reconcile heuristic was deleted in A6).
         assert!(!report_has_merge_marker(Some(&json!({

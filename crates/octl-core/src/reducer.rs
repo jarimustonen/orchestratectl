@@ -1075,13 +1075,6 @@ fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
     }
 }
 
-/// The `via` marker `run merge` stamps on the terminal `node.report` it appends
-/// after a clean merge. This is the octl-cli/octl-core contract point: the CLI
-/// (`crates/octl-cli/src/run/merge.rs`) writes it and the reducer reads it here
-/// to decide adoption. Kept in core so the reducer's adoption gate and the
-/// supervisor's teardown gate (`supervise/cleanup.rs`) agree on the exact string.
-pub const VIA_EXPLICIT_MERGE: &str = "explicit-merge";
-
 /// True when a `node.report` payload is a CONFIRMED, SUCCESSFUL explicit merge —
 /// the sole payload shape the terminal-node guard in [`reduce_node_report`]
 /// adopts. Delegates to [`ReportOrigin::report_is_confirmed_merge`] so the
