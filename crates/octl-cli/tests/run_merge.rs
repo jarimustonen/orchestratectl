@@ -190,6 +190,83 @@ fn report_file_payload_is_submitted_with_marker() {
     assert_eq!(data["wrap_up_recommendations"][0], "read sources/");
 }
 
+/// A `--report-file` whose ADVISORY section has a field-name typo
+/// (`title`/`detail` instead of `proposed_title`/`proposed_kind`) no longer
+/// blocks the merge (issue `merge-report-schema-lenience`). The clean, committed
+/// code merges; the malformed advisory proposal is dropped and surfaced as a
+/// machine-readable warning. This is the exact glasspad-stint foot-gun.
+#[test]
+fn typoed_advisory_field_merges_with_warning() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    let run_id = create_run(&home, "spinoff", "merge-lenient");
+    forge_worker_node(&home, &run_id, "spinoff", worktree.path(), "wt/test-x");
+
+    let report = scratch.path().join("report.json");
+    std::fs::write(
+        &report,
+        r#"{
+            "success": true,
+            "summary": "green, reviewed, committed",
+            "spinoff_proposals": [
+                {"proposed_title": "real follow-up", "proposed_kind": "spinoff"},
+                {"title": "typoed follow-up", "detail": "wrong field names"}
+            ],
+            "wrap_up_recommendations": ["rebase", 42]
+        }"#,
+    )
+    .unwrap();
+
+    let merge_sh = fake_merge_sh(scratch.path(), 0, "");
+    let v = run_ok(bin(&home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output",
+        "json",
+        "run",
+        "merge",
+        &run_id,
+        "--report-file",
+        report.to_str().unwrap(),
+    ]));
+
+    // The merge landed (the whole point of the fix).
+    assert_eq!(v["data"]["merged"], true);
+
+    // The two malformed advisory entries are reported structurally.
+    let adv = v["data"]["report_advisory_warnings"]
+        .as_array()
+        .expect("report_advisory_warnings present");
+    assert_eq!(adv.len(), 2, "one bad proposal + one bad wrap-up element");
+    let fields: Vec<&str> = adv.iter().map(|w| w["field"].as_str().unwrap()).collect();
+    assert!(fields.contains(&"spinoff_proposals"));
+    assert!(fields.contains(&"wrap_up_recommendations"));
+
+    // And human-readable warnings ride the envelope too.
+    let warns = v["warnings"].as_array().expect("warnings array");
+    assert!(
+        warns.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.contains("dropped spinoff_proposals[1]"))),
+        "expected a dropped-proposal warning: {warns:?}"
+    );
+
+    // The persisted report keeps the VALID proposal and drops the typoed one.
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    let reports = node_reports(&events);
+    assert_eq!(reports.len(), 1);
+    let data = &reports[0]["data"];
+    assert_eq!(data["via"], "explicit-merge");
+    let kept = data["spinoff_proposals"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "only the well-formed proposal survives");
+    assert_eq!(kept[0]["proposed_title"], "real follow-up");
+    assert_eq!(
+        data["wrap_up_recommendations"],
+        serde_json::json!(["rebase"])
+    );
+    // The merge backend DID run — leniency lets the merge proceed.
+    assert!(scratch.path().join("merge.log").exists());
+}
+
 /// A `--report-file` that contradicts the merge (`success: false` or
 /// `cancelled: true`) is rejected BEFORE the merge runs. A clean merge is a
 /// success; such a report — stamped explicit-merge — would either mis-terminalize

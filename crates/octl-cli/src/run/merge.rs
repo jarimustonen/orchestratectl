@@ -48,10 +48,10 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::report::validate_report_payload;
+use octl_core::report::sanitize_report_advisory;
 use octl_core::{
-    append_and_apply_event, read_all_events, read_manifest_opt, read_node_opt, MergeTxn, Node,
-    NodeId, RunLock,
+    append_and_apply_event, read_all_events, read_manifest_opt, read_node_opt, AdvisoryWarning,
+    MergeTxn, Node, NodeId, RunLock,
 };
 
 use crate::run::merge_recovery;
@@ -132,6 +132,11 @@ struct MergePayload<'a> {
     /// on `--dry-run`. Additive (no `schema_version` bump).
     #[serde(skip_serializing_if = "Option::is_none")]
     supervisor: Option<ConsumerOutcome>,
+    /// Advisory report fields/elements the lenient sanitizer dropped rather than
+    /// block the merge (issue `merge-report-schema-lenience`). Omitted when empty
+    /// so a clean report's envelope is byte-identical to before.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    report_advisory_warnings: &'a [AdvisoryWarning],
     #[serde(skip_serializing_if = "Option::is_none")]
     dry_run: Option<bool>,
 }
@@ -179,6 +184,11 @@ pub(crate) struct MergeOutcome {
     pub dry_run: bool,
     /// The caller's base warnings plus any appended by [`ensure_report_consumer`].
     pub warnings: Vec<String>,
+    /// Machine-readable record of every advisory report field/element dropped by
+    /// the lenient sanitizer (issue `merge-report-schema-lenience`). The structured
+    /// companion to the human-readable `dropped …` entries in `warnings`. Empty
+    /// when the report validated cleanly.
+    pub report_advisory_warnings: Vec<AdvisoryWarning>,
 }
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
@@ -192,6 +202,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         merged: outcome.merged,
         report_seq: outcome.report_seq,
         supervisor: outcome.supervisor.clone(),
+        report_advisory_warnings: &outcome.report_advisory_warnings,
         dry_run: outcome.dry_run.then_some(true),
     };
     emit(&payload, spec, &outcome.warnings)
@@ -371,11 +382,23 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // `--report-file` is rejected without having already merged. The report
     // is only submitted after a clean merge; here we just validate its shape
     // and stamp the `via: "explicit-merge"` marker.
-    let mut report = build_report(
+    let (mut report, advisory_warnings) = build_report(
         args.report_file.as_deref(),
         branch,
         effective_source.as_deref(),
     )?;
+
+    // Fold the dropped-advisory-field warnings (if any) into the caller's base
+    // warnings up front, so BOTH the dry-run preview and the real merge surface
+    // them. `--dry-run` doubles as a report-file preflight (issue
+    // `merge-report-schema-lenience` option 3): an agent can see exactly which
+    // advisory entries would be dropped before committing to the merge.
+    let base_warnings: Vec<String> = args
+        .warnings
+        .iter()
+        .cloned()
+        .chain(advisory_warnings.iter().map(AdvisoryWarning::to_message))
+        .collect();
 
     if args.dry_run {
         return Ok(MergeOutcome {
@@ -387,7 +410,8 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
             report_seq: None,
             supervisor: None,
             dry_run: true,
-            warnings: args.warnings.to_vec(),
+            warnings: base_warnings,
+            report_advisory_warnings: advisory_warnings,
         });
     }
 
@@ -405,7 +429,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         merge_recovery::Recovery::Completed => {
             // The crashed merge is confirmed landed and the node is now terminal.
             // Ensure a teardown actor and report success without re-running the merge.
-            let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+            let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, &base_warnings);
             return Ok(MergeOutcome {
                 run_id: run_id.clone(),
                 node_id: node_id.as_str().to_string(),
@@ -416,6 +440,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
                 supervisor: Some(outcome),
                 dry_run: false,
                 warnings,
+                report_advisory_warnings: advisory_warnings.clone(),
             });
         }
         // A DIFFERENT `run merge` is actively driving a transaction for this node.
@@ -545,7 +570,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // durable even though this call's `applied` is false). See the 4-model review
     // (`reducer-adopt-explicit-merge`) — gating on `applied` here was a crash-retry
     // leak. (`result.seq` is still surfaced in the envelope below.)
-    let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
+    let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, &base_warnings);
 
     Ok(MergeOutcome {
         run_id: run_id.clone(),
@@ -557,6 +582,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
         supervisor: Some(outcome),
         dry_run: false,
         warnings,
+        report_advisory_warnings: advisory_warnings,
     })
 }
 
@@ -850,13 +876,20 @@ fn branch_for(node: &Node) -> Option<&str> {
 /// `wrap_up_recommendations` in the same call) and stamp it with the
 /// `via: "explicit-merge"` marker, overriding any caller-set `via`. Without
 /// one, synthesize a minimal `{success, summary, via}` report — enough for a
-/// simple spinoff. Either way the result is validated against the §7.3 schema
-/// before it can reach the event log.
+/// simple spinoff.
+///
+/// Validation is **lenient on advisory fields** (issue
+/// `merge-report-schema-lenience`): `success` and the `cancelled`/`reason`
+/// constraints stay strict (a violation returns `schema_violation` and blocks the
+/// merge), but a malformed *advisory* entry (`discussion_items` /
+/// `spinoff_proposals` / `wrap_up_recommendations` / `summary`) is dropped from
+/// the returned report and reported as an [`AdvisoryWarning`] — never a merge
+/// blocker. Returns the sanitized report plus the drops.
 fn build_report(
     report_file: Option<&Path>,
     branch: &str,
     source: Option<&str>,
-) -> Result<Value, CliError> {
+) -> Result<(Value, Vec<AdvisoryWarning>), CliError> {
     let mut report = if let Some(path) = report_file {
         read_report_file(path)?
     } else {
@@ -899,9 +932,17 @@ fn build_report(
         Value::String(octl_core::VIA_EXPLICIT_MERGE.to_string()),
     );
 
-    validate_report_payload(&report)
+    // Lenient advisory validation (issue `merge-report-schema-lenience`): a typo
+    // in an *advisory* section (`discussion_items` / `spinoff_proposals` /
+    // `wrap_up_recommendations` / `summary`) must not reject the terminal report
+    // and block a clean, already-committed code merge. Required and
+    // correctness-bearing fields (`success`, `cancelled`/`reason`) are still
+    // strict — a violation there returns `schema_violation` and no merge happens.
+    // Malformed advisory entries are dropped from the report the reducer projects
+    // and returned as machine-readable warnings the caller surfaces.
+    let sanitized = sanitize_report_advisory(&report)
         .map_err(|e| CliError::user("schema_violation", e.to_string()))?;
-    Ok(report)
+    Ok((sanitized.report, sanitized.warnings))
 }
 
 /// Read and JSON-parse a `--report-file`, enforcing the size cap during the

@@ -10,6 +10,21 @@
 //!
 //! Errors are domain-typed ([`ReportValidationError`]); the CLI maps them
 //! to its `CliError` envelope at the boundary.
+//!
+//! # Two validation modes
+//!
+//! - **Strict** ([`validate_report_payload`]) — the whole payload passes or
+//!   the first schema violation is returned. Used by `node report` (an agent
+//!   self-submission) and merge-recovery's synthesized report, where the caller
+//!   controls the shape and a malformed field is a real bug to surface.
+//! - **Lenient advisory** ([`sanitize_report_advisory`]) — the REQUIRED and
+//!   correctness-bearing fields (`success`, `cancelled`/`reason`) are still
+//!   validated strictly, but the *advisory* sections (`summary`,
+//!   `discussion_items`, `spinoff_proposals`, `wrap_up_recommendations`) degrade
+//!   gracefully: a malformed element is dropped and reported as a machine-readable
+//!   [`AdvisoryWarning`] rather than rejecting the whole payload. Used by
+//!   `run merge --report-file` so an advisory-field typo can no longer block a
+//!   clean, already-committed code merge (issue `merge-report-schema-lenience`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -332,6 +347,30 @@ impl ReportValidationError {
 pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError> {
     let obj = data.as_object().ok_or(ReportValidationError::NotObject)?;
 
+    validate_required_fields(obj)?;
+
+    if let Some(v) = obj.get("summary") {
+        if !v.is_string() && !v.is_null() {
+            return Err(ReportValidationError::SummaryNotString);
+        }
+    }
+
+    validate_discussion_items(obj.get("discussion_items"))?;
+    validate_spinoff_proposals(obj.get("spinoff_proposals"))?;
+    validate_string_array(
+        obj.get("wrap_up_recommendations"),
+        "wrap_up_recommendations",
+    )?;
+    Ok(())
+}
+
+/// Validate the REQUIRED, correctness-bearing fields — `success` and the
+/// `cancelled`/`reason` §7.7 cross-constraints. These are strict in BOTH
+/// validation modes: they gate the terminal outcome and teardown, so a malformed
+/// one is never degraded to a warning (issue `merge-report-schema-lenience`).
+fn validate_required_fields(
+    obj: &serde_json::Map<String, Value>,
+) -> Result<(), ReportValidationError> {
     // `success` is the one strictly required field per §7.3. A cancel-
     // synthesized report (§7.7) may carry `cancelled: true` AND
     // `success: false` — both are still booleans on the wire.
@@ -342,11 +381,6 @@ pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError
         return Err(ReportValidationError::SuccessNotBoolean);
     }
 
-    if let Some(v) = obj.get("summary") {
-        if !v.is_string() && !v.is_null() {
-            return Err(ReportValidationError::SummaryNotString);
-        }
-    }
     let cancelled = match obj.get("cancelled") {
         None | Some(Value::Null) => false,
         Some(v) => v
@@ -378,13 +412,6 @@ pub fn validate_report_payload(data: &Value) -> Result<(), ReportValidationError
             _ => return Err(ReportValidationError::CancelledRequiresReason),
         }
     }
-
-    validate_discussion_items(obj.get("discussion_items"))?;
-    validate_spinoff_proposals(obj.get("spinoff_proposals"))?;
-    validate_string_array(
-        obj.get("wrap_up_recommendations"),
-        "wrap_up_recommendations",
-    )?;
     Ok(())
 }
 
@@ -395,27 +422,35 @@ fn validate_discussion_items(v: Option<&Value>) -> Result<(), ReportValidationEr
         None => return Ok(()),
     };
     for (i, item) in arr.iter().enumerate() {
-        let obj = item
-            .as_object()
-            .ok_or(ReportValidationError::DiscussionItemNotObject { index: i })?;
-        let topic = obj.get("topic").and_then(Value::as_str);
-        if topic.is_none_or(|t| t.trim().is_empty()) {
-            return Err(ReportValidationError::DiscussionItemTopicMissing { index: i });
+        validate_discussion_item(item, i)?;
+    }
+    Ok(())
+}
+
+/// Validate ONE `discussion_items` element. Extracted so both the strict
+/// validator (first error wins) and the lenient sanitizer (drop the offending
+/// element, keep the rest) share the exact same per-element rules.
+fn validate_discussion_item(item: &Value, index: usize) -> Result<(), ReportValidationError> {
+    let obj = item
+        .as_object()
+        .ok_or(ReportValidationError::DiscussionItemNotObject { index })?;
+    let topic = obj.get("topic").and_then(Value::as_str);
+    if topic.is_none_or(|t| t.trim().is_empty()) {
+        return Err(ReportValidationError::DiscussionItemTopicMissing { index });
+    }
+    if let Some(sev) = obj.get("severity") {
+        if !sev.is_string() {
+            return Err(ReportValidationError::DiscussionItemSeverityNotString { index });
         }
-        if let Some(sev) = obj.get("severity") {
-            if !sev.is_string() {
-                return Err(ReportValidationError::DiscussionItemSeverityNotString { index: i });
-            }
-            // §7.3 example lists "discuss|critical" but the design
-            // calls for forward-compatibility — accept any string and
-            // let the supervisor interpret unknown severities. (A
-            // CLI-side closed-set check would deadlock agents shipped
-            // ahead of a CLI release; see review #2/DeepSeek and #15
-            // /Claude.)
-        }
-        if let Some(opts) = obj.get("options") {
-            validate_string_array_at(opts, &format!("discussion_items[{i}].options"))?;
-        }
+        // §7.3 example lists "discuss|critical" but the design
+        // calls for forward-compatibility — accept any string and
+        // let the supervisor interpret unknown severities. (A
+        // CLI-side closed-set check would deadlock agents shipped
+        // ahead of a CLI release; see review #2/DeepSeek and #15
+        // /Claude.)
+    }
+    if let Some(opts) = obj.get("options") {
+        validate_string_array_at(opts, &format!("discussion_items[{index}].options"))?;
     }
     Ok(())
 }
@@ -427,34 +462,44 @@ fn validate_spinoff_proposals(v: Option<&Value>) -> Result<(), ReportValidationE
         None => return Ok(()),
     };
     for (i, item) in arr.iter().enumerate() {
-        let obj = item
-            .as_object()
-            .ok_or(ReportValidationError::SpinoffProposalNotObject { index: i })?;
-        let title = obj.get("proposed_title").and_then(Value::as_str);
-        if title.is_none_or(|t| t.trim().is_empty()) {
-            return Err(ReportValidationError::SpinoffProposalTitleMissing { index: i });
-        }
-        let kind_str = obj
-            .get("proposed_kind")
-            .and_then(Value::as_str)
-            .ok_or(ReportValidationError::SpinoffProposalKindNotString { index: i })?;
-        // Reject unknown kinds at the boundary so the supervisor never
-        // has to translate a generic `CorruptEventLog` for the user. The
-        // accepted set is the enum's *creatable* wire names — the read-only
-        // `Kind::Unknown` catch-all is deliberately excluded (a proposal must
-        // name a live kind), so this checks membership rather than round-tripping
-        // through serde (which would silently map any unknown string to
-        // `Kind::Unknown`).
-        if !Kind::WIRE_NAMES.contains(&kind_str) {
-            return Err(ReportValidationError::SpinoffProposalKindUnknown {
-                index: i,
-                kind: kind_str.to_string(),
-            });
-        }
-        if let Some(rationale) = obj.get("rationale") {
-            if !rationale.is_string() && !rationale.is_null() {
-                return Err(ReportValidationError::SpinoffProposalRationaleNotString { index: i });
-            }
+        validate_spinoff_proposal(item, i)?;
+    }
+    Ok(())
+}
+
+/// Validate ONE `spinoff_proposals` element. Extracted so both the strict
+/// validator and the lenient sanitizer share the exact same per-element rules —
+/// including the `proposed_title`/`proposed_kind` field names whose intuitive
+/// typos (`title`/`detail`) motivated the lenient mode (issue
+/// `merge-report-schema-lenience`).
+fn validate_spinoff_proposal(item: &Value, index: usize) -> Result<(), ReportValidationError> {
+    let obj = item
+        .as_object()
+        .ok_or(ReportValidationError::SpinoffProposalNotObject { index })?;
+    let title = obj.get("proposed_title").and_then(Value::as_str);
+    if title.is_none_or(|t| t.trim().is_empty()) {
+        return Err(ReportValidationError::SpinoffProposalTitleMissing { index });
+    }
+    let kind_str = obj
+        .get("proposed_kind")
+        .and_then(Value::as_str)
+        .ok_or(ReportValidationError::SpinoffProposalKindNotString { index })?;
+    // Reject unknown kinds at the boundary so the supervisor never
+    // has to translate a generic `CorruptEventLog` for the user. The
+    // accepted set is the enum's *creatable* wire names — the read-only
+    // `Kind::Unknown` catch-all is deliberately excluded (a proposal must
+    // name a live kind), so this checks membership rather than round-tripping
+    // through serde (which would silently map any unknown string to
+    // `Kind::Unknown`).
+    if !Kind::WIRE_NAMES.contains(&kind_str) {
+        return Err(ReportValidationError::SpinoffProposalKindUnknown {
+            index,
+            kind: kind_str.to_string(),
+        });
+    }
+    if let Some(rationale) = obj.get("rationale") {
+        if !rationale.is_string() && !rationale.is_null() {
+            return Err(ReportValidationError::SpinoffProposalRationaleNotString { index });
         }
     }
     Ok(())
@@ -498,6 +543,203 @@ fn validate_string_array(v: Option<&Value>, field: &str) -> Result<(), ReportVal
         }
     }
     Ok(())
+}
+
+/// A machine-readable warning that one advisory report field (or one element of
+/// an advisory array) was dropped during lenient sanitization
+/// (issue `merge-report-schema-lenience`).
+///
+/// Emitted by [`sanitize_report_advisory`] and surfaced in `run merge`'s JSON
+/// envelope so an agent reads a structured record of what was discarded instead
+/// of regex-parsing prose. The dropped data was never correctness-bearing (see
+/// [`sanitize_report_advisory`] for the strict/advisory split), so a warning —
+/// not a rejected merge — is the right severity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdvisoryWarning {
+    /// The advisory field the drop applies to, e.g. `spinoff_proposals`.
+    pub field: String,
+    /// The element index dropped, when the field itself was kept but one element
+    /// was invalid. Absent (`None`) when the entire field was dropped (e.g. it was
+    /// present but not an array).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Human-readable reason — the underlying [`ReportValidationError`] rendered.
+    pub reason: String,
+}
+
+impl AdvisoryWarning {
+    /// Render as a single human-readable line for the CLI's `warnings` string list,
+    /// e.g. `dropped spinoff_proposals[0]: … must be a non-empty string`.
+    #[must_use]
+    pub fn to_message(&self) -> String {
+        match self.index {
+            Some(i) => format!("dropped {}[{i}]: {}", self.field, self.reason),
+            None => format!("dropped advisory field `{}`: {}", self.field, self.reason),
+        }
+    }
+}
+
+/// The result of [`sanitize_report_advisory`]: a report with malformed *advisory*
+/// sections removed, plus the machine-readable [`AdvisoryWarning`]s describing
+/// every drop.
+#[derive(Debug, Clone)]
+pub struct SanitizedReport {
+    /// The report with malformed advisory fields/elements dropped. Required and
+    /// correctness-bearing fields are untouched (they were validated strictly).
+    pub report: Value,
+    /// One entry per dropped advisory field or element; empty when nothing was
+    /// dropped (the report validated cleanly).
+    pub warnings: Vec<AdvisoryWarning>,
+}
+
+/// Validate a §7.3 report payload with **lenient advisory handling** — the
+/// merge-first posture of `run merge --report-file` (issue
+/// `merge-report-schema-lenience`).
+///
+/// The REQUIRED, correctness-bearing fields are still strict — a violation here
+/// returns `Err` exactly as [`validate_report_payload`] would:
+/// - the payload root must be a JSON object,
+/// - `success` must be present and boolean, and
+/// - the `cancelled`/`reason` §7.7 cross-constraints must hold.
+///
+/// These gate the node's terminal outcome and the supervisor's teardown, so a
+/// malformed one is never silently degraded — that would risk mis-terminalizing a
+/// node or stranding teardown.
+///
+/// Everything else is **advisory** and degrades gracefully: a malformed value is
+/// dropped from the returned [`SanitizedReport::report`] and recorded as an
+/// [`AdvisoryWarning`] instead of failing the call. This covers:
+/// - `summary` (a non-string/non-null scalar → field dropped),
+/// - `discussion_items` / `spinoff_proposals` (a non-array → whole field dropped;
+///   an invalid element → that element dropped, valid siblings kept),
+/// - `wrap_up_recommendations` (a non-array → field dropped; a non-string element
+///   → that element dropped).
+///
+/// This is what stops an advisory-field typo (the recurring `title`/`detail`
+/// instead of `proposed_title`/`proposed_kind`/`rationale`) from rejecting the
+/// whole terminal report and blocking a clean, already-committed code merge.
+///
+/// # Errors
+///
+/// Returns a [`ReportValidationError`] only for a violation of a required field
+/// (root shape, `success`, `cancelled`/`reason`). Advisory violations never error.
+pub fn sanitize_report_advisory(data: &Value) -> Result<SanitizedReport, ReportValidationError> {
+    let obj = data.as_object().ok_or(ReportValidationError::NotObject)?;
+
+    // Required/correctness-bearing fields stay strict.
+    validate_required_fields(obj)?;
+
+    let mut out = obj.clone();
+    let mut warnings = Vec::new();
+
+    // `summary` — advisory descriptive scalar. Drop a malformed one.
+    if let Some(v) = obj.get("summary") {
+        if !v.is_string() && !v.is_null() {
+            out.remove("summary");
+            warnings.push(AdvisoryWarning {
+                field: "summary".to_string(),
+                index: None,
+                reason: ReportValidationError::SummaryNotString.to_string(),
+            });
+        }
+    }
+
+    sanitize_element_array(
+        &mut out,
+        "discussion_items",
+        ReportValidationError::DiscussionItemsNotArray,
+        validate_discussion_item,
+        &mut warnings,
+    );
+    sanitize_element_array(
+        &mut out,
+        "spinoff_proposals",
+        ReportValidationError::SpinoffProposalsNotArray,
+        validate_spinoff_proposal,
+        &mut warnings,
+    );
+    sanitize_string_array_field(&mut out, "wrap_up_recommendations", &mut warnings);
+
+    Ok(SanitizedReport {
+        report: Value::Object(out),
+        warnings,
+    })
+}
+
+/// Leniently sanitize one advisory array-of-objects field in place: a
+/// present-but-non-array field is dropped whole; each element that fails
+/// `validate` is dropped, valid siblings retained. Every drop appends an
+/// [`AdvisoryWarning`]. Indices in the warnings are the ORIGINAL element
+/// positions, so they line up with what the agent wrote.
+fn sanitize_element_array(
+    obj: &mut serde_json::Map<String, Value>,
+    field: &str,
+    not_array_err: ReportValidationError,
+    validate: fn(&Value, usize) -> Result<(), ReportValidationError>,
+    warnings: &mut Vec<AdvisoryWarning>,
+) {
+    let Some(v) = obj.get(field) else { return };
+    let Some(arr) = v.as_array() else {
+        obj.remove(field);
+        warnings.push(AdvisoryWarning {
+            field: field.to_string(),
+            index: None,
+            reason: not_array_err.to_string(),
+        });
+        return;
+    };
+    let mut kept = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        match validate(item, i) {
+            Ok(()) => kept.push(item.clone()),
+            Err(e) => warnings.push(AdvisoryWarning {
+                field: field.to_string(),
+                index: Some(i),
+                reason: e.to_string(),
+            }),
+        }
+    }
+    obj.insert(field.to_string(), Value::Array(kept));
+}
+
+/// Leniently sanitize one advisory string-array field in place: a
+/// present-but-non-array field is dropped whole; each non-string element is
+/// dropped, string siblings retained.
+fn sanitize_string_array_field(
+    obj: &mut serde_json::Map<String, Value>,
+    field: &str,
+    warnings: &mut Vec<AdvisoryWarning>,
+) {
+    let Some(v) = obj.get(field) else { return };
+    let Some(arr) = v.as_array() else {
+        obj.remove(field);
+        warnings.push(AdvisoryWarning {
+            field: field.to_string(),
+            index: None,
+            reason: ReportValidationError::FieldNotArray {
+                field: field.to_string(),
+            }
+            .to_string(),
+        });
+        return;
+    };
+    let mut kept = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        if item.is_string() {
+            kept.push(item.clone());
+        } else {
+            warnings.push(AdvisoryWarning {
+                field: field.to_string(),
+                index: Some(i),
+                reason: ReportValidationError::FieldElementNotString {
+                    field: field.to_string(),
+                    index: i,
+                }
+                .to_string(),
+            });
+        }
+    }
+    obj.insert(field.to_string(), Value::Array(kept));
 }
 
 #[cfg(test)]
@@ -893,5 +1135,167 @@ mod tests {
             validate_report_payload(&v),
             Err(ReportValidationError::FieldElementNotString { index: 1, .. })
         ));
+    }
+
+    // --- lenient advisory sanitization (issue `merge-report-schema-lenience`) ---
+
+    #[test]
+    fn sanitize_clean_report_has_no_warnings() {
+        let v = json!({
+            "success": true,
+            "summary": "did the thing",
+            "discussion_items": [{"topic": "naming", "severity": "discuss"}],
+            "spinoff_proposals": [
+                {"proposed_title": "follow-up", "proposed_kind": "spinoff", "rationale": "later"},
+            ],
+            "wrap_up_recommendations": ["rebase"],
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert!(out.warnings.is_empty());
+        assert_eq!(out.report, v);
+    }
+
+    #[test]
+    fn sanitize_drops_typoed_spinoff_proposal_with_warning() {
+        // The exact glasspad-stint foot-gun: `title`/`detail` instead of the
+        // schema's `proposed_title`/`proposed_kind`/`rationale`. Strict validation
+        // would reject the whole report and block the merge; lenient drops the
+        // proposal and warns.
+        let v = json!({
+            "success": true,
+            "summary": "green, reviewed, committed",
+            "spinoff_proposals": [{"title": "do X later", "detail": "because Y"}],
+        });
+        // Strict path rejects it (the behavior the issue is fixing).
+        assert!(validate_report_payload(&v).is_err());
+        // Lenient path merges: no error, proposal dropped, one warning.
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.warnings[0].field, "spinoff_proposals");
+        assert_eq!(out.warnings[0].index, Some(0));
+        assert_eq!(out.report["spinoff_proposals"], json!([]));
+        // Required + descriptive fields survive untouched.
+        assert_eq!(out.report["success"], json!(true));
+        assert_eq!(out.report["summary"], json!("green, reviewed, committed"));
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_siblings_drops_only_bad_element() {
+        let v = json!({
+            "success": true,
+            "spinoff_proposals": [
+                {"proposed_title": "keep me", "proposed_kind": "spinoff"},
+                {"title": "typo, drop me"},
+                {"proposed_title": "keep me too", "proposed_kind": "research"},
+            ],
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.warnings[0].index, Some(1));
+        let kept = out.report["spinoff_proposals"].as_array().unwrap();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0]["proposed_title"], json!("keep me"));
+        assert_eq!(kept[1]["proposed_title"], json!("keep me too"));
+    }
+
+    #[test]
+    fn sanitize_drops_non_array_advisory_field_whole() {
+        let v = json!({
+            "success": true,
+            "discussion_items": "not-an-array",
+            "wrap_up_recommendations": {"oops": true},
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 2);
+        // Both malformed fields removed entirely.
+        assert!(out.report.get("discussion_items").is_none());
+        assert!(out.report.get("wrap_up_recommendations").is_none());
+        let fields: Vec<&str> = out.warnings.iter().map(|w| w.field.as_str()).collect();
+        assert!(fields.contains(&"discussion_items"));
+        assert!(fields.contains(&"wrap_up_recommendations"));
+        // A whole-field drop carries no element index.
+        assert!(out.warnings.iter().all(|w| w.index.is_none()));
+    }
+
+    #[test]
+    fn sanitize_drops_non_string_wrap_up_element() {
+        let v = json!({
+            "success": true,
+            "wrap_up_recommendations": ["rebase", 42, "squash"],
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.warnings[0].index, Some(1));
+        assert_eq!(
+            out.report["wrap_up_recommendations"],
+            json!(["rebase", "squash"])
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_malformed_summary() {
+        let v = json!({"success": true, "summary": 42});
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.warnings[0].field, "summary");
+        assert!(out.report.get("summary").is_none());
+    }
+
+    #[test]
+    fn sanitize_still_rejects_missing_required_success() {
+        // Required-field strictness is preserved: no `success` → error, no merge.
+        let v = json!({"summary": "no success field"});
+        assert!(matches!(
+            sanitize_report_advisory(&v),
+            Err(ReportValidationError::MissingSuccess)
+        ));
+    }
+
+    #[test]
+    fn sanitize_still_rejects_non_boolean_success() {
+        let v = json!({"success": "yes", "spinoff_proposals": [{"title": "x"}]});
+        assert!(matches!(
+            sanitize_report_advisory(&v),
+            Err(ReportValidationError::SuccessNotBoolean)
+        ));
+    }
+
+    #[test]
+    fn sanitize_still_rejects_cancelled_contradiction() {
+        // The §7.7 cross-constraint is correctness-bearing (it drives terminal
+        // outcome), so it stays strict even in lenient mode.
+        let v = json!({"success": true, "cancelled": true, "reason": "x"});
+        assert!(matches!(
+            sanitize_report_advisory(&v),
+            Err(ReportValidationError::CancelledRequiresSuccessFalse)
+        ));
+    }
+
+    #[test]
+    fn sanitize_rejects_non_object_root() {
+        let v = json!([1, 2, 3]);
+        assert!(matches!(
+            sanitize_report_advisory(&v),
+            Err(ReportValidationError::NotObject)
+        ));
+    }
+
+    #[test]
+    fn advisory_warning_message_shapes() {
+        let elem = AdvisoryWarning {
+            field: "spinoff_proposals".to_string(),
+            index: Some(2),
+            reason: "boom".to_string(),
+        };
+        assert_eq!(elem.to_message(), "dropped spinoff_proposals[2]: boom");
+        let whole = AdvisoryWarning {
+            field: "discussion_items".to_string(),
+            index: None,
+            reason: "not an array".to_string(),
+        };
+        assert_eq!(
+            whole.to_message(),
+            "dropped advisory field `discussion_items`: not an array"
+        );
     }
 }

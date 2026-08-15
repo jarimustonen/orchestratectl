@@ -56,8 +56,8 @@ pub use plan::{
 pub use projections::{read_manifest, read_manifest_opt, read_node, read_node_opt, write_node};
 pub use reducer::{plan_projections, KIND_MERGE_ABORTED, KIND_MERGE_STARTED};
 pub use report::{
-    validate_report_payload, ReportOrigin, ReportValidationError, REPORT_ORIGIN_KEY,
-    VIA_EXPLICIT_MERGE,
+    sanitize_report_advisory, validate_report_payload, AdvisoryWarning, ReportOrigin,
+    ReportValidationError, SanitizedReport, REPORT_ORIGIN_KEY, VIA_EXPLICIT_MERGE,
 };
 pub use schema::aggregate_terminal_status;
 pub use schema::{
