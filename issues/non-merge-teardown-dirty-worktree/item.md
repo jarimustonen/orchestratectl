@@ -8,6 +8,8 @@ epic: lifecycle-architecture-review
 commits:
 - hash: 2a58bfe
   summary: preserve dirty worktrees + fail closed on non-merge teardown
+- hash: 6ce72c8
+  summary: non-force teardown removal + tri-state cleanliness (llm-review fixes)
 ---
 
 # Preserve a dirty worktree on non-merge (cancel/plain-success) teardown
