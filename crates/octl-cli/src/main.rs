@@ -25,6 +25,7 @@ mod node;
 mod output;
 mod proc;
 mod run;
+mod run_worker;
 mod skill;
 mod supervise;
 

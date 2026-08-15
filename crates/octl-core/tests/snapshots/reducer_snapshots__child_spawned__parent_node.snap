@@ -32,5 +32,6 @@ expression: v
   "tmux_identity": null,
   "tmux_window": null,
   "updated_at": "<ts>",
+  "worker_exit": null,
   "worktree_path": null
 }

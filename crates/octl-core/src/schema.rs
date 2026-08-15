@@ -543,6 +543,56 @@ pub struct Node {
     /// before this field existed readable (`0` — never retried).
     #[serde(default)]
     pub retry_attempts: u32,
+    /// The **told** exit status of the node's worker process, recorded durably by
+    /// the `run-worker` launcher shim (`crates/octl-cli/src/run_worker.rs`) when
+    /// it `wait()`s on the agent it wrapped. This is a *fact*, not an inference:
+    /// the supervisor consumes it via the typed outcome table instead of guessing
+    /// completion from pid/pane/activity proxies (design.md §2.1, issue
+    /// `thin-exit-status-launcher`). A non-zero code or a terminating signal is a
+    /// `failed` worker; `code == 0` with no `explicit-merge` transition is the
+    /// *finished-but-unmerged* case that must stay non-terminal (attention-
+    /// required), NOT be auto-failed. `None` until the shim records an exit — or
+    /// forever, for a worker never launched through the shim (the crash backstop
+    /// still covers that path). `#[serde(default)]` keeps a node written before
+    /// this field existed readable.
+    #[serde(default)]
+    pub worker_exit: Option<WorkerExit>,
+}
+
+/// The observed exit status of a node's worker process, recorded by the
+/// `run-worker` launcher shim under the run lock (design.md §2.1 / A1).
+///
+/// Exactly one of `code` / `signal` is meaningful: a worker that returned
+/// normally carries `code = Some(n)` (and `signal = None`); a worker killed by a
+/// signal carries `signal = Some(s)` (and, on Unix, `code = None`). A recorded
+/// exit is a durable *told fact* — the supervisor reads it rather than inferring
+/// completion from liveness proxies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerExit {
+    /// Normal-exit status code, if the worker was not killed by a signal.
+    #[serde(default)]
+    pub code: Option<i32>,
+    /// Terminating signal number, if the worker was killed by a signal.
+    #[serde(default)]
+    pub signal: Option<i32>,
+    /// When the shim observed the worker's exit.
+    pub at: DateTime<Utc>,
+}
+
+impl WorkerExit {
+    /// A clean exit: not signalled, and a zero return code. This is the *only*
+    /// success-shaped worker exit — but a clean exit alone is NOT a completed
+    /// unit (the worker may have finished-but-skipped `run merge`); merge is the
+    /// only success truth (design.md §2.6). Callers pair this with a merge check.
+    pub fn is_clean(self) -> bool {
+        self.signal.is_none() && self.code == Some(0)
+    }
+
+    /// A failed worker: killed by a signal, or a non-zero return code. Mutually
+    /// exclusive with [`WorkerExit::is_clean`].
+    pub fn is_failure(self) -> bool {
+        !self.is_clean()
+    }
 }
 
 /// A fully-qualified tmux window identity recorded at spawn time.

@@ -43,7 +43,7 @@ use tracing::{info, warn};
 
 use octl_core::{
     append_and_apply_event, append_and_apply_unlocked, read_manifest_opt, read_node_opt, Node,
-    NodeId, RunLock, RunPaths, Status,
+    NodeId, RunLock, RunPaths, Status, WorkerExit,
 };
 
 use crate::error::{CliError, ExitKind};
@@ -278,6 +278,17 @@ const IDLE_UNMERGED_ENV: &str = "OCTL_IDLE_UNMERGED_SECS";
 /// `run wait` can tell "agent skipped its close" from a genuine failure or a
 /// human-needed tie.
 const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
+
+/// Reason recorded on the synthesized failed `node.report` when the launcher
+/// shim's **told** exit status is a non-zero return code (design.md §2.1 / A1,
+/// issue `thin-exit-status-launcher`). Distinct from `agent-died` (a pid-loss
+/// *guess*) so `run show` / `run wait` can tell a worker that provably returned
+/// non-zero from one the watchdog merely inferred dead.
+const WORKER_EXITED_NONZERO_REASON: &str = "worker-exited-nonzero";
+
+/// Reason recorded on the synthesized failed `node.report` when the launcher
+/// shim reports the worker was killed by a signal (design.md §2.1 / A1).
+const WORKER_KILLED_BY_SIGNAL_REASON: &str = "worker-killed-by-signal";
 
 /// Idle-trickle floor for the CPU activity clock ([`cpu_activity_clock`]), in
 /// centiseconds of CPU per wall-clock second (100 == one core running flat out).
@@ -2870,6 +2881,88 @@ fn terminalize_respawn_failure(
     ok
 }
 
+/// Terminalize a node `failed` from the launcher shim's **told** exit status
+/// (design.md §2.1 / A1). Called only for a node whose recorded `worker.exited`
+/// is a failure ([`WorkerExit::is_failure`] — a non-zero code or a terminating
+/// signal). The synthesized `node.report` is a plain failure (`success: false`,
+/// no `via: explicit-merge`), so invariant 5's teardown gate preserves the
+/// branch + worktree for salvage.
+///
+/// Re-reads the node under the exclusive lock and only synthesizes while it is
+/// still non-terminal: a worker can `run merge` (→ node `done`) and *then* exit
+/// non-zero, and the merge is the higher-fidelity truth — so a late told-failure
+/// never resurrects or overrides a merged node. Idempotent across ticks: once the
+/// failed report lands the node is terminal and the next tick's told-fact pass
+/// finds nothing to do.
+fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str, exit: WorkerExit) {
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, error = %e,
+                "could not lock run to terminalize told worker-exit failure; will retry next tick"
+            );
+            return;
+        }
+    };
+    let still_live = read_node_opt(paths, nid)
+        .ok()
+        .flatten()
+        .is_some_and(|n| !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled));
+    if !still_live {
+        // Already terminal (merged, cancelled, or a prior tick's told-failure):
+        // nothing to record.
+        drop(guard);
+        return;
+    }
+    // A signal death and a non-zero return are distinct told facts; surface the
+    // one that applies (a signal, if present, is the proximate cause).
+    let (reason, detail) = match (exit.signal, exit.code) {
+        (Some(sig), _) => (
+            WORKER_KILLED_BY_SIGNAL_REASON,
+            format!("worker killed by signal {sig}"),
+        ),
+        (None, Some(code)) => (
+            WORKER_EXITED_NONZERO_REASON,
+            format!("worker exited with status {code}"),
+        ),
+        // Unreachable: a `WorkerExit::is_failure` always carries a signal or a
+        // non-zero code, but keep the summary well-formed if it ever does not.
+        (None, None) => (
+            WORKER_EXITED_NONZERO_REASON,
+            "worker exited abnormally".into(),
+        ),
+    };
+    let mut data = json!({
+        "success": false,
+        "failed": true,
+        "cancelled": false,
+        "reason": reason,
+        "summary": format!("Node {node_id} {detail}; supervisor terminalized the run failed (branch preserved)."),
+        "discussion_items": [],
+        "spinoff_proposals": [],
+        "wrap_up_recommendations": [],
+    });
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(code) = exit.code {
+            obj.insert("exit_code".to_string(), json!(code));
+        }
+        if let Some(sig) = exit.signal {
+            obj.insert("signal".to_string(), json!(sig));
+        }
+    }
+    let lock = guard.witness();
+    if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %node_id, error = %e,
+            "synthesize told worker-exit failed report failed; will retry next tick"
+        );
+    }
+    drop(guard);
+}
+
 fn watchdog_tick(
     paths: &RunPaths,
     half_state_streak: &mut std::collections::BTreeMap<String, u32>,
@@ -2895,6 +2988,14 @@ fn watchdog_tick(
     // of one subprocess per node — at ~100 agents that is 1 fork/tick, not 100.
     let mut candidates: Vec<(String, NodeId, Node, watchdog::AgentProbe)> = Vec::new();
     let mut sockets: std::collections::BTreeSet<Option<String>> = std::collections::BTreeSet::new();
+    // Nodes whose launcher shim recorded a FAILING exit status (`worker.exited`
+    // with a non-zero code or a terminating signal). These are handled by the
+    // told-fact pass below, NOT the liveness scan — the recorded status is
+    // authoritative over any pid/tmux guess (design.md §2.1 / A1). A node with a
+    // recorded *clean* exit is neither a candidate nor a told-failure: exit 0
+    // with no merge is the finished-but-unmerged / attention-required case that
+    // must stay non-terminal, so the watchdog leaves it entirely alone.
+    let mut told_failures: Vec<(String, NodeId, WorkerExit)> = Vec::new();
     // This first pass is the supervisor's highest-frequency multi-file read, so
     // it is the one most likely to observe torn state. Hold the run's shared
     // lock for the whole `nodes/` scan so a concurrent reducer cannot mutate the
@@ -2924,6 +3025,23 @@ fn watchdog_tick(
                 continue;
             };
             if matches!(n.status, Status::Done | Status::Failed | Status::Cancelled) {
+                continue;
+            }
+            // Told-fact exit status wins over liveness guessing (design.md §2.1 /
+            // A1). Once the launcher shim has recorded a `worker.exited` fact, the
+            // watchdog must NOT infer this node's outcome from pid/tmux/activity
+            // proxies — it consumes the told status instead. This is checked
+            // BEFORE the spawn-grace / retry / pid gates so the fact governs
+            // regardless of the node's age or a stale recorded pid.
+            //   - a FAILURE (non-zero / signal) → terminalize `failed` (told-fact
+            //     pass below; branch preserved via invariant 5),
+            //   - a CLEAN exit (0) with no merge → attention-required: leave the
+            //     node non-terminal, never auto-fail it (a merged node is already
+            //     terminal and skipped above).
+            if let Some(exit) = n.worker_exit {
+                if exit.is_failure() {
+                    told_failures.push((node_id.clone(), nid.clone(), exit));
+                }
                 continue;
             }
             // Retry-park gate (issue `autoretry-agent-died-worker`): a node parked
@@ -3360,6 +3478,17 @@ fn watchdog_tick(
             }
         }
     }
+    // Told-fact failure pass (design.md §2.1 / A1). For every node whose launcher
+    // shim recorded a FAILING `worker.exited` status, terminalize `failed` from
+    // the told fact — never a pid guess. Runs under the exclusive run lock with a
+    // re-read so a `run merge` / report that landed in the window wins (a worker
+    // can merge, then exit non-zero; the merge is the higher-fidelity truth). The
+    // synthesized report carries `success: false` and no explicit-merge marker, so
+    // invariant 5's teardown gate preserves the branch + worktree.
+    for (node_id, nid, exit) in told_failures {
+        synthesize_worker_exit_failure(paths, &nid, &node_id, exit);
+    }
+
     // Drive the bounded auto-retry state machine: for every parked node whose
     // backoff has elapsed, re-spawn a clean worker at the run's source branch (or
     // terminalize `failed` once the retry / spawn-failure budget is exhausted).
@@ -3639,6 +3768,7 @@ mod tests {
             last_report: None,
             last_processed_report_seq_by_child: serde_json::Map::default(),
             retry_attempts: 0,
+            worker_exit: None,
         }
     }
 
@@ -4890,6 +5020,219 @@ mod tests {
         )
         .unwrap();
         paths
+    }
+
+    /// A definitely-dead pid: spawn `true`, reap it, reuse its pid. The recycled
+    /// pid is (almost certainly) not re-issued to a live process during the test.
+    fn dead_pid() -> i32 {
+        let mut child = PCommand::new("true").spawn().unwrap();
+        let pid = child.id() as i32;
+        child.wait().unwrap();
+        pid
+    }
+
+    /// Told-exit-status core regression (issue `thin-exit-status-launcher`,
+    /// design.md §2.6): a worker that exited **0 without calling `run merge`** is
+    /// the finished-but-unmerged case. It must stay NON-terminal (attention-
+    /// required / manual finish) — NEVER auto-failed as `agent-died`, even though
+    /// its pid is provably gone. This is exactly the safety-net case the thin model
+    /// converts from a wrong terminal verdict into a visible, resumable state.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn worker_exit_zero_without_merge_stays_non_terminal() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        // No real tmux: the liveness probe must never touch the user's session.
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid());
+
+        // The launcher shim recorded a CLEAN exit; the agent skipped `run merge`.
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "worker.exited",
+            Some(&nid),
+            None,
+            json!({ "exit_code": 0 }),
+        )
+        .unwrap();
+
+        watchdog_tick(
+            &paths,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            !n.status.is_terminal(),
+            "exit 0 without a merge must stay non-terminal (attention-required), got {:?}",
+            n.status
+        );
+        assert!(
+            n.last_report.is_none(),
+            "a clean exit must NOT synthesize any agent-died / failed report"
+        );
+        assert!(
+            n.worker_exit.is_some_and(WorkerExit::is_clean),
+            "the told clean-exit fact is durably recorded on the node"
+        );
+        // And the run itself must not roll up terminal off a clean-but-unmerged node.
+        assert!(
+            cleanup::rollup_status(&paths, false).is_none(),
+            "a finished-but-unmerged run stays pending, awaiting manual finish"
+        );
+    }
+
+    /// Told-exit-status regression: a worker that exited **non-zero** is a typed
+    /// `failed` outcome (design.md §2.6) — terminalized from the told fact, with a
+    /// `worker-exited-nonzero` reason (not a pid-guessed `agent-died`), the exit
+    /// code stamped, no `explicit-merge` marker (so invariant 5 preserves the
+    /// branch), and NOT parked for empty-handed auto-retry.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn worker_exit_nonzero_terminalizes_failed() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid());
+
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "worker.exited",
+            Some(&nid),
+            None,
+            json!({ "exit_code": 7 }),
+        )
+        .unwrap();
+
+        watchdog_tick(
+            &paths,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+
+        let n = n0001(&paths);
+        assert_eq!(
+            n.status,
+            Status::Failed,
+            "a non-zero exit is a typed failure"
+        );
+        let r = n.last_report.expect("a failed report is synthesized");
+        assert_eq!(r["success"], false);
+        assert_eq!(r["reason"], WORKER_EXITED_NONZERO_REASON);
+        assert_ne!(r["reason"], "agent-died", "the told fact, not a pid guess");
+        assert_eq!(r["exit_code"], 7);
+        assert!(
+            r.get("via").is_none(),
+            "no explicit-merge marker → invariant 5 preserves the branch"
+        );
+        assert_eq!(
+            n.retry_attempts, 0,
+            "a told non-zero exit is a deliberate failure, never empty-handed auto-retry"
+        );
+    }
+
+    /// Told-exit-status regression: a worker **killed by a signal** is also a
+    /// typed `failed` outcome, distinguished by a `worker-killed-by-signal` reason
+    /// with the signal number stamped.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn worker_exit_signal_terminalizes_failed() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid());
+
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "worker.exited",
+            Some(&nid),
+            None,
+            json!({ "signal": 9 }),
+        )
+        .unwrap();
+
+        watchdog_tick(
+            &paths,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+
+        let n = n0001(&paths);
+        assert_eq!(n.status, Status::Failed);
+        let r = n.last_report.expect("a failed report is synthesized");
+        assert_eq!(r["reason"], WORKER_KILLED_BY_SIGNAL_REASON);
+        assert_eq!(r["signal"], 9);
+    }
+
+    /// Told-exit-status regression: `run merge` is the higher-fidelity truth. A
+    /// worker that merged (node already `done`) and *then* exited non-zero must NOT
+    /// be resurrected/overridden to `failed` by the late told-failure — the merge
+    /// wins (design.md §2.6: merge is the only success truth, and it is terminal).
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn worker_exit_nonzero_after_merge_keeps_done() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid());
+
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        // The worker merged first → node terminal `done` (via explicit-merge).
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid),
+            None,
+            json!({ "success": true, "cancelled": false, "via": "explicit-merge" }),
+        )
+        .unwrap();
+        // …then its process exited non-zero.
+        append_and_apply_event(
+            &paths,
+            "worker.exited",
+            Some(&nid),
+            None,
+            json!({ "exit_code": 3 }),
+        )
+        .unwrap();
+
+        watchdog_tick(
+            &paths,
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+            &mut std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+
+        let n = n0001(&paths);
+        assert_eq!(n.status, Status::Done, "the merge is terminal and wins");
+        assert_eq!(
+            n.last_report.expect("merge report")["success"],
+            true,
+            "the late non-zero exit must not override the merge success"
+        );
     }
 
     /// Write a stub `create.sh` that materializes a real worktree (forked from the

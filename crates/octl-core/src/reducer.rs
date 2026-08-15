@@ -55,7 +55,7 @@ use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
 use crate::schema::{
     ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, Node, NodeId, RunId, Status,
-    TmuxIdentity, STATE_SCHEMA_VERSION,
+    TmuxIdentity, WorkerExit, STATE_SCHEMA_VERSION,
 };
 
 /// Map an id-validation failure on an event-sourced id to a [`CorruptEventLog`]
@@ -294,6 +294,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.status" => reduce_node_status(paths, ev),
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
+        "worker.exited" => reduce_worker_exited(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
         "supervisor.attached" => reduce_supervisor_attached(paths, ev),
         "supervisor.cursor_advanced" => reduce_supervisor_cursor_advanced(paths, ev),
@@ -614,6 +615,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         last_report: None,
         last_processed_report_seq_by_child: serde_json::Map::default(),
         retry_attempts: 0,
+        worker_exit: None,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -815,6 +817,57 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     let new_status = report_terminal_status(&events_path, ev)?;
     n.last_report = Some(ev.data.clone());
     n.status = new_status;
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold a `worker.exited` event onto the node's `worker_exit` field (design.md
+/// §2.1 / A1). This records the launcher shim's **told** exit status as a
+/// durable fact; it deliberately does NOT transition `status`. Terminalization
+/// is the supervisor's decision via the typed outcome table (§2.6) — a non-zero
+/// or signalled exit becomes `failed`, while a clean exit without a merge stays
+/// non-terminal (attention-required). Keeping the status transition out of the
+/// reducer is what lets the clean-but-unmerged worker remain a visible, resumable
+/// state instead of an auto-failed one.
+///
+/// Payload contract: at least one of `exit_code` (JSON integer) or `signal`
+/// (JSON integer) must be present; a payload carrying neither is a corrupt event
+/// (the reducer is the canonical gate). The fold is idempotent and **first-write-
+/// wins**: once `worker_exit` is set, a replay or a spurious duplicate is a clean
+/// no-op, so a full replay from seq 0 converges to the same recorded fact.
+fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let code = optional_i32(&ev.data, "exit_code", &events_path, ev)?;
+    let signal = optional_i32(&ev.data, "signal", &events_path, ev)?;
+    // A worker exit is either a normal return (code) or a signal death; a payload
+    // with neither is meaningless — reject it rather than record an empty fact.
+    if code.is_none() && signal.is_none() {
+        return Err(Error::CorruptEventLog {
+            path: events_path,
+            reason: format!(
+                "event seq={} kind=worker.exited must carry `exit_code` or `signal`",
+                ev.seq
+            ),
+        });
+    }
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        // No projection to decorate (e.g. a worker.exited replayed before its
+        // node.created on a torn log): a clean no-op, healed on the next replay.
+        None => return Ok(vec![]),
+    };
+    // First-write-wins: the shim fires exactly once per worker, so an existing
+    // record is a replay/duplicate. Leaving it untouched keeps the fold a pure
+    // function of the first exit event and never churns `updated_at`.
+    if n.worker_exit.is_some() {
+        return Ok(vec![]);
+    }
+    n.worker_exit = Some(WorkerExit {
+        code,
+        signal,
+        at: ev.ts,
+    });
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -1819,6 +1872,95 @@ mod tests {
             "cleanup.window_missing",
         ] {
             assert_plan_matches_apply(&paths, &at(kind, None, serde_json::json!({})), false);
+        }
+    }
+
+    /// A `worker.exited` carrying a clean `exit_code: 0` folds onto the node's
+    /// `worker_exit` field as a clean exit — and does NOT transition `status`
+    /// (terminalization is the supervisor's decision via the typed table).
+    #[test]
+    fn worker_exited_records_clean_exit_without_transitioning_status() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "worker.exited".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({ "exit_code": 0 });
+        apply_event(&paths, &ev).expect("worker.exited applies");
+
+        let n = read_node_opt(&paths, &NodeId::parse_str("n-0001").unwrap())
+            .unwrap()
+            .unwrap();
+        let exit = n.worker_exit.expect("worker_exit recorded");
+        assert_eq!(exit.code, Some(0));
+        assert_eq!(exit.signal, None);
+        assert!(exit.is_clean());
+        assert_eq!(
+            n.status,
+            Status::Pending,
+            "the exit fact never transitions status"
+        );
+    }
+
+    /// A `worker.exited` carrying a `signal` records it as a failure; and the fold
+    /// is first-write-wins — a replayed/duplicate exit event never overwrites the
+    /// first recorded fact (replay-safety for the `applied_seq` watermark).
+    #[test]
+    fn worker_exited_records_signal_and_is_first_write_wins() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "worker.exited".into();
+        ev.node_id = Some(nid.clone());
+        ev.data = serde_json::json!({ "signal": 9 });
+        apply_event(&paths, &ev).expect("worker.exited applies");
+
+        let n = read_node_opt(&paths, &nid).unwrap().unwrap();
+        let exit = n.worker_exit.expect("worker_exit recorded");
+        assert_eq!(exit.signal, Some(9));
+        assert!(exit.is_failure());
+
+        // A later, conflicting exit event (e.g. a replay of a different value) is a
+        // clean no-op: the first fact stands.
+        let mut dup = event(run_id);
+        dup.seq = 4;
+        dup.kind = "worker.exited".into();
+        dup.node_id = Some(nid.clone());
+        dup.data = serde_json::json!({ "exit_code": 0 });
+        apply_event(&paths, &dup).expect("duplicate worker.exited applies as no-op");
+        let n2 = read_node_opt(&paths, &nid).unwrap().unwrap();
+        assert_eq!(
+            n2.worker_exit.unwrap().signal,
+            Some(9),
+            "first-write-wins: the replayed exit must not overwrite the recorded fact"
+        );
+    }
+
+    /// A `worker.exited` carrying neither `exit_code` nor `signal` is malformed —
+    /// the reducer is the canonical gate and rejects it as `CorruptEventLog` rather
+    /// than record an empty fact.
+    #[test]
+    fn worker_exited_without_code_or_signal_is_corrupt() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "worker.exited".into();
+        ev.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        ev.data = serde_json::json!({});
+        match reduce_event_to_ops(&paths, &ev) {
+            Err(Error::CorruptEventLog { .. }) => {}
+            Ok(_) => panic!("an empty worker.exited payload must be rejected, not applied"),
+            Err(other) => panic!("expected CorruptEventLog, got {other:?}"),
         }
     }
 }

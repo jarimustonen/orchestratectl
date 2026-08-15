@@ -138,6 +138,7 @@ mod tests {
             last_report: None,
             last_processed_report_seq_by_child: Map::new(),
             retry_attempts: 0,
+            worker_exit: None,
         }
     }
 

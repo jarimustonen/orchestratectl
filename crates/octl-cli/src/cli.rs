@@ -76,6 +76,12 @@ enum Command {
     /// agents, consume child `node.report` events with deterministic-
     /// ID dedup. Re-enters the same binary; `run reattach` invokes it.
     Supervise(crate::supervise::SuperviseArgs),
+    /// Thin launcher shim: `run-worker <run> <node> -- <cmd> …` wraps an
+    /// autonomous worker, waits on it, records its true exit status as a
+    /// durable `worker.exited` event, and exits with the worker's own code.
+    /// Internal — invoked by the worker-launch path, not by AI callers.
+    #[command(name = "run-worker", hide = true)]
+    RunWorker(crate::run_worker::RunWorkerArgs),
     /// Read-only self-diagnostic: validate schema, skill-sync, deps,
     /// config, and data integrity. `--fix` applies the safe subset.
     Doctor(crate::doctor::DoctorArgs),
@@ -227,6 +233,7 @@ pub fn run() -> ExitCode {
         Command::Event { action } => crate::event::dispatch(action, output, &logging_warnings),
         Command::Node { action } => crate::node::dispatch(action, output, &logging_warnings),
         Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
+        Command::RunWorker(args) => crate::run_worker::dispatch(args),
         // `doctor` owns its exit code directly: §18 requires exit 1 on any
         // `fail` *without* an error envelope (the report on stdout is the
         // answer), which does not map onto the shared `Result` path below.
