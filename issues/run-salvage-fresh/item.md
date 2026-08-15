@@ -4,6 +4,8 @@ updated: 2026-08-15
 type: feature
 status: open
 priority: normal
+epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # run salvage: fresh-agent continuation variant
