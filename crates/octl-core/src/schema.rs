@@ -578,6 +578,31 @@ pub struct Node {
     /// `ProjectionOp` by the full [`MergeTxn`] footprint.
     #[serde(default)]
     pub pending_merge: Option<Box<MergeTxn>>,
+    /// The durable, monotonic timestamp of the FIRST tick on which the supervisor
+    /// observed this node's worker process confirmed-dead with no told
+    /// `worker.exited` and no merge — the anchor for the residual crash
+    /// backstop's fixed post-death grace (design.md §2.1a, issue
+    /// `typed-supervisor-outcomes`).
+    ///
+    /// The backstop is the ONLY place pid liveness still governs an outcome
+    /// (pid liveness is a pure crash backstop now, never a primary signal). When
+    /// the launcher shim's exit fact is lost — a hard kill of the shim, host
+    /// death — the supervisor never sees a `worker.exited` event, so it falls
+    /// back to "process confirmed gone → `failed`". The grace exists only to let
+    /// an in-flight `worker.exited` / merge append land before that fires: on the
+    /// first confirmed death the supervisor records this timestamp (via a
+    /// `node.death_observed` event) and DEFERS; it terminalizes `failed` only on a
+    /// later tick once a fixed short window has elapsed AND an exclusive-lock
+    /// re-read confirms no exit/merge landed in the race window.
+    ///
+    /// Persisted (not in-memory) so the grace survives a supervisor restart in the
+    /// window — a restart re-reads it rather than restarting the clock. First-write
+    /// -wins in the reducer, so the anchor is monotonic. `None` until the first
+    /// confirmed-death observation, or forever for a worker that exits cleanly
+    /// (the shim records `worker.exited` and the backstop never engages).
+    /// `#[serde(default)]` keeps a node written before this field existed readable.
+    #[serde(default)]
+    pub first_death_at: Option<DateTime<Utc>>,
 }
 
 /// A durable, in-flight `run merge` transaction recorded by `merge.started`

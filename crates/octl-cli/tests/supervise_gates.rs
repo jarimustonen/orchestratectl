@@ -526,13 +526,12 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     // Now supervise --once: alive PID + no tmux probe → no synthesis. Disable
     // the spawn grace (this test is about PID liveness, not freshness); the
     // grace itself is covered by the dedicated `*_within_grace` regressions.
-    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
-        "--output",
-        "json",
-        "supervise",
-        &run_id,
-        "--once",
-    ]));
+    run_ok(
+        bin(&home)
+            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
+            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(
         count_kind(&events, "node.report"),
@@ -547,13 +546,12 @@ fn v2_agent_pid_discovery_via_liveness_probe() {
     let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
     n["agent_pid"] = Value::from(0x3FFF_FFFE_i64);
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
-    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
-        "--output",
-        "json",
-        "supervise",
-        &run_id,
-        "--once",
-    ]));
+    run_ok(
+        bin(&home)
+            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
+            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
     assert!(
         count_kind(&events, "node.report") >= 1,
         "dead PID must synthesize a failed node.report. events={:?}",
@@ -608,13 +606,12 @@ fn v3_kill_and_start_time_identity() {
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
     // Grace disabled: this test asserts the recycled-PID verdict, not freshness.
-    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
-        "--output",
-        "json",
-        "supervise",
-        &run_id,
-        "--once",
-    ]));
+    run_ok(
+        bin(&home)
+            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
+            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
     let events = run_dir(&home, &run_id).join("events.jsonl");
     let reports = read_events(&events)
         .into_iter()
@@ -726,7 +723,17 @@ fn dead_pid_synthesizes_after_grace() {
     n["started_at"] = Value::String("2020-01-01T00:00:00Z".into());
     std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
 
-    run_ok(bin(&home).args(["--output", "json", "supervise", &run_id, "--once"]));
+    // Zero the residual crash backstop's post-death grace so the single `--once`
+    // tick fires immediately (design.md §2.1a); the persisted defer-then-fire
+    // behavior at a non-zero grace is covered by
+    // `dead_pid_deferred_within_death_grace_then_fires`.
+    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
 
     let events = run_dir(&home, &run_id).join("events.jsonl");
     let reports = read_events(&events)
@@ -738,6 +745,64 @@ fn dead_pid_synthesizes_after_grace() {
         1,
         "a node past the spawn grace with a dead PID must synthesize one \
          terminal report"
+    );
+    assert_eq!(reports[0]["data"]["reason"], "agent-died");
+}
+
+/// The residual crash backstop's PERSISTED post-death grace (design.md §2.1a):
+/// with a non-zero grace, the FIRST tick that observes the dead PID only records
+/// the durable `node.death_observed` anchor and DEFERS — it does not synthesize a
+/// terminal report. A later tick past the grace fires it. This is what lets an
+/// in-flight `worker.exited` / merge append win the race.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn dead_pid_deferred_within_death_grace_then_fires() {
+    let home = TestHome::new();
+    let run_id = create_run(&home, "spinoff", "death-grace-defer");
+    let node_p = forge_pid_node(&home, &run_id, 0x3FFF_FFFE_i64);
+
+    // Past the spawn grace, so only the death grace governs.
+    let mut n: Value = serde_json::from_slice(&std::fs::read(&node_p).unwrap()).unwrap();
+    n["started_at"] = Value::String("2020-01-01T00:00:00Z".into());
+    std::fs::write(&node_p, serde_json::to_vec_pretty(&n).unwrap()).unwrap();
+
+    // A generous death grace: the first tick must DEFER, recording the anchor.
+    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "3600").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
+    let events = run_dir(&home, &run_id).join("events.jsonl");
+    assert_eq!(
+        count_kind(&events, "node.report"),
+        0,
+        "the first tick within the death grace must NOT terminalize"
+    );
+    assert_eq!(
+        count_kind(&events, "node.death_observed"),
+        1,
+        "the first tick records the durable first-death anchor"
+    );
+
+    // A later tick with a zero grace: the anchor is now older than the grace, so
+    // the backstop fires.
+    run_ok(bin(&home).env("OCTL_DEATH_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "supervise",
+        &run_id,
+        "--once",
+    ]));
+    let reports = read_events(&events)
+        .into_iter()
+        .filter(|v| v["kind"] == "node.report")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reports.len(),
+        1,
+        "the backstop fires once the grace elapses"
     );
     assert_eq!(reports[0]["data"]["reason"], "agent-died");
 }
@@ -1174,13 +1239,12 @@ fn watchdog_defers_when_report_already_present() {
 
     // Grace disabled so the deferral (present last_report) — not freshness — is
     // what blocks synthesis; otherwise this could pass for the wrong reason.
-    run_ok(bin(&home).env("OCTL_WATCHDOG_GRACE_SECS", "0").args([
-        "--output",
-        "json",
-        "supervise",
-        &run_id,
-        "--once",
-    ]));
+    run_ok(
+        bin(&home)
+            .env("OCTL_WATCHDOG_GRACE_SECS", "0")
+            .env("OCTL_DEATH_GRACE_SECS", "0")
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
 
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(

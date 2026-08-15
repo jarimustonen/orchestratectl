@@ -60,72 +60,6 @@ pub fn pid_start_time(pid: u32) -> Option<u64> {
         .map(sysinfo::Process::start_time)
 }
 
-/// Cumulative CPU time consumed by `pid`, in centiseconds, via
-/// `ps -o time= -p <pid>`. `None` when the process is gone, `ps` fails, or the
-/// output cannot be parsed.
-///
-/// This is the third activity clock for the idle-unmerged safety net (issue
-/// `agent-skips-run-merge-idle-pending`). Unlike the branch-tip commit time and
-/// the pane-transcript mtime — both of which freeze for an agent that is busy
-/// but SILENT and not committing (a long CPU-bound subprocess emitting nothing
-/// to the pane) — cumulative CPU time keeps advancing while a process does work
-/// and stays flat only when it is genuinely idle (an agent parked at a shell
-/// prompt burns ~no CPU). Comparing this value across ticks (see
-/// `cpu_activity_clock` in `mod.rs`) is what distinguishes "done and idle" from
-/// "still working without output", closing the false-positive hole the commit +
-/// pane clocks alone leave open.
-///
-/// `sysinfo` 0.32 has no cumulative-CPU accessor (only interval `cpu_usage`), so
-/// this shells out to `ps`, whose `time` column is portable across macOS/Linux.
-pub fn pid_cpu_time_centis(pid: u32) -> Option<u64> {
-    let out = Command::new("ps")
-        .args(["-o", "time=", "-p", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_ps_time_centis(String::from_utf8_lossy(&out.stdout).trim())
-}
-
-/// Parse a `ps -o time` duration (`[[dd-]hh:]mm:ss[.cc]`) into centiseconds.
-/// Returns `None` on any unrecognized shape so the caller declines rather than
-/// guesses. Centisecond resolution lets even a lightly-CPU-using agent register
-/// activity within a couple of ticks.
-fn parse_ps_time_centis(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    // Optional leading `dd-` (days).
-    let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<u64>().ok()?, r),
-        None => (0u64, s),
-    };
-    // The remaining colon-separated fields end in `ss[.cc]`; hours/minutes
-    // are optional prefixes.
-    let parts: Vec<&str> = rest.split(':').collect();
-    let (hours, mins, secs_field) = match parts.as_slice() {
-        [sec] => (0u64, 0u64, *sec),
-        [m, sec] => (0u64, m.parse().ok()?, *sec),
-        [h, m, sec] => (h.parse().ok()?, m.parse().ok()?, *sec),
-        _ => return None,
-    };
-    let (whole, centis) = match secs_field.split_once('.') {
-        Some((w, c)) => {
-            // Normalize the fractional part to exactly two digits.
-            let mut c = c.to_string();
-            while c.len() < 2 {
-                c.push('0');
-            }
-            (w.parse::<u64>().ok()?, c.get(..2)?.parse::<u64>().ok()?)
-        }
-        None => (secs_field.parse::<u64>().ok()?, 0u64),
-    };
-    Some((((days * 24 + hours) * 60 + mins) * 60 + whole) * 100 + centis)
-}
-
 /// Outcome of a tmux window probe.
 ///
 /// The distinction between [`Absent`](TmuxProbe::Absent) and
@@ -595,36 +529,6 @@ mod tests {
     /// `skip_tmux_check` is set).
     fn empty_snapshot() -> WatchdogTmuxSnapshot {
         WatchdogTmuxSnapshot::default()
-    }
-
-    #[test]
-    fn parse_ps_time_centis_handles_all_shapes() {
-        // mm:ss.cc (the common macOS shape)
-        assert_eq!(parse_ps_time_centis("0:00.04"), Some(4));
-        assert_eq!(parse_ps_time_centis("1:30.50"), Some(90 * 100 + 50));
-        // Bare mm:ss (no fractional part)
-        assert_eq!(parse_ps_time_centis("02:05"), Some(125 * 100));
-        // hh:mm:ss
-        assert_eq!(parse_ps_time_centis("1:00:00"), Some(3600 * 100));
-        // dd-hh:mm:ss
-        assert_eq!(parse_ps_time_centis("2-00:00:00"), Some(2 * 86400 * 100));
-        // Single-digit fractional pads to two digits (.4 == .40 == 40cs)
-        assert_eq!(parse_ps_time_centis("0:00.4"), Some(40));
-        // Surrounding whitespace (ps right-justifies its column)
-        assert_eq!(parse_ps_time_centis("   0:01.00 "), Some(100));
-        // Garbage / empty declines rather than guessing.
-        assert_eq!(parse_ps_time_centis(""), None);
-        assert_eq!(parse_ps_time_centis("nope"), None);
-        assert_eq!(parse_ps_time_centis("1:2:3:4"), None);
-    }
-
-    #[test]
-    fn own_pid_has_cpu_time() {
-        // A live process reports SOME cumulative CPU time (possibly 0 centis if
-        // it has done almost nothing, but a readable value, not `None`).
-        assert!(pid_cpu_time_centis(std::process::id()).is_some());
-        // A never-real PID declines.
-        assert_eq!(pid_cpu_time_centis(0), None);
     }
 
     #[test]

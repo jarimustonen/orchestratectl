@@ -295,6 +295,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.report" => reduce_node_report(paths, ev),
         "node.retry" => reduce_node_retry(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
+        "node.death_observed" => reduce_node_death_observed(paths, ev),
         KIND_MERGE_STARTED => reduce_merge_started(paths, ev),
         KIND_MERGE_ABORTED => reduce_merge_aborted(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
@@ -619,6 +620,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         retry_attempts: 0,
         worker_exit: None,
         pending_merge: None,
+        first_death_at: None,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -702,6 +704,11 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     // the supervisor's told-fact pass would instantly (mis)judge the new attempt
     // from the dead one's exit (issue `thin-exit-status-launcher`).
     n.worker_exit = None;
+    // Clear the previous attempt's first-death anchor: the residual crash backstop
+    // must measure the NEW attempt's own post-death grace from scratch, not inherit
+    // the dead attempt's timestamp (which would fire the backstop with no grace on
+    // the fresh worker's first confirmed death). Issue `typed-supervisor-outcomes`.
+    n.first_death_at = None;
     // The event carries its ABSOLUTE attempt number (the supervisor set it to
     // `retry_attempts + 1` at emit time). Assign it directly rather than a blind
     // `+= 1`: this makes the projection a pure function of the event, so a
@@ -908,6 +915,35 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
         signal,
         at: ev.ts,
     });
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold a `node.death_observed` event onto [`Node::first_death_at`], recording
+/// the FIRST tick on which the supervisor saw this node's worker confirmed-dead
+/// with no told `worker.exited` and no merge — the durable anchor for the
+/// residual crash backstop's fixed post-death grace (design.md §2.1a, issue
+/// `typed-supervisor-outcomes`).
+///
+/// The anchor is the event's own timestamp (`ev.ts`) — no payload field needed.
+/// The fold is **first-write-wins**: the anchor is monotonic, so a later
+/// re-observation (a supervisor restart still seeing the dead pid) never resets
+/// the clock, and a full replay from seq 0 converges to the first observation. A
+/// `node.death_observed` for a missing or already terminal node folds to nothing
+/// (the backstop is moot once the node settles).
+fn reduce_node_death_observed(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    // First-write-wins (monotonic anchor); a terminal node never engages the
+    // backstop, so leave it untouched.
+    if n.first_death_at.is_some() || n.status.is_terminal() {
+        return Ok(vec![]);
+    }
+    n.first_death_at = Some(ev.ts);
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -2229,6 +2265,46 @@ mod tests {
             Ok(_) => panic!("a worker.exited with both fields must be rejected"),
             Err(other) => panic!("expected CorruptEventLog, got {other:?}"),
         }
+    }
+
+    /// `node.death_observed` records the residual crash backstop's first-death
+    /// anchor (`first_death_at`) as `ev.ts`, is **first-write-wins** (a later
+    /// re-observation never resets the monotonic anchor), and is a no-op against a
+    /// terminal node (the backstop is moot once settled). Issue
+    /// `typed-supervisor-outcomes`.
+    #[test]
+    fn node_death_observed_records_first_death_first_write_wins() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        let mut ev = event(run_id);
+        ev.seq = 3;
+        ev.kind = "node.death_observed".into();
+        ev.node_id = Some(nid.clone());
+        ev.data = serde_json::json!({});
+        apply_event(&paths, &ev).expect("node.death_observed applies");
+        let first = read_node_opt(&paths, &nid)
+            .unwrap()
+            .unwrap()
+            .first_death_at
+            .expect("first_death_at recorded");
+        assert_eq!(first, ev.ts, "the anchor is the event's own timestamp");
+
+        // A later re-observation is first-write-wins: the monotonic anchor holds.
+        let mut later = event(run_id);
+        later.seq = 4;
+        later.kind = "node.death_observed".into();
+        later.node_id = Some(nid.clone());
+        later.ts = ev.ts + chrono::Duration::seconds(30);
+        later.data = serde_json::json!({});
+        apply_event(&paths, &later).expect("re-observation applies as no-op");
+        assert_eq!(
+            read_node_opt(&paths, &nid).unwrap().unwrap().first_death_at,
+            Some(first),
+            "first-write-wins: a re-observation must not reset the anchor"
+        );
     }
 
     /// `node.retry` clears the previous attempt's told exit fact: the re-spawned

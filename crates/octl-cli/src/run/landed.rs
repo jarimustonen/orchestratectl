@@ -54,8 +54,8 @@
 //! When neither rung can run — the branch ref was already torn down by the
 //! supervisor, no `source_repo`/`branch` was recorded, or git errors — the signal
 //! falls back to the durable **report marker**: a `success: true` terminal
-//! `node.report` whose `via` is `explicit-merge` (a `run merge`) or
-//! `merge-reconciled` (a supervisor git-reconcile). That marker is the recorded
+//! `node.report` whose `via` is `explicit-merge` (a `run merge`) — the only
+//! success-completion marker in the thin model. That marker is the recorded
 //! fact that the merge completed; it was correct in the session where the ancestry
 //! check lied, and it is the real post-teardown case (the branch ref is force-
 //! deleted after a confirmed merge, so only the marker remains).
@@ -72,7 +72,6 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-use crate::supervise::cleanup::VIA_MERGE_RECONCILED;
 use octl_core::VIA_EXPLICIT_MERGE;
 
 /// How a [`LandingSignal`] verdict was reached — surfaced as `landed_method`.
@@ -85,8 +84,8 @@ pub(crate) enum LandedMethod {
     GitVerified,
     /// Git verification was unavailable (branch torn down, no repo/branch
     /// recorded, or git errored), so the `landed: true` verdict came from the
-    /// durable `success: true` terminal-report `via` marker (`explicit-merge` /
-    /// `merge-reconciled`). This is the normal post-teardown case.
+    /// durable `success: true` terminal-report `via` marker (`explicit-merge`).
+    /// This is the normal post-teardown case.
     ReportMarker,
     /// Neither git verification nor a merge marker was available — `landed` is
     /// `false` because nothing *confirms* a landing, NOT because one was
@@ -174,22 +173,18 @@ pub(crate) fn landing_signal(inputs: &LandingInputs<'_>, git: &str) -> LandingSi
 }
 
 /// True when a terminal report is a confirmed **successful** merge — `success:
-/// true` AND a `via` of `explicit-merge` (a `run merge`) or `merge-reconciled` (a
-/// supervisor git-reconcile). Mirrors the supervisor's canonical
-/// `node_branch_merged` gate: the `success: true` requirement means a payload
-/// carrying a merge `via` but `success: false` (malformed or spoofed) never earns
-/// the landed marker on its `via` alone. A blocked handoff (`success: false`, no
-/// merge `via`) reads false.
+/// true` AND a `via` of `explicit-merge` (a `run merge`), the only success-
+/// completion marker in the thin model. Mirrors the supervisor's typed
+/// [`TerminalOutcome::Merged`](crate::supervise::outcome::TerminalOutcome) gate:
+/// the `success: true` requirement means a payload carrying the merge `via` but
+/// `success: false` (malformed or spoofed) never earns the landed marker on its
+/// `via` alone. A blocked handoff (`success: false`, no merge `via`) reads false.
 fn report_has_merge_marker(report: Option<&Value>) -> bool {
     let Some(report) = report else {
         return false;
     };
     let success = report.get("success").and_then(Value::as_bool) == Some(true);
-    success
-        && matches!(
-            report.get("via").and_then(Value::as_str),
-            Some(VIA_EXPLICIT_MERGE | VIA_MERGE_RECONCILED)
-        )
+    success && report.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE)
 }
 
 /// Git-verified landing check. Two rungs (see module docs), sound for the
@@ -497,7 +492,9 @@ mod tests {
             }
         );
 
-        // merge-reconciled counts too.
+        // The removed `merge-reconciled` marker is NO LONGER a merge signal (the
+        // git-reconcile heuristic was deleted in the A6 thin-supervisor cut) — a
+        // report carrying it does not confirm a landing.
         let reconciled = json!({ "success": true, "via": "merge-reconciled" });
         let inputs = LandingInputs {
             report: Some(&reconciled),
@@ -505,7 +502,7 @@ mod tests {
         };
         assert_eq!(
             landing_signal(&inputs, "git").method,
-            LandedMethod::ReportMarker
+            LandedMethod::Unverified
         );
     }
 
@@ -706,13 +703,17 @@ mod tests {
         assert!(!report_has_merge_marker(Some(
             &json!({ "via": "explicit-merge" })
         )));
-        // success:true + a merge via is a marker.
+        // success:true + an explicit-merge via is a marker.
         assert!(report_has_merge_marker(Some(&json!({
-            "success": true, "via": "merge-reconciled"
+            "success": true, "via": "explicit-merge"
         }))));
-        // success:true but a non-merge via is not.
+        // success:true but a non-merge via is not — including the removed
+        // `merge-reconciled` (the git-reconcile heuristic was deleted in A6).
         assert!(!report_has_merge_marker(Some(&json!({
             "success": true, "via": "watchdog"
+        }))));
+        assert!(!report_has_merge_marker(Some(&json!({
+            "success": true, "via": "merge-reconciled"
         }))));
     }
 

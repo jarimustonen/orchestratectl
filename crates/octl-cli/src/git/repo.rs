@@ -91,27 +91,6 @@ impl Git {
             .is_ok_and(|s| s.success())
     }
 
-    /// `git -C <repo> log -1 --format=%ct --end-of-options <branch>` → the Unix
-    /// committer time of `branch`'s tip commit, or `None` on any git error /
-    /// unparseable output. `--end-of-options` (NOT `--`, which for `git log`
-    /// starts a PATHSPEC and would make `branch` be read as a file path) so a
-    /// branch whose name begins with `-` is never parsed as a flag.
-    pub fn tip_committer_time(&self, repo: &str, branch: &str) -> Option<i64> {
-        let out = self
-            .at(repo)
-            .args(["log", "-1", "--format=%ct", "--end-of-options", branch])
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .parse::<i64>()
-            .ok()
-    }
-
     /// `git -C <dir> status --porcelain` → true when the output is empty (no
     /// tracked, staged, or untracked changes). A `dir` whose `git status` cannot
     /// be read is conservatively treated as **dirty** (returns false), so a
@@ -348,19 +327,6 @@ mod tests {
         let (repo, _wt) = init_repo_with_worktree(&tmp);
         let g = Git::with_bin("git");
         assert!(!g.is_ancestor(repo.to_str().unwrap(), "main", "does/not/exist"));
-    }
-
-    #[test]
-    fn tip_committer_time_reads_commit_time() {
-        let tmp = TempDir::new().unwrap();
-        let (repo, _wt) = init_repo_with_worktree(&tmp);
-        let g = Git::with_bin("git");
-        let t = g.tip_committer_time(repo.to_str().unwrap(), "main");
-        assert!(t.is_some_and(|v| v > 0));
-        assert_eq!(
-            g.tip_committer_time(repo.to_str().unwrap(), "nope/nope"),
-            None
-        );
     }
 
     #[test]

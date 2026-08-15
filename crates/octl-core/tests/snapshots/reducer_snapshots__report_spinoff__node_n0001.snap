@@ -1,5 +1,6 @@
 ---
 source: crates/octl-core/tests/reducer_snapshots.rs
+assertion_line: 83
 expression: v
 ---
 {
@@ -8,6 +9,7 @@ expression: v
   "base_sha": null,
   "branch": null,
   "children": [],
+  "first_death_at": null,
   "kind": "spinoff",
   "last_processed_report_seq_by_child": {},
   "last_report": {

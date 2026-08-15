@@ -25,6 +25,7 @@
 pub mod capture;
 pub mod cleanup;
 pub mod notify;
+pub mod outcome;
 pub mod pid_file;
 pub mod reducer;
 pub mod state;
@@ -237,185 +238,16 @@ fn no_worker_grace() -> Duration {
 /// never-created worker from a spawned-then-died one.
 const NO_WORKER_REASON: &str = "no-worker-node";
 
-/// How long an alive-but-idle autonomous agent may sit on committed, cleanly-
-/// mergeable work WITHOUT calling `run merge` before the idle-unmerged safety net
-/// terminalizes the run (issue `agent-skips-run-merge-idle-pending`).
-///
-/// The observed failure: an autonomous agent finished its work (clean commits,
-/// clean worktree) but skipped its mandatory `run merge` close and dropped to an
-/// idle shell — so the PID stays Alive, no terminal report ever lands, and the
-/// run hangs `pending` forever. This threshold is the bounded quiet-period after
-/// which the supervisor stops waiting and terminalizes the run to a recoverable
-/// failed state a conductor can salvage.
-///
-/// Measured from the LATEST of the branch-tip commit time, the pane-transcript
-/// mtime, and the CPU-activity clock (see [`cleanup::node_idle_unmerged`] and
-/// [`cpu_activity_clock`]), so a legitimately long-running agent — heavy
-/// `/llm-review` units run 54–96 min — is never tripped as long as it is still
-/// committing, still emitting pane output, OR still burning real CPU.
-///
-/// Kept at 30 min. The reopen 2026-08-11 root cause was NOT the threshold but the
-/// CPU clock, which perpetually re-stamped itself on an idle TUI's render-loop
-/// trickle so the net could never fire at ANY window (fixed in [`cpu_activity_clock`]).
-/// A tempting follow-on was to halve this to 15 min so the net fires before a
-/// watching conductor intervenes by hand — but `ps -o time` is PID-only (a
-/// CPU-bound child is invisible) and child stdout is often block-buffered off a
-/// TTY, so a silent `cargo test` / `cargo build` / slow model call can keep ALL
-/// three clocks quiet for well over 15 min while the agent legitimately works.
-/// Terminalizing those is worse than a slower backstop, and the CPU fix already
-/// removes the never-fire bug, so the reduction is not needed for correctness.
-/// Operators who want a tighter bound can still lower it via [`IDLE_UNMERGED_ENV`];
-/// tests set `0` to fire on the first quiet tick.
-const IDLE_UNMERGED_THRESHOLD: Duration = Duration::from_secs(1800);
-
-/// Env override for [`IDLE_UNMERGED_THRESHOLD`] (whole seconds; unparseable →
-/// default).
-const IDLE_UNMERGED_ENV: &str = "OCTL_IDLE_UNMERGED_SECS";
-
-/// Reason recorded on the synthesized failed `node.report` when the idle-unmerged
-/// safety net fires. Distinct from `agent-died` (the process is still Alive) and
-/// from a blocked handoff (this is complete-but-unlanded work) so `run show` /
-/// `run wait` can tell "agent skipped its close" from a genuine failure or a
-/// human-needed tie.
-const IDLE_UNMERGED_REASON: &str = "agent-idle-unmerged";
-
 /// Reason recorded on the synthesized failed `node.report` when the launcher
 /// shim's **told** exit status is a non-zero return code (design.md §2.1 / A1,
 /// issue `thin-exit-status-launcher`). Distinct from `agent-died` (a pid-loss
 /// *guess*) so `run show` / `run wait` can tell a worker that provably returned
-/// non-zero from one the watchdog merely inferred dead.
+/// non-zero from one the residual crash backstop merely inferred dead.
 const WORKER_EXITED_NONZERO_REASON: &str = "worker-exited-nonzero";
 
 /// Reason recorded on the synthesized failed `node.report` when the launcher
 /// shim reports the worker was killed by a signal (design.md §2.1 / A1).
 const WORKER_KILLED_BY_SIGNAL_REASON: &str = "worker-killed-by-signal";
-
-/// Idle-trickle floor for the CPU activity clock ([`cpu_activity_clock`]), in
-/// centiseconds of CPU per wall-clock second (100 == one core running flat out).
-/// The agent process's cumulative CPU must advance at least this fast (over the
-/// clock's current window) to count as activity.
-///
-/// An idle claude TUI still runs an event/render loop (cursor blink, periodic
-/// refresh) that trickles a few centiseconds of CPU over many seconds — far under
-/// this 5% floor — so it no longer perpetually refreshes the clock and defeats the
-/// net (issue `agent-skips-run-merge-idle-pending`, reopen 2026-08-11). Real
-/// in-process agent work (parsing large tool output, the reasoning loop between
-/// calls) sits far above it, so a genuinely busy-but-silent agent PROCESS is still
-/// held off — preserving the false-positive guard the CPU clock was added for.
-/// (Note `ps -o time` measures only the agent PID's own CPU, not its children, so
-/// a CPU-bound *subprocess* never advances this clock regardless of the floor; that
-/// case is covered by the pane clock, which the subprocess's streamed output bumps,
-/// and by the deliberately generous [`IDLE_UNMERGED_THRESHOLD`]. Summing the process
-/// tree is a tracked follow-up.)
-const CPU_ACTIVE_FLOOR_CENTIS_PER_SEC: i64 = 5;
-
-/// The CPU-activity clock measures its rate over a window no older than this
-/// (issue `agent-skips-run-merge-idle-pending`, reopen 2026-08-11). Without a cap
-/// the baseline would only move when activity was stamped, so after a long idle a
-/// genuine CPU burst would have to overcome an ever-growing "rate deficit"
-/// (`d_cpu ≥ floor × dt` against the WHOLE idle window) before registering as
-/// active — potentially long enough that the net terminalizes an agent that has
-/// just resumed real work. Sliding the baseline forward once the window reaches
-/// this age (without stamping active) bounds burst-recognition latency to this
-/// many seconds while still letting a steady idle trickle stay under the floor
-/// over every window. 90 s is short enough to catch a resuming agent well inside
-/// the idle threshold, long enough that coarse whole-second `ps` quanta average
-/// out below the floor.
-const CPU_BASELINE_WINDOW_SECS: i64 = 90;
-
-/// The effective idle-unmerged threshold, honoring [`IDLE_UNMERGED_ENV`].
-fn idle_unmerged_threshold() -> Duration {
-    match std::env::var(IDLE_UNMERGED_ENV) {
-        Ok(v) => v
-            .trim()
-            .parse::<u64>()
-            .map_or(IDLE_UNMERGED_THRESHOLD, Duration::from_secs),
-        Err(_) => IDLE_UNMERGED_THRESHOLD,
-    }
-}
-
-/// The idle-unmerged safety net's third activity clock (issue
-/// `agent-skips-run-merge-idle-pending`): the Unix time at which `node_id`'s
-/// agent process was last seen to be genuinely BUSY on-CPU (not merely ticking).
-///
-/// `cpu_now` is the current cumulative CPU time (centiseconds, from
-/// [`watchdog::pid_cpu_time_centis`]); `map` remembers `(baseline CPU
-/// centiseconds, baseline Unix time, last-active Unix time)` per node across
-/// ticks. On the first observation the baseline is seeded to `now_unix` (assume
-/// active), so a just-observed node is never immediately judged idle.
-///
-/// **Rate-gated, not any-delta** (reopen 2026-08-11). The earlier version stamped
-/// the clock "active" on ANY increase in cumulative CPU. But a claude agent
-/// sitting idle in its live TUI — the reopened failure shape (work done, unsent
-/// text in the input box) — is NOT a zero-CPU process: its terminal event/render
-/// loop (cursor blink, periodic refresh) trickles a few centiseconds of CPU over
-/// many seconds. Under any-delta that trickle perpetually re-stamped the clock, so
-/// `last_activity = max(commit, pane, cpu)` never aged past the threshold and the
-/// net could NEVER fire for the exact case it exists to catch. Here CPU only
-/// counts as activity when it advances at least [`CPU_ACTIVE_FLOOR_CENTIS_PER_SEC`]
-/// per second over the clock's current window (`d_cpu ≥ floor × elapsed`). A
-/// trickling idle loop stays under the floor, so the baseline holds while the
-/// measured rate stays low and the clock ages out; genuine in-process work sits
-/// far above it, re-stamping the clock and holding the net off — preserving the
-/// busy-but-silent false-positive guard the CPU clock was added for. The window is
-/// bounded to [`CPU_BASELINE_WINDOW_SECS`] (see there) so a burst after a long idle
-/// is recognized promptly rather than fighting an unbounded rate deficit.
-///
-/// Robustness cases (all found in review of the reopen fix):
-/// - `cpu_now == None` (CPU unreadable): EVICT the entry and return `None`, so a
-///   later readable sample re-seeds a fresh baseline rather than comparing a
-///   post-outage reading against a pre-outage one across a huge gap.
-/// - `cpu < baseline` (PID recycled, process re-spawned for this node, or the
-///   cumulative counter reset): reseed active-now — a lower total is a NEW process,
-///   never proof of idleness.
-/// - `dt <= 0` (two samples in the same whole `ps`/wall second, or a backward clock
-///   step): make NO determination — leave the baseline and `last_active` untouched.
-///   Stamping active here on any positive delta would let a same-second re-tick with
-///   an idle trickle perpetually re-stamp the clock and defeat the net.
-fn cpu_activity_clock(
-    map: &mut std::collections::BTreeMap<String, (u64, i64, i64)>,
-    node_id: &str,
-    cpu_now: Option<u64>,
-    now_unix: i64,
-) -> Option<i64> {
-    let Some(cpu) = cpu_now else {
-        // Unreadable: drop any stale baseline so the next readable sample re-seeds.
-        map.remove(node_id);
-        return None;
-    };
-    // (baseline_cpu, baseline_unix, last_active_unix).
-    let entry = map
-        .entry(node_id.to_string())
-        .or_insert((cpu, now_unix, now_unix));
-    let (base_cpu, base_t, last_active) = *entry;
-    // A cumulative total that went DOWN is a different process for this node id —
-    // treat it as freshly active rather than (via saturating_sub → 0) permanently
-    // idle.
-    if cpu < base_cpu {
-        *entry = (cpu, now_unix, now_unix);
-        return Some(now_unix);
-    }
-    let dt = now_unix.saturating_sub(base_t);
-    let d_cpu = cpu.saturating_sub(base_cpu);
-    // Busy when cumulative CPU advanced at least the floor over the window. A
-    // zero-width or backward window (`dt <= 0`) is too short to compute a rate:
-    // make no determination (never stamp active on a trickle).
-    let active =
-        dt > 0 && i128::from(d_cpu) >= i128::from(CPU_ACTIVE_FLOOR_CENTIS_PER_SEC) * i128::from(dt);
-    if active {
-        // Stamp active now and reset the baseline so the next window measures the
-        // rate afresh from here.
-        *entry = (cpu, now_unix, now_unix);
-    } else if dt >= CPU_BASELINE_WINDOW_SECS {
-        // Slide the baseline forward WITHOUT stamping active, bounding the window so
-        // a later burst is measured against a recent origin. `last_active` is
-        // preserved, so a steady idle trickle still ages the clock out.
-        *entry = (cpu, now_unix, last_active);
-    }
-    // Otherwise (idle, window not yet full) leave the baseline in place: the trickle
-    // keeps accumulating against a fixed origin, so its measured rate stays low.
-    Some(entry.2)
-}
 
 /// Max attempts to fire the `--notify` completion hook before the supervisor
 /// gives up and winds down anyway. `notify::maybe_fire` returns a retryable
@@ -802,30 +634,11 @@ pub fn dispatch(
     // the (potentially long-blocking) loop.
     readiness.ready(our_pid);
 
-    // Per-node count of consecutive ticks a node has presented the
-    // `TmuxGone` half-state. §7.5 requires half-states to "resolve via
-    // short retry then commit to dead" — we only synthesize a terminal
-    // report once the streak crosses `HALF_STATE_TICKS`. Unambiguous
-    // `Dead` / `Recycled` verdicts are committed immediately.
-    let mut half_state_streak: std::collections::BTreeMap<String, u32> =
-        std::collections::BTreeMap::new();
-
     // Per-node bounded auto-retry parks (issue `autoretry-agent-died-worker`).
-    // A node parked here after an empty-handed `agent-died` is re-spawned once its
-    // backoff elapses; the DURABLE bound is `Node.retry_attempts`, so this map is
-    // in-memory only and a restart re-derives parks from the persisted count.
+    // A node parked here after an empty-handed confirmed-death is re-spawned once
+    // its backoff elapses; the DURABLE bound is `Node.retry_attempts`, so this map
+    // is in-memory only and a restart re-derives parks from the persisted count.
     let mut retry_states: std::collections::BTreeMap<String, RetryPark> =
-        std::collections::BTreeMap::new();
-
-    // Per-node cumulative-CPU-time tracker for the idle-unmerged safety net's
-    // third activity clock (issue `agent-skips-run-merge-idle-pending`). Maps a
-    // node id to `(baseline CPU centiseconds, baseline Unix time, last-active Unix
-    // time)` so `cpu_activity_clock` can tell a busy-but-silent agent (CPU rate
-    // above the trickle floor) from a genuinely idle one (CPU flat OR merely
-    // trickling from an idle TUI render loop). In-memory only: on a restart the
-    // baseline re-seeds to "active now", conservatively delaying the net by at
-    // most one idle window rather than mis-firing.
-    let mut cpu_activity: std::collections::BTreeMap<String, (u64, i64, i64)> =
         std::collections::BTreeMap::new();
 
     // Per-node `pipe-pane` failure counter driving bounded capture retry
@@ -1247,12 +1060,7 @@ pub fn dispatch(
         // registry (that's `all-kinds-spawn`'s territory). The current
         // surface exercises liveness for any node that carries an
         // `agent_pid` recorded by `create.sh` integration.
-        if let Err(e) = watchdog_tick(
-            &paths,
-            &mut half_state_streak,
-            &mut retry_states,
-            &mut cpu_activity,
-        ) {
+        if let Err(e) = watchdog_tick(&paths, &mut retry_states) {
             warn!(
                 target: "orchestratectl::supervise",
                 error = %e.message,
@@ -2361,11 +2169,6 @@ fn all_work_done(
     child_tails.values().all(|t| t.terminal)
 }
 
-/// Number of consecutive ticks a `TmuxGone` half-state must persist
-/// before the watchdog commits to synthesizing a terminal report (§7.5
-/// "resolve via short retry then commit to dead").
-const HALF_STATE_TICKS: u32 = 3;
-
 /// The effective spawn grace this process uses: [`WATCHDOG_SPAWN_GRACE`]
 /// unless [`SPAWN_GRACE_ENV`] overrides it with a parseable whole-second
 /// count (an unparseable value is ignored, keeping the safe default).
@@ -2977,25 +2780,234 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
     drop(guard);
 }
 
+/// The fixed post-death grace for the residual crash backstop (design.md §2.1a):
+/// once a node's worker is first observed confirmed-dead with no told
+/// `worker.exited` and no merge, the supervisor waits this long — anchored to the
+/// durable [`Node::first_death_at`] — before terminalizing `failed`. Its only job
+/// is to let an in-flight `worker.exited` / merge append land first, so it is
+/// deliberately short. Overridable via [`DEATH_GRACE_ENV`] (whole seconds; tests
+/// set `0` to fire on the tick after the first-death observation).
+const DEATH_GRACE: Duration = Duration::from_secs(5);
+
+/// Env override for [`DEATH_GRACE`] (whole seconds; unparseable → default).
+const DEATH_GRACE_ENV: &str = "OCTL_DEATH_GRACE_SECS";
+
+/// The effective post-death grace, honoring [`DEATH_GRACE_ENV`].
+fn death_grace() -> Duration {
+    match std::env::var(DEATH_GRACE_ENV) {
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_or(DEATH_GRACE, Duration::from_secs),
+        Err(_) => DEATH_GRACE,
+    }
+}
+
+/// Record the durable first-death anchor for a node whose worker is confirmed
+/// gone with no told `worker.exited` and no merge (design.md §2.1a). Appends
+/// `node.death_observed` under the exclusive run lock, first-write-wins, and only
+/// while the node is still non-terminal AND still has no exit event / report — so
+/// a merge or a told exit that landed in the race window aborts the backstop
+/// before its clock even starts.
+fn record_death_observed(paths: &RunPaths, nid: &NodeId, node_id: &str) {
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, error = %e,
+                "could not lock run to record first-death observation; will retry next tick"
+            );
+            return;
+        }
+    };
+    let fresh = read_node_opt(paths, nid).ok().flatten();
+    let record = fresh.as_ref().is_some_and(|f| {
+        f.first_death_at.is_none()
+            && f.worker_exit.is_none()
+            && f.last_report.is_none()
+            && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
+    });
+    if !record {
+        drop(guard);
+        return;
+    }
+    let lock = guard.witness();
+    if let Err(e) = append_and_apply_unlocked(
+        &lock,
+        paths,
+        "node.death_observed",
+        Some(nid),
+        None,
+        json!({}),
+    ) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %node_id, error = %e,
+            "failed to record first-death observation; will retry next tick"
+        );
+    }
+    drop(guard);
+}
+
+/// The residual crash backstop (design.md §2.1a) — the ONLY place pid liveness
+/// drives an outcome. Terminalize a node `failed` because its worker process is
+/// confirmed gone with no told `worker.exited`, no merge, and the persisted
+/// post-death grace has elapsed (the shim's exit fact was lost — a hard kill of
+/// the shim, host death).
+///
+/// Re-reads the node under the exclusive lock and re-verifies the WHOLE backstop
+/// precondition against the fresh projection before appending: still
+/// non-terminal, still no `worker.exited` (a clean/failing exit that landed in
+/// the grace window wins), still no `node.report`. A recoverable-transient
+/// empty-handed death of an autonomous single-node worker is parked for bounded
+/// auto-retry instead of failed. The synthesized report carries `success: false`
+/// and no explicit-merge marker, so invariant 5's teardown gate preserves the
+/// branch + worktree.
+fn synthesize_crash_backstop_failure(
+    paths: &RunPaths,
+    nid: &NodeId,
+    node_id: &str,
+    v: watchdog::Liveness,
+    git: &str,
+    retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
+    now_instant: Instant,
+) {
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(
+                target: "orchestratectl::supervise",
+                node = %node_id, error = %e,
+                "watchdog could not lock run to synthesize crash-backstop report"
+            );
+            return;
+        }
+    };
+    let fresh = read_node_opt(paths, nid).ok().flatten();
+    // Grace-window race close: a told exit (clean OR failing) or a report that
+    // landed since the outside-lock scan wins over the pid guess.
+    let still_synthesizable = fresh.as_ref().is_some_and(|f| {
+        f.last_report.is_none()
+            && f.worker_exit.is_none()
+            && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
+    });
+    if !still_synthesizable {
+        tracing::debug!(
+            target: "orchestratectl::supervise",
+            node = %node_id,
+            "crash backstop deferred to a told exit / report that landed in the grace window"
+        );
+        drop(guard);
+        return;
+    }
+    // Bounded auto-retry park (issue `autoretry-agent-died-worker`): a genuine,
+    // empty-handed death of a retry-eligible autonomous single-node worker that
+    // committed NOTHING is re-spawned rather than failed. Gated on the strong
+    // `Dead` verdict only (not `Recycled`), a retry-eligible kind, git-confirmed
+    // empty-handed, and attempts remaining. An exhausted budget (or a `Recycled`
+    // verdict) falls through to the failed report below.
+    if matches!(v, watchdog::Liveness::Dead) {
+        if let Some(f) = fresh.as_ref() {
+            if retry_eligible_kind(f) && cleanup::node_is_empty_handed(paths, f, git) {
+                let attempts = f.retry_attempts;
+                let max = agent_retry_max_attempts();
+                if attempts < max {
+                    let attempt = attempts + 1;
+                    let backoff = agent_retry_backoff(attempt);
+                    info!(
+                        target: "orchestratectl::supervise",
+                        node = %node_id,
+                        attempt,
+                        backoff_secs = backoff.as_secs(),
+                        "empty-handed agent-died on autonomous worker; parking for bounded auto-retry"
+                    );
+                    retry_states.insert(
+                        node_id.to_string(),
+                        RetryPark {
+                            attempt,
+                            retry_at: now_instant + backoff,
+                            reason: v.reason().to_string(),
+                            spawn_failures: 0,
+                        },
+                    );
+                    drop(guard);
+                    return;
+                }
+                info!(
+                    target: "orchestratectl::supervise",
+                    node = %node_id,
+                    attempts,
+                    max,
+                    "empty-handed agent-died but retry budget exhausted; terminalizing failed"
+                );
+            }
+        }
+    }
+    // The agent's process died before merging. Before recording the bare failure,
+    // ask git whether it left salvageable work: commits ahead of source that merge
+    // cleanly (issue `agent-death-strands-recoverable-work`). A `Some` signal is
+    // only produced when the branch carries unmerged commits, so a genuine
+    // empty-handed death leaves the failed envelope byte-for-byte unchanged.
+    let recoverability = fresh
+        .as_ref()
+        .and_then(|f| cleanup::node_recoverability(paths, f, git));
+    if let Some(r) = &recoverability {
+        info!(
+            target: "orchestratectl::supervise",
+            node = %node_id,
+            branch = %r.branch,
+            unmerged_commits = r.unmerged_commits,
+            merges_cleanly = r.merges_cleanly,
+            "agent died leaving unmerged commits; stamping recoverability signal into failed report"
+        );
+    }
+    let mut data = json!({
+        "success": false,
+        "failed": true,
+        "cancelled": false,
+        "reason": v.reason(),
+        "summary": format!("Agent for node {} stopped responding: {}", node_id, v.reason()),
+        "discussion_items": [],
+        "spinoff_proposals": [],
+        "wrap_up_recommendations": [],
+    });
+    if let Some(r) = recoverability {
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("recoverable_work".to_string(), r.to_report_value());
+        }
+    }
+    // If this failure is an EXHAUSTED bounded-retry, record the count for audit.
+    let retried = fresh.as_ref().map_or(0, |f| f.retry_attempts);
+    if retried > 0 {
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("retry_attempts".to_string(), json!(retried));
+        }
+    }
+    let lock = guard.witness();
+    if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
+        warn!(
+            target: "orchestratectl::supervise",
+            node = %node_id,
+            error = %e,
+            "synthesize crash-backstop node.report failed"
+        );
+    }
+    drop(guard);
+}
+
 fn watchdog_tick(
     paths: &RunPaths,
-    half_state_streak: &mut std::collections::BTreeMap<String, u32>,
     retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
-    cpu_activity: &mut std::collections::BTreeMap<String, (u64, i64, i64)>,
 ) -> Result<(), CliError> {
     let now = Utc::now();
     let now_instant = Instant::now();
     let grace = spawn_grace();
-    // Scan our own nodes/ for any with an `agent_pid` that is running.
-    // If a node is non-terminal and its agent has died (per dual-poll
-    // protocol) AND it has not already produced a `node.report`,
-    // synthesize one with `failed: true, reason: "agent-died"`.
-    // Nodes that presented the `TmuxGone` half-state on THIS tick. Any
-    // node not in this set (alive, dead, terminal, missing agent_pid,
-    // unreadable) gets its streak dropped at end-of-tick, so the streak
-    // counts strictly *consecutive* half-state ticks and never leaks.
-    let mut tmux_gone_this_tick: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
+    let death_grace = death_grace();
+    // Scan our own nodes/ for any with an `agent_pid` that is running. A
+    // non-terminal node whose worker is confirmed gone (with no told
+    // `worker.exited` and no merge, past the post-death grace) is failed by the
+    // residual crash backstop below (design.md §2.1a).
     // First pass: collect every non-terminal node that has a live `agent_pid`,
     // and union the distinct tmux sockets they probe. This lets the tick issue
     // ONE `tmux list-windows` per socket (`watchdog-batch-tmux-probe`) instead
@@ -3107,388 +3119,71 @@ fn watchdog_tick(
     // The git binary the reconcile probes shell out to (honors `GIT_BIN`).
     let git = cleanup::git_bin();
 
-    // Node ids scanned this tick — used to prune the CPU-activity tracker below
-    // so it cannot outlive the nodes it tracks.
-    let scanned_ids: std::collections::BTreeSet<String> =
-        candidates.iter().map(|(id, ..)| id.clone()).collect();
-
     for (node_id, nid, n, probe) in candidates {
-        // Liveness. Every surviving kind is autonomous (the 0.2 cut removed the
-        // interactive `code`/`orchestrate` kinds), so the recorded agent_pid is
-        // always authoritative — a dead single fire-and-forget process is
-        // genuinely dead. The `interactive` axis of the watchdog is therefore
-        // always `false` now; it is kept as a parameter (not deleted) so the
-        // liveness probe's shape is unchanged for the surviving path.
+        // Liveness is the RESIDUAL crash backstop ONLY (design.md §2.1a). The
+        // told `worker.exited` fact (A1) is the primary completion signal, and any
+        // node that recorded one — clean or failing — was filtered out of
+        // `candidates` above. So `worker_exit` is `None` here and the only thing
+        // pid liveness governs is "the shim was lost — did the process crash?".
+        //
+        // tmux state is NO LONGER a failure trigger: a window gone while the pid
+        // is alive is not a crash. Only a confirmed-dead / recycled PID counts;
+        // `Alive` and `TmuxGone` do nothing. This deletes the tmux tri-state /
+        // streak-gating as a primary liveness signal (design.md §2).
         let v = watchdog::check_liveness_for_lifecycle(&probe, &tmux_snapshot, false);
-        // §7.5: commit `Dead`/`Recycled` immediately (PID gone or
-        // recycled is unambiguous), but require a short retry streak for
-        // the `TmuxGone` half-state so a transient `tmux list-windows`
-        // hiccup does not kill a live agent.
-        let commit = match v {
-            watchdog::Liveness::Alive => false,
-            watchdog::Liveness::Dead | watchdog::Liveness::Recycled => true,
-            watchdog::Liveness::TmuxGone => {
-                tmux_gone_this_tick.insert(node_id.clone());
-                let c = half_state_streak.entry(node_id.clone()).or_insert(0);
-                *c += 1;
-                *c >= HALF_STATE_TICKS
+        let confirmed_dead = matches!(v, watchdog::Liveness::Dead | watchdog::Liveness::Recycled);
+
+        // The residual backstop's fixed, PERSISTED post-death grace: once the
+        // worker is first observed confirmed-dead, wait `death_grace` (anchored to
+        // the durable `Node::first_death_at`) before failing, so an in-flight
+        // exit/merge append can win. The anchor survives a supervisor restart.
+        let death = if confirmed_dead {
+            // Anchor the grace to the durable first-death timestamp; on the very
+            // first observation there is none yet, so anchor to `now` (elapsed 0).
+            // With a zero grace the backstop can then fire on this same tick; with
+            // a non-zero grace the first observation is always within-grace and is
+            // recorded + deferred below.
+            let anchor = n.first_death_at.unwrap_or(now);
+            let elapsed = now
+                .signed_duration_since(anchor)
+                .to_std()
+                .unwrap_or_default();
+            if elapsed >= death_grace {
+                outcome::DeathObservation::DeadGraceElapsed
+            } else {
+                outcome::DeathObservation::DeadWithinGrace
             }
+        } else {
+            outcome::DeathObservation::Alive
         };
 
-        // Git-reconcile fallback (issues `false-failed-after-merge` /
-        // `supervisor-stuck-pending-after-self-merge`). Before we ever classify a
-        // node FAILED on liveness loss — and even while the agent is still ALIVE
-        // but its terminal report never landed (the stuck-pending race) — ask git
-        // whether the branch has already merged into the run's source (with a clean
-        // worktree). If so, the work landed: the authoritative terminal outcome is
-        // SUCCESS, not a false `failed`/`branch_preserved` and not an endless
-        // `pending`. Every surviving kind is autonomous (self-merges
-        // fire-and-forget), so the only gate is "no terminal report yet".
-        // This first probe is OUTSIDE the run lock (git is slow); it is RE-VERIFIED
-        // under the lock before synthesis to close the probe→synthesis TOCTOU (a
-        // live agent could move its branch in between). `node_branch_merged_to_source`
-        // is conservative — it requires the branch to have advanced FORWARD past its
-        // recorded fork point AND the worktree to be clean, so a fresh/rewound agent
-        // or one with live uncommitted work is never reconciled or torn down.
-        let reconcile_eligible = n.last_report.is_none();
-        let reconcile_probe =
-            reconcile_eligible && cleanup::node_branch_merged_to_source(paths, &n, &git);
-
-        if n.last_report.is_none() && (reconcile_probe || commit) {
-            // The `last_report.is_none()` we tested (and the reconcile probe) ran
-            // OUTSIDE the run lock, so a real `node.report` could land in the
-            // window before this synthesis. Acquire the run flock and re-read the
-            // node projection under it: only synthesize if the node is STILL
-            // non-terminal and STILL unreported. This closes the F15
-            // duplicate-terminal-report race (the parent-side reducer dedups it
-            // anyway, but we avoid emitting the second event at all).
-            // `append_and_apply_unlocked` is the sanctioned lock-held path —
-            // re-entering `append_and_apply_event` here would deadlock on the flock.
-            let guard = match RunLock::acquire(&paths.lock()) {
-                Ok(g) => g,
-                Err(e) => {
-                    warn!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id,
-                        error = %e,
-                        "watchdog could not lock run to synthesize report"
-                    );
-                    continue;
-                }
-            };
-            let fresh = read_node_opt(paths, &nid).ok().flatten();
-            let still_synthesizable = fresh.as_ref().is_some_and(|n| {
-                n.last_report.is_none()
-                    && !matches!(n.status, Status::Done | Status::Failed | Status::Cancelled)
-            });
-            if !still_synthesizable {
-                tracing::debug!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id,
-                    "watchdog deferred to live report"
-                );
-                drop(guard);
-                continue;
-            }
-            // Re-verify the merge UNDER the lock against the fresh projection, so
-            // the destructive `merge-reconciled` success reflects git state as of
-            // the moment we commit it — not a stale probe from before an alive
-            // agent moved its branch. If the branch is no longer merged (or the
-            // worktree turned dirty), fall through to the liveness verdict.
-            let reconciled = reconcile_probe
-                && fresh
-                    .as_ref()
-                    .is_some_and(|f| cleanup::node_branch_merged_to_source(paths, f, &git));
-            if !reconciled && !commit {
-                // The probe said "merged" but the under-lock re-check disagrees and
-                // the agent is still alive — nothing terminal to record this tick.
-                tracing::debug!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id,
-                    "reconcile no longer holds under lock; leaving live node alone"
-                );
-                drop(guard);
-                continue;
-            }
-            // Bounded auto-retry park (issue `autoretry-agent-died-worker`). A
-            // death that is NOT a reconciled-merge is a genuine `agent-died`.
-            // Before terminalizing, decide whether this is a recoverable transient
-            // death of an autonomous single-node worker that committed NOTHING —
-            // if so, park it for a re-spawn instead of writing the failed report.
-            // Gated on ALL of: the strong `Dead` verdict (the PID is provably gone
-            // per the dual-poll protocol — NOT the weaker `Recycled` / `TmuxGone`
-            // half-states, where the real agent could still be alive and committing,
-            // making the destructive teardown-and-respawn unsafe), a retry-eligible
-            // kind, POSITIVELY empty-handed (git-confirmed zero commits ahead of
-            // source AND a clean worktree — the retry ⟂ salvage split), and attempts
-            // remaining. An exhausted budget (or a weaker death verdict) falls
-            // through to the failed report below (stamped with `retry_attempts`), so
-            // a persistently-dying agent still terminalizes bounded.
-            if !reconciled && matches!(v, watchdog::Liveness::Dead) {
-                if let Some(f) = fresh.as_ref() {
-                    if retry_eligible_kind(f) && cleanup::node_is_empty_handed(paths, f, &git) {
-                        let attempts = f.retry_attempts;
-                        let max = agent_retry_max_attempts();
-                        if attempts < max {
-                            let attempt = attempts + 1;
-                            let backoff = agent_retry_backoff(attempt);
-                            info!(
-                                target: "orchestratectl::supervise",
-                                node = %node_id,
-                                attempt,
-                                backoff_secs = backoff.as_secs(),
-                                "empty-handed agent-died on autonomous worker; parking for bounded auto-retry"
-                            );
-                            retry_states.insert(
-                                node_id.clone(),
-                                RetryPark {
-                                    attempt,
-                                    retry_at: now_instant + backoff,
-                                    reason: v.reason().to_string(),
-                                    spawn_failures: 0,
-                                },
-                            );
-                            drop(guard);
-                            continue;
-                        }
-                        info!(
-                            target: "orchestratectl::supervise",
-                            node = %node_id,
-                            attempts,
-                            max,
-                            "empty-handed agent-died but retry budget exhausted; terminalizing failed"
-                        );
-                    }
+        // `worker_exit` is always `None` for a candidate, so this is purely the
+        // residual pid backstop verdict (design.md §2.6 confirmed-death row).
+        match outcome::classify_live_node(None, death) {
+            // Alive, or a told-fact case that cannot arise for a candidate.
+            outcome::LiveVerdict::Alive
+            | outcome::LiveVerdict::WorkerFailed(_)
+            | outcome::LiveVerdict::AttentionRequired => {}
+            // First confirmed-death observation (or still inside the grace):
+            // record the durable anchor and defer. A later tick past the grace
+            // fires the backstop.
+            outcome::LiveVerdict::DeferGrace => {
+                if n.first_death_at.is_none() {
+                    record_death_observed(paths, &nid, &node_id);
                 }
             }
-            // Synthesize a terminal node.report under the held run flock. A
-            // git-confirmed merge is a terminal SUCCESS (stamped
-            // `via: VIA_MERGE_RECONCILED` so cleanup force-tears-down exactly like
-            // an explicit merge — never a false `branch_preserved`); otherwise the
-            // liveness verdict stands and the node is `agent-died` FAILED.
-            let data = if reconciled {
-                info!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id,
-                    "branch already merged into source; reconciling run to success (lost terminal report)"
+            // Confirmed dead, grace elapsed, no told exit, no merge: the shim was
+            // lost — fire the residual crash backstop (branch/worktree preserved).
+            outcome::LiveVerdict::CrashBackstopFailed => {
+                synthesize_crash_backstop_failure(
+                    paths,
+                    &nid,
+                    &node_id,
+                    v,
+                    &git,
+                    retry_states,
+                    now_instant,
                 );
-                json!({
-                    "success": true,
-                    "failed": false,
-                    "cancelled": false,
-                    "via": cleanup::VIA_MERGE_RECONCILED,
-                    "reason": "branch-merged-to-source",
-                    "summary": format!(
-                        "Node {} branch already merged into source; supervisor reconciled run to success (agent's terminal report was lost).",
-                        node_id
-                    ),
-                    "discussion_items": [],
-                    "spinoff_proposals": [],
-                    "wrap_up_recommendations": [],
-                })
-            } else {
-                // The agent's process died before merging. Before recording the
-                // bare failure, ask git whether it left salvageable work: commits
-                // ahead of source that merge cleanly (issue
-                // `agent-death-strands-recoverable-work`). A `Some` signal is only
-                // produced when the branch carries unmerged commits, so a genuine
-                // empty-handed death leaves the failed envelope byte-for-byte
-                // unchanged. Computed against the SAME `fresh` projection the
-                // under-lock re-verify used, so the signal reflects git state as of
-                // the moment the report is committed.
-                let recoverability = fresh
-                    .as_ref()
-                    .and_then(|f| cleanup::node_recoverability(paths, f, &git));
-                if let Some(r) = &recoverability {
-                    info!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id,
-                        branch = %r.branch,
-                        unmerged_commits = r.unmerged_commits,
-                        merges_cleanly = r.merges_cleanly,
-                        "agent died leaving unmerged commits; stamping recoverability signal into failed report"
-                    );
-                }
-                let mut data = json!({
-                    "success": false,
-                    "failed": true,
-                    "cancelled": false,
-                    "reason": v.reason(),
-                    "summary": format!("Agent for node {} stopped responding: {}", node_id, v.reason()),
-                    "discussion_items": [],
-                    "spinoff_proposals": [],
-                    "wrap_up_recommendations": [],
-                });
-                if let Some(r) = recoverability {
-                    // `data` is the object literal above, so this always inserts.
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("recoverable_work".to_string(), r.to_report_value());
-                    }
-                }
-                // If this failure is an EXHAUSTED bounded-retry (the node was
-                // re-spawned `retry_attempts` times before finally dying
-                // empty-handed), record the count on the report so the terminal
-                // outcome is auditable — "failed after N auto-retries", not a bare
-                // first-death failure. Absent (byte-for-byte unchanged envelope)
-                // when the node was never retried.
-                let retried = fresh.as_ref().map_or(0, |f| f.retry_attempts);
-                if retried > 0 {
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert("retry_attempts".to_string(), json!(retried));
-                    }
-                }
-                data
-            };
-            // The `guard` above proves the exclusive lock is held; mint the
-            // witness to thread into the unlocked append.
-            let lock = guard.witness();
-            if let Err(e) =
-                append_and_apply_unlocked(&lock, paths, "node.report", Some(&nid), None, data)
-            {
-                warn!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id,
-                    error = %e,
-                    "synthesize node.report failed"
-                );
-            }
-            drop(guard);
-        }
-
-        // ---- Idle-unmerged safety net (issue `agent-skips-run-merge-idle-pending`) ----
-        // The reconcile path above rescues an ALREADY-MERGED branch whose report
-        // was lost; the death path rescues a DEAD agent's stranded work. Neither
-        // covers the third gap: an autonomous agent that committed cleanly-mergeable
-        // work, left a clean worktree, then skipped its mandatory `run merge` and
-        // dropped to an idle shell. Its PID stays Alive and no terminal report ever
-        // lands, so `rollup_status` returns `None` forever and the run hangs
-        // `pending` (a live supervisor + tmux window + worktree leaked per
-        // occurrence). Detect it and terminalize to a RECOVERABLE failed state a
-        // conductor can salvage with `run merge` — the same manual recovery the
-        // issue describes, now bounded instead of infinite.
-        //
-        // Gated on ALL of: liveness ALIVE (a DEAD agent's committed work is already
-        // salvaged by the death path above — never double-handle), NOT already
-        // merged (the reconcile path owns that), and no terminal report yet.
-        // (The 0.2 cut removed the interactive kinds, so there is no
-        // human-owned-merge lifecycle to exempt here anymore.) The idle +
-        // clean-worktree + committed-work checks (and the long-working-agent
-        // guard) live in `cleanup::node_idle_unmerged`; the third (CPU) activity
-        // clock is sampled here since it needs cross-tick state.
-        if matches!(v, watchdog::Liveness::Alive) && !reconcile_probe && n.last_report.is_none() {
-            let threshold = idle_unmerged_threshold().as_secs() as i64;
-            // Third activity clock: sample the agent's cumulative CPU time and
-            // fold the last-change timestamp into the idle verdict, so an agent
-            // that is busy but SILENT (no commits, no pane output) is not judged
-            // idle. Sampled every tick this node reaches here so cross-tick deltas
-            // are observed. A missing PID / unreadable CPU yields `None` → the
-            // clock is simply omitted (commit + pane clocks still apply).
-            let cpu_now = n.agent_pid.and_then(|p| {
-                u32::try_from(p)
-                    .ok()
-                    .and_then(watchdog::pid_cpu_time_centis)
-            });
-            let cpu_clock = cpu_activity_clock(cpu_activity, &node_id, cpu_now, now.timestamp());
-            // Cheap outside-lock probe (git only): gate the exclusive lock so we do
-            // not contend with the reducer every tick for every live autonomous node.
-            if cleanup::node_idle_unmerged(paths, &n, &git, now.timestamp(), threshold, cpu_clock)
-                .is_some()
-            {
-                // The probe ran OUTSIDE the run lock. Acquire the flock, re-read the
-                // node under it, and re-verify BOTH that it is still non-terminal &
-                // unreported AND that the idle-unmerged verdict still holds against
-                // the fresh projection + current git state — so a report that landed
-                // in the window, or an agent that resumed and moved its branch /
-                // dirtied its tree, aborts the synthesis. Mirrors the reconcile
-                // path's TOCTOU close.
-                let guard = match RunLock::acquire(&paths.lock()) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        warn!(
-                            target: "orchestratectl::supervise",
-                            node = %node_id,
-                            error = %e,
-                            "watchdog could not lock run to synthesize idle-unmerged report"
-                        );
-                        continue;
-                    }
-                };
-                let fresh = read_node_opt(paths, &nid).ok().flatten();
-                let still_unreported = fresh.as_ref().is_some_and(|f| {
-                    f.last_report.is_none()
-                        && !matches!(f.status, Status::Done | Status::Failed | Status::Cancelled)
-                });
-                // Reuse the CPU clock sampled above (do not re-sample: a second
-                // read with the same `now` would be a redundant map update); the
-                // git + fs clocks and the merge probe are re-run under the lock.
-                let idle = fresh.as_ref().filter(|_| still_unreported).and_then(|f| {
-                    cleanup::node_idle_unmerged(
-                        paths,
-                        f,
-                        &git,
-                        now.timestamp(),
-                        threshold,
-                        cpu_clock,
-                    )
-                });
-                let Some(idle) = idle else {
-                    tracing::debug!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id,
-                        "idle-unmerged no longer holds under lock; leaving live node alone"
-                    );
-                    drop(guard);
-                    continue;
-                };
-                info!(
-                    target: "orchestratectl::supervise",
-                    node = %node_id,
-                    branch = %idle.recoverability.branch,
-                    unmerged_commits = idle.recoverability.unmerged_commits,
-                    merges_cleanly = idle.recoverability.merges_cleanly,
-                    idle_secs = idle.idle_secs,
-                    "autonomous agent committed but never merged and has gone idle; terminalizing run to recoverable failed"
-                );
-                // The salvage hint depends on whether the branch still merges
-                // cleanly: a conflicting branch (main advanced under the idle
-                // agent) is terminalized too, but needs a conflict resolution
-                // first — say so instead of implying a plain `run merge` works.
-                let salvage = if idle.recoverability.merges_cleanly {
-                    "land it with `run merge`"
-                } else {
-                    "resolve conflicts against source, then `run merge` (see recoverable_work)"
-                };
-                let mut data = json!({
-                    "success": false,
-                    "failed": true,
-                    "cancelled": false,
-                    "reason": IDLE_UNMERGED_REASON,
-                    "summary": format!(
-                        "Agent for node {} committed work but never called `run merge` and has been idle {}s; supervisor terminalized the run recoverable ({}).",
-                        node_id, idle.idle_secs, salvage
-                    ),
-                    "discussion_items": [],
-                    "spinoff_proposals": [],
-                    "wrap_up_recommendations": [],
-                });
-                if let Some(obj) = data.as_object_mut() {
-                    obj.insert(
-                        "recoverable_work".to_string(),
-                        idle.recoverability.to_report_value(),
-                    );
-                }
-                let lock = guard.witness();
-                if let Err(e) =
-                    append_and_apply_unlocked(&lock, paths, "node.report", Some(&nid), None, data)
-                {
-                    warn!(
-                        target: "orchestratectl::supervise",
-                        node = %node_id,
-                        error = %e,
-                        "synthesize idle-unmerged node.report failed"
-                    );
-                }
-                drop(guard);
             }
         }
     }
@@ -3510,14 +3205,6 @@ fn watchdog_tick(
     // backoff before the first re-spawn (issue `autoretry-agent-died-worker`).
     reconcile_agent_retries(paths, retry_states, now_instant);
 
-    // Drop streaks for every node that did NOT present `TmuxGone` this
-    // tick (committed, recovered, terminal, or no longer scanned) so the
-    // count is strictly consecutive and the map cannot grow unbounded.
-    half_state_streak.retain(|k, _| tmux_gone_this_tick.contains(k));
-    // Prune the CPU-activity tracker to nodes still scanned this tick, so a
-    // terminalized / removed node's entry cannot linger (bounded like the
-    // streak map above).
-    cpu_activity.retain(|k, _| scanned_ids.contains(k));
     Ok(())
 }
 
@@ -3784,6 +3471,7 @@ mod tests {
             retry_attempts: 0,
             worker_exit: None,
             pending_merge: None,
+            first_death_at: None,
         }
     }
 
@@ -4092,21 +3780,34 @@ mod tests {
 
     static GRACE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// RAII env guard: restores the prior value / unsets on drop so a panicking
-    /// assertion cannot leak `OCTL_WATCHDOG_GRACE_SECS` into another test.
-    struct GraceGuard(Option<std::ffi::OsString>);
+    /// RAII env guard: restores the prior values / unsets on drop so a panicking
+    /// assertion cannot leak `OCTL_WATCHDOG_GRACE_SECS` or `OCTL_DEATH_GRACE_SECS`
+    /// into another test. Zeroes BOTH graces so the residual crash backstop fires
+    /// on the same tick it confirms death (design.md §2.1a) — with a non-zero
+    /// death grace the backstop deliberately defers a tick, which these
+    /// single-tick death tests would otherwise read as "not failed yet".
+    struct GraceGuard {
+        spawn: Option<std::ffi::OsString>,
+        death: Option<std::ffi::OsString>,
+    }
     impl GraceGuard {
         fn zero() -> Self {
-            let old = std::env::var_os(SPAWN_GRACE_ENV);
+            let spawn = std::env::var_os(SPAWN_GRACE_ENV);
+            let death = std::env::var_os(DEATH_GRACE_ENV);
             std::env::set_var(SPAWN_GRACE_ENV, "0");
-            Self(old)
+            std::env::set_var(DEATH_GRACE_ENV, "0");
+            Self { spawn, death }
         }
     }
     impl Drop for GraceGuard {
         fn drop(&mut self) {
-            match &self.0 {
+            match &self.spawn {
                 Some(v) => std::env::set_var(SPAWN_GRACE_ENV, v),
                 None => std::env::remove_var(SPAWN_GRACE_ENV),
+            }
+            match &self.death {
+                Some(v) => std::env::set_var(DEATH_GRACE_ENV, v),
+                None => std::env::remove_var(DEATH_GRACE_ENV),
             }
         }
     }
@@ -4143,786 +3844,10 @@ mod tests {
             .success()
     }
 
-    /// Init a repo on `main`, fork `wt/foo`, commit work in it, and fast-forward
-    /// `main` up to it — i.e. the spinoff's self-merge has landed. Returns
-    /// `(repo, worktree, base_sha)` where `base_sha` is the fork point.
-    fn init_merged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        tgit(&repo, &["init", "-q", "-b", "main"]);
-        tgit(&repo, &["config", "user.email", "t@example.com"]);
-        tgit(&repo, &["config", "user.name", "t"]);
-        std::fs::write(repo.join("README"), "x").unwrap();
-        tgit(&repo, &["add", "-A"]);
-        tgit(&repo, &["commit", "-qm", "init"]);
-        let base = trev(&repo, "main");
-        let wt = tmp.path().join("wt");
-        tgit(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "wt/foo",
-                wt.to_str().unwrap(),
-            ],
-        );
-        std::fs::write(wt.join("fix.rs"), "work").unwrap();
-        tgit(&wt, &["add", "-A"]);
-        tgit(&wt, &["commit", "-qm", "agent work"]);
-        tgit(&repo, &["merge", "--ff-only", "wt/foo"]); // the self-merge lands
-        (repo, wt, base)
-    }
-
-    /// A run dir + autonomous-spinoff manifest + one worker node pointing at the
-    /// merged worktree, with `agent_pid` (and no recorded `start_time`) set so
-    /// the watchdog's liveness probe reads a real verdict.
-    fn setup_merged_run(
-        tmp: &tempfile::TempDir,
-        repo: &Path,
-        wt: &Path,
-        base: &str,
-        agent_pid: i32,
-    ) -> RunPaths {
-        let run_id = "01jxwd0000000000000000000w";
-        let dir = tmp.path().join(run_id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let paths = RunPaths::new(dir, run_id).unwrap();
-        append_and_apply_event(
-            &paths,
-            "run.created",
-            None,
-            None,
-            json!({
-                "kind": "spinoff",
-                "lifecycle": "autonomous",
-                "title": "t",
-                "source_repo": repo.to_str().unwrap(),
-                "source_branch": "main",
-            }),
-        )
-        .unwrap();
-        append_and_apply_event(
-            &paths,
-            "node.created",
-            Some(&NodeId::parse_str("n-0001").unwrap()),
-            None,
-            json!({
-                "kind": "spinoff",
-                "branch": "wt/foo",
-                "base_sha": base,
-                "worktree_path": wt.to_str().unwrap(),
-                "agent_pid": agent_pid,
-                // No tmux fields → the watchdog skips the tmux probe and liveness
-                // is decided purely by the PID (Alive vs Dead).
-            }),
-        )
-        .unwrap();
-        paths
-    }
-
     fn n0001(paths: &RunPaths) -> Node {
         read_node_opt(paths, &NodeId::parse_str("n-0001").unwrap())
             .unwrap()
             .unwrap()
-    }
-
-    /// Done-criterion (b): a merged branch whose agent has DIED (liveness loss)
-    /// must reconcile to terminal SUCCESS — never the false `agent-died`/`failed`
-    /// classification — and then tear down cleanly (worktree + branch gone, no
-    /// `cleanup.branch_preserved`).
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_reconciles_merged_branch_on_agent_death() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_merged_repo(&tmp);
-        // A definitely-dead pid: spawn `true`, reap it, reuse its pid.
-        let dead = PCommand::new("true").spawn().unwrap();
-        let dead_pid = dead.id() as i32;
-        let mut dead = dead;
-        dead.wait().unwrap();
-        let paths = setup_merged_run(&tmp, &repo, &wt, &base, dead_pid);
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        let report = n
-            .last_report
-            .expect("a terminal report must be synthesized");
-        assert_eq!(
-            report["success"], true,
-            "a merged branch reconciles to SUCCESS, not agent-died failure"
-        );
-        assert_eq!(report["via"], "merge-reconciled");
-        assert_ne!(
-            report["reason"], "agent-died",
-            "must not be a false failure"
-        );
-        assert!(n.status.is_terminal());
-
-        // The main loop's teardown chain: roll the run up and clean up.
-        if let Some(status) = cleanup::rollup_status(&paths, true) {
-            let s = if status == Status::Done {
-                "done"
-            } else {
-                "failed"
-            };
-            append_and_apply_event(&paths, "run.status", None, None, json!({ "status": s }))
-                .unwrap();
-        }
-        cleanup::cleanup_terminal_nodes(&paths);
-
-        assert_eq!(
-            read_manifest_opt(&paths).unwrap().unwrap().status,
-            Status::Done,
-            "reconciled run rolls up to Done"
-        );
-        assert!(!wt.exists(), "merged worktree is torn down");
-        assert!(!tbranch_exists(&repo, "wt/foo"), "merged branch is deleted");
-        let preserved = std::fs::read_to_string(paths.events())
-            .unwrap()
-            .lines()
-            .any(|l| l.contains("cleanup.branch_preserved"));
-        assert!(
-            !preserved,
-            "a merged branch must NEVER be reported preserved"
-        );
-    }
-
-    /// Done-criterion (a): a merged branch whose agent is still ALIVE but whose
-    /// terminal report never arrived (the stuck-pending race) is reconciled to
-    /// terminal SUCCESS via the git fallback — the run cannot strand at `pending`
-    /// forever waiting on a report that will never come.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_reconciles_merged_branch_while_agent_alive() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_merged_repo(&tmp);
-        // A genuinely live agent process; reaped at end of test.
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_merged_run(&tmp, &repo, &wt, &base, alive_pid);
-
-        // Sanity: the agent really is alive, so this is the stuck-pending path,
-        // not the death path.
-        assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        let report = n
-            .last_report
-            .expect("alive-but-merged must still reconcile to a terminal report");
-        assert_eq!(report["success"], true);
-        assert_eq!(report["via"], "merge-reconciled");
-        assert!(n.status.is_terminal(), "run no longer strands at pending");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// The data-loss guard at the supervisor level (review finding #1): a LIVE
-    /// agent whose branch merged but whose worktree still holds uncommitted work
-    /// must NOT be reconciled — the watchdog synthesizes no report and leaves the
-    /// node pending, so its live work is never torn down. This is the case the
-    /// branch-ref-only check would have destroyed.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_leaves_live_agent_with_dirty_worktree_alone() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_merged_repo(&tmp);
-        // The agent merged, then kept editing — uncommitted work in the worktree.
-        std::fs::write(wt.join("still-working.rs"), "wip").unwrap();
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_merged_run(&tmp, &repo, &wt, &base, alive_pid);
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        assert!(
-            n.last_report.is_none(),
-            "a live agent with uncommitted work must NOT be reconciled/terminalized"
-        );
-        assert!(!n.status.is_terminal(), "node stays live");
-        assert!(wt.exists(), "the worktree with live work is untouched");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    // --- Idle-unmerged safety net (issue `agent-skips-run-merge-idle-pending`) ---
-    //
-    // The complement of the reconcile tests above: the branch is committed and
-    // cleanly mergeable but NOT merged, the agent is ALIVE (idle shell), and no
-    // terminal report ever landed. The safety net must terminalize the run to a
-    // recoverable failed state and NOT trip a still-working agent. (The 0.2 cut
-    // removed the interactive kinds, so there is no exempt lifecycle left.) They
-    // serialize on `octl_watchdog_grace` (grace 0) and set the process-global
-    // `OCTL_IDLE_UNMERGED_SECS`.
-
-    /// Init a repo on `main`, fork `wt/foo`, commit work in it, but DO NOT merge
-    /// into `main` — the committed-but-unmerged state. `commit_date`, when given,
-    /// backdates the commit (an `RFC3339`/`git`-parseable date) so its tip time is
-    /// stale; `None` commits at wall-clock now. Returns `(repo, worktree, base)`.
-    fn init_unmerged_repo_at(
-        tmp: &tempfile::TempDir,
-        commit_date: Option<&str>,
-    ) -> (PathBuf, PathBuf, String) {
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        tgit(&repo, &["init", "-q", "-b", "main"]);
-        tgit(&repo, &["config", "user.email", "t@example.com"]);
-        tgit(&repo, &["config", "user.name", "t"]);
-        std::fs::write(repo.join("README"), "x").unwrap();
-        tgit(&repo, &["add", "-A"]);
-        tgit(&repo, &["commit", "-qm", "init"]);
-        let base = trev(&repo, "main");
-        let wt = tmp.path().join("wt");
-        tgit(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                "wt/foo",
-                wt.to_str().unwrap(),
-            ],
-        );
-        std::fs::write(wt.join("fix.rs"), "work").unwrap();
-        tgit(&wt, &["add", "-A"]);
-        let mut commit = PCommand::new("git");
-        commit
-            .current_dir(&wt)
-            .args(["commit", "-qm", "agent work"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(d) = commit_date {
-            commit
-                .env("GIT_AUTHOR_DATE", d)
-                .env("GIT_COMMITTER_DATE", d);
-        }
-        assert!(commit.status().unwrap().success(), "commit failed");
-        // NB: no `git merge` — the work is left UNMERGED on the branch.
-        (repo, wt, base)
-    }
-
-    fn init_unmerged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
-        init_unmerged_repo_at(tmp, None)
-    }
-
-    /// Like `init_unmerged_repo`, but ALSO advances `main` with a commit that
-    /// adds the SAME file (`fix.rs`) with different content — so `wt/foo` and
-    /// `main` both introduce `fix.rs` divergently (an add/add conflict) and the
-    /// branch no longer merges cleanly into source.
-    fn init_conflicting_unmerged_repo(tmp: &tempfile::TempDir) -> (PathBuf, PathBuf, String) {
-        let (repo, wt, base) = init_unmerged_repo(tmp);
-        std::fs::write(repo.join("fix.rs"), "different").unwrap();
-        tgit(&repo, &["add", "-A"]);
-        tgit(&repo, &["commit", "-qm", "conflicting main change"]);
-        (repo, wt, base)
-    }
-
-    /// A run dir + manifest (of `kind`/`lifecycle`) + one worker node pointing at
-    /// the unmerged worktree, with a live `agent_pid`.
-    fn setup_unmerged_run(
-        tmp: &tempfile::TempDir,
-        repo: &Path,
-        wt: &Path,
-        base: &str,
-        agent_pid: i32,
-        kind: &str,
-        lifecycle: &str,
-    ) -> RunPaths {
-        let run_id = "01jxwd0000000000000000000w";
-        let dir = tmp.path().join(run_id);
-        std::fs::create_dir_all(&dir).unwrap();
-        let paths = RunPaths::new(dir, run_id).unwrap();
-        append_and_apply_event(
-            &paths,
-            "run.created",
-            None,
-            None,
-            json!({
-                "kind": kind,
-                "lifecycle": lifecycle,
-                "title": "t",
-                "source_repo": repo.to_str().unwrap(),
-                "source_branch": "main",
-            }),
-        )
-        .unwrap();
-        append_and_apply_event(
-            &paths,
-            "node.created",
-            Some(&NodeId::parse_str("n-0001").unwrap()),
-            None,
-            json!({
-                "kind": kind,
-                "branch": "wt/foo",
-                "base_sha": base,
-                "worktree_path": wt.to_str().unwrap(),
-                "agent_pid": agent_pid,
-            }),
-        )
-        .unwrap();
-        paths
-    }
-
-    /// Done-criterion: an AUTONOMOUS agent that committed cleanly-mergeable work,
-    /// left a clean worktree, but never merged and has gone idle must be
-    /// terminalized to a RECOVERABLE failed state (distinct `agent-idle-unmerged`
-    /// reason + `recoverable_work`) — never left `pending` forever.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_terminalizes_idle_unmerged_autonomous_as_recoverable() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        // Fire on the first quiet tick (any idle ≥ 0s counts).
-        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_unmerged_repo(&tmp);
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
-        assert!(pid_file::pid_alive(alive_pid as u32), "agent must be alive");
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        let report = n
-            .last_report
-            .expect("idle-unmerged autonomous run must be terminalized, not left pending");
-        assert_eq!(
-            report["success"], false,
-            "complete-but-unlanded is a failure"
-        );
-        assert_eq!(
-            report["reason"], "agent-idle-unmerged",
-            "reason distinguishes this from agent-died and blocked handoffs"
-        );
-        // The stranded work is surfaced so a conductor can `run merge` it.
-        let rec = &report["recoverable_work"];
-        assert_eq!(rec["recoverable"], true);
-        assert_eq!(rec["unmerged_commits"], 1);
-        assert_eq!(rec["merges_cleanly"], true);
-        assert_eq!(rec["branch"], "wt/foo");
-        assert!(n.status.is_terminal(), "run no longer strands at pending");
-        // No `via` marker → the cleanup gate PRESERVES the branch/worktree for
-        // salvage (invariant #5), rather than force-deleting it.
-        assert!(report.get("via").is_none(), "recoverable, not a merge");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// A legitimately long-running agent must NOT be tripped. Here the branch tip
-    /// is FRESH (just committed) and the threshold is large: `now - last_activity`
-    /// is far below it, so no report is synthesized. Guards the "heavy-LLM units
-    /// run 54–96 min — do not terminalize those" requirement.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_does_not_trip_long_working_agent_with_fresh_commit() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        // A generous threshold; the fresh commit is well within it.
-        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_unmerged_repo(&tmp);
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        assert!(
-            n.last_report.is_none(),
-            "a still-working agent (fresh commit) must NOT be terminalized"
-        );
-        assert!(!n.status.is_terminal(), "node stays live");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// The activity signal takes the MAX of the branch-tip commit time and the
-    /// pane-transcript (`agent.log`) mtime. A stale commit alone would trip the
-    /// net, but a FRESH `agent.log` (the agent is still emitting pane output — a
-    /// long `/llm-review` between commits) must hold it off. Directly exercises the
-    /// commit-vs-pane composition that keeps a working-but-not-committing agent safe.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_does_not_trip_when_pane_active_despite_stale_commit() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "3600");
-        let tmp = tempfile::TempDir::new().unwrap();
-        // Commit is ancient → its tip time alone would read as long-idle.
-        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
-        // But the pane is still active NOW: a fresh agent.log mtime.
-        std::fs::write(paths.agent_log(), b"...streaming model output...").unwrap();
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        assert!(
-            n.last_report.is_none(),
-            "a fresh pane transcript must hold off the net despite a stale commit"
-        );
-        assert!(!n.status.is_terminal(), "node stays live");
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// Regression for the `/llm-review` finding "conflicting branch still hangs":
-    /// a committed-but-CONFLICTING idle branch (main advanced under the idle
-    /// agent) must STILL be terminalized — with `recoverable: false` /
-    /// `merges_cleanly: false` surfaced — so the run cannot hang `pending`
-    /// forever merely because of a conflict. The blocked-report path still
-    /// preserves the branch/worktree for manual conflict resolution.
-    #[test]
-    #[serial_test::serial(octl_watchdog_grace)]
-    fn watchdog_terminalizes_idle_unmerged_conflicting_as_recoverable_false() {
-        let _lock = GRACE_ENV_LOCK.lock().unwrap();
-        // Also hold the crate-wide env lock: these tests read/mutate process-global
-        // env (`TMUX_BIN` via `watchdog_tick`, plus grace/retry vars), which the
-        // watchdog snapshot tests also mutate under their own `test_env::lock()`.
-        // Sharing one lock stops a snapshot test's `TMUX_BIN` from leaking into this
-        // tick and letting its fake tmux pollute that test's invocation counter
-        // (issue `immoderately-irate-north`). Acquired after `GRACE_ENV_LOCK` — a
-        // fixed order (grace → env → create) so the multi-lock tests stay acyclic.
-        let _env_lock = crate::harness::support::test_env::lock();
-        let _grace = GraceGuard::zero();
-        let _idle = EnvGuard::set(IDLE_UNMERGED_ENV, "0");
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (repo, wt, base) = init_conflicting_unmerged_repo(&tmp);
-        let mut alive = PCommand::new("sleep").arg("30").spawn().unwrap();
-        let alive_pid = alive.id() as i32;
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, alive_pid, "spinoff", "autonomous");
-
-        let mut streak = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-
-        let n = n0001(&paths);
-        let report = n
-            .last_report
-            .expect("a conflicting idle-unmerged run must still be terminalized, not left pending");
-        assert_eq!(report["success"], false);
-        assert_eq!(report["reason"], "agent-idle-unmerged");
-        let rec = &report["recoverable_work"];
-        assert_eq!(
-            rec["recoverable"], false,
-            "a conflicting branch is not cleanly recoverable"
-        );
-        assert_eq!(rec["merges_cleanly"], false);
-        assert_eq!(rec["unmerged_commits"], 1);
-        assert!(n.status.is_terminal(), "run no longer strands at pending");
-        assert!(
-            report.get("via").is_none(),
-            "recoverable, not a merge → cleanup preserves the branch for resolution"
-        );
-
-        let _ = alive.kill();
-        let _ = alive.wait();
-    }
-
-    /// The CPU-activity clock (third signal) vetoes the net for a busy-but-silent
-    /// agent. With a stale commit and no pane transcript, the git+fs clocks alone
-    /// would trip the net; a FRESH `extra_activity_unix` (CPU still advancing)
-    /// must hold it off. Regression for the `/llm-review` "silent long-running
-    /// subprocess false-positive" finding — the guard the done-criteria demands.
-    #[test]
-    fn node_idle_unmerged_cpu_clock_vetoes_busy_but_silent() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        // Ancient commit; no `agent.log` → only the commit clock is available.
-        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, 1, "spinoff", "autonomous");
-        let n = n0001(&paths);
-        let git = cleanup::git_bin();
-        // Far-future "now" so the ancient commit reads as long-idle.
-        let now = 4_000_000_000i64;
-        // Without a CPU clock, the stale commit alone trips the net.
-        assert!(
-            cleanup::node_idle_unmerged(&paths, &n, &git, now, 1800, None).is_some(),
-            "stale commit alone should trip the net"
-        );
-        // With a FRESH CPU clock (busy but silent), the net must NOT fire.
-        assert!(
-            cleanup::node_idle_unmerged(&paths, &n, &git, now, 1800, Some(now)).is_none(),
-            "a fresh CPU-activity clock must veto the idle verdict"
-        );
-        let _ = repo;
-        let _ = wt;
-    }
-
-    /// `cpu_activity_clock` (rate-gated, reopen 2026-08-11): first observation
-    /// seeds "active now"; an idle window slides the baseline forward but keeps the
-    /// old active-time; a SLOW TRICKLE (below the 5-centis/s floor) does NOT count
-    /// as activity, so the clock ages and eventually lets the net fire; a genuine
-    /// BURST (rate ≥ floor over the window) re-stamps the clock and resets the
-    /// baseline; a cumulative total that went DOWN reseeds active-now (new process);
-    /// an unreadable CPU (`None`) evicts the entry.
-    #[test]
-    fn cpu_activity_clock_tracks_changes() {
-        let mut map = std::collections::BTreeMap::new();
-        // First observation at t=100 → seeded to now (assume active).
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 100), Some(100));
-        // Flat total at t=200: dt=100 ≥ window(90) → baseline slides to (50, 200)
-        // but active-time stays 100 (idle since 100).
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(50), 200), Some(100));
-        // +1 centis over the 50 s since the slid baseline (0.02 centis/s ≪ 5) → a
-        // trickle, NOT activity; window not yet full so the baseline holds at
-        // (50, 200), active-time stays 100. The any-delta predecessor stamped active
-        // here and defeated the net.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(51), 250), Some(100));
-        // +550 centis over the 100 s since baseline (5.5 centis/s ≥ 5) → a genuine
-        // burst: active, re-stamps and resets the baseline to (600, 300).
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 300), Some(300));
-        // Flat again at t=400: dt=100 ≥ window → baseline slides to (600, 400),
-        // active-time stays 300.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(600), 400), Some(300));
-        // Cumulative total DROPS (PID recycled / re-spawn) → reseed active-now.
-        assert_eq!(cpu_activity_clock(&mut map, "n", Some(10), 450), Some(450));
-        // Unreadable CPU → entry evicted, no clock contributed (fall back to others).
-        assert_eq!(cpu_activity_clock(&mut map, "n", None, 500), None);
-        assert!(
-            !map.contains_key("n"),
-            "a None reading must evict the baseline"
-        );
-    }
-
-    /// Edge cases the review of the reopen fix surfaced: a zero-width window (two
-    /// samples in the same whole second) or a backward clock step must make NO
-    /// determination — never stamp active on a trickle (which would defeat the net);
-    /// and after an unreadable gap the next reading re-seeds a fresh baseline rather
-    /// than comparing across the outage.
-    #[test]
-    fn cpu_activity_clock_edge_cases() {
-        let mut map = std::collections::BTreeMap::new();
-        // Seed active-now at t=100.
-        assert_eq!(cpu_activity_clock(&mut map, "e", Some(50), 100), Some(100));
-        // Same whole second (dt=0) with a +2 trickle → NOT active; active-time
-        // stays 100. The any-delta predecessor stamped active on any positive delta.
-        assert_eq!(cpu_activity_clock(&mut map, "e", Some(52), 100), Some(100));
-        // Clock steps BACKWARD (dt<0) with a further CPU bump → still no stamp.
-        assert_eq!(cpu_activity_clock(&mut map, "e", Some(60), 95), Some(100));
-        // Unreadable → evict.
-        assert_eq!(cpu_activity_clock(&mut map, "e", None, 200), None);
-        // A later reading re-seeds active-now (not compared against a stale baseline
-        // across the gap, which a huge dt would otherwise pass on any delta).
-        assert_eq!(
-            cpu_activity_clock(&mut map, "e", Some(9999), 205),
-            Some(205)
-        );
-    }
-
-    /// Deficit fix (review finding #2): after a long idle, a genuine CPU burst must
-    /// be recognized promptly, not have to overcome an unbounded `d_cpu ≥ floor×dt`
-    /// deficit measured against the whole idle window. Idle for 15 min at a trickle,
-    /// then one full-core tick; the burst (3000 centis over 30 s) is active against
-    /// the bounded recent window — even though 3000 < 5×930 = 4650, which an
-    /// unbounded baseline would have missed, leaving the clock stuck and risking a
-    /// mid-work terminalization.
-    #[test]
-    fn cpu_burst_after_long_idle_is_recognized() {
-        let mut map = std::collections::BTreeMap::new();
-        // Seed idle at t=0.
-        assert_eq!(cpu_activity_clock(&mut map, "b", Some(0), 0), Some(0));
-        // 30 idle ticks (every 30 s → t=900), CPU trickling +1 per tick.
-        let mut cpu = 0u64;
-        let mut clock = 0;
-        for i in 1..=30 {
-            cpu += 1;
-            clock = cpu_activity_clock(&mut map, "b", Some(cpu), i * 30).unwrap();
-        }
-        assert_eq!(
-            clock, 0,
-            "a 15-min idle trickle keeps the clock aged at the start"
-        );
-        // A full-core burst on the next tick: +3000 centis over 30 s.
-        cpu += 3000;
-        let after = cpu_activity_clock(&mut map, "b", Some(cpu), 930).unwrap();
-        assert_eq!(
-            after, 930,
-            "a genuine burst after a long idle must re-stamp the clock, not fight a deficit"
-        );
-    }
-
-    /// Regression for the reopened missed-detection window (issue
-    /// `agent-skips-run-merge-idle-pending`, 2026-08-11): an autonomous agent that
-    /// committed then went idle in its LIVE TUI is not a zero-CPU process — its
-    /// event/render loop trickles a little CPU every tick. Under the old any-delta
-    /// CPU clock that trickle perpetually re-stamped the clock, so `last_activity`
-    /// never aged and the net could NEVER fire. Simulate that exact tick sequence
-    /// and assert (a) the CPU clock now ages out past the threshold, and (b)
-    /// composed into `node_idle_unmerged` (stale commit, no pane transcript) the
-    /// net FIRES — whereas a genuinely busy agent's fast CPU growth still vetoes it.
-    #[test]
-    fn cpu_trickle_idle_tui_ages_out_and_net_fires() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        // Ancient commit; no `agent.log` → commit + pane clocks are both stale, so
-        // only the CPU clock can hold the net off.
-        let (repo, wt, base) = init_unmerged_repo_at(&tmp, Some("2020-01-01T00:00:00 +0000"));
-        let paths = setup_unmerged_run(&tmp, &repo, &wt, &base, 1, "spinoff", "autonomous");
-        let n = n0001(&paths);
-        let git = cleanup::git_bin();
-        let threshold = 900i64;
-
-        // Simulate 40 min of an idle TUI: one tick every 30 s, CPU trickling up by
-        // 2 centis each tick (≈0.067 centis/s ≪ the 5-centis/s floor). `start` is a
-        // far-future clock so the ancient 2020 commit tip reads as long-stale.
-        let mut map = std::collections::BTreeMap::new();
-        let start = 4_000_000_000i64;
-        let mut cpu = 500u64;
-        let mut clock = start;
-        let mut now = start;
-        for i in 0..80 {
-            now = start + i * 30;
-            cpu += 2;
-            clock = cpu_activity_clock(&mut map, "n-0001", Some(cpu), now).unwrap();
-        }
-        // The clock aged: it is stuck near the start, not tracking `now`.
-        assert!(
-            now - clock >= threshold,
-            "an idle-TUI CPU trickle must let the clock age past the threshold (now={now}, clock={clock})"
-        );
-        // Composed with the stale commit / absent pane clocks, the net FIRES.
-        assert!(
-            cleanup::node_idle_unmerged(&paths, &n, &git, now, threshold, Some(clock)).is_some(),
-            "idle-TUI trickle must no longer defeat the idle-unmerged net"
-        );
-
-        // Contrast: a genuinely busy agent (CPU +1000 centis every 30 s tick = full
-        // core) keeps the clock fresh, so the net stays vetoed.
-        let mut busy_map = std::collections::BTreeMap::new();
-        let mut busy_cpu = 500u64;
-        let mut busy_clock = start;
-        let mut busy_now = start;
-        for i in 0..80 {
-            busy_now = start + i * 30;
-            busy_cpu += 3000;
-            busy_clock =
-                cpu_activity_clock(&mut busy_map, "n-0001", Some(busy_cpu), busy_now).unwrap();
-        }
-        assert!(
-            busy_now - busy_clock < threshold,
-            "a busy agent's CPU clock must stay fresh (now={busy_now}, clock={busy_clock})"
-        );
-        assert!(
-            cleanup::node_idle_unmerged(&paths, &n, &git, busy_now, threshold, Some(busy_clock))
-                .is_none(),
-            "a busy-but-silent agent must still be vetoed"
-        );
-        let _ = (repo, wt);
     }
 
     // --- Bounded auto-retry on empty-handed agent-died (issue
@@ -5075,13 +4000,7 @@ mod tests {
         )
         .unwrap();
 
-        watchdog_tick(
-            &paths,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -5130,13 +4049,7 @@ mod tests {
         )
         .unwrap();
 
-        watchdog_tick(
-            &paths,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
 
         let n = n0001(&paths);
         assert_eq!(
@@ -5183,13 +4096,7 @@ mod tests {
         )
         .unwrap();
 
-        watchdog_tick(
-            &paths,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
 
         let n = n0001(&paths);
         assert_eq!(n.status, Status::Failed);
@@ -5233,13 +4140,7 @@ mod tests {
         )
         .unwrap();
 
-        watchdog_tick(
-            &paths,
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
 
         let n = n0001(&paths);
         assert_eq!(n.status, Status::Done, "the merge is terminal and wins");
@@ -5322,16 +4223,9 @@ EOF
         let stub = write_respawn_stub(tmp.path(), &repo, &wt_root);
         let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
 
-        let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
         // One tick with backoff 0: detect death → park → reconcile → re-spawn.
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
 
         let n = n0001(&paths);
         assert!(
@@ -5363,26 +4257,29 @@ EOF
             "the stale empty-handed branch is torn down"
         );
 
-        // Eventual success: the re-spawned worker commits and self-merges; a later
-        // tick reconciles the merged branch to terminal SUCCESS.
+        // Eventual success: the re-spawned worker commits and self-merges via
+        // `run merge`, which appends the explicit-merge terminal report — the only
+        // success truth in the thin model (no git-reconcile inference any more).
         let new_wt = PathBuf::from(n.worktree_path.clone().unwrap());
         std::fs::write(new_wt.join("fix.rs"), "done").unwrap();
         tgit(&new_wt, &["add", "-A"]);
         tgit(&new_wt, &["commit", "-qm", "retried work"]);
         tgit(&repo, &["merge", "--ff-only", "wt/foo-r1"]);
-
-        watchdog_tick(
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
             &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
+            "node.report",
+            Some(&nid),
+            None,
+            json!({ "success": true, "cancelled": false, "via": "explicit-merge" }),
         )
         .unwrap();
+
         let n2 = n0001(&paths);
         let report = n2.last_report.expect("terminal report after merge");
         assert_eq!(
             report["success"], true,
-            "the re-spawned worker's merge reconciles to success"
+            "the re-spawned worker's explicit `run merge` is the success truth"
         );
         assert!(n2.status.is_terminal());
 
@@ -5437,15 +4334,8 @@ EOF
         .unwrap();
         assert_eq!(n0001(&paths).retry_attempts, 1, "pre-staged at the budget");
 
-        let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
 
         let n = n0001(&paths);
         let report = n.last_report.expect("terminal failed report");
@@ -5492,15 +4382,8 @@ EOF
         dead.wait().unwrap();
         let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid);
 
-        let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
 
         assert!(
             retries.is_empty(),
@@ -5574,18 +4457,11 @@ EOF
         let stub = write_failing_stub(tmp.path());
         let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
 
-        let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
 
         // Tick 1: death → park → reconcile → create.sh fails (failures=1 < 2). Node
         // stays non-terminal, park retained; the stale branch survives.
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
         assert!(
             !n0001(&paths).status.is_terminal(),
             "one failure is not terminal"
@@ -5600,13 +4476,7 @@ EOF
         );
 
         // Tick 2: reconcile → create.sh fails again (failures=2 == budget) → terminalize.
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
         let n = n0001(&paths);
         let report = n.last_report.expect("terminal failed report after budget");
         assert_eq!(report["success"], false);
@@ -5648,15 +4518,8 @@ EOF
         dead.wait().unwrap();
         let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid);
 
-        let mut streak = std::collections::BTreeMap::new();
         let mut retries = std::collections::BTreeMap::new();
-        watchdog_tick(
-            &paths,
-            &mut streak,
-            &mut retries,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
+        watchdog_tick(&paths, &mut retries).unwrap();
 
         assert!(
             retries.is_empty(),
