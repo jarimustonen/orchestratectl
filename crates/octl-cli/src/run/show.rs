@@ -160,19 +160,29 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         // independently of the stall shapes: a clean-exited worker is
         // attention-required even if its supervisor later died (the manual finish,
         // not `run reattach`, is the fix — see `crate::run::attention`).
-        let attention = node.as_ref().and_then(|n| {
-            crate::run::attention::is_attention_required(n.status, n.worker_exit).then(|| {
-                crate::run::attention::AttentionView::build(
-                    manifest.run_id.as_str(),
-                    now,
-                    n.started_at,
-                    manifest.created_at,
-                    n.agent_pid,
-                    n.worktree_path.clone(),
-                    manifest.source_branch.clone(),
-                )
+        // Attention only applies to a SINGLE-worker run: a fan-out (multi-node)
+        // run's per-node attention is the delegated `per-node-run` follow-up, so
+        // don't false-flag the whole run off `n-0001` alone (design.md §2.5).
+        let attention = if manifest.node_count == 1 {
+            node.as_ref().and_then(|n| {
+                crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
+                    // `is_attention_required` guarantees `worker_exit` is Some+clean.
+                    .then_some(n.worker_exit.as_ref())
+                    .flatten()
+                    .map(|exit| {
+                        crate::run::attention::AttentionView::build(
+                            manifest.run_id.as_str(),
+                            now,
+                            exit,
+                            n.agent_pid,
+                            n.worktree_path.clone(),
+                            manifest.source_branch.clone(),
+                        )
+                    })
             })
-        });
+        } else {
+            None
+        };
         let landing = LandingFields {
             source_repo: manifest.source_repo.clone(),
             source_branch: manifest.source_branch.clone(),

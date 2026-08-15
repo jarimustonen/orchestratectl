@@ -21,11 +21,15 @@
 //! ## Why this is a durable fact, not a race
 //!
 //! The shim records `worker.exited` only **after** `wait()` on the agent process
-//! returns — i.e. after the agent has exited. An exited agent cannot go on to run
-//! `run merge`, so a clean-exit-and-no-merge observation is stable: it never
-//! flips back to a merge on a later poll. That is why the detector needs no grace
-//! window (unlike the orphaned-supervisor shape, whose "is it just restarting?"
-//! ambiguity forces one).
+//! returns — i.e. after the agent has exited. The *original* worker cannot go on
+//! to run `run merge` after its exit is recorded, so at the moment of detection a
+//! clean-exit-and-no-merge observation is unambiguous and needs no grace window
+//! (unlike the orphaned-supervisor shape, whose "is it just restarting?"
+//! ambiguity forces one). The computed *hint* is nonetheless not durable: the
+//! whole point of the surface is that a human or a re-driven agent then runs
+//! `run merge` (or `run cancel`), which drives the node terminal and clears the
+//! hint. So "the fact is stable" means "the exited process can't itself merge",
+//! not "the run stays attention-required forever".
 //!
 //! ## Precedence over the stall shapes
 //!
@@ -42,44 +46,66 @@ use chrono::{DateTime, Utc};
 use octl_core::{Status, WorkerExit};
 
 /// Is this node in the attention-required state — a clean worker exit with the
-/// node still non-terminal (so `run merge` was skipped)?
+/// node still working (so `run merge` was skipped)?
 ///
 /// Returns `true` only when both hold:
 ///
-/// - the node's status is **non-terminal** (`Pending`/`Running`/`Blocked`) — a
-///   `Done`/`Failed`/`Cancelled` node already settled and is not awaiting a human;
+/// - the node's status is `Pending` or `Running` — a node still nominally
+///   *working*. A `Done`/`Failed`/`Cancelled` node already settled, and a
+///   `Blocked` node is the design's DISTINCT "blocked handoff" row (§2.6) with its
+///   own manual-action semantics — neither is the "finished but forgot to merge"
+///   shape this detects, so both are excluded (a blocked node is surfaced by its
+///   own terminal report, not conflated with attention).
 /// - the launcher shim recorded a **clean** `worker.exited`
 ///   ([`WorkerExit::is_clean`] — `code == 0`, no signal). A failing exit is the
 ///   supervisor's `failed` path, not attention; an absent exit means the worker
 ///   is still running (or was never launched through the shim) — neither is
 ///   attention-required.
 ///
-/// A merge, had it happened, would have driven the node terminal, so a
-/// non-terminal node with a clean exit is exactly "finished but did not
-/// `run merge`". Pure over its inputs; touches no event/reducer/schema path.
+/// A merge, had it happened, would have driven the node terminal, so a still-
+/// working node with a clean exit is exactly "finished but did not `run merge`".
+/// `worker_exit` is taken by reference (a merged/still-working node is inspected,
+/// never moved). Pure over its inputs; touches no event/reducer/schema path.
 #[must_use]
-pub fn is_attention_required(node_status: Status, worker_exit: Option<WorkerExit>) -> bool {
-    !node_status.is_terminal() && worker_exit.is_some_and(WorkerExit::is_clean)
+pub fn is_attention_required(node_status: Status, worker_exit: Option<&WorkerExit>) -> bool {
+    matches!(node_status, Status::Pending | Status::Running)
+        && worker_exit.is_some_and(|e| e.is_clean())
 }
 
 /// The human/JSON resume hint for an attention-required run: the two ways a PO
 /// can settle it — drive the skipped merge from the worktree, or lay it to rest.
 /// Kept as one shared helper so `run wait` / `run show` / `run list` phrase it
 /// identically.
+///
+/// The worktree path and run id are single-quoted via [`shell_single_quote`] so
+/// the emitted `cd … && …` string stays a safe copy-paste even if the path
+/// carries a space or shell metacharacter (a worktree path is tool-generated, but
+/// the hint is meant to be pasted, so it must not silently break or inject).
 #[must_use]
 pub fn resume_hint(run_id: &str, worktree_path: Option<&str>) -> String {
+    let q_run = shell_single_quote(run_id);
     match worktree_path {
         Some(path) => format!(
             "worker finished but skipped `run merge`; finish it with \
-             `cd {path} && orchestratectl run merge {run_id}`, or `run cancel {run_id}` to \
-             lay it to rest"
+             `cd {q_path} && orchestratectl run merge {q_run}`, or `run cancel {q_run}` to \
+             lay it to rest",
+            q_path = shell_single_quote(path),
         ),
         None => format!(
             "worker finished but skipped `run merge`; finish it with \
-             `orchestratectl run merge {run_id}` from its worktree, or `run cancel {run_id}` to \
+             `orchestratectl run merge {q_run}` from its worktree, or `run cancel {q_run}` to \
              lay it to rest"
         ),
     }
+}
+
+/// Wrap `s` in single quotes for safe shell copy-paste, escaping any embedded
+/// single quote with the standard `'\''` idiom (close-quote, escaped quote,
+/// reopen-quote). A tool-generated worktree path won't normally need it, but the
+/// hint is user-facing copy-paste, so it must never break on a stray space or
+/// metacharacter.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// The resume-context fields `run show` / `run list` surface for an
@@ -88,15 +114,22 @@ pub fn resume_hint(run_id: &str, worktree_path: Option<&str>) -> String {
 ///
 /// Built only when [`is_attention_required`] holds; a `None` on the summary means
 /// the run is not attention-required.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct AttentionView {
     /// Why the run needs attention. A stable machine string a JSON consumer can
     /// branch on without parsing [`Self::resume_hint`].
     pub reason: &'static str,
-    /// Seconds the node has been sitting non-terminal since it started
-    /// (`now - started_at`), or since the run was created when the node never
-    /// recorded a `started_at`. Clamped at 0 so clock skew never prints negative.
+    /// Seconds the run has been *awaiting intervention* — `now - worker_exit.at`,
+    /// the time since the worker actually finished, NOT since the run started.
+    /// This is the actionable "how long has this been sitting done-but-unmerged"
+    /// duration; a worker that ran for hours and exited seconds ago reads as a
+    /// small age, not a false multi-hour jam. Clamped at 0 so clock skew never
+    /// prints negative.
     pub pending_age_secs: i64,
+    /// The instant the worker exited (`worker_exit.at`) — the anchor for
+    /// [`Self::pending_age_secs`], surfaced so a JSON consumer can compute its own
+    /// freshness against its own clock.
+    pub exited_at: DateTime<Utc>,
     /// The last-observed worker PID (`node.agent_pid`) — the process the shim
     /// wrapped, now exited. Surfaced as evidence of which worker finished; `null`
     /// when the node never recorded a pid.
@@ -117,22 +150,25 @@ pub const ATTENTION_REASON: &str = "worker exited cleanly without running `run m
 impl AttentionView {
     /// Assemble the resume-context view for an attention-required run. `now` is
     /// injected so callers share one per-scan clock and tests are deterministic.
+    /// `worker_exit` is the node's told clean exit ([`is_attention_required`]
+    /// guarantees it is present and clean at every call site) — its `.at` anchors
+    /// the awaiting-intervention age.
     #[must_use]
     pub fn build(
         run_id: &str,
         now: DateTime<Utc>,
-        started_at: Option<DateTime<Utc>>,
-        created_at: DateTime<Utc>,
+        worker_exit: &WorkerExit,
         worker_pid: Option<i32>,
         worktree_path: Option<String>,
         source_branch: Option<String>,
     ) -> Self {
-        let anchor = started_at.unwrap_or(created_at);
-        let pending_age_secs = now.signed_duration_since(anchor).num_seconds().max(0);
+        let exited_at = worker_exit.at;
+        let pending_age_secs = now.signed_duration_since(exited_at).num_seconds().max(0);
         let resume_hint = resume_hint(run_id, worktree_path.as_deref());
         Self {
             reason: ATTENTION_REASON,
             pending_age_secs,
+            exited_at,
             worker_pid,
             worktree_path,
             source_branch,
@@ -146,19 +182,19 @@ mod tests {
     use super::*;
 
     fn exit(code: Option<i32>, signal: Option<i32>) -> WorkerExit {
-        WorkerExit {
-            code,
-            signal,
-            at: Utc::now(),
-        }
+        exit_at(code, signal, Utc::now())
     }
 
-    /// The exact attention signature: a non-terminal node with a clean (0) exit.
+    fn exit_at(code: Option<i32>, signal: Option<i32>, at: DateTime<Utc>) -> WorkerExit {
+        WorkerExit { code, signal, at }
+    }
+
+    /// The exact attention signature: a still-working node with a clean (0) exit.
     #[test]
-    fn clean_exit_non_terminal_is_attention() {
-        for status in [Status::Pending, Status::Running, Status::Blocked] {
+    fn clean_exit_working_node_is_attention() {
+        for status in [Status::Pending, Status::Running] {
             assert!(
-                is_attention_required(status, Some(exit(Some(0), None))),
+                is_attention_required(status, Some(&exit(Some(0), None))),
                 "status {status:?} with a clean exit must be attention-required"
             );
         }
@@ -170,22 +206,39 @@ mod tests {
     fn terminal_node_is_not_attention() {
         for status in [Status::Done, Status::Failed, Status::Cancelled] {
             assert!(
-                !is_attention_required(status, Some(exit(Some(0), None))),
+                !is_attention_required(status, Some(&exit(Some(0), None))),
                 "terminal status {status:?} must not be attention-required"
             );
         }
     }
 
-    /// A failing exit is the supervisor's `failed` path, not attention.
+    /// A `Blocked` node is the DISTINCT blocked-handoff row (design §2.6), not
+    /// attention — even with a clean worker exit recorded. It is surfaced by its
+    /// own terminal report, never conflated with "forgot to merge".
+    #[test]
+    fn blocked_node_is_not_attention() {
+        assert!(!is_attention_required(
+            Status::Blocked,
+            Some(&exit(Some(0), None))
+        ));
+    }
+
+    /// A failing exit is the supervisor's `failed` path, not attention — including
+    /// the mixed `code: Some(0)` WITH a signal (a signalled death is never clean).
     #[test]
     fn failing_exit_is_not_attention() {
         assert!(!is_attention_required(
             Status::Running,
-            Some(exit(Some(2), None))
+            Some(&exit(Some(2), None))
         ));
         assert!(!is_attention_required(
             Status::Running,
-            Some(exit(None, Some(9)))
+            Some(&exit(None, Some(9)))
+        ));
+        // code 0 but signalled → not clean, not attention.
+        assert!(!is_attention_required(
+            Status::Running,
+            Some(&exit(Some(0), Some(15)))
         ));
     }
 
@@ -197,38 +250,43 @@ mod tests {
         assert!(!is_attention_required(Status::Pending, None));
     }
 
-    /// `pending_age_secs` is `now - started_at`, clamped at 0 under clock skew,
-    /// and falls back to `created_at` when the node never started.
+    /// `pending_age_secs` is `now - worker_exit.at` (time awaiting intervention,
+    /// NOT since the run started), clamped at 0 under clock skew.
     #[test]
-    fn pending_age_anchors_and_clamps() {
+    fn pending_age_anchors_on_worker_exit_and_clamps() {
         let now: DateTime<Utc> = "2026-08-15T12:00:00Z".parse().unwrap();
-        let started: DateTime<Utc> = "2026-08-15T11:30:00Z".parse().unwrap();
-        let created: DateTime<Utc> = "2026-08-15T11:00:00Z".parse().unwrap();
-
-        // Anchored to started_at when present.
-        let v = AttentionView::build("r", now, Some(started), created, None, None, None);
+        // Exited 30 min ago → 1800s, regardless of how long the run had been going.
+        let exited = exit_at(Some(0), None, "2026-08-15T11:30:00Z".parse().unwrap());
+        let v = AttentionView::build("r", now, &exited, None, None, None);
         assert_eq!(v.pending_age_secs, 30 * 60);
+        assert_eq!(v.exited_at, exited.at);
 
-        // Falls back to created_at when no started_at.
-        let v = AttentionView::build("r", now, None, created, None, None, None);
-        assert_eq!(v.pending_age_secs, 60 * 60);
-
-        // Clock skew (future anchor) clamps to 0, never negative.
-        let future: DateTime<Utc> = "2026-08-15T13:00:00Z".parse().unwrap();
-        let v = AttentionView::build("r", now, Some(future), created, None, None, None);
+        // Clock skew (future exit) clamps to 0, never negative.
+        let future = exit_at(Some(0), None, "2026-08-15T13:00:00Z".parse().unwrap());
+        let v = AttentionView::build("r", now, &future, None, None, None);
         assert_eq!(v.pending_age_secs, 0);
     }
 
-    /// The resume hint names the worktree when known, and both remediations.
+    /// The resume hint names the worktree when known, and both remediations, and
+    /// single-quotes the path + run id so a metacharacter-bearing path is safe.
     #[test]
     fn resume_hint_mentions_worktree_and_both_actions() {
         let with_wt = resume_hint("01run", Some("/tmp/wt/foo"));
-        assert!(with_wt.contains("/tmp/wt/foo"));
-        assert!(with_wt.contains("run merge 01run"));
-        assert!(with_wt.contains("run cancel 01run"));
+        assert!(with_wt.contains("'/tmp/wt/foo'"));
+        assert!(with_wt.contains("run merge '01run'"));
+        assert!(with_wt.contains("run cancel '01run'"));
 
         let without = resume_hint("01run", None);
-        assert!(without.contains("run merge 01run"));
-        assert!(without.contains("run cancel 01run"));
+        assert!(without.contains("run merge '01run'"));
+        assert!(without.contains("run cancel '01run'"));
+    }
+
+    /// A worktree path with a space / single quote is single-quoted so the emitted
+    /// command is a safe copy-paste, not a broken or injecting one.
+    #[test]
+    fn resume_hint_quotes_hostile_paths() {
+        let hint = resume_hint("01run", Some("/tmp/a b/it's here"));
+        // Single quote is escaped via the '\'' idiom; the space stays inside quotes.
+        assert!(hint.contains("'/tmp/a b/it'\\''s here'"), "got: {hint}");
     }
 }

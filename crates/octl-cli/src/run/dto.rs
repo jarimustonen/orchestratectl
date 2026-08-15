@@ -321,12 +321,27 @@ impl RunSummary {
     /// Attach the attention-required verdict and (when true) its resume context,
     /// replacing the `From`-provided `false` / `None` defaults. Pass `None` for a
     /// run that is not attention-required.
+    ///
+    /// **Enforces attention-over-stall precedence** (design.md §2.5): a clean-
+    /// exited worker whose supervisor *also* died matches BOTH the attention shape
+    /// and the orphaned/stillborn stall shape, but the correct remediation is the
+    /// manual finish (`run merge`), not `run reattach`. So when attention is
+    /// present this clears `stalled` / `stillborn`, keeping the two verdicts
+    /// mutually exclusive on every wire and human surface (they were computed
+    /// independently upstream). Call this AFTER `with_stalled` / `with_stillborn`
+    /// so the precedence resolution wins — every call site does.
     #[must_use]
     pub fn with_attention(
         mut self,
         attention: Option<crate::run::attention::AttentionView>,
     ) -> Self {
         self.attention_required = attention.is_some();
+        if self.attention_required {
+            // Attention wins: suppress any stall verdict so the summary can never
+            // emit contradictory `attention_required: true` + `stalled: true`.
+            self.stalled = false;
+            self.stillborn = false;
+        }
         self.attention = attention;
         self
     }
@@ -452,12 +467,17 @@ mod tests {
     #[test]
     fn attention_view_flattens_onto_summary() {
         use crate::run::attention::AttentionView;
+        use octl_core::WorkerExit;
         let now: DateTime<Utc> = "2024-01-01T00:10:00Z".parse().unwrap();
+        let exit = WorkerExit {
+            code: Some(0),
+            signal: None,
+            at: "2024-01-01T00:00:00Z".parse().unwrap(),
+        };
         let view = AttentionView::build(
             "01arz3ndektsv4rrffq69g5fav",
             now,
-            None,
-            ts(),
+            &exit,
             Some(4242),
             Some("/tmp/wt/seed".to_string()),
             Some("main".to_string()),
@@ -465,7 +485,9 @@ mod tests {
         let got =
             serde_json::to_value(RunSummary::from(&sample()).with_attention(Some(view))).unwrap();
         assert_eq!(got["attention_required"], json!(true));
+        // Age is now - worker_exit.at = 10 min.
         assert_eq!(got["attention"]["pending_age_secs"], json!(600));
+        assert_eq!(got["attention"]["exited_at"], json!("2024-01-01T00:00:00Z"));
         assert_eq!(got["attention"]["worker_pid"], json!(4242));
         assert_eq!(got["attention"]["worktree_path"], json!("/tmp/wt/seed"));
         assert_eq!(got["attention"]["source_branch"], json!("main"));
@@ -482,6 +504,35 @@ mod tests {
         let plain = serde_json::to_value(RunSummary::from(&sample()).with_attention(None)).unwrap();
         assert_eq!(plain["attention_required"], json!(false));
         assert!(plain.get("attention").is_none());
+    }
+
+    /// Precedence: `with_attention(Some(..))` suppresses a previously-set stall
+    /// verdict, so the wire can never carry contradictory
+    /// `attention_required: true` + `stalled: true` (design.md §2.5).
+    #[test]
+    fn attention_suppresses_stall_on_summary() {
+        use crate::run::attention::AttentionView;
+        use octl_core::WorkerExit;
+        let exit = WorkerExit {
+            code: Some(0),
+            signal: None,
+            at: ts(),
+        };
+        let view = AttentionView::build("r", ts(), &exit, None, None, None);
+        let got = serde_json::to_value(
+            RunSummary::from(&sample())
+                .with_stalled(true)
+                .with_stillborn(true)
+                .with_attention(Some(view)),
+        )
+        .unwrap();
+        assert_eq!(got["attention_required"], json!(true));
+        assert_eq!(
+            got["stalled"],
+            json!(false),
+            "attention must suppress stall"
+        );
+        assert_eq!(got["stillborn"], json!(false));
     }
 
     /// `SupervisorView::probe` reads the real `supervisor.pid` file and resolves

@@ -70,7 +70,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status};
+use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status, WorkerExit};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -184,8 +184,17 @@ struct RunOutcome {
     /// `--timeout`) and — because it did not finish `done` — grades as a settled
     /// error under `--fail-on-error` (exit `3`). The run status is still
     /// `pending`/`running`; this classification NEVER mutates it terminal. The
-    /// per-verdict reason and resume hint ride in [`Self::error`].
+    /// machine reason rides in [`Self::error`]; the full resume context (worktree
+    /// path, resume hint, pid, age) rides in [`Self::attention`].
     attention_required: bool,
+    /// Resume context for an attention-required run — worktree path, source
+    /// branch, worker pid, pending age, and a one-line resume hint — so an AI
+    /// caller that unblocks on `attention_required` can drive `run merge` from the
+    /// worktree WITHOUT a second `run show` call (the AI-first contract). `None`
+    /// (omitted from the wire) unless [`Self::attention_required`] is true. The
+    /// same `AttentionView` shape `run show` / `run list` expose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attention: Option<crate::run::attention::AttentionView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -465,12 +474,18 @@ fn current_settle(
         let node_id =
             NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
         let node = read_node_opt(paths, &node_id)?;
-        let attention = node
-            .as_ref()
-            .is_some_and(|n| crate::run::attention::is_attention_required(n.status, n.worker_exit));
-        Ok(Some(Settle {
-            status: m.status,
-            stall: stall_kind(
+        let attention = node.as_ref().is_some_and(|n| {
+            crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
+        });
+        // Resolve attention-over-stall precedence HERE (design.md §2.5), at snapshot
+        // construction — not only in `read_outcome` — so the `--progress` JSONL and
+        // the settled-count decision agree with the final outcome. A clean-exited
+        // worker whose supervisor also died must read attention (manual finish), not
+        // orphaned (`run reattach`), on every surface.
+        let stall = if attention {
+            None
+        } else {
+            stall_kind(
                 m.status,
                 // Indeterminate supervisor states must not settle a wait as
                 // stalled — see `SupervisorView::presumed_working`.
@@ -479,7 +494,11 @@ fn current_settle(
                 m.created_at,
                 m.updated_at,
                 now,
-            ),
+            )
+        };
+        Ok(Some(Settle {
+            status: m.status,
+            stall,
             attention,
         }))
     })
@@ -520,6 +539,10 @@ fn read_outcome(
             worktree_path: node.as_ref().and_then(|n| n.worktree_path.clone()),
             branch: node.as_ref().and_then(|n| n.branch.clone()),
             base_sha: node.as_ref().and_then(|n| n.base_sha.clone()),
+            // Attention resume-context inputs, read in the SAME shared-lock window
+            // so the told clean-exit fact is consistent with the status above.
+            worker_exit: node.as_ref().and_then(|n| n.worker_exit),
+            agent_pid: node.as_ref().and_then(|n| n.agent_pid),
             report: node.and_then(|n| n.last_report),
         })
     })
@@ -594,6 +617,26 @@ fn read_outcome(
     } else {
         None
     };
+    // The full resume context for an attention-required outcome, so an AI caller
+    // that unblocks on `attention_required` drives `run merge` from the worktree
+    // without a second `run show` (design.md §2.5, AI-first contract). The told
+    // clean exit that SET `attention_required` is normally still present; if a
+    // race cleared it, degrade to no block (the `error` reason still explains the
+    // outcome). Uses the run's resolved id so the hint's `run merge <id>` is exact.
+    let attention = if attention_required {
+        git_inputs.worker_exit.as_ref().map(|exit| {
+            crate::run::attention::AttentionView::build(
+                paths.run_id.as_str(),
+                chrono::Utc::now(),
+                exit,
+                git_inputs.agent_pid,
+                git_inputs.worktree_path.clone(),
+                git_inputs.source_branch.clone(),
+            )
+        })
+    } else {
+        None
+    };
     // Surface the supervisor's stranded-work signal verbatim (present only on an
     // `agent-died` failed report whose branch has unmerged commits ahead of
     // source). A caller reads `recoverable_work.recoverable` to decide whether to
@@ -619,6 +662,7 @@ fn read_outcome(
         landed_method: signal.method.wire(),
         stalled,
         attention_required,
+        attention,
         summary,
         error,
         recoverable_work,
@@ -647,6 +691,12 @@ struct GitInputs {
     worktree_path: Option<String>,
     branch: Option<String>,
     base_sha: Option<String>,
+    /// The reporting node's told worker exit — the fact that drives the attention
+    /// verdict, read in the same shared-lock window as `status`.
+    worker_exit: Option<WorkerExit>,
+    /// The reporting node's last-observed worker pid, for the attention resume
+    /// context.
+    agent_pid: Option<i32>,
     report: Option<Value>,
 }
 
@@ -735,12 +785,24 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 if r.attention_required {
                     // Non-terminal, deliberate: the worker finished but skipped
                     // `run merge`. The manual finish (not `run reattach`) is the
-                    // fix; the reason rides in `error=` below.
-                    print!(
-                        "  attention_required=true (`run merge {id}` from its worktree, \
-                         or `run cancel {id}`)",
-                        id = r.run_id
-                    );
+                    // fix; name the worktree when known so the PO can `cd` to it.
+                    // The reason rides in `error=` below.
+                    match r
+                        .attention
+                        .as_ref()
+                        .and_then(|a| a.worktree_path.as_deref())
+                    {
+                        Some(wt) => print!(
+                            "  attention_required=true (worktree {wt}; \
+                             `run merge {id}` there, or `run cancel {id}`)",
+                            id = r.run_id
+                        ),
+                        None => print!(
+                            "  attention_required=true (`run merge {id}` from its worktree, \
+                             or `run cancel {id}`)",
+                            id = r.run_id
+                        ),
+                    }
                 }
                 if let Some(s) = &r.summary {
                     print!("  summary={}", output::escape_one_line(s));
@@ -861,6 +923,7 @@ mod tests {
             landed_method: "unverified",
             stalled: false,
             attention_required: false,
+            attention: None,
             summary: None,
             error: None,
             recoverable_work: None,

@@ -1119,3 +1119,89 @@ fn list_flags_attention_required_run() {
         "text row must mark the run attention: {att_line}"
     );
 }
+
+/// Backdate a run manifest's `updated_at` to `minutes_ago` before now (mirrors
+/// `run_wait`'s helper) so the orphaned-stall shape trips.
+fn backdate_manifest_updated_at(home: &TempDir, run_id: &str, minutes_ago: i64) {
+    let path = home.path().join("runs").join(run_id).join("manifest.json");
+    let mut m: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read manifest")).expect("parse");
+    let ts = (chrono::Utc::now() - chrono::Duration::minutes(minutes_ago)).to_rfc3339();
+    m.as_object_mut()
+        .unwrap()
+        .insert("updated_at".into(), Value::String(ts));
+    std::fs::write(&path, serde_json::to_vec(&m).expect("serialize")).expect("write manifest");
+}
+
+/// Precedence (design.md §2.5): a run whose worker exited cleanly AND whose
+/// supervisor died mid-run (the orphaned shape) reports `attention_required`,
+/// NOT `stalled`, on both `run show` and `run list`. The manual finish is the
+/// fix, never `run reattach`.
+#[test]
+fn attention_beats_orphaned_stall_in_show_and_list() {
+    let home = TestHome::new();
+    let run = create(&home, "spinoff", "attention-vs-orphan");
+    add_node(&home, &run, "n-0001");
+    stamp_clean_worker_exit(&home, &run);
+    // Age the manifest past the orphan grace so, absent the clean exit, this would
+    // classify as an orphaned stall (no supervisor pid → dead).
+    backdate_manifest_updated_at(&home, &run, 30);
+
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]));
+    assert_eq!(
+        show["data"]["attention_required"], true,
+        "clean exit wins over orphaned stall: {}",
+        show["data"]
+    );
+    assert_eq!(
+        show["data"]["stalled"], false,
+        "attention must suppress the stall verdict in show: {}",
+        show["data"]
+    );
+
+    let list = run_ok(
+        bin(&home)
+            .env("OCTL_STILLBORN_LIST_GRACE_SECS", "0")
+            .args(["--output", "json", "run", "list"]),
+    );
+    let row = list["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run)
+        .unwrap();
+    assert_eq!(row["attention_required"], true);
+    assert_eq!(
+        row["stalled"], false,
+        "attention must suppress the stall verdict in list: {row}"
+    );
+}
+
+/// Fan-out gate (design.md §2.5): a multi-node run is NOT flagged
+/// `attention_required` off `n-0001` alone — per-node attention is the delegated
+/// `per-node-run` follow-up. Prevents false-flagging the whole run.
+#[test]
+fn multi_node_run_is_not_flagged_attention_off_n0001() {
+    let home = TestHome::new();
+    let run = create(&home, "fan-out", "fanout");
+    add_node(&home, &run, "n-0001");
+    add_node(&home, &run, "n-0002"); // node_count == 2
+    stamp_clean_worker_exit(&home, &run); // n-0001 exits clean
+
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]));
+    assert_eq!(
+        show["data"]["attention_required"], false,
+        "a multi-node run must not be flagged attention off n-0001: {}",
+        show["data"]
+    );
+    assert!(show["data"].get("attention").is_none());
+
+    let list = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let row = list["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run)
+        .unwrap();
+    assert_eq!(row["attention_required"], false, "list: {row}");
+}

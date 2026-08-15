@@ -165,26 +165,36 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             ) && now.signed_duration_since(m.created_at) > stillborn_grace;
             // Attention-required (design.md §2.5 / A5): read the reporting node in
             // the SAME shared-lock snapshot as the manifest so the worker-exit fact
-            // and `status` cannot straddle a reducer write. Costs one node-file
-            // read per run; negligible for realistic run counts, and only n-0001 is
-            // read (the single-worker reporting node). A run with no node yet, or a
-            // node still running, simply yields `None`.
-            let node_id =
-                NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-            let node = read_node_opt(&paths, &node_id)?;
-            let attention = node.as_ref().and_then(|n| {
-                crate::run::attention::is_attention_required(n.status, n.worker_exit).then(|| {
-                    crate::run::attention::AttentionView::build(
-                        m.run_id.as_str(),
-                        now,
-                        n.started_at,
-                        m.created_at,
-                        n.agent_pid,
-                        n.worktree_path.clone(),
-                        m.source_branch.clone(),
-                    )
+            // and `status` cannot straddle a reducer write. Gated on a SINGLE-worker
+            // run (`node_count == 1`): a fan-out (multi-node) run's per-node
+            // attention is the delegated `per-node-run` follow-up, so we neither
+            // false-flag the whole run off `n-0001` nor pay the node read for it.
+            // Read best-effort: `run list` was manifest-only before, and it is a
+            // diagnostic surface, so a corrupt `n-0001` file degrades to "no
+            // attention" for this one run rather than aborting the whole listing.
+            let attention = if m.node_count == 1 {
+                let node_id =
+                    NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+                let node = read_node_opt(&paths, &node_id).ok().flatten();
+                node.as_ref().and_then(|n| {
+                    crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
+                        // `is_attention_required` guarantees `worker_exit` is Some+clean.
+                        .then_some(n.worker_exit.as_ref())
+                        .flatten()
+                        .map(|exit| {
+                            crate::run::attention::AttentionView::build(
+                                m.run_id.as_str(),
+                                now,
+                                exit,
+                                n.agent_pid,
+                                n.worktree_path.clone(),
+                                m.source_branch.clone(),
+                            )
+                        })
                 })
-            });
+            } else {
+                None
+            };
             Ok(Some((m, supervisor, stillborn, attention)))
         })
         .map_err(from_core)?;

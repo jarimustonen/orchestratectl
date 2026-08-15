@@ -5,6 +5,9 @@ type: task
 status: in-progress
 priority: high
 epic: lifecycle-architecture-review
+commits:
+- hash: 831c9fa
+  summary: surface attention-required runs without terminalizing (A5)
 ---
 
 # Thin supervisor: surface attention-required runs
