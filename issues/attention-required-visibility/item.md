@@ -2,9 +2,16 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: improvement
-status: open
+status: duplicate
 priority: normal
 epic: lifecycle-architecture-review
+related: ['@attention-required-run-surface']
+closed: 2026-08-15
+commits:
+- hash: 831c9fa
+  summary: surface attention-required runs without terminalizing (A5)
+- hash: 63ce2f6
+  summary: apply review fixes to A5 attention surface
 ---
 
 # Surface attention-required and blocked runs as a distinct visible non-terminal state
