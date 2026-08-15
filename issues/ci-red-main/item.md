@@ -2,9 +2,10 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: bug
-status: in-progress
+status: fixed
 priority: high
 labels: [ci]
+closed: 2026-08-15
 ---
 
 # CI red on main: rustdoc unresolved intra-doc link crate::spinoff::approve
