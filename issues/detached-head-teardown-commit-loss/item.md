@@ -2,12 +2,15 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 epic: lifecycle-architecture-review
 commits:
 - hash: 2ee0ff5
   summary: preserve detached-HEAD committed work on non-merge teardown
+- hash: c730d26
+  summary: harden guard per llm-review (empty-source, non-recorded-branch, toctou comment)
+closed: 2026-08-15
 ---
 
 # Detached-HEAD / no-branch worktree can lose committed work on non-merge teardown
