@@ -3024,6 +3024,23 @@ fn watchdog_tick(
     paths: &RunPaths,
     retry_states: &mut std::collections::BTreeMap<String, RetryPark>,
 ) -> Result<(), CliError> {
+    // Interactive runs: the supervisor is hands-off (design.md §6). A dead pid, a
+    // worker exit, and the crash backstop are ALL ignored — the human owns the
+    // lifecycle and drives termination via an explicit `run merge` / `run cancel`
+    // (both of which append a terminal `node.report` the rollup/cleanup path
+    // outside this tick still acts on). So the whole liveness / told-failure /
+    // crash-backstop / auto-retry machinery below is skipped: nothing here may
+    // auto-terminalize an interactive node. This is a lookup on a TOLD fact
+    // (`manifest.lifecycle`), never a re-derivation — do not gate any teardown on
+    // a signal cross-product instead.
+    if read_manifest_opt(paths)
+        .ok()
+        .flatten()
+        .is_some_and(|m| m.lifecycle.is_interactive())
+    {
+        return Ok(());
+    }
+
     let now = Utc::now();
     let now_instant = Instant::now();
     let grace = spawn_grace();
@@ -3955,6 +3972,20 @@ mod tests {
         base: &str,
         agent_pid: i32,
     ) -> RunPaths {
+        setup_run_with_lifecycle(tmp, repo, wt, base, agent_pid, "autonomous")
+    }
+
+    /// As [`setup_autonomous_run`] but with an explicit how-run `lifecycle`
+    /// (`autonomous` | `interactive`), so a test can exercise the supervisor's
+    /// interactive hands-off path (design.md §6).
+    fn setup_run_with_lifecycle(
+        tmp: &tempfile::TempDir,
+        repo: &Path,
+        wt: &Path,
+        base: &str,
+        agent_pid: i32,
+        lifecycle: &str,
+    ) -> RunPaths {
         let run_id = "01jxwd0000000000000000000w";
         let dir = tmp.path().join(run_id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3966,7 +3997,7 @@ mod tests {
             None,
             json!({
                 "kind": "spinoff",
-                "lifecycle": "autonomous",
+                "lifecycle": lifecycle,
                 "title": "t",
                 "source_repo": repo.to_str().unwrap(),
                 "source_branch": "main",
@@ -4048,6 +4079,84 @@ mod tests {
         assert!(
             cleanup::rollup_status(&paths, false).is_none(),
             "a finished-but-unmerged run stays pending, awaiting manual finish"
+        );
+    }
+
+    /// Interactive how-run regression (design.md §6): the supervisor is HANDS-OFF.
+    /// A confirmed-dead pid past the (zero) crash-backstop grace, which on an
+    /// autonomous run would synthesize a `failed` report, must be IGNORED on an
+    /// interactive run — no report, node stays non-terminal, the human owns the
+    /// lifecycle and finalizes via an explicit `run merge` / `run cancel`.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn interactive_run_ignores_dead_pid() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        // A dead pid: on an autonomous run the zero-grace crash backstop fires.
+        let paths = setup_run_with_lifecycle(&tmp, &repo, &wt, &base, dead_pid(), "interactive");
+
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            !n.status.is_terminal(),
+            "an interactive run must never auto-terminalize from a dead pid, got {:?}",
+            n.status
+        );
+        assert!(
+            n.last_report.is_none(),
+            "the interactive supervisor must synthesize no report from pid death"
+        );
+        assert!(
+            n.first_death_at.is_none(),
+            "the interactive path must not even record a death observation"
+        );
+        assert!(
+            cleanup::rollup_status(&paths, false).is_none(),
+            "an interactive run stays pending until an explicit merge/cancel"
+        );
+    }
+
+    /// Interactive how-run regression (design.md §6): even a TOLD `worker.exited`
+    /// failure — which on an autonomous run is a typed `failed` outcome — must NOT
+    /// terminalize an interactive run. The human may have quit/restarted the agent;
+    /// only an explicit `run merge` / `run cancel` ends an interactive run.
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn interactive_run_ignores_worker_exit_failure() {
+        let _lock = GRACE_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _grace = GraceGuard::zero();
+        let _tmux = EnvGuard::set("TMUX_BIN", "/nonexistent/tmux");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_run_with_lifecycle(&tmp, &repo, &wt, &base, dead_pid(), "interactive");
+
+        let nid = NodeId::parse_str("n-0001").unwrap();
+        append_and_apply_event(
+            &paths,
+            "worker.exited",
+            Some(&nid),
+            None,
+            json!({ "exit_code": 7 }),
+        )
+        .unwrap();
+
+        watchdog_tick(&paths, &mut std::collections::BTreeMap::new()).unwrap();
+
+        let n = n0001(&paths);
+        assert!(
+            !n.status.is_terminal(),
+            "an interactive run must not auto-fail on a told worker exit, got {:?}",
+            n.status
+        );
+        assert!(
+            n.last_report.is_none(),
+            "no failed report is synthesized for an interactive run"
         );
     }
 

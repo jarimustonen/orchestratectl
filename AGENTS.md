@@ -108,7 +108,7 @@ These invariants govern correctness of the on-disk run state and the autonomous-
 
 4. **Progress polling branches on `manifest.status`, NOT `lifecycle`**
    (every `crates/octl-cli/skills/*/SKILL.template.md`, and any agent prose elsewhere)
-   `Lifecycle` is `Autonomous | Interactive` — a *category* derived from `kind`, never transitions. `Status` is `Pending | Running | Done | Failed | Cancelled` — terminal states are `Done | Failed | Cancelled`. An agent that polls `lifecycle` for `completed | failed | cancelled` hangs forever; the field never matches. This was a real bug (`skill-progress-polling-wrong-field`); never re-introduce it.
+   `Lifecycle` is `Autonomous | Interactive` — a *how-run category* set once at `run create` from the explicit `--interactive` flag (issue `interactive-flag`), never transitions and NOT derived from `kind` (the removed `code` kind used to carry it accidentally; `Kind::lifecycle` now only *seeds the default* for a non-`--interactive` create). `Status` is `Pending | Running | Done | Failed | Cancelled` — terminal states are `Done | Failed | Cancelled`. An agent that polls `lifecycle` for `completed | failed | cancelled` hangs forever; the field never matches. This was a real bug (`skill-progress-polling-wrong-field`); never re-introduce it. Do NOT resurrect kind-derived `Lifecycle::Interactive` inference — interactivity is an explicit told flag on any topology, and in interactive mode the supervisor never auto-terminalizes/tears-down from a dead pid or worker exit — it waits for explicit `run merge` / `run cancel` (design.md §6).
 
 5. **Supervisor is the canonical worktree + tmux teardown actor**
    (`crates/octl-cli/src/supervise/cleanup.rs`)

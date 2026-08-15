@@ -101,6 +101,13 @@ pub struct Args<'a> {
     /// [`crate::harness::select::resolve`]; `None` falls through to
     /// `ORCHESTRATECTL_HARNESS`, then `config.toml`, then the built-in `claude`.
     pub harness: Option<String>,
+    /// Mark the run **interactive** (`--interactive`). Sets the run's how-run
+    /// [`Lifecycle`] to [`Lifecycle::Interactive`], recorded on `run.created`, so
+    /// the supervisor waits for an explicit `run merge` / `run cancel` and never
+    /// auto-terminalizes from a dead pid (design.md §6). `false` (the default) is
+    /// the autonomous fire-and-forget worker. Orthogonal to `kind` — NOT derived
+    /// from it.
+    pub interactive: bool,
     /// Completion-notification command (`--notify`). Persisted into the
     /// `run.created` event as `notify_cmd` so the supervisor can run it once
     /// on the terminal transition. `None` for a run created without `--notify`.
@@ -191,6 +198,16 @@ struct SpawnResult {
 
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let title = require_nonempty(&args.title, "title")?;
+
+    // How-run state is a TOLD fact from the explicit `--interactive` flag, not
+    // inferred from `kind` (design.md §2/§6). `--interactive` → interactive; the
+    // default falls back to the kind's autonomous seed (`lifecycle_for`), so a
+    // plain `run create` is byte-identical to before this flag existed.
+    let lifecycle = if args.interactive {
+        Lifecycle::Interactive
+    } else {
+        lifecycle_for(args.kind)
+    };
 
     // Resolve the harness (flag > env > config > default) up front so an invalid
     // `--harness` / `ORCHESTRATECTL_HARNESS` / config value fails fast before we
@@ -285,7 +302,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 run_id: &existing,
                 dir: dir.display().to_string(),
                 kind: args.kind,
-                lifecycle: lifecycle_for(args.kind),
+                lifecycle,
                 parent_run_id: parent_run_id.as_deref(),
                 parent_node_id: parent_node_id.as_deref(),
                 // Worker replays don't re-read their node here, so it stays `None`.
@@ -304,7 +321,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Validate the freshly generated id (infallible in practice) so run_dir
     // gets a typed RunId rather than a raw &str.
     let run_id_typed = parse_run_id(&run_id)?;
-    let lifecycle = lifecycle_for(args.kind);
     let child_dir = octl_core::run_dir(&root, &run_id_typed);
 
     if args.dry_run {

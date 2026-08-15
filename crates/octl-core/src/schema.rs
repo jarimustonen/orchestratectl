@@ -283,9 +283,12 @@ impl Kind {
         Kind::FanOut.wire_name(),
     ];
 
-    /// Default lifecycle for a kind (design.md §7.4). Every surviving kind is
-    /// autonomous (agent runs to completion, watchdog adjudicates) — the 0.2 cut
-    /// removed the interactive kinds, emptying `Lifecycle::Interactive`.
+    /// Default how-run [`Lifecycle`] for a kind — the value a run gets when
+    /// created WITHOUT `--interactive`. Every kind defaults to autonomous; the 0.2
+    /// cut removed the `code` kind that used to imply interactivity, so
+    /// interactivity is no longer kind-derived — it is the explicit `--interactive`
+    /// flag ([`Lifecycle`] docs, design.md §2/§6). This method only seeds the
+    /// default; it must NOT be read as "this kind is (non-)interactive".
     /// [`Kind::Unknown`] (a legacy on-disk run) reads as autonomous too; it is
     /// never freshly supervised, so the value only ever feeds read-only display.
     pub fn lifecycle(self) -> Lifecycle {
@@ -319,14 +322,41 @@ impl Kind {
     }
 }
 
-/// Lifecycle (design.md §1.2, §7.4).
+/// How a run is driven — its **how-run** state (design.md §2, §6).
+///
+/// This is an **explicit told fact**, set once at `run create` from the
+/// `--interactive` flag and never transitioned. It is deliberately NOT derived
+/// from [`Kind`]: the 0.2 cut removed the `code` kind that used to carry
+/// interactivity accidentally, and interactivity is now orthogonal to topology —
+/// *any* run can be marked interactive (`told, not guessed`, `target-state-0.2.md
+/// §2`/§4). Do not reintroduce a `Kind`-derived inference; `Kind::lifecycle`
+/// exists only to seed the default for a run created without the flag.
+///
+/// `Lifecycle` is a *category*, not a progress signal — an agent tracking
+/// completion polls `manifest.status` (`Pending | Running | Done | Failed |
+/// Cancelled`), NEVER `lifecycle`, whose value never changes (state-integrity
+/// invariant 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Lifecycle {
-    /// Agent runs to completion unattended; the watchdog adjudicates exit.
+    /// Agent runs to completion unattended; the supervisor adjudicates exit
+    /// (the told `worker.exited` fact, then the residual crash backstop).
     Autonomous,
-    /// Human-driven inside a tmux window; no watchdog-forced termination.
+    /// Human-driven: the supervisor **never** auto-terminalizes or auto-tears-down
+    /// from a dead pid or a worker exit — it waits for an explicit `run merge`
+    /// (→ teardown) or `run cancel`. The human owns the whole lifecycle
+    /// (design.md §6).
     Interactive,
+}
+
+impl Lifecycle {
+    /// True for [`Lifecycle::Interactive`] — the human-driven, supervisor-hands-off
+    /// how-run state. The single predicate the supervisor consults to suppress its
+    /// automatic terminalization/teardown machinery (design.md §6).
+    #[must_use]
+    pub fn is_interactive(self) -> bool {
+        matches!(self, Lifecycle::Interactive)
+    }
 }
 
 /// Run/node status (design.md §1.2).
@@ -393,7 +423,8 @@ pub struct Manifest {
     pub run_id: RunId,
     /// Kind of work this run performs.
     pub kind: Kind,
-    /// Execution lifecycle (autonomous vs interactive).
+    /// How-run state (autonomous vs interactive), set once at `run create` from
+    /// the explicit `--interactive` flag — never transitioned. See [`Lifecycle`].
     pub lifecycle: Lifecycle,
     /// Human-readable run title.
     pub title: String,

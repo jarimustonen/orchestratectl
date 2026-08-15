@@ -86,12 +86,12 @@ progress (see the `octl-run-overview` skill for the response shape).
 
 - **Spinoff** — one focused autonomous task, no review. "Update all
   docstrings in module X." "Refactor helper Y into its own crate."
-- **Worktree-code** — user wants to review the diff interactively. Not
-  this skill.
+- **Interactive worktree** — user wants a hands-on, human-driven session:
+  add `--interactive` to `run create` so the supervisor waits for an
+  explicit `run merge`/`run cancel` (a default spinoff is always headless +
+  autonomous). Not this skill's default path.
 - **Fan-out** — N similar independent units (≥5). Not this skill — use
   `run create --kind fan-out`.
-- **Orchestrate** — heterogeneous, dependency-ordered features. Not
-  this skill.
 
 ## Writing the prompt
 

@@ -1,6 +1,6 @@
 ---
 name: worktree-spinoff
-description: Spawn an autonomous spinoff worktree agent via `orchestratectl run create --kind spinoff` — one fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back to the source branch. Use when the user says `/worktree-spinoff <task>`, when a parallel sub-task can be handled without interactive review, or when a driver (`/fan-out`, `/orchestrate`) needs to spawn one autonomous unit. NOT for interactive review (`/worktree-code`), N identical units (`/fan-out`), or dependency-ordered features (`/orchestrate`).
+description: Spawn an autonomous spinoff worktree agent via `orchestratectl run create --kind spinoff` — one fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back to the source branch. Use when the user says `/worktree-spinoff <task>`, when a parallel sub-task can be handled without interactive review, or when a driver (`/fan-out`) needs to spawn one autonomous unit. NOT for hands-on interactive review (add `--interactive` to `run create` so the supervisor waits for an explicit `run merge`/`run cancel`), N identical units (`/fan-out`), or dependency-ordered features (stint waves).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -26,7 +26,7 @@ below assumes.
   "spinoff" worktree for a focused task.
 - ✅ A driver skill (`/fan-out`, `/orchestrate`) needs to spawn one
   autonomous unit and pass `--parent-run-id` + `--parent-node-id`.
-- ❌ User wants to review the diff interactively → `/worktree-code`.
+- ❌ User wants a hands-on, human-driven worktree → spawn with `orchestratectl run create --interactive` (the supervisor never auto-terminalizes; the human finalizes with `run merge`/`run cancel`). A default spinoff is always headless + autonomous.
 - ❌ N≥5 similar independent units → `/fan-out`.
 - ❌ Heterogeneous dependency-ordered features → `/orchestrate`.
 - ❌ Substantial research / ADR / bugfix → use the matching

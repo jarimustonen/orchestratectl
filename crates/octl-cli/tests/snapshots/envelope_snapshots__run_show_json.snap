@@ -8,6 +8,7 @@ expression: value
   "data": {
     "run_id": "[RUN_ID]",
     "kind": "spinoff",
+    "lifecycle": "autonomous",
     "status": "pending",
     "title": "seed-run",
     "created_at": "[TS]",

@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
 expression: value
 ---
 {
@@ -1544,6 +1543,35 @@ expression: value
                 "arity": {
                   "min": 1,
                   "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "interactive",
+                "long": "interactive",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Mark this run **interactive** (human-driven). The supervisor then never auto-terminalizes or auto-tears-down from a dead pid or a worker exit — it waits for an explicit `run merge` (→ teardown) or `run cancel`; the human owns the whole lifecycle (design.md §6). Opt-in; omit it (the default) for an autonomous fire-and-forget worker. This is the explicit how-run state that replaced the removed `code` kind — orthogonal to `--kind`, so any topology can be interactive",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
                   "repeated": false,
                   "multi_value": false,
                   "require_equals": false

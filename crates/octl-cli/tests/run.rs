@@ -50,6 +50,49 @@ fn create(home: &TempDir, kind: &str, title: &str) -> String {
         .to_string()
 }
 
+/// `run create --interactive` persists explicit `lifecycle: interactive`
+/// how-run state — on the create envelope, in the stored manifest (`run show`),
+/// and on the `run list` row — while a plain create stays `autonomous`. This is
+/// the told-not-guessed flag that replaced the removed kind-derived interactive
+/// lifecycle (design.md §6).
+#[test]
+fn create_interactive_persists_lifecycle() {
+    let home = TestHome::new();
+
+    // Explicit --interactive on a spinoff topology: lifecycle is interactive
+    // everywhere it surfaces.
+    let v = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "hands-on",
+        "--interactive",
+    ]));
+    assert_eq!(v["data"]["lifecycle"], "interactive");
+    let run_id = v["data"]["run_id"].as_str().unwrap().to_string();
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(v["data"]["manifest"]["lifecycle"], "interactive");
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let row = v["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run_id.as_str())
+        .expect("interactive run in list");
+    assert_eq!(row["lifecycle"], "interactive");
+
+    // The default (flag omitted) stays autonomous.
+    let auto = create(&home, "spinoff", "hands-off");
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &auto]));
+    assert_eq!(v["data"]["manifest"]["lifecycle"], "autonomous");
+}
+
 #[test]
 fn create_then_list_then_show_then_cancel_flow() {
     let home = TestHome::new();

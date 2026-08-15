@@ -234,6 +234,13 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
 pub struct RunSummary {
     pub run_id: String,
     pub kind: String,
+    /// How-run state (`autonomous` | `interactive`), from the explicit
+    /// `--interactive` flag at create — NOT a progress signal. Surfaced here so an
+    /// agent scanning `run list` can tell a human-driven run (which the supervisor
+    /// never auto-terminalizes) from an autonomous one WITHOUT confusing it with
+    /// `status`. Poll `status` for completion; read `lifecycle` for how it's driven
+    /// (design.md §6, state-integrity invariant 4).
+    pub lifecycle: &'static str,
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
@@ -352,6 +359,7 @@ impl From<&Manifest> for RunSummary {
         Self {
             run_id: m.run_id.to_string(),
             kind: kind_kebab(m.kind).to_string(),
+            lifecycle: lifecycle_kebab(m.lifecycle),
             status: status_kebab(m.status).to_string(),
             title: m.title.clone(),
             created_at: m.created_at,
@@ -449,6 +457,7 @@ mod tests {
             json!({
                 "run_id": "01arz3ndektsv4rrffq69g5fav",
                 "kind": "spinoff",
+                "lifecycle": "autonomous",
                 "status": "pending",
                 "title": "seed-run",
                 "created_at": "2024-01-01T00:00:00Z",

@@ -53,6 +53,14 @@ impl From<KindArg> for Kind {
     }
 }
 
+// The `Create` variant is a wide clap arg-bag (~300 bytes of flags) next to
+// small verb variants — the classic `large_enum_variant` shape. It is parsed
+// exactly once per process and immediately destructured in `dispatch`; it is
+// never stored in a collection or moved on a hot path, so the size gap costs
+// nothing. Boxing a clap `#[derive(Subcommand)]` struct-variant is not
+// expressible without splitting it into a separate `Args` struct, which buys no
+// runtime benefit here — allow the lint deliberately.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum RunAction {
     /// Create a new run. Top-level when `--parent-*` flags are absent,
@@ -84,6 +92,15 @@ pub enum RunAction {
         /// `run list --json`.
         #[arg(long)]
         harness: Option<String>,
+        /// Mark this run **interactive** (human-driven). The supervisor then
+        /// never auto-terminalizes or auto-tears-down from a dead pid or a worker
+        /// exit — it waits for an explicit `run merge` (→ teardown) or `run
+        /// cancel`; the human owns the whole lifecycle (design.md §6). Opt-in;
+        /// omit it (the default) for an autonomous fire-and-forget worker. This is
+        /// the explicit how-run state that replaced the removed `code` kind —
+        /// orthogonal to `--kind`, so any topology can be interactive.
+        #[arg(long)]
+        interactive: bool,
         /// Skip workmux post-create hooks; forwarded to create.sh.
         #[arg(long)]
         no_hooks: bool,
@@ -265,6 +282,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             harness,
+            interactive,
             no_hooks,
             headless,
             tmux_session,
@@ -285,6 +303,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             harness,
+            interactive,
             no_hooks,
             headless,
             tmux_session,
