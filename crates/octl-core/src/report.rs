@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::reducer::VIA_EXPLICIT_MERGE;
 use crate::schema::Kind;
 
 /// The report-payload key under which a typed [`ReportOrigin`] is serialized
@@ -80,6 +81,51 @@ impl ReportOrigin {
     pub fn from_report(report: &Value) -> Option<Self> {
         let raw = report.get(REPORT_ORIGIN_KEY)?;
         serde_json::from_value(raw.clone()).ok()
+    }
+
+    /// True when a terminal `node.report` payload is a CONFIRMED, SUCCESSFUL
+    /// `run merge` — the sole authority for a merge/success outcome (issue
+    /// `retire-via-string`).
+    ///
+    /// The typed [`ReportOrigin::RunMerge`] (stamped only by the `run merge`
+    /// transaction / its crash recovery — an agent's `node report` is normalized
+    /// to [`ReportOrigin::Agent`]) is the authoritative marker. The legacy
+    /// `via: "explicit-merge"` string is honored ONLY as a fallback for a report
+    /// that carries NO `origin` field at all — a legacy on-disk report written
+    /// before the typed origin existed. Gating the `via` fallback on a genuinely
+    /// ABSENT origin (not on [`from_report`](Self::from_report) returning `None`)
+    /// is what makes the typed field strictly stronger: a report that DOES carry
+    /// an `origin` field — parsed or malformed/hand-edited — never earns merge
+    /// status on a forged `via` string alone. This mirrors
+    /// `supervise::outcome::classify`'s merge gate exactly, so the reducer, the
+    /// `landed` fallback, and `run wait`'s `merged` flag all agree on the one
+    /// merge truth.
+    ///
+    /// Requires `success == true` and `cancelled` absent/`false`: a payload
+    /// carrying the merge marker but `success: false` (malformed/spoofed) or a
+    /// cancel is NOT a merge. Boolean typing is strict — a non-boolean `success`
+    /// / `cancelled` reads as not-a-merge rather than erroring, so a replay of
+    /// such a dead event stays a clean no-op.
+    #[must_use]
+    pub fn report_is_confirmed_merge(report: &Value) -> bool {
+        let success = matches!(report.get("success"), Some(Value::Bool(true)));
+        let not_cancelled = matches!(
+            report.get("cancelled"),
+            None | Some(Value::Null | Value::Bool(false))
+        );
+        if !(success && not_cancelled) {
+            return false;
+        }
+        // Prefer the typed origin; the legacy `via` string is authority ONLY when
+        // no `origin` field is present (a pre-typed-origin on-disk report).
+        let is_run_merge_origin = matches!(
+            Self::from_report(report),
+            Some(ReportOrigin::RunMerge { .. })
+        );
+        let origin_present = report.get(REPORT_ORIGIN_KEY).is_some();
+        let legacy_via_merge = !origin_present
+            && report.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE);
+        is_run_merge_origin || legacy_via_merge
     }
 
     /// Stamp this origin into a report payload under [`REPORT_ORIGIN_KEY`],
@@ -736,6 +782,81 @@ mod tests {
             ReportOrigin::from_report(&report),
             Some(ReportOrigin::Agent)
         );
+    }
+
+    #[test]
+    fn report_is_confirmed_merge_prefers_typed_origin() {
+        // A RunMerge origin authorizes a merge even with NO legacy `via` string.
+        let mut merged = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: Some("op-1".into()),
+            worker_oid: Some("abc".into()),
+        }
+        .stamp(&mut merged);
+        assert!(ReportOrigin::report_is_confirmed_merge(&merged));
+
+        // A bare RunMerge origin (legacy unguarded path, no OIDs) still counts.
+        let mut bare = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: None,
+            worker_oid: None,
+        }
+        .stamp(&mut bare);
+        assert!(ReportOrigin::report_is_confirmed_merge(&bare));
+    }
+
+    #[test]
+    fn report_is_confirmed_merge_legacy_via_only_when_origin_absent() {
+        // Legacy report (no origin field): the `via` marker is honored.
+        assert!(ReportOrigin::report_is_confirmed_merge(&json!({
+            "success": true, "via": "explicit-merge"
+        })));
+
+        // Present-but-Agent origin + a forged `via`: NOT a merge. Merge authority
+        // is the run-merge path; an agent report can't fabricate one on `via`.
+        let mut agent = json!({ "success": true, "via": "explicit-merge" });
+        ReportOrigin::Agent.stamp(&mut agent);
+        assert!(
+            !ReportOrigin::report_is_confirmed_merge(&agent),
+            "an Agent-origin report must not be a merge even with a forged via"
+        );
+
+        // Present-but-MALFORMED origin + a forged `via`: NOT a merge — a corrupt
+        // origin field must not re-unlock the legacy via path.
+        assert!(!ReportOrigin::report_is_confirmed_merge(&json!({
+            "success": true, "via": "explicit-merge", "origin": "garbage-not-an-object"
+        })));
+        assert!(!ReportOrigin::report_is_confirmed_merge(&json!({
+            "success": true, "via": "explicit-merge", "origin": { "kind": "bogus" }
+        })));
+    }
+
+    #[test]
+    fn report_is_confirmed_merge_requires_success_and_not_cancelled() {
+        // success:false with a merge marker is not a merge (malformed/spoofed).
+        assert!(!ReportOrigin::report_is_confirmed_merge(&json!({
+            "success": false, "via": "explicit-merge"
+        })));
+        // A RunMerge origin on a success:false report is likewise not a merge.
+        let mut neg = json!({ "success": false });
+        ReportOrigin::RunMerge {
+            op_id: None,
+            worker_oid: None,
+        }
+        .stamp(&mut neg);
+        assert!(!ReportOrigin::report_is_confirmed_merge(&neg));
+        // A cancelled report never counts, even with a RunMerge origin riding along.
+        let mut cancelled = json!({ "success": false, "cancelled": true, "reason": "x" });
+        ReportOrigin::RunMerge {
+            op_id: None,
+            worker_oid: None,
+        }
+        .stamp(&mut cancelled);
+        assert!(!ReportOrigin::report_is_confirmed_merge(&cancelled));
+        // Non-boolean success (strict typing) is not a merge.
+        assert!(!ReportOrigin::report_is_confirmed_merge(&json!({
+            "success": "true", "via": "explicit-merge"
+        })));
     }
 
     #[test]

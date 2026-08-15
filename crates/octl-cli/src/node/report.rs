@@ -74,19 +74,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     validate_report_payload(&data).map_err(map_report_validation_error)?;
 
-    // Normalize the typed report origin to `Agent` (issue `typed-report-origin`).
+    // Normalize the typed report origin to `Agent` (issue `typed-report-origin`)
+    // AND strip any caller-supplied `via` marker (issue `retire-via-string`).
     // A `node report` is always an agent self-submission, so any caller-supplied
     // `origin` is discarded and overwritten — an agent must NOT be able to assert a
     // `RunMerge` (merge authorization) or `Supervisor` origin that `classify` would
     // trust. This keeps the TYPED merge authorization tied to the `run merge` path,
     // which stamps `RunMerge` itself.
     //
-    // The pre-existing `via` marker is deliberately left untouched: the reducer's
-    // confirmed-merge adoption and `run wait`'s report-marker `landed` fallback key
-    // on `via`, and reworking that authorization surface is out of scope for this
-    // issue (the issue scopes teardown/reducer via-semantics as unchanged — a
-    // forged `via` on an `Agent`-origin report still classifies `PlainSuccess`, so
-    // teardown never force-deletes it). Tightening `via` is a separate follow-up.
+    // The legacy `via: "explicit-merge"` string is now stripped here too. Every
+    // merge consumer (the reducer's confirmed-merge adoption, `run wait`'s `landed`
+    // report-marker fallback, its `merged` flag, and the supervisor teardown gate)
+    // prefers the typed origin and only falls back to `via` when the `origin` field
+    // is genuinely absent. Since this path always stamps an `Agent` origin, a
+    // caller `via` is already inert — but removing it outright keeps the persisted
+    // report honest (no dangling forgeable marker on an agent report) rather than
+    // relying on downstream gating alone.
     normalize_agent_origin(&mut data);
 
     let root = crate::home::root_dir()?;
@@ -226,12 +229,20 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
 }
 
 /// Overwrite any caller-supplied `origin` with the typed [`Agent`] origin (issue
-/// `typed-report-origin`). A `node report` is always an agent self-submission; a
-/// `RunMerge`/`Supervisor` origin that `classify` would trust must never be
-/// assertable from an untrusted payload.
+/// `typed-report-origin`) and strip any caller-supplied `via` marker (issue
+/// `retire-via-string`). A `node report` is always an agent self-submission; a
+/// `RunMerge`/`Supervisor` origin — or the legacy `via: "explicit-merge"` merge
+/// marker — that a merge consumer would trust must never be assertable from an
+/// untrusted payload. Stamping `Agent` already makes a caller `via` inert
+/// (every consumer prefers the typed origin and only falls back to `via` when
+/// no `origin` field is present), but removing the key keeps the persisted
+/// report honest rather than relying on downstream gating alone.
 ///
 /// [`Agent`]: octl_core::ReportOrigin::Agent
 fn normalize_agent_origin(data: &mut Value) {
+    if let Some(obj) = data.as_object_mut() {
+        obj.remove("via");
+    }
     octl_core::ReportOrigin::Agent.stamp(data);
 }
 
@@ -354,5 +365,29 @@ mod tests {
             octl_core::ReportOrigin::from_report(&v),
             Some(octl_core::ReportOrigin::Agent)
         );
+    }
+
+    #[test]
+    fn a_caller_supplied_via_marker_is_stripped() {
+        // Security (issue `retire-via-string`): an agent must not be able to leave a
+        // forgeable `via: "explicit-merge"` merge marker on its own report. The key
+        // is removed outright, and the report is stamped `Agent` — so it is not a
+        // confirmed merge by any consumer.
+        let mut v = json!({ "success": true, "via": "explicit-merge", "summary": "x" });
+        normalize_agent_origin(&mut v);
+        assert!(
+            v.get("via").is_none(),
+            "the caller-supplied via must be stripped: {v}"
+        );
+        assert_eq!(
+            octl_core::ReportOrigin::from_report(&v),
+            Some(octl_core::ReportOrigin::Agent)
+        );
+        assert!(
+            !octl_core::ReportOrigin::report_is_confirmed_merge(&v),
+            "a normalized agent report is never a confirmed merge"
+        );
+        // Unrelated fields survive the strip.
+        assert_eq!(v.get("summary").and_then(Value::as_str), Some("x"));
     }
 }

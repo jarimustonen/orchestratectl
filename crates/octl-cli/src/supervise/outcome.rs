@@ -26,7 +26,7 @@
 //! append/replay/fsync correctness and the lock invariants are untouched — the
 //! caller still threads the [`octl_core::RunLock`] witness through every append.
 
-use octl_core::{Node, ReportOrigin, WorkerExit, VIA_EXPLICIT_MERGE};
+use octl_core::{Node, ReportOrigin, WorkerExit};
 use serde_json::Value;
 
 /// The teardown a [`TerminalOutcome`] authorizes — the "Teardown?" column of the
@@ -113,7 +113,6 @@ impl TerminalOutcome {
         // never a merge, never a supervisor failure.
         let origin_present = report.get(octl_core::REPORT_ORIGIN_KEY).is_some();
         let origin = ReportOrigin::from_report(report);
-        let is_run_merge_origin = matches!(origin, Some(ReportOrigin::RunMerge { .. }));
 
         // Cancel wins over EVERYTHING, checked first. The reducer rejects the
         // contradiction `success: true` + `cancelled: true` on append, but
@@ -124,18 +123,16 @@ impl TerminalOutcome {
         if cancelled {
             return Some(TerminalOutcome::Cancelled);
         }
-        // Explicit merge: success:true AND authorized by the run-merge path. The
-        // typed `RunMerge` origin is the authoritative marker (stamped only by
-        // `run merge` / its recovery — an agent's `node report` is normalized to an
-        // `Agent` origin, so it cannot assert this); the legacy `via` marker is the
-        // fallback for a report written before the origin field existed. Gating the
-        // `via` fallback on an ABSENT origin is what makes the typed field strictly
-        // stronger: a report that DOES carry an origin field (parsed or not) never
-        // earns the force teardown on a forged `via` string alone. A merge marker
-        // with success:false (malformed/spoofed) is likewise NOT a merge and falls
-        // through to the negative arms below.
-        let legacy_via_merge = !origin_present && report_via(report) == Some(VIA_EXPLICIT_MERGE);
-        if success == Some(true) && (is_run_merge_origin || legacy_via_merge) {
+        // Explicit merge: the one confirmed-merge truth shared with the reducer, the
+        // `landed` fallback, and `run wait`'s `merged` flag (issue
+        // `retire-via-string`). The typed `RunMerge` origin is the authoritative
+        // marker (stamped only by `run merge` / its recovery — an agent's
+        // `node report` is normalized to an `Agent` origin, so it cannot assert
+        // this); the legacy `via` marker is the fallback ONLY for a report carrying
+        // no origin field. A merge marker with success:false (malformed/spoofed) or
+        // a forged `via` on an origin-bearing report is NOT a merge and falls through
+        // to the negative arms below.
+        if ReportOrigin::report_is_confirmed_merge(report) {
             return Some(TerminalOutcome::Merged);
         }
         match success {
@@ -301,11 +298,6 @@ fn is_supervisor_failure(
 
 /// Reason prefix the confirmed-death crash backstop / liveness probe stamps.
 const AGENT_DIED_REASON_PREFIX: &str = "agent-";
-
-/// The `via` field of a terminal report, if any.
-fn report_via(report: &Value) -> Option<&str> {
-    report.get("via").and_then(Value::as_str)
-}
 
 #[cfg(test)]
 mod tests {

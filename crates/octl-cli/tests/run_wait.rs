@@ -7,6 +7,8 @@
 //! latency and PTY pressure. No `#[file_serial]` gate is needed (no supervisor
 //! is spawned); the `TestHome` fixture still reaps any stray process on drop.
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -125,6 +127,87 @@ fn settle_run(home: &TempDir, title: &str, status: &str, report: Value) -> Strin
     run_id
 }
 
+/// Forge a `node.created` for `n-0001` carrying a real worktree path + branch so
+/// a stubbed `run merge` can resolve the branch. Mirrors `run_merge.rs`.
+fn forge_worker_node(home: &TempDir, run_id: &str, worktree: &Path, branch: &str) {
+    let node = home.path().join(format!("node-{run_id}.json"));
+    std::fs::write(
+        &node,
+        format!(
+            r#"{{"kind":"spinoff","task":"x","worktree_path":"{}","branch":"{branch}","tmux_session":"octl","tmux_window_id":"@42"}}"#,
+            worktree.display()
+        ),
+    )
+    .unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node.to_str().unwrap(),
+    ]));
+}
+
+/// Write an executable no-op merge backend that exits 0. Mirrors `run_merge.rs`.
+fn fake_merge_sh(dir: &Path) -> std::path::PathBuf {
+    let p = dir.join("fake-merge.sh");
+    std::fs::write(&p, "#!/bin/bash\nexit 0\n").unwrap();
+    let mut perms = std::fs::metadata(&p).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&p, perms).unwrap();
+    p
+}
+
+/// Drive a fresh run through a STUBBED `run merge` so it settles `done` with a
+/// GENUINE `RunMerge`-origin terminal report (issue `retire-via-string`) — the
+/// real merge authority, not a forged `via: "explicit-merge"` string pushed
+/// through `node report` (which now strips `via` and stamps an `Agent` origin, so
+/// it could never fabricate a merge). `summary` rides `--report-file`. No source
+/// repo/branch is wired and the throwaway worktree is dropped before `run wait`
+/// runs, so git verification yields nothing and `landed` falls back to the durable
+/// merge marker (`report-marker`).
+fn settle_merged_run(home: &TempDir, title: &str, summary: &str) -> String {
+    let run_id = create(home, "spinoff", title);
+    let worktree = TempDir::new().unwrap();
+    forge_worker_node(home, &run_id, worktree.path(), "wt/test-merge");
+    let scratch = TempDir::new().unwrap();
+    let report = scratch.path().join("report.json");
+    std::fs::write(
+        &report,
+        serde_json::to_vec(&json!({ "success": true, "summary": summary })).unwrap(),
+    )
+    .unwrap();
+    let merge_sh = fake_merge_sh(scratch.path());
+    run_ok(bin(home).env("OCTL_MERGE_SH", &merge_sh).args([
+        "--output",
+        "json",
+        "run",
+        "merge",
+        &run_id,
+        "--source",
+        "main",
+        "--report-file",
+        report.to_str().unwrap(),
+    ]));
+    // `run merge` terminalizes the node but does not roll the run manifest up
+    // (no supervisor in this test); stamp the terminal `run.status` explicitly,
+    // matching `settle_run`.
+    event_create(
+        home,
+        &run_id,
+        "run.status",
+        None,
+        json!({ "status": "done" }),
+    );
+    run_id
+}
+
 /// A run left at `pending` — created with no node, never settled.
 fn pending_run(home: &TempDir, title: &str) -> String {
     create(home, "spinoff", title)
@@ -133,18 +216,10 @@ fn pending_run(home: &TempDir, title: &str) -> String {
 #[test]
 fn all_happy_path_two_done_runs_exit_zero() {
     let home = TestHome::new();
-    let a = settle_run(
-        &home,
-        "a",
-        "done",
-        json!({ "success": true, "summary": "did A", "via": "explicit-merge" }),
-    );
-    let b = settle_run(
-        &home,
-        "b",
-        "done",
-        json!({ "success": true, "summary": "did B", "via": "explicit-merge" }),
-    );
+    // A genuine merge (stubbed `run merge` → `RunMerge` origin), NOT a forged
+    // `via` string through `node report` (issue `retire-via-string`).
+    let a = settle_merged_run(&home, "a", "did A");
+    let b = settle_merged_run(&home, "b", "did B");
 
     // Default condition is --all; both runs are already terminal.
     let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &a, &b]));
@@ -155,7 +230,7 @@ fn all_happy_path_two_done_runs_exit_zero() {
         assert_eq!(r["status"], "done");
         assert_eq!(r["merged"], true);
         // With no source repo/branch to git-verify against, the `landed` signal
-        // falls back to the durable `via: explicit-merge` marker.
+        // falls back to the durable merge marker (a `RunMerge`-origin report).
         assert_eq!(r["landed"], true);
         assert_eq!(r["landed_method"], "report-marker");
         assert!(r["summary"].as_str().unwrap().starts_with("did "));

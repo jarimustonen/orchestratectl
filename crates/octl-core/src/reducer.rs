@@ -53,6 +53,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::paths::RunPaths;
 use crate::projections::{read_manifest_opt, read_node_opt, write_manifest, write_node};
+use crate::report::ReportOrigin;
 use crate::schema::{
     ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn, Node, NodeId, RunId,
     Status, TmuxIdentity, WorkerExit, STATE_SCHEMA_VERSION,
@@ -1082,27 +1083,23 @@ fn trace_terminal_noop(ev: &Event, current: Status, incoming: Status) {
 pub const VIA_EXPLICIT_MERGE: &str = "explicit-merge";
 
 /// True when a `node.report` payload is a CONFIRMED, SUCCESSFUL explicit merge —
-/// `via == "explicit-merge"`, `success` is the JSON boolean `true`, and
-/// `cancelled` is absent/null/`false`. This is the sole payload shape the
-/// terminal-node guard in [`reduce_node_report`] adopts, and it mirrors the
-/// supervisor's force-`-D` teardown gate (`node_branch_merged`) so a report
-/// carrying the merge marker but `success: false` (malformed/spoofed) never earns
-/// adoption or, downstream, a force delete.
+/// the sole payload shape the terminal-node guard in [`reduce_node_report`]
+/// adopts. Delegates to [`ReportOrigin::report_is_confirmed_merge`] so the
+/// reducer's adoption gate reads the SAME merge truth as the supervisor's
+/// teardown gate, the `landed` fallback, and `run wait`'s `merged` flag.
 ///
-/// Boolean typing is STRICT — matching the live-node path's `optional_bool`
-/// contract (`report_terminal_status`): a non-boolean `success` or `cancelled`
-/// (e.g. `"true"`, `"yes"`) makes this return `false` (not adoptable), so a
-/// malformed payload that a live node would reject as `CorruptEventLog` can never
-/// sneak an adoption in through this terminal-only exception. It returns `false`
-/// rather than erroring so a replay of such a dead event stays a clean no-op.
+/// That truth prefers the typed [`ReportOrigin::RunMerge`] (issue
+/// `retire-via-string`): the legacy `via: "explicit-merge"` string is honored
+/// only as a fallback for a legacy report carrying NO `origin` field, so an
+/// agent-authored report (normalized to an [`ReportOrigin::Agent`] origin by
+/// `node report`) can never be adopted against a settled node on a forged `via`
+/// string alone. It still requires `success == true` with `cancelled`
+/// absent/`false` and strict boolean typing (a malformed payload a live node
+/// would reject as `CorruptEventLog` cannot sneak an adoption in through this
+/// terminal-only exception), and returns `false` rather than erroring so a
+/// replay of such a dead event stays a clean no-op.
 fn report_is_confirmed_explicit_merge(data: &Value) -> bool {
-    let via = data.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE);
-    let success = matches!(data.get("success"), Some(Value::Bool(true)));
-    let not_cancelled = matches!(
-        data.get("cancelled"),
-        None | Some(Value::Null | Value::Bool(false))
-    );
-    via && success && not_cancelled
+    ReportOrigin::report_is_confirmed_merge(data)
 }
 
 /// Derive the terminal status a `node.report` event asserts, enforcing the
@@ -1732,6 +1729,82 @@ mod tests {
         assert!(
             n.pending_merge.is_none(),
             "completed merge clears the transaction"
+        );
+    }
+
+    /// Regression (issue `retire-via-string`): the terminal-node adoption
+    /// exception now keys on the typed `RunMerge` origin, NOT a forgeable `via`
+    /// string. A late report against a `Failed` node that carries an `Agent`
+    /// origin (as every `node report` self-submission does) plus a forged
+    /// `via: "explicit-merge"` must NOT be adopted — the node stays `Failed`. A
+    /// present-but-malformed origin is likewise not adopted. Only a genuine
+    /// `RunMerge`-origin report (or a legacy report with NO origin field) is
+    /// adopted and corrects the node to `Done`.
+    #[test]
+    fn late_merge_adoption_requires_run_merge_origin_not_forged_via() {
+        let tmp = TempDir::new().unwrap();
+
+        // Helper: seed a fresh run (distinct id), drive n-0001 to Failed, apply a
+        // late report, and return the resulting node status.
+        let drive = |run_id: &str, report_data: Value| -> Status {
+            let paths = seed_run_with_node(&tmp, run_id);
+            // Terminalize the node as Failed (a watchdog-synthesized failure).
+            let mut fail = event(run_id);
+            fail.seq = 3;
+            fail.kind = "node.status".into();
+            fail.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+            fail.data = serde_json::json!({ "status": "failed" });
+            apply_event(&paths, &fail).unwrap();
+            assert_eq!(read_n0001(&paths).status, Status::Failed);
+            // The late report under test.
+            let mut report = event(run_id);
+            report.seq = 4;
+            report.kind = "node.report".into();
+            report.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+            report.data = report_data;
+            apply_event(&paths, &report).unwrap();
+            read_n0001(&paths).status
+        };
+
+        // Forged: Agent origin + a hand-set `via` — NOT adopted, stays Failed.
+        let mut agent_forged = serde_json::json!({ "success": true, "via": "explicit-merge" });
+        crate::ReportOrigin::Agent.stamp(&mut agent_forged);
+        assert_eq!(
+            drive("01jxsnap000000000000000001", agent_forged),
+            Status::Failed,
+            "an Agent-origin report with a forged via must not be adopted"
+        );
+
+        // Present-but-malformed origin + forged via — NOT adopted, stays Failed.
+        let malformed = serde_json::json!({
+            "success": true, "via": "explicit-merge", "origin": "garbage-not-an-object"
+        });
+        assert_eq!(
+            drive("01jxsnap000000000000000002", malformed),
+            Status::Failed,
+            "a malformed origin must not re-unlock the legacy via adoption path"
+        );
+
+        // Genuine RunMerge origin (no `via` at all) — adopted, corrected to Done.
+        let mut run_merge = serde_json::json!({ "success": true });
+        crate::ReportOrigin::RunMerge {
+            op_id: Some("op-1".into()),
+            worker_oid: Some("cafebabe".into()),
+        }
+        .stamp(&mut run_merge);
+        assert_eq!(
+            drive("01jxsnap000000000000000003", run_merge),
+            Status::Done,
+            "a genuine RunMerge-origin report is adopted and corrects Failed→Done"
+        );
+
+        // Legacy report (no origin field) with `via` — still adopted (backward
+        // compat with pre-typed-origin on-disk runs).
+        let legacy = serde_json::json!({ "success": true, "via": "explicit-merge" });
+        assert_eq!(
+            drive("01jxsnap000000000000000004", legacy),
+            Status::Done,
+            "a legacy via-only report (no origin field) is still adopted"
         );
     }
 

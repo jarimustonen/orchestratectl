@@ -142,8 +142,10 @@ pub struct Args<'a> {
 struct RunOutcome {
     run_id: String,
     status: &'static str,
-    /// Report-based landing marker: the terminal `node.report` carries
-    /// `via: "explicit-merge"`. Retained for backward compatibility — prefer
+    /// Report-based landing marker: the terminal `node.report` is a confirmed
+    /// `run merge` — a typed `ReportOrigin::RunMerge` origin, or (for a legacy
+    /// report with no origin field) `via: "explicit-merge"` (issue
+    /// `retire-via-string`). Retained for backward compatibility — prefer
     /// [`Self::landed`], which is git-verified and robust to a caller-side
     /// rebase (issue `landing-signal-reliable-after-rebase`).
     merged: bool,
@@ -507,8 +509,8 @@ fn current_settle(
 
 /// Assemble one run's terminal outcome: its `manifest.status` plus the
 /// outcome fields folded from the default node's terminal `node.report`
-/// (`summary`, the `via: "explicit-merge"` merge marker, and — for a
-/// failed/cancelled settle — a best-effort `error` reason). The manifest and
+/// (`summary`, the confirmed-`run merge` marker via the typed report origin,
+/// and — for a failed/cancelled settle — a best-effort `error` reason). The manifest and
 /// node projections are read in a single shared-lock window so the status and
 /// the report it implies cannot disagree (state-integrity invariant 3).
 ///
@@ -571,11 +573,15 @@ fn read_outcome(
         &crate::supervise::cleanup::git_bin(),
     );
 
+    // `merged` reads the same confirmed-merge truth as the reducer, the `landed`
+    // fallback, and the supervisor teardown gate: the typed `ReportOrigin::RunMerge`
+    // (issue `retire-via-string`), with the legacy `via: "explicit-merge"` string
+    // honored only for a legacy report carrying no `origin` field. An agent-authored
+    // report (normalized to an `Agent` origin by `node report`) can no longer flip
+    // `merged` on a forged `via` string alone.
     let merged = report
         .as_ref()
-        .and_then(|r| r.get("via"))
-        .and_then(Value::as_str)
-        == Some("explicit-merge");
+        .is_some_and(octl_core::ReportOrigin::report_is_confirmed_merge);
     let summary = report
         .as_ref()
         .and_then(|r| r.get("summary"))

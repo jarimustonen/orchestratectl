@@ -53,9 +53,11 @@
 //!
 //! When neither rung can run — the branch ref was already torn down by the
 //! supervisor, no `source_repo`/`branch` was recorded, or git errors — the signal
-//! falls back to the durable **report marker**: a `success: true` terminal
-//! `node.report` whose `via` is `explicit-merge` (a `run merge`) — the only
-//! success-completion marker in the thin model. That marker is the recorded
+//! falls back to the durable **report marker**: a confirmed `run merge` terminal
+//! `node.report` (a typed `ReportOrigin::RunMerge` origin, or — for a legacy
+//! report with no origin field — `via: "explicit-merge"`; issue
+//! `retire-via-string`) — the only success-completion marker in the thin model.
+//! That marker is the recorded
 //! fact that the merge completed; it was correct in the session where the ancestry
 //! check lied, and it is the real post-teardown case (the branch ref is force-
 //! deleted after a confirmed merge, so only the marker remains).
@@ -72,7 +74,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-use octl_core::VIA_EXPLICIT_MERGE;
+use octl_core::ReportOrigin;
 
 /// How a [`LandingSignal`] verdict was reached — surfaced as `landed_method`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +86,8 @@ pub(crate) enum LandedMethod {
     GitVerified,
     /// Git verification was unavailable (branch torn down, no repo/branch
     /// recorded, or git errored), so the `landed: true` verdict came from the
-    /// durable `success: true` terminal-report `via` marker (`explicit-merge`).
+    /// durable confirmed-`run merge` terminal-report marker (a typed
+    /// `ReportOrigin::RunMerge` origin, or a legacy `via: "explicit-merge"`).
     /// This is the normal post-teardown case.
     ReportMarker,
     /// Neither git verification nor a merge marker was available — `landed` is
@@ -172,19 +175,20 @@ pub(crate) fn landing_signal(inputs: &LandingInputs<'_>, git: &str) -> LandingSi
     }
 }
 
-/// True when a terminal report is a confirmed **successful** merge — `success:
-/// true` AND a `via` of `explicit-merge` (a `run merge`), the only success-
-/// completion marker in the thin model. Mirrors the supervisor's typed
-/// [`TerminalOutcome::Merged`](crate::supervise::outcome::TerminalOutcome) gate:
-/// the `success: true` requirement means a payload carrying the merge `via` but
-/// `success: false` (malformed or spoofed) never earns the landed marker on its
-/// `via` alone. A blocked handoff (`success: false`, no merge `via`) reads false.
+/// True when a terminal report is a confirmed **successful** merge — the only
+/// success-completion marker in the thin model. Delegates to
+/// [`ReportOrigin::report_is_confirmed_merge`], so it reads the SAME merge truth
+/// as the supervisor's typed
+/// [`TerminalOutcome::Merged`](crate::supervise::outcome::TerminalOutcome) gate,
+/// the reducer's adoption gate, and `run wait`'s `merged` flag: the typed
+/// [`ReportOrigin::RunMerge`] origin (issue `retire-via-string`), with the legacy
+/// `via: "explicit-merge"` string honored only for a legacy report carrying NO
+/// `origin` field. An agent-authored report (normalized to an `Agent` origin by
+/// `node report`) never earns the landed marker on a forged `via` alone. The
+/// `success: true` requirement means a merge marker with `success: false`
+/// (malformed/spoofed) is not a marker; a blocked handoff reads false.
 fn report_has_merge_marker(report: Option<&Value>) -> bool {
-    let Some(report) = report else {
-        return false;
-    };
-    let success = report.get("success").and_then(Value::as_bool) == Some(true);
-    success && report.get("via").and_then(Value::as_str) == Some(VIA_EXPLICIT_MERGE)
+    report.is_some_and(ReportOrigin::report_is_confirmed_merge)
 }
 
 /// Git-verified landing check. Two rungs (see module docs), sound for the
@@ -715,6 +719,84 @@ mod tests {
         assert!(!report_has_merge_marker(Some(&json!({
             "success": true, "via": "merge-reconciled"
         }))));
+    }
+
+    /// Regression (issue `retire-via-string`): the report marker now keys on the
+    /// typed `RunMerge` origin, with `via` honored only for a legacy report that
+    /// carries NO origin field. A present-but-Agent or present-but-malformed
+    /// origin with a forged `via` is NOT a marker, so `landed` does not fall back
+    /// to it when git can't verify.
+    #[test]
+    fn report_marker_prefers_typed_origin() {
+        use octl_core::ReportOrigin;
+
+        // A RunMerge origin is a marker even with NO `via` string.
+        let mut merged = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: Some("op-1".into()),
+            worker_oid: Some("abc".into()),
+        }
+        .stamp(&mut merged);
+        assert!(report_has_merge_marker(Some(&merged)));
+
+        // Agent origin + a forged `via` is NOT a marker.
+        let mut agent = json!({ "success": true, "via": "explicit-merge" });
+        ReportOrigin::Agent.stamp(&mut agent);
+        assert!(
+            !report_has_merge_marker(Some(&agent)),
+            "an Agent-origin report must not be a landed marker on a forged via"
+        );
+
+        // Malformed origin + a forged `via` is NOT a marker.
+        assert!(!report_has_merge_marker(Some(&json!({
+            "success": true, "via": "explicit-merge", "origin": "garbage-not-an-object"
+        }))));
+
+        // A legacy report (no origin field) with `via` IS a marker (compat).
+        assert!(report_has_merge_marker(Some(&json!({
+            "success": true, "via": "explicit-merge"
+        }))));
+    }
+
+    /// End-to-end `landing_signal`: with no git inputs, an Agent-origin report
+    /// carrying a forged `via` reads as `Unverified` (not `report-marker`), while a
+    /// genuine `RunMerge`-origin report reads as `report-marker`.
+    #[test]
+    fn landed_fallback_gated_on_typed_origin() {
+        use octl_core::ReportOrigin;
+
+        let mut agent = json!({ "success": true, "via": "explicit-merge" });
+        ReportOrigin::Agent.stamp(&mut agent);
+        let inputs = LandingInputs {
+            report: Some(&agent),
+            ..Default::default()
+        };
+        assert_eq!(
+            landing_signal(&inputs, "git"),
+            LandingSignal {
+                landed: false,
+                method: LandedMethod::Unverified
+            },
+            "a forged via on an Agent-origin report must not confirm a landing"
+        );
+
+        let mut merged = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: None,
+            worker_oid: None,
+        }
+        .stamp(&mut merged);
+        let inputs = LandingInputs {
+            report: Some(&merged),
+            ..Default::default()
+        };
+        assert_eq!(
+            landing_signal(&inputs, "git"),
+            LandingSignal {
+                landed: true,
+                method: LandedMethod::ReportMarker
+            }
+        );
     }
 
     #[test]
