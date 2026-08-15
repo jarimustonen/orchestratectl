@@ -109,28 +109,11 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
     if !children_all_terminal {
         return None;
     }
-    let nodes = list_nodes(paths);
-    if nodes.is_empty() {
-        return None;
-    }
-    let mut any_failed = false;
-    let mut any_cancelled = false;
-    for n in &nodes {
-        match n.status {
-            Status::Done => {}
-            Status::Failed => any_failed = true,
-            Status::Cancelled => any_cancelled = true,
-            // Any live node means the run is not done yet.
-            Status::Pending | Status::Running | Status::Blocked => return None,
-        }
-    }
-    Some(if any_failed {
-        Status::Failed
-    } else if any_cancelled {
-        Status::Cancelled
-    } else {
-        Status::Done
-    })
+    // The single shared roll-up rule lives in core (`aggregate_terminal_status`),
+    // so this per-tick supervisor roll-up and `cancel_node`'s in-lock last-node
+    // roll-up can never diverge. `None` on an empty set (a freshly-created run
+    // must not vacuously complete) or any live node.
+    octl_core::aggregate_terminal_status(list_nodes(paths).iter().map(|n| n.status))
 }
 
 /// True when any node's terminal `node.report` was submitted by an explicit

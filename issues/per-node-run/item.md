@@ -2,9 +2,12 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: open
+status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: d45664c
+  summary: per-node branch-preserving run cancel --node for fan-out
 ---
 
 # Per-node run cancel for fan-out (branch-preserving)

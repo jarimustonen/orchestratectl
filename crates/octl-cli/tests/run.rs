@@ -1003,6 +1003,10 @@ fn cancel_node_settles_one_child_and_leaves_run_and_siblings_live() {
     assert_eq!(v["data"]["node"], "n-0002");
     assert_eq!(v["data"]["cancelled"], true);
     assert_eq!(v["data"]["already_terminal"], false);
+    assert!(
+        v["data"]["run_rolled_up_to"].is_null(),
+        "siblings still live → run not rolled up"
+    );
     // The payload echoes the resolved full run id, not a prefix.
     assert_eq!(v["data"]["run_id"], run_id.as_str());
 
@@ -1082,7 +1086,13 @@ fn cancel_node_malformed_id_is_rejected_before_side_effects() {
     let run_id = create(&home, "fan-out", "bad-node-id");
     add_node(&home, &run_id, "n-0001");
     let (code, _v) = run_fail(bin(&home).args([
-        "--output", "json", "run", "cancel", &run_id, "--node", "not-a-node",
+        "--output",
+        "json",
+        "run",
+        "cancel",
+        &run_id,
+        "--node",
+        "not-a-node",
     ]));
     assert_eq!(code, 1);
     // The live node is untouched — validation rejected the id before any lock.
@@ -1106,11 +1116,10 @@ fn cancel_node_missing_run_is_run_not_found() {
 }
 
 #[test]
-fn cancel_each_node_keeps_run_live_until_last_settles() {
-    // Cancelling every child one at a time keeps the run non-terminal at every
-    // step — per-node cancel never appends a `run.status`. Terminalizing the
-    // all-cancelled batch is the supervisor's rollup job, exercised end-to-end
-    // (with a bounded `supervise --once`) in `supervise_gates.rs`.
+fn cancel_each_node_keeps_run_live_until_last_then_rolls_up() {
+    // Cancelling every child one at a time keeps the run non-terminal until the
+    // LAST child settles, then that cancel rolls the run up to `cancelled` in the
+    // same transaction (llm-review C1 — no dependence on a live supervisor).
     let home = TestHome::new();
     let run_id = create(&home, "fan-out", "cancel-all");
     add_node(&home, &run_id, "n-0001");
@@ -1120,20 +1129,21 @@ fn cancel_each_node_keeps_run_live_until_last_settles() {
         "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
     ]));
     assert_eq!(v["data"]["cancelled"], true);
-    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
-    assert_eq!(
-        show["data"]["manifest"]["status"], "pending",
-        "run stays live while n-0002 is still live"
+    assert!(
+        v["data"]["run_rolled_up_to"].is_null(),
+        "run stays live while n-0002 is live"
     );
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(show["data"]["manifest"]["status"], "pending");
 
     let v = run_ok(bin(&home).args([
         "--output", "json", "run", "cancel", &run_id, "--node", "n-0002",
     ]));
     assert_eq!(v["data"]["cancelled"], true);
-    // Even after the LAST node is cancelled, per-node cancel itself never
-    // terminalizes the run — the supervisor rollup does.
+    // The last per-node cancel terminalizes the run itself.
+    assert_eq!(v["data"]["run_rolled_up_to"], "cancelled");
     let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
-    assert_eq!(show["data"]["manifest"]["status"], "pending");
+    assert_eq!(show["data"]["manifest"]["status"], "cancelled");
     assert_eq!(node_status_str(&home, &run_id, "n-0001"), "cancelled");
     assert_eq!(node_status_str(&home, &run_id, "n-0002"), "cancelled");
 }

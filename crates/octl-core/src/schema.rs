@@ -396,6 +396,52 @@ impl Status {
     }
 }
 
+/// Aggregate a set of node statuses into the run's rolled-up terminal status,
+/// or `None` when the run is not yet complete.
+///
+/// The single, shared roll-up rule — used both by the supervisor's per-tick
+/// `rollup_status` and by [`cancel_node`](crate::cancel_node)'s in-lock
+/// self-roll-up (so the two can never diverge). A **three-way** classification
+/// (design §2.5, "rollup terminalizes the run cancelled/done/failed once every
+/// node is terminal"):
+///
+/// - `None` if the set is empty (a freshly-created run must not vacuously
+///   complete) or if ANY node is still live (`Pending`/`Running`/`Blocked`);
+/// - `Some(Status::Failed)` if any node genuinely `Failed` (a real failure
+///   dominates the batch outcome);
+/// - `Some(Status::Cancelled)` if no node failed but at least one was
+///   `Cancelled` (a deliberate per-node/whole-run cancel — nothing failed, but
+///   the batch did not fully complete; branch-preserving work is untouched);
+/// - `Some(Status::Done)` when every node is `Done`.
+pub fn aggregate_terminal_status<I>(statuses: I) -> Option<Status>
+where
+    I: IntoIterator<Item = Status>,
+{
+    let mut any = false;
+    let mut any_failed = false;
+    let mut any_cancelled = false;
+    for s in statuses {
+        any = true;
+        match s {
+            Status::Done => {}
+            Status::Failed => any_failed = true,
+            Status::Cancelled => any_cancelled = true,
+            // Any live node means the run is not done yet.
+            Status::Pending | Status::Running | Status::Blocked => return None,
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some(if any_failed {
+        Status::Failed
+    } else if any_cancelled {
+        Status::Cancelled
+    } else {
+        Status::Done
+    })
+}
+
 /// `manifest.json` (design.md §1.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -832,6 +878,31 @@ pub struct Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_terminal_status_is_the_three_way_rule() {
+        use Status::{Blocked, Cancelled, Done, Failed, Pending, Running};
+        // Empty set → not complete.
+        assert_eq!(aggregate_terminal_status([]), None);
+        // Any live node → not complete.
+        for live in [Pending, Running, Blocked] {
+            assert_eq!(aggregate_terminal_status([Done, live]), None);
+        }
+        // All done → Done.
+        assert_eq!(aggregate_terminal_status([Done, Done]), Some(Done));
+        // Any failure dominates.
+        assert_eq!(aggregate_terminal_status([Done, Failed]), Some(Failed));
+        assert_eq!(aggregate_terminal_status([Failed, Cancelled]), Some(Failed));
+        // Cancelled (no failure) — pure or mixed with done.
+        assert_eq!(
+            aggregate_terminal_status([Cancelled, Cancelled]),
+            Some(Cancelled)
+        );
+        assert_eq!(
+            aggregate_terminal_status([Done, Cancelled]),
+            Some(Cancelled)
+        );
+    }
 
     /// `Kind::wire_name` (and thus `Kind::WIRE_NAMES`) must stay identical
     /// to what serde actually (de)serializes. If the `rename_all` routing

@@ -86,6 +86,7 @@ use crate::schema::{Event, NodeId, RunId, Status};
 /// already settled (skipped, not double-reported), and whether the run itself
 /// was already cancelled (a convergence-only no-op rather than a fresh cancel).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
 pub struct CancelOutcome {
     /// True when the run's manifest was already `Cancelled` on entry, so no
     /// `run.status: cancelled` event was appended. The call still scans and
@@ -261,12 +262,14 @@ pub fn cancel_run_unlocked(
 /// Outcome of a [`cancel_node`] transaction — a single-node, branch-preserving
 /// cancel for one live fan-out child.
 ///
-/// Unlike [`CancelOutcome`], this **never** carries a run-level decision: per-node
-/// cancel deliberately leaves the run non-terminal while any sibling is still
-/// live. Terminalizing the run once every node settles is the supervisor's
-/// rollup job (`supervise::cleanup::rollup_status`), so a stuck child can be
-/// unblocked without killing the batch (design §2.5).
+/// Per-node cancel deliberately leaves the run non-terminal *while any sibling is
+/// still live* (design §2.5 — a stuck child is unblocked without killing the
+/// batch). But when this cancel settles the **last** live node, the run is rolled
+/// up **in the same locked transaction** ([`rolled_up`](Self::rolled_up)) rather
+/// than deferred to the supervisor — so a run whose supervisor has died is never
+/// stranded non-terminal (llm-review C1).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
 pub struct NodeCancelOutcome {
     /// The node this call targeted (fully resolved).
     pub node_id: NodeId,
@@ -280,6 +283,13 @@ pub struct NodeCancelOutcome {
     /// prior cancel already folded) — a clean idempotent no-op, never a fresh
     /// cancel. Mutually exclusive with `cancelled`.
     pub already_terminal: bool,
+    /// `Some(status)` when this cancel settled the last live node and therefore
+    /// rolled the whole run up to a terminal status **under the same lock**
+    /// (`Cancelled` when no sibling failed, `Failed` when one did). `None` when
+    /// siblings remain live (the run stays live) or the run was already terminal
+    /// on entry. Lets the CLI tell the operator whether the run itself is now
+    /// settled rather than implying a rollup that might never come.
+    pub rolled_up: Option<Status>,
 }
 
 /// Cancel exactly ONE live node of a run, preserving its branch + worktree.
@@ -288,15 +298,21 @@ pub struct NodeCancelOutcome {
 ///
 /// This is the fan-out selectivity primitive (design §2.5, issue
 /// `per-node-run`): where [`cancel_run`] settles every live node and rolls the
-/// run up to `Cancelled` in one shot, this settles a single named node and
-/// **appends no `run.status`** — the run stays live while its siblings run, and
-/// the supervisor's rollup terminalizes the batch once the last node settles.
-/// The synthesized terminal cancel `node.report` classifies as
-/// [`Cancelled`](crate::Status) → `Teardown::SourceRelative`, so invariant 5
-/// preserves the node's committed work rather than force-deleting it.
+/// run up to `Cancelled` in one shot, this settles a single named node. While
+/// any sibling is still live it appends **only** that node's terminal cancel
+/// `node.report` (no `run.status`) — the run stays live so the batch keeps
+/// running. When it settles the **last** live node it also rolls the run up to a
+/// terminal status **in the same locked transaction** (so a dead supervisor can
+/// never strand the run non-terminal — llm-review C1). The synthesized terminal
+/// cancel `node.report` classifies as [`Cancelled`](crate::Status) →
+/// `Teardown::SourceRelative`, so invariant 5 preserves the node's committed work
+/// rather than force-deleting it.
 ///
 /// # Errors
 ///
+/// - [`Error::RunAlreadyTerminal`] if the run is `Done`/`Failed` — refused
+///   without mutating state (mirrors [`cancel_run`]; an already-`Cancelled` run
+///   is *not* refused — its live nodes can still be settled).
 /// - [`Error::NodeNotFound`] if `node_id` names no node in the run's log.
 /// - I/O / corrupt-log errors from reading the manifest, replaying the log, or
 ///   appending the report.
@@ -311,16 +327,30 @@ pub fn cancel_node(
 }
 
 /// The locked body of [`cancel_node`]. The `lock: &LockedRun` witness proves the
-/// caller already holds the run's exclusive [`RunLock`], so the log replay, the
-/// convergence read, and the single report append share one critical section
-/// (it calls [`append_and_apply_unlocked`], never [`crate::append_and_apply_event`],
-/// which would deadlock by re-locking).
+/// caller already holds the run's exclusive [`RunLock`], so the manifest read,
+/// the log replay, the convergence read, the single report append, AND the
+/// optional last-node roll-up all share one critical section (it calls
+/// [`append_and_apply_unlocked`], never [`crate::append_and_apply_event`], which
+/// would deadlock by re-locking).
 pub fn cancel_node_unlocked(
     lock: &LockedRun<'_>,
     paths: &RunPaths,
     node_id: &NodeId,
     note: Option<&str>,
 ) -> Result<NodeCancelOutcome> {
+    // Refuse a non-cancelled terminal run up front, mirroring `cancel_run`: a
+    // `Done`/`Failed` run's nodes are all terminal, so appending a fresh cancel
+    // `node.report` would either bloat the log with a dead post-terminal event or
+    // (on rebuild) flip a settled node — divergence. An already-`Cancelled` run
+    // is NOT refused: it may still carry a straggler live node to settle
+    // (llm-review C4).
+    let manifest = read_manifest(paths)?;
+    if manifest.status.is_terminal() && manifest.status != Status::Cancelled {
+        return Err(Error::RunAlreadyTerminal {
+            status: manifest.status,
+        });
+    }
+
     // One streaming replay pass over the source-of-truth log gives the
     // authoritative node set *and* each node's log-derived status (both immune to
     // the projection crash window), plus this run's already-logged cancel events
@@ -344,59 +374,137 @@ pub fn cancel_node_unlocked(
 
     let key = node_cancel_key(&paths.run_id, node_id);
 
-    // Convergence path first: this run's cancel already logged a `node.report`
-    // for this node (a prior, possibly crash-interrupted, per-node or whole-run
-    // cancel). The log is identical whether that report's projection fold landed
-    // or not, so `read_node_opt` tells the two apart — an already-folded terminal
-    // projection is a clean no-op (already-terminal), while a crash-stranded
-    // still-live projection is converged by re-folding the already-logged event
-    // (no duplicate append).
-    if let Some(prior) = prior_cancel.get(&("node.report".to_owned(), key.clone())) {
-        if let Some(n) = read_node_opt(paths, node_id)? {
-            if n.status.is_terminal() {
-                return Ok(NodeCancelOutcome {
-                    node_id: node_id.clone(),
-                    cancelled: false,
-                    already_terminal: true,
-                });
+    // Settle the target node. `cancelled` = this call ensured a terminal cancel
+    // in the log (fresh append or crash-convergence re-fold); `already_terminal`
+    // = the node was already terminal on entry (idempotent no-op).
+    let (cancelled, already_terminal) =
+        if let Some(prior) = prior_cancel.get(&("node.report".to_owned(), key.clone())) {
+            // Convergence path: this run's cancel already logged a `node.report`
+            // for this node (a prior, possibly crash-interrupted, per-node or
+            // whole-run cancel). The log is identical whether that report's
+            // projection fold landed or not, so `read_node_opt` tells the two
+            // apart — an already-folded terminal projection is a clean no-op,
+            // while a crash-stranded still-live projection is converged by
+            // re-folding the already-logged event (no duplicate append).
+            let folded_terminal =
+                read_node_opt(paths, node_id)?.is_some_and(|n| n.status.is_terminal());
+            if folded_terminal {
+                (false, true)
+            } else {
+                apply_event(paths, prior)?;
+                (true, false)
             }
-        }
-        apply_event(paths, prior)?;
-        return Ok(NodeCancelOutcome {
-            node_id: node_id.clone(),
-            cancelled: true,
-            already_terminal: false,
-        });
-    }
+        } else if log_status.is_terminal() {
+            // No prior cancel: the log is authoritative for liveness. A node the
+            // log replays as terminal — a natural success/failure, or a cancel
+            // logged outside this run's key namespace — is already settled, even
+            // if a stale projection still reads live (the log wins).
+            (false, true)
+        } else {
+            let reason = normalize_cancel_reason(note);
+            let data = json!({
+                "success": false,
+                "cancelled": true,
+                "reason": reason,
+                "summary": "Node cancelled before agent reported.",
+                "discussion_items": [],
+                "spinoff_proposals": [],
+                "wrap_up_recommendations": []
+            });
+            append_and_apply_unlocked(lock, paths, "node.report", Some(node_id), Some(&key), data)?;
+            (true, false)
+        };
 
-    // No prior cancel for this node: the log is authoritative for liveness. A
-    // node the log replays as terminal — a natural success/failure, or a cancel
-    // logged outside this run's key namespace — is already settled and reported
-    // as such, even if a stale projection still reads live (the log wins).
-    if log_status.is_terminal() {
-        return Ok(NodeCancelOutcome {
-            node_id: node_id.clone(),
-            cancelled: false,
-            already_terminal: true,
-        });
-    }
+    // Last-node roll-up (llm-review C1): if the run is still non-terminal but
+    // every node is now terminal, terminalize the run HERE, under the same lock,
+    // rather than deferring to the supervisor — which may be dead, leaving the
+    // run stranded `pending` with no live node. The aggregate is derived from the
+    // log-authoritative `node_status` (with the target's post-cancel status
+    // overridden), so it never mis-terminalizes over a stale projection. The
+    // decision runs only when NO sibling is live, so the "don't terminalize while
+    // a sibling runs" invariant holds.
+    let rolled_up = maybe_roll_up_run(
+        lock,
+        paths,
+        manifest.status,
+        &node_status,
+        node_id,
+        cancelled,
+        log_status,
+        &prior_cancel,
+    )?;
 
-    let reason = normalize_cancel_reason(note);
-    let data = json!({
-        "success": false,
-        "cancelled": true,
-        "reason": reason,
-        "summary": "Node cancelled before agent reported.",
-        "discussion_items": [],
-        "spinoff_proposals": [],
-        "wrap_up_recommendations": []
-    });
-    append_and_apply_unlocked(lock, paths, "node.report", Some(node_id), Some(&key), data)?;
     Ok(NodeCancelOutcome {
         node_id: node_id.clone(),
-        cancelled: true,
-        already_terminal: false,
+        cancelled,
+        already_terminal,
+        rolled_up,
     })
+}
+
+/// Roll the run up to a terminal status when this per-node cancel settled the
+/// last live node. Returns the status appended, or `None` when the run stays
+/// live (a sibling is still live) or was already terminal on entry.
+///
+/// Shares the whole-run cancel's `run-cancel:<run>:run-status` idempotency key
+/// (via [`run_status_cancel_key`]) so the three run-status producers in the
+/// cancel family — whole-run cancel, this last-node roll-up, and a crash-retry of
+/// either — converge on ONE logical `run.status` rather than duplicating it: a
+/// prior interrupted append captured in `prior_cancel` is re-folded, and a later
+/// `cancel_run` finds the same key and skips (llm-review C2/C4). The supervisor's
+/// own `supervise::cleanup::rollup_status` uses a different key, but it fires only
+/// while the manifest is non-terminal, so once this append lands the supervisor's
+/// tick reads the run terminal and no-ops.
+#[allow(clippy::too_many_arguments)]
+fn maybe_roll_up_run(
+    lock: &LockedRun<'_>,
+    paths: &RunPaths,
+    run_status_on_entry: Status,
+    node_status: &[(NodeId, Status)],
+    target: &NodeId,
+    target_cancelled: bool,
+    target_log_status: Status,
+    prior_cancel: &HashMap<(String, String), Event>,
+) -> Result<Option<Status>> {
+    if run_status_on_entry.is_terminal() {
+        // The run was already terminal on entry (an already-`Cancelled` run whose
+        // straggler we just settled) — nothing to roll up.
+        return Ok(None);
+    }
+    // The target's effective post-cancel status: `Cancelled` if this call settled
+    // it, else its log-derived status (an already-terminal node).
+    let effective_target = if target_cancelled {
+        Status::Cancelled
+    } else {
+        target_log_status
+    };
+    let statuses = node_status
+        .iter()
+        .map(|(nid, s)| if nid == target { effective_target } else { *s });
+    let Some(agg) = crate::aggregate_terminal_status(statuses) else {
+        // A sibling is still live — the run stays live, as designed.
+        return Ok(None);
+    };
+
+    let key = run_status_cancel_key(&paths.run_id);
+    if let Some(prior) = prior_cancel.get(&("run.status".to_owned(), key.clone())) {
+        // A prior interrupted cancel already logged the terminal `run.status`
+        // (fsynced before its manifest fold). Re-fold it to converge the manifest
+        // instead of appending a duplicate.
+        apply_event(paths, prior)?;
+    } else {
+        // `Status` serializes kebab-case (`cancelled`/`failed`/`done`) — the
+        // exact shape the reducer's `run.status` handler parses.
+        append_and_apply_unlocked(
+            lock,
+            paths,
+            "run.status",
+            None,
+            Some(&key),
+            json!({ "status": agg }),
+        )?;
+    }
+    Ok(Some(agg))
 }
 
 /// Normalize a `--note` into the terminal cancel report's `reason`. An empty or
@@ -798,7 +906,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
         bootstrap(&paths, 1);
-        cancel_run(&paths, None).unwrap(); // first cancel converges everything
+        let _ = cancel_run(&paths, None).unwrap(); // first cancel converges everything
         let before = read_all_events(&paths.events()).unwrap().len();
 
         let out = cancel_run(&paths, None).unwrap();
@@ -1279,6 +1387,7 @@ mod tests {
         assert_eq!(out.node_id.as_str(), "n-0002");
         assert!(out.cancelled);
         assert!(!out.already_terminal);
+        assert_eq!(out.rolled_up, None, "siblings live → run not rolled up");
 
         assert_eq!(node_status(&paths, "n-0002"), Status::Cancelled);
         assert_eq!(node_status(&paths, "n-0001"), Status::Pending);
@@ -1440,23 +1549,154 @@ mod tests {
     }
 
     #[test]
-    fn cancel_last_live_node_leaves_run_live_for_the_rollup() {
-        // Cancelling the final live node still appends NO run.status — the run
-        // stays non-terminal, and terminalizing it is the supervisor rollup's job
-        // (which sees every node Cancelled and rolls up). This asserts the
-        // division of labor the design mandates.
+    fn cancel_last_live_node_rolls_the_run_up_under_the_same_lock() {
+        // Cancelling the final live node terminalizes the run HERE (llm-review
+        // C1) — not deferred to a possibly-dead supervisor. Every node cancelled,
+        // none failed → the run rolls up to Cancelled in the same transaction.
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
         bootstrap(&paths, 2);
-        cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+
+        // First cancel: n-0002 still live → run stays live.
+        let first = cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+        assert!(first.cancelled);
+        assert_eq!(first.rolled_up, None);
+        assert!(!crate::read_manifest(&paths).unwrap().status.is_terminal());
+
+        // Second cancel settles the last live node → the run rolls up.
         let out = cancel_node(&paths, &nid("n-0002"), Some("x")).unwrap();
         assert!(out.cancelled);
+        assert_eq!(out.rolled_up, Some(Status::Cancelled));
         assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
         assert_eq!(node_status(&paths, "n-0002"), Status::Cancelled);
-        assert_ne!(
+        assert_eq!(
             crate::read_manifest(&paths).unwrap().status,
             Status::Cancelled,
-            "per-node cancel never terminalizes the run itself"
+            "the last per-node cancel terminalizes the run itself"
+        );
+    }
+
+    #[test]
+    fn cancel_last_live_node_rolls_up_to_failed_when_a_sibling_failed() {
+        // A genuine failure dominates the roll-up: cancelling the last live node
+        // of a batch where a sibling already failed rolls the run up to Failed
+        // (not Cancelled).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "success": false }),
+        )
+        .unwrap();
+        assert_eq!(node_status(&paths, "n-0001"), Status::Failed);
+
+        let out = cancel_node(&paths, &nid("n-0002"), Some("x")).unwrap();
+        assert!(out.cancelled);
+        assert_eq!(out.rolled_up, Some(Status::Failed));
+        assert_eq!(crate::read_manifest(&paths).unwrap().status, Status::Failed);
+    }
+
+    #[test]
+    fn cancel_last_live_node_rolls_up_to_cancelled_on_done_plus_cancelled_mix() {
+        // Some siblings merged (Done), the last is cancelled, none failed → the
+        // batch rolls up to Cancelled (nothing failed, not a clean all-Done).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap();
+        assert_eq!(node_status(&paths, "n-0001"), Status::Done);
+
+        let out = cancel_node(&paths, &nid("n-0002"), Some("x")).unwrap();
+        assert!(out.cancelled);
+        assert_eq!(out.rolled_up, Some(Status::Cancelled));
+        assert_eq!(
+            crate::read_manifest(&paths).unwrap().status,
+            Status::Cancelled
+        );
+    }
+
+    #[test]
+    fn cancel_node_refuses_a_done_run() {
+        // Mirror `cancel_run`'s guard (llm-review C4): a Done/Failed run is
+        // refused rather than appending a dead post-terminal cancel.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.status",
+            None,
+            None,
+            json!({ "status": "done" }),
+        )
+        .unwrap();
+        let before = read_all_events(&paths.events()).unwrap().len();
+
+        let err = cancel_node(&paths, &nid("n-0001"), None).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::RunAlreadyTerminal {
+                    status: Status::Done
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            read_all_events(&paths.events()).unwrap().len(),
+            before,
+            "a refused per-node cancel must not append any event"
+        );
+    }
+
+    #[test]
+    fn cancel_node_last_node_shares_run_status_key_with_whole_run_cancel() {
+        // The last-node roll-up uses the whole-run cancel's `run-status` key, so a
+        // later `cancel_run` converges on the SAME logical run.status rather than
+        // appending a duplicate.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        let out = cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+        assert_eq!(out.rolled_up, Some(Status::Cancelled));
+        let run_status_events = read_all_events(&paths.events())
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "run.status")
+            .count();
+        assert_eq!(run_status_events, 1);
+
+        // A whole-run cancel now finds the run already cancelled and converges —
+        // no second run.status.
+        let cr = cancel_run(&paths, Some("x")).unwrap();
+        assert!(cr.run_was_already_cancelled);
+        let run_status_events = read_all_events(&paths.events())
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "run.status")
+            .count();
+        assert_eq!(
+            run_status_events, 1,
+            "cancel_run must not duplicate the run.status the last-node roll-up wrote"
         );
     }
 }

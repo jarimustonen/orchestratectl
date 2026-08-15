@@ -38,6 +38,11 @@ struct NodeCancelPayload {
     /// True when the node was already terminal on entry — a clean idempotent
     /// no-op, not a fresh cancel.
     already_terminal: bool,
+    /// The terminal status the run was rolled up to when this cancel settled the
+    /// LAST live node (`cancelled` / `failed`), or `null` when siblings remain
+    /// live (the run stays live). Lets an AI caller detect terminalization
+    /// without a follow-up `run show`.
+    run_rolled_up_to: Option<String>,
 }
 
 pub fn run(
@@ -79,6 +84,18 @@ pub fn run(
     if let Some(node_id) = node_id {
         let outcome = match cancel_node(&paths, &node_id, note) {
             Ok(o) => o,
+            // A Done/Failed run can't be cancelled node-by-node either — mirror
+            // the whole-run refusal so the CLI never claims a transition the
+            // reducer would drop.
+            Err(octl_core::Error::RunAlreadyTerminal { status }) => {
+                let s = status_kebab(status);
+                return Err(CliError::user(
+                    "run_already_terminal",
+                    format!("run is {s}, cannot cancel"),
+                )
+                .with_invalid_value(s)
+                .with_expected(json!(["running", "pending", "blocked"])));
+            }
             // The named node isn't in this run's log — a caller error, mapped to
             // the same `node_not_found` code `run merge` uses.
             Err(octl_core::Error::NodeNotFound { node_id }) => {
@@ -135,27 +152,36 @@ fn emit_node(
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
+    let run_rolled_up_to = outcome.rolled_up.map(status_kebab).map(str::to_string);
     let payload = NodeCancelPayload {
         run_id: run_id.to_string(),
         node: outcome.node_id.as_str().to_string(),
         cancelled: outcome.cancelled,
         already_terminal: outcome.already_terminal,
+        run_rolled_up_to,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
             output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
-            if payload.already_terminal {
-                println!(
+            let action = if payload.already_terminal {
+                format!(
                     "no-op: node {} of run {} was already terminal",
                     payload.node, payload.run_id,
-                );
+                )
             } else {
-                println!(
-                    "cancelled node {} of run {} (branch + worktree preserved; run stays live until all nodes settle)",
+                format!(
+                    "cancelled node {} of run {} (branch + worktree preserved)",
                     payload.node, payload.run_id,
-                );
+                )
+            };
+            match &payload.run_rolled_up_to {
+                // This settled the last live node — the run terminalized here,
+                // under the same lock, so the operator isn't left waiting on a
+                // rollup that (with a dead supervisor) might never come.
+                Some(status) => println!("{action}; run rolled up to {status}"),
+                None => println!("{action}; run stays live until all nodes settle"),
             }
             output::emit_text_warnings(warnings);
         }

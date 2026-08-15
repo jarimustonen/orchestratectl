@@ -262,9 +262,7 @@ fn forge_terminal_worker_node(home: &TempDir, run_id: &str, kind: &str, report: 
 /// the terminal cancel through the production path. Used to build a multi-node
 /// fan-out for the per-node-cancel rollup test.
 fn forge_live_fanout_node(home: &TempDir, run_id: &str, node_id: &str, branch: &str) {
-    let node = home
-        .path()
-        .join(format!("node-{run_id}-{node_id}.json"));
+    let node = home.path().join(format!("node-{run_id}-{node_id}.json"));
     std::fs::write(
         &node,
         format!(
@@ -459,12 +457,14 @@ fn terminal_via_cancel_still_cleans_up() {
     );
 }
 
-/// Per-node fan-out cancel + eventual rollup (`per-node-run`): cancelling each
-/// child of a multi-node fan-out with `run cancel --node <id>` leaves the run
-/// non-terminal until the LAST child settles, then the supervisor's rollup
-/// terminalizes the batch to `cancelled` (every node cancelled, nothing failed).
-/// Each cancelled node takes the same source-relative (non-merge) teardown as a
-/// whole-run cancel — never a force removal — so branch-preserving work is safe.
+/// Per-node fan-out cancel + last-node roll-up + branch-preserving teardown
+/// (`per-node-run`): cancelling each child of a multi-node fan-out with `run
+/// cancel --node <id>` leaves the run non-terminal until the LAST child settles,
+/// then that cancel rolls the batch up to `cancelled` in the same transaction
+/// (llm-review C1 — not deferred to a possibly-dead supervisor). When the
+/// supervisor next ticks over the now-terminal run it tears each cancelled node
+/// down with the source-relative (non-merge) path — never a force removal — so
+/// branch-preserving work is safe.
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn per_node_cancel_of_every_child_rolls_fanout_up_to_cancelled() {
@@ -475,35 +475,37 @@ fn per_node_cancel_of_every_child_rolls_fanout_up_to_cancelled() {
     forge_live_fanout_node(&home, &run_id, "n-0002", "wt/child-b");
 
     // Cancel the first child: the run stays live while n-0002 runs.
-    run_ok(bin(&home).args([
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
     ]));
+    assert!(v["data"]["run_rolled_up_to"].is_null());
     let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
     assert_eq!(
         show["data"]["manifest"]["status"], "pending",
         "run must not terminalize while n-0002 is live"
     );
 
-    // Cancel the last child. Per-node cancel still appends no run.status.
-    run_ok(bin(&home).args([
+    // Cancel the last child: this rolls the all-cancelled batch up to `cancelled`
+    // right here, under the same lock.
+    let v = run_ok(bin(&home).args([
         "--output", "json", "run", "cancel", &run_id, "--node", "n-0002",
     ]));
-
-    // The supervisor tick rolls the all-cancelled batch up to `cancelled`.
-    run_ok(
-        bin(&home)
-            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
-            .env("GIT_BIN", fake_git_recorder(dir.path()))
-            .args(["--output", "json", "supervise", &run_id, "--once"]),
-    );
-
+    assert_eq!(v["data"]["run_rolled_up_to"], "cancelled");
     let events = run_dir(&home, &run_id).join("events.jsonl");
     assert_eq!(
         latest_run_status(&events).as_deref(),
         Some("cancelled"),
         "an all-cancelled fan-out rolls up to cancelled, not failed"
     );
-    // Cancel is a source-relative (non-merge) teardown → NEVER a force removal.
+
+    // The supervisor ticks over the now-terminal run and tears the children
+    // down. Cancel is source-relative (non-merge) → NEVER a force removal.
+    run_ok(
+        bin(&home)
+            .env("TMUX_BIN", fake_tmux_recorder(dir.path()))
+            .env("GIT_BIN", fake_git_recorder(dir.path()))
+            .args(["--output", "json", "supervise", &run_id, "--once"]),
+    );
     let git = log_contents(dir.path(), "git.log");
     assert!(
         !git.contains("worktree remove --force"),
