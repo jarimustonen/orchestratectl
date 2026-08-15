@@ -2,7 +2,7 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: in-progress
+status: done
 priority: high
 epic: lifecycle-architecture-review
 commits:
@@ -10,6 +10,9 @@ commits:
   summary: 'feat(merge): deterministic OID-based recovery for run merge transactions (A2)'
 - hash: ab59f55
   summary: 'fix(merge): harden A2 recovery per /llm-review + /assess-findings'
+- hash: ac402d4
+  summary: record A2 recovery commits on issue
+closed: 2026-08-15
 ---
 
 # Thin supervisor: recover run merge transactions by OID
