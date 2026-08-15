@@ -2,12 +2,17 @@
 created: 2026-08-12
 updated: 2026-08-15
 type: feature
-status: in-progress
+status: done
 priority: normal
 labels: [keep-0.2]
 commits:
 - hash: ed21344
   summary: 'feat(merge): lenient advisory report validation for run merge'
+- hash: 9618d8e
+  summary: 'fix(merge): apply llm-review findings on advisory lenience'
+- hash: 9e532dc
+  summary: 'docs(changelog): add merge-report-schema-lenience entry'
+closed: 2026-08-15
 ---
 
 # run merge should not block a clean merge on a malformed advisory report field
