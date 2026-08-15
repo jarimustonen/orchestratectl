@@ -5,6 +5,9 @@ type: bug
 status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: 2a58bfe
+  summary: preserve dirty worktrees + fail closed on non-merge teardown
 ---
 
 # Preserve a dirty worktree on non-merge (cancel/plain-success) teardown
