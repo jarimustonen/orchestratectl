@@ -6,6 +6,7 @@ status: open
 priority: normal
 epic: lifecycle-architecture-review
 related: ['@merge-transaction-recovery']
+labels: [deferred]
 ---
 
 # run merge recovery for terminal-Failed watchdog-adoption merge path

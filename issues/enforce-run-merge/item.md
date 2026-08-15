@@ -4,6 +4,8 @@ updated: 2026-08-15
 type: improvement
 status: open
 priority: normal
+epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # Enforce run merge (prevent raw-git self-merge) instead of only detecting it

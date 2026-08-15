@@ -5,6 +5,7 @@ type: improvement
 status: open
 priority: normal
 epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # Teardown does not detect in-progress git operations (rebase/cherry-pick/sequencer)

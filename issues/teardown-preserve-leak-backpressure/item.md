@@ -5,6 +5,7 @@ type: bug
 status: open
 priority: normal
 epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # Teardown fail-closed can leak a worktree forever on persistent git error

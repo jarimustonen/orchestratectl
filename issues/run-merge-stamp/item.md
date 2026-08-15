@@ -5,6 +5,7 @@ type: feature
 status: open
 priority: normal
 epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # run merge should stamp Fixes-Issue trailer into the landing commit

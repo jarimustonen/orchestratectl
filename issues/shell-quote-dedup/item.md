@@ -4,6 +4,8 @@ updated: 2026-08-15
 type: improvement
 status: open
 priority: normal
+epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # Dedupe shell_single_quote across run resume hints

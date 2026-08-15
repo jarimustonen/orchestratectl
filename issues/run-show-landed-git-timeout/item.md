@@ -4,6 +4,8 @@ updated: 2026-08-15
 type: improvement
 status: open
 priority: normal
+epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 # run show landed check has no git subprocess timeout

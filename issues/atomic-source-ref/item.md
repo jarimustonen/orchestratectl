@@ -6,6 +6,7 @@ status: open
 priority: normal
 epic: lifecycle-architecture-review
 related: ['@merge-transaction-recovery']
+labels: [deferred]
 ---
 
 # Atomic source-ref CAS for run merge (replace check-then-FF with git update-ref old-oid)

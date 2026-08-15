@@ -5,6 +5,7 @@ type: improvement
 status: open
 priority: normal
 epic: lifecycle-architecture-review
+labels: [deferred]
 ---
 
 ## Problem
