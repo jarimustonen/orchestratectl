@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: merge-report-schema-lenience (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups LANDED 2026-08-15. Residual design/lease/cleanup follow-ups deferred out of 0.2. Continue release-blockers: merge-report schema lenience, pi.dev thread, and pi skill-warning cleanup. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: workmux-pi-agent-preset (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups LANDED 2026-08-15; residual design/lease/cleanup follow-ups deferred out of 0.2. Continue release-blockers: pi.dev thread (`workmux-pi-agent-preset` → `config-subcommand`) and pi skill-warning cleanup. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -201,7 +201,6 @@ Phase 2 — COMPLETE (2026-08-13): design.md (facilitated /llm-workshop + 3-mode
 Phase 3 — COMPLETE (2026-08-13): arch-decision-rearchitect-vs-harden → ADR docs/decisions/0001; re-triaged all Lane A+E (9 obsoleted). EXECUTION now runs as the cuts below (Lane B pipeline cut = step 1).
 
 LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and-fix / defer-to-0.2.1; the 9 obsoleted lines dropped)
-  ▶ merge-report-schema-lenience            (FAST-TRACK keep per ADR — advisory-field typo makes `run merge` reject the whole report; low-risk merge-first-then-validate)
     peculiarly-cheerful-mine                (DEFER-0.2.1 — supervisor lease/heartbeat, pi.dev self-report plugin)
     uncommonly-fuzzy-swing                  (DEFER-0.2.1 — spinoff blocked-on-user-input propagation)
     supervisor-stall-detection              (DEFER-0.2.1 — supervisor-liveness bucket)
