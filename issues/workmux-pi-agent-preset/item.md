@@ -1,9 +1,13 @@
 ---
 created: 2026-08-11
-updated: 2026-08-11
+updated: 2026-08-15
 type: chore
-status: open
+status: obsolete
 priority: normal
+closed: 2026-08-15
+commits:
+- hash: 6263c1e
+  summary: DAG advanced after confirming workmux docs list pi as built-in agent
 ---
 
 # workmux pi agent preset for --harness pi

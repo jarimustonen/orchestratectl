@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: workmux-pi-agent-preset (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups LANDED 2026-08-15; residual design/lease/cleanup follow-ups deferred out of 0.2. Continue release-blockers: pi.dev thread (`workmux-pi-agent-preset` → `config-subcommand`) and pi skill-warning cleanup. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: config-subcommand (0.2 EXECUTION — thin-supervisor core + selected safety/robustness follow-ups LANDED 2026-08-15; workmux pi preset confirmed obsolete because workmux ships `pi` as a built-in agent. Continue release-blockers: `config-subcommand` and pi skill-warning cleanup. After integrated gate: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -220,8 +220,7 @@ LANE B — pipeline/* + harness/* + pi.dev (→ ⬆ v0.2.0)
   STEP 1 — cut-pipeline-floor-harness-heavy ✅ LANDED 2026-08-14 (~26.5k LOC: pipeline/floor + harness heavy layer gone, light claude+pi launcher kept; obsoleted 7 pipeline/harness fix issues).
   STEP 2 — cut-run-kinds-discussion-machinery ✅ LANDED 2026-08-14b — removed run KINDS code/orchestrate/orchestrated/bugfix/make-skill + the mid-run discussion/spinoff machinery (events, reducer projections, DiscussionId/ProposalId, discussions/+spinoffs/ dirs, counters, CLI verbs); collapsed the kind-derived lifecycle inference in supervise/*; removed --confirm-interactive + the code-run merge gate; deleted 5 bundled skills + updated the /worktree router. KEPT terminal-report discussion_items[]/spinoff_proposals[] + surviving spinoff/research/technical-decision/fan-out topologies. Legacy on-disk runs decode read-only (Kind::Unknown), reported-not-deleted (ADR §D7). /llm-review 4-model panel, FIX-class applied (fail-closed data_kind + read-only guard, 2 regression tests). Integrated gate green; obsoleted bundled-orchestrate-skill (wontfix). ⇒ SUBTRACTIVE CUTS COMPLETE.
 · pi.dev sub-thread (KEEP + grow — pi.dev is the 0.2 default harness per design.md):
-  ▶ workmux-pi-agent-preset                 (workmux pi agent preset for `--harness pi`)
-    config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
+  ▶ config-subcommand                       (config path + config show --json; config.rs — pairs w/ the harness config layer)
 
 LANE C — workmux vendoring — COMPLETE (empty; landed 2026-08-10)
 
