@@ -2,12 +2,15 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: in-progress
+status: done
 priority: high
 epic: lifecycle-architecture-review
 commits:
 - hash: 831c9fa
   summary: surface attention-required runs without terminalizing (A5)
+- hash: 63ce2f6
+  summary: apply /llm-review + /assess-findings fixes (precedence, exit-anchored age, wait resume context)
+closed: 2026-08-15
 ---
 
 # Thin supervisor: surface attention-required runs
