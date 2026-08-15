@@ -407,8 +407,9 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     // discard a live tree. For teardown, an unverifiable branch is treated exactly
     // like a provably-unmerged one.
     if !skip_source_check {
-        if let (Some(branch), Some(source)) = (n.branch.as_deref(), manifest_source_branch(paths)) {
-            match branch_unmerged_vs_source(repo, &source, branch, git) {
+        let source = manifest_source_branch(paths);
+        if let (Some(branch), Some(source)) = (n.branch.as_deref(), source.as_deref()) {
+            match branch_unmerged_vs_source(repo, source, branch, git) {
                 UnmergedCheck::HasUnmerged => {
                     record_branch_preserved(
                         paths,
@@ -465,6 +466,34 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
                     "worktree cleanliness unavailable (git error; preserving)",
                 );
                 return;
+            }
+        }
+
+        // HEAD-relative committed-work guard (issue `detached-head-teardown-commit-loss`):
+        // the committed-work checks above key off the recorded `Node.branch`, so they
+        // are blind to a worktree on a DETACHED HEAD whose commits live only on the
+        // checked-out HEAD, protected by no branch ref. A clean such tree passes the
+        // dirty guard, non-force `worktree remove` succeeds, there is no branch to `-d`,
+        // and the commits become unreachable → silent data loss. Inspect the ACTUAL HEAD
+        // oid: a detached HEAD carrying commits not in source (or with source unrecorded,
+        // an unreadable HEAD, or any git error) preserves BOTH worktree and branch (fail
+        // closed); a HEAD on any branch is protected by that surviving ref and proceeds.
+        // Runs AFTER the dirty guard so a non-repo / unverifiable tree keeps its own
+        // cleanliness reason, and only while the dir exists — a vanished dir is the
+        // already-gone case the removal path owns below.
+        if std::path::Path::new(worktree_path).exists() {
+            match head_teardown_safety(
+                repo,
+                worktree_path,
+                n.branch.as_deref(),
+                source.as_deref(),
+                git,
+            ) {
+                HeadTeardown::Preserve(reason) => {
+                    record_branch_preserved(paths, n, n.branch.as_deref(), worktree_path, reason);
+                    return;
+                }
+                HeadTeardown::Safe | HeadTeardown::DeferToBranch => {}
             }
         }
     }
@@ -544,6 +573,106 @@ fn branch_unmerged_vs_source(repo: &str, source: &str, branch: &str, git: &str) 
         Some(count) if count > 0 => UnmergedCheck::HasUnmerged,
         Some(_) => UnmergedCheck::NoUnmerged,
         None => UnmergedCheck::Unverifiable,
+    }
+}
+
+/// The outcome of the HEAD-relative committed-work guard
+/// ([`head_teardown_safety`], issue `detached-head-teardown-commit-loss`).
+///
+/// The source-relative [`branch_unmerged_vs_source`] check keys off the RECORDED
+/// `Node.branch`. That is blind to a worktree on a DETACHED HEAD (or one whose
+/// `Node.branch` is `None`/stale) whose commits live only on the checked-out HEAD
+/// with NO branch ref to protect them: a clean such tree passes the dirty guard,
+/// non-force `worktree remove` succeeds, there is no branch to `-d`, and the
+/// detached commits become unreachable → silent data loss. This guard closes that
+/// hole by inspecting the worktree's ACTUAL HEAD oid.
+///
+/// The load-bearing distinction is DETACHED vs on-a-branch, not "matches the
+/// recorded branch": a HEAD on ANY branch is safe from committed-work loss because
+/// that branch ref survives teardown (cleanup only ever deletes `Node.branch`), so
+/// it keeps the commits reachable. Only a detached HEAD has no surviving ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadTeardown {
+    /// HEAD is checked out on exactly the recorded `Node.branch`, so the
+    /// branch-based checks (+ the `-d` backstop) already own the decision — this
+    /// guard defers to them and adds nothing.
+    DeferToBranch,
+    /// Removing the worktree drops nothing committed — either HEAD is on a branch
+    /// (a surviving ref keeps its commits) or a detached HEAD is provably
+    /// reachable from source (`source..HEAD` is empty). Teardown may proceed
+    /// (still subject to the earlier dirty-worktree guard).
+    Safe,
+    /// A DETACHED HEAD whose commits are NOT provably protected — commits not in
+    /// source, a missing source branch to verify against, an unreadable HEAD, or
+    /// any git error. FAILS CLOSED: preserve BOTH worktree and any branch/metadata,
+    /// with this audit reason.
+    Preserve(&'static str),
+}
+
+/// Inspect the worktree's ACTUAL HEAD to decide whether a non-explicit-merge
+/// teardown may safely remove it (issue `detached-head-teardown-commit-loss`).
+///
+/// This is the HEAD-relative complement to the recorded-branch check
+/// ([`branch_unmerged_vs_source`]). It resolves the worktree's real HEAD oid and
+/// its symbolic branch (if any), then classifies:
+///
+/// - **Unreadable HEAD** (`git rev-parse HEAD` fails while the dir is present) →
+///   [`HeadTeardown::Preserve`], fail-closed. We cannot prove what is checked out.
+/// - **HEAD on a branch** → the branch ref survives teardown and keeps HEAD's
+///   commits reachable (cleanup only ever deletes the recorded `Node.branch`), so
+///   there is no committed-work loss:
+///   - equal to the recorded branch → [`HeadTeardown::DeferToBranch`] (the branch
+///     check already measured `source..branch` and the `-d` backstop governs it).
+///   - a DIFFERENT branch → [`HeadTeardown::Safe`] (that other ref, which cleanup
+///     never touches, protects the commits).
+/// - **Detached HEAD** → no branch ref protects it; its commits are only droppable
+///   if provably reachable from the run's source branch:
+///   - source recorded, `source..HEAD == 0` → [`HeadTeardown::Safe`].
+///   - source recorded, `source..HEAD > 0` → [`HeadTeardown::Preserve`] (THE
+///     data-loss case: unique commits reachable only from the detached HEAD).
+///   - source recorded, rev-list errors → [`HeadTeardown::Preserve`], fail-closed.
+///   - source NOT recorded → [`HeadTeardown::Preserve`], fail-closed: with no base
+///     to verify against and no branch ref, safe removal is unprovable.
+///
+/// The caller only invokes this on a non-explicit-merge path and only when the
+/// worktree dir still exists (a vanished dir is the already-gone case the
+/// missing-worktree path owns, not a preservation).
+fn head_teardown_safety(
+    repo: &str,
+    worktree_path: &str,
+    recorded_branch: Option<&str>,
+    source: Option<&str>,
+    git: &str,
+) -> HeadTeardown {
+    let g = Git::with_bin(git);
+
+    // Ground truth: the commit actually checked out. An unreadable HEAD (git
+    // error on a present worktree) fails closed — we cannot prove safe removal.
+    let Some(head_oid) = g.head_oid(worktree_path) else {
+        return HeadTeardown::Preserve("worktree HEAD unreadable (git error; preserving)");
+    };
+
+    // A HEAD on a branch is protected by that surviving ref (cleanup only deletes
+    // the recorded branch): equal → defer to the branch checks; different → safe.
+    // Only a detached HEAD (rev-parse succeeded, so a `None` here means detached,
+    // not an error) has no ref and must prove reachability from source.
+    match g.head_branch(worktree_path) {
+        Some(b) if recorded_branch == Some(b.as_str()) => HeadTeardown::DeferToBranch,
+        Some(_) => HeadTeardown::Safe,
+        None => match source {
+            Some(source) => match g.rev_list_count(repo, source, &head_oid) {
+                Some(0) => HeadTeardown::Safe,
+                Some(_) => HeadTeardown::Preserve(
+                    "detached HEAD has commits not in source (no explicit merge)",
+                ),
+                None => HeadTeardown::Preserve(
+                    "detached HEAD unmerged-commit check unavailable (git error; preserving)",
+                ),
+            },
+            None => HeadTeardown::Preserve(
+                "detached HEAD with no recorded source to verify against (preserving)",
+            ),
+        },
     }
 }
 
@@ -2011,6 +2140,203 @@ mod tests {
         );
     }
 
+    /// `head_teardown_safety` classification against real git across every arm:
+    /// aligned → defer, detached-reachable → safe, detached-unique / missing-source
+    /// / unreadable-HEAD → preserve (issue `detached-head-teardown-commit-loss`).
+    #[test]
+    fn head_teardown_safety_classifies() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let repo_s = repo.to_str().unwrap();
+        let wt_s = wt.to_str().unwrap();
+        let g = &git_bin();
+        // Aligned: HEAD on wt/foo == the recorded branch → defer to branch checks.
+        assert_eq!(
+            head_teardown_safety(repo_s, wt_s, Some("wt/foo"), Some("main"), g),
+            HeadTeardown::DeferToBranch
+        );
+        // Detached at main (no unique commits), no recorded branch → provably safe.
+        git(&wt, &["checkout", "--detach", "-q"]);
+        assert_eq!(
+            head_teardown_safety(repo_s, wt_s, None, Some("main"), g),
+            HeadTeardown::Safe
+        );
+        // Detached HEAD with a unique commit, no recorded branch → preserve.
+        commit_in_worktree(&wt, "d.rs", "detached work");
+        assert!(matches!(
+            head_teardown_safety(repo_s, wt_s, None, Some("main"), g),
+            HeadTeardown::Preserve(_)
+        ));
+        // Same, but source unrecorded → preserve (fail closed, unprovable).
+        assert!(matches!(
+            head_teardown_safety(repo_s, wt_s, None, None, g),
+            HeadTeardown::Preserve(_)
+        ));
+        // Unreadable HEAD (a real dir that is not a repo) → preserve (fail closed).
+        let bare = tmp.path().join("bare-dir");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(matches!(
+            head_teardown_safety(repo_s, bare.to_str().unwrap(), None, Some("main"), g),
+            HeadTeardown::Preserve(_)
+        ));
+    }
+
+    /// THE detached-HEAD data-loss regression (`detached-head-teardown-commit-loss`):
+    /// a non-explicit-merge teardown of a CLEAN worktree whose commits live only on a
+    /// DETACHED HEAD — with no branch (recorded or on disk) to protect them — must
+    /// PRESERVE the worktree. The dirty guard passes (clean tree) and there is no
+    /// branch to `-d`, so without the HEAD guard `worktree remove` would strand the
+    /// commits. Recorded as `cleanup.branch_preserved` with the detached-HEAD reason.
+    #[test]
+    fn detached_head_with_unique_commits_preserved_on_plain_success() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // Commit on wt/foo, detach HEAD onto that commit, then delete the branch —
+        // the work now exists ONLY on the worktree's detached HEAD.
+        commit_in_worktree(&wt, "only-on-head.rs", "detached work");
+        git(&wt, &["checkout", "--detach", "-q"]);
+        git(&repo, &["branch", "-D", "wt/foo"]);
+        assert!(!branch_exists(&repo, "wt/foo"));
+
+        // No recorded branch — the detached-HEAD shape the branch check is blind to.
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap() }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            wt.exists(),
+            "a detached HEAD with unique commits must be preserved"
+        );
+        assert!(
+            wt.join("only-on-head.rs").exists(),
+            "the detached commit's work must not be discarded"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1, "the preservation must be recorded once");
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "detached HEAD has commits not in source (no explicit merge)"
+        );
+    }
+
+    /// Stale branch metadata (`detached-head-teardown-commit-loss`): the recorded
+    /// `Node.branch` (wt/foo) is fully merged into source, so the branch-based check
+    /// green-lights teardown — but the worktree's ACTUAL HEAD is detached at a
+    /// DIFFERENT, unmerged commit. The HEAD guard catches the mismatch the branch
+    /// check misses and preserves both the worktree and its recorded branch.
+    #[test]
+    fn stale_branch_metadata_detached_unique_commits_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // wt/foo stays at main (0 ahead); the real work is committed on a detached
+        // HEAD, so the recorded branch no longer represents what is checked out.
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+        git(&wt, &["checkout", "--detach", "-q"]);
+        commit_in_worktree(&wt, "detached-work.rs", "off-branch work");
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/foo" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            wt.exists(),
+            "a stale-metadata mismatch must preserve the worktree"
+        );
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "its recorded branch survives too"
+        );
+        assert!(wt.join("detached-work.rs").exists());
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "detached HEAD has commits not in source (no explicit merge)"
+        );
+    }
+
+    /// The HEAD guard must NOT over-preserve: a CLEAN detached HEAD sitting at a
+    /// commit fully reachable from source (nothing unique to lose) is torn down
+    /// normally — worktree removed, no `cleanup.branch_preserved`. Proves the guard
+    /// is not a blanket "detached → preserve" (issue `detached-head-teardown-commit-loss`).
+    #[test]
+    fn detached_head_reachable_from_source_removed_cleanly() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // Detach at wt/foo's commit, which is level with main → HEAD carries
+        // nothing beyond source (wt/foo was created at main, 0 ahead).
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 0);
+        git(&wt, &["checkout", "--detach", "-q"]);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap() }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            !wt.exists(),
+            "a detached HEAD level with source is removed cleanly"
+        );
+        assert!(
+            events_of_kind(&paths, "cleanup.branch_preserved").is_empty(),
+            "nothing unique to lose → no preservation"
+        );
+    }
+
+    /// Fail-closed on a detached HEAD when the run has no recorded
+    /// `source_branch` to verify reachability against: with neither a faithful
+    /// branch nor a base to measure, safe removal is unprovable, so the worktree is
+    /// preserved (issue `detached-head-teardown-commit-loss`).
+    #[test]
+    fn detached_head_preserved_when_source_unrecorded() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 0); // no source_branch recorded
+        let (_repo, wt) = init_repo_with_worktree(&tmp);
+        git(&wt, &["checkout", "--detach", "-q"]);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap() }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(wt.exists(), "an unprovable detached HEAD must be preserved");
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "detached HEAD with no recorded source to verify against (preserving)"
+        );
+    }
+
     /// `worktree_cleanliness` distinguishes the three states the teardown guard
     /// keys its audit reason off: a clean real tree, a dirty one (untracked file),
     /// an unverifiable one (git error), and the "nothing to lose" clean cases
@@ -2115,6 +2441,8 @@ mod tests {
             r#"case "$3" in
                  status) exit 0;;
                  rev-list) echo 0; exit 0;;
+                 rev-parse) echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; exit 0;;
+                 symbolic-ref) echo wt/foo; exit 0;;
                  worktree)
                    case "$4" in
                      list) exit 1;;

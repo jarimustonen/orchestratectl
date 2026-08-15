@@ -60,6 +60,51 @@ impl Git {
             .ok()
     }
 
+    /// `git -C <dir> rev-parse HEAD` → the worktree's current HEAD commit oid.
+    /// `None` on a git error, a non-zero exit, or empty output — so a caller
+    /// treats an unreadable HEAD conservatively (preserve rather than remove).
+    ///
+    /// This resolves the ACTUAL checked-out commit, independent of any recorded
+    /// branch name: it is the ground truth the detached-HEAD teardown guard
+    /// (issue `detached-head-teardown-commit-loss`) measures against source, so a
+    /// worktree on a detached HEAD (or a stale `Node.branch`) can still be proven
+    /// safe-or-unsafe to remove.
+    pub fn head_oid(&self, dir: &str) -> Option<String> {
+        let out = self
+            .at(dir)
+            .args(["rev-parse", "HEAD"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+
+    /// `git -C <dir> symbolic-ref --quiet --short HEAD` → the branch HEAD is
+    /// currently on, or `None` when HEAD is DETACHED or the ref cannot be read.
+    ///
+    /// A caller distinguishes the two `None` causes by pairing this with
+    /// [`Self::head_oid`]: when `head_oid` succeeds but this returns `None`, HEAD
+    /// is a valid-but-detached commit; when `head_oid` itself fails, HEAD is
+    /// unreadable (a git error). The teardown guard treats those differently
+    /// (detached → reachability check; unreadable → fail closed).
+    pub fn head_branch(&self, dir: &str) -> Option<String> {
+        let out = self
+            .at(dir)
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+
     /// `git -C <repo> merge-base --is-ancestor <ancestor> <descendant>` — true
     /// when the command exits 0 (`ancestor` is reachable from `descendant`). A
     /// non-zero exit (not an ancestor, or exit 128 for an unknown ref) or a spawn
@@ -331,6 +376,46 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let g = Git::with_bin(failing_git(tmp.path()));
         assert_eq!(g.rev_list_count("/nonexistent", "main", "wt/foo"), None);
+    }
+
+    #[test]
+    fn head_oid_and_branch_track_the_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let (_repo, wt) = init_repo_with_worktree(&tmp);
+        let g = Git::with_bin("git");
+        let wt_s = wt.to_str().unwrap();
+        // On a branch: head_branch names it; head_oid resolves the tip.
+        assert_eq!(g.head_branch(wt_s).as_deref(), Some("wt/foo"));
+        let on_branch = g.head_oid(wt_s).expect("HEAD resolves on a branch");
+        assert_eq!(on_branch.len(), 40, "a full sha is 40 hex chars");
+        // Detach HEAD: head_branch is now None (detached), head_oid still resolves.
+        git(&wt, &["checkout", "--detach", "-q"]);
+        assert_eq!(
+            g.head_branch(wt_s),
+            None,
+            "a detached HEAD has no symbolic branch"
+        );
+        assert_eq!(
+            g.head_oid(wt_s).as_deref(),
+            Some(on_branch.as_str()),
+            "detach does not move the commit"
+        );
+    }
+
+    #[test]
+    fn head_oid_and_branch_none_on_git_error() {
+        let tmp = TempDir::new().unwrap();
+        // A real dir that is not a git repo → both probes fail (non-zero exit).
+        let g = Git::with_bin("git");
+        let bare = tmp.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        let bare_s = bare.to_str().unwrap();
+        assert_eq!(g.head_oid(bare_s), None);
+        assert_eq!(g.head_branch(bare_s), None);
+        // A failing git binary declines the same way.
+        let fg = Git::with_bin(failing_git(tmp.path()));
+        assert_eq!(fg.head_oid("/nonexistent"), None);
+        assert_eq!(fg.head_branch("/nonexistent"), None);
     }
 
     #[test]
