@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: per-node-run (0.2 EXECUTION — thin-supervisor core A1/A2/A3/A5/A6, explicit --interactive, dirty-worktree guard, and detached-HEAD committed-work guard LANDED 2026-08-15. Continue 0.2 correctness follow-ups: per-node fan-out cancel next. After correctness follow-ups + pi.dev thread: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: rollup-status-log-authoritative (0.2 EXECUTION — thin-supervisor core A1/A2/A3/A5/A6, explicit --interactive, teardown guards, and per-node fan-out cancel LANDED 2026-08-15. Continue 0.2 correctness follow-ups: make supervisor rollup log-authoritative next. After correctness follow-ups + pi.dev thread: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -201,7 +201,7 @@ Phase 2 — COMPLETE (2026-08-13): design.md (facilitated /llm-workshop + 3-mode
 Phase 3 — COMPLETE (2026-08-13): arch-decision-rearchitect-vs-harden → ADR docs/decisions/0001; re-triaged all Lane A+E (9 obsoleted). EXECUTION now runs as the cuts below (Lane B pipeline cut = step 1).
 
 LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and-fix / defer-to-0.2.1; the 9 obsoleted lines dropped)
-  ▶ per-node-run                            (A5 follow-up — per-node fan-out cancel, branch-preserving)
+  ▶ rollup-status-log-authoritative         (0.2 correctness follow-up — supervisor rollup must read log, not projection subset)
     typed-report-origin                     (A6 follow-up — typed node.report provenance, no string sniffing)
     raw-git-selfmerge-false-failed          (A6 follow-up — accepted thin-model tradeoff; surface/decide, never auto-success)
     atomic-source-ref                       (A2 follow-up — deferred residual; replace check-then-FF with git update-ref old-oid)

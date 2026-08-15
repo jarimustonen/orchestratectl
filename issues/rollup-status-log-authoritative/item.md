@@ -4,6 +4,7 @@ updated: 2026-08-15
 type: improvement
 status: open
 priority: normal
+epic: lifecycle-architecture-review
 ---
 
 # Make supervisor rollup_status log-authoritative (not a projection scan)
