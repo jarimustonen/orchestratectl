@@ -2,12 +2,15 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: in-progress
+status: done
 priority: high
 epic: lifecycle-architecture-review
 commits:
 - hash: 6ce9379
   summary: thin launcher shim records real worker exit status (A1)
+- hash: b1b2ab5
+  summary: harden launcher shim per llm-review (signals, node-validate, spawn-fail fact, retry-clear)
+closed: 2026-08-15
 ---
 
 # Thin supervisor: record worker exit status via launcher shim
