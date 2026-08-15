@@ -8,6 +8,8 @@ epic: lifecycle-architecture-review
 commits:
 - hash: 0795ad4
   summary: 'feat(merge): deterministic OID-based recovery for run merge transactions (A2)'
+- hash: ab59f55
+  summary: 'fix(merge): harden A2 recovery per /llm-review + /assess-findings'
 ---
 
 # Thin supervisor: recover run merge transactions by OID
