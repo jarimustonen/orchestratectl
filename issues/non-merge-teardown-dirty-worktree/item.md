@@ -2,7 +2,7 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 epic: lifecycle-architecture-review
 commits:
@@ -10,6 +10,7 @@ commits:
   summary: preserve dirty worktrees + fail closed on non-merge teardown
 - hash: 6ce72c8
   summary: non-force teardown removal + tri-state cleanliness (llm-review fixes)
+closed: 2026-08-15
 ---
 
 # Preserve a dirty worktree on non-merge (cancel/plain-success) teardown
