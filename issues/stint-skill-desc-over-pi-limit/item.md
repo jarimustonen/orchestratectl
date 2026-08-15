@@ -5,6 +5,9 @@ type: bug
 status: in-progress
 priority: normal
 labels: [skill]
+commits:
+- hash: ec9da0a
+  summary: trim stint SKILL descriptions under pi.dev 1024-char limit + guard test
 ---
 
 # Bundled stint-start/stint-handoff SKILL descriptions exceed pi.dev 1024-char limit
