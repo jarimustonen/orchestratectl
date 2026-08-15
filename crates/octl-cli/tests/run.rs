@@ -981,3 +981,141 @@ fn legacy_removed_kind_run_is_read_only() {
         "legacy kind provenance must be preserved"
     );
 }
+
+/// Stamp a clean (`code: 0`) `worker_exit` fact plus a `worktree_path` / pid onto
+/// `n-0001`'s projection — the durable shape the launcher shim's `worker.exited`
+/// fold produces for a worker that finished normally. The node + run stay
+/// non-terminal (no `node.report`, no terminal `run.status`). Patched directly on
+/// the projection file (the `worker.exited` event kind is shim-only and not
+/// routable through `event create`), mirroring `run_wait`'s
+/// `backdate_manifest_updated_at`; the read paths under test only *read* the node
+/// under a shared lock, so no reducer replay clobbers the patch.
+fn stamp_clean_worker_exit(home: &TempDir, run_id: &str) {
+    let path = home
+        .path()
+        .join("runs")
+        .join(run_id)
+        .join("nodes")
+        .join("n-0001.json");
+    let mut n: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read node")).expect("parse node");
+    let obj = n.as_object_mut().expect("node is a JSON object");
+    obj.insert(
+        "worker_exit".into(),
+        json!({ "code": 0, "signal": null, "at": "2026-08-15T10:00:00Z" }),
+    );
+    obj.insert("worktree_path".into(), json!("/tmp/wt/attention-seed"));
+    obj.insert("agent_pid".into(), json!(4242));
+    std::fs::write(&path, serde_json::to_vec(&n).expect("serialize node")).expect("write node");
+}
+
+/// `run show` surfaces the attention-required resume context for a run whose
+/// worker exited cleanly but skipped `run merge` (design.md §2.5 / A5): the
+/// `attention_required` flag plus the nested `attention` block (pending age,
+/// worker pid, worktree, source branch, resume hint). NEVER terminal.
+#[test]
+fn show_surfaces_attention_required_run() {
+    let home = TestHome::new();
+    let run = create(&home, "spinoff", "attention-show");
+    add_node(&home, &run, "n-0001");
+    stamp_clean_worker_exit(&home, &run);
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]));
+    let d = &v["data"];
+    assert_eq!(
+        d["status"], "pending",
+        "attention run must NOT be terminal: {d}"
+    );
+    assert_eq!(d["attention_required"], true, "must flag attention: {d}");
+    let att = &d["attention"];
+    assert_eq!(
+        att["reason"], "worker exited cleanly without running `run merge`",
+        "attention reason: {att}"
+    );
+    assert!(
+        att["pending_age_secs"]
+            .as_i64()
+            .expect("pending_age_secs i64")
+            >= 0,
+        "pending age is non-negative: {att}"
+    );
+    assert!(
+        att["resume_hint"]
+            .as_str()
+            .expect("resume_hint str")
+            .contains("run merge"),
+        "resume hint names the manual finish: {att}"
+    );
+    // A supervisor-death stall this is NOT — no reattach hint.
+    assert_eq!(
+        d["stalled"], false,
+        "attention is distinct from a stall: {d}"
+    );
+
+    // Text output carries an `attention:` line.
+    let out = bin(&home)
+        .args(["--output", "text", "run", "show", &run])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("attention:") && l.contains("run merge")),
+        "text show must carry an attention line: {text}"
+    );
+}
+
+/// `run list` flags an attention-required run with `attention_required: true` and
+/// marks the plain-text row `(attention)`, distinct from `(stillborn)` /
+/// `(stalled)`. A run still running (no worker exit) is not flagged.
+#[test]
+fn list_flags_attention_required_run() {
+    let home = TestHome::new();
+    let att = create(&home, "spinoff", "attention");
+    add_node(&home, &att, "n-0001");
+    stamp_clean_worker_exit(&home, &att);
+    // A control run with a node but no worker exit — still working, not attention.
+    let working = create(&home, "spinoff", "working");
+    add_node(&home, &working, "n-0001");
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let runs = v["data"]["runs"].as_array().expect("runs array");
+    let row = |id: &str| {
+        runs.iter()
+            .find(|r| r["run_id"] == id)
+            .unwrap_or_else(|| panic!("run {id} missing from list"))
+    };
+    let a = row(&att);
+    assert_eq!(
+        a["attention_required"], true,
+        "clean-exit run is attention: {a}"
+    );
+    assert_eq!(
+        a["status"], "pending",
+        "attention run stays non-terminal: {a}"
+    );
+    assert!(a["attention"].is_object(), "attention block present: {a}");
+    let w = row(&working);
+    assert_eq!(
+        w["attention_required"], false,
+        "a still-working run (no worker exit) is not attention: {w}"
+    );
+    assert!(w.get("attention").is_none(), "no attention block: {w}");
+
+    // Plain-text marker.
+    let out = bin(&home)
+        .args(["--output", "text", "run", "list"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).expect("utf8");
+    let att_line = text
+        .lines()
+        .find(|l| l.contains(&att))
+        .expect("attention run present in text output");
+    assert!(
+        att_line.contains("pending (attention)"),
+        "text row must mark the run attention: {att_line}"
+    );
+}

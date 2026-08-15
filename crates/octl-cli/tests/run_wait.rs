@@ -588,3 +588,124 @@ fn all_and_any_are_mutually_exclusive() {
         "conflicting flags are a usage error"
     );
 }
+
+/// Stamp a clean (`code: 0`) `worker_exit` fact onto `n-0001`'s projection — the
+/// durable shape the launcher shim's `worker.exited` fold produces for a worker
+/// that finished normally. Leaves the node (and the run) non-terminal: no
+/// `node.report`, no terminal `run.status`. Patched directly on the projection
+/// file (the `worker.exited` event kind is shim-only and not routable through
+/// `event create`), mirroring `backdate_manifest_updated_at`; the wait loop only
+/// *reads* the node under a shared lock, so no reducer replay clobbers the patch.
+fn stamp_clean_worker_exit(home: &TempDir, run_id: &str) {
+    let path = home
+        .path()
+        .join("runs")
+        .join(run_id)
+        .join("nodes")
+        .join("n-0001.json");
+    let mut n: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read node")).expect("parse node");
+    n.as_object_mut().expect("node object").insert(
+        "worker_exit".into(),
+        json!({ "code": 0, "signal": null, "at": "2026-08-15T10:00:00Z" }),
+    );
+    std::fs::write(&path, serde_json::to_vec(&n).expect("serialize node")).expect("write node");
+}
+
+/// An *attention-required* run — its worker exited cleanly but skipped
+/// `run merge`, so the node stays non-terminal — settles the wait promptly with
+/// `attention_required: true` (design.md §2.5 / A5) instead of blocking the whole
+/// timeout, and NEVER mutates the run to a terminal status.
+#[test]
+fn attention_required_run_settles_promptly_without_terminalizing() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "attention");
+    add_node(&home, &run, "n-0001");
+    stamp_clean_worker_exit(&home, &run);
+
+    let start = std::time::Instant::now();
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &run, "--timeout", "30s"]));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "attention-required run must settle promptly, took {elapsed:?}"
+    );
+    let r = &v["data"]["runs"][0];
+    // Non-terminal: the run is still `pending`. The `attention_required` flag is
+    // what tells the caller the worker finished but skipped `run merge`.
+    assert_eq!(r["status"], "pending", "run must NOT be terminalized: {r}");
+    assert_eq!(
+        r["attention_required"], true,
+        "clean-exit-no-merge run must be attention_required: {r}"
+    );
+    assert_eq!(
+        r["stalled"], false,
+        "attention-required is distinct from a supervisor-death stall: {r}"
+    );
+    assert_eq!(
+        r["error"], "worker exited cleanly without running `run merge`",
+        "attention outcome carries its own reason, distinct from a stall: {r}"
+    );
+
+    // The run status on disk is untouched — the wait mutated nothing.
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]));
+    assert_eq!(
+        show["data"]["status"], "pending",
+        "run wait must not have mutated the run terminal"
+    );
+}
+
+/// Under `--fail-on-error`, an attention-required run grades as a failure
+/// (exit 3) even though its status is still `pending` — a caller that treats a
+/// met-but-not-`done` wait as failure notices the skipped merge.
+#[test]
+fn attention_required_run_fail_on_error_exits_three() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "attention-fail");
+    add_node(&home, &run, "n-0001");
+    stamp_clean_worker_exit(&home, &run);
+
+    let v = run_exit(
+        bin(&home).args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &run,
+            "--timeout",
+            "30s",
+            "--fail-on-error",
+        ]),
+        3,
+    );
+    let r = &v["data"]["runs"][0];
+    assert_eq!(r["status"], "pending");
+    assert_eq!(r["attention_required"], true);
+}
+
+/// Precedence: a run whose worker exited cleanly AND whose supervisor died
+/// mid-run (the orphaned shape — dead supervisor, node, idle clock) is reported
+/// `attention_required`, NOT `stalled`. The told clean-exit fact is the more
+/// specific truth and the correct remediation is the manual finish (`run merge`),
+/// not `run reattach`.
+#[test]
+fn attention_wins_over_orphaned_stall() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "attention-vs-orphan");
+    add_node(&home, &run, "n-0001");
+    stamp_clean_worker_exit(&home, &run);
+    // Age the clock past the orphan grace so, absent the clean exit, this would
+    // classify as an orphaned stall.
+    backdate_manifest_updated_at(&home, &run, 30);
+
+    let v = run_ok(bin(&home).args(["--output", "json", "run", "wait", &run, "--timeout", "30s"]));
+    let r = &v["data"]["runs"][0];
+    assert_eq!(
+        r["attention_required"], true,
+        "clean exit wins over the orphaned-stall shape: {r}"
+    );
+    assert_eq!(
+        r["stalled"], false,
+        "attention-required must suppress the stall verdict: {r}"
+    );
+}

@@ -55,8 +55,9 @@
 //! - `1` — usage / unknown run id / internal error (a `CliError`).
 //! - `2` — `--timeout` reached before the wait condition was met.
 //! - `3` — `--fail-on-error` and the wait condition was met but ≥1 settled
-//!   run was `failed`/`cancelled`/stalled. A stalled run is still
-//!   `pending`/`running`, so exit `3` can accompany a non-terminal status.
+//!   run was `failed`/`cancelled`/stalled/attention-required. A stalled or
+//!   attention-required run is still `pending`/`running`, so exit `3` can
+//!   accompany a non-terminal status.
 //!
 //! Exit codes `2` and `3` still emit the normal success-shaped data
 //! envelope on stdout (the summary is the answer); they cannot ride the
@@ -127,6 +128,16 @@ pub struct Args<'a> {
 }
 
 /// One run's settle outcome (`data.runs[]`).
+///
+/// The four booleans (`merged`, `landed`, `stalled`, `attention_required`) are
+/// each an independent, orthogonal fact about the settle — a landing signal, two
+/// git-verification-vs-marker distinctions, and two non-terminal "why it settled
+/// without finishing" verdicts — not a state that would collapse into one enum
+/// (a run can be `landed` yet not `merged`; `stalled` and `attention_required`
+/// are mutually exclusive but distinct remediations). They are the stable wire
+/// contract a JSON consumer branches on, so `struct_excessive_bools` is allowed
+/// here deliberately.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Serialize)]
 struct RunOutcome {
     run_id: String,
@@ -163,6 +174,18 @@ struct RunOutcome {
     /// OR in: `run wait` is a single-worker completion primitive, so the
     /// driver-stall shape (a `--kind orchestrate` concern) stays out of it.
     stalled: bool,
+    /// Computed hint (never persisted): the reporting node exited cleanly but is
+    /// still non-terminal — it skipped `run merge` (design.md §2.5 / A5, issue
+    /// `attention-required-run-surface`). Distinct from [`Self::stalled`]: the
+    /// supervisor is not necessarily dead; the *worker* finished without merging,
+    /// so the run needs a manual finish (`run merge` from the worktree) or
+    /// `run cancel`, NOT `run reattach`. Like `stalled`, an attention-required run
+    /// settles the wait (it returns promptly instead of blocking the whole
+    /// `--timeout`) and — because it did not finish `done` — grades as a settled
+    /// error under `--fail-on-error` (exit `3`). The run status is still
+    /// `pending`/`running`; this classification NEVER mutates it terminal. The
+    /// per-verdict reason and resume hint ride in [`Self::error`].
+    attention_required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -226,7 +249,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // supervisor — so recomputing there would let the wait exit `0` on a
     // `pending` run it had just settled as stalled (a hole every reviewer
     // flagged).
-    let (stop, latched_stall) = wait_loop(
+    let (stop, latched_settle) = wait_loop(
         &runs,
         condition,
         args.timeout,
@@ -236,20 +259,21 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let waited_ms = start.elapsed().as_millis() as u64;
 
     // Build the final per-run summary, folding in each terminal node report and
-    // the latched stall verdict.
+    // the latched stall / attention verdict.
     let mut outcomes = Vec::with_capacity(runs.len());
     for (i, (run_id, paths)) in runs.iter().enumerate() {
-        outcomes.push(read_outcome(run_id, paths, latched_stall[i])?);
+        outcomes.push(read_outcome(run_id, paths, latched_settle[i])?);
     }
 
     // Decide the exit code from the assembled outcomes:
-    //   timeout                         → 2
-    //   --fail-on-error & any settled
-    //     run failed/cancelled/stalled  → 3
-    //   otherwise                       → 0
+    //   timeout                                     → 2
+    //   --fail-on-error & any settled run
+    //     failed/cancelled/stalled/attention        → 3
+    //   otherwise                                   → 0
     // A timeout takes precedence over fail-on-error: the condition was never
-    // met, so there is nothing to grade. A stalled run (stillborn or orphaned)
-    // settled the wait without ever finishing `done`, so it grades as a failure too.
+    // met, so there is nothing to grade. A stalled run (stillborn or orphaned) or
+    // an attention-required run (clean exit, no `run merge`) settled the wait
+    // without ever finishing `done`, so each grades as a failure too.
     let exit_code: u8 = match stop {
         Stop::TimedOut => 2,
         Stop::Met if args.fail_on_error && any_settled_error(&outcomes) => 3,
@@ -289,16 +313,17 @@ fn wait_loop(
     timeout: Option<Duration>,
     poll_interval: Option<Duration>,
     progress: bool,
-) -> Result<(Stop, Vec<Option<StallKind>>), CliError> {
+) -> Result<(Stop, Vec<LatchedSettle>), CliError> {
     let start = Instant::now();
     let mut backoff = poll_interval.unwrap_or(BACKOFF_START);
-    // Progress transitions key on `(status, stall)` so a healthy `pending` run
-    // going stillborn/orphaned (status unchanged) still emits one progress line.
-    let mut prev: Vec<Option<(Status, Option<StallKind>)>> = vec![None; runs.len()];
+    // Progress transitions key on `(status, stall, attention)` so a healthy
+    // `pending` run going stillborn/orphaned OR attention-required (status
+    // unchanged) still emits one progress line.
+    let mut prev: Vec<Option<(Status, Option<StallKind>, bool)>> = vec![None; runs.len()];
 
     loop {
         let mut settled = 0usize;
-        let mut stall_now: Vec<Option<StallKind>> = vec![None; runs.len()];
+        let mut settle_now: Vec<LatchedSettle> = vec![LatchedSettle::default(); runs.len()];
         // Sample the clock ONCE per poll and share it across every run in this
         // iteration, so a multi-run wait grades all runs' grace windows against
         // the same `now` (rather than a per-run drift as the loop walks the
@@ -314,18 +339,29 @@ fn wait_loop(
                     format!("run {run_id} manifest disappeared while waiting"),
                 )
             })?;
-            stall_now[i] = settle.stall;
-            // A run is settled when it reaches a terminal status OR when it is
-            // stalled — a supervisor that died (before creating any node, or
-            // mid-run) can never make the run terminal on its own, so waiting for
-            // `is_terminal()` alone would block the whole timeout (issues
-            // `run-wait-stillborn-run-not-detected` + `run-wait-still`).
-            if settle.status.is_terminal() || settle.stall.is_some() {
+            settle_now[i] = LatchedSettle {
+                stall: settle.stall,
+                attention: settle.attention,
+            };
+            // A run is settled when it reaches a terminal status, OR when it is
+            // stalled (a supervisor that died — before creating any node, or
+            // mid-run — can never make the run terminal on its own), OR when it is
+            // attention-required (the worker exited cleanly but skipped `run
+            // merge`, so nothing will drive it terminal either). Waiting for
+            // `is_terminal()` alone would block the whole timeout in every one of
+            // those cases (issues `run-wait-stillborn-run-not-detected`,
+            // `run-wait-still`, `attention-required-run-surface`).
+            if settle.status.is_terminal() || settle.stall.is_some() || settle.attention {
                 settled += 1;
             }
-            let key = (settle.status, settle.stall);
+            let key = (settle.status, settle.stall, settle.attention);
             if progress && prev[i] != Some(key) {
-                emit_progress(run_id, settle.status, settle.stall.is_some());
+                emit_progress(
+                    run_id,
+                    settle.status,
+                    settle.stall.is_some(),
+                    settle.attention,
+                );
             }
             prev[i] = Some(key);
         }
@@ -335,11 +371,11 @@ fn wait_loop(
             Condition::Any => settled >= 1,
         };
         if met {
-            return Ok((Stop::Met, stall_now));
+            return Ok((Stop::Met, settle_now));
         }
         if let Some(t) = timeout {
             if start.elapsed() >= t {
-                return Ok((Stop::TimedOut, stall_now));
+                return Ok((Stop::TimedOut, settle_now));
             }
         }
 
@@ -371,17 +407,36 @@ fn current_status(paths: &RunPaths) -> Result<Option<Status>, CliError> {
     .map_err(from_core)
 }
 
-/// One poll's settle snapshot: the run's `manifest.status` plus its read-time
-/// stall verdict — [`StallKind::Stillborn`] (supervisor dead before any node) or
+/// One poll's settle snapshot: the run's `manifest.status`, its read-time stall
+/// verdict — [`StallKind::Stillborn`] (supervisor dead before any node) or
 /// [`StallKind::Orphaned`] (supervisor died mid-run, ≥1 node, idle past the
-/// grace), or `None` for a healthy run. Both are decided as ONE consistent
-/// snapshot under the shared lock — the supervisor-pid probe is a single-file
-/// read that does not participate in the projection guards, but reading it
-/// inside the lock keeps `status` and the stall verdict from disagreeing
-/// (mirrors `run show`).
+/// grace), or `None` for a healthy run — and whether the reporting node is
+/// *attention-required* (a clean worker exit that skipped `run merge`,
+/// design.md §2.5 / A5). All decided as ONE consistent snapshot under the shared
+/// lock — the supervisor-pid probe and the node read do not participate in the
+/// projection guards, but reading them inside the lock keeps `status`, the stall
+/// verdict, and the attention verdict from disagreeing (mirrors `run show`).
 struct Settle {
     status: Status,
     stall: Option<StallKind>,
+    /// The reporting node exited cleanly but is still non-terminal — it skipped
+    /// `run merge`. A durable told fact ([`octl_core::Node::worker_exit`]), not a
+    /// timing guess, so it settles the wait immediately rather than blocking the
+    /// whole `--timeout`. Checked with precedence OVER `stall`: a clean-exited
+    /// worker is attention-required (manual finish) even if its supervisor later
+    /// died, which would otherwise read as `orphaned` (`run reattach`).
+    attention: bool,
+}
+
+/// The two non-terminal settle verdicts a poll can latch for a run — the stall
+/// kind (if any) and whether it is attention-required — carried from the poll
+/// that ended the wait through to [`read_outcome`], so the reported outcome
+/// reflects the decision [`wait_loop`] acted on rather than a fresh probe a
+/// concurrent `run reattach` / `run merge` could have flipped.
+#[derive(Clone, Copy, Default)]
+struct LatchedSettle {
+    stall: Option<StallKind>,
+    attention: bool,
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
@@ -403,6 +458,16 @@ fn current_settle(
             return Ok(None);
         };
         let supervisor = SupervisorView::probe(paths);
+        // Read the reporting node in the same shared-lock window so its
+        // `worker_exit` fact and the manifest `status` form one consistent
+        // snapshot (state-integrity invariant 3). A run with no `n-0001` node
+        // yet, or a node still running, simply is not attention-required.
+        let node_id =
+            NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+        let node = read_node_opt(paths, &node_id)?;
+        let attention = node
+            .as_ref()
+            .is_some_and(|n| crate::run::attention::is_attention_required(n.status, n.worker_exit));
         Ok(Some(Settle {
             status: m.status,
             stall: stall_kind(
@@ -415,6 +480,7 @@ fn current_settle(
                 m.updated_at,
                 now,
             ),
+            attention,
         }))
     })
     .map_err(from_core)
@@ -427,14 +493,15 @@ fn current_settle(
 /// node projections are read in a single shared-lock window so the status and
 /// the report it implies cannot disagree (state-integrity invariant 3).
 ///
-/// `latched_stall` is the stall verdict from the poll that ended the wait — the
-/// caller passes it in rather than having this function recompute it, so the
-/// outcome (and the exit code) reflect the decision `wait_loop` acted on, not a
-/// fresh probe that a concurrent `run reattach` could have flipped.
+/// `latched` is the stall + attention verdict from the poll that ended the wait
+/// — the caller passes it in rather than having this function recompute it, so
+/// the outcome (and the exit code) reflect the decision `wait_loop` acted on, not
+/// a fresh probe that a concurrent `run reattach` / `run merge` could have
+/// flipped.
 fn read_outcome(
     run_id: &str,
     paths: &RunPaths,
-    latched_stall: Option<StallKind>,
+    latched: LatchedSettle,
 ) -> Result<RunOutcome, CliError> {
     let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
     // Read every field the outcome needs — status, the terminal report, and the
@@ -491,16 +558,20 @@ fn read_outcome(
         .and_then(|r| r.get("summary"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    // A stalled run is only reported `stalled` if it did NOT reach a terminal
-    // status: if a `run reattach` revived the supervisor and terminalized the run
-    // in the gap between the settling poll and this read, its real terminal
-    // status is the truth and `stalled` must not contradict it. In the common
-    // case (the supervisor stays dead) the run is still `pending`/`running` and
-    // `stalled` stays true.
-    let stall = if status.is_terminal() {
-        None
+    // A non-terminal verdict (stall / attention) is only reported if the run did
+    // NOT reach a terminal status: if a `run reattach` / `run merge` terminalized
+    // the run in the gap between the settling poll and this read, its real
+    // terminal status is the truth and the hint must not contradict it. In the
+    // common case the run is still `pending`/`running` and the latched verdict
+    // stands. Attention-required takes precedence over a stall: a worker that
+    // exited cleanly needs a manual finish (`run merge`), not `run reattach`, even
+    // if its supervisor also died (which would otherwise read as `orphaned`).
+    let (stall, attention_required) = if status.is_terminal() {
+        (None, false)
+    } else if latched.attention {
+        (None, true)
     } else {
-        latched_stall
+        (latched.stall, false)
     };
     let stalled = stall.is_some();
     // `error` explains a non-`done` settle. For failed/cancelled the §7.3 report
@@ -508,8 +579,11 @@ fn read_outcome(
     // for a stalled settle (a `pending`/`running` run graded as a failure under
     // `--fail-on-error`) synthesize a structured reason — distinct per stall
     // kind — so a JSON grader can tell "supervisor never started" from
-    // "supervisor died mid-run" from "worker failed" without re-deriving it.
-    let error = if let Some(kind) = stall {
+    // "supervisor died mid-run" from "worker skipped run merge" without
+    // re-deriving it.
+    let error = if attention_required {
+        Some(crate::run::attention::ATTENTION_REASON.to_string())
+    } else if let Some(kind) = stall {
         Some(stall_reason(kind).to_string())
     } else if matches!(status, Status::Failed | Status::Cancelled) {
         report
@@ -544,6 +618,7 @@ fn read_outcome(
         landed: signal.landed,
         landed_method: signal.method.wire(),
         stalled,
+        attention_required,
         summary,
         error,
         recoverable_work,
@@ -576,27 +651,29 @@ struct GitInputs {
 }
 
 /// True iff any *settled* run did not finish cleanly `done` — i.e. it is
-/// `failed`, `cancelled`, or `stalled` (a `pending`/`running` run that settled
-/// the wait only because its supervisor died — stillborn before starting, or
-/// orphaned mid-run). Non-settled runs (a still-progressing run under `--any`)
-/// are not graded: they never settled.
+/// `failed`, `cancelled`, `stalled` (a `pending`/`running` run that settled the
+/// wait only because its supervisor died — stillborn before starting, or orphaned
+/// mid-run), or `attention_required` (a `pending`/`running` run whose worker
+/// exited cleanly but skipped `run merge`). Non-settled runs (a still-progressing
+/// run under `--any`) are not graded: they never settled.
 fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
     outcomes
         .iter()
-        .any(|o| matches!(o.status, "failed" | "cancelled") || o.stalled)
+        .any(|o| matches!(o.status, "failed" | "cancelled") || o.stalled || o.attention_required)
 }
 
 /// Emit one compact JSONL transition line to **stderr** for `--progress`, so a
 /// live UI can follow state changes while the machine summary still lands on
-/// stdout at the end. `stalled` carries the stall verdict so a run that goes
-/// stillborn/orphaned without a status change (it stays `pending`) still surfaces one
-/// line. Best-effort: a serialization failure is swallowed rather than aborting
-/// the wait.
-fn emit_progress(run_id: &str, status: Status, stalled: bool) {
+/// stdout at the end. `stalled` / `attention_required` carry the non-terminal
+/// verdicts so a run that goes stillborn/orphaned OR attention-required without a
+/// status change (it stays `pending`) still surfaces one line. Best-effort: a
+/// serialization failure is swallowed rather than aborting the wait.
+fn emit_progress(run_id: &str, status: Status, stalled: bool, attention_required: bool) {
     if let Ok(line) = serde_json::to_string(&serde_json::json!({
         "run_id": run_id,
         "status": status_kebab(status),
         "stalled": stalled,
+        "attention_required": attention_required,
     })) {
         eprintln!("{line}");
     }
@@ -652,6 +729,16 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                     // same way it finds a failed/cancelled one.
                     print!(
                         "  stalled=true (`run reattach {id}` or `run cancel {id}`)",
+                        id = r.run_id
+                    );
+                }
+                if r.attention_required {
+                    // Non-terminal, deliberate: the worker finished but skipped
+                    // `run merge`. The manual finish (not `run reattach`) is the
+                    // fix; the reason rides in `error=` below.
+                    print!(
+                        "  attention_required=true (`run merge {id}` from its worktree, \
+                         or `run cancel {id}`)",
                         id = r.run_id
                     );
                 }
@@ -773,12 +860,17 @@ mod tests {
             landed: false,
             landed_method: "unverified",
             stalled: false,
+            attention_required: false,
             summary: None,
             error: None,
             recoverable_work: None,
         };
         let mk_stalled = || RunOutcome {
             stalled: true,
+            ..mk("pending")
+        };
+        let mk_attention = || RunOutcome {
+            attention_required: true,
             ..mk("pending")
         };
         assert!(!any_settled_error(&[mk("done"), mk("done")]));
@@ -790,6 +882,10 @@ mod tests {
         // status is still `pending`.
         assert!(any_settled_error(&[mk_stalled()]));
         assert!(any_settled_error(&[mk("done"), mk_stalled()]));
+        // An attention-required run (clean exit, no `run merge`) also grades as a
+        // settled error even though its status stays `pending`.
+        assert!(any_settled_error(&[mk_attention()]));
+        assert!(any_settled_error(&[mk("done"), mk_attention()]));
     }
 
     #[test]

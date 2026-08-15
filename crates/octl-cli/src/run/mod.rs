@@ -4,6 +4,7 @@
 //! `spinoff` will follow: one file per verb, shared types in `mod.rs`,
 //! single `dispatch` entry point called from `cli.rs`.
 
+pub mod attention;
 pub mod cancel;
 pub mod create;
 pub mod dto;

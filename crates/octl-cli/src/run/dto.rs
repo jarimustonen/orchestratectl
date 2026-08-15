@@ -273,6 +273,24 @@ pub struct RunSummary {
     /// for the specific never-started diagnosis; read `stalled` for the generic
     /// "needs attention" signal.
     pub stillborn: bool,
+    /// Computed hint (never persisted): true for an *attention-required* run — a
+    /// worker that exited cleanly (`worker.exited` code 0) but left the node
+    /// non-terminal because it skipped `run merge` (design.md §2.5 / A5, issue
+    /// `attention-required-run-surface`). Distinct from [`Self::stalled`]: the
+    /// supervisor may well be alive and healthy; the run is stuck because the
+    /// *worker* finished without merging, so the remediation is a manual finish
+    /// (`run merge` from the worktree) or `run cancel`, NOT `run reattach`.
+    /// Defaults to `false` from `From`; the `list` / `show` handlers override it
+    /// via [`RunSummary::with_attention`] from the same shared-lock node snapshot.
+    /// See [`crate::run::attention`].
+    pub attention_required: bool,
+    /// Resume context for an attention-required run — pending age, last-observed
+    /// worker pid, worktree path, source branch, and a one-line resume hint — so a
+    /// PO can find and finish the stuck worktree. `None` (omitted from the wire)
+    /// unless [`Self::attention_required`] is true. Set together with it via
+    /// [`RunSummary::with_attention`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attention: Option<crate::run::attention::AttentionView>,
 }
 
 impl RunSummary {
@@ -299,6 +317,19 @@ impl RunSummary {
         self.stillborn = stillborn;
         self
     }
+
+    /// Attach the attention-required verdict and (when true) its resume context,
+    /// replacing the `From`-provided `false` / `None` defaults. Pass `None` for a
+    /// run that is not attention-required.
+    #[must_use]
+    pub fn with_attention(
+        mut self,
+        attention: Option<crate::run::attention::AttentionView>,
+    ) -> Self {
+        self.attention_required = attention.is_some();
+        self.attention = attention;
+        self
+    }
 }
 
 impl From<&Manifest> for RunSummary {
@@ -314,6 +345,8 @@ impl From<&Manifest> for RunSummary {
             supervisor: SupervisorView::unknown(),
             stalled: false,
             stillborn: false,
+            attention_required: false,
+            attention: None,
         }
     }
 }
@@ -409,8 +442,46 @@ mod tests {
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },
                 "stalled": false,
                 "stillborn": false,
+                "attention_required": false,
             })
         );
+    }
+
+    /// `with_attention(Some(..))` flips `attention_required` and nests the resume
+    /// context; `with_attention(None)` leaves the field absent from the wire.
+    #[test]
+    fn attention_view_flattens_onto_summary() {
+        use crate::run::attention::AttentionView;
+        let now: DateTime<Utc> = "2024-01-01T00:10:00Z".parse().unwrap();
+        let view = AttentionView::build(
+            "01arz3ndektsv4rrffq69g5fav",
+            now,
+            None,
+            ts(),
+            Some(4242),
+            Some("/tmp/wt/seed".to_string()),
+            Some("main".to_string()),
+        );
+        let got =
+            serde_json::to_value(RunSummary::from(&sample()).with_attention(Some(view))).unwrap();
+        assert_eq!(got["attention_required"], json!(true));
+        assert_eq!(got["attention"]["pending_age_secs"], json!(600));
+        assert_eq!(got["attention"]["worker_pid"], json!(4242));
+        assert_eq!(got["attention"]["worktree_path"], json!("/tmp/wt/seed"));
+        assert_eq!(got["attention"]["source_branch"], json!("main"));
+        assert_eq!(
+            got["attention"]["reason"],
+            json!(crate::run::attention::ATTENTION_REASON)
+        );
+        assert!(got["attention"]["resume_hint"]
+            .as_str()
+            .unwrap()
+            .contains("run merge"));
+
+        // Not attention-required → the nested block is omitted entirely.
+        let plain = serde_json::to_value(RunSummary::from(&sample()).with_attention(None)).unwrap();
+        assert_eq!(plain["attention_required"], json!(false));
+        assert!(plain.get("attention").is_none());
     }
 
     /// `SupervisorView::probe` reads the real `supervisor.pid` file and resolves

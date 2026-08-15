@@ -152,6 +152,27 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         } else {
             None
         };
+        // Attention-required (design.md §2.5 / A5): the reporting node's worker
+        // exited cleanly but the node is still non-terminal — it skipped
+        // `run merge`. A durable told fact (`node.worker_exit`), read here in the
+        // same shared-lock snapshot as `manifest.status`, so the verdict and the
+        // status it explains cannot straddle a reducer write. Checked
+        // independently of the stall shapes: a clean-exited worker is
+        // attention-required even if its supervisor later died (the manual finish,
+        // not `run reattach`, is the fix — see `crate::run::attention`).
+        let attention = node.as_ref().and_then(|n| {
+            crate::run::attention::is_attention_required(n.status, n.worker_exit).then(|| {
+                crate::run::attention::AttentionView::build(
+                    manifest.run_id.as_str(),
+                    now,
+                    n.started_at,
+                    manifest.created_at,
+                    n.agent_pid,
+                    n.worktree_path.clone(),
+                    manifest.source_branch.clone(),
+                )
+            })
+        });
         let landing = LandingFields {
             source_repo: manifest.source_repo.clone(),
             source_branch: manifest.source_branch.clone(),
@@ -168,20 +189,30 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             stalled,
             stall,
             stalled_idle_min,
+            attention,
             landing,
         )))
     })
     .map_err(from_core)?;
-    let (manifest, counts, supervisor, recoverable_work, stalled, stall, stalled_idle_min, landing) =
-        match scanned {
-            Some(v) => v,
-            None => {
-                return Err(
-                    CliError::user("run_not_found", format!("no run with id {run_id}"))
-                        .with_invalid_value(run_id),
-                );
-            }
-        };
+    let (
+        manifest,
+        counts,
+        supervisor,
+        recoverable_work,
+        stalled,
+        stall,
+        stalled_idle_min,
+        attention,
+        landing,
+    ) = match scanned {
+        Some(v) => v,
+        None => {
+            return Err(
+                CliError::user("run_not_found", format!("no run with id {run_id}"))
+                    .with_invalid_value(run_id),
+            );
+        }
+    };
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
     // computed outside the shared lock: the rebase-robust signal a caller should
     // trust instead of hand-rolling `git merge-base --is-ancestor`.
@@ -206,7 +237,8 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         .with_stillborn(matches!(
             &stall,
             Some(crate::run::stalled::StallKind::Stillborn)
-        ));
+        ))
+        .with_attention(attention);
     let payload = ShowPayload {
         summary,
         manifest: ManifestView::from(&manifest),
@@ -253,6 +285,23 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                         payload.manifest.run_id
                     ),
                 }
+            }
+            if let Some(att) = &payload.summary.attention {
+                // Non-terminal, deliberate: the worker finished but skipped
+                // `run merge`. Print the resume context a PO needs to find and
+                // finish the worktree (design.md §2.5). NOT a stall — no
+                // `run reattach`.
+                let idle = att.pending_age_secs / 60;
+                let pid = att
+                    .worker_pid
+                    .map_or_else(|| "?".to_string(), |p| p.to_string());
+                let wt = att.worktree_path.as_deref().unwrap_or("?");
+                println!(
+                    "attention:     true — {reason} (worker pid {pid} exited, node non-terminal, \
+                     idle {idle} min). worktree {wt}. {hint}",
+                    reason = att.reason,
+                    hint = att.resume_hint,
+                );
             }
             println!(
                 "landed:        {} ({})",

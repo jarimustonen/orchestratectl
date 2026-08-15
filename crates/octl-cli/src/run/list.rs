@@ -2,12 +2,17 @@
 
 use serde::Serialize;
 
-use octl_core::{read_manifest_opt, RunLock, RunPaths};
+use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::dto::{RunSummary, SupervisorState, SupervisorView};
 use crate::run::{from_core, runs_root};
+
+/// The single reporting node of a single-worker worktree run (`n-0001`); mirrors
+/// `run show` / `run wait`. Its `worker_exit` fact drives the attention-required
+/// verdict (design.md §2.5 / A5).
+const DEFAULT_NODE_ID: &str = "n-0001";
 
 pub struct Args<'a> {
     pub status: Option<String>,
@@ -158,10 +163,32 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 m.created_at,
                 m.updated_at,
             ) && now.signed_duration_since(m.created_at) > stillborn_grace;
-            Ok(Some((m, supervisor, stillborn)))
+            // Attention-required (design.md §2.5 / A5): read the reporting node in
+            // the SAME shared-lock snapshot as the manifest so the worker-exit fact
+            // and `status` cannot straddle a reducer write. Costs one node-file
+            // read per run; negligible for realistic run counts, and only n-0001 is
+            // read (the single-worker reporting node). A run with no node yet, or a
+            // node still running, simply yields `None`.
+            let node_id =
+                NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+            let node = read_node_opt(&paths, &node_id)?;
+            let attention = node.as_ref().and_then(|n| {
+                crate::run::attention::is_attention_required(n.status, n.worker_exit).then(|| {
+                    crate::run::attention::AttentionView::build(
+                        m.run_id.as_str(),
+                        now,
+                        n.started_at,
+                        m.created_at,
+                        n.agent_pid,
+                        n.worktree_path.clone(),
+                        m.source_branch.clone(),
+                    )
+                })
+            });
+            Ok(Some((m, supervisor, stillborn, attention)))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stillborn) = match scanned {
+        let (m, supervisor, stillborn, attention) = match scanned {
             Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
@@ -176,7 +203,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         let summary = RunSummary::from(&m)
             .with_supervisor(supervisor)
             .with_stalled(stalled)
-            .with_stillborn(stillborn);
+            .with_stillborn(stillborn)
+            .with_attention(attention);
         if let Some(filter) = &args.status {
             if &summary.status != filter {
                 continue;
@@ -227,6 +255,11 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                     format!("{} (stillborn)", r.status)
                 } else if r.stalled {
                     format!("{} (stalled)", r.status)
+                } else if r.attention_required {
+                    // A worker that exited cleanly but skipped `run merge` — a
+                    // non-terminal run awaiting a manual finish, distinct from a
+                    // dead-supervisor stall (design.md §2.5).
+                    format!("{} (attention)", r.status)
                 } else {
                     r.status.clone()
                 };
