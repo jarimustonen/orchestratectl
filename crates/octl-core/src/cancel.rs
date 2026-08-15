@@ -580,68 +580,19 @@ struct CancelProbeData {
 /// cancel loudly rather than silently dropping a node. A missing log yields an
 /// empty ledger (run never appended an event — nothing to cancel).
 ///
-/// Per-node status is accumulated by a tiny per-node state machine that mirrors
-/// the reducer's terminal-state guard: `node.created` seeds [`Status::Pending`]
-/// (idempotent on replay), and `node.status` / `node.report` transition a node
-/// only while it is still non-terminal. A `node.status` / `node.report` for a
-/// node id never introduced by a `node.created` is ignored, exactly as the
-/// reducer no-ops a status/report against a non-existent node. Malformed status
-/// fields degrade gracefully (the node is left non-terminal, hence cancelled)
-/// rather than aborting the whole cancel — the append path already validates
-/// every committed event, so this only matters for a hand-corrupted log.
-///
-/// Node ids are sorted by numeric suffix (not lexically), so output and the
-/// cancel order stay intuitive past the digit-width boundary where `n-10000`
-/// would otherwise sort before `n-9999` (see [`NodeId`]).
+/// Per-node status is accumulated by the shared [`NodeStatusAcc`] state machine
+/// (which mirrors the reducer's terminal-state guard) — the same accumulator the
+/// supervisor's log-authoritative [`read_node_statuses`] uses, so the cancel path
+/// and the supervisor roll-up can never derive a different node set or status
+/// from the same log. Node ids come out sorted by numeric suffix.
 fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
     let events_path = paths.checked_events()?;
     let prefix = format!("run-cancel:{}:", paths.run_id.as_str());
-    // Creation order is preserved here and re-sorted by numeric suffix below.
-    let mut order: Vec<NodeId> = Vec::new();
-    let mut status: HashMap<NodeId, Status> = HashMap::new();
+    let mut acc = NodeStatusAcc::default();
     let mut prior_cancel: HashMap<(String, String), Event> = HashMap::new();
 
     for_each_event_probe::<CancelProbe, _>(&events_path, |probe, raw| {
-        match probe.kind.as_str() {
-            "node.created" => {
-                if let Some(nid) = &probe.node_id {
-                    // Idempotent on replay: a second `node.created` for the same
-                    // id is a no-op, mirroring the reducer's existence guard.
-                    if !status.contains_key(nid) {
-                        order.push(nid.clone());
-                        status.insert(nid.clone(), Status::Pending);
-                    }
-                }
-            }
-            "node.status" => {
-                if let Some(nid) = &probe.node_id {
-                    if let Some(cur) = status.get_mut(nid) {
-                        if !cur.is_terminal() {
-                            if let Some(ns) = probe.data.status.as_deref().and_then(parse_status) {
-                                *cur = ns;
-                            }
-                        }
-                    }
-                }
-            }
-            "node.report" => {
-                if let Some(nid) = &probe.node_id {
-                    if let Some(cur) = status.get_mut(nid) {
-                        // Terminal guard *before* deriving the outcome, mirroring
-                        // the reducer: a report against an already-terminal node
-                        // is a dead event (its payload may even be a bare `{}`).
-                        if !cur.is_terminal() {
-                            if let Some(ns) =
-                                report_terminal_status(probe.data.success, probe.data.cancelled)
-                            {
-                                *cur = ns;
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        acc.observe(&probe);
         // Capture only this run's cancel events, keyed by (kind, key), and only
         // for those materialize the full payload the re-fold path needs.
         if let Some(key) = probe
@@ -666,25 +617,145 @@ fn read_cancel_ledger(paths: &RunPaths) -> Result<CancelLedger> {
         Ok(())
     })?;
 
-    // A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits in u64); the
-    // unwrap_or keeps the sort total even for a hypothetical unparseable body.
-    order.sort_by_key(|id| {
-        id.as_str()
-            .strip_prefix("n-")
-            .and_then(|d| d.parse::<u64>().ok())
-            .unwrap_or(0)
-    });
-    let node_status = order
-        .into_iter()
-        .map(|id| {
-            let s = status[&id];
-            (id, s)
-        })
-        .collect();
     Ok(CancelLedger {
-        node_status,
+        node_status: acc.finish(),
         prior_cancel,
     })
+}
+
+/// The log-authoritative per-node status set for a run, replayed once from
+/// `events.jsonl` — the source-of-truth alternative to a `nodes/*.json`
+/// projection scan.
+///
+/// Returns every node a `node.created` event introduced, paired with the status
+/// the log replays for it, deduped and sorted by numeric suffix ([`NodeId`]
+/// order). Both the node set and each node's status come from the log, so the
+/// result includes a node whose `node.created` was fsynced while its projection
+/// write was crash-interrupted (the node a `nodes/*.json` scan would silently
+/// drop) and reports a node terminal whenever the log says so even if its
+/// projection still reads live (the window [`crate::events`] documents the log
+/// leading the projections through).
+///
+/// This is what lets a supervisor's run-status roll-up stay log-authoritative:
+/// terminalizing a run from the projection subset can miss a log-visible live
+/// node and roll the run up while it is still running, which a later
+/// `rebuild_projections` would then resurrect as live under a terminal run
+/// (violating "a run must not terminalize while a log-visible node is live" —
+/// issue `rollup-status-log-authoritative`). Feeding this into
+/// [`aggregate_terminal_status`](crate::aggregate_terminal_status) closes that
+/// window. It is the read half [`cancel_node`]'s in-lock self-roll-up already
+/// uses via the cancel ledger; both now share the `NodeStatusAcc` state machine
+/// so the supervisor tick and the cancel path can never diverge.
+///
+/// Reads through `RunPaths::checked_events` (a symlinked log is refused) and
+/// shares the crate's streaming torn-tail policy: a crash-truncated final line
+/// is dropped, an interior unparseable line surfaces as
+/// [`Error::CorruptEventLog`], and a missing log yields an empty set. Like the
+/// cancel ledger it never holds the whole log in memory — each line is skimmed
+/// envelope + a few small status fields, never the full `node.report` payload —
+/// so the per-tick cost stays bounded even for a run with hundreds of nodes.
+///
+/// # Errors
+///
+/// I/O errors reading the log, a rejected symlinked path, or an interior corrupt
+/// event line.
+pub fn read_node_statuses(paths: &RunPaths) -> Result<Vec<(NodeId, Status)>> {
+    let events_path = paths.checked_events()?;
+    let mut acc = NodeStatusAcc::default();
+    for_each_event_probe::<CancelProbe, _>(&events_path, |probe, _raw| {
+        acc.observe(&probe);
+        Ok(())
+    })?;
+    Ok(acc.finish())
+}
+
+/// Streaming accumulator for log-derived per-node status: the shared state
+/// machine behind both the cancel ledger ([`read_cancel_ledger`]) and the
+/// supervisor's log-authoritative roll-up ([`read_node_statuses`]), so the two
+/// can never derive a different node set or status from the same log.
+///
+/// Mirrors the reducer's terminal-state guard exactly: `node.created` seeds
+/// [`Status::Pending`] (idempotent on replay — a second `node.created` for the
+/// same id is a no-op, matching the reducer's existence guard), and
+/// `node.status` / `node.report` transition a node only while it is still
+/// non-terminal. A `node.status` / `node.report` for an id never introduced by a
+/// `node.created` is ignored, exactly as the reducer no-ops a status/report
+/// against a non-existent node. Malformed status fields degrade gracefully (the
+/// node is left at its current status) rather than aborting — the append path
+/// already validates every committed event, so a `None` transition only arises
+/// from a hand-corrupted log.
+#[derive(Default)]
+struct NodeStatusAcc {
+    /// Node ids in creation order (re-sorted by numeric suffix at [`finish`]).
+    order: Vec<NodeId>,
+    /// Each node's current log-derived status.
+    status: HashMap<NodeId, Status>,
+}
+
+impl NodeStatusAcc {
+    /// Fold one skimmed event line ([`CancelProbe`]) into the per-node map.
+    fn observe(&mut self, probe: &CancelProbe) {
+        match probe.kind.as_str() {
+            "node.created" => {
+                if let Some(nid) = &probe.node_id {
+                    if !self.status.contains_key(nid) {
+                        self.order.push(nid.clone());
+                        self.status.insert(nid.clone(), Status::Pending);
+                    }
+                }
+            }
+            "node.status" => {
+                if let Some(nid) = &probe.node_id {
+                    if let Some(cur) = self.status.get_mut(nid) {
+                        if !cur.is_terminal() {
+                            if let Some(ns) = probe.data.status.as_deref().and_then(parse_status) {
+                                *cur = ns;
+                            }
+                        }
+                    }
+                }
+            }
+            "node.report" => {
+                if let Some(nid) = &probe.node_id {
+                    if let Some(cur) = self.status.get_mut(nid) {
+                        // Terminal guard *before* deriving the outcome, mirroring
+                        // the reducer: a report against an already-terminal node
+                        // is a dead event (its payload may even be a bare `{}`).
+                        if !cur.is_terminal() {
+                            if let Some(ns) =
+                                report_terminal_status(probe.data.success, probe.data.cancelled)
+                            {
+                                *cur = ns;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Consume into the sorted `(NodeId, Status)` list. Node ids are sorted by
+    /// numeric suffix (not lexically), so a run past the digit-width boundary
+    /// where `n-10000` would otherwise sort before `n-9999` stays intuitive (see
+    /// [`NodeId`]). A validated `NodeId` is `n-` + ASCII digits (≤10, so it fits
+    /// in u64); the `unwrap_or` keeps the sort total for a hypothetical
+    /// unparseable body.
+    fn finish(mut self) -> Vec<(NodeId, Status)> {
+        self.order.sort_by_key(|id| {
+            id.as_str()
+                .strip_prefix("n-")
+                .and_then(|d| d.parse::<u64>().ok())
+                .unwrap_or(0)
+        });
+        self.order
+            .into_iter()
+            .map(|id| {
+                let s = self.status[&id];
+                (id, s)
+            })
+            .collect()
+    }
 }
 
 /// Parse a `node.status` / `run.status` status string into a [`Status`],

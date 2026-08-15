@@ -101,6 +101,23 @@ pub(crate) fn git_bin() -> String {
 /// most once and a concurrent `run cancel` (which freezes the manifest
 /// terminal) makes this a clean no-op. This is what terminalizes a fan-out
 /// batch after a per-node `run cancel --node` settles the last live child.
+///
+/// **The terminalization decision is log-authoritative** (issue
+/// `rollup-status-log-authoritative`): the per-node status set comes from
+/// [`octl_core::read_node_statuses`] — a streaming replay of `events.jsonl` —
+/// NOT a `nodes/*.json` projection scan. A node whose `node.created` (or terminal
+/// event) was fsynced to the log while its projection write was crash-interrupted
+/// is invisible to a projection scan; rolling the run up from that subset could
+/// terminalize the run while a log-visible node is still live, and a later
+/// `rebuild_projections` would resurrect it as live under an already-terminal run
+/// (violating the core invariant "a run must not terminalize while a log-visible
+/// node is live"). Replaying the log closes that window. This is the read half
+/// [`cancel_node`](octl_core::cancel_node)'s in-lock self-roll-up already uses, so
+/// the two paths share one source of truth. On a log-read error (I/O, a corrupt
+/// interior line) it FAILS CLOSED — returns `None` (do not terminalize) rather
+/// than roll the run up from an unreadable log. The teardown loop
+/// ([`cleanup_terminal_nodes`]) may still scan projections for cleanup work; only
+/// this run-status decision must be log-derived.
 pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<Status> {
     let manifest = read_manifest_opt(paths).ok().flatten()?;
     if manifest.status.is_terminal() {
@@ -109,11 +126,17 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
     if !children_all_terminal {
         return None;
     }
-    // The single shared roll-up rule lives in core (`aggregate_terminal_status`),
-    // so this per-tick supervisor roll-up and `cancel_node`'s in-lock last-node
-    // roll-up can never diverge. `None` on an empty set (a freshly-created run
-    // must not vacuously complete) or any live node.
-    octl_core::aggregate_terminal_status(list_nodes(paths).iter().map(|n| n.status))
+    // Log-authoritative node status: a crash-interrupted projection write can
+    // hide a log-visible live node from `list_nodes`, so terminalizing from the
+    // projection subset is unsafe (issue `rollup-status-log-authoritative`). Read
+    // each node's status from the event log instead; a read error fails closed to
+    // `None` (never terminalize from an unreadable log). The single shared roll-up
+    // rule lives in core (`aggregate_terminal_status`), so this per-tick
+    // supervisor roll-up and `cancel_node`'s in-lock last-node roll-up can never
+    // diverge. `None` on an empty set (a freshly-created run must not vacuously
+    // complete) or any live node.
+    let node_statuses = octl_core::read_node_statuses(paths).ok()?;
+    octl_core::aggregate_terminal_status(node_statuses.into_iter().map(|(_, s)| s))
 }
 
 /// True when any node's terminal `node.report` was submitted by an explicit
@@ -3177,6 +3200,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rollup_status(&paths, true), None);
+    }
+
+    #[test]
+    fn rollup_does_not_terminalize_over_a_node_hidden_by_a_missing_projection() {
+        // Log-authoritative roll-up (issue `rollup-status-log-authoritative`): a
+        // node whose `node.created` is in the log but whose `nodes/*.json`
+        // projection write was crash-interrupted must still count as live. Here
+        // n-0001 is terminal (Done) and n-0002's projection is deleted, leaving
+        // its `node.created` in the log — the interrupted-fold state. A projection
+        // scan would see only the terminal n-0001 and wrongly roll the run up to
+        // Done; the log replay sees n-0002 still Pending and returns None.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        report(&paths, "n-0001", json!({ "success": true }));
+
+        // Remove n-0002's projection while its `node.created` event stays logged.
+        let n2 = nid("n-0002");
+        std::fs::remove_file(paths.node(&n2)).unwrap();
+        assert!(
+            read_node_opt(&paths, &n2).unwrap().is_none(),
+            "projection gone"
+        );
+        // The projection scan the old implementation used sees only n-0001.
+        assert_eq!(list_nodes(&paths).len(), 1, "n-0002 hidden from the scan");
+
+        assert_eq!(
+            rollup_status(&paths, true),
+            None,
+            "n-0002 is still live in the log; the run must not terminalize"
+        );
+
+        // Sanity: once n-0002 is settled in the log too, the run rolls up.
+        report(&paths, "n-0002", json!({ "success": true }));
+        assert_eq!(rollup_status(&paths, true), Some(Status::Done));
     }
 
     // --- Git-reconcile of a self-merged branch (issues `false-failed-after-merge`

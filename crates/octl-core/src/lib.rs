@@ -35,8 +35,8 @@ pub mod schema;
 mod stress_tests;
 
 pub use cancel::{
-    cancel_node, cancel_node_unlocked, cancel_run, cancel_run_unlocked, CancelOutcome,
-    NodeCancelOutcome,
+    cancel_node, cancel_node_unlocked, cancel_run, cancel_run_unlocked, read_node_statuses,
+    CancelOutcome, NodeCancelOutcome,
 };
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
