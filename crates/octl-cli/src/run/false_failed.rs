@@ -55,12 +55,46 @@
 //!   origin / legacy `via: "explicit-merge"`). A recorded merge is the honest
 //!   `done` path; its absence beside git-verified-landed content is the whole
 //!   tell.
+//! - a **fork-point (`base_sha`) is recorded** for the node. This is the stricter
+//!   burden of proof this consumer demands over the bare `landed` signal (llm
+//!   review consensus, gemini + deepseek): without a `base_sha`,
+//!   [`crate::run::landed`]'s ancestry safety net cannot tell a genuine landing
+//!   from a **never-advanced branch that merged nothing** — a branch trivially an
+//!   ancestor of source with zero commits reads `landed: true, git-verified` under
+//!   the missing-base fallback (`branch_advanced_past_base` returns `true` when
+//!   `base` is `None`). Firing on that would tell a user to `run salvage` a branch
+//!   with no work. Every normal spinoff records `base_sha` at `node.created`, so
+//!   requiring it suppresses only the ambiguous legacy/corrupt no-fork-point case
+//!   — a deliberately conservative false-negative (never a false positive).
 //!
 //! Every branch of that AND is load-bearing: drop the git-verified requirement
 //! and a stale marker could fire it; drop the not-a-merge requirement and an
 //! honest `done` run (mis-statused) could; drop the `Failed` gate and a
 //! still-running raw-git-merger (not yet dead) would false-flag before the human
-//! could even act.
+//! could even act; drop the `base_sha` requirement and a never-advanced branch
+//! that merged nothing would falsely read as landed.
+//!
+//! ## Accepted blind spots (false negatives, never false positives)
+//!
+//! The signal rests on git's *history* view of the recorded worker branch, so it
+//! deliberately does NOT fire — but also never mis-fires — in these shapes:
+//!
+//! - **Single-worker only.** `run show` gates this on `node_count == 1` (mirroring
+//!   [`crate::run::attention`]): the reporting node is `n-0001`, so for a
+//!   multi-node fan-out a *child* worker that raw-selfmerged then died is NOT
+//!   surfaced (its `n-0001` may be a driver). Per-node false-failed is the
+//!   delegated `per-node-run` follow-up.
+//! - **Squash merges.** A `git merge --squash` collapses the branch's commits into
+//!   one new patch-id, so `git cherry` sees `+` and ancestry is false — `landed`
+//!   reads false and the hint stays silent. The content IS in source but git
+//!   cannot prove the *branch's* commits landed.
+//! - **Post-merge extra commits.** If the worker raw-merged then committed MORE on
+//!   the branch before dying, `git cherry` sees a `+` for the extra commit and
+//!   `landed` reads false — the run's *earlier* work is in source but the branch
+//!   is no longer fully integrated, so the hint stays silent.
+//!
+//! In every case a false negative is strictly safer than falsely telling a user
+//! their work is already merged.
 
 use octl_core::ReportOrigin;
 use serde_json::Value;
@@ -78,16 +112,22 @@ use crate::run::landed::LandedMethod;
 /// `status_is_failed` is passed as a bool rather than a `Status` so the caller
 /// keeps the single source of truth for "is this the failed terminal" (and so
 /// this stays trivially testable without constructing a `Status`).
+/// `base_sha_present` is `node.base_sha.is_some()` — the recorded fork point; see
+/// the module docs for why it is a required burden of proof here (it closes the
+/// never-advanced-branch false positive the bare `landed` signal admits when the
+/// fork point is unknown).
 #[must_use]
 pub fn is_false_failed_suspected(
     status_is_failed: bool,
     landed: bool,
     landed_method: LandedMethod,
+    base_sha_present: bool,
     report: Option<&Value>,
 ) -> bool {
     status_is_failed
         && landed
         && landed_method == LandedMethod::GitVerified
+        && base_sha_present
         && !report.is_some_and(ReportOrigin::report_is_confirmed_merge)
 }
 
@@ -142,9 +182,9 @@ pub fn resume_hint(run_id: &str) -> String {
     format!(
         "the run is `failed` but its branch content is already in source with no `run merge` on \
          record — record the merge honestly with `orchestratectl run salvage {q}` (drives the \
-         skipped merge idempotently and terminalizes the run to `done`), or `run cancel {q}` to \
-         accept the failure (the branch is preserved either way). Do NOT hand-merge with raw git; \
-         always finish through `orchestratectl run merge`/`run salvage`"
+         skipped merge idempotently and terminalizes the run to `done`), or \
+         `orchestratectl run cancel {q}` to accept the failure (the branch is preserved either \
+         way). Do NOT hand-merge with raw git; always finish through `orchestratectl run merge`"
     )
 }
 
@@ -163,7 +203,8 @@ mod tests {
     use serde_json::json;
 
     /// The exact false-failed signature: `failed` + git-verified landed + a
-    /// non-merge terminal report (a crash-backstop `failed`).
+    /// recorded fork point + a non-merge terminal report (a crash-backstop
+    /// `failed`).
     #[test]
     fn failed_git_verified_landed_without_merge_is_suspected() {
         let backstop = json!({ "success": false, "reason": "agent-died" });
@@ -171,6 +212,7 @@ mod tests {
             true,
             true,
             LandedMethod::GitVerified,
+            true,
             Some(&backstop),
         ));
         // Also fires with no terminal report at all (the crash backstop may fire
@@ -179,7 +221,25 @@ mod tests {
             true,
             true,
             LandedMethod::GitVerified,
+            true,
             None,
+        ));
+    }
+
+    /// A missing fork point (`base_sha`) suppresses the hint even when git reads
+    /// the branch as landed — the ancestry net cannot distinguish a genuine
+    /// landing from a never-advanced branch without a fork point, so the stricter
+    /// burden of proof declines rather than risk a false positive (llm-review
+    /// consensus, gemini + deepseek).
+    #[test]
+    fn missing_base_sha_is_not_suspected() {
+        let backstop = json!({ "success": false, "reason": "agent-died" });
+        assert!(!is_false_failed_suspected(
+            true,
+            true,
+            LandedMethod::GitVerified,
+            false, // no base_sha recorded
+            Some(&backstop),
         ));
     }
 
@@ -198,6 +258,7 @@ mod tests {
             true,
             true,
             LandedMethod::GitVerified,
+            true,
             Some(&typed),
         ));
 
@@ -206,6 +267,7 @@ mod tests {
             true,
             true,
             LandedMethod::GitVerified,
+            true,
             Some(&legacy),
         ));
     }
@@ -220,6 +282,7 @@ mod tests {
             true,
             true,
             LandedMethod::ReportMarker,
+            true,
             Some(&report),
         ));
     }
@@ -234,6 +297,7 @@ mod tests {
             true,
             false,
             LandedMethod::GitVerified,
+            true,
             Some(&report),
         ));
         // Unverified method (git couldn't run) — landed can only be false there,
@@ -242,6 +306,7 @@ mod tests {
             true,
             false,
             LandedMethod::Unverified,
+            true,
             Some(&report),
         ));
     }
@@ -254,17 +319,26 @@ mod tests {
             false,
             true,
             LandedMethod::GitVerified,
+            true,
             None,
         ));
     }
 
-    /// The resume hint names both remediations (`run salvage` and `run cancel`),
-    /// warns against raw-git merges, and single-quotes the run id.
+    /// The resume hint names both remediations — and BOTH are fully
+    /// `orchestratectl`-qualified so they are directly copy-pasteable (llm-review:
+    /// a bare `run cancel` would fail in the user's shell). It warns against
+    /// raw-git merges and single-quotes the run id.
     #[test]
     fn resume_hint_names_salvage_and_cancel() {
         let hint = resume_hint("01run");
-        assert!(hint.contains("run salvage '01run'"), "got: {hint}");
-        assert!(hint.contains("run cancel '01run'"), "got: {hint}");
+        assert!(
+            hint.contains("orchestratectl run salvage '01run'"),
+            "got: {hint}"
+        );
+        assert!(
+            hint.contains("orchestratectl run cancel '01run'"),
+            "cancel must be fully qualified for copy-paste: {hint}"
+        );
         assert!(
             hint.contains("run merge"),
             "must steer to run merge: {hint}"

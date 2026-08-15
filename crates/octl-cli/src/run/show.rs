@@ -257,6 +257,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             matches!(manifest.status, Status::Failed),
             signal.landed,
             signal.method,
+            landing.base_sha.is_some(),
             landing.report.as_ref(),
         ))
     .then(|| crate::run::false_failed::FalseFailedView::build(manifest.run_id.as_str()));

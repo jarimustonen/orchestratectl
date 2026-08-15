@@ -2,9 +2,12 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: task
-status: open
+status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: 7c847fc
+  summary: 'feat(false-failed): surface raw-git self-merge death as non-terminal hint'
 ---
 
 # Raw-git self-merge then death is a false-failed run under the thin model

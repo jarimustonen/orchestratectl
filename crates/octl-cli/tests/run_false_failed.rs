@@ -85,7 +85,7 @@ fn seed_raw_selfmerge_failed(
     home: &Path,
     run_id: &str,
     repo: &Path,
-    base: &str,
+    base: Option<&str>,
     branch: &str,
 ) -> RunPaths {
     ensure_root(home).unwrap();
@@ -106,19 +106,20 @@ fn seed_raw_selfmerge_failed(
         }),
     )
     .unwrap();
-    append_and_apply_event(
-        &paths,
-        "node.created",
-        Some(&node_id()),
-        None,
-        json!({
-            "kind": "spinoff",
-            "worktree_path": repo.display().to_string(),
-            "branch": branch,
-            "base_sha": base,
-        }),
-    )
-    .unwrap();
+    let mut node_data = json!({
+        "kind": "spinoff",
+        "worktree_path": repo.display().to_string(),
+        "branch": branch,
+    });
+    // A recorded fork point is optional here so a test can exercise the
+    // base_sha-absent suppression path.
+    if let Some(base) = base {
+        node_data
+            .as_object_mut()
+            .unwrap()
+            .insert("base_sha".into(), json!(base));
+    }
+    append_and_apply_event(&paths, "node.created", Some(&node_id()), None, node_data).unwrap();
     // The worker was hard-killed (signal) — no clean exit, so the crash backstop,
     // not the attention path, governs.
     append_and_apply_event(
@@ -168,7 +169,7 @@ fn run_show_flags_raw_selfmerge_death_as_false_failed_without_auto_success() {
     let repo = TempDir::new().unwrap();
     let (base, branch) = repo_with_raw_selfmerge(repo.path());
     let run_id = new_run_id();
-    seed_raw_selfmerge_failed(home.path(), &run_id, repo.path(), &base, &branch);
+    seed_raw_selfmerge_failed(home.path(), &run_id, repo.path(), Some(&base), &branch);
 
     let v = run_show_json(&home, &run_id);
     let d = &v["data"];
@@ -251,7 +252,7 @@ fn run_show_does_not_flag_genuinely_unlanded_failed_run() {
     git(repo_path, &["checkout", "-q", "main"]);
 
     let run_id = new_run_id();
-    seed_raw_selfmerge_failed(home.path(), &run_id, repo_path, &base, "wt/raw");
+    seed_raw_selfmerge_failed(home.path(), &run_id, repo_path, Some(&base), "wt/raw");
 
     let v = run_show_json(&home, &run_id);
     let d = &v["data"];
@@ -260,5 +261,42 @@ fn run_show_does_not_flag_genuinely_unlanded_failed_run() {
     assert!(
         d.get("false_failed").is_none() || d["false_failed"].is_null(),
         "an honestly-failed unlanded run must not be flagged false-failed: {d}"
+    );
+}
+
+/// Regression for the llm-review consensus false positive (gemini + deepseek): a
+/// failed run whose worker branch is a trivial ancestor of source but committed
+/// NOTHING, with NO recorded `base_sha`, must NOT be flagged false-failed. Without
+/// a fork point the `landed` ancestry net reads such a branch as `git-verified`
+/// landed, which would wrongly tell the user to `run salvage` a branch with no
+/// work; the stricter `base_sha`-present burden of proof suppresses it.
+#[test]
+fn run_show_does_not_flag_never_advanced_branch_without_base_sha() {
+    let home = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    let repo_path = repo.path();
+    git(repo_path, &["init", "-q", "-b", "main"]);
+    git(repo_path, &["config", "user.email", "t@t"]);
+    git(repo_path, &["config", "user.name", "t"]);
+    std::fs::write(repo_path.join("f"), "base\n").unwrap();
+    git(repo_path, &["add", "f"]);
+    git(repo_path, &["commit", "-qm", "base"]);
+    // A worker branch that forked but committed NOTHING — a trivial ancestor of
+    // main. Then main advances so the branch is strictly behind but reachable.
+    git(repo_path, &["branch", "wt/raw"]);
+    std::fs::write(repo_path.join("g"), "more\n").unwrap();
+    git(repo_path, &["add", "g"]);
+    git(repo_path, &["commit", "-qm", "main advances"]);
+
+    // Seed WITHOUT a base_sha (None) — the ambiguous legacy/corrupt shape.
+    let run_id = new_run_id();
+    seed_raw_selfmerge_failed(home.path(), &run_id, repo_path, None, "wt/raw");
+
+    let v = run_show_json(&home, &run_id);
+    let d = &v["data"];
+    assert_eq!(d["status"], "failed");
+    assert!(
+        d.get("false_failed").is_none() || d["false_failed"].is_null(),
+        "a never-advanced branch with no fork point must not be flagged false-failed: {d}"
     );
 }
