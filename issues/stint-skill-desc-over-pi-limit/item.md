@@ -1,8 +1,8 @@
 ---
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 type: bug
-status: open
+status: in-progress
 priority: normal
 labels: [skill]
 ---

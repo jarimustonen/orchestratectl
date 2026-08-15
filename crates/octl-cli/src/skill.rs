@@ -3141,6 +3141,26 @@ mod tests {
         assert_eq!(parse_description(body), None);
     }
 
+    /// Every bundled skill's `description:` frontmatter must fit pi.dev's
+    /// 1024-*character* limit — pi warns on load past it and drops the
+    /// overflow, degrading skill selection (issue
+    /// `stint-skill-desc-over-pi-limit`). Counted in Unicode scalar values,
+    /// not bytes, because the descriptions carry multi-byte glyphs (ä, →).
+    #[test]
+    fn bundled_descriptions_fit_pi_char_limit() {
+        const PI_DESCRIPTION_LIMIT: usize = 1024;
+        for skill in SKILLS {
+            let desc = parse_description(skill.body)
+                .unwrap_or_else(|| panic!("skill {} has no description", skill.name));
+            let chars = desc.chars().count();
+            assert!(
+                chars <= PI_DESCRIPTION_LIMIT,
+                "skill {} description is {chars} chars (> {PI_DESCRIPTION_LIMIT} pi.dev limit)",
+                skill.name
+            );
+        }
+    }
+
     #[test]
     fn sha256_hex_is_deterministic_and_lowercase() {
         let a = sha256_hex(b"hello");
