@@ -2668,7 +2668,7 @@ fn terminalize_respawn_failure(
         drop(guard);
         return true;
     }
-    let data = json!({
+    let mut data = json!({
         "success": false,
         "failed": true,
         "cancelled": false,
@@ -2681,6 +2681,10 @@ fn terminalize_respawn_failure(
         "wrap_up_recommendations": [],
         "retry_attempts": attempt.saturating_sub(1),
     });
+    // Typed provenance (issue `typed-report-origin`): the supervisor synthesized
+    // this failure, so `classify` splits it to `Failed` from the origin, not a
+    // `reason`-string sniff.
+    octl_core::ReportOrigin::Supervisor.stamp(&mut data);
     let lock = guard.witness();
     let ok = match append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
         Ok(_) => true,
@@ -2771,6 +2775,9 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
         // told fact's own timestamp, useful for forensics.
         obj.insert("worker_exited_at".to_string(), json!(exit.at.to_rfc3339()));
     }
+    // Typed provenance (issue `typed-report-origin`): a supervisor-synthesized
+    // told-exit failure.
+    octl_core::ReportOrigin::Supervisor.stamp(&mut data);
     let lock = guard.witness();
     if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
         warn!(
@@ -3010,6 +3017,9 @@ fn synthesize_crash_backstop_failure(
             obj.insert("retry_attempts".to_string(), json!(retried));
         }
     }
+    // Typed provenance (issue `typed-report-origin`): the residual crash backstop
+    // is a supervisor-synthesized failure.
+    octl_core::ReportOrigin::Supervisor.stamp(&mut data);
     let lock = guard.witness();
     if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {
         warn!(

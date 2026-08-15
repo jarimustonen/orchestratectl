@@ -371,7 +371,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // `--report-file` is rejected without having already merged. The report
     // is only submitted after a clean merge; here we just validate its shape
     // and stamp the `via: "explicit-merge"` marker.
-    let report = build_report(
+    let mut report = build_report(
         args.report_file.as_deref(),
         branch,
         effective_source.as_deref(),
@@ -496,6 +496,18 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     // the merge already landed) re-uses the same key and returns the prior
     // seq instead of double-appending. The merge itself is also a clean
     // no-op on retry (the branch is already merged, worktree may be gone).
+    // Stamp the typed report origin (issue `typed-report-origin`): `run merge` is
+    // the sole authority for a `RunMerge` origin, carrying the transaction's
+    // immutable OIDs for provenance when a transaction was recorded (absent only on
+    // the legacy unguarded path — no concrete source branch / stubbed git). This is
+    // parallel to the `via` marker `build_report` already stamped; the origin is the
+    // higher-fidelity signal `supervise::outcome::classify` now prefers.
+    octl_core::ReportOrigin::RunMerge {
+        op_id: merge_start.as_ref().map(|h| h.op_id.clone()),
+        worker_oid: merge_start.as_ref().map(|h| h.worker_oid.clone()),
+    }
+    .stamp(&mut report);
+
     let idem_key = format!("explicit-merge:{run_id}:{node_id}");
     let result = append_and_apply_event(
         &paths,
@@ -716,6 +728,9 @@ struct MergeStartHandle {
     /// The source ref OID recorded before the merge — the compare half of the
     /// compare-and-swap, forwarded to merge.sh.
     expected_source_oid: String,
+    /// The worker tip OID the merge integrates — stamped into the terminal
+    /// report's typed `RunMerge` origin for provenance (issue `typed-report-origin`).
+    worker_oid: String,
 }
 
 /// Record the merge transaction (`merge.started`) BEFORE the git mutation, so a
@@ -766,7 +781,7 @@ fn record_merge_start(
         source_branch: source_branch.to_string(),
         worker_branch: worker_branch.to_string(),
         expected_source_oid: expected_source_oid.clone(),
-        worker_oid,
+        worker_oid: worker_oid.clone(),
         base_sha: node.base_sha.clone(),
         driver_pid: Some(pid as i32),
         driver_pid_start_secs: crate::supervise::watchdog::pid_start_time(pid),
@@ -793,6 +808,7 @@ fn record_merge_start(
     Ok(Some(MergeStartHandle {
         op_id: txn.op_id,
         expected_source_oid,
+        worker_oid,
     }))
 }
 

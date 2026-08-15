@@ -177,6 +177,23 @@ not an interpretation of signal combinations:
 `cancel` explicitly preserves work (never a teardown authorization) — closes the critique
 gap that an implementer might read `cancel` as delete.
 
+**Typed report origin (issue `typed-report-origin`, follow-up to A6).** The A6 table
+above still classified rows by sniffing string conventions on the terminal
+`node.report`: `via: "explicit-merge"` (merge) and `reason.starts_with("agent-")` +
+a hard-coded reason list (supervisor failure vs blocked handoff). Those conflate the
+report's *author* with its *content* and misclassify silently when a new supervisor
+reason is added. A typed `ReportOrigin` (`octl_core::report`) is now stamped on the
+event by the path that appends it — `run merge`/its recovery stamps
+`RunMerge{op_id, worker_oid}` (the SOLE merge authority; an agent `node report` is
+normalized to `Agent`, so it can never assert a merge origin), the supervisor stamps
+`Supervisor` on every synthesized failure, an agent self-submission is `Agent`.
+`TerminalOutcome::classify` / `is_supervisor_failure` read the typed origin when
+present and fall back to the legacy `via`/`reason` sniff only when it is ABSENT, so
+old on-disk runs classify exactly as before while new runs no longer depend on the
+string conventions. Merge authorization stays tied to the run-merge path exactly as
+the `via` marker did — the typed origin is a parallel, higher-fidelity signal, not a
+new trust boundary, and teardown policy is unchanged (blocked/failed both preserve).
+
 ### 2.7 Why not the protocol now (and why 0.2.1)
 
 The protocol model (A+C: worker self-reports `spawned→working→merging→merged|blocked|

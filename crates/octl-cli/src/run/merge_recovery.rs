@@ -440,7 +440,7 @@ fn worker_landed(
 /// transaction. Mirrors the minimal report `run merge` synthesizes (a clean
 /// merge is a success), plus a note that it was recovered.
 fn completion_report(txn: &MergeTxn) -> Value {
-    let report = json!({
+    let mut report = json!({
         "success": true,
         "summary": format!(
             "recovered crashed merge of {} into {} (op {})",
@@ -448,6 +448,14 @@ fn completion_report(txn: &MergeTxn) -> Value {
         ),
         "via": VIA_EXPLICIT_MERGE,
     });
+    // Recovery completes the SAME run-merge transaction, so it stamps the same
+    // typed `RunMerge` origin the live merge path would have (issue
+    // `typed-report-origin`), carrying the transaction's immutable OIDs.
+    octl_core::ReportOrigin::RunMerge {
+        op_id: Some(txn.op_id.clone()),
+        worker_oid: Some(txn.worker_oid.clone()),
+    }
+    .stamp(&mut report);
     // Validate the §7.3 shape UNCONDITIONALLY (not `debug_assert!`) so a future
     // edit to this constant-shaped payload cannot silently append an invalid report
     // in a release build (/llm-review finding). It never fails at runtime today.

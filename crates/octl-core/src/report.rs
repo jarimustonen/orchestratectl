@@ -11,9 +11,91 @@
 //! Errors are domain-typed ([`ReportValidationError`]); the CLI maps them
 //! to its `CliError` envelope at the boundary.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::schema::Kind;
+
+/// The report-payload key under which a typed [`ReportOrigin`] is serialized
+/// (issue `typed-report-origin`).
+pub const REPORT_ORIGIN_KEY: &str = "origin";
+
+/// The typed provenance of a `node.report` — WHO authored it (issue
+/// `typed-report-origin`).
+///
+/// Before this field, `supervise::outcome` split a terminal report's outcome by
+/// sniffing string conventions: a `reason` that `starts_with("agent-")` or is one
+/// of a hard-coded set meant "supervisor failure", and `via: "explicit-merge"`
+/// from *any* author meant "merged". Those conventions are brittle (a new
+/// supervisor reason silently misclassifies) and conflate the report's AUTHOR with
+/// its content. `ReportOrigin` records the author explicitly on the event, so the
+/// outcome table can read a typed fact instead of pattern-matching prose.
+///
+/// The origin is stamped by the code path that appends the report, never accepted
+/// from an untrusted payload: `run merge` stamps [`ReportOrigin::RunMerge`] (the
+/// SOLE merge authority — an agent's `node report` cannot assert it; that path
+/// normalizes any supplied origin back to [`ReportOrigin::Agent`]), the supervisor
+/// stamps [`ReportOrigin::Supervisor`] on every report it synthesizes, and an
+/// agent self-submission is [`ReportOrigin::Agent`]. This keeps merge authorization
+/// tied to the run-merge path exactly as the legacy `via` marker did — the typed
+/// origin is a parallel, higher-fidelity signal, not a new trust boundary.
+///
+/// Serialized under [`REPORT_ORIGIN_KEY`] with an internal `kind` tag, e.g.
+/// `{"kind": "agent"}`, `{"kind": "supervisor"}`,
+/// `{"kind": "run-merge", "op_id": "…", "worker_oid": "…"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ReportOrigin {
+    /// The worker agent authored this report itself — a `node report`
+    /// self-submission (a success handoff, or a blocked `success: false` handoff).
+    Agent,
+    /// The supervisor/launcher synthesized this report: a told worker-exit
+    /// failure, the crash backstop, or a re-spawn-exhausted failure.
+    Supervisor,
+    /// Stamped by the `run merge` transaction (or its crash recovery) — the ONLY
+    /// authority for a merge/success outcome. The immutable transaction OIDs are
+    /// carried for provenance/forensics; they are absent only on the legacy
+    /// unguarded merge path (no concrete source branch / stubbed git) where no
+    /// transaction was recorded, but the discriminant alone still identifies the
+    /// report as a genuine `run merge`.
+    RunMerge {
+        /// The merge transaction's `op_id`, when a transaction was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op_id: Option<String>,
+        /// The worker tip OID the merge integrated, when a transaction was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_oid: Option<String>,
+    },
+}
+
+impl ReportOrigin {
+    /// Read the typed origin from a report payload, or `None` when the field is
+    /// absent (a legacy report written before this field existed) or malformed.
+    ///
+    /// A malformed `origin` is treated as absent rather than an error: the outcome
+    /// classifier falls back to its conservative legacy string-sniffing path, so a
+    /// corrupt/hand-edited origin can never *fabricate* a more-authoritative
+    /// outcome than the legacy markers already imply.
+    #[must_use]
+    pub fn from_report(report: &Value) -> Option<Self> {
+        let raw = report.get(REPORT_ORIGIN_KEY)?;
+        serde_json::from_value(raw.clone()).ok()
+    }
+
+    /// Stamp this origin into a report payload under [`REPORT_ORIGIN_KEY`],
+    /// overwriting any existing value. A no-op if `report` is not a JSON object
+    /// (callers always pass an object — the §7.3 validator rejects non-objects
+    /// before this point).
+    pub fn stamp(&self, report: &mut Value) {
+        if let Some(obj) = report.as_object_mut() {
+            // Serializing a tagged enum with only `Option::None` extra fields
+            // yields a plain object, so this never fails for these variants.
+            if let Ok(v) = serde_json::to_value(self) {
+                obj.insert(REPORT_ORIGIN_KEY.to_string(), v);
+            }
+        }
+    }
+}
 
 /// A §7.3 report payload failed structural validation.
 ///
@@ -569,6 +651,98 @@ mod tests {
             validate_report_payload(&v),
             Err(ReportValidationError::CancelledRequiresReason)
         ));
+    }
+
+    // --- ReportOrigin (issue `typed-report-origin`) ---
+
+    #[test]
+    fn report_origin_round_trips_through_a_report() {
+        let cases = [
+            ReportOrigin::Agent,
+            ReportOrigin::Supervisor,
+            ReportOrigin::RunMerge {
+                op_id: Some("op-123".into()),
+                worker_oid: Some("deadbeef".into()),
+            },
+            ReportOrigin::RunMerge {
+                op_id: None,
+                worker_oid: None,
+            },
+        ];
+        for origin in cases {
+            let mut report = json!({ "success": true });
+            origin.stamp(&mut report);
+            assert_eq!(
+                ReportOrigin::from_report(&report),
+                Some(origin.clone()),
+                "round-trip: {origin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn report_origin_serializes_with_kind_tag() {
+        let mut report = json!({ "success": true });
+        ReportOrigin::Agent.stamp(&mut report);
+        assert_eq!(report["origin"], json!({ "kind": "agent" }));
+
+        let mut merge = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: Some("op-9".into()),
+            worker_oid: Some("abc123".into()),
+        }
+        .stamp(&mut merge);
+        assert_eq!(
+            merge["origin"],
+            json!({ "kind": "run-merge", "op_id": "op-9", "worker_oid": "abc123" })
+        );
+
+        // A bare run-merge (legacy unguarded path) omits the null OID fields.
+        let mut bare = json!({ "success": true });
+        ReportOrigin::RunMerge {
+            op_id: None,
+            worker_oid: None,
+        }
+        .stamp(&mut bare);
+        assert_eq!(bare["origin"], json!({ "kind": "run-merge" }));
+    }
+
+    #[test]
+    fn report_origin_absent_or_malformed_is_none() {
+        // A legacy report with no origin field.
+        assert_eq!(ReportOrigin::from_report(&json!({ "success": true })), None);
+        // A malformed origin is treated as absent (conservative fallback), never
+        // an error that could brick classification.
+        assert_eq!(
+            ReportOrigin::from_report(&json!({ "origin": "not-an-object" })),
+            None
+        );
+        assert_eq!(
+            ReportOrigin::from_report(&json!({ "origin": { "kind": "bogus" } })),
+            None
+        );
+    }
+
+    #[test]
+    fn report_origin_stamp_overwrites_a_supplied_value() {
+        // The enforcement `node report` relies on: stamping Agent discards any
+        // caller-supplied merge/supervisor origin.
+        let mut report = json!({
+            "success": true,
+            "origin": { "kind": "run-merge", "op_id": "spoofed" }
+        });
+        ReportOrigin::Agent.stamp(&mut report);
+        assert_eq!(
+            ReportOrigin::from_report(&report),
+            Some(ReportOrigin::Agent)
+        );
+    }
+
+    #[test]
+    fn report_origin_stamp_on_non_object_is_noop() {
+        let mut not_obj = json!([1, 2, 3]);
+        ReportOrigin::Agent.stamp(&mut not_obj);
+        assert_eq!(not_obj, json!([1, 2, 3]));
     }
 
     #[test]

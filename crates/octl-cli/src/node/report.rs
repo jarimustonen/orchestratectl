@@ -64,7 +64,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     };
 
     let bytes = read_capped(&args.from_file)?;
-    let data: Value = serde_json::from_slice(&bytes).map_err(|e| {
+    let mut data: Value = serde_json::from_slice(&bytes).map_err(|e| {
         CliError::user(
             "from_file_invalid_json",
             format!("parse {}: {}", args.from_file.display(), e),
@@ -73,6 +73,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     })?;
 
     validate_report_payload(&data).map_err(map_report_validation_error)?;
+
+    // Normalize the typed report origin to `Agent` (issue `typed-report-origin`).
+    // A `node report` is always an agent self-submission, so any caller-supplied
+    // `origin` is discarded and overwritten — an agent must NOT be able to assert a
+    // `RunMerge` (merge authorization) or `Supervisor` origin. This keeps merge
+    // authorization tied to the `run merge` path, which stamps `RunMerge` itself.
+    normalize_agent_origin(&mut data);
 
     let root = crate::home::root_dir()?;
     let paths = run_paths_from_cli_arg(&root, &run_id)?;
@@ -210,6 +217,15 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
     Ok(buf)
 }
 
+/// Overwrite any caller-supplied `origin` with the typed [`Agent`] origin (issue
+/// `typed-report-origin`). A `node report` is always an agent self-submission; a
+/// merge/supervisor origin must never be assertable from an untrusted payload.
+///
+/// [`Agent`]: octl_core::ReportOrigin::Agent
+fn normalize_agent_origin(data: &mut Value) {
+    octl_core::ReportOrigin::Agent.stamp(data);
+}
+
 /// Map a domain [`ReportValidationError`] to the CLI's `schema_violation`
 /// envelope. The validator itself lives in `octl_core::report` so the
 /// supervisor can reuse it (handoff D3); this is the CLI-boundary
@@ -302,5 +318,32 @@ mod tests {
         let err = validate(&v).unwrap_err();
         assert_eq!(err.code, "schema_violation");
         assert!(err.expected.is_none());
+    }
+
+    // --- typed origin normalization (issue `typed-report-origin`) ---
+
+    #[test]
+    fn agent_origin_is_stamped_on_a_plain_report() {
+        let mut v = json!({"success": false, "summary": "blocked on X"});
+        normalize_agent_origin(&mut v);
+        assert_eq!(
+            octl_core::ReportOrigin::from_report(&v),
+            Some(octl_core::ReportOrigin::Agent)
+        );
+    }
+
+    #[test]
+    fn a_caller_supplied_merge_origin_is_overwritten_to_agent() {
+        // Security: an agent must not be able to assert a merge origin. Any supplied
+        // origin is discarded in favor of `Agent`.
+        let mut v = json!({
+            "success": true,
+            "origin": { "kind": "run-merge", "op_id": "spoofed", "worker_oid": "deadbeef" }
+        });
+        normalize_agent_origin(&mut v);
+        assert_eq!(
+            octl_core::ReportOrigin::from_report(&v),
+            Some(octl_core::ReportOrigin::Agent)
+        );
     }
 }
