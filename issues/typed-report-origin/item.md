@@ -8,6 +8,8 @@ epic: lifecycle-architecture-review
 commits:
 - hash: 7c5a1a8
   summary: 'feat(report): typed node.report origin instead of string sniffing'
+- hash: f695979
+  summary: 'fix(outcome): don''t downgrade a malformed origin to the legacy via path'
 ---
 
 # Type node.report provenance instead of reason/via string sniffing
