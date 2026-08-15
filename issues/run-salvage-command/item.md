@@ -3,13 +3,16 @@ created: 2026-07-26
 updated: 2026-08-15
 type: feature
 reporter: claude-code
-status: in-progress
+status: done
 priority: normal
 related: ['@agent-death-strands-recoverable-work']
 labels: [rescope-0.2]
 commits:
 - hash: '8004943'
   summary: add fenced manual run salvage (A3)
+- hash: bf1be1c
+  summary: apply /llm-review fence-safety findings
+closed: 2026-08-15
 ---
 
 # orchestratectl run salvage: recover a dead agent's stranded work
