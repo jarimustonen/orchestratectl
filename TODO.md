@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: thin-supervisor-build (0.2 EXECUTION — the SUBTRACTIVE CUTS ARE COMPLETE as of 2026-08-14b: pipeline/floor + harness-heavy (cut-pipeline-floor-harness-heavy) AND run KINDS + mid-run discussion/spinoff machinery (cut-run-kinds-discussion-machinery) both LANDED, integrated-gate green, local binary redeployed doctor 849/0/0. NEXT = the thin-supervisor BUILD (migration sketch step 2+): A1 exit-status launcher shim / A2 merge-transaction recovery / A6 typed outcome table / A3 fenced manual resume-finish skill (= run-salvage-command) / A5 richer run show + run cancel --node / the --interactive flag. NOT YET FILED — file the granular build issues at the next /stint-start, then execute behind the integrated gate. This is BUILD not delete → still touches supervise/* (hot cluster) so sequence within Lane A. After the build: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: thin-exit-status-launcher (0.2 EXECUTION — granular thin-supervisor build issues filed 2026-08-15. Sequence the hot Lane A build: A1 exit-status launcher shim → A2 merge-transaction recovery → A6 typed outcome table → A5 attention-required run surface → A3 fenced manual resume-finish skill (= run-salvage-command) → explicit --interactive flag. This is BUILD not delete → still touches supervise/* plus events/reducer/schema/run DTOs, so keep it serialized behind the integrated gate. After the build: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -201,8 +201,13 @@ Phase 2 — COMPLETE (2026-08-13): design.md (facilitated /llm-workshop + 3-mode
 Phase 3 — COMPLETE (2026-08-13): arch-decision-rearchitect-vs-harden → ADR docs/decisions/0001; re-triaged all Lane A+E (9 obsoleted). EXECUTION now runs as the cuts below (Lane B pipeline cut = step 1).
 
 LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and-fix / defer-to-0.2.1; the 9 obsoleted lines dropped)
+  ▶ thin-exit-status-launcher               (A1 — launcher shim records real worker exit status; first thin-supervisor build issue)
+    merge-transaction-recovery              after thin-exit-status-launcher (A2 — OID-based run merge transaction recovery)
+    typed-supervisor-outcomes               after merge-transaction-recovery (A6 — explicit terminal/non-terminal outcome table)
+    attention-required-run-surface          after typed-supervisor-outcomes (A5 — run wait/show/list attention-required visibility + node cancel surface)
+    run-salvage-command                     after attention-required-run-surface (A3 — fenced manual resume/finish skill; existing issue re-scoped by ADR)
+    interactive-flag                        after typed-supervisor-outcomes (explicit --interactive how-run state; sequence in Lane A hot cluster)
     merge-report-schema-lenience            (FAST-TRACK keep per ADR — advisory-field typo makes `run merge` reject the whole report; low-risk merge-first-then-validate)
-    run-salvage-command                     (→ the manual resume/finish skill A3; part of the thin-supervisor build)
     peculiarly-cheerful-mine                (DEFER-0.2.1 — supervisor lease/heartbeat, pi.dev self-report plugin)
     uncommonly-fuzzy-swing                  (DEFER-0.2.1 — spinoff blocked-on-user-input propagation)
     supervisor-stall-detection              (DEFER-0.2.1 — supervisor-liveness bucket)
