@@ -978,6 +978,166 @@ fn cancel_does_not_over_report_already_terminal_node() {
     );
 }
 
+// --- per-node `run cancel --node <id>` (fan-out selectivity) ---------------
+
+/// Read one node's status from disk via `node show`.
+fn node_status_str(home: &TempDir, run_id: &str, node_id: &str) -> String {
+    let v = run_ok(bin(home).args(["--output", "json", "node", "show", run_id, node_id]));
+    v["data"]["status"].as_str().expect("status string").into()
+}
+
+#[test]
+fn cancel_node_settles_one_child_and_leaves_run_and_siblings_live() {
+    // The fan-out headline: `run cancel --node n-0002` settles ONLY that child,
+    // preserves it Cancelled, and leaves the run + siblings untouched and
+    // non-terminal — no `run.status` is appended while a sibling is still live.
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "batch");
+    add_node(&home, &run_id, "n-0001");
+    add_node(&home, &run_id, "n-0002");
+    add_node(&home, &run_id, "n-0003");
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0002", "--note", "stuck",
+    ]));
+    assert_eq!(v["data"]["node"], "n-0002");
+    assert_eq!(v["data"]["cancelled"], true);
+    assert_eq!(v["data"]["already_terminal"], false);
+    // The payload echoes the resolved full run id, not a prefix.
+    assert_eq!(v["data"]["run_id"], run_id.as_str());
+
+    // Only n-0002 settled; siblings still live; the run is NOT terminalized.
+    assert_eq!(node_status_str(&home, &run_id, "n-0002"), "cancelled");
+    assert_eq!(node_status_str(&home, &run_id, "n-0001"), "pending");
+    assert_eq!(node_status_str(&home, &run_id, "n-0003"), "pending");
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(
+        show["data"]["manifest"]["status"], "pending",
+        "per-node cancel must not terminalize the run while siblings are live"
+    );
+
+    // The synthesized report is the branch-preserving cancel shape.
+    let node = run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0002"]));
+    assert_eq!(node["data"]["last_report"]["cancelled"], true);
+    assert_eq!(node["data"]["last_report"]["success"], false);
+    assert_eq!(node["data"]["last_report"]["reason"], "stuck");
+}
+
+#[test]
+fn cancel_node_duplicate_is_idempotent() {
+    // A duplicate per-node cancel is a clean no-op: the second call reports the
+    // node already-terminal and appends no second report.
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "dup");
+    add_node(&home, &run_id, "n-0001");
+    add_node(&home, &run_id, "n-0002");
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
+    ]));
+    assert_eq!(v["data"]["cancelled"], true);
+    assert_eq!(v["data"]["already_terminal"], false);
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
+    ]));
+    assert_eq!(v["data"]["cancelled"], false);
+    assert_eq!(v["data"]["already_terminal"], true);
+    assert_eq!(node_status_str(&home, &run_id, "n-0001"), "cancelled");
+}
+
+#[test]
+fn cancel_node_on_already_done_node_is_noop() {
+    // Cancelling a node that finished on its own is an already-terminal no-op,
+    // never an over-write of its success.
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "settled");
+    add_node(&home, &run_id, "n-0001");
+    node_report(&home, &run_id, "n-0001", json!({ "success": true }));
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
+    ]));
+    assert_eq!(v["data"]["cancelled"], false);
+    assert_eq!(v["data"]["already_terminal"], true);
+    assert_eq!(node_status_str(&home, &run_id, "n-0001"), "done");
+}
+
+#[test]
+fn cancel_node_unknown_id_is_node_not_found() {
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "no-such-node");
+    add_node(&home, &run_id, "n-0001");
+    let (code, v) = run_fail(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0009",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "node_not_found");
+    assert_eq!(v["error"]["invalid_value"], "n-0009");
+}
+
+#[test]
+fn cancel_node_malformed_id_is_rejected_before_side_effects() {
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "bad-node-id");
+    add_node(&home, &run_id, "n-0001");
+    let (code, _v) = run_fail(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "not-a-node",
+    ]));
+    assert_eq!(code, 1);
+    // The live node is untouched — validation rejected the id before any lock.
+    assert_eq!(node_status_str(&home, &run_id, "n-0001"), "pending");
+}
+
+#[test]
+fn cancel_node_missing_run_is_run_not_found() {
+    let home = TestHome::new();
+    let (code, v) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "cancel",
+        "01000000000000000000000000",
+        "--node",
+        "n-0001",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(v["error"]["code"], "run_not_found");
+}
+
+#[test]
+fn cancel_each_node_keeps_run_live_until_last_settles() {
+    // Cancelling every child one at a time keeps the run non-terminal at every
+    // step — per-node cancel never appends a `run.status`. Terminalizing the
+    // all-cancelled batch is the supervisor's rollup job, exercised end-to-end
+    // (with a bounded `supervise --once`) in `supervise_gates.rs`.
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "cancel-all");
+    add_node(&home, &run_id, "n-0001");
+    add_node(&home, &run_id, "n-0002");
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0001",
+    ]));
+    assert_eq!(v["data"]["cancelled"], true);
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(
+        show["data"]["manifest"]["status"], "pending",
+        "run stays live while n-0002 is still live"
+    );
+
+    let v = run_ok(bin(&home).args([
+        "--output", "json", "run", "cancel", &run_id, "--node", "n-0002",
+    ]));
+    assert_eq!(v["data"]["cancelled"], true);
+    // Even after the LAST node is cancelled, per-node cancel itself never
+    // terminalizes the run — the supervisor rollup does.
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert_eq!(show["data"]["manifest"]["status"], "pending");
+    assert_eq!(node_status_str(&home, &run_id, "n-0001"), "cancelled");
+    assert_eq!(node_status_str(&home, &run_id, "n-0002"), "cancelled");
+}
+
 /// A run recorded under a kind removed in the 0.2 cut (e.g. `code`) still
 /// decodes read-only (`Kind::Unknown`) so `run list` / `run show` REPORT it
 /// (ADR §D7 — the on-disk evidence corpus is never faulted or deleted), but

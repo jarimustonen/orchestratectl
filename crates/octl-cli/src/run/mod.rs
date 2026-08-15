@@ -162,10 +162,19 @@ pub enum RunAction {
     },
     /// Show one run's manifest and counters.
     Show { run_id: String },
-    /// Cancel a run: synthesize terminal `node.report` for non-terminal
-    /// nodes, emit `run.status: cancelled`. Idempotent.
+    /// Cancel a run (all live nodes → `run.status: cancelled`), or a single
+    /// live node with `--node <id>` (branch-preserving; the run stays live
+    /// while siblings run and the supervisor rolls it up once every node
+    /// settles). Idempotent.
     Cancel {
         run_id: String,
+        /// Cancel exactly ONE live node (e.g. `n-0002`) instead of the whole
+        /// run — for unblocking a single stuck fan-out child without killing
+        /// the batch. The node's branch + worktree are preserved
+        /// (source-relative teardown); the run is NOT terminalized while other
+        /// nodes remain live.
+        #[arg(long)]
+        node: Option<String>,
         #[arg(long)]
         note: Option<String>,
     },
@@ -323,7 +332,9 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             warnings,
         }),
         RunAction::Show { run_id } => show::run(&run_id, spec, warnings),
-        RunAction::Cancel { run_id, note } => cancel::run(&run_id, note.as_deref(), spec, warnings),
+        RunAction::Cancel { run_id, node, note } => {
+            cancel::run(&run_id, node.as_deref(), note.as_deref(), spec, warnings)
+        }
         RunAction::Merge {
             run_id,
             source,

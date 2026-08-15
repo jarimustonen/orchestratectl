@@ -81,7 +81,7 @@ expression: value
     "subcommands": [
       {
         "command": "orchestratectl run cancel",
-        "about": "Cancel a run: synthesize terminal `node.report` for non-terminal nodes, emit `run.status: cancelled`. Idempotent",
+        "about": "Cancel a run (all live nodes → `run.status: cancelled`), or a single live node with `--node <id>` (branch-preserving; the run stays live while siblings run and the supervisor rolls it up once every node settles). Idempotent",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

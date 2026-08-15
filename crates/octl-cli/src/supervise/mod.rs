@@ -1179,7 +1179,9 @@ pub fn dispatch(
         if let Some(status) = cleanup::rollup_status(&paths, children_all_terminal) {
             let status_str = match status {
                 Status::Done => "done",
-                // Failed is the only other value `rollup_status` returns.
+                Status::Cancelled => "cancelled",
+                // Done/Cancelled/Failed are the only values `rollup_status`
+                // returns; anything else falls back to failed.
                 _ => "failed",
             };
             let key = format!("supervisor-rollup:{run_id}:run-status");

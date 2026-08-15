@@ -149,16 +149,10 @@ pub fn cancel_run_unlocked(
     }
     let run_was_already_cancelled = manifest.status == Status::Cancelled;
 
-    // Normalize the cancel reason ONCE up front. An empty or whitespace-only
-    // `--note` would otherwise flow into the synthesized report as `reason: ""`,
-    // which the reducer rejects (`CancelledRequiresReason`) — aborting the whole
-    // transaction mid-loop and, since retries reuse the same bad note, leaving
-    // the run permanently un-cancellable. A blank note falls back to the
-    // default.
-    let reason = note
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("cancelled by user");
+    // Normalize the cancel reason ONCE up front (see [`normalize_cancel_reason`]):
+    // a blank `--note` would flow in as `reason: ""`, which the reducer rejects
+    // and would brick the run's cancellability. It falls back to the default.
+    let reason = normalize_cancel_reason(note);
 
     // One streaming replay pass over the source-of-truth log: the authoritative
     // node set *and each node's current status* (both immune to the projection
@@ -262,6 +256,158 @@ pub fn cancel_run_unlocked(
         nodes_cancelled,
         nodes_already_terminal,
     })
+}
+
+/// Outcome of a [`cancel_node`] transaction — a single-node, branch-preserving
+/// cancel for one live fan-out child.
+///
+/// Unlike [`CancelOutcome`], this **never** carries a run-level decision: per-node
+/// cancel deliberately leaves the run non-terminal while any sibling is still
+/// live. Terminalizing the run once every node settles is the supervisor's
+/// rollup job (`supervise::cleanup::rollup_status`), so a stuck child can be
+/// unblocked without killing the batch (design §2.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeCancelOutcome {
+    /// The node this call targeted (fully resolved).
+    pub node_id: NodeId,
+    /// True when this call ensured the node carries a terminal cancel in the
+    /// source-of-truth log — either by synthesizing and durably appending a fresh
+    /// cancel `node.report`, or by re-folding a prior interrupted cancel's
+    /// already-logged event (crash convergence, no duplicate append). False when
+    /// the node was already terminal on entry (see `already_terminal`).
+    pub cancelled: bool,
+    /// True when the node was *already* terminal on entry (merged, failed, or a
+    /// prior cancel already folded) — a clean idempotent no-op, never a fresh
+    /// cancel. Mutually exclusive with `cancelled`.
+    pub already_terminal: bool,
+}
+
+/// Cancel exactly ONE live node of a run, preserving its branch + worktree.
+/// Acquires the run's [`RunLock`] once and delegates to
+/// [`cancel_node_unlocked`].
+///
+/// This is the fan-out selectivity primitive (design §2.5, issue
+/// `per-node-run`): where [`cancel_run`] settles every live node and rolls the
+/// run up to `Cancelled` in one shot, this settles a single named node and
+/// **appends no `run.status`** — the run stays live while its siblings run, and
+/// the supervisor's rollup terminalizes the batch once the last node settles.
+/// The synthesized terminal cancel `node.report` classifies as
+/// [`Cancelled`](crate::Status) → `Teardown::SourceRelative`, so invariant 5
+/// preserves the node's committed work rather than force-deleting it.
+///
+/// # Errors
+///
+/// - [`Error::NodeNotFound`] if `node_id` names no node in the run's log.
+/// - I/O / corrupt-log errors from reading the manifest, replaying the log, or
+///   appending the report.
+pub fn cancel_node(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    note: Option<&str>,
+) -> Result<NodeCancelOutcome> {
+    RunLock::with_lock(paths, |lock| {
+        cancel_node_unlocked(lock, paths, node_id, note)
+    })
+}
+
+/// The locked body of [`cancel_node`]. The `lock: &LockedRun` witness proves the
+/// caller already holds the run's exclusive [`RunLock`], so the log replay, the
+/// convergence read, and the single report append share one critical section
+/// (it calls [`append_and_apply_unlocked`], never [`crate::append_and_apply_event`],
+/// which would deadlock by re-locking).
+pub fn cancel_node_unlocked(
+    lock: &LockedRun<'_>,
+    paths: &RunPaths,
+    node_id: &NodeId,
+    note: Option<&str>,
+) -> Result<NodeCancelOutcome> {
+    // One streaming replay pass over the source-of-truth log gives the
+    // authoritative node set *and* each node's log-derived status (both immune to
+    // the projection crash window), plus this run's already-logged cancel events
+    // so a prior interrupted cancel is re-folded, never duplicated.
+    let CancelLedger {
+        node_status,
+        prior_cancel,
+    } = read_cancel_ledger(paths)?;
+
+    // The log is authoritative for the node set: a node whose `node.created` was
+    // fsynced but whose projection write was crash-interrupted is still
+    // resolvable here (a `nodes/*.json` scan would miss it). A genuinely absent
+    // id is a caller error.
+    let log_status = node_status
+        .iter()
+        .find(|(nid, _)| nid == node_id)
+        .map(|(_, s)| *s)
+        .ok_or_else(|| Error::NodeNotFound {
+            node_id: node_id.as_str().to_owned(),
+        })?;
+
+    let key = node_cancel_key(&paths.run_id, node_id);
+
+    // Convergence path first: this run's cancel already logged a `node.report`
+    // for this node (a prior, possibly crash-interrupted, per-node or whole-run
+    // cancel). The log is identical whether that report's projection fold landed
+    // or not, so `read_node_opt` tells the two apart — an already-folded terminal
+    // projection is a clean no-op (already-terminal), while a crash-stranded
+    // still-live projection is converged by re-folding the already-logged event
+    // (no duplicate append).
+    if let Some(prior) = prior_cancel.get(&("node.report".to_owned(), key.clone())) {
+        if let Some(n) = read_node_opt(paths, node_id)? {
+            if n.status.is_terminal() {
+                return Ok(NodeCancelOutcome {
+                    node_id: node_id.clone(),
+                    cancelled: false,
+                    already_terminal: true,
+                });
+            }
+        }
+        apply_event(paths, prior)?;
+        return Ok(NodeCancelOutcome {
+            node_id: node_id.clone(),
+            cancelled: true,
+            already_terminal: false,
+        });
+    }
+
+    // No prior cancel for this node: the log is authoritative for liveness. A
+    // node the log replays as terminal — a natural success/failure, or a cancel
+    // logged outside this run's key namespace — is already settled and reported
+    // as such, even if a stale projection still reads live (the log wins).
+    if log_status.is_terminal() {
+        return Ok(NodeCancelOutcome {
+            node_id: node_id.clone(),
+            cancelled: false,
+            already_terminal: true,
+        });
+    }
+
+    let reason = normalize_cancel_reason(note);
+    let data = json!({
+        "success": false,
+        "cancelled": true,
+        "reason": reason,
+        "summary": "Node cancelled before agent reported.",
+        "discussion_items": [],
+        "spinoff_proposals": [],
+        "wrap_up_recommendations": []
+    });
+    append_and_apply_unlocked(lock, paths, "node.report", Some(node_id), Some(&key), data)?;
+    Ok(NodeCancelOutcome {
+        node_id: node_id.clone(),
+        cancelled: true,
+        already_terminal: false,
+    })
+}
+
+/// Normalize a `--note` into the terminal cancel report's `reason`. An empty or
+/// whitespace-only note would otherwise flow in as `reason: ""`, which the
+/// reducer rejects (`CancelledRequiresReason`) — aborting the transaction and,
+/// since a retry reuses the same bad note, leaving the node/run permanently
+/// un-cancellable. A blank note falls back to the default.
+fn normalize_cancel_reason(note: Option<&str>) -> &str {
+    note.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("cancelled by user")
 }
 
 /// Cancel-relevant facts replayed from `events.jsonl` in one streaming pass
@@ -1114,6 +1260,203 @@ mod tests {
                 .map(NodeId::as_str)
                 .collect::<Vec<_>>(),
             vec!["n-0002"],
+        );
+    }
+
+    // --- per-node cancel (`cancel_node`) -----------------------------------
+
+    #[test]
+    fn cancel_node_settles_one_node_and_leaves_the_run_and_siblings_live() {
+        // The fan-out headline: cancelling one live child settles ONLY that node,
+        // preserves it as Cancelled, and leaves the run + every sibling untouched
+        // and non-terminal — the supervisor's rollup (not this call) terminalizes
+        // the batch later.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 3);
+
+        let out = cancel_node(&paths, &nid("n-0002"), Some("stuck")).unwrap();
+        assert_eq!(out.node_id.as_str(), "n-0002");
+        assert!(out.cancelled);
+        assert!(!out.already_terminal);
+
+        assert_eq!(node_status(&paths, "n-0002"), Status::Cancelled);
+        assert_eq!(node_status(&paths, "n-0001"), Status::Pending);
+        assert_eq!(node_status(&paths, "n-0003"), Status::Pending);
+        assert!(
+            !crate::read_manifest(&paths).unwrap().status.is_terminal(),
+            "no run.status is appended by a per-node cancel while siblings are live"
+        );
+        // The synthesized report carries the branch-preserving cancel shape.
+        let report = crate::read_node(&paths, &nid("n-0002"))
+            .unwrap()
+            .last_report
+            .expect("cancel report recorded");
+        assert_eq!(report["cancelled"], true);
+        assert_eq!(report["success"], false);
+        assert_eq!(report["reason"], "stuck");
+    }
+
+    #[test]
+    fn cancel_node_unknown_id_is_node_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        let err = cancel_node(&paths, &nid("n-0009"), None).unwrap_err();
+        assert!(
+            matches!(err, Error::NodeNotFound { ref node_id } if node_id == "n-0009"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cancel_node_on_already_terminal_node_is_idempotent_noop() {
+        // A node that finished on its own (Done) is reported already-terminal,
+        // never freshly cancelled, and no cancel report is appended over its
+        // success.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        append_and_apply_event(
+            &paths,
+            "node.report",
+            Some(&nid("n-0001")),
+            None,
+            json!({ "success": true }),
+        )
+        .unwrap();
+
+        let out = cancel_node(&paths, &nid("n-0001"), None).unwrap();
+        assert!(!out.cancelled);
+        assert!(out.already_terminal);
+        assert_eq!(node_status(&paths, "n-0001"), Status::Done, "untouched");
+        assert_eq!(report_count(&paths, "n-0001"), 1, "no cancel over-write");
+    }
+
+    #[test]
+    fn cancel_node_twice_does_not_duplicate_the_report() {
+        // Idempotent duplicate per-node cancel: the second call converges/no-ops
+        // and never appends a second cancel `node.report`.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+
+        let first = cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+        assert!(first.cancelled);
+        assert_eq!(report_count(&paths, "n-0001"), 1);
+
+        let second = cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+        assert!(!second.cancelled);
+        assert!(second.already_terminal);
+        assert_eq!(
+            report_count(&paths, "n-0001"),
+            1,
+            "a duplicate per-node cancel must not append a second report"
+        );
+        assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
+    }
+
+    #[test]
+    fn cancel_node_converges_a_crash_stranded_prior_cancel_without_duplicating() {
+        // Crash-retry: a prior cancel fsynced the node's cancel `node.report`
+        // (with the deterministic key) but crashed before folding the projection,
+        // so the node still reads live. A re-cancel re-folds the logged event
+        // (node → Cancelled) without appending a second report.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1); // run.created(1) + node.created(2)
+        let node = nid("n-0001");
+        let key = node_cancel_key(&paths.run_id, &node);
+        RunLock::with_lock(&paths, |lock| {
+            append_event_with_seq(
+                lock,
+                &paths,
+                3,
+                "node.report",
+                Some(&node),
+                Some(&key),
+                json!({ "success": false, "cancelled": true, "reason": "x" }),
+            )
+        })
+        .unwrap();
+        assert_eq!(node_status(&paths, "n-0001"), Status::Pending);
+
+        let out = cancel_node(&paths, &node, None).unwrap();
+        assert!(out.cancelled, "the stranded cancel is converged");
+        assert!(!out.already_terminal);
+        assert_eq!(report_count(&paths, "n-0001"), 1, "no duplicate append");
+        assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
+    }
+
+    #[test]
+    fn cancel_node_resolves_a_node_with_a_missing_projection() {
+        // The log — not the `nodes/*.json` scan — is authoritative for the node
+        // set: a node whose projection write was crash-interrupted is still
+        // cancellable (and its cancel report lands so a rebuild reconstructs it
+        // Cancelled, not live).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        let n2 = nid("n-0002");
+        std::fs::remove_file(paths.node(&n2)).unwrap();
+        assert!(read_node_opt(&paths, &n2).unwrap().is_none());
+
+        let out = cancel_node(&paths, &n2, Some("stop")).unwrap();
+        assert!(out.cancelled);
+        // The source-of-truth log now carries the terminal cancel report, so a
+        // rebuild reconstructs the node Cancelled (its projection stays absent —
+        // the reducer folds a report without resurrecting a deleted projection,
+        // exactly as the whole-run cancel does).
+        assert_eq!(report_count(&paths, "n-0002"), 1);
+    }
+
+    #[test]
+    fn cancel_node_blank_note_falls_back_to_default_reason() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 1);
+        let out = cancel_node(&paths, &nid("n-0001"), Some("   ")).unwrap();
+        assert!(out.cancelled);
+        let report = crate::read_node(&paths, &nid("n-0001"))
+            .unwrap()
+            .last_report
+            .expect("cancel report recorded");
+        assert_eq!(report["reason"], "cancelled by user");
+    }
+
+    #[test]
+    fn cancel_node_takes_the_run_lock_exactly_once() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 3);
+        ACQUIRE_COUNT.with(|c| c.set(0));
+        let out = cancel_node(&paths, &nid("n-0002"), Some("x")).unwrap();
+        assert!(out.cancelled);
+        assert_eq!(
+            ACQUIRE_COUNT.with(std::cell::Cell::get),
+            1,
+            "per-node cancel must take the run lock exactly once"
+        );
+    }
+
+    #[test]
+    fn cancel_last_live_node_leaves_run_live_for_the_rollup() {
+        // Cancelling the final live node still appends NO run.status — the run
+        // stays non-terminal, and terminalizing it is the supervisor rollup's job
+        // (which sees every node Cancelled and rolls up). This asserts the
+        // division of labor the design mandates.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        cancel_node(&paths, &nid("n-0001"), Some("x")).unwrap();
+        let out = cancel_node(&paths, &nid("n-0002"), Some("x")).unwrap();
+        assert!(out.cancelled);
+        assert_eq!(node_status(&paths, "n-0001"), Status::Cancelled);
+        assert_eq!(node_status(&paths, "n-0002"), Status::Cancelled);
+        assert_ne!(
+            crate::read_manifest(&paths).unwrap().status,
+            Status::Cancelled,
+            "per-node cancel never terminalizes the run itself"
         );
     }
 }

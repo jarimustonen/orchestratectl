@@ -77,9 +77,18 @@ pub(crate) fn git_bin() -> String {
 /// Aggregate the terminal `run.status` a non-terminal run should record, or
 /// `None` when it is not yet complete.
 ///
-/// Returns `Some(Status::Done)` when the run has at least one node and every
-/// node is `Done`; `Some(Status::Failed)` when every node is terminal but at
-/// least one is `Failed`/`Cancelled`. Returns `None` when:
+/// Returns the aggregate terminal status once the run has at least one node and
+/// every node is terminal — a **three-way** classification (design §2.5,
+/// "rollup terminalizes the run cancelled/done/failed once every node is
+/// terminal"):
+/// - `Some(Status::Failed)` if any node genuinely `Failed` (a real failure
+///   dominates the batch outcome);
+/// - `Some(Status::Cancelled)` if no node failed but at least one was
+///   `Cancelled` (a deliberate per-node/whole-run cancel — nothing failed, but
+///   the batch did not fully complete; branch-preserving work is untouched);
+/// - `Some(Status::Done)` when every node is `Done`.
+///
+/// Returns `None` when:
 /// - the manifest is missing or already terminal (nothing to roll up),
 /// - any tracked child run is still non-terminal (`children_all_terminal` is
 ///   false) — a driver must not complete before its children,
@@ -90,7 +99,8 @@ pub(crate) fn git_bin() -> String {
 /// The caller appends the returned status as a `run.status` event under a
 /// deterministic idempotency key, so re-evaluating it every tick appends at
 /// most once and a concurrent `run cancel` (which freezes the manifest
-/// terminal) makes this a clean no-op.
+/// terminal) makes this a clean no-op. This is what terminalizes a fan-out
+/// batch after a per-node `run cancel --node` settles the last live child.
 pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<Status> {
     let manifest = read_manifest_opt(paths).ok().flatten()?;
     if manifest.status.is_terminal() {
@@ -104,16 +114,20 @@ pub fn rollup_status(paths: &RunPaths, children_all_terminal: bool) -> Option<St
         return None;
     }
     let mut any_failed = false;
+    let mut any_cancelled = false;
     for n in &nodes {
         match n.status {
             Status::Done => {}
-            Status::Failed | Status::Cancelled => any_failed = true,
+            Status::Failed => any_failed = true,
+            Status::Cancelled => any_cancelled = true,
             // Any live node means the run is not done yet.
             Status::Pending | Status::Running | Status::Blocked => return None,
         }
     }
     Some(if any_failed {
         Status::Failed
+    } else if any_cancelled {
+        Status::Cancelled
     } else {
         Status::Done
     })
@@ -3045,13 +3059,52 @@ mod tests {
     }
 
     #[test]
-    fn rollup_failed_when_a_node_is_cancelled() {
+    fn rollup_cancelled_when_every_node_is_cancelled() {
+        // A fan-out whose every child was cancelled (per-node or whole-run) rolls
+        // up to Cancelled — nothing failed, so `Failed` would misreport it.
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
-        bootstrap(&paths, 1);
+        bootstrap(&paths, 2);
         report(
             &paths,
             "n-0001",
+            json!({ "success": false, "cancelled": true, "reason": "x" }),
+        );
+        report(
+            &paths,
+            "n-0002",
+            json!({ "success": false, "cancelled": true, "reason": "x" }),
+        );
+        assert_eq!(rollup_status(&paths, true), Some(Status::Cancelled));
+    }
+
+    #[test]
+    fn rollup_cancelled_when_done_and_cancelled_mix_without_failure() {
+        // Some children merged, one was cancelled, none failed: the batch did not
+        // fully complete but nothing failed → Cancelled (not Done, not Failed).
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        report(&paths, "n-0001", json!({ "success": true }));
+        report(
+            &paths,
+            "n-0002",
+            json!({ "success": false, "cancelled": true, "reason": "x" }),
+        );
+        assert_eq!(rollup_status(&paths, true), Some(Status::Cancelled));
+    }
+
+    #[test]
+    fn rollup_failed_dominates_a_cancelled_node() {
+        // A genuine failure dominates: even alongside a cancelled node, the run
+        // rolls up to Failed.
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        bootstrap(&paths, 2);
+        report(&paths, "n-0001", json!({ "success": false }));
+        report(
+            &paths,
+            "n-0002",
             json!({ "success": false, "cancelled": true, "reason": "x" }),
         );
         assert_eq!(rollup_status(&paths, true), Some(Status::Failed));

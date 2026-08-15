@@ -169,6 +169,15 @@ back-compat.
 5. **Schema drift** — if `schema_version` does not match what this skill
    describes, stop and tell the user the skill is out of date with the
    installed binary.
+6. **Unblocking ONE stuck fan-out child** — cancel a whole run with
+   `orchestratectl run cancel <run-id>`; cancel a single live node with
+   `orchestratectl run cancel <run-id> --node <node-id>`. The per-node form
+   is branch-preserving (source-relative teardown — a child's committed
+   work is never force-deleted) and does NOT terminalize the run while
+   other nodes are still live: the supervisor rolls the run up
+   (`done | failed | cancelled`) only once every node has settled. Both
+   forms are idempotent — a duplicate cancel of an already-terminal
+   node/run reports it settled rather than erroring.
 
 ## Errors
 

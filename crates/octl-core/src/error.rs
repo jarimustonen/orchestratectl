@@ -18,6 +18,18 @@ pub enum Error {
         status: Status,
     },
 
+    /// A per-node [`cancel_node`](crate::cancel_node) named a node id the run's
+    /// event log never introduced (no `node.created`). The node set is derived
+    /// from the source-of-truth log — not the `nodes/*.json` projections — so a
+    /// node whose projection write was crash-interrupted is still resolvable;
+    /// this error means the id is genuinely absent, and the CLI maps it to a
+    /// `node_not_found` user error.
+    #[error("no node {node_id} in this run")]
+    NodeNotFound {
+        /// The rejected node id.
+        node_id: String,
+    },
+
     /// Filesystem I/O failure with the offending path attached for context.
     #[error("io error at {path}: {source}")]
     Io {

@@ -34,7 +34,10 @@ pub mod schema;
 #[cfg(test)]
 mod stress_tests;
 
-pub use cancel::{cancel_run, cancel_run_unlocked, CancelOutcome};
+pub use cancel::{
+    cancel_node, cancel_node_unlocked, cancel_run, cancel_run_unlocked, CancelOutcome,
+    NodeCancelOutcome,
+};
 pub use envelope::SCHEMA_VERSION;
 pub use error::{Error, Result};
 pub use events::{
