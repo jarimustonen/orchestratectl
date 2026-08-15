@@ -143,3 +143,90 @@ fn shim_rejects_unknown_run() {
         "expected run_not_found, got: {stderr}"
     );
 }
+
+#[test]
+fn shim_rejects_unknown_node() {
+    let home = TempDir::new().unwrap();
+    let _paths = seed_run(home.path());
+    // The run exists but the node does not — the shim must refuse, not launch a
+    // worker whose exit would fold to nothing (a `worker.exited` for an unknown
+    // node is a silent reducer no-op).
+    let out = bin(&home)
+        .args(["run-worker", RUN_ID, "n-9999", "--", "sh", "-c", "exit 0"])
+        .output()
+        .expect("spawn shim");
+    assert!(
+        !out.status.success(),
+        "an unknown node must fail, not launch"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("node_not_found"),
+        "expected node_not_found, got: {stderr}"
+    );
+}
+
+#[test]
+fn shim_records_a_told_failure_when_the_worker_cannot_launch() {
+    let home = TempDir::new().unwrap();
+    let paths = seed_run(home.path());
+    // The wrapped program does not exist → the worker cannot be launched at all.
+    let out = bin(&home)
+        .args([
+            "run-worker",
+            RUN_ID,
+            "n-0001",
+            "--",
+            "/nonexistent/orchestratectl-no-such-worker",
+        ])
+        .output()
+        .expect("spawn shim");
+    assert!(!out.status.success(), "a spawn failure exits non-zero");
+
+    // Crucially, a told FAILURE fact is still recorded — the supervisor must not
+    // have to fall back to pid-guessing for a worker that never started.
+    let ev = worker_exited_event(&paths);
+    assert_eq!(ev["data"]["exit_code"], 127);
+}
+
+#[test]
+fn shim_survives_sigterm_and_records_the_childs_true_exit() {
+    let home = TempDir::new().unwrap();
+    let paths = seed_run(home.path());
+
+    // The shim wraps a child that sleeps, then exits cleanly. We SIGTERM the SHIM
+    // while the child is still running: the shim must ignore it, keep waiting, and
+    // record the child's real clean exit (design.md §2.1 — the told fact must
+    // survive a foreground-group / teardown signal).
+    let mut child = bin(&home)
+        .args([
+            "run-worker",
+            RUN_ID,
+            "n-0001",
+            "--",
+            "sh",
+            "-c",
+            "sleep 2; exit 0",
+        ])
+        .spawn()
+        .expect("spawn shim");
+    let shim_pid = child.id().to_string();
+
+    // Give the shim time to install its signal-ignore and spawn the child.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let killed = Command::new("kill")
+        .args(["-TERM", &shim_pid])
+        .status()
+        .expect("send SIGTERM")
+        .success();
+    assert!(killed, "SIGTERM to the shim should be delivered");
+
+    let status = child.wait().expect("await shim");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the shim ignored SIGTERM, waited for the child, and propagated its clean exit"
+    );
+    let ev = worker_exited_event(&paths);
+    assert_eq!(ev["data"]["exit_code"], 0);
+}

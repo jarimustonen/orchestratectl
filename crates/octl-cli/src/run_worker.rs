@@ -21,16 +21,36 @@
 //! interactive TUI shares the pane exactly as an un-wrapped launch would, and it
 //! never times the child out — the agent owns its own runtime.
 
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::Command;
 
 use clap::Args as ClapArgs;
 use serde_json::{json, Value};
 
-use octl_core::{append_and_apply_event, read_manifest_opt};
+use octl_core::{append_and_apply_event, read_manifest_opt, read_node_opt, NodeId, RunPaths};
 
 use crate::error::CliError;
 use crate::run::{from_core, parse_node_id, parse_run_id, run_paths_exact};
+
+/// Signals the shim IGNORES while it waits on the child, restoring their default
+/// disposition in the child via `pre_exec` (below). A worker launched into an
+/// interactive PTY shares the foreground process group, so a `SIGINT` (Ctrl-C) —
+/// or a `SIGHUP`/`SIGTERM` from a pane/window teardown — is delivered to the shim
+/// as well as the child. If the shim died from it before recording, the told-fact
+/// guarantee would collapse to the pid-guess it exists to replace. Ignoring these
+/// in the shim (while the child keeps its default disposition) lets the child take
+/// the signal, die, and be reaped so the shim records its TRUE status and exits
+/// with it. `SIGKILL` cannot be caught — that is the residual case the crash
+/// backstop (design.md §2.1a) covers.
+const SHIM_IGNORED_SIGNALS: [libc::c_int; 4] =
+    [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+/// Synthetic exit code recorded when the worker could not be *launched* at all
+/// (e.g. the program is missing / not executable). Mirrors the shell's
+/// "command not found" convention so the told fact is a plain non-zero failure —
+/// the supervisor terminalizes `failed` (branch preserved) instead of falling
+/// back to the pid-guess this shim exists to eliminate.
+const SPAWN_FAILURE_EXIT_CODE: i32 = 127;
 
 #[derive(ClapArgs, Debug)]
 pub struct RunWorkerArgs {
@@ -49,8 +69,9 @@ pub struct RunWorkerArgs {
 /// `process::exit`s with the child's code (or `128 + signal`, the shell
 /// convention) so the pane's exit status mirrors the agent's.
 pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
-    // Validate ids and resolve the run BEFORE spawning: a typo must fail loudly
-    // here rather than launch a worker whose exit can never be attributed.
+    // Validate ids and resolve the run + node BEFORE spawning: a typo must fail
+    // loudly here rather than launch a worker whose exit the reducer would fold to
+    // nothing (a `worker.exited` for an unknown node is a silent no-op).
     let run_id = parse_run_id(&args.run_id)?;
     let node_id = parse_node_id(&args.node_id)?;
     let root = crate::home::root_dir()?;
@@ -61,6 +82,16 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
                 .with_invalid_value(&args.run_id),
         );
     }
+    if read_node_opt(&paths, &node_id)
+        .map_err(from_core)?
+        .is_none()
+    {
+        return Err(CliError::user(
+            "node_not_found",
+            format!("no node {} in run {}", args.node_id, args.run_id),
+        )
+        .with_invalid_value(&args.node_id));
+    }
 
     // `required = true` guarantees at least the program; split off its args.
     let (program, prog_args) = args
@@ -68,35 +99,61 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         .split_first()
         .ok_or_else(|| CliError::user("missing_worker_command", "no worker command after `--`"))?;
 
+    // Survive foreground-group signals so the child owns them and the shim lives
+    // long enough to record the child's true status (see `SHIM_IGNORED_SIGNALS`).
+    // SAFETY: `libc::signal` is async-signal-safe and this runs single-threaded at
+    // startup before the child is spawned.
+    for sig in SHIM_IGNORED_SIGNALS {
+        unsafe { libc::signal(sig, libc::SIG_IGN) };
+    }
+
     // Inherit stdio (the default): the wrapped agent runs its interactive TUI in
     // this pane's PTY. No timeout — the worker owns its own lifecycle; the shim
-    // only observes the exit.
-    let status = Command::new(program)
-        .args(prog_args)
-        .status()
-        .map_err(|e| {
-            CliError::system(
+    // only observes the exit. The child restores DEFAULT signal dispositions (via
+    // `pre_exec`, after fork / before exec) so it still takes a Ctrl-C / teardown
+    // signal normally even though the shim ignores it.
+    let mut cmd = Command::new(program);
+    cmd.args(prog_args);
+    // SAFETY: the closure only calls the async-signal-safe `libc::signal` in the
+    // forked child before `exec`; it touches no shared state and allocates nothing.
+    unsafe {
+        cmd.pre_exec(|| {
+            for sig in SHIM_IGNORED_SIGNALS {
+                libc::signal(sig, libc::SIG_DFL);
+            }
+            Ok(())
+        });
+    }
+
+    let status = match cmd.status() {
+        Ok(s) => s,
+        Err(e) => {
+            // The worker could not even be launched. Record a told FAILURE (rather
+            // than let the supervisor fall back to pid-guessing) and then surface
+            // the error normally.
+            let mut data = serde_json::Map::new();
+            data.insert("exit_code".into(), json!(SPAWN_FAILURE_EXIT_CODE));
+            record_worker_exit(&paths, &node_id, &args, Value::Object(data));
+            return Err(CliError::system(
                 "worker_spawn_failed",
                 format!("could not launch worker `{program}`: {e}"),
-            )
-        })?;
+            ));
+        }
+    };
 
-    // Exactly one of code / signal is meaningful on Unix: a normal return
-    // carries a code (signal None); a signal death carries a signal (code None).
+    // Exactly one of code / signal is meaningful on Unix: a normal return carries
+    // a code (signal None); a signal death carries a signal (code None). Prefer the
+    // signal when present so the fact is never the ambiguous both-fields shape the
+    // reducer rejects.
     let exit_code = status.code();
     let signal = status.signal();
-
     let mut data = serde_json::Map::new();
-    match (exit_code, signal) {
-        (Some(c), _) => {
-            data.insert("exit_code".into(), json!(c));
-            if let Some(s) = signal {
-                // Defensive: a platform reporting both — record both facts.
-                data.insert("signal".into(), json!(s));
-            }
-        }
-        (None, Some(s)) => {
+    match (signal, exit_code) {
+        (Some(s), _) => {
             data.insert("signal".into(), json!(s));
+        }
+        (None, Some(c)) => {
+            data.insert("exit_code".into(), json!(c));
         }
         // Neither present is unreachable on Unix (ExitStatus always carries one),
         // but the reducer rejects an empty payload, so record a synthetic
@@ -106,29 +163,7 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         }
     }
 
-    // Record the told fact durably under the run lock. Idempotency-keyed so a
-    // (pathological) re-invocation for the same node dedups to the first exit;
-    // `append_and_apply_event` acquires the flock itself, so the invariant-5
-    // `LockedRun` witness is threaded internally.
-    let key = format!("worker-exit:{node_id}");
-    if let Err(e) = append_and_apply_event(
-        &paths,
-        "worker.exited",
-        Some(&node_id),
-        Some(&key),
-        Value::Object(data),
-    ) {
-        // Do NOT swallow the worker's status over a recording failure: the crash
-        // backstop (§2.1a) covers a missing exit event. Warn and still propagate
-        // the child's code so the pane reflects reality.
-        tracing::warn!(
-            target: "orchestratectl::run_worker",
-            run_id = %args.run_id,
-            node_id = %args.node_id,
-            error = %from_core(e).message,
-            "failed to record worker.exited event; relying on the crash backstop"
-        );
-    }
+    record_worker_exit(&paths, &node_id, &args, Value::Object(data));
 
     // Propagate the worker's own exit status. `process::exit` runs no
     // destructors, so flush the buffered tracing log first (parity with the
@@ -136,4 +171,32 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
     let code = exit_code.unwrap_or_else(|| 128 + signal.unwrap_or(1));
     crate::cli::flush_logs();
     std::process::exit(code);
+}
+
+/// Append the durable `worker.exited` fact under the run lock (design.md §2.1).
+///
+/// No idempotency key: the shim fires once per launched worker, and the reducer's
+/// first-write-wins guard already dedups a replay. A KEY scoped to the node would
+/// silently swallow a *retried* worker's exit (a second shim for the same node),
+/// so it is deliberately absent — attempt-scoped recording is left to the
+/// attempt-identity work when retries are wired through the shim.
+///
+/// A recording failure does not swallow the worker's status (the crash backstop,
+/// design.md §2.1a, covers a missing exit event), but it MUST be visible: it is
+/// surfaced on stderr (the pane the operator sees) as well as the tracing log.
+fn record_worker_exit(paths: &RunPaths, node_id: &NodeId, args: &RunWorkerArgs, data: Value) {
+    if let Err(e) = append_and_apply_event(paths, "worker.exited", Some(node_id), None, data) {
+        let msg = from_core(e).message;
+        eprintln!(
+            "orchestratectl run-worker: failed to record worker.exited for {}/{}: {msg}",
+            args.run_id, args.node_id
+        );
+        tracing::warn!(
+            target: "orchestratectl::run_worker",
+            run_id = %args.run_id,
+            node_id = %args.node_id,
+            error = %msg,
+            "failed to record worker.exited event; relying on the crash backstop"
+        );
+    }
 }

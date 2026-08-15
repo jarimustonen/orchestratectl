@@ -5,6 +5,9 @@ type: task
 status: in-progress
 priority: high
 epic: lifecycle-architecture-review
+commits:
+- hash: 6ce9379
+  summary: thin launcher shim records real worker exit status (A1)
 ---
 
 # Thin supervisor: record worker exit status via launcher shim

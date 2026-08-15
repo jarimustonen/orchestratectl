@@ -2951,6 +2951,9 @@ fn synthesize_worker_exit_failure(paths: &RunPaths, nid: &NodeId, node_id: &str,
         if let Some(sig) = exit.signal {
             obj.insert("signal".to_string(), json!(sig));
         }
+        // When the worker actually exited (vs. when the supervisor noticed) — the
+        // told fact's own timestamp, useful for forensics.
+        obj.insert("worker_exited_at".to_string(), json!(exit.at.to_rfc3339()));
     }
     let lock = guard.witness();
     if let Err(e) = append_and_apply_unlocked(&lock, paths, "node.report", Some(nid), None, data) {

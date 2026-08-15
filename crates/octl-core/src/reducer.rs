@@ -688,6 +688,11 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     n.started_at = Some(ev.ts);
     n.updated_at = ev.ts;
     n.last_report = None;
+    // Clear the previous attempt's told exit fact: the freshly re-spawned worker
+    // is a NEW process, so a stale `worker_exit` must not carry over — otherwise
+    // the supervisor's told-fact pass would instantly (mis)judge the new attempt
+    // from the dead one's exit (issue `thin-exit-status-launcher`).
+    n.worker_exit = None;
     // The event carries its ABSOLUTE attempt number (the supervisor set it to
     // `retry_attempts + 1` at emit time). Assign it directly rather than a blind
     // `+= 1`: this makes the projection a pure function of the event, so a
@@ -840,21 +845,30 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
     let node_id = require_envelope_node_id(&events_path, ev)?;
     let code = optional_i32(&ev.data, "exit_code", &events_path, ev)?;
     let signal = optional_i32(&ev.data, "signal", &events_path, ev)?;
-    // A worker exit is either a normal return (code) or a signal death; a payload
-    // with neither is meaningless — reject it rather than record an empty fact.
-    if code.is_none() && signal.is_none() {
-        return Err(Error::CorruptEventLog {
-            path: events_path,
-            reason: format!(
-                "event seq={} kind=worker.exited must carry `exit_code` or `signal`",
-                ev.seq
-            ),
-        });
+    // A worker exit is EXACTLY one of a normal return (code) or a signal death
+    // (signal). Neither is meaningless; both is contradictory (a process cannot
+    // both return a code and be killed) — reject either rather than record an
+    // ambiguous fact the outcome classifier would then have to disambiguate.
+    match (code, signal) {
+        (Some(_), None) | (None, Some(_)) => {}
+        _ => {
+            return Err(Error::CorruptEventLog {
+                path: events_path,
+                reason: format!(
+                    "event seq={} kind=worker.exited must carry EXACTLY one of `exit_code` or `signal`",
+                    ev.seq
+                ),
+            });
+        }
     }
     let mut n = match read_node_opt(paths, &node_id)? {
         Some(n) => n,
-        // No projection to decorate (e.g. a worker.exited replayed before its
-        // node.created on a torn log): a clean no-op, healed on the next replay.
+        // No projection to decorate. A `worker.exited` for a node that does not
+        // exist folds to nothing — consistent with the other node reducers
+        // (`node.report` / `node.status`). In practice the shim validates the node
+        // exists before it can record an exit, and normal append ordering always
+        // places `node.created` first, so this is only hit for a genuinely orphan
+        // event.
         None => return Ok(vec![]),
     };
     // First-write-wins: the shim fires exactly once per worker, so an existing
@@ -1962,5 +1976,64 @@ mod tests {
             Ok(_) => panic!("an empty worker.exited payload must be rejected, not applied"),
             Err(other) => panic!("expected CorruptEventLog, got {other:?}"),
         }
+
+        // Carrying BOTH is contradictory (a process cannot both return a code and
+        // be killed) — also rejected.
+        ev.data = serde_json::json!({ "exit_code": 0, "signal": 9 });
+        match reduce_event_to_ops(&paths, &ev) {
+            Err(Error::CorruptEventLog { .. }) => {}
+            Ok(_) => panic!("a worker.exited with both fields must be rejected"),
+            Err(other) => panic!("expected CorruptEventLog, got {other:?}"),
+        }
+    }
+
+    /// `node.retry` clears the previous attempt's told exit fact: the re-spawned
+    /// worker is a NEW process, so a stale `worker_exit` must not carry over (it
+    /// would make the supervisor mis-judge the fresh attempt from the dead one's
+    /// exit). Issue `thin-exit-status-launcher`.
+    #[test]
+    fn node_retry_clears_worker_exit() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let paths = bootstrap_retry_node(&tmp, run_id);
+        let nid = NodeId::parse_str("n-0001").unwrap();
+
+        // Record a failing exit on the first attempt.
+        let mut exit = event(run_id);
+        exit.seq = 3;
+        exit.kind = "worker.exited".into();
+        exit.node_id = Some(nid.clone());
+        exit.data = serde_json::json!({ "exit_code": 7 });
+        apply_event(&paths, &exit).unwrap();
+        assert!(read_node_opt(&paths, &nid)
+            .unwrap()
+            .unwrap()
+            .worker_exit
+            .is_some());
+
+        // Retry re-spawns the node — the stale exit fact must be gone.
+        let mut retry = event(run_id);
+        retry.seq = 4;
+        retry.kind = "node.retry".into();
+        retry.node_id = Some(nid.clone());
+        retry.data = serde_json::json!({
+            "attempt": 1,
+            "reason": "agent-died",
+            "branch": "wt/foo",
+            "worktree_path": "/tmp/new-wt",
+            "agent_pid": 222,
+        });
+        apply_event(&paths, &retry).unwrap();
+
+        let n = read_node_opt(&paths, &nid).unwrap().unwrap();
+        assert!(
+            n.worker_exit.is_none(),
+            "node.retry must clear the previous attempt's worker_exit"
+        );
+        assert_eq!(
+            n.status,
+            Status::Pending,
+            "retry returns the node to Pending"
+        );
     }
 }
