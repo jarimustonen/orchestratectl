@@ -48,6 +48,14 @@ struct ShowPayload<'a> {
     /// projection or running `git log <source>..<branch>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     recoverable_work: Option<Value>,
+    /// Suspected *false-failed* run (issue `raw-git-selfmerge-false-failed`):
+    /// present only when the run is `failed` yet git confirms the worker's
+    /// content is already in source and no `run merge` recorded it — the raw-git
+    /// self-merge-then-death tradeoff. A non-mutating hint pointing at
+    /// `run salvage`; NEVER an auto-success. `None` on any other run. See
+    /// [`crate::run::false_failed`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    false_failed: Option<crate::run::false_failed::FalseFailedView>,
     // `landed`/`landed_method`/`recoverable_work` are computed detail unique to
     // `run show`. The run's `stalled` hint (see [`crate::run::stalled`]) and the
     // `supervisor` liveness probe live on the flattened `summary` row above, so
@@ -237,6 +245,21 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         },
         &crate::supervise::cleanup::git_bin(),
     );
+    // Suspected false-failed (issue `raw-git-selfmerge-false-failed`): a `failed`
+    // run whose worker content git CONFIRMS is in source, with no `run merge` on
+    // record — the raw-git self-merge-then-death tradeoff. Computed off the same
+    // git-verified `landed` signal + the terminal report; a non-mutating hint,
+    // never an auto-success (the removed git-reconcile-implies-done probe,
+    // invariant 7). Gated on a single-worker run so a fan-out driver node's
+    // `n-0001` landing never false-flags the whole run (mirrors `attention`).
+    let false_failed = (manifest.node_count == 1
+        && crate::run::false_failed::is_false_failed_suspected(
+            matches!(manifest.status, Status::Failed),
+            signal.landed,
+            signal.method,
+            landing.report.as_ref(),
+        ))
+    .then(|| crate::run::false_failed::FalseFailedView::build(manifest.run_id.as_str()));
     // The flattened top-level row: same shape as a `run list` row, so
     // `data.supervisor` / `data.status` / `data.kind` read identically across
     // both verbs (issue `run-show-json-null-fields`). `manifest` keeps the full
@@ -256,6 +279,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         landed: signal.landed,
         landed_method: signal.method.wire(),
         recoverable_work,
+        false_failed,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -317,6 +341,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 "landed:        {} ({})",
                 payload.landed, payload.landed_method
             );
+            if let Some(ff) = &payload.false_failed {
+                // Non-terminal-changing hint: the run is `failed` but its content
+                // is git-verified in source with no `run merge` recorded (raw-git
+                // self-merge then death). Never auto-success — steer to salvage.
+                println!("false-failed:  true — {}. {}", ff.reason, ff.resume_hint);
+            }
             println!("kind:          {}", payload.manifest.kind);
             println!("lifecycle:     {}", payload.manifest.lifecycle);
             println!("created_at:    {}", payload.manifest.created_at);

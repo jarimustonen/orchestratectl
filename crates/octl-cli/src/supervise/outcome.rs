@@ -404,6 +404,32 @@ mod tests {
         assert_eq!(outcome.teardown(), Teardown::PreserveWork);
     }
 
+    /// Regression (issue `raw-git-selfmerge-false-failed`): a worker that
+    /// raw-git self-merged into source then DIED yields a crash-backstop `failed`
+    /// report (`success: false`, `agent-died`, a supervisor origin) — it must
+    /// classify `Failed` → `PreserveWork`, NOT force teardown. The content is in
+    /// source but the branch/worktree stay preserved (the observability tradeoff
+    /// is surfaced read-time by `run show`'s `false_failed` hint, never a
+    /// destructive auto-success here). This is the no-destructive-teardown half
+    /// of the tradeoff.
+    #[test]
+    fn raw_selfmerge_death_backstop_preserves_work() {
+        let mut report = json!({ "success": false, "reason": "agent-died" });
+        octl_core::ReportOrigin::Supervisor.stamp(&mut report);
+        let n = node_with_report(Some(report));
+        let outcome = TerminalOutcome::classify(&n).expect("classifies");
+        assert_eq!(outcome, TerminalOutcome::Failed);
+        assert_eq!(
+            outcome.teardown(),
+            Teardown::PreserveWork,
+            "a raw-selfmerge-then-death failure must preserve the branch + worktree"
+        );
+        assert!(
+            !outcome.is_explicit_merge(),
+            "a raw-git self-merge is NOT a recorded run merge — never force-deletable"
+        );
+    }
+
     /// A node with no terminal report is not classified — it is still live.
     #[test]
     fn no_report_is_not_terminal() {

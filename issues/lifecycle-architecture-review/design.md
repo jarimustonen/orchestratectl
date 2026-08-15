@@ -194,6 +194,24 @@ string conventions. Merge authorization stays tied to the run-merge path exactly
 the `via` marker did — the typed origin is a parallel, higher-fidelity signal, not a
 new trust boundary, and teardown policy is unchanged (blocked/failed both preserve).
 
+**Suspected false-failed — the raw-git-self-merge tradeoff (issue `raw-git-selfmerge-false-failed`).**
+Because `run merge` is the ONLY success truth, a worker that instead **hand-merges its
+branch into source with raw git** and then dies leaves no `merge.started` transaction and
+no `RunMerge` origin. The confirmed-death backstop (§2.1a) then classifies it `failed`
+(row above), even though its content is already in source. This is an accepted
+observability tradeoff, **not data loss** (the branch + worktree are preserved by the
+`failed → preserve` teardown policy). The 0.2 decision is deliberately conservative:
+**never auto-succeed off a branch-content heuristic** (that is the deleted
+git-reconcile-implies-done probe, invariant 7 — resurrecting it would let a coincidental/
+forged branch state fake a success). Instead `run show` surfaces a **read-time, non-mutating
+`false_failed` hint** (`crate::run::false_failed`) when a `failed` run's content is
+*git-verified* in source (the rebase-robust `landed` signal, method `git-verified`) with no
+`run merge` on record. The hint steers the human to `run salvage` — which drives the skipped
+merge through the real `run merge` machinery, idempotently against the already-integrated
+content, terminalizing the run to `done` honestly — and reinforces that raw-git merges must
+never be used to finish a run. The signal is a hint, never a verdict; the run stays `failed`
+until a real `run merge`/`run salvage` records the merge.
+
 ### 2.7 Why not the protocol now (and why 0.2.1)
 
 The protocol model (A+C: worker self-reports `spawned→working→merging→merged|blocked|

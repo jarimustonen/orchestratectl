@@ -105,8 +105,21 @@ same way across both verbs. `data.manifest` then extends that row with
 full detail (`lifecycle`, `updated_at`, `source_*`, `parent_*`,
 `open_discussions`, `pending_spinoffs`); `data.counts` carries
 denormalised counters; `data.supervisor` is the probed supervisor
-liveness; `landed`/`landed_method`/`recoverable_work` are `run
-show`-only computed detail; some kinds add kind-specific fields.
+liveness; `landed`/`landed_method`/`recoverable_work`/`false_failed` are
+`run show`-only computed detail; some kinds add kind-specific fields.
+
+`data.false_failed` (present only when set) flags a **suspected
+false-failed run**: the run is `failed` yet git confirms the worker's
+content is already in source (`landed: true`, `landed_method:
+"git-verified"`) with no `run merge` on record — the raw-git
+self-merge-then-death case. It is a **non-mutating hint, never an
+auto-success**: the run stays `failed`. Its `resume_hint` steers you to
+`orchestratectl run salvage <id>`, which records the skipped merge
+through the real `run merge` machinery (idempotent against the
+already-integrated content) and terminalizes the run to `done` honestly.
+Do NOT treat a `false_failed` run as done — run salvage first. Never
+finish a run with a raw `git merge`; always use `run merge`/`run
+salvage`.
 
 `data.supervisor.state` is the field to branch on — it distinguishes the
 conditions the legacy `alive` boolean collapses: `alive` (running),
