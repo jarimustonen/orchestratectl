@@ -475,17 +475,18 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
         // checked-out HEAD, protected by no branch ref. A clean such tree passes the
         // dirty guard, non-force `worktree remove` succeeds, there is no branch to `-d`,
         // and the commits become unreachable → silent data loss. Inspect the ACTUAL HEAD
-        // oid: a detached HEAD carrying commits not in source (or with source unrecorded,
-        // an unreadable HEAD, or any git error) preserves BOTH worktree and branch (fail
-        // closed); a HEAD on any branch is protected by that surviving ref and proceeds.
-        // Runs AFTER the dirty guard so a non-repo / unverifiable tree keeps its own
-        // cleanliness reason, and only while the dir exists — a vanished dir is the
+        // oid: a detached HEAD — OR a HEAD on a branch other than the recorded one —
+        // carrying commits not in source (or with source unrecorded, an unreadable HEAD,
+        // or any git error) preserves BOTH worktree and branch (fail closed); only a HEAD
+        // whose actual oid is reachable from source, or one on exactly the recorded branch,
+        // proceeds. Runs AFTER the dirty guard so a non-repo / unverifiable tree keeps its
+        // own cleanliness reason, and only while the dir exists — a vanished dir is the
         // already-gone case the removal path owns below.
         if std::path::Path::new(worktree_path).exists() {
             match head_teardown_safety(
                 repo,
                 worktree_path,
-                n.branch.as_deref(),
+                n.branch.as_deref().filter(|s| !s.is_empty()),
                 source.as_deref(),
                 git,
             ) {
@@ -501,11 +502,16 @@ pub(crate) fn cleanup_node(paths: &RunPaths, n: &Node, tmux: &str, git: &str) {
     // Remove the worktree. Only a confirmed explicit `run merge` (`merged`) forces:
     // `--force` bulldozes disposable scratch (issue
     // `supervisor-worktree-remove-no-force`). Every other reached-here path is
-    // NON-force — the dirty-worktree + source-relative guards already preserved
-    // every dirty/unmerged case, so the tree is verified clean and non-force
-    // removal succeeds; and non-force is the ATOMIC safety net that closes the
-    // TOCTOU window (a tree dirtied by a race between the check above and here makes
-    // git REFUSE rather than discard the new work).
+    // NON-force — the dirty-worktree + source-relative + HEAD guards already
+    // preserved every dirty/unmerged case, so the tree is verified clean and
+    // non-force removal succeeds. Non-force removal re-checks CLEANLINESS, so it is
+    // the atomic net for the UNCOMMITTED-work TOCTOU: a tree dirtied by a race
+    // between the check above and here makes git REFUSE rather than discard it. It
+    // does NOT re-check HEAD reachability, so it does NOT close the COMMITTED-HEAD-
+    // movement race (a concurrent `git checkout --detach <new-commit>` leaving a
+    // clean tree could still orphan the new commit) — that residual needs a rescue
+    // ref / worktree lease and is tracked as a follow-up
+    // (`detached-head-teardown-toctou`).
     if !remove_worktree(repo, worktree_path, git, merged) {
         if !std::path::Path::new(worktree_path).exists() {
             // The dir is simply gone (user removed it manually, or merge.sh's
@@ -587,26 +593,63 @@ fn branch_unmerged_vs_source(repo: &str, source: &str, branch: &str, git: &str) 
 /// detached commits become unreachable → silent data loss. This guard closes that
 /// hole by inspecting the worktree's ACTUAL HEAD oid.
 ///
-/// The load-bearing distinction is DETACHED vs on-a-branch, not "matches the
-/// recorded branch": a HEAD on ANY branch is safe from committed-work loss because
-/// that branch ref survives teardown (cleanup only ever deletes `Node.branch`), so
-/// it keeps the commits reachable. Only a detached HEAD has no surviving ref.
+/// The only case that DEFERS is a HEAD checked out on exactly the recorded
+/// `Node.branch`: then HEAD's tip IS the recorded branch tip, the branch check
+/// already measured it, and the `-d` backstop governs the branch. Every other
+/// case — detached, OR on a branch DIFFERENT from the recorded one — is verified
+/// against source directly. An earlier design let "HEAD on any branch" pass
+/// unconditionally on the theory that the branch ref survives teardown; a review
+/// (issue `detached-head-teardown-commit-loss`, finding B) showed that unsound in
+/// a multi-node run — a merged sibling node can force-`-D` that branch AFTER this
+/// worktree is removed (git only refuses to delete a branch checked out in a LIVE
+/// worktree), orphaning any commits it holds beyond source. So a non-recorded
+/// branch earns removal only when its tip is provably reachable from source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadTeardown {
     /// HEAD is checked out on exactly the recorded `Node.branch`, so the
     /// branch-based checks (+ the `-d` backstop) already own the decision — this
     /// guard defers to them and adds nothing.
     DeferToBranch,
-    /// Removing the worktree drops nothing committed — either HEAD is on a branch
-    /// (a surviving ref keeps its commits) or a detached HEAD is provably
-    /// reachable from source (`source..HEAD` is empty). Teardown may proceed
-    /// (still subject to the earlier dirty-worktree guard).
+    /// Removing the worktree drops nothing committed — HEAD's actual oid is
+    /// provably reachable from source (`source..HEAD` is empty), so no surviving
+    /// ref is needed to protect it. Teardown may proceed (still subject to the
+    /// earlier dirty-worktree guard).
     Safe,
-    /// A DETACHED HEAD whose commits are NOT provably protected — commits not in
-    /// source, a missing source branch to verify against, an unreadable HEAD, or
-    /// any git error. FAILS CLOSED: preserve BOTH worktree and any branch/metadata,
-    /// with this audit reason.
+    /// HEAD's commits are NOT provably in source — a detached or non-recorded
+    /// branch carrying commits not in source, a missing source branch to verify
+    /// against, an unreadable HEAD, or any git error. FAILS CLOSED: preserve BOTH
+    /// worktree and any branch/metadata, with this audit reason.
     Preserve(&'static str),
+}
+
+/// Whether HEAD's actual oid is reachable from the run's source branch — the
+/// single reachability question both the detached and non-recorded-branch arms of
+/// [`head_teardown_safety`] answer (they differ only in audit-reason wording).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadReach {
+    /// `source..HEAD` is empty — nothing committed to lose from HEAD.
+    InSource,
+    /// `source..HEAD > 0` — HEAD carries commits not in source.
+    NotInSource,
+    /// `rev-list` could not be computed (git error) — unverifiable, fail closed.
+    Unverifiable,
+    /// No source branch was recorded to verify against — fail closed.
+    NoSource,
+}
+
+/// Classify HEAD's actual oid against the run's source branch (`git rev-list
+/// --count <source>..<head_oid>`). Empty/malformed source is already normalized
+/// to `None` by [`manifest_source_branch`], and [`Git::rev_list_count`] rejects an
+/// empty endpoint, so this never measures against ambient `HEAD`.
+fn head_reach_from_source(g: &Git, repo: &str, source: Option<&str>, head_oid: &str) -> HeadReach {
+    match source {
+        Some(source) => match g.rev_list_count(repo, source, head_oid) {
+            Some(0) => HeadReach::InSource,
+            Some(_) => HeadReach::NotInSource,
+            None => HeadReach::Unverifiable,
+        },
+        None => HeadReach::NoSource,
+    }
 }
 
 /// Inspect the worktree's ACTUAL HEAD to decide whether a non-explicit-merge
@@ -618,21 +661,22 @@ enum HeadTeardown {
 ///
 /// - **Unreadable HEAD** (`git rev-parse HEAD` fails while the dir is present) →
 ///   [`HeadTeardown::Preserve`], fail-closed. We cannot prove what is checked out.
-/// - **HEAD on a branch** → the branch ref survives teardown and keeps HEAD's
-///   commits reachable (cleanup only ever deletes the recorded `Node.branch`), so
-///   there is no committed-work loss:
-///   - equal to the recorded branch → [`HeadTeardown::DeferToBranch`] (the branch
-///     check already measured `source..branch` and the `-d` backstop governs it).
-///   - a DIFFERENT branch → [`HeadTeardown::Safe`] (that other ref, which cleanup
-///     never touches, protects the commits).
-/// - **Detached HEAD** → no branch ref protects it; its commits are only droppable
-///   if provably reachable from the run's source branch:
-///   - source recorded, `source..HEAD == 0` → [`HeadTeardown::Safe`].
-///   - source recorded, `source..HEAD > 0` → [`HeadTeardown::Preserve`] (THE
-///     data-loss case: unique commits reachable only from the detached HEAD).
-///   - source recorded, rev-list errors → [`HeadTeardown::Preserve`], fail-closed.
-///   - source NOT recorded → [`HeadTeardown::Preserve`], fail-closed: with no base
-///     to verify against and no branch ref, safe removal is unprovable.
+/// - **HEAD on the recorded branch** → [`HeadTeardown::DeferToBranch`]: HEAD's tip
+///   IS the recorded branch tip, so the branch check already measured
+///   `source..branch` and the `-d` backstop governs it.
+/// - **HEAD detached, OR on a branch DIFFERENT from the recorded one** → its
+///   commits are only droppable if the ACTUAL head oid is reachable from source
+///   ([`head_reach_from_source`]):
+///   - `source..HEAD == 0` → [`HeadTeardown::Safe`].
+///   - `source..HEAD > 0` → [`HeadTeardown::Preserve`] (THE data-loss case:
+///     commits reachable only from this HEAD, unprotected once the worktree — and
+///     possibly a sibling's branch — is gone).
+///   - rev-list errors → [`HeadTeardown::Preserve`], fail-closed.
+///   - source NOT recorded → [`HeadTeardown::Preserve`], fail-closed.
+///
+/// Note it verifies the oid it actually READ (`head_oid`), never the branch tip
+/// reported by the separate `symbolic-ref` probe — so a HEAD that moves between
+/// the two probes cannot green-light removal of the commit we observed.
 ///
 /// The caller only invokes this on a non-explicit-merge path and only when the
 /// worktree dir still exists (a vanished dir is the already-gone case the
@@ -652,24 +696,33 @@ fn head_teardown_safety(
         return HeadTeardown::Preserve("worktree HEAD unreadable (git error; preserving)");
     };
 
-    // A HEAD on a branch is protected by that surviving ref (cleanup only deletes
-    // the recorded branch): equal → defer to the branch checks; different → safe.
-    // Only a detached HEAD (rev-parse succeeded, so a `None` here means detached,
-    // not an error) has no ref and must prove reachability from source.
+    // Only a HEAD on exactly the recorded branch defers; a detached HEAD (a `None`
+    // here means detached, since `head_oid` already proved the repo valid) OR a
+    // HEAD on a DIFFERENT branch must prove the actual head oid is reachable from
+    // source — a non-recorded branch is not a durable protector (finding B).
     match g.head_branch(worktree_path) {
         Some(b) if recorded_branch == Some(b.as_str()) => HeadTeardown::DeferToBranch,
-        Some(_) => HeadTeardown::Safe,
-        None => match source {
-            Some(source) => match g.rev_list_count(repo, source, &head_oid) {
-                Some(0) => HeadTeardown::Safe,
-                Some(_) => HeadTeardown::Preserve(
-                    "detached HEAD has commits not in source (no explicit merge)",
-                ),
-                None => HeadTeardown::Preserve(
-                    "detached HEAD unmerged-commit check unavailable (git error; preserving)",
-                ),
-            },
-            None => HeadTeardown::Preserve(
+        Some(_) => match head_reach_from_source(&g, repo, source, &head_oid) {
+            HeadReach::InSource => HeadTeardown::Safe,
+            HeadReach::NotInSource => HeadTeardown::Preserve(
+                "HEAD on a non-recorded branch has commits not in source (no explicit merge)",
+            ),
+            HeadReach::Unverifiable => HeadTeardown::Preserve(
+                "HEAD-branch unmerged-commit check unavailable (git error; preserving)",
+            ),
+            HeadReach::NoSource => HeadTeardown::Preserve(
+                "HEAD on a branch other than the recorded one, no recorded source to verify against (preserving)",
+            ),
+        },
+        None => match head_reach_from_source(&g, repo, source, &head_oid) {
+            HeadReach::InSource => HeadTeardown::Safe,
+            HeadReach::NotInSource => HeadTeardown::Preserve(
+                "detached HEAD has commits not in source (no explicit merge)",
+            ),
+            HeadReach::Unverifiable => HeadTeardown::Preserve(
+                "detached HEAD unmerged-commit check unavailable (git error; preserving)",
+            ),
+            HeadReach::NoSource => HeadTeardown::Preserve(
                 "detached HEAD with no recorded source to verify against (preserving)",
             ),
         },
@@ -939,6 +992,7 @@ fn manifest_source_repo(paths: &RunPaths) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|m| m.source_repo)
+        .filter(|s| !s.is_empty())
 }
 
 /// The branch the run was started from (`manifest.source_branch`), if recorded.
@@ -952,6 +1006,10 @@ fn manifest_source_branch(paths: &RunPaths) -> Option<String> {
         .ok()
         .flatten()
         .and_then(|m| m.source_branch)
+        // An empty `source_branch` must read as "unrecorded", NOT `Some("")`:
+        // passing `""` into a `<source>..<x>` range silently measures against
+        // ambient `HEAD` (issue `detached-head-teardown-commit-loss`, finding A).
+        .filter(|s| !s.is_empty())
 }
 
 /// Close the node's tmux window, recovering from the manual-rebase orphan case
@@ -2155,6 +2213,27 @@ mod tests {
             head_teardown_safety(repo_s, wt_s, Some("wt/foo"), Some("main"), g),
             HeadTeardown::DeferToBranch
         );
+        // HEAD on wt/foo but recorded branch is a DIFFERENT name, wt/foo level with
+        // source → the actual oid is reachable, so removal is safe (not blanket-safe
+        // on "it's on a branch": verified against source, finding B).
+        assert_eq!(
+            head_teardown_safety(repo_s, wt_s, Some("wt/other"), Some("main"), g),
+            HeadTeardown::Safe
+        );
+        // HEAD on a different branch that carries a unique commit → the non-recorded
+        // branch is not a durable protector, and the commit is not in source → preserve.
+        commit_in_worktree(&wt, "onbranch.rs", "unique on wt/foo");
+        assert!(matches!(
+            head_teardown_safety(repo_s, wt_s, Some("wt/other"), Some("main"), g),
+            HeadTeardown::Preserve(_)
+        ));
+        // Same different-branch unique commit but no recorded source → preserve (fail closed).
+        assert!(matches!(
+            head_teardown_safety(repo_s, wt_s, Some("wt/other"), None, g),
+            HeadTeardown::Preserve(_)
+        ));
+        // Reset wt/foo back to source so the detached checks below start level.
+        git(&wt, &["reset", "--hard", "main", "-q"]);
         // Detached at main (no unique commits), no recorded branch → provably safe.
         git(&wt, &["checkout", "--detach", "-q"]);
         assert_eq!(
@@ -2335,6 +2414,147 @@ mod tests {
             evs[0]["data"]["reason"],
             "detached HEAD with no recorded source to verify against (preserving)"
         );
+    }
+
+    /// Finding A (review): an EMPTY `source_branch` must not become an ambient-`HEAD`
+    /// range. A detached HEAD with a unique commit and `source_branch: ""` must fail
+    /// closed and preserve — `manifest_source_branch` normalizes `""` to `None`, so
+    /// the guard treats it as "no recorded source" rather than measuring `..<oid>`
+    /// against the main repo's HEAD (which could falsely return 0 and delete the work).
+    #[test]
+    fn empty_source_branch_preserves_detached_unique_commits() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        // Record source_repo but an EMPTY source_branch (the malformed shape).
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({
+                "kind": "spinoff",
+                "lifecycle": "autonomous",
+                "title": "t",
+                "source_repo": repo.to_str().unwrap(),
+                "source_branch": "",
+            }),
+        )
+        .unwrap();
+        // A commit that lives only on the detached HEAD.
+        commit_in_worktree(&wt, "only-on-head.rs", "detached work");
+        git(&wt, &["checkout", "--detach", "-q"]);
+        git(&repo, &["branch", "-D", "wt/foo"]);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap() }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            wt.exists(),
+            "empty source_branch must fail closed, not remove"
+        );
+        assert!(wt.join("only-on-head.rs").exists());
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "detached HEAD with no recorded source to verify against (preserving)"
+        );
+    }
+
+    /// Finding B (review): a worktree checked out on a branch OTHER than its recorded
+    /// `Node.branch`, carrying a commit not in source, must PRESERVE — a non-recorded
+    /// branch is not a durable protector (a merged sibling could `-D` it after this
+    /// worktree is removed). The guard proves reachability from source and fails
+    /// closed when the actual HEAD is ahead of it.
+    #[test]
+    fn head_on_non_recorded_branch_with_unique_commit_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // Record a branch that EXISTS and is level with source (so the earlier
+        // recorded-branch source check passes and flow reaches the HEAD guard)…
+        git(&repo, &["branch", "wt/recorded", "main"]);
+        // …but the worktree's ACTUAL branch (wt/foo) has a unique commit — the
+        // stale-metadata mismatch the HEAD guard must catch.
+        commit_in_worktree(&wt, "real-work.rs", "unique on wt/foo");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+        assert_eq!(commits_ahead(&repo, "main", "wt/recorded"), 0);
+
+        let _ = forge_node(
+            &paths,
+            "n-0001",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/recorded" }),
+        );
+        report(&paths, "n-0001", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0001")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(
+            wt.exists(),
+            "a mismatched branch with unique commits must be preserved"
+        );
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "the real branch must survive"
+        );
+        assert!(wt.join("real-work.rs").exists());
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "HEAD on a non-recorded branch has commits not in source (no explicit merge)"
+        );
+    }
+
+    /// Finding B, the multi-node sibling scenario the fix defends against: node B
+    /// worktree is checked out on node A's branch `wt/foo` and commits a unique
+    /// commit there (advancing wt/foo past source); B records a different branch. On
+    /// teardown B must PRESERVE — otherwise B's worktree would be removed and, once it
+    /// is no longer checked out, a merged sibling could delete `wt/foo` and orphan the
+    /// commit. Proves the "different branch is safe" arm was correctly tightened.
+    #[test]
+    fn sibling_worktree_on_foreign_branch_with_unique_commit_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let paths = fresh_run(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
+        // Node B's own branch exists and is level with source (so the recorded-branch
+        // check passes and flow reaches the HEAD guard)…
+        git(&repo, &["branch", "wt/node-b", "main"]);
+        // …but B's worktree is checked out on wt/foo and commits a unique commit there,
+        // advancing wt/foo past source.
+        commit_in_worktree(&wt, "sibling-work.rs", "unique, unmerged");
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+
+        // Node B records ITS OWN branch name, not wt/foo (which it is checked out on).
+        let _ = forge_node(
+            &paths,
+            "n-0002",
+            json!({ "worktree_path": wt.to_str().unwrap(), "branch": "wt/node-b" }),
+        );
+        report(&paths, "n-0002", json!({ "success": true }));
+        let n = read_node_opt(&paths, &nid("n-0002")).unwrap().unwrap();
+
+        cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
+
+        assert!(wt.exists(), "the foreign-branch worktree must be preserved");
+        assert!(
+            branch_exists(&repo, "wt/foo"),
+            "wt/foo (holding the unique commit) must survive"
+        );
+        assert_eq!(commits_ahead(&repo, "main", "wt/foo"), 1);
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
     }
 
     /// `worktree_cleanliness` distinguishes the three states the teardown guard
@@ -2550,19 +2770,25 @@ mod tests {
         assert_eq!(evs[0]["data"]["worktree_path"], gone.to_str().unwrap());
     }
 
-    /// Required behaviour #3: when `git branch -D` itself refuses (here: the
-    /// branch does not exist), the worktree is still removed and the failure is
-    /// recorded as a non-fatal `cleanup.branch_remove_failed` — run completion is
-    /// never blocked on branch cleanup.
+    /// A branch-delete refusal that does NOT block run completion is covered by
+    /// [`unmerged_branch_not_force_deleted_without_explicit_merge`] (worktree removed,
+    /// `-d` refuses the unmerged branch, `cleanup.branch_remove_failed` recorded,
+    /// cleanup continues). This test pins the COMPLEMENTARY, safer contract the
+    /// committed-work fix introduced: a recorded `Node.branch` that does not resolve
+    /// (stale/bogus metadata) makes the source-relative check UNVERIFIABLE, so
+    /// teardown fails CLOSED and preserves rather than removing the worktree and
+    /// logging a delete failure. A non-resolvable recorded branch is a red flag, not
+    /// a green light (issues `non-merge-teardown-dirty-worktree` /
+    /// `detached-head-teardown-commit-loss`).
     #[test]
-    fn branch_remove_failure_records_event_and_continues() {
+    fn nonresolvable_recorded_branch_fails_closed_and_preserves() {
         let tmp = TempDir::new().unwrap();
         let paths = fresh_run(&tmp);
-        bootstrap(&paths, 0);
-        let (_repo, wt) = init_repo_with_worktree(&tmp);
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        bootstrap_source_main(&paths, &repo);
 
-        // Name a branch that does not exist so `git branch -D` refuses, while the
-        // worktree removal still succeeds.
+        // A recorded branch that does not exist → `rev-list main..wt/never-existed`
+        // errors → UnmergedCheck::Unverifiable → preserve (fail closed).
         let n = forge_node(
             &paths,
             "n-0001",
@@ -2571,16 +2797,19 @@ mod tests {
 
         cleanup_node(&paths, &n, "/usr/bin/true", &git_bin());
 
-        assert!(!wt.exists(), "worktree must still be removed");
-        let evs = events_of_kind(&paths, "cleanup.branch_remove_failed");
-        assert_eq!(evs.len(), 1, "branch failure must be recorded once");
-        assert_eq!(evs[0]["data"]["branch"], "wt/never-existed");
         assert!(
-            !evs[0]["data"]["error"]
-                .as_str()
-                .unwrap_or_default()
-                .is_empty(),
-            "the git stderr must be captured for the operator"
+            wt.exists(),
+            "a non-resolvable recorded branch must preserve, not remove"
+        );
+        assert!(
+            events_of_kind(&paths, "cleanup.branch_remove_failed").is_empty(),
+            "no branch delete is attempted on a fail-closed preserve"
+        );
+        let evs = events_of_kind(&paths, "cleanup.branch_preserved");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0]["data"]["reason"],
+            "unmerged-commit check unavailable (git error; preserving)"
         );
     }
 

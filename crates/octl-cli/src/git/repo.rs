@@ -45,9 +45,23 @@ impl Git {
     /// conservatively rather than guess. This is the primitive behind both the
     /// source-relative unmerged-work check and the forward-advance check.
     pub fn rev_list_count(&self, repo: &str, from: &str, to: &str) -> Option<u64> {
+        // Reject an empty endpoint: `git rev-list --count ..<to>` (or `<from>..`)
+        // silently defaults the omitted side to the repo's ambient `HEAD`, so a
+        // malformed empty `source`/`branch` would be measured against the wrong
+        // base — a fail-OPEN a teardown safety check must never accept (issue
+        // `detached-head-teardown-commit-loss`, review finding A). `--end-of-options`
+        // additionally stops a ref that begins with `-` from being parsed as a flag.
+        if from.is_empty() || to.is_empty() {
+            return None;
+        }
         let out = self
             .at(repo)
-            .args(["rev-list", "--count", &format!("{from}..{to}")])
+            .args([
+                "rev-list",
+                "--count",
+                "--end-of-options",
+                &format!("{from}..{to}"),
+            ])
             .stderr(Stdio::null())
             .output()
             .ok()?;
@@ -378,6 +392,22 @@ mod tests {
         assert_eq!(g.rev_list_count("/nonexistent", "main", "wt/foo"), None);
     }
 
+    /// An empty endpoint must NOT be spawned as `git rev-list --count ..<oid>`
+    /// (which git resolves against ambient `HEAD`). It fails closed → `None`
+    /// WITHOUT running git (issue `detached-head-teardown-commit-loss`, review
+    /// finding A). Proven against a real repo: even with valid refs available, an
+    /// empty side returns `None`, never a 0 count from an ambient-HEAD fallback.
+    #[test]
+    fn rev_list_count_rejects_empty_endpoint() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, _wt) = init_repo_with_worktree(&tmp);
+        let g = Git::with_bin("git");
+        let repo_s = repo.to_str().unwrap();
+        assert_eq!(g.rev_list_count(repo_s, "", "wt/foo"), None);
+        assert_eq!(g.rev_list_count(repo_s, "main", ""), None);
+        assert_eq!(g.rev_list_count(repo_s, "", ""), None);
+    }
+
     #[test]
     fn head_oid_and_branch_track_the_worktree() {
         let tmp = TempDir::new().unwrap();
@@ -387,7 +417,13 @@ mod tests {
         // On a branch: head_branch names it; head_oid resolves the tip.
         assert_eq!(g.head_branch(wt_s).as_deref(), Some("wt/foo"));
         let on_branch = g.head_oid(wt_s).expect("HEAD resolves on a branch");
-        assert_eq!(on_branch.len(), 40, "a full sha is 40 hex chars");
+        // A full object id is 40 hex chars (SHA-1) or 64 (SHA-256) — accept both
+        // so the test is portable to a SHA-256-configured git.
+        assert!(
+            (on_branch.len() == 40 || on_branch.len() == 64)
+                && on_branch.bytes().all(|b| b.is_ascii_hexdigit()),
+            "a full object id is 40 or 64 hex chars, got {on_branch:?}"
+        );
         // Detach HEAD: head_branch is now None (detached), head_oid still resolves.
         git(&wt, &["checkout", "--detach", "-q"]);
         assert_eq!(

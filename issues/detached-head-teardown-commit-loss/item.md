@@ -2,9 +2,12 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: bug
-status: open
+status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: 2ee0ff5
+  summary: preserve detached-HEAD committed work on non-merge teardown
 ---
 
 # Detached-HEAD / no-branch worktree can lose committed work on non-merge teardown
