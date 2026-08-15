@@ -139,9 +139,9 @@ struct MergePayload<'a> {
 /// Machine-readable result of [`ensure_report_consumer`]: what state the run's
 /// per-run supervisor was left in after the terminal report was appended. The
 /// non-silent counterpart to the merge `warnings`.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(tag = "state", rename_all = "kebab-case")]
-enum ConsumerOutcome {
+pub(crate) enum ConsumerOutcome {
     /// A live supervisor is already consuming the report on its next tick.
     Alive,
     /// The run was already terminal — a supervisor rolled it up and exited, so
@@ -158,11 +158,53 @@ enum ConsumerOutcome {
     Deferred { recovery_command: String },
 }
 
+/// The owned, emit-independent result of driving the full merge lifecycle for
+/// one run. Produced by [`execute`] and rendered by [`run`] (via [`emit`]).
+///
+/// It exists so a second caller — `run salvage` (issue `run-salvage-command`,
+/// design.md §2.2) — can drive the *identical* merge machinery (crash-recovery,
+/// CAS-guarded `merge.sh`, the `via: "explicit-merge"` terminal report,
+/// supervisor reattach) and then fold this result into its OWN envelope, instead
+/// of re-implementing a raw git self-merge that would bypass the merge-transaction
+/// record and the teardown gate. Every field is owned so it outlives the borrowed
+/// [`Args`].
+pub(crate) struct MergeOutcome {
+    pub run_id: String,
+    pub node_id: String,
+    pub branch: String,
+    pub source: Option<String>,
+    pub merged: bool,
+    pub report_seq: Option<u64>,
+    pub supervisor: Option<ConsumerOutcome>,
+    pub dry_run: bool,
+    /// The caller's base warnings plus any appended by [`ensure_report_consumer`].
+    pub warnings: Vec<String>,
+}
+
 pub fn run(args: Args<'_>) -> Result<(), CliError> {
+    let spec = args.spec;
+    let outcome = execute(&args)?;
+    let payload = MergePayload {
+        run_id: &outcome.run_id,
+        node_id: &outcome.node_id,
+        branch: &outcome.branch,
+        source: outcome.source.as_deref(),
+        merged: outcome.merged,
+        report_seq: outcome.report_seq,
+        supervisor: outcome.supervisor.clone(),
+        dry_run: outcome.dry_run.then_some(true),
+    };
+    emit(&payload, spec, &outcome.warnings)
+}
+
+/// Drive the full merge lifecycle and return the owned [`MergeOutcome`] without
+/// emitting anything. `run` (this file) and `salvage::run` are the two callers:
+/// each renders the result into its own envelope.
+pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
     let run_id = args.run_id.clone();
     let node_id = parse_node_id(args.node_id.as_deref().unwrap_or(DEFAULT_NODE_ID))?;
-    let source = match args.source {
-        Some(s) => Some(require_nonempty(&s, "source")?),
+    let source = match &args.source {
+        Some(s) => Some(require_nonempty(s, "source")?),
         None => None,
     };
 
@@ -330,17 +372,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )?;
 
     if args.dry_run {
-        let payload = MergePayload {
-            run_id: &run_id,
-            node_id: node_id.as_str(),
-            branch,
-            source: effective_source.as_deref(),
+        return Ok(MergeOutcome {
+            run_id: run_id.clone(),
+            node_id: node_id.as_str().to_string(),
+            branch: branch.to_string(),
+            source: effective_source.clone(),
             merged: false,
             report_seq: None,
             supervisor: None,
-            dry_run: Some(true),
-        };
-        return emit(&payload, args.spec, args.warnings);
+            dry_run: true,
+            warnings: args.warnings.to_vec(),
+        });
     }
 
     let git = git_bin();
@@ -358,17 +400,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             // The crashed merge is confirmed landed and the node is now terminal.
             // Ensure a teardown actor and report success without re-running the merge.
             let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
-            let payload = MergePayload {
-                run_id: &run_id,
-                node_id: node_id.as_str(),
-                branch,
-                source: effective_source.as_deref(),
+            return Ok(MergeOutcome {
+                run_id: run_id.clone(),
+                node_id: node_id.as_str().to_string(),
+                branch: branch.to_string(),
+                source: effective_source.clone(),
                 merged: true,
                 report_seq: None,
                 supervisor: Some(outcome),
-                dry_run: None,
-            };
-            return emit(&payload, args.spec, &warnings);
+                dry_run: false,
+                warnings,
+            });
         }
         // A DIFFERENT `run merge` is actively driving a transaction for this node.
         // Starting a fresh merge would `merge.started`-overwrite its `pending_merge`
@@ -487,17 +529,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // leak. (`result.seq` is still surfaced in the envelope below.)
     let (outcome, warnings) = ensure_report_consumer(&paths, &run_id, args.warnings);
 
-    let payload = MergePayload {
-        run_id: &run_id,
-        node_id: node_id.as_str(),
-        branch,
-        source: effective_source.as_deref(),
+    Ok(MergeOutcome {
+        run_id: run_id.clone(),
+        node_id: node_id.as_str().to_string(),
+        branch: branch.to_string(),
+        source: effective_source.clone(),
         merged: true,
         report_seq: Some(result.seq),
         supervisor: Some(outcome),
-        dry_run: None,
-    };
-    emit(&payload, args.spec, &warnings)
+        dry_run: false,
+        warnings,
+    })
 }
 
 /// Guarantee the terminal `node.report` just appended has a live consumer, or

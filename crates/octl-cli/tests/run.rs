@@ -1043,7 +1043,7 @@ fn show_surfaces_attention_required_run() {
         att["resume_hint"]
             .as_str()
             .expect("resume_hint str")
-            .contains("run merge"),
+            .contains("run salvage"),
         "resume hint names the manual finish: {att}"
     );
     // A supervisor-death stall this is NOT — no reattach hint.
@@ -1061,7 +1061,7 @@ fn show_surfaces_attention_required_run() {
     let text = String::from_utf8(out.stdout).expect("utf8");
     assert!(
         text.lines()
-            .any(|l| l.starts_with("attention:") && l.contains("run merge")),
+            .any(|l| l.starts_with("attention:") && l.contains("run salvage")),
         "text show must carry an attention line: {text}"
     );
 }

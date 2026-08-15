@@ -1,9 +1,9 @@
 ---
 created: 2026-07-26
-updated: 2026-08-13
+updated: 2026-08-15
 type: feature
 reporter: claude-code
-status: open
+status: in-progress
 priority: normal
 related: ['@agent-death-strands-recoverable-work']
 labels: [rescope-0.2]

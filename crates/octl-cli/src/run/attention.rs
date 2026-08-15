@@ -73,30 +73,25 @@ pub fn is_attention_required(node_status: Status, worker_exit: Option<&WorkerExi
 }
 
 /// The human/JSON resume hint for an attention-required run: the two ways a PO
-/// can settle it — drive the skipped merge from the worktree, or lay it to rest.
-/// Kept as one shared helper so `run wait` / `run show` / `run list` phrase it
-/// identically.
+/// can settle it — the fenced manual finish (`run salvage`, which finds the
+/// worktree, verifies/fences the prior worker, and drives the skipped merge
+/// itself), or lay it to rest (`run cancel`). Kept as one shared helper so
+/// `run wait` / `run show` / `run list` phrase it identically.
 ///
-/// The worktree path and run id are single-quoted via [`shell_single_quote`] so
-/// the emitted `cd … && …` string stays a safe copy-paste even if the path
-/// carries a space or shell metacharacter (a worktree path is tool-generated, but
-/// the hint is meant to be pasted, so it must not silently break or inject).
+/// The run id is single-quoted via [`shell_single_quote`] so the emitted string
+/// stays a safe copy-paste even if it carries a shell metacharacter (ids are
+/// tool-generated, but the hint is meant to be pasted, so it must not break or
+/// inject). `worktree_path` is retained in the signature (surfaced separately by
+/// `run show`/`run list`) but no longer needs interpolating — `run salvage`
+/// resolves the worktree from the run itself.
 #[must_use]
-pub fn resume_hint(run_id: &str, worktree_path: Option<&str>) -> String {
+pub fn resume_hint(run_id: &str, _worktree_path: Option<&str>) -> String {
     let q_run = shell_single_quote(run_id);
-    match worktree_path {
-        Some(path) => format!(
-            "worker finished but skipped `run merge`; finish it with \
-             `cd {q_path} && orchestratectl run merge {q_run}`, or `run cancel {q_run}` to \
-             lay it to rest",
-            q_path = shell_single_quote(path),
-        ),
-        None => format!(
-            "worker finished but skipped `run merge`; finish it with \
-             `orchestratectl run merge {q_run}` from its worktree, or `run cancel {q_run}` to \
-             lay it to rest"
-        ),
-    }
+    format!(
+        "worker finished but skipped `run merge`; finish it with \
+         `orchestratectl run salvage {q_run}` (fences the prior worker and merges from its \
+         worktree), or `run cancel {q_run}` to lay it to rest"
+    )
 }
 
 /// Wrap `s` in single quotes for safe shell copy-paste, escaping any embedded
@@ -267,26 +262,24 @@ mod tests {
         assert_eq!(v.pending_age_secs, 0);
     }
 
-    /// The resume hint names the worktree when known, and both remediations, and
-    /// single-quotes the path + run id so a metacharacter-bearing path is safe.
+    /// The resume hint names both remediations (`run salvage` and `run cancel`)
+    /// and single-quotes the run id — identically whether or not a worktree path
+    /// is known (salvage resolves the worktree itself).
     #[test]
-    fn resume_hint_mentions_worktree_and_both_actions() {
-        let with_wt = resume_hint("01run", Some("/tmp/wt/foo"));
-        assert!(with_wt.contains("'/tmp/wt/foo'"));
-        assert!(with_wt.contains("run merge '01run'"));
-        assert!(with_wt.contains("run cancel '01run'"));
-
-        let without = resume_hint("01run", None);
-        assert!(without.contains("run merge '01run'"));
-        assert!(without.contains("run cancel '01run'"));
+    fn resume_hint_mentions_both_actions() {
+        for wt in [Some("/tmp/wt/foo"), None] {
+            let hint = resume_hint("01run", wt);
+            assert!(hint.contains("run salvage '01run'"), "got: {hint}");
+            assert!(hint.contains("run cancel '01run'"), "got: {hint}");
+        }
     }
 
-    /// A worktree path with a space / single quote is single-quoted so the emitted
-    /// command is a safe copy-paste, not a broken or injecting one.
+    /// A run id with a shell metacharacter is single-quoted so the emitted command
+    /// is a safe copy-paste, not a broken or injecting one.
     #[test]
-    fn resume_hint_quotes_hostile_paths() {
-        let hint = resume_hint("01run", Some("/tmp/a b/it's here"));
-        // Single quote is escaped via the '\'' idiom; the space stays inside quotes.
-        assert!(hint.contains("'/tmp/a b/it'\\''s here'"), "got: {hint}");
+    fn resume_hint_quotes_hostile_ids() {
+        let hint = resume_hint("01'; rm -rf /", None);
+        // Single quote is escaped via the '\'' idiom.
+        assert!(hint.contains("'01'\\''; rm -rf /'"), "got: {hint}");
     }
 }

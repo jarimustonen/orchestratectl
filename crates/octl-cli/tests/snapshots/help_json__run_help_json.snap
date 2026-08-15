@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
+assertion_line: 66
 expression: value
 ---
 {
@@ -7,7 +8,7 @@ expression: value
   "data": {
     "schema_version_help": 3,
     "command": "orchestratectl run",
-    "about": "Create, list, show, wait on, cancel, merge, or reattach a run",
+    "about": "Create, list, show, wait on, cancel, merge, salvage, or reattach a run",
     "aliases": [],
     "hidden": false,
     "deprecated": false,
@@ -113,6 +114,14 @@ expression: value
       {
         "command": "orchestratectl run reattach",
         "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
+        "aliases": [],
+        "hidden": false,
+        "deprecated": false,
+        "has_subcommands": false
+      },
+      {
+        "command": "orchestratectl run salvage",
+        "about": "Salvage a stuck single-worker run: fence its prior worker (verifying identity first) and drive `run merge` from the preserved worktree's current git state — the fenced manual finish for an `attention-required` run (a worker that exited cleanly but skipped `run merge`) or a `failed` run whose branch was preserved. Refuses an already-`done`/`cancelled` run, a multi-node run, a run with no preserved worktree/branch, and a live worker it cannot safely fence",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

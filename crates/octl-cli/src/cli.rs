@@ -57,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         action: SkillAction,
     },
-    /// Create, list, show, wait on, cancel, merge, or reattach a run.
+    /// Create, list, show, wait on, cancel, merge, salvage, or reattach a run.
     Run {
         #[command(subcommand)]
         action: crate::run::RunAction,

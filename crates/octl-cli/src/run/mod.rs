@@ -13,6 +13,7 @@ pub mod list;
 pub mod merge;
 pub mod merge_recovery;
 pub mod reattach;
+pub mod salvage;
 pub mod show;
 pub mod spawn;
 pub mod stalled;
@@ -177,6 +178,34 @@ pub enum RunAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Salvage a stuck single-worker run: fence its prior worker (verifying
+    /// identity first) and drive `run merge` from the preserved worktree's
+    /// current git state — the fenced manual finish for an
+    /// `attention-required` run (a worker that exited cleanly but skipped
+    /// `run merge`) or a `failed` run whose branch was preserved. Refuses an
+    /// already-`done`/`cancelled` run, a multi-node run, a run with no
+    /// preserved worktree/branch, and a live worker it cannot safely fence.
+    Salvage {
+        run_id: String,
+        /// Merge target branch. Defaults to the run's recorded `source_branch`.
+        #[arg(long)]
+        source: Option<String>,
+        /// Optional §7.3 report payload (JSON file) to submit on the salvage
+        /// merge, forwarded to `run merge` (stamped `via: "explicit-merge"`).
+        #[arg(long)]
+        report_file: Option<std::path::PathBuf>,
+        /// Permit fencing a *live* worker: SIGTERM the recorded agent pid
+        /// (only ever when its start-time identity matches). Without it, a
+        /// still-alive original worker is a refusal — salvage never kills a
+        /// running worker implicitly.
+        #[arg(long)]
+        fence: bool,
+        /// Resolve inputs and report the planned salvage (worker state,
+        /// whether a fence would fire, the planned merge) without fencing or
+        /// merging anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Block until one or more runs reach a terminal state
     /// (`done | failed | cancelled`) and emit a structured summary, so
     /// callers stop hand-rolling `run show` poll loops. Read-only: never
@@ -287,6 +316,21 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             source,
             node_id,
             report_file,
+            dry_run,
+            spec,
+            warnings,
+        }),
+        RunAction::Salvage {
+            run_id,
+            source,
+            report_file,
+            fence,
+            dry_run,
+        } => salvage::run(salvage::Args {
+            run_id,
+            source,
+            report_file,
+            fence,
             dry_run,
             spec,
             warnings,
