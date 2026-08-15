@@ -5,6 +5,9 @@ type: improvement
 status: in-progress
 priority: normal
 epic: lifecycle-architecture-review
+commits:
+- hash: 7c5a1a8
+  summary: 'feat(report): typed node.report origin instead of string sniffing'
 ---
 
 # Type node.report provenance instead of reason/via string sniffing

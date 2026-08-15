@@ -103,9 +103,15 @@ impl TerminalOutcome {
         let success = report.get("success").and_then(Value::as_bool);
         let cancelled = report.get("cancelled").and_then(Value::as_bool) == Some(true);
         // The typed provenance (issue `typed-report-origin`), when the report
-        // carries it. `None` for a legacy report written before the field existed —
-        // classification then falls back to the conservative string-sniffing paths
-        // (`via` / `reason`) below, so old on-disk runs classify exactly as before.
+        // carries it. The legacy string-sniffing fallback (`via` / `reason`) is
+        // gated on the origin field being genuinely ABSENT — a legacy report — NOT
+        // on `from_report` returning `None`. That distinction is load-bearing for
+        // security: a report that CARRIES an `origin` field but whose value fails to
+        // parse (corrupt / hand-edited / a downgrade attempt) must NOT re-unlock the
+        // forgeable legacy `via` merge path (llm-review consensus finding). A
+        // present-but-malformed origin is treated as "typed, but unknown authority":
+        // never a merge, never a supervisor failure.
+        let origin_present = report.get(octl_core::REPORT_ORIGIN_KEY).is_some();
         let origin = ReportOrigin::from_report(report);
         let is_run_merge_origin = matches!(origin, Some(ReportOrigin::RunMerge { .. }));
 
@@ -124,12 +130,11 @@ impl TerminalOutcome {
         // `Agent` origin, so it cannot assert this); the legacy `via` marker is the
         // fallback for a report written before the origin field existed. Gating the
         // `via` fallback on an ABSENT origin is what makes the typed field strictly
-        // stronger: a report that DOES carry an origin but is not `RunMerge` (e.g. an
-        // `Agent` report that hand-set `via: explicit-merge`) is NOT a merge — it
-        // never earns the force teardown on a forged string alone. A merge marker
+        // stronger: a report that DOES carry an origin field (parsed or not) never
+        // earns the force teardown on a forged `via` string alone. A merge marker
         // with success:false (malformed/spoofed) is likewise NOT a merge and falls
         // through to the negative arms below.
-        let legacy_via_merge = origin.is_none() && report_via(report) == Some(VIA_EXPLICIT_MERGE);
+        let legacy_via_merge = !origin_present && report_via(report) == Some(VIA_EXPLICIT_MERGE);
         if success == Some(true) && (is_run_merge_origin || legacy_via_merge) {
             return Some(TerminalOutcome::Merged);
         }
@@ -137,11 +142,13 @@ impl TerminalOutcome {
             // A negative report that is neither cancel nor merge: a blocked
             // handoff or a supervisor/worker-recorded failure. They share a
             // teardown policy (PreserveWork); the split is observability only.
-            Some(false) => Some(if is_supervisor_failure(report, origin.as_ref()) {
-                TerminalOutcome::Failed
-            } else {
-                TerminalOutcome::Blocked
-            }),
+            Some(false) => Some(
+                if is_supervisor_failure(report, origin_present, origin.as_ref()) {
+                    TerminalOutcome::Failed
+                } else {
+                    TerminalOutcome::Blocked
+                },
+            ),
             // A success report that did not come through `run merge`.
             Some(true) => Some(TerminalOutcome::PlainSuccess),
             // No boolean `success` on a present report: the reducer would have
@@ -255,15 +262,26 @@ pub fn classify_live_node(worker_exit: Option<WorkerExit>, death: DeathObservati
 /// a `Supervisor` origin is a supervisor failure, an `Agent` origin is a blocked
 /// handoff, and — defensively — a `RunMerge` origin on a negative report (which
 /// `run merge` refuses to append, but classify stays defensive) is treated as a
-/// non-supervisor blocked. Only when the origin is ABSENT (a legacy report) does it
-/// fall back to sniffing the `reason` string, preserving the pre-typed behavior for
-/// old on-disk runs.
-fn is_supervisor_failure(report: &Value, origin: Option<&ReportOrigin>) -> bool {
+/// non-supervisor blocked. The `reason`-string sniff runs ONLY when the origin
+/// field is genuinely ABSENT (`origin_present == false`, a legacy report) — a
+/// present-but-malformed origin is NOT re-downgraded to string sniffing (parallel
+/// to the merge gate; llm-review consensus finding), it is treated as an unknown
+/// author and classified `Blocked`. Either way the teardown policy is identical
+/// ([`Teardown::PreserveWork`]), so this only governs the observability split.
+fn is_supervisor_failure(
+    report: &Value,
+    origin_present: bool,
+    origin: Option<&ReportOrigin>,
+) -> bool {
     match origin {
         Some(ReportOrigin::Supervisor) => return true,
         Some(ReportOrigin::Agent | ReportOrigin::RunMerge { .. }) => return false,
-        // Legacy report: no typed origin — fall back to the reason-string sniff.
         None => {}
+    }
+    if origin_present {
+        // A typed origin field is present but did not parse: treat as an unknown
+        // author, not a legacy report — do not fall back to string sniffing.
+        return false;
     }
     let Some(reason) = report.get("reason").and_then(Value::as_str) else {
         // A negative report with no reason is more likely an agent handoff than a
@@ -479,6 +497,42 @@ mod tests {
         );
         assert!(!outcome.is_explicit_merge());
         assert_eq!(outcome.teardown(), Teardown::SourceRelative);
+    }
+
+    /// Security regression (llm-review consensus): a report that CARRIES an
+    /// `origin` field whose value fails to parse must NOT re-unlock the legacy
+    /// forgeable `via` merge path. A present-but-malformed origin is "typed but
+    /// unknown authority" — never a merge (classifies `PlainSuccess`), never a
+    /// supervisor failure (a negative one classifies `Blocked`). Only a genuinely
+    /// ABSENT origin falls back to the `via` / `reason` string sniff.
+    #[test]
+    fn malformed_origin_does_not_downgrade_to_legacy_via_or_reason() {
+        // Malformed origin + forged via + success:true must NOT be Merged.
+        let forged_merge = node_with_report(Some(json!({
+            "success": true,
+            "via": "explicit-merge",
+            "origin": "garbage-not-an-object"
+        })));
+        let outcome = TerminalOutcome::classify(&forged_merge).expect("classifies");
+        assert_eq!(
+            outcome,
+            TerminalOutcome::PlainSuccess,
+            "a present-but-malformed origin must not unlock the legacy via merge path"
+        );
+        assert!(!outcome.is_explicit_merge());
+        assert_eq!(outcome.teardown(), Teardown::SourceRelative);
+
+        // Malformed origin + a supervisor-looking reason must NOT sniff to Failed;
+        // an unknown author is conservatively Blocked (same teardown either way).
+        let unknown_neg = node_with_report(Some(json!({
+            "success": false,
+            "reason": "worker-exited-nonzero",
+            "origin": { "kind": "not-a-real-variant" }
+        })));
+        assert_eq!(
+            TerminalOutcome::classify(&unknown_neg),
+            Some(TerminalOutcome::Blocked)
+        );
     }
 
     /// Legacy compatibility: a report with NO origin field classifies exactly as

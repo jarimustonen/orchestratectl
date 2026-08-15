@@ -77,8 +77,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // Normalize the typed report origin to `Agent` (issue `typed-report-origin`).
     // A `node report` is always an agent self-submission, so any caller-supplied
     // `origin` is discarded and overwritten — an agent must NOT be able to assert a
-    // `RunMerge` (merge authorization) or `Supervisor` origin. This keeps merge
-    // authorization tied to the `run merge` path, which stamps `RunMerge` itself.
+    // `RunMerge` (merge authorization) or `Supervisor` origin that `classify` would
+    // trust. This keeps the TYPED merge authorization tied to the `run merge` path,
+    // which stamps `RunMerge` itself.
+    //
+    // The pre-existing `via` marker is deliberately left untouched: the reducer's
+    // confirmed-merge adoption and `run wait`'s report-marker `landed` fallback key
+    // on `via`, and reworking that authorization surface is out of scope for this
+    // issue (the issue scopes teardown/reducer via-semantics as unchanged — a
+    // forged `via` on an `Agent`-origin report still classifies `PlainSuccess`, so
+    // teardown never force-deletes it). Tightening `via` is a separate follow-up.
     normalize_agent_origin(&mut data);
 
     let root = crate::home::root_dir()?;
@@ -219,7 +227,8 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, CliError> {
 
 /// Overwrite any caller-supplied `origin` with the typed [`Agent`] origin (issue
 /// `typed-report-origin`). A `node report` is always an agent self-submission; a
-/// merge/supervisor origin must never be assertable from an untrusted payload.
+/// `RunMerge`/`Supervisor` origin that `classify` would trust must never be
+/// assertable from an untrusted payload.
 ///
 /// [`Agent`]: octl_core::ReportOrigin::Agent
 fn normalize_agent_origin(data: &mut Value) {
