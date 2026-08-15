@@ -193,7 +193,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: detached-head-teardown-commit-loss (0.2 EXECUTION — thin-supervisor core A1/A2/A3/A5/A6, explicit --interactive, and dirty-worktree teardown guard LANDED 2026-08-15. Continue 0.2 correctness follow-ups, starting with detached-HEAD/no-branch committed-work preservation on non-merge teardown. After correctness follow-ups + pi.dev thread: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
+GLOBAL HEAD-OF-LINE: per-node-run (0.2 EXECUTION — thin-supervisor core A1/A2/A3/A5/A6, explicit --interactive, dirty-worktree guard, and detached-HEAD committed-work guard LANDED 2026-08-15. Continue 0.2 correctness follow-ups: per-node fan-out cancel next. After correctness follow-ups + pi.dev thread: cut v0.2.0.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin); the thin-supervisor build takes priority over them.   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -201,14 +201,16 @@ Phase 2 — COMPLETE (2026-08-13): design.md (facilitated /llm-workshop + 3-mode
 Phase 3 — COMPLETE (2026-08-13): arch-decision-rearchitect-vs-harden → ADR docs/decisions/0001; re-triaged all Lane A+E (9 obsoleted). EXECUTION now runs as the cuts below (Lane B pipeline cut = step 1).
 
 LANE A — supervise/agent-lifecycle CORE  (post-ADR survivors only — kept-and-fix / defer-to-0.2.1; the 9 obsoleted lines dropped)
-  ▶ detached-head-teardown-commit-loss      (0.2 correctness follow-up — preserve detached/no-branch committed work on non-merge teardown)
-    per-node-run                            (A5 follow-up — per-node fan-out cancel, branch-preserving)
+  ▶ per-node-run                            (A5 follow-up — per-node fan-out cancel, branch-preserving)
     typed-report-origin                     (A6 follow-up — typed node.report provenance, no string sniffing)
     raw-git-selfmerge-false-failed          (A6 follow-up — accepted thin-model tradeoff; surface/decide, never auto-success)
     atomic-source-ref                       (A2 follow-up — deferred residual; replace check-then-FF with git update-ref old-oid)
     run-merge-recovery                      (A2 follow-up — deferred residual; persist rich report payload on recovered completion)
     run-merge-recovery-2                    (A2 follow-up — deferred residual; recovery for terminal-Failed watchdog-adoption merge path)
     teardown-preserve-leak-backpressure     (teardown follow-up — visible backpressure for persistent fail-closed preserve loops)
+    detached-head-teardown-toctou           (teardown follow-up — close HEAD movement check-then-act window; likely lease/rescue-ref design)
+    teardown-durable-ref-validation         (teardown follow-up — validate source/worker refs are durable refs/heads)
+    teardown-inprogress-git-op              (teardown follow-up — preserve in-progress git operation state)
     run-merge-stamp                         (run merge should stamp Fixes-Issue/Refs-Issue trailer into landing commit)
     merge-report-schema-lenience            (FAST-TRACK keep per ADR — advisory-field typo makes `run merge` reject the whole report; low-risk merge-first-then-validate)
     peculiarly-cheerful-mine                (DEFER-0.2.1 — supervisor lease/heartbeat, pi.dev self-report plugin)
