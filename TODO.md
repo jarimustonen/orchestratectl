@@ -6,49 +6,54 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-14 (**ADR LANDED; 0.2 EXECUTION UNDERWAY — first big cut done; NEXT = the next sequenced cut**)
+## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-15 (**SUBTRACTIVE CUTS COMPLETE; NEXT = the thin-supervisor BUILD**)
 
-**✅ LATEST (2026-08-14 — read first).** The architecture DECISION PHASE is over and **0.2 execution
-has begun.** This session: the ADR landed, then two full rounds + a feedback fix, all green, `main`
-clean, local binary rebuilt (`doctor` **845/0/0**). **v0.1.8 shipped; v0.2.0 is now accumulating on `main`** (breaking — do NOT patch-release it).
+**✅ LATEST (2026-08-15 — read first).** The 0.2 **subtractive-cut phase is DONE.** This session landed the
+second (and final) big cut — the run KINDS + the mid-run discussion/spinoff machinery — behind a green
+integrated gate, then cleaned up its own CI fallout. `main` is green (incl. `cargo doc`), clean, pushed;
+local binary redeployed (`doctor` **849/0/0**). **v0.2.0 keeps accumulating on `main`** (breaking — do NOT
+patch-release). No release cut this session (the thin-supervisor build still comes before v0.2.0).
 
-- **◆ DECISION-2 RECORDED → ADR `docs/decisions/0001-thin-supervisor-vs-harden.md`** (`arch-decision-rearchitect-vs-harden`
-  closed done). Re-triaged EVERY Lane A + E issue: **9 obsoleted** (idle-unmerged-*, watchdog pair,
-  autoretry, interactive-merge-audit, code-run-inject, moderately-macabre-self, idle-empty-handed),
-  the rest kept-and-fix or DEFER-to-0.2.1. Lanes A + E are now **UN-gated** but most survivors are
-  0.2.1 material — don't pull them ahead of the cuts.
-- **⬆ v0.1.8 SHIPPED** (crates.io octl-core→orchestratectl, `v0.1.8` tag → Release CI green all 8 jobs,
-  Homebrew tap): `signal-exit-143-regression` (a REAL bug — SIGTERM/SIGINT during supervisor boot exited
-  2 not 143/130; boot-signal short-circuit + deterministic test) + `support-pi-dev` (pi.dev skill install
-  now mirrors companion files). NB: the version bump left `version_*` snapshots stale → brief main-CI red,
-  fixed `0bf6a75`; now guarded (see below).
-- **0.2 EXECUTION — first subtractive cut LANDED** (`cut-pipeline-floor-harness-heavy`, ~26.5k LOC deleted):
-  `pipeline/` + `floor/` + the harness heavy layer (`harness bakeoff`/`conformance`, `CodeHarness` trait,
-  `aider` + `claude-deepseek` adapters) are GONE; the light `--harness claude|pi` launcher kept and verified.
-  Obsoleted 7 pipeline/harness fix issues. **Breaking CLI change** → v0.2.0-bound.
-- **Two more landed this session:** `pi-provenance-flat-file-model` (skill.rs → flat per-file pi.dev mirror
-  provenance, schema v3, upgrade path from v2); `release-version-snapshot-refresh` (a loud CI guard
-  `scripts/check-version-snapshots.sh` + a release-mechanics doc step so a version bump can never again
-  silently stale the `version_*` snapshots). Plus the feedback fix `stint-head-of-line-in-progress-eligible`
-  (bundled SKILLs: an `in-progress` issue is now a RESUMABLE head-of-line candidate, not excluded — Jari:
-  MUST land in 0.2.0; done + redeployed). All in `CHANGELOG [Unreleased]` toward 0.2.0.
+- **STEP 2 CUT LANDED** (`cut-run-kinds-discussion-machinery`, done): removed the `code`/`orchestrate`/
+  `orchestrated`/`bugfix`/`make-skill` run KINDS + the mid-run discussion/spinoff machinery (events, reducer
+  projections, `DiscussionId`/`ProposalId`, `discussions/`+`spinoffs/` dirs, counters, CLI verbs); collapsed
+  the kind-derived lifecycle inference in `supervise/*`; removed `--confirm-interactive` + the code-run merge
+  gate; **deleted 5 bundled skills** (`/worktree-code`, `/orchestrate`, `/worktree-orchestrated`,
+  `/worktree-bugfix`, `/worktree-make-skill`) + updated the `/worktree` router. **KEPT** terminal-report
+  `discussion_items[]`/`spinoff_proposals[]` + surviving `spinoff`/`research`/`technical-decision`/`fan-out`.
+  Legacy on-disk runs of removed kinds decode read-only (`Kind::Unknown`), reported-not-deleted (ADR §D7).
+  `/llm-review` 4-model panel, FIX-class applied (fail-closed `data_kind` + read-only guard, 2 regression
+  tests). Integrated gate green (all suites 0 failed); obsoleted `bundled-orchestrate-skill` (wontfix). ⇒
+  **SUBTRACTIVE CUTS COMPLETE** (step 1 pipeline/harness landed 2026-08-14; step 2 = this).
+- **CI fallout caught + fixed same session** (`ci-red-main`, fixed): the cut removed `spinoff::approve` but
+  left a dangling intra-doc link to it in `proc.rs` → `main`'s `docs` job went red. `cargo test`/`clippy`
+  don't catch broken intra-doc links; a CI-watcher filed it, a headless spinoff repointed the link,
+  `cargo doc` now green. **Process fix:** `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` is now
+  part of the green gate (root `AGENTS.md`) — a symbol-removing cut MUST run it.
 
-**⏭ NEXT = the next sequenced cut** (the new GLOBAL HEAD once filed): **remove the run KINDS**
-(`code`/`orchestrate`/`orchestrated`/`bugfix`/`make-skill`) **+ the mid-run discussion/spinoff-proposal
-machinery.** This is the riskier cut — it touches `supervise/*` (the kind-derived lifecycle inference
-collapses when `Lifecycle::Interactive` empties) + the skill bundle, so it is SEQUENCED after the pipeline
-cut (not parallel with skill.rs work). File the granular cut issue at `/stint-start`, then execute behind
-the integrated gate. After the cuts: the thin-supervisor build (exit-status launcher shim A1 + typed
-outcome table A6 + fenced manual resume/finish A3 + `--interactive` flag), then cut **v0.2.0**.
+**⏭ NEXT = the thin-supervisor BUILD** (GLOBAL HEAD `thin-supervisor-build`, not yet filed as granular
+issues). Migration sketch step 2+: **A1** exit-status launcher shim / **A2** merge-transaction recovery /
+**A6** typed outcome table / **A3** fenced manual resume-finish skill (= `run-salvage-command`) / **A5**
+richer `run show` + `run cancel --node` / the **`--interactive`** flag. File the granular build issues at the
+next `/stint-start`, then execute behind the integrated gate. This is BUILD not delete → still touches
+`supervise/*` (hot cluster) so sequence within Lane A. After the build: cut **v0.2.0**. (Lane A + E survivors
+are mostly DEFER-to-0.2.1; don't pull them ahead of the build.)
 
-**⚠ Open follow-up filed this session:** `run-create-long-title-stillborn` (a long `--title` truncates the
-worktree/tmux-window name → the window lookup misses → **stillborn spawn**, no reason persisted; masquerades
-as `supervisor-spawn-fails-silently`). Workaround: keep `--title` short. In the DAG (Lane A).
+**⚠ Open follow-ups:** `run-create-long-title-stillborn` (Lane A — long `--title` truncates the
+worktree/tmux-window name → window lookup misses → **stillborn spawn**, no reason persisted; workaround: keep
+`--title` short). `stint-skill-desc-over-pi-limit` (Lane D, filed this session — `stint-start`/`stint-handoff`
+SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load; trim both ≤1024).
+**Intake handled:** `intake-feature-orchestratectl-302ab43b3efd` closed **duplicate** of Lane E's
+`node-show-null-report` (the run-show/node-show terminal-report shows `"none"`/null after self-merge though
+it's on disk in `nodes/n-0001.json .last_report`; the intake adds that `run show` — not only `node show` — is
+affected; that detail lives on the closed intake item's body).
 
-**🧹 Whole-repo cleanup coming (Jari, 2026-08-14):** a repo-wide siivous is imminent — it will also cover
-migrating this `TODO.md` execution-DAG onto `issuectl dag` (the updated `/wrap-up` Step 7 keys on
-`issuectl dag`, which is currently empty for this repo — a known config gap, NOT real unlaned work). Do
-NOT file a separate migration issue; it folds into that cleanup.
+**🧹 Whole-repo cleanup coming (Jari, 2026-08-14):** a repo-wide siivous is imminent. It should also sweep
+the now-**stale skill references left in `AGENTS.md`** (the Spinoff-workflow + hot-file prose still names the
+5 removed `/worktree-code`/`/worktree-bugfix`/`/worktree-make-skill`/`/orchestrate`/`/worktree-orchestrated`
+skills), and migrate this `TODO.md` execution-DAG onto `issuectl dag` (the `/wrap-up` Step 7 keys on
+`issuectl dag`, currently empty for this repo — a known config gap, NOT real unlaned work). Do NOT file
+separate issues for these; they fold into that cleanup.
 
 **— historical below (this session's earlier waves + canonical KEY LEARNINGs, still load-bearing) —**
 
@@ -173,7 +178,7 @@ stint's focus. DAG drift-clean at wrap (42 active issues, all in lanes, nothing 
 
 ---
 
-## Execution DAG (2026-08-14b)
+## Execution DAG (2026-08-15)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -227,6 +232,7 @@ LANE D — workflow/skill (skill.rs + skill prose; NOT lifecycle core — procee
     spinoff-skill-stale-preview-banner      collision: bundled-skill snapshot (octl-spawn-spinoff SKILL.md preview banner — prose fix)
     consult-failure-hard-fail               (a failed/partial consult review inside a worktree must be a HARD failure, not silently passed)
     stint-skills-drop-intake-specifics      (remove project-specific intake concepts leaked into stint-handoff + AGENTS-EXECUTION-DAG.md — keep the stint skills generic/OSS)
+    stint-skill-desc-over-pi-limit          (NEW 2026-08-15 — stint-start (1211) + stint-handoff (1142) SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load. Trim both SKILL.template.md descriptions ≤1024 keeping trigger phrases; consider a doctor/CI guard. Only 2 bundled skills over; same class as obsoleted bundled-orchestrate-skill.)
 
 LANE E — run/* read surface (cluster B, run-state DTO)  (post-ADR survivors — kept)
     node-show-null-report                   (node show null report after self-merge — report is in nodes/<node>.json last_report)
@@ -513,4 +519,4 @@ were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy` — only the light
 ## Piialiisan bugiraportit
 
 - [x] 🐛 Auto-land an idle spinoff whose work is committed and merges cleanly — CLOSED wontfix 2026-08-14 (subsumed by the thin-supervisor ADR's manual-finish decision; re-file if a concrete need surfaces). ([`intake-feature-orchestratectl-0c37ae4b9e84`](issues/intake-feature-orchestratectl-0c37ae4b9e84/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: run show --output json surfaces terminal report as "none"; report lives… — jari via Telegram ([`intake-feature-orchestratectl-302ab43b3efd`](issues/intake-feature-orchestratectl-302ab43b3efd/item.md)) — NEEDS-TRIAGE (arrived during handoff; disposition at next /stint-handoff or /triage-bugs)
+- [x] 🐛 run show --output json surfaces terminal report as "none"; report lives in nodes/n-0001.json .last_report — CLOSED **duplicate** 2026-08-15 of Lane E `node-show-null-report` (same bug; intake adds that `run show`, not only `node show`, is affected — noted on the closed intake body). ([`intake-feature-orchestratectl-302ab43b3efd`](issues/intake-feature-orchestratectl-302ab43b3efd/item.md))

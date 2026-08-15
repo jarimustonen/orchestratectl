@@ -1,13 +1,14 @@
 ---
 created: 2026-08-14
-updated: 2026-08-14
+updated: 2026-08-15
 type: feature
 reporter: jari
-status: open
+status: duplicate
 priority: normal
 labels:
 - via:agent-homebase-wrapup
 - needs-triage
+closed: 2026-08-15
 ---
 
 # run show --output json surfaces terminal report as "none"; report lives…
