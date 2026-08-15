@@ -89,8 +89,10 @@ impl ConfigKey {
 pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let path = config_path()?;
     // Load config once and read the env once; every row is resolved against the
-    // same ambient snapshot so the picture is internally consistent.
-    let config = Config::load()?;
+    // same ambient snapshot so the picture is internally consistent. Load from
+    // the already-resolved `path` (not `Config::load()`, which re-resolves the
+    // home) so the reported `path` and the file actually read are the same one.
+    let config = Config::load_from(&path)?;
     let env = std::env::var(HARNESS_ENV).ok();
     let env = env.as_deref();
 
@@ -135,8 +137,12 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
         OutputFormat::Text => {
             println!("path:   {}", payload.path);
             println!("exists: {}", payload.exists);
+            // Pad the key column to the widest key so the value/source columns
+            // stay aligned — `harness.technical-decision` (26 chars) overflows a
+            // fixed pad, so compute it from the rows.
+            let key_w = payload.keys.iter().map(|k| k.key.len()).max().unwrap_or(0);
             for k in &payload.keys {
-                println!("{:<24} {:<10} ({})", k.key, k.value, k.source);
+                println!("{:<key_w$} {:<10} ({})", k.key, k.value, k.source);
             }
             output::emit_text_warnings(warnings);
         }

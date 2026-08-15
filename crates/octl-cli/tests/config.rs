@@ -256,6 +256,25 @@ fn config_show_text_is_human_readable() {
         stdout.contains("harness.default"),
         "text output: {stdout:?}"
     );
+    // The value column stays aligned even for the widest key
+    // (`harness.technical-decision`, 26 chars > any fixed pad): every harness
+    // row's value must start at the same column.
+    let value_cols: Vec<usize> = stdout
+        .lines()
+        .filter(|l| l.starts_with("harness."))
+        .map(|l| {
+            let key_end = l.find(' ').expect("key/value separator");
+            l[key_end..].len() - l[key_end..].trim_start().len() + key_end
+        })
+        .collect();
+    assert!(
+        value_cols.len() >= 5,
+        "expected all harness rows: {stdout:?}"
+    );
+    assert!(
+        value_cols.windows(2).all(|w| w[0] == w[1]),
+        "value column not aligned across rows: {stdout:?}"
+    );
 }
 
 #[test]

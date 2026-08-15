@@ -4,6 +4,9 @@ updated: 2026-08-16
 type: feature
 status: in-progress
 priority: normal
+commits:
+- hash: c58ee69
+  summary: 'feat(config): add config path + config show inspection commands'
 ---
 
 # config subcommand: config path and config show --json
