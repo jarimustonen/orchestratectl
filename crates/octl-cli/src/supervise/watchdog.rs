@@ -342,7 +342,7 @@ const TMUX_OUTPUT_CAP: usize = 1 << 20; // 1 MiB
 /// Spawn `cmd` and wait at most `timeout`, mapping the shared bounded-subprocess
 /// outcome ([`crate::proc::run_with_timeout`]) into a tmux-probe verdict. The
 /// timeout + process-group-kill + drained-capture machinery lives in
-/// [`crate::proc`] so the watchdog and spin-off materialization share one
+/// [`crate::proc`] so the watchdog and pane-output capture share one
 /// implementation; here we only care about exit success and captured stdout.
 fn run_timed(cmd: Command, timeout: Duration) -> ProbeOutcome {
     match crate::proc::run_with_timeout(cmd, timeout, TMUX_OUTPUT_CAP) {

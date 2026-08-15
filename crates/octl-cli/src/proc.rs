@@ -2,11 +2,11 @@
 //!
 //! One timeout + process-group-kill + capped-capture implementation, lifted
 //! from the original tmux-specific watchdog `run_timed` (the
-//! `spinoff-issuectl-subprocess-bounds` work). Both the liveness watchdog
-//! ([`crate::supervise::watchdog`]) and spin-off materialization
-//! ([`crate::spinoff::approve`]) drive untrusted/foreign binaries (`tmux`,
-//! `issuectl`) that can wedge, stream unbounded output, or fork children — so
-//! every such spawn goes through here rather than `Command::output()`:
+//! `spinoff-issuectl-subprocess-bounds` work). The supervisor's tmux
+//! shell-outs — the liveness watchdog ([`crate::supervise::watchdog`]) and
+//! pane-output capture ([`crate::supervise::capture`]) — drive foreign binaries
+//! (`tmux`) that can wedge, stream unbounded output, or fork children, so every
+//! such spawn goes through here rather than `Command::output()`:
 //!
 //! - **Timeout.** The std library has no built-in process timeout, so this
 //!   polls [`std::process::Child::try_wait`] against a deadline and SIGKILLs the
