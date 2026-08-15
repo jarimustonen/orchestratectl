@@ -2,12 +2,15 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 commits:
 - hash: 63aa894
   summary: make supervisor rollup_status log-authoritative
+- hash: 06880c1
+  summary: surface log-read errors + honest cost docs (llm-review)
+closed: 2026-08-15
 ---
 
 # Make supervisor rollup_status log-authoritative (not a projection scan)
