@@ -349,6 +349,12 @@ fn bad_report_file_rejected_before_merge() {
     assert!(!out.status.success());
     let err: Value = serde_json::from_slice(&out.stderr).expect("stderr JSON");
     assert_eq!(err["error"]["code"], "schema_violation");
+    // The structured `expected` hint survives the merge boundary (parity with
+    // `node report`) — a malformed REQUIRED field stays strict AND self-describing.
+    assert_eq!(
+        err["error"]["expected"],
+        serde_json::json!({"field": "success", "type": "boolean"})
+    );
     assert!(
         !scratch.path().join("merge.log").exists(),
         "merge must not run when the report file is invalid"

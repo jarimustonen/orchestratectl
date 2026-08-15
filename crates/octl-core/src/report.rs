@@ -611,13 +611,30 @@ pub struct SanitizedReport {
 /// [`AdvisoryWarning`] instead of failing the call. This covers:
 /// - `summary` (a non-string/non-null scalar → field dropped),
 /// - `discussion_items` / `spinoff_proposals` (a non-array → whole field dropped;
-///   an invalid element → that element dropped, valid siblings kept),
+///   an invalid element → that WHOLE element dropped, valid siblings kept),
 /// - `wrap_up_recommendations` (a non-array → field dropped; a non-string element
 ///   → that element dropped).
+///
+/// **Element granularity is coarse by design:** an element is validated as a unit,
+/// so a malformed *nested* value (e.g. a non-string inside a `discussion_items[i].
+/// options` array, or a bad `spinoff_proposals[i].proposed_kind`) drops the entire
+/// containing element — its valid siblings like `topic` go with it. This keeps the
+/// lenient rules byte-identical to the strict per-element validators (no rule
+/// drift) at the cost of not salvaging partial elements; salvaging a typo is what
+/// motivated leniency, and dropping one malformed proposal is an acceptable price.
 ///
 /// This is what stops an advisory-field typo (the recurring `title`/`detail`
 /// instead of `proposed_title`/`proposed_kind`/`rationale`) from rejecting the
 /// whole terminal report and blocking a clean, already-committed code merge.
+///
+/// **Provenance is NOT validated here — the caller owns it.** This function
+/// touches only the required and advisory fields above; every OTHER top-level key
+/// (`origin`, `via`, and any unknown agent key) is preserved verbatim from the
+/// input. It deliberately does NOT establish provenance trust: a caller that
+/// persists the result MUST stamp the authoritative [`ReportOrigin`] itself (as
+/// `run merge` does after this returns) — never trust a payload-supplied `origin`
+/// / `via`. See [`ReportOrigin`]'s "never accepted from an untrusted payload"
+/// contract; this sanitizer is a shape check, not a trust boundary.
 ///
 /// # Errors
 ///
@@ -1278,6 +1295,45 @@ mod tests {
             sanitize_report_advisory(&v),
             Err(ReportValidationError::NotObject)
         ));
+    }
+
+    #[test]
+    fn sanitize_preserves_unknown_and_provenance_fields() {
+        // The sanitizer is a SHAPE check, not a trust boundary: it must pass
+        // through `origin`, `via`, and unknown agent keys untouched. (`run merge`
+        // re-stamps the authoritative origin/via afterward — provenance trust is
+        // the caller's job, per the doc contract.)
+        let v = json!({
+            "success": true,
+            "origin": {"kind": "agent"},
+            "via": "explicit-merge",
+            "custom_agent_key": {"nested": [1, 2, 3]},
+            "spinoff_proposals": [{"title": "typo, drop me"}],
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1, "only the bad proposal is dropped");
+        assert_eq!(out.report["origin"], json!({"kind": "agent"}));
+        assert_eq!(out.report["via"], json!("explicit-merge"));
+        assert_eq!(out.report["custom_agent_key"], json!({"nested": [1, 2, 3]}));
+    }
+
+    #[test]
+    fn sanitize_nested_options_drops_whole_discussion_item() {
+        // A malformed nested `options` drops the ENTIRE element (coarse by design),
+        // taking the otherwise-valid `topic` with it. Documented behavior.
+        let v = json!({
+            "success": true,
+            "discussion_items": [
+                {"topic": "keep", "severity": "discuss"},
+                {"topic": "drop me", "options": ["ok", 42]},
+            ],
+        });
+        let out = sanitize_report_advisory(&v).unwrap();
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.warnings[0].index, Some(1));
+        let kept = out.report["discussion_items"].as_array().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["topic"], json!("keep"));
     }
 
     #[test]

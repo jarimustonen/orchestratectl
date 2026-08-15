@@ -1,10 +1,13 @@
 ---
 created: 2026-08-12
-updated: 2026-08-13
+updated: 2026-08-15
 type: feature
-status: open
+status: in-progress
 priority: normal
 labels: [keep-0.2]
+commits:
+- hash: ed21344
+  summary: 'feat(merge): lenient advisory report validation for run merge'
 ---
 
 # run merge should not block a clean merge on a malformed advisory report field

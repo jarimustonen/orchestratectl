@@ -257,7 +257,7 @@ fn normalize_agent_origin(data: &mut Value) {
 /// supervisor can reuse it (handoff D3); this is the CLI-boundary
 /// translation, preserving the structured `expected` hints the agent UX
 /// relied on.
-fn map_report_validation_error(err: ReportValidationError) -> CliError {
+pub(crate) fn map_report_validation_error(err: ReportValidationError) -> CliError {
     let mut cli = CliError::user("schema_violation", err.to_string());
     if let Some(expected) = err.expected() {
         cli = cli.with_expected(expected);

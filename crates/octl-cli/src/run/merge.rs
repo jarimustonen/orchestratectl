@@ -940,8 +940,11 @@ fn build_report(
     // strict — a violation there returns `schema_violation` and no merge happens.
     // Malformed advisory entries are dropped from the report the reducer projects
     // and returned as machine-readable warnings the caller surfaces.
+    // A REQUIRED-field violation still errors; map it through the shared boundary
+    // translator so the structured `expected` hint (e.g. `{field:"success",
+    // type:"boolean"}`) survives to the envelope, exactly as `node report` does.
     let sanitized = sanitize_report_advisory(&report)
-        .map_err(|e| CliError::user("schema_violation", e.to_string()))?;
+        .map_err(crate::node::report::map_report_validation_error)?;
     Ok((sanitized.report, sanitized.warnings))
 }
 
