@@ -307,9 +307,12 @@ fn terminal_report_rolls_run_to_done_and_cleans_up() {
         "tmux window not closed: {tmux:?}"
     );
     let git = log_contents(dir.path(), "git.log");
+    // NON-force removal on the non-merge (plain-success) path: git's own atomic
+    // dirty-check is the TOCTOU safety net; `--force` is reserved for a confirmed
+    // `run merge` (issue `non-merge-teardown-dirty-worktree`).
     assert!(
-        git.contains("worktree remove --force /fake/wt"),
-        "worktree not removed: {git:?}"
+        git.contains("worktree remove /fake/wt") && !git.contains("worktree remove --force"),
+        "worktree not removed with non-force on the non-merge path: {git:?}"
     );
     assert!(
         git.contains("branch -d -- wt/test-x"),
@@ -417,7 +420,13 @@ fn terminal_via_cancel_still_cleans_up() {
         log_contents(dir.path(), "tmux.log").contains("kill-window -t @42"),
         "cancel path must still close the tmux window"
     );
-    assert!(log_contents(dir.path(), "git.log").contains("worktree remove --force /fake/wt"));
+    // Cancel is a source-relative (non-merge) teardown → NON-force removal
+    // (issue `non-merge-teardown-dirty-worktree`).
+    let git = log_contents(dir.path(), "git.log");
+    assert!(
+        git.contains("worktree remove /fake/wt") && !git.contains("worktree remove --force"),
+        "cancel path must remove the worktree with non-force: {git:?}"
+    );
 }
 
 /// worktree-merge-orphans-tmux-window: when the recorded tmux window cannot be

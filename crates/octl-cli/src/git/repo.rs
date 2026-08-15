@@ -91,20 +91,32 @@ impl Git {
             .is_ok_and(|s| s.success())
     }
 
-    /// `git -C <dir> status --porcelain` → true when the output is empty (no
-    /// tracked, staged, or untracked changes). A `dir` whose `git status` cannot
-    /// be read is conservatively treated as **dirty** (returns false), so a
-    /// transient git failure never green-lights tearing a live tree down. The
-    /// caller owns the "path is None / no longer exists → clean" guard.
-    pub fn worktree_is_clean(&self, dir: &str) -> bool {
+    /// `git -C <dir> status --porcelain --untracked-files=all` → the cleanliness
+    /// of the tree as a THREE-state answer:
+    ///
+    /// - `Some(true)` — status ran and the output is empty: no tracked, staged, or
+    ///   untracked changes.
+    /// - `Some(false)` — status ran and reported changes: the tree is dirty.
+    /// - `None` — status could not be run (spawn failure / non-zero exit): the
+    ///   tree's cleanliness is UNVERIFIABLE. The caller decides how to treat that
+    ///   (teardown fails closed → preserve).
+    ///
+    /// `--untracked-files=all` is load-bearing: without it a repo (or the user's
+    /// global `~/.gitconfig`) setting `status.showUntrackedFiles=no` would hide an
+    /// agent's untracked new files from the check, and a non-force
+    /// [`Self::worktree_remove`] would then delete them (issue
+    /// `non-merge-teardown-dirty-worktree`). Ignored files are deliberately NOT
+    /// reported — they are disposable by policy, exactly as git's own non-force
+    /// `worktree remove` treats them.
+    pub fn worktree_status_clean(&self, dir: &str) -> Option<bool> {
         match self
             .at(dir)
-            .args(["status", "--porcelain"])
+            .args(["status", "--porcelain", "--untracked-files=all"])
             .stderr(Stdio::null())
             .output()
         {
-            Ok(out) if out.status.success() => out.stdout.iter().all(u8::is_ascii_whitespace),
-            _ => false,
+            Ok(out) if out.status.success() => Some(out.stdout.iter().all(u8::is_ascii_whitespace)),
+            _ => None,
         }
     }
 
@@ -128,18 +140,35 @@ impl Git {
             .filter(|s| !s.is_empty())
     }
 
-    /// `git -C <repo> worktree remove --force <worktree_path>` — lenient.
-    /// `--force` because on the paths that reach it the branch is either merged
-    /// or provably has no unmerged work vs its source (unmerged work is preserved
-    /// upstream in `cleanup_node`), so any untracked/modified scratch left behind
-    /// is disposable; without it git refuses to remove a dirty tree and the
-    /// cascade orphans the worktree AND branch (issue
-    /// `supervisor-worktree-remove-no-force`). Returns `true` on success so the
-    /// caller can distinguish an already-gone worktree from a genuine refusal.
-    pub fn worktree_remove(&self, repo: &str, worktree_path: &str) -> bool {
+    /// `git -C <repo> worktree remove [--force] <worktree_path>` — lenient. The
+    /// `force` flag is a data-loss boundary (issue
+    /// `non-merge-teardown-dirty-worktree`):
+    ///
+    /// - `force == true` — reserved for a CONFIRMED explicit `run merge`
+    ///   (`Teardown::Full`). `--force` bulldozes any untracked/modified scratch;
+    ///   the merge already confirmed the work landed in source, so the tree is
+    ///   disposable.
+    /// - `force == false` — every non-explicit-merge (`SourceRelative`) teardown.
+    ///   `cleanup_node` has already preserved a dirty tree upstream, so the tree
+    ///   reaching here is expected clean and non-force removal succeeds. But
+    ///   non-force is ALSO the atomic safety net: git re-checks cleanliness as part
+    ///   of the removal, so a tree that went dirty in the TOCTOU window between the
+    ///   upstream `worktree_status_clean` check and here makes git REFUSE (returns
+    ///   `false`) instead of silently discarding the new work. The caller treats a
+    ///   refusal-with-an-existing-dir as a preservation, not a removal.
+    ///
+    /// Returns `true` on success so the caller can distinguish an already-gone
+    /// worktree (removal fails, dir absent) from a genuine refusal (removal fails,
+    /// dir present).
+    pub fn worktree_remove(&self, repo: &str, worktree_path: &str, force: bool) -> bool {
         let mut cmd = self.at(repo);
-        cmd.args(["worktree", "remove", "--force", worktree_path]);
-        run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
+        if force {
+            cmd.args(["worktree", "remove", "--force", worktree_path]);
+            run_lenient(cmd, &format!("git worktree remove --force {worktree_path}"))
+        } else {
+            cmd.args(["worktree", "remove", worktree_path]);
+            run_lenient(cmd, &format!("git worktree remove {worktree_path}"))
+        }
     }
 
     /// `git -C <repo> branch -{d|D} -- <branch>` — lenient. `force` selects the
@@ -330,24 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn worktree_is_clean_tracks_dirtiness() {
-        let tmp = TempDir::new().unwrap();
-        let (_repo, wt) = init_repo_with_worktree(&tmp);
-        let g = Git::with_bin("git");
-        assert!(g.worktree_is_clean(wt.to_str().unwrap()));
-        std::fs::write(wt.join("scratch"), "dirt").unwrap();
-        assert!(!g.worktree_is_clean(wt.to_str().unwrap()));
-    }
-
-    #[test]
-    fn worktree_is_clean_false_on_git_error() {
-        // A non-repo directory: `git status` fails → conservatively dirty.
-        let tmp = TempDir::new().unwrap();
-        let g = Git::with_bin("git");
-        assert!(!g.worktree_is_clean(tmp.path().to_str().unwrap()));
-    }
-
-    #[test]
     fn main_worktree_resolves_from_linked() {
         let tmp = TempDir::new().unwrap();
         let (repo, wt) = init_repo_with_worktree(&tmp);
@@ -365,10 +376,53 @@ mod tests {
         let (repo, wt) = init_repo_with_worktree(&tmp);
         let g = Git::with_bin("git");
         let repo_s = repo.to_str().unwrap();
-        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap()));
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap(), true));
         assert!(!wt.exists());
         // Second remove of an already-gone worktree is a lenient no-op (false).
-        assert!(!g.worktree_remove(repo_s, wt.to_str().unwrap()));
+        assert!(!g.worktree_remove(repo_s, wt.to_str().unwrap(), true));
+    }
+
+    /// Non-force removal is the atomic dirty-check: it removes a genuinely CLEAN
+    /// worktree but REFUSES a dirty one (an untracked file), leaving it in place —
+    /// so a TOCTOU race that dirties the tree between the pre-check and removal
+    /// cannot silently discard the work (issue `non-merge-teardown-dirty-worktree`).
+    #[test]
+    fn worktree_remove_nonforce_refuses_dirty_but_removes_clean() {
+        let tmp = TempDir::new().unwrap();
+        let (repo, wt) = init_repo_with_worktree(&tmp);
+        let g = Git::with_bin("git");
+        let repo_s = repo.to_str().unwrap();
+        // An untracked file makes non-force removal refuse; the worktree survives.
+        std::fs::write(wt.join("scratch"), "dirt").unwrap();
+        assert!(!g.worktree_remove(repo_s, wt.to_str().unwrap(), false));
+        assert!(wt.exists(), "non-force must not delete a dirty worktree");
+        // Clean it up; now non-force removal succeeds.
+        std::fs::remove_file(wt.join("scratch")).unwrap();
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap(), false));
+        assert!(!wt.exists());
+    }
+
+    /// `worktree_status_clean` is a three-state answer, and `--untracked-files=all`
+    /// makes an untracked file register as dirty even under
+    /// `status.showUntrackedFiles=no` — the config that would otherwise hide it and
+    /// let a non-force removal delete it (issue `non-merge-teardown-dirty-worktree`).
+    #[test]
+    fn worktree_status_clean_tristate_and_uall_defeats_showuntrackedfiles_no() {
+        let tmp = TempDir::new().unwrap();
+        let (_repo, wt) = init_repo_with_worktree(&tmp);
+        let g = Git::with_bin("git");
+        let wt_s = wt.to_str().unwrap();
+        assert_eq!(g.worktree_status_clean(wt_s), Some(true), "clean tree");
+        // Hide untracked files via config — the -uall override must still see them.
+        git(&wt, &["config", "status.showUntrackedFiles", "no"]);
+        std::fs::write(wt.join("agent-new.rs"), "work").unwrap();
+        assert_eq!(
+            g.worktree_status_clean(wt_s),
+            Some(false),
+            "untracked file must count as dirty despite showUntrackedFiles=no"
+        );
+        // A non-repo dir → status errors → Unverifiable (None).
+        assert_eq!(g.worktree_status_clean(tmp.path().to_str().unwrap()), None);
     }
 
     /// The crux invariant: `-d` (force == false) REFUSES an unmerged branch,
@@ -384,7 +438,7 @@ mod tests {
         std::fs::write(wt.join("f"), "y").unwrap();
         git(&wt, &["add", "-A"]);
         git(&wt, &["commit", "-qm", "unmerged work"]);
-        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap()));
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap(), true));
         assert!(branch_exists(&repo, "wt/foo"));
 
         // `-d` refuses: the branch has commits not merged into HEAD (main).
@@ -407,7 +461,7 @@ mod tests {
         let g = Git::with_bin("git");
         let repo_s = repo.to_str().unwrap();
         // wt/foo is at main (fully merged); detach worktree then `-d` succeeds.
-        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap()));
+        assert!(g.worktree_remove(repo_s, wt.to_str().unwrap(), true));
         assert_eq!(g.branch_delete(repo_s, "wt/foo", false), None);
         assert!(!branch_exists(&repo, "wt/foo"));
     }
