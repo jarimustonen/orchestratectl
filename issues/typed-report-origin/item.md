@@ -2,7 +2,7 @@
 created: 2026-08-15
 updated: 2026-08-15
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 commits:
@@ -10,6 +10,7 @@ commits:
   summary: 'feat(report): typed node.report origin instead of string sniffing'
 - hash: f695979
   summary: 'fix(outcome): don''t downgrade a malformed origin to the legacy via path'
+closed: 2026-08-15
 ---
 
 # Type node.report provenance instead of reason/via string sniffing
