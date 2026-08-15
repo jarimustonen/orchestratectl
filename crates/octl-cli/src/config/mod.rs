@@ -1,5 +1,16 @@
 //! User-facing configuration file — the `file` layer of the
-//! flag > env > file > default precedence (AGENTS-AI-FIRST-CLI §8).
+//! flag > env > file > default precedence (AGENTS-AI-FIRST-CLI §8) — plus the
+//! read-only `config` noun that inspects it.
+//!
+//! Two responsibilities live here:
+//!
+//! - [`Config`] / [`config_path`] — the loader for the `file` layer, consumed by
+//!   the harness resolver ([`crate::harness::select`]).
+//! - The `config` subcommand ([`ConfigAction`], [`dispatch`]) — `config path`
+//!   prints the file location and `config show` prints the *effective resolved*
+//!   configuration with a per-key `source` (`env | file | default`), so an AI
+//!   caller can reason about **why** a value is what it is (§8). Read-only: it
+//!   never mutates the file. Verbs live in [`show`] and [`path`].
 //!
 //! Location: `<ORCHESTRATECTL_HOME or ~/.orchestratectl>/config.toml`. The file
 //! is entirely optional; a missing or empty file yields [`Config::default`], so
@@ -39,9 +50,50 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use clap::Subcommand;
 use serde::Deserialize;
 
 use crate::error::CliError;
+use crate::output::OutputSpec;
+
+pub mod path;
+pub mod show;
+
+/// Schema version of the `config` subcommand's JSON payloads (the
+/// `schema_version_config` field on `config path` / `config show`). Bumped
+/// independently of the run-state schema so an agent can pin the shape of the
+/// config surface (AGENTS-AI-FIRST-CLI §10).
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+/// The `config` noun — read-only inspection of the effective configuration
+/// (AGENTS-AI-FIRST-CLI §8). Never mutates `config.toml`.
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Print the config file location (whether or not the file exists).
+    Path,
+    /// Print the effective resolved configuration with a per-key source
+    /// (`env | file | default`). Secret-valued keys are redacted unless
+    /// `--show-secrets` is given.
+    Show {
+        /// Reveal secret-valued keys instead of redacting them. Emits a
+        /// warning to stderr. No config key is secret today, so this is a
+        /// forward-compatible no-op on the current surface.
+        #[arg(long)]
+        show_secrets: bool,
+    },
+}
+
+/// Dispatch a `config` subcommand to its verb module.
+pub fn dispatch(
+    action: ConfigAction,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    match action {
+        ConfigAction::Path => path::run(spec, warnings),
+        ConfigAction::Show { show_secrets } => show::run(show_secrets, spec, warnings),
+    }
+}
 
 /// The parsed `config.toml`. All sections optional; an absent section leaves the
 /// corresponding settings at their built-in defaults.

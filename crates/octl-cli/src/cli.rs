@@ -85,6 +85,12 @@ enum Command {
     /// Read-only self-diagnostic: validate schema, skill-sync, deps,
     /// config, and data integrity. `--fix` applies the safe subset.
     Doctor(crate::doctor::DoctorArgs),
+    /// Inspect configuration: print the config file path (`config path`)
+    /// or the effective resolved config with per-key source (`config show`).
+    Config {
+        #[command(subcommand)]
+        action: crate::config::ConfigAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -238,6 +244,7 @@ pub fn run() -> ExitCode {
         // `fail` *without* an error envelope (the report on stdout is the
         // answer), which does not map onto the shared `Result` path below.
         Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
+        Command::Config { action } => crate::config::dispatch(action, output, &logging_warnings),
     };
 
     match result {

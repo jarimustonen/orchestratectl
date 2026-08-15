@@ -59,7 +59,7 @@ Precedence (AGENTS-AI-FIRST-CLI §8), resolved per run in `harness::select`:
 **flag `--harness` > env `ORCHESTRATECTL_HARNESS` > `config.toml` `[harness]`
 (per-kind override, then section default) > built-in default (`claude`)**. The
 config file (`config.toml` under the resolved home — `$ORCHESTRATECTL_HOME` or
-`~/.orchestratectl`; `config.rs`) is the tool's first config-file layer; a user
+`~/.orchestratectl`; `config/mod.rs`) is the tool's first config-file layer; a user
 points `[harness.per_kind] research = "pi"` while `code` stays claude (per-kind
 keys are validated against the known run kinds at load, so a typo fails loudly). The resolved harness is folded onto `manifest.harness` (from
 the `run.created` event, which also carries `harness_source` for provenance) and
@@ -67,6 +67,34 @@ surfaced on `run show` / `run list --json`. `harness::select::resolve_with` is t
 pure, unit-tested resolver; `resolve` supplies the ambient config+env.
 
 `--harness pi` requires a `pi` agent configured in workmux.
+
+## `config` noun (read-only config inspection)
+
+`orchestratectl config path` / `config show` inspect the config surface (§8);
+neither ever mutates `config.toml`. Lives in `config/{mod,path,show}.rs` (the
+`config` module hosts both the `Config` loader and the noun's `dispatch`).
+
+- **`config path`** prints the config file location with `exists` (true/false —
+  the file need not exist; the caller wants the *path*, e.g. "where do I write
+  settings?").
+- **`config show`** prints the *effective resolved* config as per-key rows: one
+  `harness.default` (the section-level default, via
+  `harness::select::resolve_default`) plus one `harness.<kind>` per creatable run
+  kind (via `resolve_with`). Each row carries `value`, `source`
+  (`env | file | default` — the `flag` layer is per-invocation, never a `config
+  show` source), and a `secret` flag. **The harness precedence is reused
+  verbatim** — `config show` never re-implements resolution, so an
+  `ORCHESTRATECTL_HARNESS` override honestly shows every row as `source: "env"`
+  (the effective picture, not the shadowed file value). A bad harness value in
+  the file fails loudly (`invalid_harness`), same as `run create`.
+
+Secret redaction (§8) is wired but currently inert: every key is `secret: false`
+today, so `--show-secrets` reveals nothing and warns only when a secret key
+actually exists. Both payloads carry `schema_version_config`
+(`config::CONFIG_SCHEMA_VERSION`), independent of the run-state schema. The
+`CREATABLE_KINDS` list in `show.rs` is drift-guarded against `Kind::WIRE_NAMES`
+by a unit test. Help snapshot: `help_json__config_help_json.snap`; behavior
+tests: `tests/config.rs`.
 
 ## pi worker-prompt translation shim (`harness::prompt`)
 

@@ -129,6 +129,26 @@ pub fn resolve_with(
     finish(super::DEFAULT_HARNESS, HarnessSource::Default)
 }
 
+/// Resolve the **section-level** default harness — the value a run kind with no
+/// per-kind override lands on — ignoring `config.harness.per_kind` entirely:
+/// `env > config.harness.default > built-in default`. Used by `config show` to
+/// present the base `harness.default` key alongside the per-kind rows (which do
+/// consult `per_kind` via [`resolve_with`]). Every layer is validated the same
+/// way, so a bad `[harness] default` fails loudly here too.
+pub fn resolve_default(env: Option<&str>, config: &Config) -> Result<HarnessChoice, CliError> {
+    // env (empty string counts as unset — mirrors `resolve_with`).
+    if let Some(raw) = env {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return finish(trimmed, HarnessSource::Env);
+        }
+    }
+    if let Some(raw) = config.harness.default.as_deref() {
+        return finish(raw, HarnessSource::File);
+    }
+    finish(super::DEFAULT_HARNESS, HarnessSource::Default)
+}
+
 /// Validate `raw` against [`super::KNOWN_HARNESSES`] and wrap it with its source,
 /// or fail with a structured error that names both the bad value and the layer.
 fn finish(raw: &str, source: HarnessSource) -> Result<HarnessChoice, CliError> {
@@ -280,6 +300,40 @@ mod tests {
             "message: {}",
             e.message
         );
+    }
+
+    #[test]
+    fn resolve_default_ignores_per_kind() {
+        // The section-default resolver never consults `per_kind`, even when
+        // every kind is overridden: it reports the base a non-overridden kind
+        // would fall to.
+        let c = cfg(Some("pi"), &[("spinoff", "claude"), ("research", "claude")]);
+        let got = resolve_default(None, &c).unwrap();
+        assert_eq!(got.name, "pi");
+        assert_eq!(got.source, HarnessSource::File);
+    }
+
+    #[test]
+    fn resolve_default_env_beats_file_default() {
+        let c = cfg(Some("claude"), &[]);
+        let got = resolve_default(Some("pi"), &c).unwrap();
+        assert_eq!(got.name, "pi");
+        assert_eq!(got.source, HarnessSource::Env);
+    }
+
+    #[test]
+    fn resolve_default_falls_through_to_builtin() {
+        let got = resolve_default(None, &Config::default()).unwrap();
+        assert_eq!(got.name, "claude");
+        assert_eq!(got.source, HarnessSource::Default);
+    }
+
+    #[test]
+    fn resolve_default_rejects_bad_file_value() {
+        let c = cfg(Some("gpt"), &[]);
+        let e = resolve_default(None, &c).unwrap_err();
+        assert_eq!(e.code, "invalid_harness");
+        assert!(e.message.contains("from file"), "message: {}", e.message);
     }
 
     #[test]

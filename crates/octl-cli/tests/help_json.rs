@@ -154,6 +154,14 @@ fn noun_only_help_json_lists_verbs() {
     snapshot("run_help_json", &stdout);
 }
 
+#[test]
+fn config_noun_help_json_lists_verbs() {
+    // The `config` noun (config path / config show) — pins its verb surface
+    // and per-verb flags (`--show-secrets`) as a §14 drill-down.
+    let stdout = help_stdout(&["config", "--help", "--output", "json", "--depth", "tree"]);
+    snapshot("config_help_json", &stdout);
+}
+
 // ----------------------------------------------------------------------
 // Behavioural guards (not snapshots) for the success-criteria contract.
 // ----------------------------------------------------------------------
