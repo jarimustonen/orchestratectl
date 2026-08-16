@@ -108,6 +108,21 @@ the DAG merge from memory.
     weak (subjects change under rebase/squash and can collide). If `landed` and your manual
     check disagree, treat it as a reconciliation point — block and investigate rather than
     auto-deploying or auto-salvaging.
+- **Read every settled worker's report before planning the next wave.** The persisted
+  projection field is `last_report`; use the read surface rather than opening run files:
+
+  ```bash
+  orchestratectl run show "$run_id" --output json | jq '.data.report'
+  # Node-level compatibility probe, including older binaries:
+  orchestratectl node show "$run_id" n-0001 --output json |
+    jq '.data.report // .data.last_report'
+  ```
+
+  `run wait` can return several runs, so its envelope is `data.runs[]`, not
+  `data.<field>`: use `jq '.data.runs[] | {run_id, status, summary}'` and never
+  `.data.status`. It folds in `summary`; use `run show`/`node show` for the full
+  `discussion_items`, `spinoff_proposals`, and `wrap_up_recommendations` needed
+  to sequence later lane work.
 - **One deploy at a time.** Never parallel deploys.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 

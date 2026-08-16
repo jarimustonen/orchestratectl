@@ -51,7 +51,14 @@ pub struct NodeView<'a> {
     pub children: &'a [ChildRef],
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// Projection-native report field. Kept for backwards compatibility with
+    /// callers that already read the on-disk-shaped wire view.
     pub last_report: &'a Option<Value>,
+    /// Stable, consumer-facing alias for the worker's terminal report.
+    ///
+    /// Unlike `last_report`, this does not expose that the projection stores
+    /// only the latest report. Both fields intentionally carry identical data.
+    pub report: &'a Option<Value>,
 }
 
 impl<'a> From<&'a Node> for NodeView<'a> {
@@ -75,6 +82,7 @@ impl<'a> From<&'a Node> for NodeView<'a> {
             started_at: n.started_at,
             updated_at: n.updated_at,
             last_report: &n.last_report,
+            report: &n.last_report,
         }
     }
 }
@@ -169,6 +177,7 @@ mod tests {
                 "started_at": "2024-01-01T00:00:00Z",
                 "updated_at": "2024-01-01T00:00:00Z",
                 "last_report": null,
+                "report": null,
             })
         );
     }
@@ -188,6 +197,14 @@ mod tests {
             after.get("last_processed_report_seq_by_child").is_none(),
             "internal cursor must be absent from the wire contract"
         );
+    }
+
+    #[test]
+    fn report_alias_matches_last_report() {
+        let mut n = sample();
+        n.last_report = Some(json!({"summary": "worker finished"}));
+        let got = serde_json::to_value(NodeView::from(&n)).unwrap();
+        assert_eq!(got["report"], got["last_report"]);
     }
 
     #[test]

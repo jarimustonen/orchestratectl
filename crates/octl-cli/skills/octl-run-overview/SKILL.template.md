@@ -8,20 +8,10 @@ schema_version: 1
 
 # octl-run-overview
 
-> ## ⚠️ PREVIEW — DO NOT INVOKE BLINDLY
->
-> The `orchestratectl run list` / `orchestratectl run show` subcommands
-> documented here are **not yet implemented** in this build. They land in
-> a follow-up issue (`run-list-show`). Until then, this file is a forward
-> contract: read it to understand the shape of the response, but **call
-> `orchestratectl version` first** and refuse to execute `run` commands
-> unless they appear in `--help`. If they don't, tell the user the
-> feature is not yet shipped and stop.
-
 `orchestratectl` is the state owner for agent workflows: worktrees,
 fan-outs, orchestrations, and spinoffs. Every workflow is a **run** with
-canonical state under `~/.orchestratectl/runs/<run-id>/`. Two commands
-will expose that state to you once they ship:
+canonical state under `~/.orchestratectl/runs/<run-id>/`. These commands
+expose that state:
 
 - `orchestratectl run list` — every run, newest first
 - `orchestratectl run show <run-id>` — one run, full detail (one-shot)
@@ -32,12 +22,9 @@ will expose that state to you once they ship:
   loop (`--any` returns on the first terminal run; `--timeout <dur>` and
   `--fail-on-error` shape the exit code).
 
-The default output is `--output jsonl` — one compact JSON envelope per
-line on stdout. Agents read this directly with `serde_json::from_str`
-on each line. Pass `--output text` only when a human is reading the
-terminal; pass `--output json` if you want pretty-printed JSON instead
-of the single-line stream. The `--json` flag from older builds is
-gone — `--output jsonl` is the canonical machine form.
+Pass `--output json` for one structured JSON envelope, or `--output jsonl`
+for a line-oriented stream. Use `--output text` only when a human is reading
+the terminal.
 
 ## Envelope
 
@@ -163,6 +150,33 @@ equals `state == "alive"` — prefer `state`, since only it tells
 Both `data.status` (flat) and `data.manifest.status` resolve to the same
 value; the flat path matches `run list`, the nested one is kept for
 back-compat.
+
+## Reading a worker report back
+
+A terminal worker report is persisted on the node projection as
+`last_report`. The read surface avoids needing that projection detail:
+`run show` exposes the default worker's report at `data.report`, while
+`node show` keeps `data.last_report` and also exposes an identical
+`data.report` alias.
+
+```bash
+orchestratectl run show "$run_id" --output json | jq '.data.report'
+# Compatibility probe for node show, including binaries before the alias:
+orchestratectl node show "$run_id" n-0001 --output json |
+  jq '.data.report // .data.last_report'
+```
+
+Do not apply `run show` paths to `run wait`: waiting can cover several run
+ids, so its outcomes live in `data.runs[]`. A valid wait probe is:
+
+```bash
+orchestratectl run wait "$run_id" --output json |
+  jq '.data.runs[] | {run_id, status, summary}'
+```
+
+Thus `.data.status` is intentionally null on a `run wait` response. `run wait`
+folds in a summary; use `run show` or `node show` to read the full
+`discussion_items`, `spinoff_proposals`, and `wrap_up_recommendations` arrays.
 
 ## Decision rules
 

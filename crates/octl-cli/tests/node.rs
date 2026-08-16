@@ -209,6 +209,10 @@ fn report_appends_event_and_updates_node() {
     let node: Value = serde_json::from_slice(&std::fs::read(&node_path).unwrap()).unwrap();
     assert_eq!(node["status"], "done");
     assert_eq!(node["last_report"]["summary"], "did the thing");
+
+    let shown = run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
+    assert_eq!(shown["data"]["last_report"]["summary"], "did the thing");
+    assert_eq!(shown["data"]["report"], shown["data"]["last_report"]);
 }
 
 #[test]

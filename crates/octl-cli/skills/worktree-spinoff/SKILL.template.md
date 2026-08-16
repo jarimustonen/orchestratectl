@@ -350,7 +350,7 @@ The spinoff runs asynchronously. To inspect status **once**:
   event log.
 - `orchestratectl node list <run-id>` — per-unit detail (a
   spinoff has exactly one worker node).
-- `orchestratectl node show <node-id>` — the structured terminal
+- `orchestratectl node show <run-id> n-0001` — the structured terminal
   report `orchestratectl run merge` submits as it merges the branch (see
   "Terminal report (mandatory)").
 
@@ -376,7 +376,28 @@ zsh word-splitting and routinely polled the wrong field.
 **Settled ≠ landed — read the `landed` flag, not `merge-base --is-ancestor`.**
 Both `run wait` and `run show` surface a `landed` boolean plus a `landed_method`
 (`git-verified` | `report-marker` | `unverified`). Trust it as the landing
-signal. Do **not** git-verify a landing with
+signal.
+
+### Reading a worker report back
+
+The terminal report is persisted: it is **not** under a projection field named
+`report`. `node show` preserves the projection-native `data.last_report` and
+also exposes the consumer-facing `data.report` alias. For a single-worker
+spinoff, `run show` exposes the same report at `data.report`:
+
+```bash
+orchestratectl run show "$run_id" --output json | jq '.data.report'
+# or inspect the node directly; the fallback also works with older binaries:
+orchestratectl node show "$run_id" n-0001 --output json |
+  jq '.data.report // .data.last_report'
+```
+
+`run wait` deliberately has a different envelope because it can wait for many
+runs: read outcomes from `data.runs[]` (for example,
+`jq '.data.runs[] | {run_id, status, summary}'`), not `data.status`. Use
+`run show` or `node show` above when you need all four report fields
+(`summary`, `discussion_items`, `spinoff_proposals`, and
+`wrap_up_recommendations`). Do **not** git-verify a landing with
 `git merge-base --is-ancestor <worker-branch> <target>`: if the caller rebased
 local `main` (routine on a busy repo), the worker's merge is replayed under a new
 hash while the branch ref stays put, so `--is-ancestor` returns a **false "not

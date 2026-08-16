@@ -126,6 +126,70 @@ fn create_then_list_then_show_then_cancel_flow() {
     assert_eq!(v["data"]["manifest"]["status"], "cancelled");
 }
 
+/// `run show` exposes the complete terminal report from its default worker so
+/// an orchestrator can read the worker's reasoning without reaching into the
+/// node projection. `node show` retains both the projection-native
+/// `last_report` and its consumer-facing `report` alias.
+#[test]
+fn show_surfaces_default_worker_report() {
+    let home = TestHome::new();
+    let run_id = create(&home, "spinoff", "report surface");
+
+    // Create the default worker node through the public event path.
+    let node_file = home.path().join("node-created.json");
+    std::fs::write(
+        &node_file,
+        serde_json::to_vec(&json!({"kind": "spinoff"})).unwrap(),
+    )
+    .unwrap();
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        &run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        "n-0001",
+        "--from-file",
+        node_file.to_str().unwrap(),
+    ]));
+
+    let report_file = home.path().join("report.json");
+    std::fs::write(
+        &report_file,
+        serde_json::to_vec(&json!({
+            "success": true,
+            "summary": "explained the result",
+            "discussion_items": [],
+            "spinoff_proposals": [],
+            "wrap_up_recommendations": ["run the next lane"],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "node",
+        "report",
+        &run_id,
+        "n-0001",
+        "--from-file",
+        report_file.to_str().unwrap(),
+    ]));
+
+    let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    let report = &shown["data"]["report"];
+    assert_eq!(report["summary"], "explained the result");
+    assert_eq!(report["discussion_items"], json!([]));
+    assert_eq!(
+        report["wrap_up_recommendations"],
+        json!(["run the next lane"])
+    );
+}
+
 /// Regression for `run-show-json-null-fields`: `run show`'s `data` must carry
 /// the run's identity + liveness at the TOP level, in the SAME flat shape a
 /// `run list` row uses — `data.run_id` / `data.kind` / `data.status` /

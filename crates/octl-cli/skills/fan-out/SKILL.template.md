@@ -276,7 +276,7 @@ Likely codes:
   `data.manifest.status` (terminal: `done | failed | cancelled`) via
   `orchestratectl run show <child-id>`.
 - `orchestratectl node list <driver-run-id>` — per-unit table.
-- `orchestratectl node show <child-node-id>` — terminal report for one
+- `orchestratectl node show <child-run-id> <child-node-id>` — terminal report for one
   unit (the child's closing `orchestratectl run merge` is what *writes*
   it, merging and reporting in one step; see "Terminal report
   (mandatory)").

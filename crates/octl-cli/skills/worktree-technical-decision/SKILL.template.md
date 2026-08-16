@@ -216,7 +216,7 @@ take exactly one of them before its session ends:
    ```
 
    This records the node terminal without merging — `orchestratectl
-   node show <node-id>` reports `status: done` with your report
+   node show <run-id> <node-id>` reports `status: done` with your report
    attached. The supervisor still winds the run down, but the branch is
    left unmerged for the user.
 

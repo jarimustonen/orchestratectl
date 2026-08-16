@@ -41,6 +41,10 @@ struct ShowPayload<'a> {
     landed: bool,
     /// How `landed` was decided: `git-verified` | `report-marker` | `unverified`.
     landed_method: &'static str,
+    /// Terminal report from the default worker node. This is a read-only
+    /// convenience surface for callers that otherwise need `node show`; the
+    /// projection-native `node show` field remains `last_report`.
+    report: Option<Value>,
     /// The `recoverable_work` block from the default node's terminal report,
     /// present only when a dead agent left unmerged commits ahead of source
     /// (issue `agent-death-strands-recoverable-work`). Surfaced so a caller can
@@ -279,6 +283,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         counts,
         landed: signal.landed,
         landed_method: signal.method.wire(),
+        report: landing.report,
         recoverable_work,
         false_failed,
     };

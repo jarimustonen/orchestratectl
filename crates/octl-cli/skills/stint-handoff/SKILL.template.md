@@ -45,6 +45,21 @@ improvising the merge from memory.
   human-in-the-loop fold (step 1's "Ack + fold") is exactly where a marginal suggestion
   should be dropped, not admitted.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
+- **Read worker reports before writing the next handoff.** A terminal report is persisted as
+  `last_report` on its node. Prefer the public read surface:
+
+  ```bash
+  orchestratectl run show "$run_id" --output json | jq '.data.report'
+  # Node-level compatibility probe, including older binaries:
+  orchestratectl node show "$run_id" n-0001 --output json |
+    jq '.data.report // .data.last_report'
+  ```
+
+  `run wait` is multi-run: its results are in `data.runs[]`, so probe it with
+  `jq '.data.runs[] | {run_id, status, summary}'`, not `.data.status`. The wait
+  result folds in a summary; `run show`/`node show` expose the complete
+  `discussion_items`, `spinoff_proposals`, and `wrap_up_recommendations` needed
+  for the next handoff.
 - **Propose, don't presume.** `/wrap-up` presents proposed `AGENTS.md`/issue/preference
   changes and asks before writing; don't assume it committed unless it reports saved
   changes.
