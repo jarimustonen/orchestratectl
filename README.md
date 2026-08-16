@@ -84,7 +84,7 @@ crashed supervisor or a partial write never leaves a run unrunnable.
 
 For the AI-first CLI conventions every command follows (strict input
 validation, `--json` output, JSONL logs, no interactive prompts), see
-[AGENTS-AI-FIRST-CLI.md](AGENTS-AI-FIRST-CLI.md).
+`/ai-first-cli-canon`.
 
 ## Bundled skills
 
@@ -121,7 +121,7 @@ Repo layout:
 - `crates/octl-cli/` — the `orchestratectl` binary and its bundled skills.
 - `issues/<slug>/item.md` — every issue + epic (managed by
   [`issuectl`](https://github.com/jarimustonen/issuectl)).
-- `AGENTS-AI-FIRST-CLI.md` — CLI design canon (shared with `homebase`).
+- `ai-first-cli-canon` — CLI design canon (shared with `homebase`).
 
 ## Roadmap
 

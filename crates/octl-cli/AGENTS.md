@@ -1,6 +1,6 @@
 # crates/octl-cli
 
-The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `event tail`, `skill install`, etc.) per `AGENTS-AI-FIRST-CLI.md`. Bundled SKILLs live under `skills/<name>/SKILL.template.md` and are embedded via `build.rs` + `include_str!`.
+The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `event tail`, `skill install`, etc.) per `ai-first-cli-canon`. Bundled SKILLs live under `skills/<name>/SKILL.template.md` and are embedded via `build.rs` + `include_str!`.
 
 ## `skill install` dual-homes into pi.dev (`~/.pi/agent/skills/`)
 

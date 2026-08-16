@@ -28,7 +28,7 @@ read this file before opening either.
   cargo doc --workspace --no-deps           # warnings are errors in CI
   ```
 - New commands or flags must follow the AI-first conventions documented
-  in [`AGENTS-AI-FIRST-CLI.md`](AGENTS-AI-FIRST-CLI.md) — `--json` output,
+  in `/ai-first-cli-canon` — `--json` output,
   JSONL logs, strict input validation, informative error envelopes, no
   interactive prompts. New SKILL.md examples are CI-gated against the
   actual binary CLI surface.
@@ -49,7 +49,7 @@ read this file before opening either.
   ```
 - `issues/<slug>/item.md` — every issue + epic (flat layout, no
   numeric prefix, status in frontmatter).
-- `AGENTS-AI-FIRST-CLI.md` — CLI design canon, shared with the
+- `ai-first-cli-canon` — CLI design canon, shared with the
   `homebase` repo; treat as canonical, not a project-local doc.
 
 ## License

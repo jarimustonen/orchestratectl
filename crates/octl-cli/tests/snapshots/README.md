@@ -2,8 +2,7 @@
 
 These `*.snap` files are [`insta`](https://insta.rs) snapshots produced by
 `tests/envelope_snapshots.rs`. They lock the **shape** of every
-machine-readable contract the CLI emits, per
-[`AGENTS-AI-FIRST-CLI.md`](../../../../AGENTS-AI-FIRST-CLI.md):
+machine-readable contract the CLI emits, per the `/ai-first-cli-canon` skill:
 
 - **Success envelope** (§10) — `{schema_version, data, warnings?}` on stdout
 - **Error envelope** (§10) — `{schema_version, error: {code, message,
