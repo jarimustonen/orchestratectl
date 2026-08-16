@@ -4,6 +4,8 @@ updated: 2026-08-16
 type: task
 status: open
 priority: high
+lane: skills
+lane_seq: 50
 ---
 
 # Audit: no user-specific facts in a public artifact
@@ -81,3 +83,41 @@ found. Companion work in `project-canon`: `portable-neutral-defaults` (the concr
 and `canon-no-user-specifics` (promoting this rule to a canon section with a mechanical
 `doctor` check, so it is enforced rather than remembered). Once that check ships, this audit
 becomes automated — this issue is the one-time manual pass.
+
+### 2026-08-16T17:21:11Z · @claude
+
+SCOPING (triage 2026-08-16, ei vielä auditointi — vain laajuuden kartoitus lanen valintaa varten).
+
+Grep shipatusta artefaktista (pois lukien issues/, TODO.md, history/) hakusanoilla
+`jarimustonen|/Users/jari|~/Sources|crmctl|tilictl|intakectl|aggountant|jari.mustonen|jari@`
+osuu 19 tiedostoon:
+
+**Mukana toimitettavat SKILL-templaatit (5)** — nämä ovat `skills`-lanen kuumia tiedostoja:
+`octl-run-overview`, `octl-spawn-spinoff`, `orchestratectl-overview`, `worktree-merge`, `worktree-spinoff`.
+
+**Juuridokumentit (7):** AGENTS.md, CLAUDE.md, README.md, CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, OSS-RELEASE.md
+**Rakennus/julkaisu (4):** Cargo.toml, dist-workspace.toml, .github/workflows/{publish-crates,release}.yml
+**Muut (3):** .github/ISSUE_TEMPLATE/config.yml, .claude/skills/issue/SKILL.md, .codex/prompts/issue.md
+
+Nolla osumaa `crates/*/src/`-hakemistoissa — eli sisäänrakennettuja oletusarvoja ei tämän greppauksen
+perusteella ole saastunut, toisin kuin project-canonissa. Se on hyvä merkki muttei vielä todiste;
+varsinainen auditointi tarkistaa myös testit ja fixturet.
+
+TÄRKEÄ EROTTELU auditoijalle: iso osa osumista on **legitiimejä julkisia koordinaatteja**, ei vuotoja —
+`github.com/jarimustonen/orchestratectl` (repon oikea osoite Cargo.tomlissa, README-badgeissa,
+release-workflowissa) ja Homebrew-tap `jarimustonen/orchestratectl`. Näitä ei pidä poistaa.
+Huolestuttava luokka on: yksityisten repojen nimet (crmctl, tilictl, intakectl, aggountant),
+henkilökohtaiset polkukäytännöt (~/Sources, /Users/jari) ja sähköpostiosoitteet.
+
+LANE: `skills`, koska viiden SKILL-templaatin päällekkäisyys tarkoittaa ettei tätä saa ajaa
+rinnakkain skills-lanen kanssa. Sijoitettu lanen loppuun (`lane_seq 50`), jotta se ei estä
+lanen halpoja korjauksia — mutta huomaa että ne korjaukset koskevat samoja tiedostoja, joten
+järjestys on tarkoituksellinen, ei mielivaltainen.
+
+### 2026-08-16T17:21:39Z · @claude
+
+KORJAUS edelliseen muistiinpanoon: `lane_seq 50` EI aseta tätä lanen viimeiseksi. `issuectl dag` järjestää ensin prioriteetin mukaan ja vasta sitten `lane_seq`:llä, joten `priority: high` nostaa tämän lanen toiseksi (heti `spinoff-report-fields-null`:n jälkeen, joka on myös high ja voittaa tasatilanteen pienemmällä lane_seq:llä).
+
+Se on puolustettavissa — julkisen artefaktin vuototarkistus on aidosti kiireellinen — mutta se EI ole se järjestys jota tavoittelin. Jos haluat sen lanen loppuun halpojen korjausten jälkeen, laske prioriteetti: `issuectl update audit-no-user-specifics --priority normal`. Sama mekanismi selittää miksi `lifecycle`-lanen kärki on `uncommonly-fuzzy-swing` eikä `shell-quote-dedup`.
+
+
