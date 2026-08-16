@@ -4,6 +4,17 @@ All notable changes to `orchestratectl` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-16
+
+### Added
+
+- **A worker's terminal report is now readable without knowing the projection's field names (`spinoff-report-fields-null`).** Four separate bug reports claimed spinoff reports persisted as `null`; every one of them was a read-surface error, not data loss — the node projection's field is `last_report` (not `report`), and `run wait` emits `data.runs[]` (it can wait on several runs) while `run show` emits `data.<field>`, so `.data.status` and `.report.summary` correctly returned `null` on payloads that never carried them. The reports were intact in all four verified runs. `node show` now also exposes the terminal report as `data.report` alongside the unchanged `last_report`, and `run show` exposes it for single-worker runs (intentionally `null` for fan-out and other multi-node runs, where each worker is read with `node show`). The load-bearing half of the fix is documentation: the bundled skills taught agents how to *write* a report and never how to *read one back*, so `octl-run-overview`, `worktree-spinoff`, `stint-start`, `stint-handoff`, and `fan-out` now carry the read-back guidance, the `run wait` / `run show` envelope difference, and a working `jq` probe. Additive throughout — no field renamed, no envelope reshaped.
+- **`version` advertises the schema versions it supports, and `--json` is a global shorthand (`cli-canon-version-schemas`).** Closes AGENTS-AI-FIRST-CLI §10: the `version` payload now carries named envelope, state, config, help, and skill schema support derived from the real schema constants rather than a hardcoded literal that can rot, so an agent can detect drift instead of guessing. `--json` is accepted globally (previously `version` took only `--output json`), with `--output` resolved after parsing so a conflict between the two selectors is detected at any argument position.
+
+### Fixed
+
+- **`run create` with a long `--title` no longer spawns a stillborn run (`run-create-long-title-stillborn`).** The derived branch name could exceed workmux's 50-byte window-name input, so the window was created under a truncated name while `create.sh` looked it up by the untruncated one — `tmux-window-not-found`, leaving a `pending` run with no live worker and no useful commits. This was the only one of five run-create-stillbirth reports with a deterministic repro. Branch names are now bounded to that reproduced 50-byte boundary, keeping the created name and the lookup name the same derived value; the externally-owned `create.sh` lookup stays exact by design rather than being widened to a prefix match, which could bind teardown to an unrelated window.
+
 ## [0.2.0] - 2026-08-16
 
 ### Removed
