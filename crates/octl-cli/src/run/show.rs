@@ -283,7 +283,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         counts,
         landed: signal.landed,
         landed_method: signal.method.wire(),
-        report: landing.report,
+        // A top-level run report has one unambiguous meaning only for a
+        // single-worker run. Multi-node runs expose each worker through
+        // `node show`; never present n-0001 as the whole run's report.
+        report: (manifest.node_count == 1)
+            .then(|| landing.report.clone())
+            .flatten(),
         recoverable_work,
         false_failed,
     };

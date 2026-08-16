@@ -7,6 +7,9 @@ status: in-progress
 priority: high
 lane: skills
 lane_seq: 5
+commits:
+- hash: b17db5c0e94c40416890b09aa1458210ec62effc
+  summary: surface spinoff terminal reports
 ---
 
 # Spinoff terminal report fields persist as null

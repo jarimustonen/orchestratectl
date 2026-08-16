@@ -383,11 +383,14 @@ signal.
 The terminal report is persisted: it is **not** under a projection field named
 `report`. `node show` preserves the projection-native `data.last_report` and
 also exposes the consumer-facing `data.report` alias. For a single-worker
-spinoff, `run show` exposes the same report at `data.report`:
+spinoff, `run show` exposes the same report at `data.report`; multi-node runs
+must read each worker with `node show`:
 
 ```bash
+# skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
 orchestratectl run show "$run_id" --output json | jq '.data.report'
-# or inspect the node directly; the fallback also works with older binaries:
+# Node-level projection-compatible probe:
+# skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
 orchestratectl node show "$run_id" n-0001 --output json |
   jq '.data.report // .data.last_report'
 ```

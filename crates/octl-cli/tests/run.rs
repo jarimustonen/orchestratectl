@@ -50,6 +50,28 @@ fn create(home: &TempDir, kind: &str, title: &str) -> String {
         .to_string()
 }
 
+fn create_node(home: &TempDir, run_id: &str, node_id: &str) {
+    let node_file = home.path().join(format!("{node_id}-created.json"));
+    std::fs::write(
+        &node_file,
+        serde_json::to_vec(&json!({"kind": "spinoff"})).unwrap(),
+    )
+    .unwrap();
+    run_ok(bin(home).args([
+        "--output",
+        "json",
+        "event",
+        "create",
+        run_id,
+        "--kind",
+        "node.created",
+        "--node-id",
+        node_id,
+        "--from-file",
+        node_file.to_str().unwrap(),
+    ]));
+}
+
 /// `run create --interactive` persists explicit `lifecycle: interactive`
 /// how-run state — on the create envelope, in the stored manifest (`run show`),
 /// and on the `run list` row — while a plain create stays `autonomous`. This is
@@ -136,25 +158,9 @@ fn show_surfaces_default_worker_report() {
     let run_id = create(&home, "spinoff", "report surface");
 
     // Create the default worker node through the public event path.
-    let node_file = home.path().join("node-created.json");
-    std::fs::write(
-        &node_file,
-        serde_json::to_vec(&json!({"kind": "spinoff"})).unwrap(),
-    )
-    .unwrap();
-    run_ok(bin(&home).args([
-        "--output",
-        "json",
-        "event",
-        "create",
-        &run_id,
-        "--kind",
-        "node.created",
-        "--node-id",
-        "n-0001",
-        "--from-file",
-        node_file.to_str().unwrap(),
-    ]));
+    create_node(&home, &run_id, "n-0001");
+    let before_report = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert!(before_report["data"]["report"].is_null());
 
     let report_file = home.path().join("report.json");
     std::fs::write(
@@ -188,6 +194,36 @@ fn show_surfaces_default_worker_report() {
         report["wrap_up_recommendations"],
         json!(["run the next lane"])
     );
+    let node = run_ok(bin(&home).args(["--output", "json", "node", "show", &run_id, "n-0001"]));
+    assert_eq!(report, &node["data"]["report"]);
+    assert_eq!(report, &node["data"]["last_report"]);
+}
+
+#[test]
+fn show_hides_single_worker_report_on_multi_node_runs() {
+    let home = TestHome::new();
+    let run_id = create(&home, "fan-out", "many reports");
+    create_node(&home, &run_id, "n-0001");
+    create_node(&home, &run_id, "n-0002");
+    let report_file = home.path().join("first-node-report.json");
+    std::fs::write(
+        &report_file,
+        serde_json::to_vec(&json!({"success": true, "summary": "first only"})).unwrap(),
+    )
+    .unwrap();
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "node",
+        "report",
+        &run_id,
+        "n-0001",
+        "--from-file",
+        report_file.to_str().unwrap(),
+    ]));
+
+    let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", &run_id]));
+    assert!(shown["data"]["report"].is_null());
 }
 
 /// Regression for `run-show-json-null-fields`: `run show`'s `data` must carry

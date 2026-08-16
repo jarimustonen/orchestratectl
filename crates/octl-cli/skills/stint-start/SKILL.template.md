@@ -109,11 +109,15 @@ the DAG merge from memory.
     check disagree, treat it as a reconciliation point — block and investigate rather than
     auto-deploying or auto-salvaging.
 - **Read every settled worker's report before planning the next wave.** The persisted
-  projection field is `last_report`; use the read surface rather than opening run files:
+  projection field is `last_report`; use the read surface rather than opening run files.
+  For a single-worker run, `run show` has `data.report`. Multi-node runs must
+  inspect each node:
 
   ```bash
+  # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
   orchestratectl run show "$run_id" --output json | jq '.data.report'
-  # Node-level compatibility probe, including older binaries:
+  # Node-level projection-compatible probe:
+  # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
   orchestratectl node show "$run_id" n-0001 --output json |
     jq '.data.report // .data.last_report'
   ```

@@ -46,11 +46,14 @@ improvising the merge from memory.
   should be dropped, not admitted.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 - **Read worker reports before writing the next handoff.** A terminal report is persisted as
-  `last_report` on its node. Prefer the public read surface:
+  `last_report` on its node. For a single-worker run, prefer the public
+  `run show` surface. For a multi-node run, inspect each node:
 
   ```bash
+  # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
   orchestratectl run show "$run_id" --output json | jq '.data.report'
-  # Node-level compatibility probe, including older binaries:
+  # Node-level projection-compatible probe:
+  # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
   orchestratectl node show "$run_id" n-0001 --output json |
     jq '.data.report // .data.last_report'
   ```

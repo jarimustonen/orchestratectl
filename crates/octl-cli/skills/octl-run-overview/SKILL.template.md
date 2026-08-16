@@ -53,7 +53,7 @@ by `created_at` (RFC3339).
   "data": {
     "runs": [
       {
-        "id": "01HZ...",
+        "run_id": "01HZ...",
         "kind": "spinoff | research | technical-decision | fan-out",
         "lifecycle": "autonomous | interactive",
         "status": "pending | running | done | failed | cancelled",
@@ -93,7 +93,9 @@ full detail (`lifecycle`, `updated_at`, `source_*`, `parent_*`,
 `open_discussions`, `pending_spinoffs`); `data.counts` carries
 denormalised counters; `data.supervisor` is the probed supervisor
 liveness; `landed`/`landed_method`/`recoverable_work`/`false_failed` are
-`run show`-only computed detail; some kinds add kind-specific fields.
+`run show`-only computed detail. `report` is the default worker's terminal
+report for a **single-worker** run and is `null` before that worker reports or
+when the run has multiple nodes. Some kinds add kind-specific fields.
 
 `data.false_failed` (present only when set) flags a **suspected
 false-failed run**: the run is `failed` yet git confirms the worker's
@@ -142,7 +144,8 @@ equals `state == "alive"` — prefer `state`, since only it tells
       "open_discussions": 0,
       "pending_spinoffs": 0
     },
-    "counts": { "nodes": 10, "discussions": 0, "spinoffs": 0 }
+    "counts": { "nodes": 10 },
+    "report": null
   }
 }
 ```
@@ -155,13 +158,16 @@ back-compat.
 
 A terminal worker report is persisted on the node projection as
 `last_report`. The read surface avoids needing that projection detail:
-`run show` exposes the default worker's report at `data.report`, while
-`node show` keeps `data.last_report` and also exposes an identical
+`run show` exposes the default worker's report at `data.report` for a
+single-worker run. For a multi-node run it is `null`, so inspect each worker
+with `node show`, which keeps `data.last_report` and also exposes an identical
 `data.report` alias.
 
 ```bash
+# skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
 orchestratectl run show "$run_id" --output json | jq '.data.report'
-# Compatibility probe for node show, including binaries before the alias:
+# Node-level projection-compatible probe:
+# skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
 orchestratectl node show "$run_id" n-0001 --output json |
   jq '.data.report // .data.last_report'
 ```
