@@ -2,6 +2,7 @@
 created: 2026-06-27
 updated: 2026-06-27
 type: improvement
+closed: 2026-06-27
 status: done
 priority: normal
 epic: orchestratectl-mvp

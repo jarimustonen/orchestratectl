@@ -3,6 +3,7 @@ created: 2026-06-28
 updated: 2026-06-29
 type: epic
 owner: jari
+closed: 2026-06-29
 status: done
 priority: high
 epic: orchestratectl-mvp
