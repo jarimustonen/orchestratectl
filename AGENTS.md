@@ -62,6 +62,15 @@ Every project-specific fact an orchestrator needs:
 - **Coding happens in worktrees, never in the orchestrator/stint session.** Spawn `/worktree-spinoff <issue-slug>` (headless for batches > 3; see the macOS PTY note). **Verify every landing from git** — `run` status can lag reality.
 - **Test accounts / reset:** n/a (no external test accounts).
 
+## Harness boundary: non-blocking waits are NOT an orchestratectl dependency
+
+Decided 2026-08-16 by **homebase ADR 0011** (`~/Sources/homebase/docs/decisions/0011-pidev-background-process-runtime.md`, status Accepted), which supersedes this repo's closed `pi-background-jobs-extension` issue. Two separate lifecycles, and orchestratectl owns only one of them:
+
+- **Interactive, session-scoped** background commands in a pi.dev TUI session are homebase's concern. Its runtime is the pinned third-party extension **`@aliou/pi-processes@0.10.9`** (conditionally adopted, gated on a smoke matrix; `pi-background-tasks` and a custom-built extension were both rejected). Processes it manages die with the pi session — that is a safety property, not a defect.
+- **Durable, harness-neutral** background running is the separate `orx-background-runner` work (tracked in homebase, blocked on the smoke gate). Its contract is start / status / bounded logs / stop / bounded wait over runner-owned job metadata.
+
+**The binding constraint for this repo:** `orchestratectl` MUST NOT import `@aliou/pi-processes`, reach into its manager object, assume its process ids or log paths, or send/receive its in-process EventBus events. A pi extension's internals are not a public interface. orchestratectl stays the run-state owner and keeps exposing `run wait`, the `landed` flag, and the JSON contracts; any future non-blocking adapter sits behind the neutral runner contract, never on a harness-specific substrate. Do not re-file a "build our own pi background-jobs extension" issue here — that option was evaluated and rejected.
+
 ## Spinoff workflow + lifecycle
 
 Use `/worktree-spinoff <issue-slug>` for bug fixes / improvements; the bundled SKILL handles the whole loop end-to-end: spawn → work → merge (`orchestratectl run merge`) → self-cleanup (tmux window + worktree + branch all gone). Same for `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill`. Interactive `/worktree-code` works the same way but waits for the user's explicit `/worktree-merge`.

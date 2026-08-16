@@ -40,3 +40,9 @@ In pi.dev, a normal bash/tool `orchestratectl run wait` blocks the agent turn. A
 ### 2026-08-16T15:33:24Z · @claude
 
 Suljettu: kuuluu toiseen repoon. Issue päättää itse että tämä on erillinen avoimen lähdekoodin pi.dev-laajennus (`pi-background-jobs`) eikä osa orchestratectl:ää, ja ajoitus on 0.3. orchestratectl:n rooli (run wait, landed, JSON-sopimukset) on jo olemassa. Kirjaa uudelleen siinä repossa kun se perustetaan.
+
+## Comments
+
+### 2026-08-16T17:44:55Z · @claude
+
+SUPERSEDED by homebase ADR 0011 (2026-08-16, Accepted): `0011-pidev-background-process-runtime.md`. Outcome differs from this issue's plan — no custom `pi-background-jobs` extension is being built. homebase conditionally adopts the pinned third-party `@aliou/pi-processes@0.10.9` as its INTERACTIVE, session-scoped pi runtime (gated on a smoke matrix); building our own extension was evaluated and rejected. The DURABLE, harness-neutral runner is separate work (`orx-background-runner`, homebase, blocked on that gate). Binding constraint recorded in this repo's AGENTS.md: orchestratectl must not import pi-processes, touch its manager, assume its ids/log paths, or use its in-process EventBus — it stays the run-state owner behind `run wait` / `landed` / the JSON contracts. Do not re-file a custom-extension issue here.
