@@ -2,11 +2,15 @@
 created: 2026-08-14
 updated: 2026-08-16
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 labels: [architecture]
 lane: lifecycle
 lane_seq: 20
+commits:
+- hash: e03650a
+  summary: bound long-title run branch names
+closed: 2026-08-16
 ---
 
 # run create with a long --title spawns stillborn (tmux window-name truncation mismatch)
