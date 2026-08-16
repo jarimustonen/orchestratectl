@@ -13,8 +13,15 @@ spawned, no release cut. Release state is unchanged from stint 1 (**v0.2.0** eve
 The whole issue queue was swept against ADR 0010 (`open ∧ ¬laned`) and every claim was **verified against current
 code**, not taken from the issue text. `main` clean, 0 unpushed. Commits: `abb5cce`, `6d1d230`, `5f367e1`, `8a81025`.
 
-**Result: 39 unscheduled issues → 24 closed, 15 laned. The unlaned set is now empty** (18 open non-epic issues,
-all in `issuectl dag`; the 2 remaining `unscheduled` entries are epics, which are containers, not schedulable units).
+**Result: 39 unscheduled issues → 24 closed, 15 laned** (18 open non-epic issues, all in `issuectl dag`; the 2
+remaining `unscheduled` entries are epics, which are containers, not schedulable units).
+
+**⚠ ONE UNLANED ISSUE, arrived at wrap and NOT dispositioned — `audit-no-user-specifics`** (task, priority **high**,
+filed from project-canon during this session, commit `33f2279`). It asks for a family-wide sweep for user-specific
+facts in a public artifact, after 0.1.1/0.2.0 shipped a gh account, a personal repo-root convention, and three private
+repo names to crates.io as built-in defaults. It landed after the triage sweep, so it was surfaced to Jari but left
+for him to lane or close — **first thing to decide next stint**. If it holds here, it is likely its own lane (it
+touches defaults/config, not the `run/*`/`supervise/*` hot files).
 
 **Why so many closed — the load-bearing finding.** Two thirds of the queue was not real work:
 - **4 issues were never bugs at all — all four are the same mistake.** `run wait` emits `data.runs[]` (it can wait on
