@@ -5,6 +5,8 @@ type: bug
 status: open
 priority: normal
 related: ['@run-create-long-title-stillborn']
+lane: lifecycle
+lane_seq: 25
 ---
 
 # Use ULID entropy in run-create branch names
