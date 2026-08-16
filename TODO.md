@@ -6,54 +6,42 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ) — 2026-08-15 (**SUBTRACTIVE CUTS COMPLETE; NEXT = the thin-supervisor BUILD**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-16 (**v0.2.0 SHIPPED; NEXT = post-release cleanup / 0.2.1 planning**)
 
-**✅ LATEST (2026-08-15 — read first).** The 0.2 **subtractive-cut phase is DONE.** This session landed the
-second (and final) big cut — the run KINDS + the mid-run discussion/spinoff machinery — behind a green
-integrated gate, then cleaned up its own CI fallout. `main` is green (incl. `cargo doc`), clean, pushed;
-local binary redeployed (`doctor` **849/0/0**). **v0.2.0 keeps accumulating on `main`** (breaking — do NOT
-patch-release). No release cut this session (the thin-supervisor build still comes before v0.2.0).
+**✅ LATEST (2026-08-16: read first).** The 0.2 simplification release is fully shipped. This stint ran the
+thin-supervisor build and selected safety/robustness follow-ups end-to-end, then cut **v0.2.0** through every channel.
+`main` is clean, pushed, tagged `v0.2.0`; crates.io has **`octl-core 0.2.0`** and **`orchestratectl 0.2.0`**;
+GitHub Release / cargo-dist assets are published at `https://github.com/jarimustonen/orchestratectl/releases/tag/v0.2.0`;
+Release CI and main CI are green. Local binary is **0.2.0** and local deploy/doctor is clean after installing all
+skill homes: `orchestratectl doctor` **898 ok / 0 warn / 0 fail**. No new Telegram intake surfaced at handoff.
 
-- **STEP 2 CUT LANDED** (`cut-run-kinds-discussion-machinery`, done): removed the `code`/`orchestrate`/
-  `orchestrated`/`bugfix`/`make-skill` run KINDS + the mid-run discussion/spinoff machinery (events, reducer
-  projections, `DiscussionId`/`ProposalId`, `discussions/`+`spinoffs/` dirs, counters, CLI verbs); collapsed
-  the kind-derived lifecycle inference in `supervise/*`; removed `--confirm-interactive` + the code-run merge
-  gate; **deleted 5 bundled skills** (`/worktree-code`, `/orchestrate`, `/worktree-orchestrated`,
-  `/worktree-bugfix`, `/worktree-make-skill`) + updated the `/worktree` router. **KEPT** terminal-report
-  `discussion_items[]`/`spinoff_proposals[]` + surviving `spinoff`/`research`/`technical-decision`/`fan-out`.
-  Legacy on-disk runs of removed kinds decode read-only (`Kind::Unknown`), reported-not-deleted (ADR §D7).
-  `/llm-review` 4-model panel, FIX-class applied (fail-closed `data_kind` + read-only guard, 2 regression
-  tests). Integrated gate green (all suites 0 failed); obsoleted `bundled-orchestrate-skill` (wontfix). ⇒
-  **SUBTRACTIVE CUTS COMPLETE** (step 1 pipeline/harness landed 2026-08-14; step 2 = this).
-- **CI fallout caught + fixed same session** (`ci-red-main`, fixed): the cut removed `spinoff::approve` but
-  left a dangling intra-doc link to it in `proc.rs` → `main`'s `docs` job went red. `cargo test`/`clippy`
-  don't catch broken intra-doc links; a CI-watcher filed it, a headless spinoff repointed the link,
-  `cargo doc` now green. **Process fix:** `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` is now
-  part of the green gate (root `AGENTS.md`) — a symbol-removing cut MUST run it.
+**What landed this stint (0.2 core):**
+- **Thin supervisor model implemented:** A1 worker exit-status shim, A2 OID-based `run merge` transaction recovery,
+  A6 typed outcome table, A5 `attention_required` read/wait surface, A3 fenced `run salvage`, and explicit
+  `run create --interactive`. The old inference-by-activity/branch/pane success heuristics are gone; `run merge` is
+  the only success truth, while negative/manual states are typed and branch-preserving.
+- **Release-blocking safety/robustness follow-ups landed:** dirty-worktree and detached-HEAD committed-work preservation
+  on non-merge teardown, per-node branch-preserving `run cancel --node`, log-authoritative leaf rollup, typed
+  `ReportOrigin` + retired forgeable `via` merge authority, raw-git self-merge false-failed hint, and lenient advisory
+  report validation for `run merge --report-file`.
+- **pi.dev / skill surface completed for 0.2:** `config path` + `config show`, workmux `pi` preset confirmed obsolete
+  because current workmux has built-in `pi`, and bundled `stint-start`/`stint-handoff` descriptions trimmed under
+  pi.dev's 1024-char limit with a guard test.
+- **0.3 decision recorded:** pi.dev non-blocking waits should be a separate **`pi-background-jobs`** extension/repo,
+  not orchestratectl core. Issue `pi-background-jobs-extension` is filed and **deferred** for 0.3.
 
-**⏭ NEXT = the thin-supervisor BUILD** (GLOBAL HEAD `thin-supervisor-build`, not yet filed as granular
-issues). Migration sketch step 2+: **A1** exit-status launcher shim / **A2** merge-transaction recovery /
-**A6** typed outcome table / **A3** fenced manual resume-finish skill (= `run-salvage-command`) / **A5**
-richer `run show` + `run cancel --node` / the **`--interactive`** flag. File the granular build issues at the
-next `/stint-start`, then execute behind the integrated gate. This is BUILD not delete → still touches
-`supervise/*` (hot cluster) so sequence within Lane A. After the build: cut **v0.2.0**. (Lane A + E survivors
-are mostly DEFER-to-0.2.1; don't pull them ahead of the build.)
+**⏭ NEXT.** The immediate 0.2 release train is done. Resume with ordinary post-release cleanup and 0.2.1 planning:
+start at Lane D `skill-install-force-symlink` unless Jari wants the repo-wide cleanup first. The 0.2.1 supervisor
+thread is mostly deferred design/lease/plugin work: pi.dev self-report/heartbeat lease, blocked-on-user-input propagation,
+run-create resilience, teardown backpressure/lease hardening, child-run log-authoritative rollup, and config layered
+inspection. Do **not** reopen the 0.2 refactor release path unless CI or release verification regresses.
 
-**⚠ Open follow-ups:** `run-create-long-title-stillborn` (Lane A — long `--title` truncates the
-worktree/tmux-window name → window lookup misses → **stillborn spawn**, no reason persisted; workaround: keep
-`--title` short). `stint-skill-desc-over-pi-limit` (Lane D, filed this session — `stint-start`/`stint-handoff`
-SKILL descriptions exceed pi.dev's 1024-char limit → pi harness warns on load; trim both ≤1024).
-**Intake handled:** `intake-feature-orchestratectl-302ab43b3efd` closed **duplicate** of Lane E's
-`node-show-null-report` (the run-show/node-show terminal-report shows `"none"`/null after self-merge though
-it's on disk in `nodes/n-0001.json .last_report`; the intake adds that `run show` — not only `node show` — is
-affected; that detail lives on the closed intake item's body).
-
-**🧹 Whole-repo cleanup coming (Jari, 2026-08-14):** a repo-wide siivous is imminent. It should also sweep
-the now-**stale skill references left in `AGENTS.md`** (the Spinoff-workflow + hot-file prose still names the
-5 removed `/worktree-code`/`/worktree-bugfix`/`/worktree-make-skill`/`/orchestrate`/`/worktree-orchestrated`
-skills), and migrate this `TODO.md` execution-DAG onto `issuectl dag` (the `/wrap-up` Step 7 keys on
-`issuectl dag`, currently empty for this repo — a known config gap, NOT real unlaned work). Do NOT file
-separate issues for these; they fold into that cleanup.
+**⚠ Known follow-ups / not release blockers:** `run-create-long-title-stillborn` remains open (workaround: short
+`--title`); Lane E read-surface bugs (`node-show-null-report`, `run-show-null-worktree-path`,
+`count-jsons-swallows-io`) remain; `config-show-layered-view`, `run-salvage-fresh`, `enforce-run-merge`,
+`run-show-landed-git-timeout`, teardown TOCTOU/ref-validation/in-progress-op/backpressure, and A2 recovery residuals
+are intentionally deferred. A repo-wide cleanup is still desired: stale skill references in `AGENTS.md` and migrating
+this TODO DAG onto `issuectl dag` should fold into that cleanup, not be filed as scattered one-offs.
 
 **— historical below (this session's earlier waves + canonical KEY LEARNINGs, still load-bearing) —**
 
@@ -178,7 +166,7 @@ stint's focus. DAG drift-clean at wrap (42 active issues, all in lanes, nothing 
 
 ---
 
-## Execution DAG (2026-08-15)
+## Execution DAG (2026-08-16)
 
 Scheduling PLAN — source of truth for lane + order; **issuectl is authoritative for
 STATUS** (never copied here). Lanes = hot-file families; within a lane ≤1 live worktree at
@@ -193,7 +181,7 @@ Convention: `crates/octl-cli/skills/stint-start/AGENTS-EXECUTION-DAG.md` (shared
 
 <!-- execution-dag:begin -->
 ```
-GLOBAL HEAD-OF-LINE: RELEASE-GATE-v0.2.0 (0.2 EXECUTION — thin-supervisor core, selected safety/robustness follow-ups, pi.dev config surface, and pi skill description guard LANDED 2026-08-15/16. Next: integrated green gate, local redeploy/doctor, finalize CHANGELOG, cut and publish v0.2.0. Residual design/lease/cleanup follow-ups are deferred out of 0.2.) NB: Lanes A + E survivors are mostly DEFER-to-0.2.1 (0.2.1 pi.dev plugin).   ← start here on resume
+GLOBAL HEAD-OF-LINE: skill-install-force-symlink (v0.2.0 SHIPPED 2026-08-16: crates.io + GitHub/cargo-dist + local deploy/doctor all green. Next normal work: Lane D skill-install-force-symlink, unless Jari chooses repo-wide cleanup first. 0.2.1 lifecycle/plugin follow-ups are deferred and should be planned deliberately, not pulled into the just-shipped 0.2 release path.)   ← start here on resume
 
 LANE F — ARCHITECTURE RE-EXAMINATION  (epic: lifecycle-architecture-review)  ✅ DECISION PHASE COMPLETE
 Phase 1 — COMPLETE (2026-08-12): analysis.md + feature-audit.md + alternatives.md. ◆ DECISION-1 → target-state-0.2.md.
@@ -243,7 +231,7 @@ UNLANED — confirmed no shared hot file, run anytime:
 
 ⬆ RELEASE v0.1.7 — ✅ SHIPPED 2026-08-12 (crates.io octl-core→orchestratectl, v0.1.7 tag → Release CI green all jobs, Homebrew tap 0.1.7): agent-skips-run-merge-idle-pending + ci-docs-bakeoff-registry-link + doctor-codex-companion-coverage.
 ⬆ RELEASE v0.1.8 — ✅ SHIPPED 2026-08-13 (crates.io octl-core→orchestratectl, v0.1.8 tag → Release CI green all 8 jobs, Homebrew tap 0.1.8): signal-exit-143-regression (signal-during-boot → 143/130) + support-pi-dev (pi.dev companion install). NB: the version bump left version_* insta snapshots stale → brief main-CI red, fixed 0bf6a75; hardened by release-version-snapshot-refresh.
-⬆ RELEASE v0.2.0 — THE SIMPLIFICATION + pi.dev (Jari's call — one release, no separate 0.3): the DECISION-1 cuts + the chosen supervisor-core model (from the design→ADR) + the pi.dev thread (workmux-pi-agent-preset + config-subcommand, on 0.1.7's --harness + dual-home). Breaking CLI change (kinds/flags/subcommands removed) — likely a clean break (single-user); confirm at design.
+⬆ RELEASE v0.2.0: ✅ SHIPPED 2026-08-16 (crates.io octl-core→orchestratectl 0.2.0, v0.2.0 tag → Release CI green, GitHub/cargo-dist assets published, local binary 0.2.0, doctor 898/0/0): the DECISION-1 cuts + thin-supervisor model + selected safety follow-ups + pi.dev config/skill surface. Breaking CLI change: removed dead kinds/subcommands and pipeline/harness-heavy surface.
 Cadence: release whenever a wave lands shippable user-facing work (operating policy — release often, fully autonomous).
 ```
 <!-- execution-dag:end -->
