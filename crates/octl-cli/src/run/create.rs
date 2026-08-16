@@ -936,6 +936,14 @@ fn resolve_prompt_file(
     }
 }
 
+/// Longest ASCII workmux handle that survives its tmux-window naming path.
+///
+/// `workmux` flattens the slash in `wt/<id>-<slug>` before creating its window.
+/// Above this bound its created name is truncated, while create.sh correctly
+/// looks up the untruncated branch-derived name. Keep the *input* to both sides
+/// within the bound instead of loosening create.sh's authoritative lookup.
+const MAX_WORKMUX_WINDOW_NAME_BYTES: usize = 50;
+
 /// Build the branch name we hand to create.sh. We keep the convention
 /// the skill family uses (`wt/<short-id>-<slug>`) so windows produced
 /// by `orchestratectl` and `/worktree-code` look identical in tmux.
@@ -946,6 +954,7 @@ fn derive_branch_name(kind: Kind, run_id: &str, title: &str) -> String {
         .filter(char::is_ascii_alphanumeric)
         .take(10)
         .collect::<String>();
+    let prefix = format!("wt/{short}-");
     let slug: String = title
         .to_ascii_lowercase()
         .chars()
@@ -960,8 +969,16 @@ fn derive_branch_name(kind: Kind, run_id: &str, title: &str) -> String {
     } else {
         slug
     };
-    let slug: String = slug.chars().take(40).collect();
-    format!("wt/{short}-{slug}")
+    // `slug` is ASCII-only, so char and byte lengths agree. Do not grow this
+    // independently of the workmux window-name bound above.
+    let max_slug_len = MAX_WORKMUX_WINDOW_NAME_BYTES.saturating_sub(prefix.len());
+    let slug: String = slug
+        .chars()
+        .take(max_slug_len)
+        .collect::<String>()
+        .trim_end_matches('-')
+        .to_string();
+    format!("{prefix}{slug}")
 }
 
 struct EmitInput<'a> {
@@ -1062,6 +1079,48 @@ mod tests {
     fn derive_branch_empty_title_uses_kind() {
         let b = derive_branch_name(Kind::Research, "01JX1234567890ABCDE", "   !!!  ");
         assert!(b.ends_with("research"));
+    }
+
+    #[test]
+    fn derive_branch_caps_the_flat_workmux_window_name_at_exact_boundary() {
+        let run_id = "01JX1NS7H8AAAAA9BBBBBBBBBB";
+        let at_limit = "x".repeat(36);
+        let over_limit = format!("{at_limit}y");
+        let expected = format!("wt/01jx1ns7h8-{at_limit}");
+
+        assert_eq!(
+            derive_branch_name(Kind::Spinoff, run_id, &at_limit),
+            expected
+        );
+        assert_eq!(expected.len(), MAX_WORKMUX_WINDOW_NAME_BYTES);
+        assert_eq!(
+            derive_branch_name(Kind::Spinoff, run_id, &over_limit),
+            expected,
+            "one byte over the workmux limit must derive the same bounded name"
+        );
+    }
+
+    #[test]
+    fn derive_branch_normalizes_unicode_whitespace_and_quotes_before_bounding() {
+        let b = derive_branch_name(
+            Kind::Spinoff,
+            "01JX1NS7H8AAAAA9BBBBBBBBBB",
+            "  Café \"quoted\"  and ‘spaced’  ",
+        );
+        assert_eq!(b, "wt/01jx1ns7h8-caf-quoted-and-spaced");
+        assert!(b.is_ascii());
+        assert!(!b.contains(char::is_whitespace));
+        assert!(!b.contains(['\'', '\"']));
+    }
+
+    #[test]
+    fn derive_branch_drops_a_separator_at_the_truncation_boundary() {
+        let title = format!("{} y", "x".repeat(35));
+        let branch = derive_branch_name(Kind::Spinoff, "01JX1NS7H8AAAAA9BBBBBBBBBB", &title);
+
+        assert_eq!(branch, format!("wt/01jx1ns7h8-{}", "x".repeat(35)));
+        assert_eq!(branch.len(), MAX_WORKMUX_WINDOW_NAME_BYTES - 1);
+        assert!(!branch.ends_with('-'));
     }
 
     #[test]

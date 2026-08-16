@@ -270,6 +270,59 @@ fn source_branch_forwards_base_flag_to_create_sh() {
 }
 
 #[test]
+fn long_title_forwards_a_workmux_window_safe_branch_name() {
+    // Regression for run-create-long-title-stillborn: workmux flattens the
+    // branch into its window name and truncates names over 50 bytes. The old
+    // 40-character slug made this title's branch 54 bytes, so create.sh looked
+    // up a name different from the one workmux had created.
+    let home = TestHome::new();
+    let argv = home.path().join("create-argv.txt");
+    let script = write_argv_recording_create_sh(
+        &home,
+        &argv,
+        &fake_success_stdout("spinoff", std::process::id()),
+    );
+    run_ok(bin(&home, &script).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "DAG head-of-line: in-progress issues are resumable, not excluded (stint-head-of-line-in-progress-eligible)",
+        "--task",
+        "do work",
+        "--headless",
+    ]));
+
+    let forwarded: Vec<String> = std::fs::read_to_string(&argv)
+        .expect("create.sh recorded its argv")
+        .lines()
+        .map(str::to_string)
+        .collect();
+    // The create.sh contract has branch and prompt-file as its two positional
+    // arguments. Find the branch by its unambiguous convention rather than
+    // depending on where optional flags were emitted.
+    let branch = forwarded
+        .iter()
+        .find(|arg| arg.starts_with("wt/"))
+        .expect("branch argument must be passed to create.sh");
+    assert!(
+        branch.len() <= 50,
+        "branch must fit workmux's window-name bound: {branch}"
+    );
+    assert!(
+        !branch.ends_with('-'),
+        "branch must not end with a separator after capping: {branch}"
+    );
+    assert!(
+        branch.starts_with("wt/"),
+        "branch must retain the worktree convention: {branch}"
+    );
+}
+
+#[test]
 fn no_source_branch_omits_base_flag() {
     let home = TestHome::new();
     let argv = home.path().join("create-argv.txt");
