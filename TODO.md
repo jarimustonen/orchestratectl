@@ -16,12 +16,14 @@ code**, not taken from the issue text. `main` clean, 0 unpushed. Commits: `abb5c
 **Result: 39 unscheduled issues → 24 closed, 15 laned** (18 open non-epic issues, all in `issuectl dag`; the 2
 remaining `unscheduled` entries are epics, which are containers, not schedulable units).
 
-**⚠ ONE UNLANED ISSUE, arrived at wrap and NOT dispositioned — `audit-no-user-specifics`** (task, priority **high**,
-filed from project-canon during this session, commit `33f2279`). It asks for a family-wide sweep for user-specific
-facts in a public artifact, after 0.1.1/0.2.0 shipped a gh account, a personal repo-root convention, and three private
-repo names to crates.io as built-in defaults. It landed after the triage sweep, so it was surfaced to Jari but left
-for him to lane or close — **first thing to decide next stint**. If it holds here, it is likely its own lane (it
-touches defaults/config, not the `run/*`/`supervise/*` hot files).
+**`audit-no-user-specifics` arrived at wrap and is laned** (task, priority **high**, filed from project-canon during
+this session, commit `33f2279`) — a family-wide sweep for user-specific facts in a public artifact, after 0.1.1/0.2.0
+shipped a gh account, a personal repo-root convention, and three private repo names to crates.io as built-in defaults.
+Scoped before laning: grepping the shipped artifact hits **19 files, five of them bundled SKILL templates**, so it
+went into `skills` (it cannot run in parallel with that lane). **Zero hits under `crates/*/src/`** — unlike
+project-canon, this repo does not appear to have leaked user-specifics into built-in defaults; a lead, not a verdict,
+since the audit still owes tests and fixtures. The issue carries the full file list and the distinction the auditor
+needs: most hits are the repo's *legitimate* public coordinates (GitHub URL, Homebrew tap), not leaks.
 
 **Why so many closed — the load-bearing finding.** Two thirds of the queue was not real work:
 - **4 issues were never bugs at all — all four are the same mistake.** `run wait` emits `data.runs[]` (it can wait on
