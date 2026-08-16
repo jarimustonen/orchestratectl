@@ -3,13 +3,16 @@ created: 2026-08-16
 updated: 2026-08-16
 type: bug
 reporter: jari
-status: in-progress
+status: fixed
 priority: high
 lane: skills
 lane_seq: 5
 commits:
 - hash: b17db5c0e94c40416890b09aa1458210ec62effc
   summary: surface spinoff terminal reports
+- hash: 6ec8f5b7478191fbf70ffb07d5ccae1fd45d9113
+  summary: scope run reports to single workers
+closed: 2026-08-16
 ---
 
 # Spinoff terminal report fields persist as null
