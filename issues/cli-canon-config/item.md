@@ -2,11 +2,13 @@
 created: 2026-08-16
 updated: 2026-08-16
 type: improvement
-status: open
+status: done
 priority: normal
 labels: [cli-canon, tooling]
 lane: cli-canon
 lane_seq: 10
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # cli-canon: §8 config path / config show --json
@@ -29,3 +31,9 @@ and `config show --json` (effective config values + their source/provenance). No
 `--json` envelope like the rest of the surface.
 
 **Current state (evidence):** `orchestratectl config` → unrecognized subcommand.
+
+## Comments
+
+### 2026-08-16T17:26:55Z · @claude
+
+Closed at stint-3 Phase 1 without code: live re-verification shows the §8 gap is already closed by v0.2.0. `orchestratectl config path` and `config show` both emit the canon envelope, and `config show` carries per-key provenance (`source: file`). The issue body's 'unrecognized subcommand' evidence predates the stint-1 config-subcommand landing.
