@@ -2,11 +2,15 @@
 created: 2026-08-16
 updated: 2026-08-16
 type: improvement
-status: in-progress
+status: done
 priority: normal
 labels: [cli-canon, tooling]
 lane: cli-canon
 lane_seq: 20
+closed: 2026-08-16
+commits:
+- hash: 15b14a7df66408f20459be9c0c0d500b385ccddf
+  summary: advertise version schema support and global JSON
 ---
 
 # cli-canon: §10 version payload supported_schemas
