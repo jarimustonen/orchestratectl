@@ -91,6 +91,7 @@ fn version_json_pins_envelope_and_payload_shape() {
             "skills",
             "schema_version",
             "supported_schemas",
+            "supported_schemas_by_name",
             "state_schema_version",
             "supported_state_schemas",
         ]),
@@ -100,6 +101,24 @@ fn version_json_pins_envelope_and_payload_shape() {
     // Exact values where stable.
     assert_eq!(data["schema_version"], 1);
     assert_eq!(data["supported_schemas"], serde_json::json!([1]));
+    assert_eq!(
+        data["supported_schemas_by_name"]["envelope"],
+        data["supported_schemas"]
+    );
+    assert_eq!(
+        data["supported_schemas_by_name"]["state"],
+        data["supported_state_schemas"]
+    );
+    assert_eq!(
+        data["supported_schemas_by_name"],
+        serde_json::json!({
+            "envelope": [1],
+            "state": [1],
+            "config": [1],
+            "help": [3],
+            "skill": [1],
+        })
+    );
     assert_eq!(data["state_schema_version"], 1);
     assert_eq!(data["supported_state_schemas"], serde_json::json!([1]));
 
@@ -168,14 +187,46 @@ fn version_jsonl_default_is_single_line_envelope() {
 }
 
 #[test]
-fn version_rejects_legacy_json_flag() {
-    // `--json` is gone; passing it must error with `unknown_subcommand_or_flag`.
-    let out = bin().args(["--json", "version"]).output().expect("spawn");
-    assert!(!out.status.success(), "expected non-zero exit");
-    let stderr = String::from_utf8(out.stderr).expect("utf8");
-    let last = stderr.lines().last().expect("stderr non-empty");
-    let v: serde_json::Value = serde_json::from_str(last).expect("error envelope is valid JSON");
-    assert_eq!(v["error"]["code"], "unknown_subcommand_or_flag");
+fn version_accepts_global_json_flag() {
+    for args in [["--json", "version"], ["version", "--json"]] {
+        let out = bin().args(args).output().expect("spawn");
+        assert!(
+            out.status.success(),
+            "args: {args:?}, exit: {:?}",
+            out.status
+        );
+        assert!(out.stderr.is_empty(), "stderr: {:?}", out.stderr);
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("valid JSON envelope");
+        assert_eq!(v["schema_version"], 1);
+        assert!(v["data"].is_object());
+    }
+
+    let output_json = bin()
+        .args(["--output", "json", "version"])
+        .output()
+        .expect("spawn");
+    let shorthand = bin().args(["version", "--json"]).output().expect("spawn");
+    assert_eq!(shorthand.stdout, output_json.stdout);
+}
+
+#[test]
+fn version_rejects_conflicting_output_selectors() {
+    for args in [
+        ["--json", "--output", "json", "version"],
+        ["--output", "json", "version", "--json"],
+        ["version", "--json", "--output", "json"],
+        ["version", "--output", "json", "--json"],
+    ] {
+        let out = bin().args(args).output().expect("spawn");
+        assert!(
+            !out.status.success(),
+            "args unexpectedly succeeded: {args:?}"
+        );
+        assert!(out.stdout.is_empty(), "args wrote stdout: {args:?}");
+        let err: serde_json::Value = serde_json::from_slice(&out.stderr).expect("JSON error");
+        assert_eq!(err["error"]["code"], "conflicting_output_flags");
+    }
 }
 
 #[test]

@@ -78,6 +78,23 @@ expression: value
     "supported_schemas": [
       1
     ],
+    "supported_schemas_by_name": {
+      "envelope": [
+        1
+      ],
+      "state": [
+        1
+      ],
+      "config": [
+        1
+      ],
+      "help": [
+        3
+      ],
+      "skill": [
+        1
+      ]
+    },
     "state_schema_version": 1,
     "supported_state_schemas": [
       1

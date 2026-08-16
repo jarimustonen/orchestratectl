@@ -244,7 +244,7 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Skill-format schema version (the version of the SKILL.md frontmatter +
 /// body contract itself, distinct from the envelope `schema_version`).
-const SKILL_SCHEMA_VERSION: u32 = 1;
+pub const SKILL_SCHEMA_VERSION: u32 = 1;
 
 /// Provenance marker filename. `cmd_install` drops this hidden file into
 /// every claude-layout skill directory it writes (`~/.claude/skills/

@@ -1,6 +1,5 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
 expression: value
 ---
 {
@@ -43,6 +42,35 @@ expression: value
         }
       },
       {
+        "name": "json",
+        "long": "json",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": true,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
         "name": "output",
         "long": "output",
         "long_aliases": [],
@@ -57,9 +85,7 @@ expression: value
         "is_global": true,
         "hidden": false,
         "deprecated": false,
-        "defaults": [
-          "jsonl"
-        ],
+        "defaults": [],
         "accepted_values": [
           "json",
           "jsonl",
@@ -116,6 +142,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -130,9 +185,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -189,6 +242,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -203,9 +285,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -263,6 +343,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -277,9 +386,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -426,6 +533,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -440,9 +576,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -500,6 +634,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -514,9 +677,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -660,6 +821,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "kind",
                 "long": "kind",
                 "long_aliases": [],
@@ -732,9 +922,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -868,6 +1056,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -882,9 +1099,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -987,6 +1202,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -1001,9 +1245,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -1060,6 +1302,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -1074,9 +1345,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -1264,6 +1533,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -1278,9 +1576,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -1365,6 +1661,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -1379,9 +1704,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -1468,6 +1791,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -1482,9 +1834,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -1527,6 +1877,35 @@ expression: value
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
                 "accepted_values": [],
                 "accepts_file_paths": false,
                 "conflicts_with": [],
@@ -1612,9 +1991,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -1860,6 +2237,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "kind",
                 "long": "kind",
                 "long_aliases": [],
@@ -1994,9 +2400,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -2315,6 +2719,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "kind",
                 "long": "kind",
                 "long_aliases": [],
@@ -2357,9 +2790,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -2474,6 +2905,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "node_id",
                 "long": "node-id",
                 "long_aliases": [],
@@ -2517,9 +2977,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -2649,6 +3107,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "max_iter",
                 "long": "max-iter",
                 "long_aliases": [],
@@ -2721,9 +3208,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -2853,6 +3338,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -2867,9 +3381,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -2999,6 +3511,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3013,9 +3554,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3176,6 +3715,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3190,9 +3758,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3356,6 +3922,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -3370,9 +3965,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -3473,6 +4066,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -3487,9 +4109,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -3639,6 +4259,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3653,9 +4302,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3728,6 +4375,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3742,9 +4418,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3802,6 +4476,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3816,9 +4519,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3891,6 +4592,35 @@ expression: value
                 }
               },
               {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
                 "name": "output",
                 "long": "output",
                 "long_aliases": [],
@@ -3905,9 +4635,7 @@ expression: value
                 "is_global": true,
                 "hidden": false,
                 "deprecated": false,
-                "defaults": [
-                  "jsonl"
-                ],
+                "defaults": [],
                 "accepted_values": [
                   "json",
                   "jsonl",
@@ -3968,6 +4696,35 @@ expression: value
             "hidden": false,
             "deprecated": false,
             "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
             "accepted_values": [],
             "accepts_file_paths": false,
             "conflicts_with": [],
@@ -4083,9 +4840,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",
@@ -4158,6 +4913,35 @@ expression: value
             }
           },
           {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
             "name": "output",
             "long": "output",
             "long_aliases": [],
@@ -4172,9 +4956,7 @@ expression: value
             "is_global": true,
             "hidden": false,
             "deprecated": false,
-            "defaults": [
-              "jsonl"
-            ],
+            "defaults": [],
             "accepted_values": [
               "json",
               "jsonl",

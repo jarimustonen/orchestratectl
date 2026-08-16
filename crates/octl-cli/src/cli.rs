@@ -19,6 +19,7 @@ use crate::output::{self, OutputFormat, OutputSpec};
 
 const GIT_COMMIT: &str = env!("ORCHESTRATECTL_GIT_COMMIT");
 const CARGO_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SUPPORTED_ENVELOPE_SCHEMAS: &[u32] = &[octl_core::SCHEMA_VERSION];
 
 #[derive(Parser, Debug)]
 #[command(
@@ -38,11 +39,14 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        default_value = "jsonl",
         value_name = "FMT|PATH",
         value_parser = parse_output_arg,
     )]
-    output: OutputSpec,
+    output: Option<OutputSpec>,
+
+    /// Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout.
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -204,15 +208,32 @@ pub fn run() -> ExitCode {
         Err(e) => return handle_clap_error(e, &logging_warnings),
     };
 
+    let output = match (cli.output, cli.json) {
+        (Some(_), true) => {
+            let err = CliError::user(
+                "conflicting_output_flags",
+                "--json cannot be used with --output; use exactly one output selector",
+            );
+            err.emit();
+            return ExitCode::from(ExitKind::User as u8);
+        }
+        (Some(output), false) => output,
+        (None, true) => OutputSpec {
+            format: OutputFormat::Json,
+            file: None,
+        },
+        (None, false) => OutputSpec::default(),
+    };
+
     info!(
         target: "orchestratectl::cli",
-        output_format = ?cli.output.format,
-        output_file = ?cli.output.file,
+        output_format = ?output.format,
+        output_file = ?output.file,
         command = ?cli.command,
         "command dispatched"
     );
 
-    let output = &cli.output;
+    let output = &output;
     let result = match cli.command {
         Command::Version => cmd_version(output, &logging_warnings),
         Command::Skill { action } => match action {
@@ -352,9 +373,25 @@ struct VersionPayload {
     // asymmetric foot-gun (review history/review-version-subcommand.md
     // §1).
     schema_version: u32,
+    /// The envelope schema versions understood by this binary, as required by
+    /// §10. The named companion below distinguishes independent schemas that
+    /// happen to share a numeric version.
     supported_schemas: &'static [u32],
+    /// Independent payload schemas keyed by their public wire surface. This
+    /// is additive to `supported_schemas`, whose array shape is already part
+    /// of the v1 version-payload API.
+    supported_schemas_by_name: SupportedSchemas,
     state_schema_version: u32,
     supported_state_schemas: &'static [u32],
+}
+
+#[derive(Debug, Serialize)]
+struct SupportedSchemas {
+    envelope: &'static [u32],
+    state: &'static [u32],
+    config: &'static [u32],
+    help: &'static [u32],
+    skill: &'static [u32],
 }
 
 fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
@@ -363,7 +400,14 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
         commit: GIT_COMMIT,
         skills: crate::skill::catalog(),
         schema_version: octl_core::SCHEMA_VERSION,
-        supported_schemas: &[octl_core::SCHEMA_VERSION],
+        supported_schemas: SUPPORTED_ENVELOPE_SCHEMAS,
+        supported_schemas_by_name: SupportedSchemas {
+            envelope: SUPPORTED_ENVELOPE_SCHEMAS,
+            state: octl_core::SUPPORTED_STATE_SCHEMAS,
+            config: &[crate::config::CONFIG_SCHEMA_VERSION],
+            help: &[crate::help::SCHEMA_VERSION_HELP],
+            skill: &[crate::skill::SKILL_SCHEMA_VERSION],
+        },
         state_schema_version: octl_core::STATE_SCHEMA_VERSION,
         supported_state_schemas: octl_core::SUPPORTED_STATE_SCHEMAS,
     };
@@ -378,6 +422,18 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
             println!(
                 "supported envelopes:     {}",
                 format_u32_list(payload.supported_schemas)
+            );
+            println!(
+                "config schemas:          {}",
+                format_u32_list(payload.supported_schemas_by_name.config)
+            );
+            println!(
+                "help schemas:            {}",
+                format_u32_list(payload.supported_schemas_by_name.help)
+            );
+            println!(
+                "skill schemas:           {}",
+                format_u32_list(payload.supported_schemas_by_name.skill)
             );
             println!("state schema version:    {}", payload.state_schema_version);
             println!(
