@@ -3,11 +3,13 @@ created: 2026-08-16
 updated: 2026-08-16
 type: bug
 reporter: jari
-status: open
+status: cannot-reproduce
 priority: normal
 labels:
 - via:agent-homebase-wrapup
 - needs-triage
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # run wait --output json returns null terminal fields for a settled run
@@ -46,3 +48,9 @@ Every settled-run check this session had to fall back to a second `run show` cal
 `status`/`landed`. Low severity (workaround exists) but it defeats the point of `run wait`
 folding the summary in, and the null-vs-populated split between the two commands is
 surprising. Observed with orchestratectl 0.1.8 on macOS (darwin 25.5.0), 2026-08-16.
+
+## Resolution
+
+### 2026-08-16T15:32:29Z · @claude
+
+Ei bugi. `run wait` palauttaa listan ajoja (`data.runs[]`), koska se voi odottaa montaa yhtä aikaa; raportin kysely haki yksittäistä kenttää suoraan (`.data.status`), jota ei ole. Oikea kysely `.data.runs[0].status` palauttaa kaikki kentät. Verifioitu koodista (run/wait.rs: WaitData.runs). Jäännös: run show palauttaa yhden ajon, run wait listan — muotoero on dokumentaatioasia, ei koodivirhe.

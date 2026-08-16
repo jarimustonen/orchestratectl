@@ -1,10 +1,12 @@
 ---
 created: 2026-08-06
-updated: 2026-08-13
+updated: 2026-08-16
 type: improvement
-status: open
+status: duplicate
 priority: normal
 labels: [defer-0.2.1]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # orchestrate driver heartbeat for broader stall/liveness detection
@@ -43,3 +45,9 @@ These must go through `LockedRun` + `append_and_apply_*` (state-integrity invari
 ### 2026-08-13T11:10:30Z · @adr-decision-2
 
 DEFER-to-0.2.1: An explicit driver heartbeat/lease is the protocol path itself — deferred with it. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-16T15:33:38Z · @claude
+
+Duplikaatti: @supervisor-stall-detection. Sama puuttuva signaali (orkestroijan/agentin elonmerkki tapahtumahiljaisuuden aikana), eri kulma. Ratkaisu on yksi: hiljaisuuteen perustuva stall-havainto, ei kaksi rinnakkaista mekanismia. Ohjaimen heartbeat-tarve on kirjattu kohde-issuen alle.

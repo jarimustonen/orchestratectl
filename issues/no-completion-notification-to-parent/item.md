@@ -1,9 +1,9 @@
 ---
 created: 2026-07-24
-updated: 2026-08-13
+updated: 2026-08-16
 type: bug
 reporter: jari
-status: open
+status: fixed
 priority: normal
 labels: [supervisor, keep-0.2]
 commits:
@@ -15,6 +15,8 @@ commits:
   summary: skill docs — supervisor env note
 - hash: 6a91973
   summary: switch to at-least-once delivery (owner decision)
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # Spawning session gets no completion notification when an async run finishes/merges
@@ -90,3 +92,9 @@ _Add rationale for reopening here._
 ### 2026-08-13T11:10:42Z · @adr-decision-2
 
 KEEP-and-fix: The notify back-channel survives; multi-child robustness still wanted. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-16T15:32:30Z · @claude
+
+Toimitettu. Valmistumiskoukku (`run create --notify`) on olemassa ja dokumentoitu invarianttina 5: koukku laukeaa terminaalitransitiossa ENNEN purkua, at-least-once -toimituksella. Verifioitu koodista (supervise/notify.rs). Moninodisten ajojen yhteenveto jatkuu erillisenä: @notify-run-level-summary.

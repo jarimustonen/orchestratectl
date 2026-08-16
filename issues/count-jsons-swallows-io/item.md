@@ -1,10 +1,12 @@
 ---
 created: 2026-08-10
-updated: 2026-08-13
+updated: 2026-08-16
 type: improvement
-status: open
+status: wontfix
 priority: normal
 labels: [rescope-0.2]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # run show: count_jsons silently returns 0 on filesystem read failure
@@ -24,3 +26,9 @@ payload/error shape.
 ### 2026-08-13T11:10:43Z · @adr-decision-2
 
 RE-SCOPE: The discussion/spinoff projection counts it guarded are cut (D3); re-target at the residual node count, which should read the authoritative manifest counter rather than a directory scan — closing the swallowed-IO path entirely. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-16T15:32:58Z · @claude
+
+Suljettu epärealistisena. Vaatii käyttöoikeus- tai IO-virheen ohjelman OMASSA kotihakemistossa (~/.orchestratectl/runs/<id>/nodes/). Aiempi RE-SCOPE-päätös (lue manifestin laskuri hakemistoskannauksen sijaan) on kelvollinen mikro-siivous, mutta ilman havaittua esiintymää se ei ansaitse issueta.

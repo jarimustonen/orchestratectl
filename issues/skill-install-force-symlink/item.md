@@ -1,9 +1,11 @@
 ---
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-16
 type: bug
 status: open
 priority: normal
+lane: skills
+lane_seq: 20
 ---
 
 # skill install --force aborts on a pre-existing symlink (refused_overwrite)

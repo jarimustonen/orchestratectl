@@ -1,11 +1,13 @@
 ---
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 type: improvement
-status: open
+status: wontfix
 priority: normal
 epic: lifecycle-architecture-review
 labels: [deferred]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 ## Problem
@@ -36,3 +38,9 @@ child run's log-authoritative status rather than its manifest/`nodes` projection
 ## Notes
 
 Hot-file cluster: `crates/octl-cli/src/supervise/*` — sequence edits.
+
+## Resolution
+
+### 2026-08-16T15:32:58Z · @claude
+
+Suljettu epärealistisena. Vaatii koneen kaatumisen täsmälleen kahden peräkkäisen levykirjoituksen (tapahtuman fsync ja projektiokirjoituksen) välissä. Invariantti 1:n applied_seq-vesileima kattaa toipumisen; lapsiajojen vastaava kovennus on teoreettinen eikä perustu havaintoon.

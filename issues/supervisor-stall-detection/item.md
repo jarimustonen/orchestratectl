@@ -1,10 +1,12 @@
 ---
 created: 2026-08-11
-updated: 2026-08-13
+updated: 2026-08-16
 type: bug
 status: open
 priority: normal
 labels: [defer-0.2.1]
+lane: lifecycle
+lane_seq: 30
 ---
 
 # supervisor reports stalled:false through a multi-hour silent agent hang; run wait default timeout (6h) is too long to surface it

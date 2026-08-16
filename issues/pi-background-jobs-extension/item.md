@@ -1,10 +1,12 @@
 ---
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 type: feature
-status: open
+status: obsolete
 priority: normal
 labels: [deferred]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # pi.dev background jobs extension for orchestratectl waits
@@ -32,3 +34,9 @@ In pi.dev, a normal bash/tool `orchestratectl run wait` blocks the agent turn. A
 - Documented shutdown behavior: kill or intentionally orphan child waiters.
 - Timeout default, e.g. 6h, to avoid immortal waits.
 - orchestratectl docs mention the extension as the recommended pi.dev non-blocking wait integration, but orchestratectl remains usable without it.
+
+## Resolution
+
+### 2026-08-16T15:33:24Z · @claude
+
+Suljettu: kuuluu toiseen repoon. Issue päättää itse että tämä on erillinen avoimen lähdekoodin pi.dev-laajennus (`pi-background-jobs`) eikä osa orchestratectl:ää, ja ajoitus on 0.3. orchestratectl:n rooli (run wait, landed, JSON-sopimukset) on jo olemassa. Kirjaa uudelleen siinä repossa kun se perustetaan.

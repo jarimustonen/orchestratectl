@@ -1,9 +1,11 @@
 ---
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-16
 type: bug
 status: open
 priority: normal
+lane: skills
+lane_seq: 10
 ---
 
 # `octl-spawn-spinoff` SKILL.md still carries a "NOT IMPLEMENTED" preview banner — but the surface ships in 0.1.0

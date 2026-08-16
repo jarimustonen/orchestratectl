@@ -1,11 +1,13 @@
 ---
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 type: improvement
-status: open
+status: wontfix
 priority: normal
 epic: lifecycle-architecture-review
 labels: [deferred]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # run show landed check has no git subprocess timeout
@@ -25,3 +27,9 @@ Surfaced by multi-model llm-review (anthropic #4, deepseek #5) during the `raw-g
 - Applies uniformly to all `landed` consumers; must not regress the rebase-robust semantics.
 
 **Acceptance:** `run show` cannot hang unbounded on a slow/stuck git; the landing verdict semantics are unchanged for a healthy repo.
+
+## Resolution
+
+### 2026-08-16T15:32:58Z · @claude
+
+Suljettu epärealistisena. Issue perustelee riskin verkkolevyllä (NFS) ja patologisella historialla; kumpaakaan ei ole. Paikallisella levyllä git ei jumitu ikuisesti — vanhentunut index.lock palauttaa virheen, ei riipu. Ei havaittua esiintymää.

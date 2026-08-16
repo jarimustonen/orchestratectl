@@ -1,9 +1,11 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-08-16
 type: feature
 status: open
 priority: normal
+lane: skills
+lane_seq: 30
 ---
 
 # Failed or partial consult review inside a worktree is a hard failure

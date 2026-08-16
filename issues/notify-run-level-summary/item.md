@@ -1,11 +1,13 @@
 ---
 created: 2026-07-24
-updated: 2026-08-13
+updated: 2026-08-16
 type: improvement
 status: open
 priority: normal
 related: ['@no-completion-notification-to-parent']
 labels: [keep-0.2]
+lane: lifecycle
+lane_seq: 70
 ---
 
 # Run-level completion summary for --notify (multi-node runs)

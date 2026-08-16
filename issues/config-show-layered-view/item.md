@@ -6,6 +6,8 @@ status: open
 priority: normal
 epic: lifecycle-architecture-review
 labels: [deferred]
+lane: surface
+lane_seq: 10
 ---
 
 # config show: layered/raw inspection that tolerates invalid values

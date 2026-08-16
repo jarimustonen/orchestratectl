@@ -1,9 +1,11 @@
 ---
 created: 2026-07-24
-updated: 2026-07-26
+updated: 2026-08-16
 type: bug
-status: in-progress
+status: obsolete
 priority: normal
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # Worker Claude process can hang mid-run; run reports failed though work is committed-unmerged
@@ -61,3 +63,9 @@ API error/cutoff? a crash?). The run dir has only `events.jsonl` / `manifest.jso
 capture the agent pane to a durable `<run-dir>/agent.log` (e.g. `tmux pipe-pane` set up
 by the supervisor right after spawn confirmation) so post-mortem diagnosis is possible.
 Until that exists, every autonomous worker death is uninvestigatable after teardown.
+
+## Resolution
+
+### 2026-08-16T15:32:30Z · @claude
+
+Ohitettu `run salvage` -komennolla (A3, design §2.2). Jumittunut työntekijä näkyy nyt attention-required -tilassa (run list/show/wait) ja pelastuskomento vie säilytetyn työpuun maaliin; issuen kuvaama käsin tehty elvytys (git merge --ff-only + worktree remove + branch -d) ei ole enää tarpeen. Verifioitu koodista (run/salvage.rs).

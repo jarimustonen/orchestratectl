@@ -1,10 +1,12 @@
 ---
 created: 2026-08-12
-updated: 2026-08-13
+updated: 2026-08-16
 type: bug
 status: open
 priority: normal
 labels: [observability, keep-0.2]
+lane: lifecycle
+lane_seq: 60
 ---
 
 # run show reports null worktree_path/source_branch for a live pending run

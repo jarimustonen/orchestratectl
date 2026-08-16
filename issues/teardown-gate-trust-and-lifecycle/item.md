@@ -1,12 +1,14 @@
 ---
 created: 2026-07-03
-updated: 2026-08-13
+updated: 2026-08-16
 type: improvement
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 labels: [supervisor, followup, rescope-0.2]
 related: ['@blocked-report-deletes-branch']
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # Harden teardown-gate trust boundary + preserved-worktree lifecycle
@@ -83,3 +85,9 @@ implemented in `498cf5d`.
 ### 2026-08-13T11:10:43Z · @adr-decision-2
 
 RE-SCOPE: The teardown gate survives (invariant 5), but the report-shape trust decision is re-framed by the A6 typed-outcome table + A1 exit shim. Re-target the hardening at the typed-outcome gate rather than report-payload inference. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-16T15:33:24Z · @claude
+
+Suljettu ohitettuna. Vuoden 2026-07 katselmusjäännös purkuvaiheen suojauksista; sen jälkeen purkuvaihe on rakennettu uusiksi (tyypitetty TerminalOutcome-taulu, lähdesuhteinen unmerged-tarkistus, likaisen työpuun vahti, HEAD-suhteinen vahti, non-force removal). Listan kohdista suurin osa on toimitettu ja loput ovat teoreettisia — ne kirjattiin erikseen ja suljettiin samassa triagessa.

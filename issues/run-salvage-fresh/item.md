@@ -1,11 +1,13 @@
 ---
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-16
 type: feature
-status: open
+status: wontfix
 priority: normal
 epic: lifecycle-architecture-review
 labels: [deferred]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # run salvage: fresh-agent continuation variant
@@ -27,3 +29,9 @@ and the single-node / preserved-worktree refusals already in `run/salvage.rs`.
 Also in this bucket (from the original issue's option-1 review): per-node salvage
 of a fan-out child (the current verb refuses multi-node with
 `ambiguous_multi_node`), tracked with `per-node-run`.
+
+## Resolution
+
+### 2026-08-16T15:33:24Z · @claude
+
+Suljettu spekulatiivisena. `run salvage` -komennon toimitettu suora finish/merge -polku riittää; 'jatka uudella agentilla samassa työpuussa' -varianttia ei ole kaivattu kertaakaan sen jälkeen kun A3 laskeutui. Avaa uudelleen jos tarve syntyy oikeasti.

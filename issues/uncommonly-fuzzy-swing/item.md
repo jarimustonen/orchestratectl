@@ -1,10 +1,12 @@
 ---
 created: 2026-08-10
-updated: 2026-08-13
+updated: 2026-08-16
 type: feature
 status: open
 priority: high
 labels: [defer-0.2.1]
+lane: lifecycle
+lane_seq: 40
 ---
 
 # Spinoff blocked on user input at a genuine fork must propagate to the parent agent, not silently block

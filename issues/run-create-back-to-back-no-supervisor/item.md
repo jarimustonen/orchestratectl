@@ -1,10 +1,12 @@
 ---
 created: 2026-07-25
-updated: 2026-08-13
+updated: 2026-08-16
 type: bug
-status: open
+status: duplicate
 priority: normal
 labels: [defer-0.2.1]
+closed: 2026-08-16
+closed_by: claude
 ---
 
 # Second of two back-to-back 'run create' calls left supervisor-less (pid null, no worker node)
@@ -67,3 +69,9 @@ Suggested direction (still no in-process race to fix): make the zombie self-heal
 ### 2026-08-13T11:10:30Z · @adr-decision-2
 
 DEFER-to-0.2.1: Supervisor-existence bucket — resolved by the lease. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-16T15:33:38Z · @claude
+
+Duplikaatti: @run-create-long-title-stillborn. Sama vika — ajo syntyy, mutta valvoja tai työntekijä ei. Viisi issueta kuvasi tätä eri kulmista; konsolidoitu pitkän otsikon tapaukseen, koska se on AINOA jolla on deterministinen toisto (pitkä --title → katkaistu haaranimi → tmux-window-not-found → stillborn). Muut kolme ovat sama oire ilman toistoa ja neljäs on saman vian jälkihoitoa. Havainnot säilyvät tässä issuessa; korjaa toistettava ensin.
