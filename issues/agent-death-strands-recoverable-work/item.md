@@ -99,15 +99,13 @@ Option 1 is the safe floor and unblocks tooling immediately; 2/3 are the ergonom
 - `@cancel-liveness-from-log` — liveness derived from the event log.
 - `@agent-died-merge-no-teardown-interactive` — teardown after mid-session agent-died.
 
-## Notes
+## Comments
 
 The `/stint` conductor recovered this incident by hand: verified the preserved branch was
 green, spawned a salvage spinoff that fast-forwarded `ee39196`, ran `/llm-review` +
 `/assess-findings` (which caught a real `../`-escape floor-bypass bug, fixed in `6c8362a`),
 and merged. It worked, but only because the operator thought to check `git log
 main..<branch>` on a "failed" run. The tooling should make that recoverability first-class.
-
-## Comments
 
 ### 2026-07-26T13:20:58Z · @claude-code
 

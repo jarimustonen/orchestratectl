@@ -53,7 +53,7 @@ run-status decision must be log-derived.
 
 That test fails with the current projection-scan implementation.
 
-## Notes
+## Comments
 
 Hot-file caution: `crates/octl-cli/src/supervise/*` is a sequence-edits cluster.
 Consider performance of a per-tick log scan vs the current directory read.

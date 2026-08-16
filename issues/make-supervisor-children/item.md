@@ -35,7 +35,7 @@ log), symmetric with `read_node_statuses` for leaf nodes. Locate where
 `children_all_terminal` is computed in `supervise/mod.rs` and base it on each
 child run's log-authoritative status rather than its manifest/`nodes` projection.
 
-## Notes
+## Comments
 
 Hot-file cluster: `crates/octl-cli/src/supervise/*` — sequence edits.
 

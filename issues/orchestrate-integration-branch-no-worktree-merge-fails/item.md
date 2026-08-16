@@ -76,7 +76,7 @@ Preference: (1) is a one-line skill change and unblocks the common `/orchestrate
 path immediately; (2) is the durable fix. Consider doing both — (1) now, (2) as the
 real guard.
 
-## Notes
+## Comments
 
 - `run merge --dry-run` giving a green result while the real merge fails is itself a
   small papercut — the dry-run doesn't check that the target branch is materialized

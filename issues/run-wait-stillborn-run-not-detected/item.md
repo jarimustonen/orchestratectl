@@ -72,7 +72,7 @@ elsewhere, so no work was lost — but the stillborn run still consumed a full
 - Optionally: a `run reattach` / `run cancel` hint in the returned envelope so the
   caller knows the run is dead rather than slow.
 
-## Notes
+## Comments
 
 Separate, milder rough edge seen the same session (probably NOT worth its own
 issue): report-marker landings routinely return `landed: false /

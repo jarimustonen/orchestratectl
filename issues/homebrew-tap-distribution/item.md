@@ -38,7 +38,7 @@ In `~/Sources/homebase`:
 - Add `jarimustonen/orchestratectl/orchestratectl` to `dotfiles/src/brew-packages.txt`.
 - Rewrite `dotfiles/setup.d/orchestratectl.sh` to the brew-upgrade shape used by `issuectl.sh` / `ossctl.sh` (keeping the global `orchestratectl skill install --force` step, since orchestratectl's skills are machine-global — unlike issuectl's repo-local `/issue` skill).
 
-## Notes
+## Comments
 
 - Keep the global skill-install step: ossctl's hook is the closest model (brew upgrade + `skill install --force` + leftover-prune + lockstep check).
 - `issuectl`'s skill is intentionally repo-local and stays that way — this migration is about distribution parity, not skill parity.

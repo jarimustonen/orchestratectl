@@ -19,6 +19,6 @@ From /llm-review of @supervisor-tmux-window-identity. The liveness watchdog spaw
 
 Group probes by socket and run one query per socket per tick: `tmux -S <socket> list-windows -a -F '#{window_id}'`. Build an in-memory set of live `window_id`s per socket, then evaluate every node against the snapshot. Preserves the tri-state semantics (socket unreachable -> Unknown for all nodes on it).
 
-## Notes
+## Comments
 
 Not a regression — split out of the qualified-identity change to keep that PR focused. Measure first (design.md §9 tracks supervisor process-count / poll-cost validation).

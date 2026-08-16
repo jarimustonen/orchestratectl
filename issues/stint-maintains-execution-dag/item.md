@@ -42,6 +42,6 @@ Today the stint skill plans a round from the TODO.md handoff + open issues, but 
 3. If a DAG format/section convention should live in TODO.md structurally, document it (e.g. a template stub the skill writes into).
 4. Redeploy: cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor (0 fail/0 warn).
 
-## Notes
+## Comments
 - The current hand-built DAG in TODO.md (## Execution DAG (2026-07-27)) is the working example to generalize from — read it.
 - Bundled-skill change ⇒ insta snapshot loop applies (see crates/octl-cli/CLAUDE.md).

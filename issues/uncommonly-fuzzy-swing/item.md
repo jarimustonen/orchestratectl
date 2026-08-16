@@ -68,7 +68,7 @@ it to the user.** Sketch:
 - The read-time stall-detection pattern from `peculiarly-muddled-caption` is the model for
   the delayed propagation.
 
-## Notes
+## Comments
 
 Filed in place of any handoff "workaround" note: the manual `tmux capture-pane` + nudge
 recovery is NOT the intended resolution and is deliberately not being enshrined as

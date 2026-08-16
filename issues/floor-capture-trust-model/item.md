@@ -91,7 +91,7 @@ so it can **forge** or **suppress** what the parser sees:
    `forbidden-even-if-declared` set for validation-control files
    (`.cargo/config*`, `rust-toolchain.toml`, build scripts, CI).
 
-## Notes
+## Comments
 
 - The `plan::Check::run` shell-string-vs-`{cmd,cwd,expect_exit}` contract
   (`plan-check-run-contract`) is a prerequisite for the isolation work.

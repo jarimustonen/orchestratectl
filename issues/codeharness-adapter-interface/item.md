@@ -54,7 +54,7 @@ rollout (design §14) plugs it in later.
   aider adapter is exercised through the same contract gate with a fake `aider`
   binary.
 
-## Notes
+## Comments
 
 - The interface issue enumerated `ChunkRequest` as "at least" its listed fields;
   a `files` field (declared file scope, design §4 `files_touched[]`) was added

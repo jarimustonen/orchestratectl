@@ -45,7 +45,7 @@ Concretely: remove the `issuectl update <slug> --status in-progress` step from
 `/triage-bugs`' fix-now disposition, and stop its lifecycle prose from claiming the caller
 owns the `→ in-progress` transition.
 
-## Notes
+## Comments
 
 - `/triage-bugs` is bundled under `crates/octl-cli/skills/triage-bugs/` — a bundled-skill
   change ⇒ redeploy + insta snapshot loop.

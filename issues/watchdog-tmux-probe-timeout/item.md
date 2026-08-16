@@ -19,6 +19,6 @@ From /llm-review of @supervisor-tmux-window-identity. The watchdog's `Command::o
 
 Wrap the tmux probe in a bounded wait (spawn + wait-with-timeout, or a helper). On timeout, return `TmuxProbe::Unknown` (defer to PID liveness) rather than blocking or reaping. Applies to both `probe_window_qualified` and `probe_window_by_name`.
 
-## Notes
+## Comments
 
 Pre-existing; split out of the qualified-identity change. Compose with @watchdog-batch-tmux-probe (a per-socket batch query needs the same timeout).

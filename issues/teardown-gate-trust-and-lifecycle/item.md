@@ -74,7 +74,7 @@ The blocked / unmerged path intentionally leaves the worktree registered in
 - A distinct `blocked` manifest status (vs `failed`) would make the
   preserved-branch scenario discoverable at the run level.
 
-## Notes
+## Comments
 
 Raw review corpus: `history/review-blocked-report-deletes-branch-raw.txt`
 (gitignored). Consensus top finding (source-relative check) was already

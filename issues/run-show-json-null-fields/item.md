@@ -30,7 +30,7 @@ supervisor + agent PIDs were alive per `ps`.
 `run show --output json` should return the same populated data `run list` / `event tail` see,
 or a clear error — not a silent all-null payload for a resolvable, live run.
 
-## Notes
+## Comments
 Observed once, during another repo's run being active; possibly a race (record mid-write) or a
 resolution path that differs from `list`/`event tail`. Filing for awareness; reproduce before
 fixing. Run state is global (`~/.orchestratectl/runs/`), so cwd/repo shouldn't matter.

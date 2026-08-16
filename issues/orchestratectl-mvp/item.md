@@ -66,6 +66,6 @@ Child issues (see `breakdown.md` for full dependencies and critical path):
 - [ ] @spinoff-proposal-cli — `spinoff list|approve|reject`
 - [ ] @create-sh-structured-stdout — cross-repo patch to `create.sh` (chore)
 
-## Notes
+## Comments
 
 Built in parallel with the existing skills — both write into `~/.orchestratectl/runs/` once a thin shim from the skills lands. Until then, the binary's state is the only source of truth and skills are untouched.
