@@ -5,6 +5,8 @@ type: bug
 reporter: jari
 status: open
 priority: high
+lane: skills
+lane_seq: 5
 ---
 
 # Spinoff terminal report fields persist as null
@@ -97,3 +99,21 @@ Filed from the `project-canon` repo after a 4-unit `/stint-start` round (2026-08
 all four workers did correct work and merged cleanly — the defect is purely in the report
 channel, not in worker behaviour or the merge path. Reported at the maintainer's request
 after the pattern proved systemic rather than prompt-fixable.
+
+### 2026-08-16T16:51:25Z · @claude
+
+VERIFIOITU TRIAGESSA 2026-08-16: raportteja ei ole kadonnut. Levyllä oleva kenttä on `last_report`, ei `report` — issuen koetin `jq '.report.summary'` palauttaa nullin rakenteellisesti. Kaikki neljä mainittua ajoa tarkistettu suoraan:
+
+| ajo | .last_report.summary | wrap_up_recommendations |
+|---|---|---|
+| 01m05ejk7bc5g85tj2jjkxmkzh | "Centralized JSON fatal-error envelopes…" | 1 |
+| 01m05fe6fgcw78s55vppdp37fa | "Added project-canon version --json…" | 2 |
+| 01m05g9pnqmj9xq5prd5rcmdkv | "Implemented canon §14 structured --help --json…" | 2 |
+| 01m05gyzvgns7m3m879yahtjv2 | "Delivered config path/show with TOML…" | 2 |
+
+Issuen oma vahvin vihje oli oikea: `run wait` palautti rikkaan summaryn, koska data oli koko ajan siellä. `spinoff_proposals` on aidosti 0 kaikissa neljässä — työntekijöillä ei ollut ehdotettavaa, ei pudotus. Myöskään `node show --run-id <id>` ei toimi: komento ottaa kaksi positionaalista argumenttia (`node show <RUN_ID> <NODE_ID>`).
+
+UUDELLEENRAJAUS: tiedonmenetystä ei ole, mutta ansa on aito ja toistuva. Tämä on NELJÄS sama väärä ilmoitus (@node-show-null-report, @intake-bug-orchestratectl-eb2acb9686cb, run wait -muotoero, tämä). Syy: mukana toimitettavat ohjeet kertovat miten raportti KIRJOITETAAN, mutta eivät sanaakaan siitä miten se luetaan takaisin — `last_report` ei esiinny yhdessäkään SKILL-tiedostossa. Lukija arvaa kirjoitusmuodosta `report`.
+
+Todellinen työ: (a) dokumentoi lukupinta ohjeisiin, (b) harkitse `report`-aliasta `node show`n ulostuloon, (c) yhtenäistä `run wait`in `data.runs[]` ja `run show`n `data.<kenttä>` -muotoero tai dokumentoi se. Alkuperäinen acceptance-kriteeristö perustuu pudotusoletukseen ja on vanhentunut.
+

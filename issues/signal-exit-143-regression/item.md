@@ -1,10 +1,11 @@
 ---
 created: 2026-08-13
-updated: 2026-08-13
+updated: 2026-08-16
 type: bug
-status: closed
+status: fixed
 priority: high
 related: ['@supervise-gates-signal-wait-hardening', '@supervise-gate-test-flake']
+closed: 2026-08-16
 ---
 
 # CI red on main: signal_exit_codes_and_payload — SIGTERM exits 512 not 143
