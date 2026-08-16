@@ -6,9 +6,68 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-16 (**v0.2.0 SHIPPED; NEXT = post-release cleanup / 0.2.1 planning**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-16 (**v0.2.0 SHIPPED; issue queue triaged to zero unlaned — NEXT = start the `skills` lane**)
 
-**✅ LATEST (2026-08-16: read first).** The 0.2 simplification release is fully shipped. This stint ran the
+**✅ LATEST (2026-08-16, stint 2 — read first).** A **triage-only stint**: no product code touched, no worktrees
+spawned, no release cut. Release state is unchanged from stint 1 (**v0.2.0** everywhere; see the stint-1 block below).
+The whole issue queue was swept against ADR 0010 (`open ∧ ¬laned`) and every claim was **verified against current
+code**, not taken from the issue text. `main` clean, 0 unpushed. Commits: `abb5cce`, `6d1d230`, `5f367e1`, `8a81025`.
+
+**Result: 39 unscheduled issues → 24 closed, 15 laned. The unlaned set is now empty** (18 open non-epic issues,
+all in `issuectl dag`; the 2 remaining `unscheduled` entries are epics, which are containers, not schedulable units).
+
+**Why so many closed — the load-bearing finding.** Two thirds of the queue was not real work:
+- **4 issues were never bugs at all — all four are the same mistake.** `run wait` emits `data.runs[]` (it can wait on
+  many runs) while `run show` emits `data.<field>`; and the node projection's field is **`last_report`, not `report`**.
+  Reports queried `.data.status` and `.report.summary`, got `null`, and were filed as data loss. Verified against the
+  actual runs: every report was intact, summaries and `wrap_up_recommendations` included. Affected
+  `node-show-null-report`, `intake-…eb2acb9686cb`, and the high-priority `spinoff-report-fields-null`.
+  **The real defect: the bundled skills document how to WRITE a report and never how to READ one back** — `last_report`
+  appears in no SKILL file. That is now `spinoff-report-fields-null`, re-scoped, with the verification table attached.
+- **11 were LLM review-residue.** Three (`atomic-source-ref`, `run-merge-recovery`, `run-merge-recovery-2`) shared a
+  word-for-word 3-line template body whose only content pointed at `history/review-merge-transaction-recovery.md` —
+  a file that does not exist (`history/` is gitignored), making them unactionable. The rest needed a crash inside a
+  two-write window, a recycled pid on a phased-out file format, an IO error in our own home dir, or a hung git on NFS
+  we do not have; two stated **in their own text** that the problem was unconfirmed or unreachable.
+- **5 were duplicates**, 3 out of scope, 1 already fixed by `run salvage`, 1 shipped (`--notify`).
+
+**⚠ KEY LEARNING #NEW (canonical) — an automated review pass that files every "deferred residual" as an issue
+manufactures a backlog of un-work.** 13 of the 24 closures came from the `/llm-review` + `/assess-findings` cascade.
+The failure mode is not bad judgment about severity; it is **filing without content**: a template body pointing at a
+machine-local, gitignored review artifact that is gone by the time anyone reads the issue. Rule going forward: a
+review residual becomes an issue only if it has **(a) an observed occurrence** or **(b) a self-contained, readable
+description**. Never a bare pointer to a `history/` file. This matches `/stint-handoff`'s standing "scrutinise
+spin-off quality before folding" discipline — apply it at *filing* time too, not only at folding time.
+
+**⏭ NEXT — start at the `skills` lane, head `spinoff-report-fields-null`.** It is high-priority, cheap (documentation
+plus a `report` alias on `node show`, optionally unifying the `run wait` / `run show` envelope shape), and it stops a
+recurring drain: four separate false bug reports have now come from that one undocumented read surface. The rest of
+that lane is small and independent (`spinoff-skill-stale-preview-banner` — the "NOT IMPLEMENTED" banner is still live
+and in **two** skills, not one; `skill-install-force-symlink` — the **dangling**-symlink case is still real,
+`path.exists()` follows links; `consult-failure-hard-fail` — kept and re-scoped on Jari's call to prose in four SKILL
+templates, phrased generically so the open-source skills stay project-neutral; `stint-skills-drop-intake-specifics`).
+The three cheapest wins across the whole DAG are roughly one worktree together.
+
+**Lanes (4, split so no two touch the same hot-file family):** `skills` (5 — `crates/octl-cli/skills/*` + `skill.rs`),
+`lifecycle` (9 — everything touching `run/*` or `supervise/*`, sequenced), `cli-canon` (3 — unchanged from stint 1),
+`surface` (1 — config only). Note `lifecycle`'s head is `uncommonly-fuzzy-swing` because **priority outranks
+`lane_seq`** in `issuectl dag`; that is correct (it is the lane's most valuable item), but it is not the cheapest
+start — lower its priority if you want to warm up on `shell-quote-dedup` (now **three** copies, not two).
+
+**🧹 Queue hygiene done this stint.** `issuectl doctor --fix`: 16 `## Notes` → `## Comments`, and `.issuectl/AGENTS.md`
+regenerated — it had been missing eight frontmatter fields including **`lane`**, the very field the DAG runs on.
+`signal-exit-143-regression` carried status `closed`, a value **not in the schema enum**, so issuectl never classified
+it as terminal and it kept surfacing as unlaned; set to `fixed`. Eight pre-issuectl closures had no `closed:` date —
+recovered the real dates from git history (all June 2026, 13.–29.6.) rather than stamping a placeholder. `issuectl
+doctor` is now clean apart from `arch-supervision-alternatives`'s undeclared `deliverable` key, which is not an error.
+
+**❗ Outside this repo (for Jari).** `~/.claude/skills/triage-bugs/` is left with dangling symlinks after the homebase
+rename to `triage-unlaned-issues` (homebase `fd14a240`), and the new skill is not installed into `~/.claude/skills/`
+yet — this stint ran its helper straight from the homebase source. Fix on the homebase side.
+
+**— stint 1 (2026-08-16, the v0.2.0 release) below —**
+
+The 0.2 simplification release is fully shipped. This stint ran the
 thin-supervisor build and selected safety/robustness follow-ups end-to-end, then cut **v0.2.0** through every channel.
 `main` is clean, pushed, tagged `v0.2.0`; crates.io has **`octl-core 0.2.0`** and **`orchestratectl 0.2.0`**;
 GitHub Release / cargo-dist assets are published at `https://github.com/jarimustonen/orchestratectl/releases/tag/v0.2.0`;
@@ -36,11 +95,12 @@ thread is mostly deferred design/lease/plugin work: pi.dev self-report/heartbeat
 run-create resilience, teardown backpressure/lease hardening, child-run log-authoritative rollup, and config layered
 inspection. Do **not** reopen the 0.2 refactor release path unless CI or release verification regresses.
 
-**⚠ Known follow-ups / not release blockers:** `run-create-long-title-stillborn` remains open (workaround: short
-`--title`); Lane E read-surface bugs (`node-show-null-report`, `run-show-null-worktree-path`,
-`count-jsons-swallows-io`) remain; `config-show-layered-view`, `run-salvage-fresh`, `enforce-run-merge`,
-`run-show-landed-git-timeout`, teardown TOCTOU/ref-validation/in-progress-op/backpressure, and A2 recovery residuals
-are intentionally deferred. A repo-wide cleanup is still desired for stale skill references in `AGENTS.md`; scheduling already lives in `issuectl dag`.
+**⚠ Known follow-ups (SUPERSEDED by stint 2's triage — see the block above; kept for context).** This list named
+`node-show-null-report`, `count-jsons-swallows-io`, `run-salvage-fresh`, `run-show-landed-git-timeout`, and the
+teardown TOCTOU / ref-validation / in-progress-op / backpressure residuals as "intentionally deferred" — all are now
+**closed**, most as unactionable or unreachable. Still open and laned: `run-create-long-title-stillborn` (workaround:
+short `--title`), `run-show-null-worktree-path`, `config-show-layered-view`, `enforce-run-merge`. A repo-wide cleanup
+of stale skill references in `AGENTS.md` is still desired; scheduling lives in `issuectl dag`.
 
 **— historical below (this session's earlier waves + canonical KEY LEARNINGs, still load-bearing) —**
 
@@ -194,5 +254,5 @@ were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy` — only the light
 
 - [x] 🐛 Auto-land an idle spinoff whose work is committed and merges cleanly — CLOSED wontfix 2026-08-14 (subsumed by the thin-supervisor ADR's manual-finish decision; re-file if a concrete need surfaces). ([`intake-feature-orchestratectl-0c37ae4b9e84`](issues/intake-feature-orchestratectl-0c37ae4b9e84/item.md))
 - [x] 🐛 run show --output json surfaces terminal report as "none"; report lives in nodes/n-0001.json .last_report — CLOSED **duplicate** 2026-08-15 of Lane E `node-show-null-report` (same bug; intake adds that `run show`, not only `node show`, is affected — noted on the closed intake body). ([`intake-feature-orchestratectl-302ab43b3efd`](issues/intake-feature-orchestratectl-302ab43b3efd/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: run create timeout can leave a supervisorless pending run with no nodes — jari via Telegram ([`intake-bug-orchestratectl-dabe78632044`](issues/intake-bug-orchestratectl-dabe78632044/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: run wait --output json returns null terminal fields for a settled run — jari via Telegram ([`intake-bug-orchestratectl-eb2acb9686cb`](issues/intake-bug-orchestratectl-eb2acb9686cb/item.md))
+- [x] 🐛 run create timeout can leave a supervisorless pending run with no nodes — CLOSED **duplicate** 2026-08-16 of `run-create-long-title-stillborn`, which is the only one of five run-create-stillbirth reports with a deterministic repro (long `--title` → truncated branch name → `tmux-window-not-found`). ([`intake-bug-orchestratectl-dabe78632044`](issues/intake-bug-orchestratectl-dabe78632044/item.md))
+- [x] 🐛 run wait --output json returns null terminal fields for a settled run — CLOSED **cannot-reproduce** 2026-08-16: not a bug. `run wait` emits `data.runs[]` (it can wait on many runs); the probe queried `.data.status`, which does not exist. `.data.runs[0].status` returns everything. ([`intake-bug-orchestratectl-eb2acb9686cb`](issues/intake-bug-orchestratectl-eb2acb9686cb/item.md))
