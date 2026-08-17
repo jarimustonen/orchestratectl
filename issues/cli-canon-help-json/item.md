@@ -8,11 +8,11 @@ labels: [cli-canon, tooling]
 lane: cli-canon
 lane_seq: 60
 commits:
-- hash: 2becf633ca1828c6eccf8c58f5dbd61a6bb03a5
+- hash: c6a5268ca8d8a012205eab4af197961b1e97ec17
   summary: 'fix(help): honor global --json with --help'
-- hash: 8c9745824f58665d8411548adca6af3afe60a701
+- hash: 80632450b8ddb79a24adb1971a5b2211cfe7892b
   summary: 'fix(help): keep shorthand resolver lint-clean'
-- hash: b7a2e957d017728bd538bd9f812e93b8d0c17c82
+- hash: 7b332cec3f9129905758fd7573f3a6480e0af466
   summary: 'fix(help): reject malformed selectors under --json'
 closed: 2026-08-17
 ---
