@@ -86,7 +86,26 @@ seq 20, sequenced after `config-show-layered-view`, but it is **genuinely cross-
 `harness::select` **and** the run-create path (accepting a profile, recording resolved profile/model/fallback in run
 metadata). Run-create is `lifecycle` territory. **Do not run it in parallel with any `lifecycle` unit.** The schema has
 a `collision` field for exactly this, but it is **not implemented in `issuectl update`** and no issue uses it, so the
-warning lives in the issue body instead.
+warning lives in the issue body instead (filed upstream as `intake-feature-issuectl-769ae85ab662`).
+
+**◆ DESIGN STEER ON `add-configurable-agent` (Jari, at this wrap) — capability names are the interface, raw model IDs
+are at most an escape hatch.** The system should be driven by a small set of capability tiers (roughly *ultra-capable /
+capable / fast / security-conscious*), configurable but shipping **sensible defaults for both the role set and the
+mapping**, so it works with no config file present. Consequence: the issue's `expert`/`standard`/`implementer`/`secure`
+examples are **capability tiers, not Jari's fleet baked in** — the model IDs there are illustrative config, never
+built-in defaults (same leak class `audit-no-user-specifics` exists to catch). **Open, NOT decided:** whether to also
+expose raw `--model` / `--effort` flags — Jari is explicitly unsure. Recommendation recorded on the issue: build the
+capability layer first, add raw flags only if a concrete need survives it. Note the merged intake's escalation case
+(terra gave up twice, sol finished in one pass) *argues for* the tier framing — "retry one tier up" is portable where
+two hardcoded vendor IDs are not.
+
+**`intake-feature-orchestratectl-d0c82ab27c9d` closed duplicate into `add-configurable-agent`**, content transcribed
+first. It contributed three requirements the feature issue lacked: (1) the per-run override is the **primitive** and a
+valid **MVP slice that may land first**; (2) the resolved profile/model/fallback must be **recorded on the manifest and
+shown by `run show`**; (3) it must replace a genuinely unsafe workaround — pi reads its model from the **global**
+`~/.pi/agent/settings.json`, so per-spawn selection today means rewriting that file and restoring it (racy under
+concurrent spawns, easy to leave mutated). Any design still requiring global-settings mutation has not solved it. pi
+accepts `--model "provider/id:<thinking>"` on its CLI, so passthrough is viable.
 
 **Triage sweep done at this wrap (`/triage-unlaned-issues`), DAG now 0 unlaned.**
 - **Laned:** `intake-bug-orchestratectl-169460ea27e7` (stale pending runs → `lifecycle`) — admitted and **re-scoped**:
@@ -449,3 +468,4 @@ were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy` — only the light
 - [x] 🐛 stale pending runs clutter run list and look like live workers — **ADMITTED + LANED** 2026-08-17 (`lifecycle`), re-scoped: the staged-create fix in 0.2.2 covers prevention, so this now owns (a) the ~7 stale pendings already on disk and (b) making a stale pending distinguishable from a live worker in `run list`. ([`intake-bug-orchestratectl-169460ea27e7`](issues/intake-bug-orchestratectl-169460ea27e7/item.md))
 - [x] 🐛 node show accepts wrong argument order silently: returns {} with exit 0 — CLOSED **cannot-reproduce** 2026-08-17: verified against the running **0.2.2** binary, which returns a proper `unknown_subcommand_or_flag` envelope with exit 1. Filed against 0.2.0. ([`intake-bug-orchestratectl-bb9e417520dd`](issues/intake-bug-orchestratectl-bb9e417520dd/item.md))
 - [ ] 🐛 Piialiisan bugiraportti: run create: per-run worker model override (harness args), without mutat… — jari via Telegram ([`intake-feature-orchestratectl-d0c82ab27c9d`](issues/intake-feature-orchestratectl-d0c82ab27c9d/item.md))
+- [x] 🐛 run create: per-run worker model override (harness args), without mutating global pi settings — CLOSED **duplicate** 2026-08-17 of `add-configurable-agent`, content transcribed first (per-run override as the MVP primitive, manifest/`run show` recording, and the racy global-settings workaround it must replace). ([`intake-feature-orchestratectl-d0c82ab27c9d`](issues/intake-feature-orchestratectl-d0c82ab27c9d/item.md))
