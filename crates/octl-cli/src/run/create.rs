@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 
+use chrono::{Duration, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -282,34 +283,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     let root = crate::home::root_dir()?;
 
-    if let Some(key) = args.idempotency_key.as_deref() {
-        if let Some(existing) = idempotency::lookup(
-            args.source_repo.as_deref(),
-            args.source_branch.as_deref(),
-            key,
-        )? {
-            // `existing` is a previously-stored run id; validate it before it
-            // composes a path (run_dir only accepts a typed RunId).
-            let dir = published_replay_dir(&root, &existing)?;
-            return emit(EmitInput {
-                run_id: &existing,
-                dir: dir.display().to_string(),
-                kind: args.kind,
-                lifecycle,
-                parent_run_id: parent_run_id.as_deref(),
-                parent_node_id: parent_node_id.as_deref(),
-                // Worker replays don't re-read their node here, so it stays `None`.
-                node_id: None,
-                spawn: None,
-                supervisor_pid: None,
-                idempotent_replay: Some(true),
-                dry_run: None,
-                spec: args.spec,
-                warnings: args.warnings,
-            });
-        }
-    }
-
     let run_id = new_run_id();
     // Validate the freshly generated id (infallible in practice) so run_dir
     // gets a typed RunId rather than a raw &str.
@@ -345,28 +318,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // exactly one concurrent caller wins and materializes; the losers observe
     // the reservation and replay the winner's run instead of spawning a
     // duplicate. Skipped on dry-run (handled above — dry-run persists nothing).
-    let mut reservation: Option<ReservationGuard> =
-        if let Some(key) = args.idempotency_key.as_deref() {
-            match idempotency::reserve(
-                args.source_repo.as_deref(),
-                args.source_branch.as_deref(),
-                key,
-                &run_id,
-            )? {
-                idempotency::Reservation::Reserved => Some(ReservationGuard {
-                    repo: args.source_repo.clone(),
-                    branch: args.source_branch.clone(),
-                    key: key.to_string(),
-                    run_id: run_id.clone(),
-                    armed: true,
-                }),
-                idempotency::Reservation::AlreadyReserved(existing) => {
-                    // A concurrent same-key call won the race between our `lookup`
-                    // and this `reserve`. Replay ITS run, exactly as the top-of-
-                    // function fast path would have.
-                    let dir = published_replay_dir(&root, &existing)?;
+    let mut reclaimed_staging_runs = Vec::new();
+    let mut reservation: Option<ReservationGuard> = if let Some(key) =
+        args.idempotency_key.as_deref()
+    {
+        let creator = idempotency::CreatorLease {
+            pid: std::process::id(),
+            pid_start_secs: crate::supervise::watchdog::pid_start_time(std::process::id()),
+            started_at: Utc::now(),
+        };
+        let proposed = idempotency::ReservationRecord::new(&run_id, creator);
+        let mut observed = match idempotency::reserve(
+            args.source_repo.as_deref(),
+            args.source_branch.as_deref(),
+            key,
+            &proposed,
+        )? {
+            idempotency::Reservation::Reserved => None,
+            idempotency::Reservation::AlreadyReserved(existing) => Some(existing),
+        };
+        for _ in 0..8 {
+            let Some(existing) = observed.take() else {
+                break;
+            };
+            match classify_existing_reservation(&root, &existing, Utc::now())? {
+                ExistingReservation::Published(dir) => {
+                    repair_parent_child_publication(&root, &dir)?;
                     return emit(EmitInput {
-                        run_id: &existing,
+                        run_id: &existing.run_id,
                         dir: dir.display().to_string(),
                         kind: args.kind,
                         lifecycle,
@@ -381,10 +360,64 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                         warnings: args.warnings,
                     });
                 }
+                ExistingReservation::CreatorLive => {
+                    return Err(CliError::system(
+                            "idempotency_creator_live",
+                            format!(
+                                "idempotency key is being materialized by live creator pid {} for run {}; retry after that create finishes",
+                                existing.creator.as_ref().map_or(0, |c| c.pid), existing.run_id
+                            ),
+                        )
+                        .with_invalid_value(existing.run_id));
+                }
+                ExistingReservation::Unverifiable => {
+                    return Err(CliError::system(
+                            "idempotency_creator_unverifiable",
+                            format!(
+                                "idempotency key points to unpublished run {}, but its creator identity cannot be verified; inspect the reservation and staging run before retrying",
+                                existing.run_id
+                            ),
+                        )
+                        .with_invalid_value(existing.run_id));
+                }
+                ExistingReservation::CreatorDead => {
+                    let mut replacement = proposed.clone();
+                    replacement.stale_run_ids = existing.stale_run_ids.clone();
+                    replacement.stale_run_ids.push(existing.run_id.clone());
+                    replacement.stale_run_ids.sort();
+                    replacement.stale_run_ids.dedup();
+                    match idempotency::reclaim(
+                        args.source_repo.as_deref(),
+                        args.source_branch.as_deref(),
+                        key,
+                        &existing,
+                        &replacement,
+                    )? {
+                        idempotency::Reclaim::Reclaimed => {
+                            reclaimed_staging_runs = replacement.stale_run_ids;
+                            break;
+                        }
+                        idempotency::Reclaim::Changed(current) => observed = Some(current),
+                    }
+                }
             }
-        } else {
-            None
-        };
+        }
+        if observed.is_some() {
+            return Err(CliError::system(
+                "idempotency_reservation_contended",
+                "idempotency reservation changed repeatedly while reclaiming; retry",
+            ));
+        }
+        Some(ReservationGuard {
+            repo: args.source_repo.clone(),
+            branch: args.source_branch.clone(),
+            key: key.to_string(),
+            run_id: run_id.clone(),
+            armed: true,
+        })
+    } else {
+        None
+    };
 
     ensure_root(&root).map_err(from_core)?;
     // A run becomes externally visible only when its fully materialized state
@@ -394,6 +427,26 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // for an accepted run.
     let staging_root = root.join(".creating");
     ensure_root(&staging_root).map_err(from_core)?;
+    for stale_run_id in &reclaimed_staging_runs {
+        let stale_id = parse_run_id(stale_run_id)?;
+        let stale_dir = octl_core::run_dir(&staging_root, &stale_id);
+        match std::fs::remove_dir_all(&stale_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // Keep the replacement reservation durable: its stale_run_ids
+                // obligation lets the next retry resume cleanup. Releasing it
+                // here would lose the only pointer to the inherited staging dir.
+                if let Some(g) = reservation.as_mut() {
+                    g.disarm();
+                }
+                return Err(CliError::system(
+                    "stale_staging_cleanup_failed",
+                    format!("remove reclaimed staging run {}: {e}", stale_dir.display()),
+                ));
+            }
+        }
+    }
 
     if is_child {
         // Validate the parent exists up front (fail fast before we create the
@@ -529,18 +582,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             "child_kind": kind_kebab(args.kind),
             "child_title": title,
         });
-        // No idempotency key on the parent's `child.spawned`: `run create`'s
-        // own dedup is the CLI-level idempotency reservation (key -> run_id)
-        // that short-circuits a retry *before* this point. Passing the key here
-        // would instead make `append_and_apply_event` scan the parent log and,
-        // on a retry that slipped past the reservation, return an idempotent
-        // replay of the *first* child — silently orphaning the freshly
-        // generated `run_id`.
+        // The key is child-identity-specific, not the caller's create key. A
+        // retry after child publication can therefore repair this exact parent
+        // edge without deduping a distinct child or appending it twice.
+        let edge_key = format!("child-spawned:{run_id}");
         octl_core::append_and_apply_event(
             &parent_paths,
             "child.spawned",
             Some(parent_node_id_typed.as_ref().expect("is_child")),
-            None,
+            Some(&edge_key),
             child_data,
         )
         .map_err(from_core)?;
@@ -555,6 +605,17 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // not release the key if the following parent append has an I/O error.
         if let Some(g) = reservation.as_mut() {
             g.disarm();
+        }
+        // Deterministic integration-test seam for the cross-log crash window.
+        // It is reachable only through the test-only skeleton path, never for a
+        // production materialization.
+        if std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok()
+            && std::env::var("OCTL_TEST_FAIL_AFTER_PUBLISH").is_ok()
+        {
+            return Err(CliError::system(
+                "test_fail_after_publish",
+                "injected failure after child publication",
+            ));
         }
         // The skeleton child is live as soon as its run dir is published — emit
         // `child.spawned` here. The idempotency key was already reserved before
@@ -721,51 +782,119 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     })
 }
 
-/// Resolve an idempotency replay only when its run has crossed the publication
-/// boundary. A reservation is deliberately visible before materialization to
-/// serialize concurrent callers, but it is not a success claim: replaying a
-/// private or hard-killed staging run would recreate the stillborn lie this
-/// module prevents.
-fn published_replay_dir(
+const CREATOR_WITHOUT_IDENTITY_STALE_AFTER_MINS: i64 = 30;
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExistingReservation {
+    Published(PathBuf),
+    CreatorLive,
+    CreatorDead,
+    Unverifiable,
+}
+
+/// Classify an existing reservation without guessing. Publication wins even if
+/// the creator died immediately afterward. An unpublished creator with an
+/// authoritative start-time identity is reclaimable only when that identity is
+/// no longer live. A legacy/no-identity record fails closed after its bounded
+/// trust window instead of treating a recycled PID as either live or dead.
+fn classify_existing_reservation(
     root: &std::path::Path,
-    run_id: &str,
-) -> Result<std::path::PathBuf, CliError> {
-    let run_id_typed = parse_run_id(run_id)?;
-    let dir = octl_core::run_dir(root, &run_id_typed);
-    // A reservation is deliberately published before its winner materializes,
-    // so duplicate concurrent callers must wait for the winner's publication
-    // boundary instead of either duplicating it or reporting a private run as a
-    // success. This is a bounded wait: without a creator lease we cannot safely
-    // steal a reservation after a hard kill (tracked separately).
-    let wait_ms = std::env::var("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(30_000);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
-    loop {
-        let manifest = dir.join("manifest.json");
-        match manifest.try_exists() {
-            Ok(true) => return Ok(dir),
-            Ok(false) if std::time::Instant::now() >= deadline => {
-                return Err(CliError::system(
-                    "idempotency_publish_timeout",
-                    format!(
-                        "idempotency key points to run {run_id}, but its creator did not publish \
-                         a worker node within {wait_ms}ms. It may still be materializing or was \
-                         interrupted; inspect the creator before retrying with a new key"
-                    ),
-                )
-                .with_invalid_value(run_id));
-            }
-            Ok(false) => std::thread::sleep(std::time::Duration::from_millis(10)),
-            Err(e) => {
-                return Err(CliError::system(
-                    "io_error",
-                    format!("check {}: {e}", manifest.display()),
-                ));
-            }
+    record: &idempotency::ReservationRecord,
+    now: chrono::DateTime<Utc>,
+) -> Result<ExistingReservation, CliError> {
+    classify_existing_reservation_with(root, record, now, |pid, start| {
+        crate::supervise::pid_file::pid_live_with_identity(pid, start)
+    })
+}
+
+fn classify_existing_reservation_with(
+    root: &std::path::Path,
+    record: &idempotency::ReservationRecord,
+    now: chrono::DateTime<Utc>,
+    owner_live: impl FnOnce(u32, Option<u64>) -> bool,
+) -> Result<ExistingReservation, CliError> {
+    let run_id = parse_run_id(&record.run_id)?;
+    let dir = octl_core::run_dir(root, &run_id);
+    match dir.join("manifest.json").try_exists() {
+        Ok(true) => return Ok(ExistingReservation::Published(dir)),
+        Ok(false) => {}
+        Err(e) => {
+            return Err(CliError::system(
+                "io_error",
+                format!("check {}/manifest.json: {e}", dir.display()),
+            ))
         }
     }
+    let Some(creator) = record.creator.as_ref() else {
+        return Ok(ExistingReservation::Unverifiable);
+    };
+    let live = owner_live(creator.pid, creator.pid_start_secs);
+    match (live, creator.pid_start_secs) {
+        (false, _) => Ok(ExistingReservation::CreatorDead),
+        (true, Some(_)) => Ok(ExistingReservation::CreatorLive),
+        (true, None)
+            if now.signed_duration_since(creator.started_at)
+                < Duration::minutes(CREATOR_WITHOUT_IDENTITY_STALE_AFTER_MINS) =>
+        {
+            Ok(ExistingReservation::CreatorLive)
+        }
+        (true, None) => Ok(ExistingReservation::Unverifiable),
+    }
+}
+
+/// Repair the child-publication/parent-edge crash window. The child's durable
+/// manifest is the transaction record: once published, every keyed replay
+/// appends the exact `child.spawned` edge idempotently to the recorded parent's
+/// log before returning success.
+fn repair_parent_child_publication(
+    root: &std::path::Path,
+    child_dir: &std::path::Path,
+) -> Result<(), CliError> {
+    let child_id = child_dir
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| CliError::system("invalid_run_id", "published child path has no run id"))?;
+    let child_id_typed = parse_run_id(child_id)?;
+    let child_paths = run_paths_exact(root, &child_id_typed)?;
+    let manifest = octl_core::RunLock::with_shared_lock(&child_paths.lock(), || {
+        octl_core::read_manifest_opt(&child_paths)
+    })
+    .map_err(from_core)?
+    .ok_or_else(|| {
+        CliError::system(
+            "run_not_published",
+            format!("published run {child_id} has no durable manifest"),
+        )
+    })?;
+    let (Some(parent_run_id), Some(parent_node_id)) = (
+        manifest.parent_run_id.as_ref(),
+        manifest.parent_node_id.as_ref(),
+    ) else {
+        if manifest.parent_run_id.is_some() || manifest.parent_node_id.is_some() {
+            return Err(CliError::system(
+                "child_parent_link_invalid",
+                format!("child run {child_id} has an incomplete parent identity"),
+            ));
+        }
+        return Ok(());
+    };
+    let parent_paths = run_paths_exact(root, parent_run_id)?;
+    let data = json!({
+        "child_run_id": child_id,
+        "child_node_id": "n-0001",
+        "child_kind": kind_kebab(manifest.kind),
+        "child_title": manifest.title,
+    });
+    let key = format!("child-spawned:{child_id}");
+    octl_core::append_and_apply_event(
+        &parent_paths,
+        "child.spawned",
+        Some(parent_node_id),
+        Some(&key),
+        data,
+    )
+    .map_err(from_core)?;
+    Ok(())
 }
 
 /// Atomically publish a fully materialized staging run into the public run
@@ -1098,6 +1227,89 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dead_creator_reservation_is_reclaimable_without_waiting() {
+        let root = tempfile::TempDir::new().unwrap();
+        let started = Utc::now();
+        let record = idempotency::ReservationRecord::new(
+            "01jxsnap000000000000000000",
+            idempotency::CreatorLease {
+                pid: 42,
+                pid_start_secs: Some(100),
+                started_at: started,
+            },
+        );
+        assert_eq!(
+            classify_existing_reservation_with(root.path(), &record, started, |pid, start| {
+                assert_eq!((pid, start), (42, Some(100)));
+                false
+            })
+            .unwrap(),
+            ExistingReservation::CreatorDead
+        );
+    }
+
+    #[test]
+    fn live_creator_reservation_is_never_reclaimed() {
+        let root = tempfile::TempDir::new().unwrap();
+        let started = Utc::now();
+        let record = idempotency::ReservationRecord::new(
+            "01jxsnap000000000000000000",
+            idempotency::CreatorLease {
+                pid: 42,
+                pid_start_secs: Some(100),
+                started_at: started,
+            },
+        );
+        assert_eq!(
+            classify_existing_reservation_with(root.path(), &record, started, |_, _| true).unwrap(),
+            ExistingReservation::CreatorLive
+        );
+    }
+
+    #[test]
+    fn stale_live_pid_without_start_identity_fails_closed() {
+        let root = tempfile::TempDir::new().unwrap();
+        let started = Utc::now() - Duration::minutes(31);
+        let record = idempotency::ReservationRecord::new(
+            "01jxsnap000000000000000000",
+            idempotency::CreatorLease {
+                pid: 42,
+                pid_start_secs: None,
+                started_at: started,
+            },
+        );
+        assert_eq!(
+            classify_existing_reservation_with(root.path(), &record, Utc::now(), |_, _| true)
+                .unwrap(),
+            ExistingReservation::Unverifiable
+        );
+    }
+
+    #[test]
+    fn published_reservation_replays_even_when_creator_is_dead() {
+        let root = tempfile::TempDir::new().unwrap();
+        let started = Utc::now();
+        let record = idempotency::ReservationRecord::new(
+            "01jxsnap000000000000000000",
+            idempotency::CreatorLease {
+                pid: 42,
+                pid_start_secs: Some(100),
+                started_at: started,
+            },
+        );
+        let dir = root.path().join("runs").join(&record.run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), "published").unwrap();
+        assert_eq!(
+            classify_existing_reservation_with(root.path(), &record, started, |_, _| {
+                panic!("published state must win before liveness probe")
+            })
+            .unwrap(),
+            ExistingReservation::Published(dir)
+        );
+    }
 
     #[test]
     fn derive_branch_basic() {

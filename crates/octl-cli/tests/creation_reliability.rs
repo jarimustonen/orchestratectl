@@ -26,7 +26,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use octl_core::{append_and_apply_event, NodeId, RunPaths};
+use serde_json::{json, Value};
 use serial_test::file_serial;
 use tempfile::TempDir;
 
@@ -146,13 +147,33 @@ fn interrupted_create_never_publishes_a_zero_node_run() {
     // fixture's blocking child alive.
     child.kill().expect("kill run create");
     child.wait().expect("reap run create");
-    // A same-key retry must fail loudly instead of replaying the private run as
-    // a success. It must not remove the live creator's reservation: concurrent
-    // callers need the same protection.
+    // The shell child can outlive its killed Rust parent. Stop it before retrying
+    // so this fixture models a fully-dead materializer identity, not an unrelated
+    // orphan side effect.
+    if let Ok(pid) = std::fs::read_to_string(&script_pid)
+        .map(|s| s.trim().parse::<i32>().expect("numeric script pid"))
+    {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+
+    let stale_staging = home
+        .path()
+        .join(".creating")
+        .join("runs")
+        .read_dir()
+        .unwrap()
+        .next()
+        .expect("stale staged run")
+        .unwrap()
+        .path();
+    assert!(stale_staging.exists());
+
+    // A same-key retry proves the creator PID dead, atomically reclaims the
+    // reservation, removes the stale staging run, and creates afresh. The
+    // skeleton seam makes this deterministic without tmux/workmux or sleeps.
     let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("ORCHESTRATECTL_HOME", home.path())
-        .env("OCTL_CREATE_SH", &create_sh)
-        .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .args([
             "--output",
             "json",
@@ -165,37 +186,185 @@ fn interrupted_create_never_publishes_a_zero_node_run() {
             "interrupted",
             "--idempotency-key",
             "interrupted-key",
-            "--task",
-            "echo done",
         ])
         .output()
         .expect("retry interrupted run create");
     assert!(
-        !retry.status.success(),
-        "private reservation must not replay"
+        retry.status.success(),
+        "dead creator reservation must be reclaimable: {}",
+        String::from_utf8_lossy(&retry.stderr)
     );
-    let retry_error: Value = serde_json::from_slice(&retry.stderr).unwrap();
-    assert_eq!(retry_error["error"]["code"], "idempotency_publish_timeout");
+    let replay: Value = serde_json::from_slice(&retry.stdout).unwrap();
+    let new_run_id = replay["data"]["run_id"].as_str().unwrap();
+    assert!(home.path().join("runs").join(new_run_id).exists());
+    assert!(
+        !stale_staging.exists(),
+        "stale staging state must be removed"
+    );
+}
 
-    if let Ok(pid) = std::fs::read_to_string(&script_pid)
-        .map(|s| s.trim().parse::<i32>().expect("numeric script pid"))
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn concurrent_retry_refuses_while_creator_lease_is_live() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let ready = scratch.path().join("create-started");
+    let script_pid = scratch.path().join("create.pid");
+    let create_sh = scratch.path().join("blocking-create.sh");
+    write_exec(
+        &create_sh,
+        &format!(
+            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do sleep 1; done\n",
+            script_pid.display(),
+            ready.display()
+        ),
+    );
+    let mut creator = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_CREATE_SH", &create_sh)
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "live",
+            "--idempotency-key",
+            "live-key",
+            "--task",
+            "work",
+        ])
+        .spawn()
+        .unwrap();
+    wait_for(&ready);
+
+    let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "live",
+            "--idempotency-key",
+            "live-key",
+        ])
+        .output()
+        .unwrap();
+    assert!(!retry.status.success());
+    let error: Value = serde_json::from_slice(&retry.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "idempotency_creator_live");
+
+    creator.kill().unwrap();
+    creator.wait().unwrap();
+    if let Ok(pid) = std::fs::read_to_string(&script_pid).map(|s| s.trim().parse::<i32>().unwrap())
     {
         unsafe { libc::kill(pid, libc::SIGKILL) };
     }
+}
 
-    let public_runs = std::fs::read_dir(home.path().join("runs"))
-        .expect("public runs directory")
-        .count();
-    assert_eq!(public_runs, 0, "an interrupted create must publish no run");
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn retry_repairs_published_child_missing_parent_edge() {
+    let home = TestHome::new();
+    let parent_id = "01jxsnap000000000000000000";
+    let parent_dir = home.path().join("runs").join(parent_id);
+    std::fs::create_dir_all(&parent_dir).unwrap();
+    let parent = RunPaths::new(parent_dir.clone(), parent_id).unwrap();
+    append_and_apply_event(
+        &parent,
+        "run.created",
+        None,
+        None,
+        json!({
+            "kind": "spinoff",
+            "lifecycle": "autonomous",
+            "title": "parent"
+        }),
+    )
+    .unwrap();
+    append_and_apply_event(
+        &parent,
+        "node.created",
+        Some(&NodeId::parse_str("n-0001").unwrap()),
+        None,
+        json!({ "kind": "spinoff" }),
+    )
+    .unwrap();
+
+    let args = [
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "child",
+        "--idempotency-key",
+        "child-repair-key",
+        "--parent-run-id",
+        parent_id,
+        "--parent-node-id",
+        "n-0001",
+    ];
+    let interrupted = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .env("OCTL_TEST_FAIL_AFTER_PUBLISH", "1")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(!interrupted.status.success());
+    assert_eq!(
+        read_events(&parent.events())
+            .iter()
+            .filter(|event| event["kind"] == "child.spawned")
+            .count(),
+        0
+    );
+
+    let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .args(args)
+        .output()
+        .unwrap();
     assert!(
-        home.path()
-            .join(".creating")
-            .join("runs")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_some(),
-        "the unfinished state stays in the private staging root for diagnosis"
+        retry.status.success(),
+        "repair retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    let edges: Vec<_> = read_events(&parent.events())
+        .into_iter()
+        .filter(|event| event["kind"] == "child.spawned")
+        .collect();
+    assert_eq!(edges.len(), 1, "repair must append exactly one parent edge");
+    assert!(edges[0]["idempotency_key"]
+        .as_str()
+        .unwrap()
+        .starts_with("child-spawned:"));
+
+    // A second replay is idempotent across the parent event log too.
+    let again = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(again.status.success());
+    assert_eq!(
+        read_events(&parent.events())
+            .iter()
+            .filter(|event| event["kind"] == "child.spawned")
+            .count(),
+        1
     );
 }
 
