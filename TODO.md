@@ -6,9 +6,94 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.2.1 SHIPPED — NEXT = `multiplexer` lane, head `tmux-stub-etxtbsy-flake` (CI-red flake)**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.2.2 SHIPPED + CI GREEN — NEXT = `skills` lane, head `release-gate-on-ci` or `audit-no-user-specifics`**)
 
-**✅ LATEST (2026-08-17, stint 3 — read first).** A **full round + release**: three parallel headless spinoffs, one per
+**✅ LATEST (2026-08-17, stint 4 — read first).** A **full round + release + a caught mistake**: four parallel headless
+spinoffs (one per lane), all landed on first spawn, no worker deaths; **v0.2.2 cut through every channel**; then CI
+caught that one of the four fixes was **incomplete**, and a fifth spinoff finished it. crates.io has `octl-core 0.2.2`
++ `orchestratectl 0.2.2`; the `v0.2.2` tag's Release CI is **green**, the crates.io publish job is **green**, and
+**main CI is green on all 8 jobs, both platforms**. Local binary **0.2.2**, `orchestratectl doctor` **997 ok / 0 warn
+/ 0 fail**. `main` clean.
+
+**What landed (5 units, 5 issues closed):**
+- **`pi-spinoff-batch`** (supervise→lifecycle, high) — the load-bearing fix. `run create` now **stages** the prompt and
+  durable projections outside the public run tree while `create.sh` blocks on workmux/tmux/harness startup, and
+  atomically publishes only after a live worker PID **and** `node.created` are durable. So a client timeout under a
+  concurrent batch can no longer leave a successful-looking `pending` manifest with zero nodes. Worker filed
+  `create-idempotency-lease-recovery` for the residual (hard-kill mid-create leaves reclaimable staging state).
+- **`cli-canon-help-json`** (cli-canon) — canon §14 closed. `--help --json` now emits the clap-**derived** help
+  envelope (not a hand-maintained literal), and malformed output selectors are rejected. That lane is now empty.
+- **`tmux-stub-etxtbsy-flake`** (multiplexer) — see the KEY LEARNING below; took **two** spinoffs.
+- **`spinoff-skill-stale-preview-banner` + `skill-install-force-symlink`** (skills, one worker, two commits) — stale
+  "NOT IMPLEMENTED" preview guidance removed; forced install now replaces a **dangling** symlink (non-following
+  metadata, since `path.exists()` follows links).
+
+**⚠ KEY LEARNING #NEW (canonical) — the local green gate runs on macOS and is STRUCTURALLY BLIND to a whole failure
+class; CI is the only gate that sees it.** `tmux-stub-etxtbsy-flake` is ETXTBSY: Linux refuses to exec a file while any
+process holds a write fd to it; **macOS does not enforce this at all**. So the first fix (`sync_all` + `drop` before
+`chmod`) passed its worker's full local gate AND the orchestrator's integrated gate on merged `main` (26 suites, 0
+failures) — and CI still went red, with **two sibling tests** failing. The real cause was one level deeper: a
+**cross-thread fork/exec race** — cargo runs these tests as parallel threads in ONE process, so when thread A holds a
+write fd to its stub, thread B's `Command::spawn` forks and the child transiently inherits it; `O_CLOEXEC` closes it
+only at *exec*, so a live process holds a write handle during that window. The second spinoff confirmed this and fixed
+it structurally (a test-local mutex held from stub creation through the tmux calls), **verified green on
+`test (ubuntu-latest)`**. Corollaries: (1) for a platform-specific class, a green local run is **not evidence** —
+argue the fix on mechanism and confirm on CI; (2) "the tests pass" did not mean the fix was right, twice in a row.
+
+**⚠ KEY LEARNING #NEW (canonical) — I published v0.2.2 BEFORE CI had reported on the commit it contained.** The release
+was unharmed (the defect was test-only), but that was **luck, not process**, and crates.io publishes are permanent
+(yank-only). Filed as **`release-gate-on-ci`** (skills, high) with the cheap fix: make CI a hard gate in the release
+sequence — `git push && gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')"
+--exit-status && cargo publish …`. `--exit-status` is the load-bearing part: red CI breaks the `&&` chain so no publish
+happens. Same discipline as the existing "never `| tail` a command whose exit status gates an `&&` chain" rule.
+
+**⚠ LANE-STRUCTURE FIX (this wrap) — `supervise` was a phantom lane; merged into `lifecycle`.** `lifecycle` is defined
+as "everything touching `run/*` or `supervise/*`", so a parallel `supervise` lane was definitionally overlapping. Not a
+prediction — **verified from git**: the `supervise` lane's only work (`pi-spinoff-batch`) landed **entirely in
+`crates/octl-cli/src/run/create.rs`** (247 lines), **zero files under `supervise/*`**. Its follow-up
+`create-idempotency-lease-recovery` inherits that surface, so it moved to `lifecycle` (seq 5, now the lane head).
+This is the same shape as the two integrated-main breakages already recorded below; the difference is it was caught
+**before** a spawn. **`lifecycle` is deliberately NOT split** despite depth 12 — the `run/*` vs `supervise/*` split has
+already failed once here (`supervisor-dies-before-worker-node`), so it stays the sequential spine and parallelism comes
+from the other lanes.
+
+**⏭ NEXT — `skills` lane.** Its head is `release-gate-on-ci` (filed this wrap), with `audit-no-user-specifics` right
+behind it — **both high, both guarding something irreversible** (crates.io permanence vs. leaking user-specific facts
+into a public artifact), and `audit-no-user-specifics` has now been head-adjacent for three stints. Pick either; they
+are one lane so they sequence anyway. Cheap parallel partners: `surface`/`config-show-layered-view` and the
+`lifecycle` head `create-idempotency-lease-recovery`.
+
+**Lanes (3 now — `multiplexer` and `cli-canon` both drained this round and vanished; lanes derive from issue
+frontmatter, so no cleanup was needed).** `lifecycle` (12), `skills` (5), `surface` (2). Realistic parallelism is
+therefore **3 units/round**, which matches what actually ran. **`cli-canon` will return** as the canon grows (§19+) —
+reuse the name.
+
+**⚠ `add-configurable-agent` does NOT fit the lane model — read before scheduling it.** Jari's own feature request
+(named agent profiles: `expert`/`standard`/`implementer`/`secure`, with fallbacks + config layering). Laned `surface`
+seq 20, sequenced after `config-show-layered-view`, but it is **genuinely cross-cutting**: config surface **and**
+`harness::select` **and** the run-create path (accepting a profile, recording resolved profile/model/fallback in run
+metadata). Run-create is `lifecycle` territory. **Do not run it in parallel with any `lifecycle` unit.** The schema has
+a `collision` field for exactly this, but it is **not implemented in `issuectl update`** and no issue uses it, so the
+warning lives in the issue body instead.
+
+**Triage sweep done at this wrap (`/triage-unlaned-issues`), DAG now 0 unlaned.**
+- **Laned:** `intake-bug-orchestratectl-169460ea27e7` (stale pending runs → `lifecycle`) — admitted and **re-scoped**:
+  this round's staged-create fix should stop NEW stillborn pendings, so what remains is (a) the ~7 already on disk and
+  (b) making a stale pending distinguishable from a live worker in `run list`. Corroborated again: `run list` returned
+  ~301KB dominated by old pendings, several from other repos. Plus `add-configurable-agent` (above).
+- **Closed:** `intake-bug-orchestratectl-bb9e417520dd` (`node show` wrong arg order → `{}` with exit 0) as
+  **cannot-reproduce** — verified against the **running 0.2.2 binary**: it now returns a proper
+  `unknown_subcommand_or_flag` envelope with exit 1. Filed against 0.2.0. **Third time this round-shape has paid off:
+  check the running binary, not the issue text.**
+- **Closed:** `run-wait-false-stillborn-slow-start` as **cannot-reproduce** on Jari's call — but note the precise
+  grounds: it **did genuinely occur** when filed (a worker documented 4 spawns, all falsely declared dead, all
+  recovering). It is closed because it **did not recur** — 5/5 waits correct this round after the staged-create fix,
+  including a 50-min and a 9-min wait. Plausible mechanism (sampling a run before its node existed) but **not verified
+  as causal**. Re-file readily if it returns.
+
+**— stint 3 (2026-08-17, v0.2.1) below —**
+
+**✅ (2026-08-17, stint 3).** A **full round + release**: three parallel headless spinoffs, one per
 lane, all landed on first spawn with no worker deaths, then **v0.2.1 cut through every channel**. crates.io has
 `octl-core 0.2.1` + `orchestratectl 0.2.1`; the `v0.2.1` tag's Release CI is green with **12 assets**; the crates.io
 publish job is green. Local binary **0.2.1**, `orchestratectl doctor` **954 ok / 0 warn / 0 fail**. `main` clean.
@@ -349,5 +434,5 @@ were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy` — only the light
 - [x] 🐛 run show --output json surfaces terminal report as "none"; report lives in nodes/n-0001.json .last_report — CLOSED **duplicate** 2026-08-15 of Lane E `node-show-null-report` (same bug; intake adds that `run show`, not only `node show`, is affected — noted on the closed intake body). ([`intake-feature-orchestratectl-302ab43b3efd`](issues/intake-feature-orchestratectl-302ab43b3efd/item.md))
 - [x] 🐛 run create timeout can leave a supervisorless pending run with no nodes — CLOSED **duplicate** 2026-08-16 of `run-create-long-title-stillborn`, which is the only one of five run-create-stillbirth reports with a deterministic repro (long `--title` → truncated branch name → `tmux-window-not-found`). ([`intake-bug-orchestratectl-dabe78632044`](issues/intake-bug-orchestratectl-dabe78632044/item.md))
 - [x] 🐛 run wait --output json returns null terminal fields for a settled run — CLOSED **cannot-reproduce** 2026-08-16: not a bug. `run wait` emits `data.runs[]` (it can wait on many runs); the probe queried `.data.status`, which does not exist. `.data.runs[0].status` returns everything. ([`intake-bug-orchestratectl-eb2acb9686cb`](issues/intake-bug-orchestratectl-eb2acb9686cb/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: stale pending runs clutter run list and look like live workers — jari via Telegram ([`intake-bug-orchestratectl-169460ea27e7`](issues/intake-bug-orchestratectl-169460ea27e7/item.md))
-- [ ] 🐛 Piialiisan bugiraportti: node show accepts wrong argument order silently: returns {} with exit 0 — jari via Telegram ([`intake-bug-orchestratectl-bb9e417520dd`](issues/intake-bug-orchestratectl-bb9e417520dd/item.md))
+- [x] 🐛 stale pending runs clutter run list and look like live workers — **ADMITTED + LANED** 2026-08-17 (`lifecycle`), re-scoped: the staged-create fix in 0.2.2 covers prevention, so this now owns (a) the ~7 stale pendings already on disk and (b) making a stale pending distinguishable from a live worker in `run list`. ([`intake-bug-orchestratectl-169460ea27e7`](issues/intake-bug-orchestratectl-169460ea27e7/item.md))
+- [x] 🐛 node show accepts wrong argument order silently: returns {} with exit 0 — CLOSED **cannot-reproduce** 2026-08-17: verified against the running **0.2.2** binary, which returns a proper `unknown_subcommand_or_flag` envelope with exit 1. Filed against 0.2.0. ([`intake-bug-orchestratectl-bb9e417520dd`](issues/intake-bug-orchestratectl-bb9e417520dd/item.md))
