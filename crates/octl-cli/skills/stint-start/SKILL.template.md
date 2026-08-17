@@ -1,6 +1,6 @@
 ---
 name: stint-start
-description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous — resume straight from the handoff-prepared agenda (`## 🔄 Continue here` + DAG). Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
+description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, read the issuectl scheduling DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous: resume from the handoff narrative and the live issuectl DAG. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -18,7 +18,7 @@ Run this skill **every round**. A feedback mini-round (Phase 5) is just a fresh 
 this same skill — a full pass from Phase 0 — on the smaller work-list; there is no
 separate mini-round logic. When the session is done and the user asks to hand off, that
 terminal wrap is a **different** skill: **`/stint-handoff`** (update the `TODO.md` handoff
-block + final DAG merge, then `/wrap-up`).
+narrative, verify the live issue schedule, then `/wrap-up`).
 
 This skill is **generic**. Every project-specific fact — the deploy command, whether
 you may deploy without asking, the green-gate commands, hot files, the test-account
@@ -31,13 +31,12 @@ unresolvable *and* blocking (see *Autonomy*). It assumes this toolchain —
 for workers — and is a layer on top of them. Read `orchestratectl-overview` and
 `worktree-spinoff` before your first spawn.
 
-The Execution-DAG convention, the operating-policy facts to read, and the project
-prerequisites live in the shared reference **[`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md)**
-(installed alongside this skill). **Open and read it before Phase 0** — Claude Code loads
-only this `SKILL.md`, so the linked file is not in context until you open it, and the
-phases below reference its merge algorithm rather than repeating it. If the file is
-missing or unreadable, stop and report an incomplete skill install rather than improvising
-the DAG merge from memory.
+Scheduling requires **`issuectl dag --json`** with `--reservations`. It is the sole
+source for lane order, dependency state, collision tokens, computed heads, and
+spawnability. `TODO.md` is only the handoff narrative: never infer or maintain scheduling
+structure there. If issuectl, the DAG command, its required JSON fields, or reservation
+support is unavailable, stop and report an unmigrated or incompatible project. Never
+fall back to a prose schedule.
 
 ## Standing discipline (holds across every phase)
 
@@ -49,21 +48,22 @@ the DAG merge from memory.
   main's current state. Never leave main modified-but-uncommitted across a phase, and
   **never commit a worker's in-progress work for it** — each worktree commits its own
   changes. If a worker didn't land, report it; do not rescue it by committing on main.
-- **Maintain the execution DAG in `TODO.md`.** `TODO.md` carries a lane-based
-  **execution DAG** — the *scheduling plan* over the repo's currently-active issues.
-  It is authoritative for the **plan** (which lane each issue is in, the order within a
-  lane, cross-lane file-collision tags) and it stores **no status**: status always lives
-  in `issuectl`, read through on demand. So the DAG can never drift out of sync with
-  status. You **merge** it (drop only terminal issues, add active/non-terminal ones, keep
-  the existing plan) — you never regenerate it from scratch. The head-of-line ("what's next") is **computed
-  on read** by joining the DAG's lane order with live `issuectl` status; the printed
-  `▶` marker is only a snapshot. An `in-progress` issue is **not** excluded from the
-  head-of-line — in-progress means *started*, not *being worked right now*, so a started
-  issue with no launched-but-unsettled run this round is a **resumable** candidate to
-  surface, not skip (double-work is prevented by reserving at launch — see Phase 2 — not by
-  the eligibility rule). Full convention in the shared
-  [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md). Editing the DAG is orchestration,
-  not product code — do it in this session.
+- **Read scheduling from issuectl.** After Phase 0 reconstructs holds, every work-selection
+  read must use `issuectl dag --json --reservations "$reservations"`. A bootstrap read
+  with `[]` may resolve hold metadata but must never drive spawning until run enumeration
+  proves the hold set is actually empty. Read `.data.lanes[]` for ordered issues and
+  computed heads, each issue's dependency, collision, and `spawnable` fields,
+  `.data.unscheduled`, and numeric `.data.spawnable_heads`. An `in-progress` head remains
+  resumable; reservations, not status, prevent duplicate work. Never copy this graph into
+  `TODO.md` or recompute what the command already derives. A command failure, malformed
+  envelope, missing blocker, self-dependency, or cycle makes the schedule invalid: stop
+  before selecting or spawning work. A dependency is satisfied only by a delivering
+  terminal status. In the default schema, `fixed` and `done` deliver; `wontfix`,
+  `obsolete`, `cannot-reproduce`, and `duplicate` do not. Use the consuming project's
+  equivalents if it customizes statuses. An entry in `.data.unscheduled` has no executable
+  lane. Assign a conservative lane only when you intend to run that issue this round, or
+  use the reserved `unlaned` lane only when it is confirmed parallel-safe. Leave deferred
+  or out-of-plan entries unscheduled and report them.
 - **Autonomous spinoffs run headless.** Every self-merging spinoff you spawn directly
   (`/worktree-spinoff`) passes `--headless`, so the round's workers land in the detached
   `headless` tmux session instead of cluttering the user's window list; attach with
@@ -124,9 +124,9 @@ the DAG merge from memory.
 
 ## Autonomy
 
-Autonomy is **maximal — just go**. `/stint-handoff` has already left the start fully
-prepared (the `## 🔄 Continue here` block + the execution DAG), so **trust that prepared
-state and start executing** — do not re-derive or re-confirm the plan with the user.
+Autonomy is **maximal: just go**. `/stint-handoff` has left a prepared narrative and
+issuectl carries the live schedule, so **trust those sources and start executing**. Do not
+re-derive or re-confirm the plan with the user.
 Run orienting → planning → orchestration → deploy → report autonomously; narrate state
 changes and decisions, not internal deliberation. When a fact is missing, prefer reading
 it or logging a best-judgment decision and proceeding, rather than asking. Pause only
@@ -152,44 +152,68 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
 1. **Pull.** `git pull --ff-only` in the repo. If it can't fast-forward, stop and
    report; do not force.
 2. **Read the operating policy** from the repo's root `AGENTS.md` and `CLAUDE.md`, and
-   the `TODO.md` handoff block (`## 🔄 Continue here` / `ALOITA TÄSTÄ`). The exact facts
-   to gather — deploy command + autonomy, deploy target, green-gate commands, live-version
-   check, hot-file list, migration rules, test-account reset preference — are listed in the
-   shared [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md) § *Reading the operating
-   policy*.
-3. **Establish ground truth from git**, not from the handoff's claims: is `main` ==
-   what's deployed (use the project's live-version check)? Merged-but-undeployed
-   work? Half-finished worktree branches? (`git log --oneline`, compare against the
-   handoff's stated prod image/version.)
-4. **Merge the execution DAG against reality** (do this *first*, before orienting —
-   otherwise you orient off stale data). This is a stateful **merge**, not a rewrite:
-   preserve the existing lane assignment, order, and `collision:` tags; only reconcile
-   the *set* of issues. The full merge procedure — active-set fetch, drop/add rules, the
-   `comm -3` drift check, edge validation, and head recompute — is in the shared
-   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md) § *Execution DAG (the convention)*.
-   Then **commit** the changed files (`TODO.md` plus any issue files `issuectl`
-   rewrote — name the exact paths, not `git add -A`) so main is clean before Phase 1.
-5. **Orient the user** in one tight message: where things stand, what the pull
-   brought in, **the ready frontier from the DAG** (head-of-line per lane, and what's
-   blocked), and what you propose to tackle this round (fold in the `$ARGUMENTS` focus
-   hint). Then proceed — don't wait for permission to *start*.
+   the `TODO.md` handoff block (`## 🔄 Continue here` / `ALOITA TÄSTÄ`). Gather the deploy
+   command and autonomy, deploy target, green-gate commands, live-version check, hot-file
+   guidance, migration rules, and test-account reset preference. Hot-file guidance must
+   name shared files or file families precisely enough to map issue work into serial lanes
+   and cross-lane collision tokens. Deploy policy must state the exact command, target,
+   and autonomy; the live-version check and green gate must be executable commands. If a
+   required fact is missing, resolve it from project docs or git where possible; only ask
+   when it is both unresolvable and blocking, and recommend documenting it.
+3. **Establish ground truth from git**, not from the handoff's claims: is `main` equal to
+   what's deployed (use the project's live-version check)? Is there merged-but-undeployed
+   work or a half-finished worktree branch? Compare `git log --oneline` with the handoff's
+   stated live image or version.
+4. **Read the live schedule and reconstruct holds.** Verify the prerequisite first with
+   `issuectl dag --help` and verify scheduling mutations with `issuectl update --help`.
+   Set `reservations='[]'` and run the command once to obtain the
+   issue-to-lane/collision mapping:
+
+   ```bash
+   reservations='[]'
+   issuectl dag --json --reservations "$reservations"
+   ```
+
+   This bootstrap read is also the schema gate: confirm `.data.lanes[]`,
+   `.data.unscheduled`, and numeric `.data.spawnable_heads` exist, and lane issues carry
+   `collision` arrays plus Boolean `spawnable` values. If any field is absent, stop as
+   incompatible rather than guessing. Inspect `orchestratectl run list --output json` and
+   the relevant `run show` records for
+   every live or resumable run. Map each run's issue slug through the first DAG response,
+   then replace `reservations` with the exact issuectl hold-array shape, one object per
+   run: `[{"lane":"backend","collision":["path/to/hot-file"]}]`. Two live runs are
+   two array objects, even when their lanes match. Include the issue's lane and its
+   complete `.collision` array; collision tokens are exact opaque strings copied from
+   issue metadata, not inferred paths or lane names. Re-run the command with that payload;
+   only this reservation-aware response may drive spawning. If there are no holds, the
+   second read still uses `[]`. Validate assembled JSON before use. If a run cannot be
+   mapped to its issue and complete hold, inspect it with `run show` and resolve any open
+   awaiting-input request, retry-with-harvest case, cancellation, or other ownership state
+   first. A run relinquishes ownership only after it lands or a terminal cancel/abandon
+   path confirms that no preserved worktree, branch, or resumable work remains. Do not
+   spawn while ownership remains ambiguous. If the command fails, its JSON
+   is malformed, or the graph is invalid, stop; never retry without reservations or patch
+   around the failure in `TODO.md`.
+5. **Orient the user** in one tight message: where things stand, what the pull brought
+   in, the computed head per lane, what is blocked or unscheduled, and what you propose to
+   tackle this round (fold in the `$ARGUMENTS` focus hint). Then proceed without waiting
+   for permission to start.
 
 ### Phase 1 — Plan the round
 
-The work-list is **already prepared** — take it from the handoff-built `## 🔄 Continue
-here` block + the execution DAG. Fold in the `$ARGUMENTS` focus hint and any items the
-user explicitly names this round, but do **not** re-ask the user to confirm the plan the
-handoff already supplied.
+The work-list is **already prepared**: use the `## 🔄 Continue here` narrative for intent
+and a reservation-aware DAG read for the current executable frontier. Shell variables do
+not survive between tool calls: for every read, assign the current JSON and invoke issuectl
+in the same shell command, or pass a recorded reservation-file path. Never emit
+`--reservations ""`; pass `'[]'` explicitly when run enumeration proves there are no
+holds. Fold in the `$ARGUMENTS` focus hint and any items the user explicitly names this
+round, but do **not** re-ask the user to confirm the plan the handoff already supplied.
 
-- **Cold start (no prepared state).** "Trust the prepared state" assumes there *is* one.
-  If the `## 🔄 Continue here` block or the DAG is **missing or empty** (a fresh clone,
-  the repo's first run, or a stint that never reached handoff), do **not** invent a plan
-  and do **not** silently treat the entire open backlog as this round's agenda. Bootstrap
-  it: the Phase-0 DAG merge already built the active set from live `issuectl` status, so
-  orient from that computed ready frontier, state plainly that no prepared narrative
-  exists, and — since there is no human-vetted plan to trust — do a single planning pass
-  with the user before spawning. This is a legitimate pause (a genuine fork the handoff
-  could not have resolved), not a violation of the autonomy posture.
+- **Cold start (no prepared narrative).** If the handoff block is missing or empty, do not
+  invent a plan and do not silently treat the entire open backlog as this round's agenda.
+  Orient from issuectl's computed frontier, state plainly that no prepared narrative
+  exists, and do one planning pass with the user before spawning. This is a legitimate
+  pause because no human-vetted intent exists.
 - A **deliberately empty** prepared agenda (handoff ran, acked nothing, no active work) is
   not a cold start — report "no ready work" and skip spawn/deploy rather than manufacturing
   units from the backlog.
@@ -197,21 +221,21 @@ handoff already supplied.
 Then:
 
 - **Decompose** into independent worktree units.
-- **Resolve file collisions — this *is* the lane assignment.** Units that touch the
-  same hot file (per the repo's AGENTS.md hot-file notes) must be **sequenced**, not run
-  in parallel against that file — i.e. they share a **lane** in the DAG. Disjoint units
-  run in parallel (different lanes). **If you can't tell whether two units are disjoint,
-  sequence them** — a wrong guess causes merge conflicts.
-- **Update the DAG for the round.** File any planned unit that isn't yet an issue (per
-  repo policy) and insert it into its lane. Record real logical deps additively
-  (`issuectl apply` → `add_blocked_by`, only on issues not yet `in-progress`) and mirror
-  them as `after <slug> (needs …)`. Tag a unit that also touches a *second* lane's hot file
-  with `collision: <file>`. **Only mutate frontmatter of an issue that is not yet
-  `in-progress`** — once a worktree owns it, its issue file is worker-owned (calling
-  `issuectl` on it races the worker per `worktree-spinoff`); note the intended dep in the
-  DAG and reconcile after it lands. **Commit `TODO.md` plus every issue file `issuectl`
-  rewrote (name the paths, not `git add -A`) before Phase 2 spawns anything** — verify a
-  clean tree so workers branch off committed metadata.
+- **Resolve file collisions through issue metadata.** Units that touch the same hot file
+  must be sequenced in one lane; disjoint units can use different lanes. Shared resources
+  across lanes belong in each issue's `collision` list. If disjointness is unclear,
+  sequence the units.
+- **Update issue metadata for the round.** File any planned unit that is not yet an issue.
+  Use the validated CLI operations, for example `issuectl update <slug> --lane <lane>
+  --lane-seq <n> --add-blocked-by <blocker> --add-collision <token> --json`; repeat the
+  additive flags as needed rather than replacing lists. Never edit a second scheduling
+  copy in prose. Only mutate an issue that is not yet owned by a live worktree because a
+  concurrent issuectl write races that worker; otherwise defer the metadata change until
+  it lands. Deferred work remains represented by issue status/metadata and is not pulled
+  into the round unless the prepared intent names it. Commit every rewritten issue path
+  by exact name, never `git add -A`, before Phase 2 and verify a clean tree. Re-run
+  `issuectl dag --json --reservations "$reservations"` and use its computed order,
+  blockers, heads, and spawnability as the plan.
 - **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
   big or genuinely ambiguous feature → design-first.
 - **Announce the plan** in one short message (which units, what's parallel vs
@@ -279,21 +303,23 @@ git** before counting it toward the deploy pile:
     and worktree are safe to remove — but that removal is a **deliberate, human-overseen
     cleanup**, not an automatic conductor action (the intended `run salvage` command will
     fold this in; until it ships, retry-with-harvest is the manual stand-in).
-- **Never write status into the DAG** — not even a spawn breadcrumb (that would leave
-  `TODO.md` dirty across the phase and pollute the drift check). The worktree owns the
-  issue status lifecycle (`in-progress` → terminal `fixed`/`done`). If the DAG also wrote
-  status it would race those updates. Track which units you've launched this round in
-  **conductor memory** (the recorded run ids), not in the file. Pick the next unit by **recomputing**
-  the head-of-line from live `issuectl` status (see the shared
-  [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md)), never from the printed `▶`.
-- **Reserve collision files at launch, not at first commit.** A spawned worker does not
-  flip its issue to `in-progress` until its first commit, so keying spawn-eligibility off
-  `issuectl` status alone leaves a window where two heads sharing a hot file both look
-  free. Treat every **launched-but-unsettled run this round as already holding its
-  collision files** (its lane's hot-file family + any `collision:` tag) **and its issue**.
-  A head is spawnable only if its collision files intersect no unsettled run's and no
-  unsettled run already covers its issue — otherwise sequence it (this is why same-lane
-  units already go launch → `run wait` → verify → next).
+- **Reserve at launch, not at first commit.** Immediately after spawning, add that run's
+  issue slug, run id, lane, and complete collision-token list to conductor memory; the
+  JSON passed to issuectl contains each hold's `lane` and `collision` fields. Before every
+  subsequent pick, materialize the complete current hold array and pass it in the same
+  shell invocation, for example `reservations='[...]'; issuectl dag --json --reservations
+  "$reservations"`. Launch only a lane issue whose
+  own `spawnable` field is true, and separately exclude every slug already held in
+  conductor memory because the reservation schema carries resource tokens, not issue
+  identity. issuectl treats `unlaned` as parallel-safe, so a hold carrying that lane does
+  not reserve other `unlaned` issues; collision tokens and the separate slug guard still
+  apply. Do not release a hold merely because `run wait` returned: awaiting-input or
+  recoverable runs can settle while retaining resumable work. Resolve awaiting-input
+  requests before selecting again. Release a hold only after `run show` confirms the run
+  has landed, or an explicit cancel/abandon path confirms no preserved or resumable
+  ownership remains. This closes both the pre-commit and
+  attention-required windows. Do not write spawn breadcrumbs or run status to `TODO.md`;
+  issue status belongs to the worker and live holds belong to conductor memory.
 
 ### Phase 3 — Deploy (the conductor owns this — when the project permits)
 
@@ -332,8 +358,8 @@ discussion points, spin-off calls. This is where they react, and their reactions
 decide what happens next.
 
 - **Light feedback** (a handful of small asks) → **re-run this whole skill** on the
-  smaller work-list: a fresh `stint-start` pass from Phase 0 (pull, ground-truth, DAG
-  merge, plan, spawn, deploy, report), just with fewer units. There is no separate
+  smaller work-list: a fresh `stint-start` pass from Phase 0 (pull, ground-truth,
+  issuectl schedule read, plan, spawn, deploy, report), just with fewer units. There is no separate
   mini-round logic and no "phases in miniature" — a feedback round *is* an ordinary
   `stint-start` round. Still no coding in this session — every change goes through a
   worktree.
@@ -341,11 +367,11 @@ decide what happens next.
   context. **Land it durably first** — update the affected **issues**,
   **documentation**, and **`TODO.md`** so nothing is lost — *then* move to the handoff.
 
-**Keep the DAG current before any re-run.** If feedback files new issues or changes a
-dependency, **insert them into the DAG and commit** (same edit as Phase 1) *before* a
-feedback re-run consults it — a re-run that sequences against a stale DAG can mis-order or
-miss an issue. If you capture feedback durably without a re-run, still do the insert so the
-eventual handoff (`/stint-handoff`) opens onto an accurate graph.
+**Keep issue scheduling current before any re-run.** If feedback files new issues or
+changes a dependency, update its scheduling frontmatter through issuectl and commit the
+exact rewritten issue paths before a feedback re-run consults `issuectl dag --json`.
+If you capture feedback without a re-run, still record the metadata so the eventual
+handoff sees the accurate live graph.
 
 Once the feedback is absorbed (acted on via worktrees, or captured durably), the round is
 done. When the session's context is filling or the user asks to wrap up, **propose
@@ -358,7 +384,7 @@ done. When the session's context is filling or the user asks to wrap up, **propo
 - **Does not write code** in this session — every change goes through a worktree.
 - **Not for a single one-off coding task** — that's `/worktree` (router).
 - **Not the terminal handoff/wrap-up** — that's `/stint-handoff` (update the `TODO.md`
-  handoff block + final DAG merge, then `/wrap-up`).
+  handoff narrative, verify the issuectl schedule, then `/wrap-up`).
 - **Not for bare** status / deploy — those are `/worktree-status` and the project deploy
   command.
 - **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.

@@ -16,7 +16,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 /// Build a fake `PATH` dir containing stub executables for every binary
 /// `doctor`'s `dep.*` checks look for, so those checks pass deterministically.
@@ -372,64 +377,6 @@ fn pi_in_sync_after_install_is_ok() {
 }
 
 #[test]
-fn pi_companion_in_sync_after_install_is_ok() {
-    // End-to-end: installing a skill that ships a companion (stint-start →
-    // AGENTS-EXECUTION-DAG.md) mirrors the companion into the pi dir and records
-    // it, so `doctor` reports `skill.sync.<name>.pi.<file>` OK against real bytes.
-    let env = setup();
-    assert!(bin(&env)
-        .args(["skill", "install", "stint-start"])
-        .output()
-        .expect("spawn")
-        .status
-        .success());
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "skill.sync.stint-start.pi.AGENTS-EXECUTION-DAG.md");
-    assert_eq!(c["status"], "ok", "pi companion should be in sync: {c}");
-}
-
-#[test]
-fn pi_companion_missing_after_install_warns() {
-    // The reported bug: SKILL.md present but the companion absent. After a real
-    // install, delete only the pi companion — `doctor` must WARN
-    // `skill.sync.<name>.pi.<file>` (not installed), never report all-clear.
-    let env = setup();
-    assert!(bin(&env)
-        .args(["skill", "install", "stint-start"])
-        .output()
-        .expect("spawn")
-        .status
-        .success());
-    std::fs::remove_file(
-        env.home
-            .path()
-            .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md"),
-    )
-    .unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "skill.sync.stint-start.pi.AGENTS-EXECUTION-DAG.md");
-    assert_eq!(c["status"], "warn", "missing pi companion must warn: {c}");
-    assert!(c["message"].as_str().unwrap().contains("not installed"));
-    assert!(c["fix_suggestion"]
-        .as_str()
-        .unwrap()
-        .contains("skill install stint-start --force"));
-    assert!(out.status.success(), "warnings must not fail the run");
-}
-
-#[test]
 fn pi_orphan_companion_flagged_then_cleared_by_force() {
     // A pi companion the record tracks that the binary no longer bundles is
     // flagged as skill.orphan.<name>.pi.<file>; a --force reinstall reconciles it
@@ -445,16 +392,14 @@ fn pi_orphan_companion_flagged_then_cleared_by_force() {
     let pi_dir = env.home.path().join(".pi/agent/skills/stint-start");
     let record_path = env.orch.join("state").join("pi-installed-skills.json");
 
-    // Give the orphan the SAME bytes/hash as the real companion so the --force
-    // reconcile recognises it as our copy and removes it.
-    let real = pi_dir.join("AGENTS-EXECUTION-DAG.md");
-    let real_bytes = std::fs::read(&real).unwrap();
-    std::fs::write(pi_dir.join("OLD-COMPANION.md"), &real_bytes).unwrap();
+    // Give the orphan matching bytes/hash so --force recognises it as our copy.
+    let old_bytes = b"stale\n";
+    std::fs::write(pi_dir.join("OLD-COMPANION.md"), old_bytes).unwrap();
     let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    let real_hash =
-        prov["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].clone();
-    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] =
-        serde_json::json!({ "sha256": real_hash, "kind": "companion" });
+    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] = serde_json::json!({
+        "sha256": sha256_hex(old_bytes),
+        "kind": "companion"
+    });
     std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
 
     // doctor flags the orphan companion.
@@ -649,199 +594,11 @@ fn install_bundled(env: &Env, name: &str) {
     assert!(out.status.success(), "install {name} failed: {out:?}");
 }
 
-/// The `stint-start` skill's companion, used by the companion checks.
-const COMPANION_REL: &str = ".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md";
-const COMPANION_ID: &str = "skill.sync.stint-start.AGENTS-EXECUTION-DAG.md";
-
-#[test]
-fn companion_in_sync_after_install_is_ok() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, COMPANION_ID);
-    assert_eq!(
-        c["status"], "ok",
-        "freshly-installed companion is in sync: {c:?}"
-    );
-    // A green companion never carries a fix suggestion.
-    assert!(c["fix_suggestion"].is_null());
-    assert!(out.status.success());
-}
-
-#[test]
-fn companion_missing_warns() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-    std::fs::remove_file(env.home.path().join(COMPANION_REL)).unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, COMPANION_ID);
-    assert_eq!(c["status"], "warn");
-    assert!(c["message"].as_str().unwrap().contains("not installed"));
-    assert!(c["message"]
-        .as_str()
-        .unwrap()
-        .contains("AGENTS-EXECUTION-DAG.md"));
-    // A missing companion is info-as-warn — never flips the exit code.
-    assert!(out.status.success());
-}
-
-#[test]
-fn companion_drift_warns_with_install_suggestion() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-    // Roll the companion back to an older cli_version so content + version
-    // both drift below the binary.
-    std::fs::write(
-        env.home.path().join(COMPANION_REL),
-        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale body\n",
-    )
-    .unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, COMPANION_ID);
-    assert_eq!(c["status"], "warn");
-    assert!(c["message"].as_str().unwrap().contains("0.0.0"));
-    assert!(c["fix_suggestion"]
-        .as_str()
-        .unwrap()
-        .contains("skill install stint-start --force"));
-    assert!(out.status.success());
-}
-
-#[test]
-fn companion_local_edit_warns_even_when_version_matches() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-    // Same cli_version as the binary but edited body — a user tweak that a
-    // pure version check would miss; content-identity catches it.
-    let binary = env!("CARGO_PKG_VERSION");
-    std::fs::write(
-        env.home.path().join(COMPANION_REL),
-        format!("---\ncli_version: \"{binary}\"\nschema_version: 1\n---\nlocally edited\n"),
-    )
-    .unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, COMPANION_ID);
-    assert_eq!(c["status"], "warn");
-    let msg = c["message"].as_str().unwrap();
-    assert!(msg.contains("differs from the bundled copy"), "msg: {msg}");
-    assert!(msg.contains("cli_version matches binary"), "msg: {msg}");
-    // A same-version content difference is advisory only — no autonomous
-    // fix (we refuse to clobber possible local edits).
-    assert!(c["fix_suggestion"].is_string());
-    assert!(out.status.success());
-}
-
-#[test]
-fn orphan_companion_warns_distinctly_and_spares_unrecorded_file() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-    let skill_dir = env.home.path().join(".claude/skills/stint-start");
-    let marker = skill_dir.join(".orchestratectl-managed");
-
-    // Simulate a prior binary that shipped an extra companion this one
-    // dropped: the file lingers and the marker still records it as managed.
-    std::fs::write(skill_dir.join("OLD-COMPANION.md"), "stale\n").unwrap();
-    let mut marker_body = std::fs::read_to_string(&marker).unwrap();
-    marker_body.push_str("companion: OLD-COMPANION.md\n");
-    std::fs::write(&marker, marker_body).unwrap();
-    // A file the user dropped in, never recorded by any marker.
-    std::fs::write(skill_dir.join("my-note.md"), "mine\n").unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-
-    // The orphan is a distinct finding, separate from the forward
-    // skill.sync.<name>.<file> checks.
-    let c = find_check(checks, "skill.orphan.stint-start.OLD-COMPANION.md");
-    assert_eq!(c["status"], "warn");
-    assert!(c["message"].as_str().unwrap().contains("de-registered"));
-    assert!(c["fix_suggestion"]
-        .as_str()
-        .unwrap()
-        .contains("skill install stint-start --force"));
-
-    // The still-bundled companion stays OK, and the user's unrecorded file
-    // is never flagged as an orphan.
-    let sync = find_check(checks, COMPANION_ID);
-    assert_eq!(sync["status"], "ok");
-    assert!(
-        !checks
-            .iter()
-            .any(|c| c["id"] == "skill.orphan.stint-start.my-note.md"),
-        "an unrecorded user file must not be flagged as an orphan companion"
-    );
-    // An orphan-companion WARN never flips the exit code.
-    assert!(out.status.success());
-}
-
-#[test]
-fn fix_reinstalls_drifted_companion() {
-    let env = setup();
-    install_bundled(&env, "stint-start");
-    let companion = env.home.path().join(COMPANION_REL);
-    std::fs::write(
-        &companion,
-        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale body\n",
-    )
-    .unwrap();
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor", "--fix"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let fixes = v["data"]["fixes_applied"]
-        .as_array()
-        .expect("fixes_applied");
-    let f = fixes
-        .iter()
-        .find(|f| f["check_id"] == COMPANION_ID)
-        .expect("companion re-install fix applied");
-    assert_eq!(f["applied"], true, "fix outcome: {f:?}");
-
-    // The companion is restored to the binary's bundled copy.
-    let after = std::fs::read_to_string(&companion).unwrap();
-    assert!(
-        after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))),
-        "companion was not re-installed: {after}"
-    );
-}
-
 // ---- codex flat-layout coverage ----
 
 const CODEX_PROMPT_REL: &str = ".codex/prompts/stint-start.md";
-const CODEX_COMPANION_REL: &str = ".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md";
 const CODEX_MARKER_REL: &str = ".codex/prompts/_shared/.orchestratectl-managed";
 const CODEX_SKILL_ID: &str = "skill.sync.codex.stint-start";
-const CODEX_COMPANION_ID: &str = "skill.sync.codex._shared.AGENTS-EXECUTION-DAG.md";
 
 /// Install a bundled skill to the codex flat layout through the real
 /// `skill install --agent codex` path, so codex checks see byte-identical
@@ -854,34 +611,6 @@ fn install_bundled_codex(env: &Env, name: &str) {
         .output()
         .expect("spawn codex install");
     assert!(out.status.success(), "codex install {name} failed: {out:?}");
-}
-
-#[test]
-fn codex_skill_and_companion_in_sync_after_install_are_ok() {
-    let env = setup();
-    install_bundled_codex(&env, "stint-start");
-
-    let out = bin(&env)
-        .args(["--output", "json", "doctor"])
-        .output()
-        .expect("spawn");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let checks = v["data"]["checks"].as_array().unwrap();
-    let skill = find_check(checks, CODEX_SKILL_ID);
-    assert_eq!(skill["status"], "ok", "codex skill in sync: {skill:?}");
-    let companion = find_check(checks, CODEX_COMPANION_ID);
-    assert_eq!(
-        companion["status"], "ok",
-        "codex companion in sync: {companion:?}"
-    );
-    // A green codex tree never carries an orphan finding for a bundled item.
-    assert!(
-        !checks
-            .iter()
-            .any(|c| c["id"] == "skill.orphan.codex._shared.AGENTS-EXECUTION-DAG.md"),
-        "still-bundled codex companion must not be flagged as an orphan"
-    );
-    assert!(out.status.success());
 }
 
 #[test]
@@ -980,19 +709,14 @@ fn codex_orphan_prompt_and_companion_warn() {
     let companion_orphan = find_check(checks, "skill.orphan.codex._shared.OLD-SHARED.md");
     assert_eq!(companion_orphan["status"], "warn");
 
-    // The still-bundled skill + companion stay OK; the user's own prompt is
-    // never flagged as an orphan.
+    // The still-bundled skill stays OK; the user's own prompt is never flagged.
     assert_eq!(find_check(checks, CODEX_SKILL_ID)["status"], "ok");
-    assert_eq!(find_check(checks, CODEX_COMPANION_ID)["status"], "ok");
     assert!(
         !checks
             .iter()
             .any(|c| c["id"] == "skill.orphan.codex.my-own"),
         "an unrecorded user prompt must not be flagged as a codex orphan"
     );
-    // Codex-side companion + prompt orphans are just companions/prompts; the
-    // marker guard proves the file is untouched.
-    assert!(env.home.path().join(CODEX_COMPANION_REL).exists());
     // Orphan WARNs never flip the exit code.
     assert!(out.status.success());
 }

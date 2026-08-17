@@ -1,6 +1,6 @@
 ---
 name: stint-handoff
-description: "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), then hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
+description: "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff narrative, verify the live issuectl scheduling DAG, then hand off via `/wrap-up` and, if the project declares one, do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md and verifies scheduling, then calls it); NOT a worktree itself."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -17,25 +17,21 @@ A stint typically fills a session's context after ~one round. When you notice th
 the user asks), **propose** the handoff; run the steps below only on the user's go — do
 not auto-run them.
 
-This skill is **generic**: project specifics (the test-account reset preference, where
+This skill is **generic**: project specifics (the test-account reset preference and where
 the `TODO.md` handoff block lives) are read from the repo's own `AGENTS.md` / `TODO.md`.
-The Execution-DAG convention and the final-merge procedure live in the shared reference
-**[`AGENTS-EXECUTION-DAG.md`](../stint-start/AGENTS-EXECUTION-DAG.md)** (installed
-alongside `stint-start`); this skill LINKS there rather than repeating the rules.
-**Open and read that file before the DAG merge in step 1** — Claude Code loads only this
-`SKILL.md`, so the merge algorithm is not in context until you open the link. If it is
-missing or unreadable, stop and report an incomplete skill install rather than
-improvising the merge from memory.
+Scheduling comes only from `issuectl dag --json`; `TODO.md` remains a narrative and never
+stores a second scheduling graph. Verify `issuectl dag --help` advertises
+`--reservations`. If the command or required JSON surface is unavailable, stop and report
+an unmigrated or incompatible project rather than falling back to prose.
 
 ## Standing discipline
 
 - **Keep main clean.** The handoff edits are orchestration, not product code — you make
-  them in this session. But commit them promptly and on their own (see step 2); never
+  them in this session. But commit them promptly and on their own (see the commit step); never
   leave `TODO.md` modified-but-uncommitted across the wrap.
-- **Never regenerate the DAG — merge it.** The final DAG update is a stateful *merge*
-  (drop only terminal issues, add active/non-terminal ones, keep the existing lane order),
-  exactly the Phase-0 merge `stint-start` runs at the start of a round. Regenerating from
-  scratch risks dropping a `collision:` edge.
+- **Read scheduling, never duplicate it.** Use `issuectl dag --json` for lane order,
+  dependency state, collision tokens, computed heads, and spawnability. Do not copy those
+  fields into the handoff narrative.
 - **Scrutinise spin-off quality before folding.** Before filing or adding a
   review-generated spin-off (from `/llm-review`, a review panel, or an
   `/assess-findings` cascade) to the next stint's agenda, weigh it critically against real
@@ -69,44 +65,55 @@ improvising the merge from memory.
 
 0. **Preflight (read-only).** This is the terminal wrap, not a re-orient — but because it
    can be invoked standalone, confirm the ground truth you're about to record is real
-   before writing it. Verify a clean-ish worktree (`git status --short`) and that no round
-   worker is still unsettled (any live/launched `orchestratectl run` this round has
-   settled and its landing is git-verified). If workers are still running or a landing is
-   unverified, **do not wrap yet** — the round isn't done; go back to `/stint-start`. Read
-   the current `TODO.md` handoff block and, if the block will state deployment state, the
+   before writing it. Verify a clean-ish worktree (`git status --short`). Inspect
+   `orchestratectl run list --output json` and relevant `run show` records, not just runs
+   remembered in this conversation. Every live, awaiting-input, recoverable, or otherwise
+   resumable worker must have landed or relinquished ownership through a terminal
+   cancel/abandon path that confirms no preserved worktree, branch, or resumable work
+   remains. If ownership stays unresolved, skip schedule verification, record the run id,
+   slug, and preserved-work fact in the narrative, commit that narrative, and stop before
+   `/wrap-up`; never end the session with no durable record. Otherwise read the current
+   `TODO.md` handoff block and, if the block will state deployment state, the
    project's live-version check — write "unverified" rather than guessing if you can't
    confirm it.
-1. **Update the `TODO.md` handoff block** (`## 🔄 Continue here` / `ALOITA TÄSTÄ`) so a
-   fresh agent can resume from `jatketaan @TODO.md` — where the round left off, what's
-   landed, what prod is running, and what's next. **In the same edit, merge the execution
-   DAG one last time**: reconcile lane nodes against the active set, park deferred issues
-   under `## Adjacent backlog`, refresh the date stamp, and set the `GLOBAL HEAD-OF-LINE`.
-   This is the same merge — the active-set
-   fetch, drop/add rules, the `comm -3` drift check, edge validation, and head recompute
-   are all in the shared
-   [`AGENTS-EXECUTION-DAG.md`](../stint-start/AGENTS-EXECUTION-DAG.md) § *Execution DAG
-   (the convention)* — so the next resume opens onto an accurate graph.
-2. **Commit the `TODO.md` handoff + DAG update immediately, on its own** — `git add
-   TODO.md` (that exact path, not `git add -A`) and commit *before* the next step, so it
-   doesn't get folded into `/wrap-up`'s mixed commit or left dangling.
-3. **`/wrap-up`** — it will *present proposed* `AGENTS.md` / issue / preference changes
-   and ask before writing; don't assume it committed unless it reports saved changes.
-4. **Test-account reset.** If the project's `AGENTS.md` / `TODO.md` declares a
-   **test-account reset preference** (so testing starts from a known state), do it or
-   remind the user. If the project declares none, skip this step.
-5. **Verify terminal state.** Run `git status --short`. The handoff commit from step 2
-   should be in; if `/wrap-up` wrote approved files without committing, follow its commit
-   contract (or ask the user) — do not declare the handoff complete while main is left
-   dirty. This is what lets the next agent resume from a clean tree.
+1. **Read the live schedule.** After preflight proves there are no ownership holds, run
+   `issuectl dag --json --reservations '[]'` and read `.data.lanes[]`,
+   `.data.unscheduled`, and `.data.spawnable_heads`. If the command fails, its JSON is
+   malformed, or the graph has a missing blocker, self-dependency, or cycle, record the
+   verification failure for the narrative and continue only through the narrative commit;
+   do not call `/wrap-up` or declare the handoff complete. Do not mutate issue scheduling
+   during terminal wrap or encode a workaround in `TODO.md`.
+2. **Update only the `TODO.md` handoff narrative** (`## 🔄 Continue here` / `ALOITA
+   TÄSTÄ`) so a fresh agent can resume from `jatketaan @TODO.md`: where the round left
+   off, what landed, what is live, the intended product direction, and unresolved
+   decisions. Issue slugs may provide context, including a concise "needs scheduling
+   triage" note for unscheduled active work or a run-ownership fact from preflight.
+   Recording that verification failed and naming involved slugs is an unresolved decision,
+   not a copied schedule. Do not describe any issue as currently ready,
+   blocked, headed, or spawnable, and do not copy lane order, dependency edges, collision
+   values, computed-head flags, or spawnability into this file.
+3. **Commit the handoff update immediately, on its own**: `git add TODO.md` (that exact
+   path, not `git add -A`) and commit before the next step, so it is not folded into
+   `/wrap-up`'s mixed commit or left dangling. If the narrative did not change, do not
+   manufacture an empty commit.
+4. **`/wrap-up`**: if schedule verification failed in step 1, stop here and report the
+   committed narrative plus the failure. Otherwise `/wrap-up` will present proposed
+   `AGENTS.md` / issue / preference changes and ask before writing; do not assume it
+   committed unless it reports saved changes.
+5. **Test-account reset.** If the project's `AGENTS.md` / `TODO.md` declares a reset
+   preference, do it or remind the user. If the project declares none, skip this step.
+6. **Verify terminal state.** Run `git status --short`. If `/wrap-up` wrote approved files
+   without committing, follow its commit contract (or ask the user). Do not declare the
+   handoff complete while main is dirty.
 
 ## Non-goals
 
 - **Not the round engine** — it does not pull, plan, spawn worktrees, or deploy; that is
   `/stint-start`.
-- **Not a bare `/wrap-up`** — this first updates the `TODO.md` handoff block and merges
-  the DAG, *then* calls `/wrap-up`.
+- **Not a bare `/wrap-up`** — this first updates the `TODO.md` handoff narrative and
+  verifies the issuectl schedule, then calls `/wrap-up`.
 - **Not a worktree**, and does not create one.
-- **Does not write product code** — the only direct edits are the `TODO.md` handoff block
-  and the DAG merge (plus any issue files `issuectl` necessarily rewrote while merging);
-  `/wrap-up` may separately propose other changes.
-- **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md.
+- **Does not write product code** — its only direct edit is the `TODO.md` handoff
+  narrative; `/wrap-up` may separately propose other changes.
+- **Hardcodes no project facts** — reads them from the repo's AGENTS.md/TODO.md and issue
+  metadata.

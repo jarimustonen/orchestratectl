@@ -96,7 +96,7 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
         }
 
         // Companion resource files shipped alongside this skill's SKILL.md
-        // (e.g. `stint-start/AGENTS-EXECUTION-DAG.md`). Each installs as a
+        // (for example, a skill's shared reference file). Each installs as a
         // sibling of SKILL.md; a missing, stale, or user-edited companion
         // leaves the skill's in-body link dangling while SKILL.md itself
         // still looks in sync, so audit each one under its own id. Only

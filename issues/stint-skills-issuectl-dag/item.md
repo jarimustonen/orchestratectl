@@ -2,11 +2,12 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: task
-status: open
+status: done
 priority: high
 related: ['@stint-skills-drop-intake-specifics']
 lane: skills
 lane_seq: 2
+closed: 2026-08-17
 ---
 
 # Migrate stint skills from TODO markdown DAG to issuectl dag

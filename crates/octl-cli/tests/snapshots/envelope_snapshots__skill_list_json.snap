@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -48,11 +49,11 @@ expression: value
       },
       {
         "name": "stint-start",
-        "description": "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous — resume straight from the handoff-prepared agenda (`## 🔄 Continue here` + DAG). Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
+        "description": "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, read the issuectl scheduling DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous: resume from the handoff narrative and the live issuectl DAG. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
       },
       {
         "name": "stint-handoff",
-        "description": "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff block AND merge the execution DAG one last time (committed on its own), then hand off via `/wrap-up`, and — if the project declares one — do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md + the DAG, then calls it); NOT a worktree itself."
+        "description": "Terminal wrap of a work-session (työrupeama, 'stint'): update the repo's TODO.md `## 🔄 Continue here` handoff narrative, verify the live issuectl scheduling DAG, then hand off via `/wrap-up` and, if the project declares one, do the test-account reset. Run at session end, on the user's go, so a fresh agent can resume from `jatketaan @TODO.md`. Use when the user says 'päätetään rupeama', 'wrap up the stint', 'hand off', 'update the handoff and wrap up', or invokes bare `/stint-handoff`. Generic across projects: reads all specifics from the repo's own AGENTS.md/TODO.md and issue metadata. NOT the round engine (that is `/stint-start`, which spawns worktrees and deploys); NOT a bare `/wrap-up` (this first updates TODO.md and verifies scheduling, then calls it); NOT a worktree itself."
       },
       {
         "name": "fan-out",

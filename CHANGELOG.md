@@ -14,6 +14,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Autonomous workers can now propagate genuine decision forks (`uncommonly-fuzzy-swing`).** A worker records a durable `node.awaiting_input` event carrying report-shaped discussion items with the question, options, and recommended default instead of blocking indefinitely on stdin. `run show` and `run list` expose the open request immediately; after a restart-safe three-minute grace, `run wait` settles and the existing `--notify` hook fires with awaiting-input context. `node.input_resolved` clears the generation safely, terminal reports and retries clear stale requests, and bundled spinoff guidance requires a bounded default-or-blocked-report path that preserves blocked work.
 
+### Changed
+
+- **Bundled stint scheduling now uses issuectl directly (`stint-skills-issuectl-dag`).** `/stint-start` and `/stint-handoff` read lane order, dependencies, collision tokens, computed heads, and reservation-aware spawnability from `issuectl dag --json`; `TODO.md` is now handoff narrative only. The retired `AGENTS-EXECUTION-DAG.md` companion is no longer bundled or installed. Until reconciled, `doctor` reports the managed copies as orphan companions. Remove them by running `orchestratectl skill install --force` and then `orchestratectl skill install --agent codex --force`; the second command reconciles the Codex mirror.
+
 ## [0.3.0] - 2026-08-17
 
 ### Removed

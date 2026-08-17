@@ -30,25 +30,10 @@ struct EmbeddedSkill {
     path_in_repo: &'static str,
 }
 
-/// A companion reference file that ships *alongside* a skill's `SKILL.md`.
-/// Used for shared reference prose that more than one skill links to (e.g.
-/// the stint family's `AGENTS-EXECUTION-DAG.md`), so the linked file
-/// actually exists on disk in whatever project the skill runs in.
-///
-/// The two supported agent layouts install it differently:
-///
-/// - **claude** (`~/.claude/skills/<name>/`) — a per-skill directory, so the
-///   companion is written as a plain sibling of the owning skill's
-///   `SKILL.md` and the in-body links (`AGENTS-EXECUTION-DAG.md` from the
-///   owner, `../stint-start/AGENTS-EXECUTION-DAG.md` from a cross-skill
-///   linker) resolve as authored.
-/// - **codex** (`~/.codex/prompts/`) — a flat prompts dir where every
-///   top-level `*.md` becomes a slash-command, so a bare companion would
-///   surface as a bogus prompt and collide across skills. The companion is
-///   instead written into a shared `_shared/` subdir (ignored by codex's
-///   top-level prompt discovery), and `cmd_install` rewrites each
-///   `claude_link_target` in the codex skill body to the single
-///   `_shared/<filename>` form so the link still resolves.
+/// A companion reference file that ships alongside a skill's `SKILL.md`.
+/// Claude and pi install it as a sibling in the skill directory. Codex installs
+/// it under the shared `_shared/` subdirectory and rewrites declared links to
+/// that location.
 struct EmbeddedResource {
     filename: &'static str,
     body: &'static str,
@@ -72,26 +57,9 @@ const CODEX_SHARED_SUBDIR: &str = "_shared";
 /// `include_str!` below embeds it. `cmd_install` writes each resource as a
 /// sibling of the skill's `SKILL.md` (claude) or into the `_shared/` subdir
 /// (codex) — see `EmbeddedResource` for the layout rationale.
-fn resources_for(name: &str) -> &'static [EmbeddedResource] {
-    match name {
-        "stint-start" => STINT_START_RESOURCES,
-        _ => &[],
-    }
+fn resources_for(_name: &str) -> &'static [EmbeddedResource] {
+    &[]
 }
-
-const STINT_START_RESOURCES: &[EmbeddedResource] = &[EmbeddedResource {
-    filename: "AGENTS-EXECUTION-DAG.md",
-    body: include_str!(concat!(
-        env!("OUT_DIR"),
-        "/skills/stint-start/AGENTS-EXECUTION-DAG.md"
-    )),
-    // `stint-start` links to it as a sibling; `stint-handoff` links across
-    // to it via `../stint-start/…`. Both collapse to `_shared/…` on codex.
-    claude_link_targets: &[
-        "AGENTS-EXECUTION-DAG.md",
-        "../stint-start/AGENTS-EXECUTION-DAG.md",
-    ],
-}];
 
 /// The codex-layout link target for a companion: a single shared path every
 /// skill body resolves to, relative to the flat prompts dir.
@@ -107,14 +75,9 @@ fn codex_link_target(filename: &str) -> String {
 /// for any body that references no companion.
 ///
 /// Scope is deliberately the whole catalog, not just the skill being
-/// installed: a skill that links *cross-skill* to another's companion (e.g.
-/// `stint-handoff` → the DAG owned by `stint-start`) must still resolve to the
-/// one shared copy. `claude_link_targets` are distinctive prose strings, so a
-/// global replace never touches an unrelated body — pinned by the
-/// `every_claude_link_target_appears_in_some_skill_body` test. A standalone
-/// install of a cross-linking skill leaves the shared file un-installed until
-/// its owner also lands; that dangles the link exactly as the claude layout
-/// already does (both resolve once both skills are installed).
+/// installed, so cross-skill companion links can resolve to one shared copy.
+/// `claude_link_targets` are distinctive prose strings, and the rewrite is
+/// pinned by `every_claude_link_target_appears_in_some_skill_body`.
 fn render_body_for_agent(agent: &str, body: &'static str) -> Cow<'static, str> {
     if agent != "codex" {
         return Cow::Borrowed(body);
@@ -640,16 +603,12 @@ pub fn cmd_install(
         // the claude write.
         //
         // pi uses a PER-SKILL directory, exactly like claude (unlike codex's
-        // flat prompts dir), so companion resources install as plain siblings
-        // of the pi `SKILL.md` — byte-identical to the claude copy, with NO
-        // link rewrite: the body's `](AGENTS-EXECUTION-DAG.md)` sibling link
-        // (and `stint-handoff`'s cross-skill `](../stint-start/…)` link)
-        // resolves against the mirrored sibling just as it does under claude.
-        // Mirroring the companion is what keeps a skill that STOPS on a missing
-        // companion (e.g. `stint-start`) from aborting under pi (issue
-        // `support-pi-dev`). Skipped for a custom `--dest` (caller-managed
-        // path) and for `--agent codex` alone (codex is not a claude-format
-        // consumer; pi mirrors the claude corpus).
+        // flat prompts dir), so any companion resource installs as a plain
+        // sibling of the pi `SKILL.md`, byte-identical to the claude copy and
+        // with no link rewrite. This keeps a skill from aborting under pi when
+        // it requires a bundled sibling. The current catalog has no companion
+        // resources, but the generic lifecycle remains supported. Mirroring is
+        // skipped for a custom `--dest` and for `--agent codex` alone.
         //
         // The pi mirror is intentionally UNMANAGED in-tree: no `.orchestratectl-
         // managed` marker (the pi corpus stays a pure body mirror). Its
@@ -2891,22 +2850,6 @@ mod tests {
     }
 
     #[test]
-    fn render_body_for_codex_rewrites_both_companion_link_forms() {
-        // The owning skill's sibling link and a cross-skill `../owner/` link
-        // both collapse to the single shared `_shared/` target, and neither
-        // claude form survives in the rendered codex body.
-        let start = SKILLS.iter().find(|s| s.name == "stint-start").unwrap();
-        let handoff = SKILLS.iter().find(|s| s.name == "stint-handoff").unwrap();
-        let start_codex = render_body_for_agent("codex", start.body);
-        let handoff_codex = render_body_for_agent("codex", handoff.body);
-
-        assert!(start_codex.contains("](_shared/AGENTS-EXECUTION-DAG.md)"));
-        assert!(!start_codex.contains("](AGENTS-EXECUTION-DAG.md)"));
-        assert!(handoff_codex.contains("](_shared/AGENTS-EXECUTION-DAG.md)"));
-        assert!(!handoff_codex.contains("](../stint-start/AGENTS-EXECUTION-DAG.md)"));
-    }
-
-    #[test]
     fn render_body_for_codex_without_companion_links_is_noop() {
         // A codex body that references no companion is returned borrowed and
         // unchanged — the global rewrite table only touches bodies that carry
@@ -2918,6 +2861,31 @@ mod tests {
         let rendered = render_body_for_agent("codex", no_links.body);
         assert!(matches!(rendered, Cow::Borrowed(_)));
         assert_eq!(&*rendered, no_links.body);
+    }
+
+    #[test]
+    fn stint_skills_pin_issuectl_dag_cutover() {
+        for name in ["stint-start", "stint-handoff"] {
+            let body = SKILLS.iter().find(|s| s.name == name).unwrap().body;
+            assert!(body.contains("issuectl dag --json"), "{name}");
+            for forbidden in [
+                "AGENTS-EXECUTION-DAG.md",
+                "execution-dag:begin",
+                "execution-dag:end",
+                "comm -3",
+                "GLOBAL HEAD-OF-LINE",
+                "collision:",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{name} still contains retired DAG notation {forbidden:?}"
+                );
+            }
+        }
+        for name in ["stint-start", "stint-handoff"] {
+            let skill = SKILLS.iter().find(|s| s.name == name).unwrap();
+            assert!(skill.body.contains("--reservations"), "{name}");
+        }
     }
 
     #[test]
@@ -2959,25 +2927,16 @@ mod tests {
 
     #[test]
     fn orphan_companions_flags_dropped_but_not_bundled() {
-        // Simulate a prior binary that installed `stint-start` with an extra
-        // companion `OLD-COMPANION.md` this binary no longer ships, alongside
-        // the still-bundled real one. The dropped file lingers on disk and the
-        // marker still records it.
+        // Simulate a prior binary that installed a companion this binary no
+        // longer ships. The dropped file lingers and the marker still records it.
         let skill = "stint-start";
-        let bundled: Vec<&str> = resources_for(skill).iter().map(|r| r.filename).collect();
-        assert!(
-            !bundled.is_empty(),
-            "test assumes stint-start ships >=1 companion"
-        );
         let dir = tempfile::tempdir().unwrap();
-        // Marker records both the still-bundled companions AND the orphan.
-        let mut recorded: Vec<String> = bundled.iter().copied().map(String::from).collect();
-        recorded.push("OLD-COMPANION.md".to_string());
-        write_marker(&dir.path().join(MANAGED_MARKER_FILENAME), skill, &recorded).unwrap();
-        // Both files present on disk.
-        for f in &bundled {
-            fs::write(dir.path().join(f), "x").unwrap();
-        }
+        write_marker(
+            &dir.path().join(MANAGED_MARKER_FILENAME),
+            skill,
+            &["OLD-COMPANION.md".to_string()],
+        )
+        .unwrap();
         fs::write(dir.path().join("OLD-COMPANION.md"), "stale").unwrap();
 
         let orphans = orphan_companions(skill, dir.path());
@@ -3037,7 +2996,7 @@ mod tests {
         write_codex_marker(
             &marker,
             &["stint-start".to_string(), "worktree-code".to_string()],
-            &["AGENTS-EXECUTION-DAG.md".to_string()],
+            &["REFERENCE.md".to_string()],
         )
         .unwrap();
         assert_eq!(
@@ -3046,7 +3005,7 @@ mod tests {
         );
         assert_eq!(
             read_marker_records(&marker, "companion"),
-            vec!["AGENTS-EXECUTION-DAG.md".to_string()]
+            vec!["REFERENCE.md".to_string()]
         );
         // An absent marker records nothing for either key.
         let missing = dir.path().join("nope");
@@ -3072,11 +3031,6 @@ mod tests {
             sources.len(),
             "companion filenames must be unique across skills"
         );
-        // stint-start's companion is present (guards the doctor codex checks
-        // have at least one companion to audit).
-        assert!(sources
-            .iter()
-            .any(|c| c.filename == "AGENTS-EXECUTION-DAG.md"));
     }
 
     #[test]
@@ -3334,7 +3288,7 @@ mod tests {
         let body = b"---\nname: old-skill\n---\nbody\n";
         fs::write(&mirror, body).unwrap();
         let comp_body = b"companion payload\n";
-        fs::write(skill_dir.join("AGENTS-EXECUTION-DAG.md"), comp_body).unwrap();
+        fs::write(skill_dir.join("REFERENCE.md"), comp_body).unwrap();
         // A second recorded companion the user has since edited: must survive.
         fs::write(skill_dir.join("EDITED.md"), b"user changed this").unwrap();
 
@@ -3342,7 +3296,7 @@ mod tests {
             "0.1.0",
             Some(sha256_hex(body)),
             &[
-                ("AGENTS-EXECUTION-DAG.md", sha256_hex(comp_body)),
+                ("REFERENCE.md", sha256_hex(comp_body)),
                 ("EDITED.md", sha256_hex(b"original edited body")),
             ],
         );
@@ -3358,7 +3312,7 @@ mod tests {
         assert!(summary.body_removed);
         assert!(!mirror.exists(), "SKILL.md removed");
         assert!(
-            !skill_dir.join("AGENTS-EXECUTION-DAG.md").exists(),
+            !skill_dir.join("REFERENCE.md").exists(),
             "our unmodified companion is removed"
         );
         assert!(
@@ -3501,22 +3455,21 @@ mod tests {
 
     #[test]
     fn reconcile_pi_companions_force_removes_dropped_companion() {
-        // A still-registered skill whose record tracks a companion the binary no
-        // longer bundles: under --force the orphan file is removed and dropped
-        // from the record; a still-bundled companion is left tracked.
+        // A still-registered skill whose record tracks companions the binary no
+        // longer bundles: under --force every orphan is removed from disk and record.
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
-        // stint-start ships AGENTS-EXECUTION-DAG.md; OLD.md is the dropped one.
+        // The fixture carries two companions from the prior catalog.
         let dag = b"dag body\n";
         let old = b"old body\n";
-        fs::write(dir.join("AGENTS-EXECUTION-DAG.md"), dag).unwrap();
+        fs::write(dir.join("REFERENCE.md"), dag).unwrap();
         fs::write(dir.join("OLD.md"), old).unwrap();
 
         let mut rec = skill_record(
             CLI_VERSION,
             Some(sha256_hex(b"skill body")),
             &[
-                ("AGENTS-EXECUTION-DAG.md", sha256_hex(dag)),
+                ("REFERENCE.md", sha256_hex(dag)),
                 ("OLD.md", sha256_hex(old)),
             ],
         );
@@ -3532,23 +3485,17 @@ mod tests {
             &mut warnings,
         );
 
-        assert_eq!(pruned, vec!["stint-start/OLD.md".to_string()]);
-        assert!(
-            rec.files.contains_key("AGENTS-EXECUTION-DAG.md"),
-            "still-bundled companion stays tracked"
+        assert_eq!(
+            pruned,
+            vec![
+                "stint-start/OLD.md".to_string(),
+                "stint-start/REFERENCE.md".to_string(),
+            ]
         );
-        assert!(
-            !rec.files.contains_key("OLD.md"),
-            "dropped companion is removed from the record"
-        );
-        assert!(
-            !dir.join("OLD.md").exists(),
-            "orphan file removed on --force"
-        );
-        assert!(
-            dir.join("AGENTS-EXECUTION-DAG.md").exists(),
-            "bundled companion file left in place"
-        );
+        assert!(!rec.files.contains_key("REFERENCE.md"));
+        assert!(!rec.files.contains_key("OLD.md"));
+        assert!(!dir.join("OLD.md").exists());
+        assert!(!dir.join("REFERENCE.md").exists());
     }
 
     #[test]
@@ -3630,20 +3577,14 @@ mod tests {
         let path = dir.path().join("pi.json");
         fs::write(
             &path,
-            r#"{"schema_version":2,"skills":{"stint-start":{"sha256":"bb","cli_version":"0.1.0","companions":{"AGENTS-EXECUTION-DAG.md":"cc"}}}}"#,
+            r#"{"schema_version":2,"skills":{"stint-start":{"sha256":"bb","cli_version":"0.1.0","companions":{"REFERENCE.md":"cc"}}}}"#,
         )
         .unwrap();
         let prov = load_pi_provenance_for_write(&path).unwrap();
         let rec = &prov.skills["stint-start"];
         assert_eq!(rec.body_hash(), Some("bb"));
-        assert_eq!(
-            rec.companion_names(),
-            vec!["AGENTS-EXECUTION-DAG.md".to_string()]
-        );
-        assert_eq!(
-            rec.files["AGENTS-EXECUTION-DAG.md"].kind,
-            PiFileKind::Companion
-        );
+        assert_eq!(rec.companion_names(), vec!["REFERENCE.md".to_string()]);
+        assert_eq!(rec.files["REFERENCE.md"].kind, PiFileKind::Companion);
     }
 
     #[test]
@@ -3656,7 +3597,7 @@ mod tests {
         let path = dir.path().join("pi.json");
         fs::write(
             &path,
-            r#"{"schema_version":2,"skills":{"s":{"sha256":"","cli_version":"0.1.0","companions":{"AGENTS-EXECUTION-DAG.md":"aa","EMPTY.md":"","SKILL.md":"bb","skill.md":"cc"}}}}"#,
+            r#"{"schema_version":2,"skills":{"s":{"sha256":"","cli_version":"0.1.0","companions":{"REFERENCE.md":"aa","EMPTY.md":"","SKILL.md":"bb","skill.md":"cc"}}}}"#,
         )
         .unwrap();
         let prov = load_pi_provenance_for_write(&path).unwrap();
@@ -3668,7 +3609,7 @@ mod tests {
         );
         assert_eq!(
             rec.companion_names(),
-            vec!["AGENTS-EXECUTION-DAG.md".to_string()],
+            vec!["REFERENCE.md".to_string()],
             "empty-hash and SKILL.md-aliasing companions are dropped"
         );
     }

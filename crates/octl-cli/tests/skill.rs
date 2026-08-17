@@ -15,7 +15,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 fn bin(home: &TempDir) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
@@ -208,8 +213,7 @@ fn skill_install_force_prunes_orphan_companion_file() {
     // A prior binary installed `stint-start` with an extra companion the
     // current binary no longer ships. It survives on disk and its
     // provenance marker still records it. A `--force` re-install must remove
-    // the orphan file and report it under `pruned_companions`, while leaving
-    // the still-bundled companion(s) in place.
+    // the orphan file and report it under `pruned_companions`.
     let home = mk_home();
     // First install lays down the skill dir + marker.
     let first = bin(&home)
@@ -228,13 +232,6 @@ fn skill_install_force_prunes_orphan_companion_file() {
     let mut marker_body = std::fs::read_to_string(&marker).expect("read marker");
     marker_body.push_str("companion: OLD-COMPANION.md\n");
     std::fs::write(&marker, marker_body).expect("append marker");
-    // Sanity: the real bundled companion is present and stays present.
-    let real_companion = skill_dir.join("AGENTS-EXECUTION-DAG.md");
-    assert!(
-        real_companion.exists(),
-        "bundled companion missing after install"
-    );
-
     // Forced re-install prunes the orphan.
     let out = bin(&home)
         .args([
@@ -257,7 +254,6 @@ fn skill_install_force_prunes_orphan_companion_file() {
         .collect();
     assert_eq!(pruned, vec!["stint-start/OLD-COMPANION.md"]);
     assert!(!orphan.exists(), "orphan companion not removed by --force");
-    assert!(real_companion.exists(), "bundled companion wrongly removed");
     // The rewritten marker no longer records the pruned orphan.
     let marker_after = std::fs::read_to_string(&marker).expect("read marker after");
     assert!(
@@ -267,10 +263,119 @@ fn skill_install_force_prunes_orphan_companion_file() {
 }
 
 #[test]
+fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "--agent", "all"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let retired_name = "AGENTS-EXECUTION-DAG.md";
+    let retired_bytes = b"retired managed companion\n";
+
+    let claude_dir = home.path().join(".claude/skills/stint-start");
+    std::fs::write(claude_dir.join(retired_name), retired_bytes).unwrap();
+    let claude_marker = claude_dir.join(".orchestratectl-managed");
+    let mut marker = std::fs::read_to_string(&claude_marker).unwrap();
+    marker.push_str(&format!("companion: {retired_name}\n"));
+    std::fs::write(&claude_marker, marker).unwrap();
+
+    let pi_dir = home.path().join(".pi/agent/skills/stint-start");
+    std::fs::write(pi_dir.join(retired_name), retired_bytes).unwrap();
+    let pi_record = env_orch_state_record(&home);
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&pi_record).unwrap()).unwrap();
+    record["skills"]["stint-start"]["files"][retired_name] = serde_json::json!({
+        "sha256": sha256_hex(retired_bytes),
+        "kind": "companion"
+    });
+    std::fs::write(&pi_record, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    let codex_shared = home.path().join(".codex/prompts/_shared");
+    std::fs::write(codex_shared.join(retired_name), retired_bytes).unwrap();
+    let codex_marker = codex_shared.join(".orchestratectl-managed");
+    let mut marker = std::fs::read_to_string(&codex_marker).unwrap();
+    marker.push_str(&format!("companion: {retired_name}\n"));
+    std::fs::write(&codex_marker, marker).unwrap();
+
+    let doctor = bin(&home)
+        .args(["doctor", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(doctor.status.success());
+    let doctor: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let checks = doctor["data"]["checks"].as_array().unwrap();
+    for id in [
+        "skill.orphan.stint-start.AGENTS-EXECUTION-DAG.md",
+        "skill.orphan.stint-start.pi.AGENTS-EXECUTION-DAG.md",
+        "skill.orphan.codex._shared.AGENTS-EXECUTION-DAG.md",
+    ] {
+        let check = checks
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("doctor did not report retired companion {id}: {checks:?}"));
+        assert_eq!(check["status"], "warn", "{id}: {check:?}");
+        assert!(
+            check["fix_suggestion"]
+                .as_str()
+                .is_some_and(|s| s.contains("--force")),
+            "{id}: {check:?}"
+        );
+    }
+
+    assert!(bin(&home)
+        .args(["skill", "install", "--force"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(bin(&home)
+        .args(["skill", "install", "--agent", "codex", "--force"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    for retired in [
+        claude_dir.join(retired_name),
+        pi_dir.join(retired_name),
+        codex_shared.join(retired_name),
+    ] {
+        assert!(
+            !retired.exists(),
+            "retired companion survived at {}",
+            retired.display()
+        );
+    }
+    assert!(!std::fs::read_to_string(claude_marker)
+        .unwrap()
+        .contains(retired_name));
+    assert!(!std::fs::read_to_string(codex_marker)
+        .unwrap()
+        .contains(retired_name));
+    let record: Value = serde_json::from_slice(&std::fs::read(pi_record).unwrap()).unwrap();
+    assert!(record["skills"]["stint-start"]["files"]
+        .get(retired_name)
+        .is_none());
+
+    let doctor = bin(&home)
+        .args(["doctor", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(doctor.status.success());
+    let doctor: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert!(!doctor["data"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["id"].as_str().is_some_and(|id| id.contains(retired_name))));
+}
+
+#[test]
 fn codex_install_writes_provenance_marker() {
-    // A default `--agent codex` install must drop the single shared codex
-    // marker recording the installed prompt(s) + companion(s) — the signal
-    // later pruning + doctor coverage key on.
+    // A default `--agent codex` install records the installed prompt in the
+    // shared provenance marker used by pruning and doctor.
     let home = mk_home();
     let out = bin(&home)
         .args([
@@ -286,13 +391,15 @@ fn codex_install_writes_provenance_marker() {
         .expect("spawn");
     assert!(out.status.success(), "codex install failed: {out:?}");
 
-    // The flat prompt + shared companion landed.
     assert!(home.path().join(".codex/prompts/stint-start.md").exists());
-    assert!(home
-        .path()
-        .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
-        .exists());
-    // The marker records the prompt and the companion.
+    assert!(
+        !home
+            .path()
+            .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
+            .exists(),
+        "retired DAG companion must not be installed for codex"
+    );
+    // The marker records the prompt.
     let marker = home
         .path()
         .join(".codex/prompts/_shared/.orchestratectl-managed");
@@ -302,10 +409,7 @@ fn codex_install_writes_provenance_marker() {
         "marker: {body}"
     );
     assert!(body.contains("prompt: stint-start"), "marker: {body}");
-    assert!(
-        body.contains("companion: AGENTS-EXECUTION-DAG.md"),
-        "marker: {body}"
-    );
+    assert!(!body.contains("AGENTS-EXECUTION-DAG.md"), "marker: {body}");
 }
 
 #[test]
@@ -314,7 +418,7 @@ fn codex_force_prunes_orphan_prompt_and_companion() {
     // binary no longer ships; both linger on disk and the shared marker still
     // records them. A full-catalog `--force` install must remove BOTH and
     // report them (prompt under `pruned`, companion as `_shared/<file>` under
-    // `pruned_companions`), while leaving the still-bundled companion in place.
+    // `pruned_companions`).
     let home = mk_home();
     // Full-catalog codex install lays down the flat prompts + shared marker.
     let first = bin(&home)
@@ -339,10 +443,6 @@ fn codex_force_prunes_orphan_prompt_and_companion() {
     marker_body.push_str("prompt: gone-skill\n");
     marker_body.push_str("companion: OLD-SHARED.md\n");
     std::fs::write(&marker, marker_body).unwrap();
-    // The still-bundled companion is present and must survive.
-    let real_companion = shared.join("AGENTS-EXECUTION-DAG.md");
-    assert!(real_companion.exists(), "bundled codex companion missing");
-
     let out = bin(&home)
         .args([
             "skill", "install", "--agent", "codex", "--force", "--output", "json",
@@ -379,10 +479,6 @@ fn codex_force_prunes_orphan_prompt_and_companion() {
     assert!(
         !orphan_companion.exists(),
         "orphan codex companion not removed"
-    );
-    assert!(
-        real_companion.exists(),
-        "bundled codex companion wrongly removed"
     );
     // The rewritten marker no longer records either pruned orphan.
     let marker_after = std::fs::read_to_string(&marker).unwrap();
@@ -741,30 +837,19 @@ fn skill_install_default_dual_homes_into_pi() {
         std::fs::read(&pi).unwrap(),
         "pi mirror must be byte-identical to the claude SKILL.md"
     );
+    for retired in [
+        home.path()
+            .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md"),
+        home.path()
+            .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md"),
+    ] {
+        assert!(
+            !retired.exists(),
+            "retired DAG companion must not be installed: {}",
+            retired.display()
+        );
+    }
 
-    // Companion resources mirror into the pi per-skill dir as byte-identical
-    // siblings of SKILL.md (stint-start ships AGENTS-EXECUTION-DAG.md), exactly
-    // as they do for claude — so a skill that STOPS on a missing companion does
-    // not abort under pi (issue support-pi-dev).
-    let claude_companion = home
-        .path()
-        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    let pi_companion = home
-        .path()
-        .join(".pi/agent/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    assert!(
-        claude_companion.exists(),
-        "companion missing from claude dir"
-    );
-    assert!(
-        pi_companion.exists(),
-        "companion must be mirrored into the pi dir"
-    );
-    assert_eq!(
-        std::fs::read(&claude_companion).unwrap(),
-        std::fs::read(&pi_companion).unwrap(),
-        "pi companion must be byte-identical to the claude companion"
-    );
     // The pi mirror is still not a managed claude dir — no in-dir provenance
     // marker (lifecycle is keyed on the out-of-band record instead).
     assert!(
@@ -776,20 +861,10 @@ fn skill_install_default_dual_homes_into_pi() {
         "pi mirror must not carry the claude provenance marker"
     );
 
-    // The companion is tracked in the out-of-band provenance record under its
-    // owning skill, so `doctor` and the de-registration prune can see it.
     let record: Value = serde_json::from_slice(
         &std::fs::read(env_orch_state_record(&home)).expect("provenance record"),
     )
     .expect("record json");
-    assert!(
-        record["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].is_string(),
-        "companion hash must be recorded under its owning skill: {record}"
-    );
-    assert_eq!(
-        record["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["kind"], "companion",
-        "companion file recorded with kind=companion: {record}"
-    );
     assert_eq!(
         record["skills"]["stint-start"]["files"]["SKILL.md"]["kind"], "skill",
         "body file recorded with kind=skill: {record}"
@@ -814,18 +889,16 @@ fn skill_install_force_reconciles_dropped_pi_companion() {
     let record_path = env_orch_state_record(&home);
 
     // Simulate a prior binary having installed an extra companion the current
-    // binary no longer ships. Give it the SAME bytes (and thus the same recorded
-    // hash) as the real companion so reconciliation recognises it as our copy.
-    let real = pi_dir.join("AGENTS-EXECUTION-DAG.md");
-    let real_bytes = std::fs::read(&real).unwrap();
+    // binary no longer ships. Its recorded hash matches the bytes on disk.
     let orphan = pi_dir.join("OLD-COMPANION.md");
-    std::fs::write(&orphan, &real_bytes).unwrap();
+    let orphan_bytes = b"former bundled companion\n";
+    std::fs::write(&orphan, orphan_bytes).unwrap();
 
     let mut prov: Value = serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
-    let real_hash =
-        prov["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].clone();
-    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] =
-        serde_json::json!({ "sha256": real_hash, "kind": "companion" });
+    prov["skills"]["stint-start"]["files"]["OLD-COMPANION.md"] = serde_json::json!({
+        "sha256": sha256_hex(orphan_bytes),
+        "kind": "companion"
+    });
     std::fs::write(&record_path, serde_json::to_string_pretty(&prov).unwrap()).unwrap();
 
     // A --force redeploy reconciles the dropped companion.
@@ -846,8 +919,6 @@ fn skill_install_force_reconciles_dropped_pi_companion() {
         !orphan.exists(),
         "dropped pi companion must be removed on --force"
     );
-    assert!(real.exists(), "the still-bundled companion is kept");
-
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let pruned_companions: Vec<&str> = v["data"]["pruned_companions"]
         .as_array()
@@ -867,10 +938,6 @@ fn skill_install_force_reconciles_dropped_pi_companion() {
             .get("OLD-COMPANION.md")
             .is_none(),
         "reconciled companion must be dropped from the record: {after}"
-    );
-    assert!(
-        after["skills"]["stint-start"]["files"]["AGENTS-EXECUTION-DAG.md"]["sha256"].is_string(),
-        "the bundled companion stays tracked"
     );
 }
 
@@ -1346,215 +1413,6 @@ fn skill_install_all_does_not_follow_symlinked_orphan() {
     );
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert!(v["data"]["pruned"].as_array().expect("pruned").is_empty());
-}
-
-#[test]
-fn skill_install_stint_start_writes_companion_resource_for_claude() {
-    // stint-start ships a companion reference (AGENTS-EXECUTION-DAG.md);
-    // the default claude install must write it as a sibling of SKILL.md so
-    // the skill's in-body link resolves at runtime, and report it in the
-    // install payload.
-    let home = mk_home();
-    let out = bin(&home)
-        .args(["skill", "install", "stint-start", "--output", "json"])
-        .output()
-        .expect("spawn");
-    assert!(out.status.success(), "install failed: {out:?}");
-
-    let skill_md = home.path().join(".claude/skills/stint-start/SKILL.md");
-    let companion = home
-        .path()
-        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    assert!(skill_md.exists(), "SKILL.md not installed");
-    assert!(
-        companion.exists(),
-        "companion AGENTS-EXECUTION-DAG.md not installed alongside SKILL.md"
-    );
-
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let installed = v["data"]["installed"].as_array().expect("installed array");
-    let paths: Vec<&str> = installed
-        .iter()
-        .map(|f| f["path"].as_str().unwrap())
-        .collect();
-    assert!(
-        paths.iter().any(|p| p.ends_with("AGENTS-EXECUTION-DAG.md")),
-        "companion not reported in install payload: {paths:?}"
-    );
-}
-
-#[test]
-fn skill_install_stint_start_codex_writes_companion_to_shared_and_rewrites_link() {
-    // The codex layout is a flat prompts dir where every top-level `.md`
-    // surfaces as a slash-command, so the companion is installed into a
-    // `_shared/` subdir (never a bogus top-level prompt) and the skill body's
-    // sibling link `](AGENTS-EXECUTION-DAG.md)` is rewritten to point there.
-    let home = mk_home();
-    let out = bin(&home)
-        .args([
-            "skill",
-            "install",
-            "stint-start",
-            "--agent",
-            "codex",
-            "--output",
-            "json",
-        ])
-        .output()
-        .expect("spawn");
-    assert!(out.status.success(), "codex install failed: {out:?}");
-
-    let prompt = home.path().join(".codex/prompts/stint-start.md");
-    assert!(prompt.exists(), "flat codex prompt not installed");
-    // Companion lands in `_shared/`, NOT as a top-level flat prompt.
-    assert!(
-        home.path()
-            .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
-            .exists(),
-        "companion not installed into the codex _shared/ subdir"
-    );
-    assert!(
-        !home
-            .path()
-            .join(".codex/prompts/AGENTS-EXECUTION-DAG.md")
-            .exists(),
-        "companion must not leak into the flat codex prompts dir as a bogus prompt"
-    );
-
-    // The in-body link resolves to the shared copy, and the claude-layout
-    // sibling form is gone.
-    let body = std::fs::read_to_string(&prompt).unwrap();
-    assert!(
-        body.contains("](_shared/AGENTS-EXECUTION-DAG.md)"),
-        "codex body link was not rewritten to the _shared/ target"
-    );
-    assert!(
-        !body.contains("](AGENTS-EXECUTION-DAG.md)"),
-        "codex body still carries the un-rewritten claude sibling link"
-    );
-
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let installed = v["data"]["installed"].as_array().expect("installed array");
-    let paths: Vec<&str> = installed
-        .iter()
-        .map(|f| f["path"].as_str().unwrap())
-        .collect();
-    assert!(
-        paths
-            .iter()
-            .any(|p| p.ends_with("_shared/AGENTS-EXECUTION-DAG.md")),
-        "companion not reported in codex install payload: {paths:?}"
-    );
-}
-
-#[test]
-fn skill_install_stint_handoff_codex_rewrites_cross_skill_link() {
-    // `stint-handoff` links to the DAG cross-skill via
-    // `](../stint-start/AGENTS-EXECUTION-DAG.md)`. On codex that collapses to
-    // the same shared `_shared/` target so the reference still resolves in the
-    // flat layout.
-    let home = mk_home();
-    let out = bin(&home)
-        .args(["skill", "install", "stint-handoff", "--agent", "codex"])
-        .output()
-        .expect("spawn");
-    assert!(out.status.success(), "codex install failed: {out:?}");
-
-    let body =
-        std::fs::read_to_string(home.path().join(".codex/prompts/stint-handoff.md")).unwrap();
-    assert!(
-        body.contains("](_shared/AGENTS-EXECUTION-DAG.md)"),
-        "cross-skill codex link was not rewritten to the _shared/ target"
-    );
-    assert!(
-        !body.contains("](../stint-start/AGENTS-EXECUTION-DAG.md)"),
-        "codex body still carries the un-rewritten cross-skill link"
-    );
-}
-
-#[test]
-fn skill_install_all_codex_writes_shared_companion_once() {
-    // A full codex catalog install must place the companion in `_shared/`
-    // exactly once (owned by stint-start) with no duplicate-destination
-    // collision, and leave the claude sibling body link byte-for-byte in the
-    // claude install untouched.
-    let home = mk_home();
-    let out = bin(&home)
-        .args(["skill", "install", "--agent", "all"])
-        .output()
-        .expect("spawn");
-    assert!(out.status.success(), "install --agent all failed: {out:?}");
-
-    // codex: shared companion present, no flat leak.
-    assert!(
-        home.path()
-            .join(".codex/prompts/_shared/AGENTS-EXECUTION-DAG.md")
-            .exists(),
-        "codex shared companion missing after --agent all"
-    );
-    // claude: unchanged sibling layout, body link NOT rewritten.
-    let claude_body =
-        std::fs::read_to_string(home.path().join(".claude/skills/stint-start/SKILL.md")).unwrap();
-    assert!(
-        claude_body.contains("](AGENTS-EXECUTION-DAG.md)"),
-        "claude body sibling link must be preserved verbatim"
-    );
-    assert!(
-        home.path()
-            .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md")
-            .exists(),
-        "claude sibling companion missing after --agent all"
-    );
-}
-
-#[test]
-fn skill_install_over_older_companion_upgrades_without_force() {
-    // §17 drift must apply to companion resources too: the shipped
-    // companion carries `cli_version` frontmatter, so a redeploy over an
-    // older on-disk copy overwrites it (with a warning) WITHOUT --force,
-    // exactly like SKILL.md. A version-less companion would wrongly force
-    // `--force` on every catalog update — this pins the fix.
-    let home = mk_home();
-    assert!(bin(&home)
-        .args(["skill", "install", "stint-start"])
-        .output()
-        .expect("spawn")
-        .status
-        .success());
-
-    let skill_md = home.path().join(".claude/skills/stint-start/SKILL.md");
-    let companion = home
-        .path()
-        .join(".claude/skills/stint-start/AGENTS-EXECUTION-DAG.md");
-    // Make BOTH claude on-disk files look older than the binary so the
-    // whole plan qualifies for the drift-upgrade (no-force) path. The pi
-    // mirror (also written by the first install) does NOT need aging: a
-    // derived pi mirror never gates the plan — preflight leaves an existing
-    // pi copy in place on a non-force run (see F1 / `pi_mirror_skipped`).
-    std::fs::write(
-        &skill_md,
-        "---\nname: stint-start\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &companion,
-        "---\ncli_version: \"0.0.0\"\nschema_version: 1\n---\nstale\n",
-    )
-    .unwrap();
-
-    let out = bin(&home)
-        .args(["skill", "install", "stint-start"])
-        .output()
-        .expect("spawn");
-    assert!(
-        out.status.success(),
-        "redeploy over an older companion must not require --force: {out:?}"
-    );
-    let after = std::fs::read_to_string(&companion).unwrap();
-    assert!(
-        after.contains(&format!("cli_version: \"{}\"", env!("CARGO_PKG_VERSION"))),
-        "companion was not upgraded to the binary version"
-    );
 }
 
 // --- pi.dev mirror lifecycle (out-of-band provenance) --------------------
