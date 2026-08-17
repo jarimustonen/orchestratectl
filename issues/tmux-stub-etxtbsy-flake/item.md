@@ -2,7 +2,7 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: bug
-status: open
+status: in-progress
 priority: high
 lane: multiplexer
 lane_seq: 10
@@ -65,3 +65,7 @@ _Add rationale for reopening here._
 ### 2026-08-17T07:32:35Z · @orchestrator
 
 Reopened 2026-08-17: the first fix (sync_all + drop before chmod in `fake_tmux`) was necessary but NOT sufficient. Main CI on 1566b5e still fails on ubuntu with ETXTBSY (`ExecutableFileBusy`, os code 26), now in TWO sibling tests: `new_session_headless_returns_pane_id_and_disables_rename` (direct ETXTBSY) and `find_window_by_path_scopes_to_all_when_no_session` (downstream symptom: the stub spawn fails so the probe returns None instead of Some("@9")). Each test already uses its own tempdir, so this is NOT path sharing between tests. Leading hypothesis: a cross-thread fork/exec race. Rust runs these tests as parallel threads in ONE process; when thread A still holds (or has just held) a write fd to its stub, thread B's Command::spawn forks and the child transiently inherits that fd. CLOEXEC closes it only at exec, so between fork and exec a live process holds a write handle to A's stub, and A's own exec then gets ETXTBSY. A loaded CI runner widens that window, which is why it is Linux-only, load-dependent, and survived the close-before-chmod fix.
+
+### 2026-08-17T07:35:41Z · @worker
+
+Confirmed the cross-thread fork/exec race by tracing the shared in-process Rust test model and `Command::spawn` mechanics: a fork can inherit another fake stub writer before CLOEXEC takes effect at exec, producing Linux ETXTBSY despite closing the original writer before its own spawn. Chose a test-local mutex held from `fake_tmux` creation through each fixture lifetime, so every fake-tmux write and every command it executes are serialized. This covers the entire fake_tmux family without changing production code.

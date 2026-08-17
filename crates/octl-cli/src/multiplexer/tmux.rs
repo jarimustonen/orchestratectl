@@ -339,10 +339,34 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
+    static FAKE_TMUX_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A fake tmux plus the guard that serializes its creation and execution.
+    ///
+    /// `Command::spawn` forks the whole test process. A child may transiently
+    /// inherit another thread's still-open stub write descriptor before exec,
+    /// which makes Linux reject execution of that stub with `ETXTBSY`. Keeping
+    /// this guard until the test ends prevents any fake-tmux spawn while another
+    /// fake tmux is being written.
+    struct FakeTmux {
+        tmux: Tmux,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl std::ops::Deref for FakeTmux {
+        type Target = Tmux;
+
+        fn deref(&self) -> &Self::Target {
+            &self.tmux
+        }
+    }
+
     /// Write a fake `tmux` script that records its argv to `<dir>/tmux.log` and
-    /// runs `body` (a shell snippet with `$@`/`$*` available). Returns its path,
-    /// suitable for [`Tmux::with_bin`].
-    fn fake_tmux(dir: &std::path::Path, body: &str) -> String {
+    /// runs `body` (a shell snippet with `$@`/`$*` available).
+    fn fake_tmux(dir: &std::path::Path, body: &str) -> FakeTmux {
+        let serial = FAKE_TMUX_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = dir.join("tmux");
         let log = dir.join("tmux.log");
         let mut file = std::fs::File::create(&path).unwrap();
@@ -357,7 +381,10 @@ mod tests {
         file.sync_all().unwrap();
         drop(file);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path.to_string_lossy().into_owned()
+        FakeTmux {
+            tmux: Tmux::with_bin(path.to_string_lossy()),
+            _serial: serial,
+        }
     }
 
     fn log_of(dir: &std::path::Path) -> String {
@@ -367,7 +394,7 @@ mod tests {
     #[test]
     fn kill_window_threads_socket_before_verb() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), ""));
+        let tmux = fake_tmux(tmp.path(), "");
         assert!(tmux.kill_window(Some("/tmp/sock-7"), "@42"));
         let log = log_of(tmp.path());
         assert!(
@@ -379,14 +406,14 @@ mod tests {
     #[test]
     fn kill_window_reports_false_on_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), "exit 1"));
+        let tmux = fake_tmux(tmp.path(), "exit 1");
         assert!(!tmux.kill_window(None, "@99"));
     }
 
     #[test]
     fn kill_session_no_socket() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), ""));
+        let tmux = fake_tmux(tmp.path(), "");
         assert!(tmux.kill_session(None, "headless"));
         assert!(log_of(tmp.path()).contains("kill-session -t headless"));
     }
@@ -395,10 +422,10 @@ mod tests {
     fn find_window_by_path_requires_exact_cwd_match() {
         let tmp = tempfile::tempdir().unwrap();
         // A sibling pane one level deeper must NOT match; only the exact cwd.
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *list-windows*) printf '@7\t/wt/foo/src\n@9\t/wt/foo\n';; esac"#,
-        ));
+        );
         assert_eq!(
             tmux.find_window_by_path(None, Some("headless"), "/wt/foo"),
             Some("@9".to_string())
@@ -409,10 +436,10 @@ mod tests {
     #[test]
     fn find_window_by_path_scopes_to_all_when_no_session() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *list-windows*) printf '@9\t/wt/foo\n';; esac"#,
-        ));
+        );
         assert_eq!(
             tmux.find_window_by_path(None, None, "/wt/foo"),
             Some("@9".to_string())
@@ -423,17 +450,17 @@ mod tests {
     #[test]
     fn find_window_by_path_none_on_nonzero() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), "exit 1"));
+        let tmux = fake_tmux(tmp.path(), "exit 1");
         assert_eq!(tmux.find_window_by_path(None, Some("s"), "/wt/foo"), None);
     }
 
     #[test]
     fn list_session_windows_parses_attached_and_names() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *list-windows*) printf '0\tzsh\n1\t🎬 wt/x\n';; esac"#,
-        ));
+        );
         let (attached, names) = tmux.list_session_windows(None, "headless").unwrap();
         assert!(
             attached,
@@ -445,7 +472,7 @@ mod tests {
     #[test]
     fn list_session_windows_none_when_session_gone() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), "exit 1"));
+        let tmux = fake_tmux(tmp.path(), "exit 1");
         assert!(tmux.list_session_windows(None, "gone").is_none());
     }
 
@@ -453,10 +480,10 @@ mod tests {
     fn new_session_headless_returns_pane_id_and_disables_rename() {
         let tmp = tempfile::tempdir().unwrap();
         // Echo a pane id for the new-session query; record everything.
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *new-session*) echo '%3';; esac"#,
-        ));
+        );
         let pane = tmux
             .new_session(&NewSession {
                 session: "headless",
@@ -482,10 +509,10 @@ mod tests {
     #[test]
     fn new_session_surfaces_nonzero() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *new-session*) echo boom >&2; exit 1;; esac"#,
-        ));
+        );
         let err = tmux
             .new_session(&NewSession {
                 session: "headless",
@@ -503,10 +530,10 @@ mod tests {
     #[test]
     fn new_session_without_window_name_skips_rename_off() {
         let tmp = tempfile::tempdir().unwrap();
-        let tmux = Tmux::with_bin(fake_tmux(
+        let tmux = fake_tmux(
             tmp.path(),
             r#"case "$*" in *new-session*) echo '%1';; esac"#,
-        ));
+        );
         let pane = tmux
             .new_session(&NewSession {
                 session: "headless",
@@ -526,7 +553,7 @@ mod tests {
     fn new_session_empty_pane_id_is_a_protocol_error() {
         let tmp = tempfile::tempdir().unwrap();
         // Zero exit, no stdout — must not return Ok("").
-        let tmux = Tmux::with_bin(fake_tmux(tmp.path(), ""));
+        let tmux = fake_tmux(tmp.path(), "");
         let err = tmux
             .new_session(&NewSession {
                 session: "headless",
