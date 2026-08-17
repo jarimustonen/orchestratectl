@@ -332,6 +332,11 @@ const HELP_FLAG_ID: &str = "__octl_help_request";
 /// can assert it still matches the real `Cli` arg.
 pub(crate) const OUTPUT_ARG_ID: &str = "output";
 
+/// Id of the global `--json` shorthand. It is a real format selector, so
+/// `--help --json` must take the same structured-help path as
+/// `--help --output json`.
+const JSON_ARG_ID: &str = "json";
+
 /// Whether `arg` is *the* global `--output` flag — matched on id, long name,
 /// and global-ness together so a future subcommand-local arg that merely
 /// reuses the id `output` cannot inherit its custom metadata.
@@ -373,6 +378,9 @@ pub enum HelpRequest {
         /// The literal value as the user typed it.
         value: String,
     },
+    /// Both global output selectors were supplied. This is the same
+    /// caller error normal command dispatch reports.
+    ConflictingOutputFlags,
 }
 
 /// Synthetic id for the global `--depth` arg injected into the lenient-parse
@@ -390,9 +398,10 @@ const DEPTH_ARG_ID: &str = "__octl_help_depth";
 /// (handled by clap for free).
 ///
 /// Returns [`HelpRequest::Render`] only when **both** an explicit help flag
-/// (`--help`/`-h`) and an explicit non-text `--output` are present; a bare
-/// `--help` or `--output text` returns [`HelpRequest::None`]. An unknown
-/// subcommand returns [`HelpRequest::UnknownSubcommand`].
+/// (`--help`/`-h`) and an explicit machine-output selector are present:
+/// `--json`, or non-text `--output`. A bare `--help` or `--output text`
+/// returns [`HelpRequest::None`]. An unknown subcommand returns
+/// [`HelpRequest::UnknownSubcommand`].
 #[must_use]
 pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
     let mut lenient = root
@@ -443,19 +452,36 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         return HelpRequest::None;
     }
 
-    // ...and an explicit non-text `--output`. The `jsonl` default does not
-    // count (`value_source` distinguishes it), so a bare `--help` keeps
-    // clap's text rendering.
-    let spec = match matches.value_source(OUTPUT_ARG_ID) {
+    // ...and an explicit machine-output selector. The global `--json`
+    // shorthand is equivalent to `--output json` for this early path too;
+    // otherwise `orchestratectl --help --json` would fall through to clap's
+    // text renderer before normal output selection gets a chance to run.
+    // The `jsonl` default does not count (`value_source` distinguishes it),
+    // so a bare `--help` keeps clap's text rendering.
+    let output_spec = match matches.value_source(OUTPUT_ARG_ID) {
         Some(ValueSource::CommandLine) => matches.get_one::<OutputSpec>(OUTPUT_ARG_ID).cloned(),
         _ => None,
     };
-    let Some(spec) = spec else {
-        return HelpRequest::None;
+    // Unit callers may supply a deliberately minimal command tree without
+    // the CLI's global shorthand. Do not ask clap for a missing id: that
+    // panics rather than reporting an absent match.
+    let json_shorthand = root
+        .get_arguments()
+        .any(|arg| arg.get_id().as_str() == JSON_ARG_ID)
+        && matches.value_source(JSON_ARG_ID) == Some(ValueSource::CommandLine)
+        && matches.get_flag(JSON_ARG_ID);
+    let spec = match (output_spec, json_shorthand) {
+        // Match normal command dispatch: a caller must choose exactly one
+        // output selector, including on the early structured-help path.
+        (Some(_), true) => return HelpRequest::ConflictingOutputFlags,
+        (Some(spec), false) if spec.format != OutputFormat::Text => spec,
+        (Some(_), false) => return HelpRequest::None,
+        (None, true) => OutputSpec {
+            format: OutputFormat::Json,
+            file: None,
+        },
+        (None, false) => return HelpRequest::None,
     };
-    if spec.format == OutputFormat::Text {
-        return HelpRequest::None;
-    }
 
     // Walk the resolved subcommand path, validating each name against the
     // real tree. With `allow_external_subcommands`, an unknown token in

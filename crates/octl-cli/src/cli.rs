@@ -187,6 +187,14 @@ pub fn run() -> ExitCode {
             err.emit();
             return ExitCode::from(ExitKind::User as u8);
         }
+        crate::help::HelpRequest::ConflictingOutputFlags => {
+            let err = CliError::user(
+                "conflicting_output_flags",
+                "--json cannot be used with --output; use exactly one output selector",
+            );
+            err.emit();
+            return ExitCode::from(ExitKind::User as u8);
+        }
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. It MUST

@@ -74,7 +74,9 @@ fn top_level_help_json_locks_the_whole_surface() {
     // summarises immediate children) does not collapse the surface lock —
     // we still want a snapshot that fails on any flag/positional drift
     // anywhere in the tree (issue: help-json-depth-control).
-    let stdout = help_stdout(&["--help", "--output", "json", "--depth", "tree"]);
+    // `--json` is the global shorthand, so the root surface must not need
+    // the longer `--output json` spelling.
+    let stdout = help_stdout(&["--help", "--json", "--depth", "tree"]);
     snapshot("top_level_help_json", &stdout);
 }
 
@@ -143,7 +145,8 @@ fn invalid_depth_value_errors_with_invalid_arguments() {
 fn leaf_verb_help_json() {
     // A leaf verb resolves to its own full flag/positional list,
     // independent of its parent noun (§14 drill-down).
-    let stdout = help_stdout(&["run", "create", "--help", "--output", "json"]);
+    // Drill-down accepts the same global shorthand in either argument order.
+    let stdout = help_stdout(&["run", "create", "--json", "--help"]);
     snapshot("run_create_help_json", &stdout);
 }
 
@@ -316,6 +319,22 @@ fn output_equals_form_triggers_json_help() {
     let stdout = help_stdout(&["run", "create", "--help", "--output=json"]);
     let v: Value = serde_json::from_str(stdout.trim()).expect("json");
     assert_eq!(v["data"]["command"], "orchestratectl run create");
+}
+
+#[test]
+fn json_and_output_are_conflicting_selectors_under_help_too() {
+    let assert = bin()
+        .args(["--help", "--json", "--output", "json"])
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    assert!(out.stdout.is_empty(), "no help on stdout for a conflict");
+    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+    let v: Value = serde_json::from_str(stderr.trim()).expect("error envelope");
+    assert_eq!(
+        v["error"]["code"], "conflicting_output_flags",
+        "envelope: {v}"
+    );
 }
 
 #[test]

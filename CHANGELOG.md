@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`--help --json` now uses the global JSON shorthand (`cli-canon-help-json`).** `orchestratectl --help --json` and drill-down forms such as `orchestratectl run create --json --help` emit the schema-versioned, clap-derived help envelope rather than text help, matching `--help --output json`. Supplying both output selectors remains a structured caller error.
+
 ### Fixed
 
 - **Bundled `octl-spawn-spinoff` guidance no longer describes the shipped spinoff surface as a preview (`spinoff-skill-stale-preview-banner`).** Removed the stale stop-gate and obsolete `not_implemented` fallback so agents invoke `run create --kind spinoff` directly.
