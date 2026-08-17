@@ -399,10 +399,9 @@ fn harness_flag_forwards_agent_records_and_surfaces() {
 }
 
 #[test]
-fn default_harness_omits_agent_and_records_claude() {
-    // No `--harness`: create.sh gets NO `--agent` (byte-identical to before the
-    // flag existed, so workmux's default agent runs), but the manifest still
-    // records the resolved default `claude`.
+fn default_harness_forwards_pi_agent_and_records_pi() {
+    // No `--harness`: the built-in pi default is forwarded explicitly to
+    // create.sh, and the manifest records the resolved default `pi`.
     let home = TestHome::new();
     let argv = home.path().join("create-argv.txt");
     let script = write_argv_recording_create_sh(
@@ -417,16 +416,22 @@ fn default_harness_omits_agent_and_records_claude() {
     let run_id = v["data"]["run_id"].as_str().unwrap().to_string();
 
     let recorded = std::fs::read_to_string(&argv).expect("create.sh recorded its argv");
-    assert!(
-        !recorded.lines().any(|a| a == "--agent"),
-        "default harness must not forward --agent; argv={recorded:?}"
+    let forwarded: Vec<&str> = recorded.lines().collect();
+    let pos = forwarded
+        .iter()
+        .position(|a| *a == "--agent")
+        .unwrap_or_else(|| panic!("default harness must forward --agent; argv={forwarded:?}"));
+    assert_eq!(
+        forwarded.get(pos + 1).copied(),
+        Some("pi"),
+        "default harness must forward the pi agent; argv={forwarded:?}"
     );
     let manifest: Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join("runs").join(&run_id).join("manifest.json"))
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(manifest["harness"], "claude");
+    assert_eq!(manifest["harness"], "pi");
 }
 
 #[test]

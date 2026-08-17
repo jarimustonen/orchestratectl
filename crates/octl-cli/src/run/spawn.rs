@@ -103,10 +103,10 @@ pub struct SpawnRequest<'a> {
     pub kind: &'a str,
     /// Workmux agent to launch in the worker's pane, forwarded to create.sh as
     /// `--agent <name>` (→ `workmux add -a <name>`). `None` keeps workmux's own
-    /// configured default agent — the historical behaviour, and what a `claude`
-    /// harness resolves to (byte-identical to before this flag existed).
-    /// `Some(name)` selects a non-default harness's agent (e.g. `pi`); the
-    /// harness → agent mapping lives in [`crate::harness::workmux_agent`].
+    /// configured default agent, which is how the non-default `claude` harness
+    /// launches. `Some(name)` selects that harness's agent (the built-in `pi`
+    /// harness supplies `Some("pi")`); the harness → agent mapping lives in
+    /// [`crate::harness::workmux_agent`].
     pub agent: Option<&'a str>,
     /// Branch name (positional 1). Caller is responsible for any
     /// canonicalization; create.sh validates the charset.
@@ -193,9 +193,8 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         cmd.current_dir(cwd);
     }
     cmd.arg("--type").arg(req.kind);
-    // Forward the selected harness's workmux agent. Omitted for the default
-    // (claude → `None`), so a default-harness spawn's create.sh argv is unchanged
-    // from before `--harness` existed.
+    // Forward the selected harness's workmux agent. The explicit claude harness
+    // maps to `None`, while the built-in pi harness supplies `Some("pi")`.
     if let Some(agent) = req.agent {
         cmd.arg("--agent").arg(agent);
     }
@@ -715,8 +714,8 @@ EOF
         .unwrap();
         assert_eq!(with.tmux_session.as_deref(), Some("pi"));
 
-        // No `--agent` when the harness maps to `None` (claude default): create.sh
-        // sees no agent flag and keeps workmux's default agent — unchanged argv.
+        // No `--agent` when the explicit claude harness maps to `None`: create.sh
+        // sees no agent flag and keeps workmux's configured default agent.
         let without = run_create_sh(&SpawnRequest {
             kind: "spinoff",
             agent: None,

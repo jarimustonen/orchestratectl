@@ -8,11 +8,10 @@
 //! 2. **env** — `ORCHESTRATECTL_HARNESS` (mirrors the flag name per §8). An empty
 //!    value counts as unset and falls through.
 //! 3. **config file** — `[harness]` in `config.toml`: a `per_kind[<kind>]`
-//!    override wins over the section `default`. This is where a repo/user points
-//!    autonomous kinds (`research`, `spinoff`) at `pi` while interactive `code`
-//!    keeps the global default.
-//! 4. **built-in default** — [`super::DEFAULT_HARNESS`] (`claude`), the same for
-//!    every kind, so claude stays the default and the interactive driver.
+//!    override wins over the section `default`. This is where a repo/user can
+//!    opt into `claude` for a particular kind.
+//! 4. **built-in default** — [`super::DEFAULT_HARNESS`] (`pi`), the universal
+//!    default for every run per ADR 0001 D4; `claude` is a non-default opt-in.
 //!
 //! The resolved name is validated against [`super::KNOWN_HARNESSES`]; an unknown
 //! value is a hard [`CliError`] naming both the offending value and where it came
@@ -65,8 +64,9 @@ pub struct HarnessChoice {
 }
 
 impl HarnessChoice {
-    /// The workmux agent to launch for this harness (`None` = workmux default,
-    /// i.e. claude). See [`super::workmux_agent`].
+    /// The workmux agent to launch for this harness (`None` = workmux's own
+    /// configured default, used by the explicit `claude` harness). See
+    /// [`super::workmux_agent`].
     #[must_use]
     pub fn workmux_agent(&self) -> Option<&str> {
         super::workmux_agent(&self.name)
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn default_when_nothing_set() {
         let got = resolve_with(Kind::Spinoff, None, None, &Config::default()).unwrap();
-        assert_eq!(got.name, "claude");
+        assert_eq!(got.name, "pi");
         assert_eq!(got.source, HarnessSource::Default);
     }
 
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn resolve_default_falls_through_to_builtin() {
         let got = resolve_default(None, &Config::default()).unwrap();
-        assert_eq!(got.name, "claude");
+        assert_eq!(got.name, "pi");
         assert_eq!(got.source, HarnessSource::Default);
     }
 

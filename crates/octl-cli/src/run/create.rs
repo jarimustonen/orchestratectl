@@ -432,8 +432,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // `--skip-materialize` is set there's no spawn, no prompt.
     // Translate the worker-facing prompt for harnesses that need it (the pi
     // shim — Claude-flavored SKILL references mapped to bash/CLI, with the exact
-    // run id templated into the closing call). `None` for the default claude
-    // harness, so its prompt.md is byte-identical to before.
+    // run id templated into the closing call). The explicit claude harness gets
+    // no preamble, so its prompt.md remains byte-identical to before.
     let prompt_preamble =
         crate::harness::prompt::worker_prompt_preamble(&harness.name, args.kind, &run_id);
     let prompt_path = match prompt_source {
@@ -589,9 +589,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let branch_name = derive_branch_name(args.kind, &run_id, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
-        // Launch the worker under the resolved harness's workmux agent. `None`
-        // for the default (claude) keeps create.sh's argv unchanged from before
-        // `--harness` existed; `Some("pi")` etc. selects a non-default harness.
+        // Launch the worker under the resolved harness's workmux agent. The
+        // built-in pi harness supplies `Some("pi")`; explicit claude maps to
+        // `None` and keeps workmux's configured default agent.
         agent: harness.workmux_agent(),
         branch: &branch_name,
         prompt_file: &prompt_path,

@@ -47,24 +47,26 @@ It stubs the two shell-out boundaries through the production override hooks — 
 ## `run create --harness` (worker harness selection)
 
 `run create --harness <name>` picks which agent runtime launches the worker in its
-tmux pane — `claude` (default) | `pi` (the `harness::KNOWN_HARNESSES` registry). The
-mechanism is deliberately narrow: the resolved harness maps to a **workmux agent**
-(`harness::workmux_agent`) forwarded to `create.sh` as `--agent <name>` (→
-`workmux add -a`). `claude` maps to `None` — no `--agent` is passed, so a default
-spawn's create.sh argv is byte-identical to before the flag existed. The
-supervisor/merge/report path is harness-agnostic, so a non-claude worker rides the
-exact same lifecycle.
+tmux pane — `pi` (built-in default) | `claude` (non-default opt-in), from the
+`harness::KNOWN_HARNESSES` registry. Per ADR 0001 D4, pi.dev is the universal
+default for autonomous and interactive runs. The mechanism is deliberately narrow:
+the resolved harness maps to a **workmux agent** (`harness::workmux_agent`) forwarded
+to `create.sh` as `--agent <name>` (→ `workmux add -a`). `pi` maps to an explicit
+`--agent pi`; `claude` maps to `None`, retaining workmux's own configured default
+agent for an explicit claude selection. The supervisor/merge/report path is
+harness-agnostic, so every worker rides the exact same lifecycle.
 
 Precedence (AGENTS-AI-FIRST-CLI §8), resolved per run in `harness::select`:
 **flag `--harness` > env `ORCHESTRATECTL_HARNESS` > `config.toml` `[harness]`
-(per-kind override, then section default) > built-in default (`claude`)**. The
-config file (`config.toml` under the resolved home — `$ORCHESTRATECTL_HOME` or
+(per-kind override, then section default) > built-in default (`pi`)**. The config
+file (`config.toml` under the resolved home — `$ORCHESTRATECTL_HOME` or
 `~/.orchestratectl`; `config/mod.rs`) is the tool's first config-file layer; a user
-points `[harness.per_kind] research = "pi"` while `code` stays claude (per-kind
-keys are validated against the known run kinds at load, so a typo fails loudly). The resolved harness is folded onto `manifest.harness` (from
-the `run.created` event, which also carries `harness_source` for provenance) and
-surfaced on `run show` / `run list --json`. `harness::select::resolve_with` is the
-pure, unit-tested resolver; `resolve` supplies the ambient config+env.
+can set `[harness.per_kind] research = "claude"` as an opt-in (per-kind keys are
+validated against the known run kinds at load, so a typo fails loudly). The resolved
+harness is folded onto `manifest.harness` (from the `run.created` event, which also
+carries `harness_source` for provenance) and surfaced on `run show` / `run list
+--json`. `harness::select::resolve_with` is the pure, unit-tested resolver;
+`resolve` supplies the ambient config+env.
 
 `--harness pi` requires a `pi` agent configured in workmux.
 

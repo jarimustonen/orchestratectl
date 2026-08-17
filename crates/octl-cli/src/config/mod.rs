@@ -24,7 +24,7 @@
 //! ```toml
 //! [harness]
 //! # Default harness for every run kind unless overridden below.
-//! default = "claude"
+//! default = "pi"
 //!
 //! [harness.per_kind]
 //! # Per-kind overrides, keyed by the kebab-case run kind. Lets a repo default
@@ -115,7 +115,7 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct HarnessConfig {
     /// Default harness for all run kinds unless a `per_kind` entry overrides it.
-    /// `None` (key absent) falls through to the built-in default (`claude`).
+    /// `None` (key absent) falls through to the built-in default (`pi`).
     #[serde(default)]
     pub default: Option<String>,
     /// Per-kind overrides, keyed by kebab-case run kind (`research`, `spinoff`,

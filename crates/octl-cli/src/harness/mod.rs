@@ -28,18 +28,18 @@ pub(crate) mod support;
 /// for a valid `run create --harness <name>` value.
 pub const KNOWN_HARNESSES: &[&str] = &["claude", "pi"];
 
-/// The built-in default harness when no flag / env / config selects one. Claude
-/// stays the default and the interactive driver (issue `run-create-harness-flag`).
-pub const DEFAULT_HARNESS: &str = "claude";
+/// The built-in default harness when no flag / env / config selects one. Per ADR
+/// 0001 D4, pi.dev is the universal default; claude is a non-default opt-in.
+pub const DEFAULT_HARNESS: &str = "pi";
 
 /// Map a resolved harness name to the workmux agent to launch in the worker's
 /// tmux pane (`create.sh --agent` → `workmux add -a`).
 ///
-/// `claude` maps to `None` so the launch stays **byte-identical** to today's
-/// default — no `--agent` is passed and workmux uses its own configured default
-/// agent. **Every other name** — including one this build does not recognise —
-/// forwards verbatim as the workmux agent (so `--harness pi` runs
-/// `workmux add -a pi`; workmux must have that agent configured).
+/// `claude` maps to `None`, preserving its legacy workmux-default launch shape:
+/// no `--agent` is passed. `pi`, including the built-in default, maps to an
+/// explicit `--agent pi`. **Every other name** — including one this build does
+/// not recognise — forwards verbatim as the workmux agent (so `--harness pi`
+/// runs `workmux add -a pi`; workmux must have that agent configured).
 ///
 /// The unknown case forwards rather than falling back to `None` **on purpose**:
 /// the supervisor's retry path reads `manifest.harness` and passes it here, and

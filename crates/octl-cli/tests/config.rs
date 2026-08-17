@@ -159,7 +159,7 @@ fn config_show_json_pins_payload_and_default_sources() {
             BTreeSet::from(["key", "value", "source", "secret"]),
             "unexpected row keys: {row_keys:?}"
         );
-        assert_eq!(k["value"], "claude");
+        assert_eq!(k["value"], "pi");
         assert_eq!(k["source"], "default");
         assert_eq!(k["secret"], false);
     }

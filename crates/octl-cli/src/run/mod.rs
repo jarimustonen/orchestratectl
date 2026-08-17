@@ -84,13 +84,13 @@ pub enum RunAction {
         /// Workmux layout name; forwarded to create.sh as `-l <name>`.
         #[arg(long)]
         layout: Option<String>,
-        /// Agent runtime to launch the worker under: `claude` (default) | `pi`.
-        /// Overrides `ORCHESTRATECTL_HARNESS`, the
-        /// `config.toml` `[harness]` default, and the built-in default (in that
-        /// precedence order). A non-claude harness is forwarded to create.sh as
-        /// `--agent <name>` (→ `workmux add -a`), so the selected agent must be
-        /// configured in workmux. Recorded on the run and shown by `run show` /
-        /// `run list --json`.
+        /// Agent runtime to launch the worker under: `pi` (built-in default) |
+        /// `claude` (non-default opt-in). Overrides `ORCHESTRATECTL_HARNESS`,
+        /// the `config.toml` `[harness]` default, and the built-in default (in
+        /// that precedence order). `pi` is forwarded to create.sh as `--agent
+        /// pi` (→ `workmux add -a`), so it must be configured in workmux;
+        /// `claude` keeps workmux's own configured default agent. Recorded on
+        /// the run and shown by `run show` / `run list --json`.
         #[arg(long)]
         harness: Option<String>,
         /// Mark this run **interactive** (human-driven). The supervisor then

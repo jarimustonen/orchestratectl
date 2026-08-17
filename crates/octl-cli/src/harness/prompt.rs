@@ -111,7 +111,7 @@ The original task brief follows.
 /// The worker-prompt preamble for a resolved harness + run kind, or `None` when no
 /// translation is needed.
 ///
-/// `None` for the default `claude` harness (the prompt is passed through
+/// `None` for the non-default `claude` harness (the prompt is passed through
 /// byte-for-byte) and for every pi kind except [`Kind::Research`] — the single
 /// kind this shim covers end-to-end. A `Some` value is prepended to the worker's
 /// prompt by `run create` before it is materialized to `prompt.md`; `run_id` is
