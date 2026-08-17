@@ -9,6 +9,8 @@ lane_seq: 10
 commits:
 - hash: 1104fb1042099e4ccbfe1614155fe2d959a04209
   summary: 'fix: close tmux test stub before exec'
+- hash: e822897
+  summary: 'fix: close tmux test stub before exec'
 closed: 2026-08-17
 ---
 
