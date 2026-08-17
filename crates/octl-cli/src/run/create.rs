@@ -772,12 +772,21 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // `supervisor-stuck-pending-after-self-merge`). Best-effort: a git failure
     // leaves `base_sha` null and the reconcile fallback simply does not fire.
     let base_sha = capture_base_sha(&outcome.worktree_path);
+    // An explicit source is authoritative. Otherwise read the branch-creation
+    // provenance from the materialized worker branch itself. Unlike ambient
+    // cwd, that reflog is anchored to the repo and base workmux actually used.
+    let materialized_source_branch = args
+        .source_branch
+        .clone()
+        .or_else(|| capture_materialized_source_branch(&outcome.worktree_path, &outcome.branch));
 
-    // Emit node.created with the discovered metadata. The reducer
-    // creates nodes/n-0001.json with these fields wired in.
+    // Emit node.created with the discovered metadata. The reducer creates
+    // nodes/n-0001.json and fills a previously-unknown manifest source branch
+    // in the same locked append/apply transaction.
     let node_data = json!({
         "kind": kind_kebab(args.kind),
         "branch": outcome.branch,
+        "source_branch": materialized_source_branch,
         "base_sha": base_sha,
         "worktree_path": outcome.worktree_path,
         "tmux_window": outcome.tmux_window,
@@ -1090,6 +1099,31 @@ pub(crate) fn capture_base_sha(worktree_path: &str) -> Option<String> {
     // reconcile check.
     let ok = matches!(sha.len(), 40 | 64) && sha.chars().all(|c| c.is_ascii_hexdigit());
     ok.then_some(sha)
+}
+
+/// Read the base named by git when the materializer created `branch`.
+///
+/// This is anchored to the new worktree rather than ambient cwd, so it cannot
+/// accidentally persist a branch from another repository or race a later
+/// checkout in the source worktree. Best-effort: custom reflog formats,
+/// disabled reflogs, and unnamed sources such as `HEAD` remain unknown.
+fn capture_materialized_source_branch(worktree_path: &str, branch: &str) -> Option<String> {
+    let git = std::env::var("GIT_BIN").unwrap_or_else(|_| "git".to_string());
+    let out = std::process::Command::new(git)
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["reflog", "show", "--format=%gs", "-1", branch])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .strip_prefix("branch: Created from ")
+        .map(str::to_string)
+        .filter(|base| !base.is_empty() && base != "HEAD")
 }
 
 fn resolve_parent_session(

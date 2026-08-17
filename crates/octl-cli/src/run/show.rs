@@ -276,6 +276,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     // both verbs (issue `run-show-json-null-fields`). `manifest` keeps the full
     // nested detail alongside it.
     let summary = crate::run::dto::RunSummary::from(&manifest)
+        .with_worktree_path(landing.worktree_path.clone())
         .with_supervisor(supervisor)
         .with_stalled(stalled)
         .with_stillborn(matches!(

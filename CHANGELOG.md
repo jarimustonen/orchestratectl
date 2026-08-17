@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pending materialized runs expose their repository coordinates (`run-show-null-worktree-path`).** `run show` and `run list` now surface the default worker's `worktree_path` and the run's effective `source_branch` as soon as worktree creation succeeds, rather than leaving both fields null until callers inspect git worktrees or tmux panes.
+
 ### Added
 
 - **Autonomous workers can now propagate genuine decision forks (`uncommonly-fuzzy-swing`).** A worker records a durable `node.awaiting_input` event carrying report-shaped discussion items with the question, options, and recommended default instead of blocking indefinitely on stdin. `run show` and `run list` expose the open request immediately; after a restart-safe three-minute grace, `run wait` settles and the existing `--notify` hook fires with awaiting-input context. `node.input_resolved` clears the generation safely, terminal reports and retries clear stale requests, and bundled spinoff guidance requires a bounded default-or-blocked-report path that preserves blocked work.

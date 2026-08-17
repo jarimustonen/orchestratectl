@@ -575,6 +575,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
     // The envelope `node_id` is already a validated `NodeId` (parsed on read),
     // so take it directly — no re-parse needed.
     let node_id = require_envelope_node_id(&events_path, ev)?;
+    let is_default_node = node_id.as_str() == "n-0001";
     // Idempotent on replay: skip if the node already exists.
     if read_node_opt(paths, &node_id)?.is_some() {
         return Ok(vec![]);
@@ -628,9 +629,20 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
+        // Materialization is the point at which an implicit source branch is
+        // known. Preserve an explicit run.created value; otherwise fold the
+        // source discovered by the creator into the manifest in this same
+        // locked event application.
+        if is_default_node && m.source_branch.is_none() {
+            m.source_branch = d
+                .get("source_branch")
+                .and_then(Value::as_str)
+                .filter(|branch| !branch.is_empty())
+                .map(str::to_string);
+        }
         // `node_count` is derived from the projection directories in
         // `advance_applied_seq`, never incremented here — see the module note
-        // and issue `manifest-counter-desync`. This op only refreshes the run's
+        // and issue `manifest-counter-desync`. This op also refreshes the run's
         // last-activity timestamp.
         m.updated_at = ev.ts;
         ops.push(ProjectionOp::Manifest(m));
@@ -1745,6 +1757,81 @@ mod tests {
             .unwrap();
         assert!(n2.tmux_identity.is_none());
         assert_eq!(n2.tmux_window.as_deref(), Some("🚀 wt/y"));
+    }
+
+    #[test]
+    fn node_materialization_populates_missing_manifest_source_branch() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000001";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data = serde_json::json!({
+            "kind": "spinoff", "lifecycle": "autonomous", "title": "t"
+        });
+        apply_event(&paths, &created).unwrap();
+        assert!(read_manifest_opt(&paths)
+            .unwrap()
+            .unwrap()
+            .source_branch
+            .is_none());
+
+        let mut node = event(run_id);
+        node.seq = 2;
+        node.kind = "node.created".into();
+        node.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        node.data = serde_json::json!({
+            "kind": "spinoff",
+            "source_branch": "main",
+            "worktree_path": "/tmp/wt/pending"
+        });
+        apply_event(&paths, &node).unwrap();
+
+        let manifest = read_manifest_opt(&paths).unwrap().unwrap();
+        assert_eq!(manifest.status, Status::Pending);
+        assert_eq!(manifest.source_branch.as_deref(), Some("main"));
+        let node = read_n0001(&paths);
+        assert_eq!(node.worktree_path.as_deref(), Some("/tmp/wt/pending"));
+    }
+
+    #[test]
+    fn node_materialization_preserves_explicit_manifest_source_branch() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000002";
+        let rid = RunId::parse_str(run_id).unwrap();
+        let dir = crate::run_dir(tmp.path(), &rid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, run_id).unwrap();
+
+        let mut created = event(run_id);
+        created.kind = "run.created".into();
+        created.data = serde_json::json!({
+            "kind": "spinoff", "lifecycle": "autonomous", "title": "t",
+            "source_branch": "release"
+        });
+        apply_event(&paths, &created).unwrap();
+
+        let mut node = event(run_id);
+        node.seq = 2;
+        node.kind = "node.created".into();
+        node.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        node.data = serde_json::json!({
+            "kind": "spinoff", "source_branch": "main"
+        });
+        apply_event(&paths, &node).unwrap();
+
+        assert_eq!(
+            read_manifest_opt(&paths)
+                .unwrap()
+                .unwrap()
+                .source_branch
+                .as_deref(),
+            Some("release")
+        );
     }
 
     /// Bootstrap a run with a single `n-0001` node via the event-sourced path,

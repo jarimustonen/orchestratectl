@@ -1,12 +1,13 @@
 ---
 created: 2026-08-12
-updated: 2026-08-16
+updated: 2026-08-17
 type: bug
-status: open
+status: fixed
 priority: normal
 labels: [observability, keep-0.2]
 lane: lifecycle
 lane_seq: 60
+closed: 2026-08-17
 ---
 
 # run show reports null worktree_path/source_branch for a live pending run
@@ -38,3 +39,9 @@ orchestratectl 0.1.5.
 ### 2026-08-13T11:10:42Z · @adr-decision-2
 
 KEEP-and-fix: A5 REQUIRES run show to expose the worktree path for attention-required runs — the fix becomes mandatory. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-17T19:01:47Z · @issuectl
+
+Implemented pending-state worktree/source coordinates on run show and run list, with replay-safe projection updates and integration coverage.

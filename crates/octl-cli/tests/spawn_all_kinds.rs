@@ -113,6 +113,78 @@ fn each_kind_spawns_and_emits_node_created() {
     }
 }
 
+/// A successfully materialized worker is published while still `pending`; both
+/// read surfaces must already carry the repo coordinates at that point.
+#[test]
+fn pending_materialized_run_surfaces_worktree_and_source_branch() {
+    let home = TestHome::new();
+    let repo = TempDir::new().unwrap();
+    let git_init = Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git init");
+    assert!(git_init.status.success(), "git init failed");
+    for args in [
+        &["config", "user.email", "test@example.invalid"][..],
+        &["config", "user.name", "Test"][..],
+        &["commit", "--allow-empty", "-m", "base"][..],
+        &["branch", "wt/test-spinoff", "main"][..],
+    ] {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("prepare git repo");
+        assert!(out.status.success(), "git {args:?} failed");
+    }
+    let worker = repo.path().join("worker");
+    let worktree_add = Command::new("git")
+        .args(["worktree", "add"])
+        .arg(&worker)
+        .arg("wt/test-spinoff")
+        .current_dir(repo.path())
+        .output()
+        .expect("git worktree add");
+    assert!(worktree_add.status.success(), "git worktree add failed");
+    let fake_output = serde_json::json!({
+        "schema_version": 1,
+        "type": "spinoff",
+        "branch": "wt/test-spinoff",
+        "worktree_path": worker,
+        "tmux_window": "test",
+        "agent_pid_hint": std::process::id(),
+        "workmux_session": "test"
+    })
+    .to_string();
+    let script = write_fake_create_sh(&home, &fake_output, 0);
+    let created = run_ok(bin(&home, &script).current_dir(repo.path()).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "pending coordinates",
+        "--task",
+        "do work",
+    ]));
+    let run_id = created["data"]["run_id"].as_str().unwrap();
+
+    let shown = run_ok(bin(&home, &script).args(["--output", "json", "run", "show", run_id]));
+    assert_eq!(shown["data"]["status"], "pending");
+    assert_eq!(shown["data"]["worktree_path"], worker.display().to_string());
+    assert_eq!(shown["data"]["source_branch"], "main");
+    assert_eq!(shown["data"]["manifest"]["source_branch"], "main");
+
+    let listed = run_ok(bin(&home, &script).args(["--output", "json", "run", "list"]));
+    let row = &listed["data"]["runs"][0];
+    assert_eq!(row["status"], "pending");
+    assert_eq!(row["worktree_path"], worker.display().to_string());
+    assert_eq!(row["source_branch"], "main");
+}
+
 #[test]
 fn missing_task_and_prompt_file_is_user_error() {
     let home = TempDir::new().unwrap();

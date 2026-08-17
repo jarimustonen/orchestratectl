@@ -167,46 +167,53 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             // the SAME shared-lock snapshot as the manifest so the worker-exit fact
             // and `status` cannot straddle a reducer write. Gated on a SINGLE-worker
             // run (`node_count == 1`): a fan-out (multi-node) run's per-node
-            // attention is the delegated `per-node-run` follow-up, so we neither
-            // false-flag the whole run off `n-0001` nor pay the node read for it.
-            // Read best-effort: `run list` was manifest-only before, and it is a
-            // diagnostic surface, so a corrupt `n-0001` file degrades to "no
-            // attention" for this one run rather than aborting the whole listing.
-            let node = if m.node_count == 1 {
-                let node_id =
-                    NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-                read_node_opt(&paths, &node_id).ok().flatten()
-            } else {
-                None
-            };
-            let attention = if m.node_count == 1 {
-                node.as_ref().and_then(|n| {
-                    crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
-                        // `is_attention_required` guarantees `worker_exit` is Some+clean.
-                        .then_some(n.worker_exit.as_ref())
-                        .flatten()
-                        .map(|exit| {
-                            crate::run::attention::AttentionView::build(
-                                m.run_id.as_str(),
-                                now,
-                                exit,
-                                n.agent_pid,
-                                n.worktree_path.clone(),
-                                m.source_branch.clone(),
-                            )
-                        })
-                })
-            } else {
-                None
-            };
-            let awaiting_input = node
-                .as_ref()
+            // attention is the delegated `per-node-run` follow-up, so we never
+            // false-flag the whole run off `n-0001`.
+            // Read the default node unconditionally for materialization
+            // coordinates. Its projection, not the derived manifest counter, is
+            // the source of truth for whether the worktree exists. Best-effort:
+            // one corrupt node degrades this diagnostic row rather than aborting
+            // the entire listing.
+            let node_id =
+                NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
+            let default_node = read_node_opt(&paths, &node_id).ok().flatten();
+            // Keep attention/awaiting-input single-worker scoped. n-0001 is not
+            // representative of a multi-node run; widening this gate would be an
+            // unrelated behavior change to those diagnostics.
+            let diagnostic_node = (m.node_count == 1)
+                .then_some(default_node.as_ref())
+                .flatten();
+            let attention = diagnostic_node.and_then(|n| {
+                crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
+                    // `is_attention_required` guarantees `worker_exit` is Some+clean.
+                    .then_some(n.worker_exit.as_ref())
+                    .flatten()
+                    .map(|exit| {
+                        crate::run::attention::AttentionView::build(
+                            m.run_id.as_str(),
+                            now,
+                            exit,
+                            n.agent_pid,
+                            n.worktree_path.clone(),
+                            m.source_branch.clone(),
+                        )
+                    })
+            });
+            let awaiting_input = diagnostic_node
                 .and_then(|n| n.awaiting_input.as_ref())
                 .map(|open| crate::run::awaiting_input::AwaitingInputView::build(open, now));
-            Ok(Some((m, supervisor, stillborn, attention, awaiting_input)))
+            let worktree_path = default_node.as_ref().and_then(|n| n.worktree_path.clone());
+            Ok(Some((
+                m,
+                supervisor,
+                stillborn,
+                attention,
+                awaiting_input,
+                worktree_path,
+            )))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stillborn, attention, awaiting_input) = match scanned {
+        let (m, supervisor, stillborn, attention, awaiting_input, worktree_path) = match scanned {
             Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
@@ -219,6 +226,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // `kind` / `status` through the `run/mod.rs` helpers rather than
         // round-tripping the enums through `serde_json::to_value`.
         let summary = RunSummary::from(&m)
+            .with_worktree_path(worktree_path)
             .with_supervisor(supervisor)
             .with_stalled(stalled)
             .with_stillborn(stillborn)

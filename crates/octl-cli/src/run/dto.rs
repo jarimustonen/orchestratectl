@@ -245,6 +245,12 @@ pub struct RunSummary {
     pub status: String,
     pub title: String,
     pub created_at: DateTime<Utc>,
+    /// Merge target recorded for the run. Populated when the worktree is
+    /// materialized, including while the run remains `pending`.
+    pub source_branch: Option<String>,
+    /// Default worker's materialized worktree. Set by the list/show handlers
+    /// from the node projection under the same shared-lock snapshot.
+    pub worktree_path: Option<String>,
     /// The code-harness selected for this run's worker (`claude` | `pi` | …),
     /// recorded at `run create`. `null` for a legacy run created before harness
     /// selection existed.
@@ -319,6 +325,13 @@ impl RunSummary {
         self
     }
 
+    /// Attach the default worker's materialized worktree path.
+    #[must_use]
+    pub fn with_worktree_path(mut self, worktree_path: Option<String>) -> Self {
+        self.worktree_path = worktree_path;
+        self
+    }
+
     /// Set the computed `stalled` hint, replacing the `From`-provided `false`
     /// default.
     #[must_use]
@@ -390,6 +403,8 @@ impl From<&Manifest> for RunSummary {
             status: status_kebab(m.status).to_string(),
             title: m.title.clone(),
             created_at: m.created_at,
+            source_branch: m.source_branch.clone(),
+            worktree_path: None,
             harness: m.harness.clone(),
             node_count: m.node_count,
             supervisor: SupervisorView::unknown(),
@@ -491,6 +506,8 @@ mod tests {
                 "status": "pending",
                 "title": "seed-run",
                 "created_at": "2024-01-01T00:00:00Z",
+                "source_branch": null,
+                "worktree_path": null,
                 "harness": null,
                 "node_count": 0,
                 "supervisor": { "pid": null, "state": "unknown", "alive": false },
