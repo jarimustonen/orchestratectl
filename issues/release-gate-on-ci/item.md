@@ -2,7 +2,7 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: chore
-status: in-progress
+status: done
 priority: high
 lane: skills
 lane_seq: 30
@@ -11,6 +11,7 @@ commits:
   summary: gate crates publishing on full CI checks
 - hash: 4dfcd4d
   summary: harden release gate against mismatched publishes
+closed: 2026-08-17
 ---
 
 # CI must gate the release, not run alongside it
