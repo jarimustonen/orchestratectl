@@ -11,6 +11,7 @@
 //! `~/.orchestratectl/` or `~/.claude/` directories under CI or local
 //! `cargo test`.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -279,7 +280,7 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
     std::fs::write(claude_dir.join(retired_name), retired_bytes).unwrap();
     let claude_marker = claude_dir.join(".orchestratectl-managed");
     let mut marker = std::fs::read_to_string(&claude_marker).unwrap();
-    marker.push_str(&format!("companion: {retired_name}\n"));
+    writeln!(marker, "companion: {retired_name}").expect("writing to a String cannot fail");
     std::fs::write(&claude_marker, marker).unwrap();
 
     let pi_dir = home.path().join(".pi/agent/skills/stint-start");
@@ -296,7 +297,7 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
     std::fs::write(codex_shared.join(retired_name), retired_bytes).unwrap();
     let codex_marker = codex_shared.join(".orchestratectl-managed");
     let mut marker = std::fs::read_to_string(&codex_marker).unwrap();
-    marker.push_str(&format!("companion: {retired_name}\n"));
+    writeln!(marker, "companion: {retired_name}").expect("writing to a String cannot fail");
     std::fs::write(&codex_marker, marker).unwrap();
 
     let doctor = bin(&home)
