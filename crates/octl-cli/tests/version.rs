@@ -114,7 +114,7 @@ fn version_json_pins_envelope_and_payload_shape() {
         serde_json::json!({
             "envelope": [1],
             "state": [1],
-            "config": [1],
+            "config": [2],
             "help": [3],
             "skill": [1],
         })
