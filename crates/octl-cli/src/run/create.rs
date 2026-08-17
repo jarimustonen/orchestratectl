@@ -1,19 +1,18 @@
 //! `run create` — top-level + child-spawn run initialization.
 //!
-//! Top-level: initializes the run dir, shells out to create.sh to
-//! materialize worktree + tmux window + agent, emits `node.created`
-//! with the discovered agent PID, and spawns the supervisor.
+//! Top-level: materializes the worktree + tmux window + agent in an invisible
+//! staging run dir, emits `node.created` with the discovered agent PID, then
+//! atomically publishes the run and spawns its supervisor. A caller interrupted
+//! while `create.sh` is under load can therefore never leave a visible 0-node
+//! run behind.
 //!
-//! Child-spawn (`--parent-run-id` + `--parent-node-id`): initializes the
-//! child run dir and shells out to create.sh for the child, then — only
-//! once create.sh has returned success and the agent PID is verified —
-//! emits `child.spawned` on the parent's events. This emit-after-success
-//! ordering keeps the parent's DAG bookkeeping transactional: a create.sh
-//! failure removes the half-built child run dir and emits NO `child.spawned`,
-//! so a failed spawn never leaves a phantom 0-node child in `pending` on the
-//! parent (issue: failed-spawn-leaves-phantom-child). The CLI does NOT spawn
-//! a supervisor for the child — the parent's supervisor sees `child.spawned`
-//! in its tail-follow loop and is the sole spawner of child supervisors
+//! Child-spawn (`--parent-run-id` + `--parent-node-id`) follows the same staging
+//! protocol, then emits `child.spawned` only after the child is published. This
+//! keeps the parent's DAG bookkeeping transactional: a failed spawn emits NO
+//! `child.spawned`, so it cannot leave a phantom 0-node child in `pending` on
+//! the parent (issue: failed-spawn-leaves-phantom-child). The CLI does NOT spawn
+//! a supervisor for the child — the parent's supervisor sees `child.spawned` in
+//! its tail-follow loop and is the sole spawner of child supervisors
 //! (single-arbiter invariant, design.md §7.2).
 
 use std::path::PathBuf;
@@ -33,17 +32,12 @@ use crate::run::{
 
 /// Drop-releases an idempotency reservation unless disarmed.
 ///
-/// Armed the moment `reserve` wins the key; disarmed once the run is durable
-/// enough that a keyed retry should REPLAY it rather than re-spawn. So any `?`
-/// early-return between `reserve` and that commit point frees the key on unwind
-/// — otherwise an error before the run materialized would strand the key on a
-/// phantom run forever (the reservation-leak the review caught). Disarm points:
-/// top-level after `run.created` is durable (a recoverable pending run — keep
-/// the key so a retry short-circuits to it); a child only on full success after
-/// `child.spawned` (a child failure discards the run dir, so its key must be
-/// freed). Release is ownership-checked, so this never clobbers another run's
-/// key. NOTE: `Drop` does not run on a hard process kill — see the module doc
-/// for that documented crash-window limitation.
+/// Armed the moment `reserve` wins the key; disarmed only once the complete run
+/// has been atomically published. Thus every ordinary error before publication
+/// releases it on unwind instead of making a retry replay an invisible staging
+/// directory. Release is ownership-checked, so this never clobbers another
+/// run's key. NOTE: `Drop` does not run on a hard process kill — the staging
+/// directory is deliberately invisible to normal run readers in that case.
 struct ReservationGuard {
     repo: Option<String>,
     branch: Option<String>,
@@ -296,8 +290,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         )? {
             // `existing` is a previously-stored run id; validate it before it
             // composes a path (run_dir only accepts a typed RunId).
-            let existing_rid = parse_run_id(&existing)?;
-            let dir = octl_core::run_dir(&root, &existing_rid);
+            let dir = published_replay_dir(&root, &existing)?;
             return emit(EmitInput {
                 run_id: &existing,
                 dir: dir.display().to_string(),
@@ -371,8 +364,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     // A concurrent same-key call won the race between our `lookup`
                     // and this `reserve`. Replay ITS run, exactly as the top-of-
                     // function fast path would have.
-                    let existing_rid = parse_run_id(&existing)?;
-                    let dir = octl_core::run_dir(&root, &existing_rid);
+                    let dir = published_replay_dir(&root, &existing)?;
                     return emit(EmitInput {
                         run_id: &existing,
                         dir: dir.display().to_string(),
@@ -395,6 +387,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         };
 
     ensure_root(&root).map_err(from_core)?;
+    // A run becomes externally visible only when its fully materialized state
+    // is renamed from this sibling root into `<root>/runs`. In particular, a
+    // harness/client timeout while `create.sh` is waiting for a loaded headless
+    // tmux session leaves no manifest that `run list`/`run wait` could mistake
+    // for an accepted run.
+    let staging_root = root.join(".creating");
+    ensure_root(&staging_root).map_err(from_core)?;
 
     if is_child {
         // Validate the parent exists up front (fail fast before we create the
@@ -414,11 +413,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         }
     }
 
-    // Initialize the child (or top-level) run directory.
-    std::fs::create_dir_all(&child_dir).map_err(|e| {
-        CliError::system("io_error", format!("mkdir {}: {}", child_dir.display(), e))
+    // Materialize in an invisible sibling root. Only after `node.created` is
+    // durable do we rename this directory into the public `<root>/runs` tree.
+    // `rename` is atomic because both roots live under the same state root.
+    let staging_dir = octl_core::run_dir(&staging_root, &run_id_typed);
+    std::fs::create_dir_all(&staging_dir).map_err(|e| {
+        CliError::system(
+            "io_error",
+            format!("mkdir {}: {}", staging_dir.display(), e),
+        )
     })?;
-    let paths = run_paths_exact(&root, &run_id_typed)?;
+    let paths = octl_core::RunPaths::from_validated(&staging_dir, run_id_typed.clone())
+        .map_err(from_core)?;
 
     // Materialize the prompt file under <run-dir>/prompt.md unless the
     // caller supplied one outside the run dir (in which case we use the
@@ -432,7 +438,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         crate::harness::prompt::worker_prompt_preamble(&harness.name, args.kind, &run_id);
     let prompt_path = match prompt_source {
         Some(src) => Some(resolve_prompt_file(
-            &child_dir,
+            &staging_dir,
             src,
             prompt_preamble.as_deref(),
         )?),
@@ -500,17 +506,6 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     octl_core::append_and_apply_event(&paths, "run.created", None, None, Value::Object(data))
         .map_err(from_core)?;
 
-    // Commit point for a TOP-LEVEL run: `run.created` is durable, so the run is
-    // a recoverable `pending` run on disk. Disarm the reservation guard — a
-    // later create.sh / supervisor failure must now KEEP the key so a keyed
-    // retry short-circuits to this run rather than minting a duplicate. A CHILD
-    // stays armed until full success (its run dir is discarded on failure).
-    if !is_child {
-        if let Some(g) = reservation.as_mut() {
-            g.disarm();
-        }
-    }
-
     // The 0.2 cut removed the `orchestrate` DAG-driver kind — the only kind that
     // synthesized its own `n-0001` driver node here. Every surviving kind's node
     // is materialized by `create.sh` (a `fan-out` driver's included), so the
@@ -555,17 +550,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // `--skip-materialize` short-circuit: skeleton-only run, used by
     // tests that need a run dir without booting a real worktree/agent.
     if skip_materialize {
-        // The skeleton child is live as soon as its run dir exists — emit
+        publish_staging_run(&staging_dir, &child_dir)?;
+        // Publication is the idempotency commit point even for a skeleton; do
+        // not release the key if the following parent append has an I/O error.
+        if let Some(g) = reservation.as_mut() {
+            g.disarm();
+        }
+        // The skeleton child is live as soon as its run dir is published — emit
         // `child.spawned` here. The idempotency key was already reserved before
         // materialization (see `reserve` above), same as the materialized path.
         emit_child_spawned()?;
-        // Commit point for a CHILD: run dir + `child.spawned` are durable, so a
-        // keyed retry must replay rather than re-spawn. Disarm the guard.
-        if is_child {
-            if let Some(g) = reservation.as_mut() {
-                g.disarm();
-            }
-        }
         // A `--skip-materialize` / `OCTL_TEST_SKIP_MATERIALIZE` run is a pure
         // skeleton with NO supervisor (the only kind that needed a supervisor on
         // this path was the removed `orchestrate` driver).
@@ -587,13 +581,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let prompt_path = prompt_path.expect("non-skip path resolves prompt source");
-    // Shell out to create.sh. For a TOP-LEVEL run a failure here leaves the
-    // run on disk in `pending` with no node — `run cancel` / `run show` still
-    // work, and a retry with the same `--idempotency-key` short-circuits. For
-    // a CHILD spawn we instead remove the half-built run dir on failure: no
-    // `child.spawned` has been emitted yet, so nothing references this run, and
-    // leaving it would strand a phantom 0-node child in `pending` (the bug this
-    // module fixes). The cleanup is helper-wrapped so both failure arms (the
+    // Shell out to create.sh. A failure remains private and is removed: no
+    // public manifest exists until a live worker node is durable. This holds for
+    // top-level and child runs alike, so neither can strand a visible 0-node
+    // `pending` run. The cleanup is helper-wrapped so both failure arms (the
     // create.sh non-zero exit and the PID-liveness re-check) share it.
     let branch_name = derive_branch_name(args.kind, &run_id, &title);
     let spawn_req = spawn::SpawnRequest {
@@ -621,16 +612,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // returning the error. Best-effort: a leftover dir is far less harmful
     // than a panic mid-error-handling, so a remove failure is swallowed.
     let cleanup_orphan_child = || {
-        if is_child {
-            let _ = std::fs::remove_dir_all(&child_dir);
-            // The child's idempotency key (if any) is freed by the still-armed
-            // `ReservationGuard` on this function's error unwind — a child is
-            // only disarmed on full success — so a keyed retry re-spawns cleanly
-            // instead of replaying a run dir we just discarded. (Top-level spawn
-            // failures deliberately KEEP the reservation: the run stays on disk
-            // in `pending` and a retry short-circuits to it — top-level is
-            // disarmed right after `run.created`.)
-        }
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        // The reservation remains armed until publication, so an ordinary spawn
+        // failure releases it on unwind and a keyed retry starts cleanly. A hard
+        // client kill can leave staging state, but never a public run manifest.
     };
     let outcome = match spawn::run_create_sh_with_tmux_retry(&spawn_req) {
         Ok(o) => o,
@@ -639,27 +624,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             return Err(e);
         }
     };
-    // V2: re-verify the discovered PID is still alive. If it died
-    // between create.sh's check and ours, emit node.failed (top-level) or
-    // remove the orphan child run dir, then return a structured error rather
-    // than silently recording a dead PID.
+    // Re-verify the discovered PID before publishing anything. A process that
+    // died between create.sh's check and ours is a failed materialization, not a
+    // public failed node: publishing it would recreate the 0-node/false-success
+    // shape this staging protocol excludes.
     if let Err(e) = spawn::verify_agent_pid(outcome.agent_pid_hint) {
-        if is_child {
-            cleanup_orphan_child();
-            return Err(e);
-        }
-        let _ = octl_core::append_and_apply_event(
-            &paths,
-            "node.failed",
-            Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
-            None,
-            json!({
-                "reason": "agent-pid-discovery-failed",
-                "agent_pid_hint": outcome.agent_pid_hint,
-                "branch": outcome.branch,
-                "tmux_window": outcome.tmux_window,
-            }),
-        );
+        cleanup_orphan_child();
         return Err(e);
     }
 
@@ -700,24 +670,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     )
     .map_err(from_core)?;
 
-    // Emit-after-success: only now that create.sh returned a live, verified
-    // child does the parent learn about it. Emitting `child.spawned` here
-    // (rather than before the spawn) makes the parent's DAG bookkeeping
-    // transactional — a failed spawn leaves no parent event and no child run
-    // dir, so the parent supervisor never tracks a phantom 0-node child. (On
-    // that failure the child's still-armed reservation guard releases the key on
-    // unwind — so a keyed retry re-spawns cleanly.)
-    emit_child_spawned()?;
-
-    // Commit point for a CHILD (materialized path): the run is materialized and
-    // `child.spawned` is durable, so disarm — a keyed retry must now replay.
-    // Top-level was already disarmed after `run.created`; its supervisor failure
-    // below therefore KEEPS the key so a retry replays this recoverable run.
-    if is_child {
-        if let Some(g) = reservation.as_mut() {
-            g.disarm();
-        }
+    // `node.created` is now durable in the staging directory. Publish it as a
+    // single rename before telling a parent about it or launching a supervisor:
+    // every successful `run create` therefore names an already-existing node.
+    publish_staging_run(&staging_dir, &child_dir)?;
+    // Publication is the idempotency commit point. It precedes every fallible
+    // operation: otherwise an error after the rename could release the key and
+    // let a retry create a duplicate public child.
+    if let Some(g) = reservation.as_mut() {
+        g.disarm();
     }
+    let paths = run_paths_exact(&root, &run_id_typed)?;
+
+    // Emit-after-publication: only now that create.sh returned a live, verified
+    // child does the parent learn about it. This preserves transactional parent
+    // bookkeeping: a failed spawn emits no parent event and no public child.
+    emit_child_spawned()?;
 
     // For top-level runs, spawn the supervisor and wait for its PID
     // file. Child-spawn delegates supervisor creation to the parent
@@ -750,6 +718,73 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         dry_run: None,
         spec: args.spec,
         warnings: args.warnings,
+    })
+}
+
+/// Resolve an idempotency replay only when its run has crossed the publication
+/// boundary. A reservation is deliberately visible before materialization to
+/// serialize concurrent callers, but it is not a success claim: replaying a
+/// private or hard-killed staging run would recreate the stillborn lie this
+/// module prevents.
+fn published_replay_dir(
+    root: &std::path::Path,
+    run_id: &str,
+) -> Result<std::path::PathBuf, CliError> {
+    let run_id_typed = parse_run_id(run_id)?;
+    let dir = octl_core::run_dir(root, &run_id_typed);
+    // A reservation is deliberately published before its winner materializes,
+    // so duplicate concurrent callers must wait for the winner's publication
+    // boundary instead of either duplicating it or reporting a private run as a
+    // success. This is a bounded wait: without a creator lease we cannot safely
+    // steal a reservation after a hard kill (tracked separately).
+    let wait_ms = std::env::var("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(30_000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        let manifest = dir.join("manifest.json");
+        match manifest.try_exists() {
+            Ok(true) => return Ok(dir),
+            Ok(false) if std::time::Instant::now() >= deadline => {
+                return Err(CliError::system(
+                    "idempotency_publish_timeout",
+                    format!(
+                        "idempotency key points to run {run_id}, but its creator did not publish \
+                         a worker node within {wait_ms}ms. It may still be materializing or was \
+                         interrupted; inspect the creator before retrying with a new key"
+                    ),
+                )
+                .with_invalid_value(run_id));
+            }
+            Ok(false) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(e) => {
+                return Err(CliError::system(
+                    "io_error",
+                    format!("check {}: {e}", manifest.display()),
+                ));
+            }
+        }
+    }
+}
+
+/// Atomically publish a fully materialized staging run into the public run
+/// tree. Both paths are siblings under the same filesystem in the normal state
+/// root layout, so a successful rename cannot expose a partially-written
+/// manifest or node projection.
+fn publish_staging_run(
+    staging_dir: &std::path::Path,
+    child_dir: &std::path::Path,
+) -> Result<(), CliError> {
+    std::fs::rename(staging_dir, child_dir).map_err(|e| {
+        CliError::system(
+            "run_publish_failed",
+            format!(
+                "publish staged run {} to {}: {e}",
+                staging_dir.display(),
+                child_dir.display()
+            ),
+        )
     })
 }
 

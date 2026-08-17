@@ -24,6 +24,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use serial_test::file_serial;
@@ -81,12 +82,121 @@ EOF
     p
 }
 
+fn wait_for(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(path.exists(), "timed out waiting for {}", path.display());
+}
+
 fn read_events(events: &Path) -> Vec<Value> {
     std::fs::read_to_string(events)
         .unwrap_or_default()
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .collect()
+}
+
+/// An external client timeout can kill `run create` while its create.sh child is
+/// still blocked. The unfinished create must remain private in `.creating`, not
+/// publish the old `run.created`-only stillborn shape under `runs/`.
+#[test]
+#[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
+fn interrupted_create_never_publishes_a_zero_node_run() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let ready = scratch.path().join("create-started");
+    let script_pid = scratch.path().join("create.pid");
+    let create_sh = scratch.path().join("blocking-create.sh");
+    write_exec(
+        &create_sh,
+        &format!(
+            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do sleep 1; done\n",
+            script_pid.display(),
+            ready.display()
+        ),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_CREATE_SH", &create_sh)
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--headless",
+            "--title",
+            "interrupted",
+            "--idempotency-key",
+            "interrupted-key",
+            "--task",
+            "echo done",
+        ])
+        .spawn()
+        .expect("spawn blocking run create");
+    wait_for(&ready);
+
+    // This models the caller-side timeout in the field report. Kill the shell
+    // too: `Command::output` does not create a new process group, so a direct
+    // SIGKILL of its Rust parent would otherwise intentionally leave the test
+    // fixture's blocking child alive.
+    child.kill().expect("kill run create");
+    child.wait().expect("reap run create");
+    // A same-key retry must fail loudly instead of replaying the private run as
+    // a success. It must not remove the live creator's reservation: concurrent
+    // callers need the same protection.
+    let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_CREATE_SH", &create_sh)
+        .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--headless",
+            "--title",
+            "interrupted",
+            "--idempotency-key",
+            "interrupted-key",
+            "--task",
+            "echo done",
+        ])
+        .output()
+        .expect("retry interrupted run create");
+    assert!(
+        !retry.status.success(),
+        "private reservation must not replay"
+    );
+    let retry_error: Value = serde_json::from_slice(&retry.stderr).unwrap();
+    assert_eq!(retry_error["error"]["code"], "idempotency_publish_timeout");
+
+    if let Ok(pid) = std::fs::read_to_string(&script_pid)
+        .map(|s| s.trim().parse::<i32>().expect("numeric script pid"))
+    {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+
+    let public_runs = std::fs::read_dir(home.path().join("runs"))
+        .expect("public runs directory")
+        .count();
+    assert_eq!(public_runs, 0, "an interrupted create must publish no run");
+    assert!(
+        home.path()
+            .join(".creating")
+            .join("runs")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some(),
+        "the unfinished state stays in the private staging root for diagnosis"
+    );
 }
 
 /// `run create` returns a loud `supervisor_spawn_failed` envelope (with the run
