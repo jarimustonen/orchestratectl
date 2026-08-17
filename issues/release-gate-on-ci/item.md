@@ -6,6 +6,9 @@ status: in-progress
 priority: high
 lane: skills
 lane_seq: 30
+commits:
+- hash: 47f308d
+  summary: gate crates publishing on full CI checks
 ---
 
 # CI must gate the release, not run alongside it
