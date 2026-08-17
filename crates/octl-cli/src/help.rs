@@ -475,12 +475,11 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         // output selector, including on the early structured-help path.
         (Some(_), true) => return HelpRequest::ConflictingOutputFlags,
         (Some(spec), false) if spec.format != OutputFormat::Text => spec,
-        (Some(_), false) => return HelpRequest::None,
         (None, true) => OutputSpec {
             format: OutputFormat::Json,
             file: None,
         },
-        (None, false) => return HelpRequest::None,
+        _ => return HelpRequest::None,
     };
 
     // Walk the resolved subcommand path, validating each name against the
