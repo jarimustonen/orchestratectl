@@ -115,6 +115,11 @@ Naming implication: a role set presented as a single ordered ladder (expert/stan
 
 Example given: `secure` → `pi-gemma` (local).
 
+### 2026-08-17T11:42:08Z · @orchestrator
+
+Design pass done 2026-08-17: design.md v2 in this issue dir. Draft was reviewed by a 4-role LLM panel (architect=gemini-3.1-pro, security=deepseek-v4-pro, maintainability=gemini-2.5-pro, test-strategist=claude-opus-4-7; synthesis in gitignored history/2026-08-17-panel-add-configurable-agent.md — all binding resolutions are folded into design.md itself). Headline resolution (security-critical): the repo config layer may SELECT profiles by name but never DEFINE them — repo-authored [profiles.*] argv would make 'run create' in a checked-out repo an arbitrary-command-execution vector. Other key calls: 'local' is a declared residency class with mechanically enforced selection/fallback/exhaustion/retry semantics, NOT an egress sandbox (docs must say so); PATH-presence fallback honestly scoped to per-machine installation differences (runtime-failure fallback = named follow-up); specificity-first file precedence (profile.per_kind > harness.per_kind > profile.default > harness.default); expanded test matrix incl. quoting property test, spawn-boundary argv spy, retry-after-crash, concurrent-spawn. Ready for implementation in slices A-D per design.md §7.
+
+
 
 
 
