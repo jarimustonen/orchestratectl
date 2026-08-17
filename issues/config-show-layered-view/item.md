@@ -14,6 +14,8 @@ commits:
   summary: 'feat: add layered tolerant config inspection'
 - hash: ac7befcb775222e1bcce54ea09b3a4d7bfae5512
   summary: 'fix: harden layered config diagnostics'
+- hash: 38111a4286aef21ac38c6ed7a966049f25ecd04d
+  summary: 'test: pin config schema v2 in version contract'
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
