@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **Dead `octl-core` plan API (`cut-plan-module`).** **Breaking:** removed the unused Plan v3 schema module and its public re-exports from `octl-core`.
+
 ### Fixed
 
 - **Tmux stub tests serialize writing and execution on Linux (`tmux-stub-etxtbsy-flake`).** A parallel test process can fork while another test still has a stub script open for writing; the forked child transiently inherits that descriptor before `exec`, so Linux rejects execution of the script with `ETXTBSY`. The fake-tmux fixture now holds a shared test-local mutex from stub creation through the test's tmux commands, eliminating that write-fd inheritance window for the whole fake-stub family.

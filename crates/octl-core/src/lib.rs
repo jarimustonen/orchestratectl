@@ -25,7 +25,6 @@ pub mod events;
 pub mod ids;
 pub mod lock;
 pub mod paths;
-pub mod plan;
 pub mod projections;
 pub mod reducer;
 pub mod report;
@@ -48,11 +47,6 @@ pub use events::{
 pub use ids::{format_node_id, new_op_id, new_run_id};
 pub use lock::{Exclusive, LockedRun, RunLock, Shared};
 pub use paths::{nofollow, run_dir, validate_run_id, RunPaths};
-pub use plan::{
-    parse_and_validate_plan, plan_v3_json_schema, validate_plan, Acceptance, Baseline, Check,
-    Chunk, Feature, Plan, PlanValidationError, Tier, PLAN_SCHEMA_VERSION, PLAN_V3_JSON_SCHEMA,
-    PROVENANCE_REQUIRED_SCHEMA, SUPPORTED_PLAN_SCHEMAS, TOLERATED_OPTIONAL_FIELDS,
-};
 pub use projections::{read_manifest, read_manifest_opt, read_node, read_node_opt, write_node};
 pub use reducer::{plan_projections, KIND_MERGE_ABORTED, KIND_MERGE_STARTED};
 pub use report::{
