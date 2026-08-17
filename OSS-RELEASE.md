@@ -5,6 +5,7 @@ maturity: mvp
 ecosystems: [rust]
 targets:
   - {ecosystem: rust, package: orchestratectl, registry: crates.io, adapter: cargo-publish}
+  - {ecosystem: rust, package: orchestratectl, registry: gh-releases, adapter: cargo-dist}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
 release: {model: gated, layout: single, bump_hook: "INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots"}
