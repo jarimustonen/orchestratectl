@@ -139,6 +139,47 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
     assert!(out.status.success(), "force install failed: {out:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn skill_install_force_replaces_dangling_symlink() {
+    // `Path::exists()` follows a symlink and returns false for this target.
+    // The install preflight must instead see the link itself and authorize
+    // `--force` to atomically replace it.
+    let home = mk_home();
+    let dest = home.path().join("SKILL.md");
+    std::os::unix::fs::symlink(home.path().join("missing-SKILL.md"), &dest)
+        .expect("create dangling symlink");
+    assert!(
+        std::fs::symlink_metadata(&dest)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink(),
+        "fixture must be a symlink"
+    );
+    assert!(!dest.exists(), "fixture must be dangling");
+
+    let out = bin(&home)
+        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .arg(&dest)
+        .arg("--force")
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "force install failed: {out:?}");
+    assert!(
+        std::fs::symlink_metadata(&dest)
+            .expect("installed file metadata")
+            .file_type()
+            .is_file(),
+        "dangling symlink was not replaced"
+    );
+    assert!(
+        std::fs::read_to_string(&dest)
+            .expect("installed body")
+            .contains("name: octl-run-overview"),
+        "installed body missing"
+    );
+}
+
 #[test]
 fn skill_install_with_default_paths_writes_under_home() {
     let home = mk_home();

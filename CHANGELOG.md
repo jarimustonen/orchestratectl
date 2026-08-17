@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Bundled `octl-spawn-spinoff` guidance no longer describes the shipped spinoff surface as a preview (`spinoff-skill-stale-preview-banner`).** Removed the stale stop-gate and obsolete `not_implemented` fallback so agents invoke `run create --kind spinoff` directly.
+- **`skill install --force` now replaces dangling symlink destinations (`skill-install-force-symlink`).** Install preflight uses non-following metadata, so a broken link is treated as an existing destination and atomically replaced instead of failing during creation.
 
 ## [0.2.1] - 2026-08-16
 

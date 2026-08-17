@@ -1221,6 +1221,20 @@ fn sibling_path(skill_path: &Path, filename: &str) -> PathBuf {
 /// the plan. Catches the partial-install retry trap noted by the review:
 /// without preflight, writing N targets sequentially can leave the user
 /// with a half-installed catalog and an ambiguous error on retry.
+/// Inspect a destination without following symlinks. Unlike [`Path::exists`],
+/// this reports a dangling symlink as present, so `--force` can replace the
+/// link itself rather than letting the later atomic rename fail unexpectedly.
+fn destination_metadata(path: &Path) -> Result<Option<fs::Metadata>, CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(CliError::system(
+            "metadata_failed",
+            format!("could not inspect {}: {error}", path.display()),
+        )),
+    }
+}
+
 fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError> {
     use std::cmp::Ordering;
     let mut seen: HashSet<&Path> = HashSet::new();
@@ -1242,7 +1256,14 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
             )
             .with_invalid_value(path.display().to_string()));
         }
-        if path.is_dir() {
+        let destination = destination_metadata(path)?;
+        // `symlink_metadata` intentionally classifies a symlink to a directory
+        // as a symlink, not a directory: it is a replaceable file destination
+        // when `--force` is passed.
+        if destination
+            .as_ref()
+            .is_some_and(|metadata| metadata.file_type().is_dir())
+        {
             return Err(CliError::user(
                 "invalid_dest",
                 format!("destination is a directory: {}", path.display()),
@@ -1266,7 +1287,7 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
         // operating policy always deploys with `--force`. Lifecycle
         // (prune + doctor drift) is tracked separately as
         // `pidev-pi-skill-lifecycle`.
-        if *agent == "pi" && path.exists() {
+        if *agent == "pi" && destination.is_some() {
             if force {
                 overwrite_allowed.insert(path.clone());
             } else {
@@ -1284,7 +1305,7 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
             }
             continue;
         }
-        if !path.exists() {
+        if destination.is_none() {
             // No file → the write loop will refuse to clobber via
             // persist_noclobber. Do not insert into `overwrite_allowed`.
             continue;

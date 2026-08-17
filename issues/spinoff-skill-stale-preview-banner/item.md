@@ -2,10 +2,14 @@
 created: 2026-08-04
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 lane: skills
 lane_seq: 10
+commits:
+- hash: 973ad3ed6cfbb6fec05dfef6fd1293cdfaead92e
+  summary: 'fix(skills): remove stale spinoff preview guidance'
+closed: 2026-08-17
 ---
 
 # `octl-spawn-spinoff` SKILL.md still carries a "NOT IMPLEMENTED" preview banner — but the surface ships in 0.1.0
