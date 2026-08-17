@@ -43,6 +43,43 @@ So the "supervisor died before creating any worker node" verdict was **false**;
 the supervisor had simply not recorded its pid / created its node yet at the
 instant `run wait` sampled it.
 
+## Severity update: this is the DEFAULT behaviour on this host, not an edge case
+
+Follow-up in the same session: **every one of four spawns** in this stint
+returned the identical `waited_ms: 0` stillborn verdict, and **every one that
+was left alone recovered** with `node_count: 1`, a live supervisor, and a
+working tmux window. Recovery took roughly 1–3 minutes.
+
+Timeline (4 spawns, 1 unit of real work):
+
+| spawn | early verdict | left alone? | actual outcome |
+|---|---|---|---|
+| `01m077het6…` | stillborn | yes (waited) | recovered → completed the work |
+| `01m077r1by…` (dup) | stillborn | cancelled | had reached `nodes=1` when cancelled |
+| `01m078qkf7…` | stillborn | cancelled | had reached `nodes=1` when cancelled |
+| `01m078tgwa…` | stillborn | yes (waited) | recovered → live agent, working |
+
+So the early verdict is **not** a rare race — on this host it is what
+`run wait` always says about a fresh spawn. The verdict carries no information;
+only waiting distinguishes a live run from a dead one.
+
+**The failure mode is caller-induced destruction.** An orchestrator following
+the documented "trust the CLI's `landed`/`stalled` flags" guidance will cancel
+and re-spawn healthy runs, killing workers that were seconds from starting.
+That is exactly what happened here: two live runs were cancelled on a false
+verdict, burning three spawns to do one unit of work. Worse, each cancel-plus-
+respawn briefly put two supervisors on the same issue.
+
+This raises the priority: the bug does not merely mislead, it actively causes
+an autonomous caller to destroy good work.
+
+## Additional detail: cancel cleanup is inconsistent
+
+`run cancel` on one of these runs removed its worktree directory; on another it
+left the directory (and a `git worktree` bookkeeping entry) behind. Both were
+empty, so nothing was lost, but the inconsistency means a caller cannot predict
+whether cleanup is needed after cancelling a stillborn-looking run.
+
 ## Impact — this is the dangerous part
 
 The false verdict directly causes **duplicate spawns of the same work**. Acting
@@ -99,6 +136,10 @@ itself *yet*". Suggested directions:
 - [ ] A stillborn verdict is re-evaluated (not latched) if the run later gains a
       node or live supervisor
 - [ ] Regression test covers the create→node race window
+- [ ] `run cancel` cleanup is deterministic (always removes the worktree, or
+      never does and says so) so a caller knows whether to clean up
+- [ ] Guidance for autonomous callers: never cancel/re-spawn on an early
+      stillborn verdict; wait for a node or a grace period first
 
 Relates to: `run-wait-stillborn-run-not-detected` (fixed; the inverse failure),
 `run-create-long-title-stillborn` (fixed; a *real* stillborn class),
