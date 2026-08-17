@@ -1,13 +1,13 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-17
 type: bug
 reporter: jari
 status: open
 priority: normal
 labels:
 - via:agent-homebase-wrapup
-- needs-triage
+lane: lifecycle
 ---
 
 # stale pending runs clutter run list and look like live workers
@@ -59,3 +59,9 @@ belief that duplicate work is inbound.
 Side observation, possibly related and possibly its own bug: `orchestratectl node show n-0001
 --run-id <id> --output json` produced no output at all for a completed run, while
 `~/.orchestratectl/runs/<id>/nodes/n-0001.json` existed and was readable.
+
+## Comments
+
+### 2026-08-17T08:14:16Z · @orchestrator
+
+Admitted to the plan 2026-08-17 (needs-triage removed) and RE-SCOPED. This round's `pi-spinoff-batch` fix (staged run creation, released in 0.2.2) should stop NEW stillborn pending runs from being published at all, so the prevention half is done. What remains and is what this issue now covers: (a) the ~7 already-accumulated stale pending runs on disk, and (b) the listing/presentation side — a stale pending must be distinguishable at a glance from a live worker in `run list`. Corroborated again this session: `run list` returned ~301KB dominated by old pendings, several belonging to other repos, which is the signal /stint-start's preflight reads.

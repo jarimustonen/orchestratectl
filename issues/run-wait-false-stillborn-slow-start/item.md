@@ -2,10 +2,11 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: bug
-status: open
+status: cannot-reproduce
 priority: high
 labels: [run-wait, supervisor, reliability]
 lane: lifecycle
+closed: 2026-08-17
 ---
 
 # run wait reports a healthy slow-starting run as stillborn (false verdict, causes duplicate spawns)
@@ -145,3 +146,9 @@ itself *yet*". Suggested directions:
 Relates to: `run-wait-stillborn-run-not-detected` (fixed; the inverse failure),
 `run-create-long-title-stillborn` (fixed; a *real* stillborn class),
 `supervisor-pid-claim-race`.
+
+## Comments
+
+### 2026-08-17T08:14:27Z · @orchestrator
+
+Closing 2026-08-17 on Jari's call. Being precise about the grounds: this DID genuinely occur when filed — the reporting worker documented four spawns in a table, every one receiving the same waited_ms:0 stillborn verdict, every one recovering when left alone. It is closed because it did NOT recur, not because it was never real. Evidence: the following stint ran five spawns through `run wait` after the staged-creation fix (pi-spinoff-batch, released in 0.2.2) and all five verdicts were correct, including one 50-minute and one 9-minute wait. Plausible mechanism for the fix: the false verdict came from sampling a run before its worker node existed, and staged creation no longer publishes a run in that state. NOT verified as causal.

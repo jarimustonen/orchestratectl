@@ -6,6 +6,8 @@ reporter: jari
 status: open
 priority: normal
 labels: [configuration, agents]
+lane: surface
+lane_seq: 20
 ---
 
 # Add configurable agent profiles
@@ -54,3 +56,9 @@ Use these as illustrative user configuration, not hard-coded defaults that force
 - Add profile-aware command input and resolver behaviour with deterministic fallback handling.
 - Surface the selected profile and resolved agent details in machine-readable output and run metadata.
 - Cover precedence, validation errors, explicit selection, automatic selection, fallback, and no-profile backward compatibility with tests.
+
+## Comments
+
+### 2026-08-17T08:14:16Z · @orchestrator
+
+Laned to `surface` (seq 20) 2026-08-17, sequenced AFTER config-show-layered-view — both rework the config surface. COLLISION WARNING for whoever schedules this: despite the `surface` lane it is genuinely cross-cutting — it also touches harness::select (profile→executable resolution) and the run-create path (accepting a profile, recording the resolved profile/model/fallback in run metadata). Run-create is `lifecycle` territory. Do NOT run this in parallel with any lifecycle-lane unit. This is exactly the lane-misprediction shape that broke integrated main twice before (see TODO.md KEY LEARNING on disjoint lanes being a prediction, not a guarantee).

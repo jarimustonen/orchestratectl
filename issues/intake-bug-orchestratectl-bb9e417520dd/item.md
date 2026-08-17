@@ -3,11 +3,12 @@ created: 2026-08-17
 updated: 2026-08-17
 type: bug
 reporter: jari
-status: open
+status: cannot-reproduce
 priority: normal
 labels:
 - via:agent-homebase-wrapup
 - needs-triage
+closed: 2026-08-17
 ---
 
 # node show accepts wrong argument order silently: returns {} with exit 0
@@ -57,3 +58,9 @@ explicitly; otherwise fail on it.
 ## Environment
 
 orchestratectl 0.2.0 (macOS arm64). Reproduced against a completed spinoff run.
+
+## Comments
+
+### 2026-08-17T08:14:16Z · @orchestrator
+
+Closed cannot-reproduce 2026-08-17: verified against the RUNNING 0.2.2 binary, not the issue text. `orchestratectl node show n-0001 --run-id <id> --output json` now returns {"schema_version":1,"error":{"code":"unknown_subcommand_or_flag",...}} with exit 1, naming the usage line. The report was filed against 0.2.0. Reopen if an empty {} with exit 0 is observed on 0.2.2 or later.
