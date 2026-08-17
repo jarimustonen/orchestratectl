@@ -2,7 +2,7 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: high
 lane: lifecycle
 lane_seq: 2
@@ -13,6 +13,9 @@ commits:
   summary: isolate CI and publish-gate tests with nextest
 - hash: 49282c2
   summary: apply review finding and correct MSRV gate description
+- hash: 618b3c4
+  summary: preserve watchdog scheduling under nextest
+closed: 2026-08-17
 ---
 
 # ETXTBSY flake is cross-module: all executable-stub test fixtures share one fork/exec race, tmux-only mutex insufficient
