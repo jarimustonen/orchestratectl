@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
 ### Fixed
 
 - **Pending materialized runs expose their repository coordinates (`run-show-null-worktree-path`).** `run show` and `run list` now surface the default worker's `worktree_path` and the run's effective `source_branch` as soon as worktree creation succeeds, rather than leaving both fields null until callers inspect git worktrees or tmux panes.
@@ -469,7 +471,8 @@ behind-the-seam) that landed before the release.
   correctness blocker (the blocked-report source-relative net already
   covers committed-work preservation on the cancel path).
 
-[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.0...v0.2.1
