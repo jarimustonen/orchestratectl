@@ -2,10 +2,14 @@
 created: 2026-08-04
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: normal
 lane: skills
 lane_seq: 20
+commits:
+- hash: a06434d738e6bc911aa57fded2bb0bf7d257fbe2
+  summary: 'fix(skill): replace dangling symlinks with force'
+closed: 2026-08-17
 ---
 
 # skill install --force aborts on a pre-existing symlink (refused_overwrite)
