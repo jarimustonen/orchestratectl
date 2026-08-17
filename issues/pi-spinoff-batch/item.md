@@ -2,7 +2,7 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: high
 lane: supervise
 commits:
@@ -10,6 +10,7 @@ commits:
   summary: stage creates before publishing workers
 - hash: 30f31a3
   summary: stage creates before publishing workers
+closed: 2026-08-17
 ---
 
 # Pi spinoff batch creates stillborn runs after partial success

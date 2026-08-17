@@ -5,6 +5,7 @@ type: bug
 status: open
 priority: high
 labels: [run-wait, supervisor, reliability]
+lane: lifecycle
 ---
 
 # run wait reports a healthy slow-starting run as stillborn (false verdict, causes duplicate spawns)
