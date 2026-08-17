@@ -4,6 +4,9 @@ updated: 2026-08-17
 type: improvement
 status: open
 priority: high
+commits:
+- hash: 44447b6
+  summary: stage creates before publishing workers
 ---
 
 # Recover interrupted run-create reservations and child publication

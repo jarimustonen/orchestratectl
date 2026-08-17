@@ -5,6 +5,9 @@ type: bug
 status: in-progress
 priority: high
 lane: supervise
+commits:
+- hash: 44447b6
+  summary: stage creates before publishing workers
 ---
 
 # Pi spinoff batch creates stillborn runs after partial success
