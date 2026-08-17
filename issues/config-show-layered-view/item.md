@@ -16,6 +16,8 @@ commits:
   summary: 'fix: harden layered config diagnostics'
 - hash: 38111a4286aef21ac38c6ed7a966049f25ecd04d
   summary: 'test: pin config schema v2 in version contract'
+- hash: 6fd9e278c47c94e319791e5e5fe7c4c8b5806f7f
+  summary: 'docs: fix config inspection intra-doc link'
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
