@@ -40,12 +40,24 @@ it structurally (a test-local mutex held from stub creation through the tmux cal
 `test (ubuntu-latest)`**. Corollaries: (1) for a platform-specific class, a green local run is **not evidence** —
 argue the fix on mechanism and confirm on CI; (2) "the tests pass" did not mean the fix was right, twice in a row.
 
-**⚠ KEY LEARNING #NEW (canonical) — I published v0.2.2 BEFORE CI had reported on the commit it contained.** The release
-was unharmed (the defect was test-only), but that was **luck, not process**, and crates.io publishes are permanent
-(yank-only). Filed as **`release-gate-on-ci`** (skills, high) with the cheap fix: make CI a hard gate in the release
-sequence — `git push && gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')"
---exit-status && cargo publish …`. `--exit-status` is the load-bearing part: red CI breaks the `&&` chain so no publish
-happens. Same discipline as the existing "never `| tail` a command whose exit status gates an `&&` chain" rule.
+**⚠ KEY LEARNING #NEW (canonical) — NEVER `cargo publish` locally; the tag push IS the publish.** I published v0.2.2
+from a local `cargo publish` **before** CI had reported on the commit it contained. The release was unharmed (the defect
+was test-only) but that was **luck, not process**, and crates.io is yank-only. Investigating the fix turned up the
+larger finding: **`.github/workflows/publish-crates.yml` already publishes both crates from CI**, tag-triggered, in
+dependency order, with the repo's `CARGO_REGISTRY_TOKEN` — so the local publish was **redundant all along**, and the CI
+job looked green only because it tolerates *"already exists on the crates.io index"* as success. The fix is therefore
+**subtractive, not a new rule to remember**: stop publishing locally. Sequence is changelog + bump + snapshots →
+commit → push → **main CI green** → push tag → CI publishes crates *and* builds binaries. `AGENTS.md` is updated (the
+"DO NOT `cargo publish` locally" bullet; the cadence + autonomy bullets were corrected to match, since they still
+described the hand-ordered two-crate publish). **Remaining hole, tracked in `release-gate-on-ci`:**
+`publish-crates.yml` self-verifies with only `cargo build --release`, **not** the test suite, so a tag pushed onto a red
+commit would still publish — the real fix is running the tests inside that workflow, which is enforcement rather than
+convention. Until then, gate the tag push:
+`gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status && git push origin vX.Y.Z`.
+
+**Note on the macOS-blindness learning above:** Jari's call at this wrap was **not** to document it in `AGENTS.md` —
+the machines move to Linux shortly, so the blind spot resolves itself and the note would be stale on arrival. It is
+kept here as history because it explains why the ETXTBSY fix took two spinoffs.
 
 **⚠ LANE-STRUCTURE FIX (this wrap) — `supervise` was a phantom lane; merged into `lifecycle`.** `lifecycle` is defined
 as "everything touching `run/*` or `supervise/*`", so a parallel `supervise` lane was definitionally overlapping. Not a
