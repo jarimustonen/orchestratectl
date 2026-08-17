@@ -1,9 +1,11 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-17
 type: bug
 status: open
-priority: normal
+priority: high
+lane: multiplexer
+lane_seq: 10
 ---
 
 # Flaky test: tmux stub hits ETXTBSY on Linux CI

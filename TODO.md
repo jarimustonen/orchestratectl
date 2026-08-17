@@ -6,9 +6,93 @@ for the actual tracked work.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-16 (**v0.2.0 SHIPPED; issue queue triaged to zero unlaned — NEXT = start the `skills` lane**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.2.1 SHIPPED — NEXT = `multiplexer` lane, head `tmux-stub-etxtbsy-flake` (CI-red flake)**)
 
-**✅ LATEST (2026-08-16, stint 2 — read first).** A **triage-only stint**: no product code touched, no worktrees
+**✅ LATEST (2026-08-17, stint 3 — read first).** A **full round + release**: three parallel headless spinoffs, one per
+lane, all landed on first spawn with no worker deaths, then **v0.2.1 cut through every channel**. crates.io has
+`octl-core 0.2.1` + `orchestratectl 0.2.1`; the `v0.2.1` tag's Release CI is green with **12 assets**; the crates.io
+publish job is green. Local binary **0.2.1**, `orchestratectl doctor` **954 ok / 0 warn / 0 fail**. `main` clean.
+
+**What landed (3 units):**
+- **`spinoff-report-fields-null`** (skills, high) — the four "reports persist as null" reports were **all read-surface
+  errors**, re-verified against the actual run records this round: the node field is `last_report` (not `report`), and
+  `run wait` emits `data.runs[]` while `run show` emits `data.<field>`. Fix: `node show` now also exposes
+  `data.report`, `run show` exposes it for **single-worker** runs (intentionally `null` for fan-out — read each worker
+  with `node show`), and the read-back guidance + a working `jq` probe went into **five** bundled skills
+  (`octl-run-overview`, `worktree-spinoff`, `stint-start`, `stint-handoff`, `fan-out`). Additive only — no field
+  renamed, no envelope reshaped. The `run wait`/`run show` envelope unification was deliberately NOT done (breaking).
+- **`run-create-long-title-stillborn`** (lifecycle) — branch names bounded to workmux's **50-byte** window-name input,
+  so the created window name and `create.sh`'s exact lookup can no longer diverge (`tmux-window-not-found` → stillborn
+  `pending` run). Deliberately did NOT widen the lookup to a prefix match: a loose match can bind teardown to an
+  unrelated window.
+- **`cli-canon-version-schemas`** (cli-canon) — canon §10 closed. `version` now carries `supported_schemas` plus a
+  named `supported_schemas_by_name` map (envelope/state/config/help/skill), derived from the real schema constants
+  rather than a hardcodable literal, and `--json` is a global shorthand.
+
+**Closed without code:** `cli-canon-config` — live re-verification showed §8 (`config path` / `config show` with
+per-key `source` provenance) already shipped in 0.2.0; the issue body's "unrecognized subcommand" evidence predated
+the stint-1 landing. **Second round running where verifying against the running binary, not the issue text, changed
+the answer** — keep doing that before spending a worker.
+
+**⚠ KEY LEARNING #NEW (canonical) — the documented local-deploy command was broken AND silently reported success.**
+Two independent defects compounding:
+1. `cargo install --path crates/octl-cli --force` **fails** on a 1.85 toolchain: `cargo install` re-resolves deps from
+   scratch instead of using the workspace `Cargo.lock`, pulls `time 0.3.55` (requires rustc **1.88**), and dies. The
+   `time = 0.3.41` pin from KEY LEARNING #1 protects the *workspace build* but **not** a fresh-resolving `cargo
+   install`. **`--locked` is mandatory.**
+2. The failure was invisible because the documented chain pipes to `tail`: `cargo install … | tail -3 && skill install
+   && doctor` makes the shell see **tail's** exit status, so a failed install marches on and `doctor` reports green
+   **about a binary that was never replaced**. On this machine `PATH` then resolved to the Homebrew tap binary, so
+   everything looked deployed.
+   Both are now fixed in `AGENTS.md` with the reasoning inline. Corollary: never `| tail` a command whose exit status
+   gates an `&&` chain, and verify a deploy by `ls -l ~/.cargo/bin/orchestratectl` + `version`, not by `doctor` alone.
+   Also: `skill install --force` does NOT refresh the **codex** skill home — that needs `--agent codex --force`
+   (doctor showed 14 warns after the bump until it was run).
+
+**⚠ `ossctl` still cannot cut this project's releases — verified this round, not assumed.** `ossctl release plan
+--version 0.2.1` seals a plan whose `targets[]` contains **only `orchestratectl`**; `octl-core` is absent, so a cut
+would publish the CLI against an `octl-core =0.2.1` that is not yet in the registry. The installed `release cut` also
+has no `--bump` (the OSS-RELEASE.md text describes an ossctl 0.5.0 feature). So v0.2.1 was hand-cut the documented
+way. `release-rust-workspace-multicrate` in **~/Sources/ossctl** remains the blocker to retiring hand-cut releases.
+
+**◆ ADR 0011 (homebase, Accepted 2026-08-16) draws a binding boundary for this repo — recorded in `AGENTS.md`.**
+Supersedes the closed `pi-background-jobs-extension`: we are **not** building our own pi extension. homebase
+conditionally adopts pinned **`@aliou/pi-processes@0.10.9`** as its *interactive, session-scoped* pi runtime (gated on
+a smoke matrix); the *durable, harness-neutral* runner is separate work (`orx-background-runner`, tracked in homebase,
+blocked on that gate). **orchestratectl must not import pi-processes, touch its manager, assume its ids/log paths, or
+use its in-process EventBus** — we stay the run-state owner behind `run wait` / `landed` / the JSON contracts. Open
+question left for Jari: whether the durable runner contract eventually moves here; recommendation was to leave it in
+homebase until the gate opens.
+
+**⏭ NEXT — `multiplexer` lane, head `tmux-stub-etxtbsy-flake` (priority raised to high this wrap).** It made **main CI
+red on the v0.2.1 release commit itself** (`multiplexer::tmux::tests::new_session_surfaces_nonzero`, ETXTBSY on
+ubuntu): the test writes an executable stub and spawns it while the write handle is still open. Linux-only race, passes
+on rerun, so `main` CI is green again — but it will keep reddening release commits until fixed. It is test-only and
+disjoint from every other lane, hence its own lane. After that the cheap wins are `skills`
+(`spinoff-skill-stale-preview-banner`, `skill-install-force-symlink`) and `cli-canon-help-json`.
+
+**Lanes (6 now).** `skills` (6), `lifecycle` (10), `cli-canon` (1 — two of three closed this round), `surface` (1),
+plus two that arrived from parallel sessions: `supervise` (1 — `pi-spinoff-batch`) and `multiplexer` (1, new this
+wrap). Note `lifecycle`'s head is still `uncommonly-fuzzy-swing` because **priority outranks `lane_seq`**; it is the
+lane's most valuable item but not the cheapest start. **`uncommonly-fuzzy-swing` and `spinoff-report-fields-null` were
+deliberately NOT run in parallel this round** — both work the terminal-report surface, exactly the lane-misprediction
+trap; that constraint is now gone since the report work landed.
+
+**New follow-up filed by a worker:** `run-branch-name-ulid-entropy` (lifecycle, seq 25) — `derive_branch_name` takes
+the first 10 ULID chars, which encode the **millisecond timestamp, not entropy**, so two runs created in the same
+millisecond with similar titles can derive the same branch name. Carries a repro, so it clears the filing bar from
+stint 2's learning.
+
+**❗ Untriaged intake still waiting (surfaced at this wrap, NOT folded).**
+`intake-bug-orchestratectl-169460ea27e7` — *stale pending runs clutter run list and look like live workers*
+(`via:agent-homebase-wrapup`, `needs-triage`). **Corroborated directly this session:** `run list` shows **7 `pending`
+runs**, oldest from **24 July**, several belonging to other repos entirely — indistinguishable at a glance from live
+workers. This actively degrades the signal `/stint-start`'s preflight reads to decide what is unsettled. Recommend
+admitting it; it stays `needs-triage` until Jari acks.
+
+**— stint 2 (2026-08-16, triage-only) below —**
+
+**✅ (2026-08-16, stint 2).** A **triage-only stint**: no product code touched, no worktrees
 spawned, no release cut. Release state is unchanged from stint 1 (**v0.2.0** everywhere; see the stint-1 block below).
 The whole issue queue was swept against ADR 0010 (`open ∧ ¬laned`) and every claim was **verified against current
 code**, not taken from the issue text. `main` clean, 0 unpushed. Commits: `abb5cce`, `6d1d230`, `5f367e1`, `8a81025`.
