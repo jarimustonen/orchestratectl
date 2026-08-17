@@ -1157,6 +1157,9 @@ fn signal_exit_codes_and_payload() {
 /// `OCTL_TEST_SLOW_LOG_WRITES` hook throttles each log `write(2)` so the
 /// buffered "supervisor started" event is provably still in flight at signal
 /// time — only the explicit `flush_logs()` drain gets it to disk before exit.
+// The slow-writer injection is deliberately unavailable in production
+// binaries, so this deterministic flush test only applies to debug builds.
+#[cfg(debug_assertions)]
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn sigterm_flushes_buffered_supervisor_logs() {

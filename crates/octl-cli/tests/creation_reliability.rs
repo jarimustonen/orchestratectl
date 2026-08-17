@@ -26,8 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[cfg(debug_assertions)]
 use octl_core::{append_and_apply_event, NodeId, RunPaths};
-use serde_json::{json, Value};
+#[cfg(debug_assertions)]
+use serde_json::json;
+use serde_json::Value;
 use serial_test::file_serial;
 use tempfile::TempDir;
 
@@ -295,6 +298,9 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
     }
 }
 
+// The fail-after-publish injection is deliberately unavailable in production
+// binaries, so this recovery test only applies to debug-profile test builds.
+#[cfg(debug_assertions)]
 #[test]
 #[file_serial(key, path => "/tmp/octl-test-supervise.lock")]
 fn retry_repairs_published_child_missing_parent_edge() {

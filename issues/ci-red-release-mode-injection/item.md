@@ -6,6 +6,9 @@ status: in-progress
 priority: high
 lane: lifecycle
 lane_seq: 1
+commits:
+- hash: 2d0122c
+  summary: start release injection CI fix
 ---
 
 # creation_reliability test red on CI: release build ignores debug-only injection hooks
