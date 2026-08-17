@@ -2,7 +2,7 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: bug
-status: fixed
+status: open
 priority: high
 lane: multiplexer
 lane_seq: 10
@@ -11,7 +11,6 @@ commits:
   summary: 'fix: close tmux test stub before exec'
 - hash: e822897
   summary: 'fix: close tmux test stub before exec'
-closed: 2026-08-17
 ---
 
 # Flaky test: tmux stub hits ETXTBSY on Linux CI
@@ -56,3 +55,13 @@ Flaky red CI on `main`. The v0.2.1 release itself is fine — `Release` and
 `Publish to crates.io` both succeeded and the
 [v0.2.1 release](https://github.com/jarimustonen/orchestratectl/releases/tag/v0.2.1)
 exists — so this is a test-harness defect, not a shipped regression.
+
+## Reopen Notes — 2026-08-17
+
+_Add rationale for reopening here._
+
+## Comments
+
+### 2026-08-17T07:32:35Z · @orchestrator
+
+Reopened 2026-08-17: the first fix (sync_all + drop before chmod in `fake_tmux`) was necessary but NOT sufficient. Main CI on 1566b5e still fails on ubuntu with ETXTBSY (`ExecutableFileBusy`, os code 26), now in TWO sibling tests: `new_session_headless_returns_pane_id_and_disables_rename` (direct ETXTBSY) and `find_window_by_path_scopes_to_all_when_no_session` (downstream symptom: the stub spawn fails so the probe returns None instead of Some("@9")). Each test already uses its own tempdir, so this is NOT path sharing between tests. Leading hypothesis: a cross-thread fork/exec race. Rust runs these tests as parallel threads in ONE process; when thread A still holds (or has just held) a write fd to its stub, thread B's Command::spawn forks and the child transiently inherits that fd. CLOEXEC closes it only at exec, so between fork and exec a live process holds a write handle to A's stub, and A's own exec then gets ETXTBSY. A loaded CI runner widens that window, which is why it is Linux-only, load-dependent, and survived the close-before-chmod fix.
