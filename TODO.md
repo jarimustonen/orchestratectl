@@ -56,15 +56,18 @@ downloading a CI *action* (cargo-deny job, run 32041657942) is infra noise, not 
 sync warns.
 
 **⏭ NEXT — `add-configurable-agent` ALONE (surface lane head, in-progress: design.md v2 is ready to implement), or the
-`skills` head `audit-no-user-specifics`.** `add-configurable-agent` is cross-cutting (config + `harness::select` +
-run-create) — **do not run it in parallel with any `lifecycle` unit** (see the steer blocks below, which are its
-working brief). `audit-no-user-specifics` (high, guards a public-artifact leak class) has now been head-adjacent for
-four stints — if the profile work doesn't start this round, do it. Cheap parallel partner for either: the `lifecycle`
-head `uncommonly-fuzzy-swing` (blocked-on-user-input propagation) — but NOT alongside `add-configurable-agent`.
+`skills` head.** `add-configurable-agent` is cross-cutting (config + `harness::select` + run-create) — **do not run it
+in parallel with any `lifecycle` unit** (see the steer blocks below, which are its working brief). The `skills` lane
+was re-headed at this wrap on Jari's call: **`stint-skills-drop-intake-specifics` → `stint-skills-issuectl-dag`
+first** — the bundled stint skills' stale `AGENTS-EXECUTION-DAG.md` guidance (markdown-DAG merge, `deferred`
+exclusion) actively contradicts current practice and misleads EVERY stint-start, so killing it outranks
+`audit-no-user-specifics` (which has waited four stints and stays right behind; note the `deferred` label itself was
+retired — `intake-feature-issuectl-4f9dbc60a05e` in issuectl covers the doctor check). Cheap parallel partner for
+either: the `lifecycle` head `uncommonly-fuzzy-swing` — but NOT alongside `add-configurable-agent`.
 
-**Lanes (3):** `lifecycle` (11, head `uncommonly-fuzzy-swing`), `skills` (5, head `audit-no-user-specifics`),
-`surface` (1: only `add-configurable-agent`, in-progress). Realistic parallelism 2–3 units/round; only 2 if the
-profile work runs (it excludes `lifecycle`).
+**Lanes (3):** `lifecycle` (11, head `uncommonly-fuzzy-swing`), `skills` (5, head
+`stint-skills-drop-intake-specifics`), `surface` (1: only `add-configurable-agent`, in-progress). Realistic
+parallelism 2–3 units/round; only 2 if the profile work runs (it excludes `lifecycle`).
 
 **⚠ `add-configurable-agent` does NOT fit the lane model — read before scheduling it.** Jari's own feature request
 (named agent profiles: `expert`/`standard`/`implementer`/`secure`, with fallbacks + config layering). Laned `surface`
