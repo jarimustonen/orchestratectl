@@ -1,6 +1,6 @@
 //! `config show` — tolerant, layered configuration inspection (§8).
 //!
-//! Unlike execution, inspection does not deserialize through [`Config`]: it
+//! Unlike execution, inspection does not deserialize through [`crate::config::Config`]: it
 //! parses the file as raw TOML and validates every harness layer independently.
 //! This lets a caller see an invalid file value, including one shadowed by
 //! `ORCHESTRATECTL_HARNESS`, without weakening the strict resolver used by
