@@ -2,13 +2,16 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: high
 lane: lifecycle
 lane_seq: 1
 commits:
 - hash: 2d0122c
   summary: start release injection CI fix
+- hash: 836ba7c
+  summary: skip debug-hook cases in release builds
+closed: 2026-08-17
 ---
 
 # creation_reliability test red on CI: release build ignores debug-only injection hooks
