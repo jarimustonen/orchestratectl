@@ -2,7 +2,7 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: bug
-status: in-progress
+status: fixed
 priority: high
 lane: multiplexer
 lane_seq: 10
@@ -11,6 +11,9 @@ commits:
   summary: 'fix: close tmux test stub before exec'
 - hash: e822897
   summary: 'fix: close tmux test stub before exec'
+- hash: 2259895ecff5b3fabc06c39b57b8c6edaa19d2e5
+  summary: 'fix: serialize tmux test stubs'
+closed: 2026-08-17
 ---
 
 # Flaky test: tmux stub hits ETXTBSY on Linux CI
@@ -69,3 +72,9 @@ Reopened 2026-08-17: the first fix (sync_all + drop before chmod in `fake_tmux`)
 ### 2026-08-17T07:35:41Z · @worker
 
 Confirmed the cross-thread fork/exec race by tracing the shared in-process Rust test model and `Command::spawn` mechanics: a fork can inherit another fake stub writer before CLOEXEC takes effect at exec, producing Linux ETXTBSY despite closing the original writer before its own spawn. Chose a test-local mutex held from `fake_tmux` creation through each fixture lifetime, so every fake-tmux write and every command it executes are serialized. This covers the entire fake_tmux family without changing production code.
+
+## Resolution
+
+### 2026-08-17T07:42:24Z · @issuectl
+
+Fixed by serializing the fake-tmux fixture lifetime, including its creation and command execution, to eliminate the confirmed cross-thread fork/exec ETXTBSY race on Linux.
