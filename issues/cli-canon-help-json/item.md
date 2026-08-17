@@ -7,6 +7,11 @@ priority: normal
 labels: [cli-canon, tooling]
 lane: cli-canon
 lane_seq: 60
+commits:
+- hash: 2becf633ca1828c6eccf8c58f5dbd61a6bb03a5
+  summary: 'fix(help): honor global --json with --help'
+- hash: 8c9745824f58665d8411548adca6af3afe60a701
+  summary: 'fix(help): keep shorthand resolver lint-clean'
 ---
 
 # cli-canon: §14 --help --json machine-readable help
