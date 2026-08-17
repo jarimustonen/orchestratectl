@@ -10,7 +10,23 @@ holds only the **active handoff** and a **compact stint archive**.
 
 ## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.2.2 SHIPPED + CI GREEN — NEXT = `skills` lane, head `release-gate-on-ci` or `audit-no-user-specifics`**)
 
-**✅ LATEST (2026-08-17, stint 4 — read first).** A **full round + release + a caught mistake**: four parallel headless
+**✅ LATEST (2026-08-17, review session, after stint 4 — read first).** A Fable-driven repo review + doc cleanup
+session, run alongside a parallel `add-configurable-agent` design session (its `design.md` v2 landed in the same
+window, no collisions). What changed:
+- **Docs:** `AGENTS.md` rewritten for consistency (current header, tool-family section, promoted standing learnings,
+  fixed stale skill refs + invariant 3); `TODO.md` compressed (stints 1–3 → Stint archive; Piialiisa section removed on
+  Jari's call); **`README.md` rewritten** against the 0.2.2 reality (old one described v0.1.0 with five deleted skills).
+- **Code (2 spinoffs, both first-spawn, integrated gate green, deployed, doctor 1006/0/0):** `cut-plan-module` — the
+  dead 2013-line `octl-core/src/plan.rs` + its `lib.rs` re-exports removed (**breaking `Removed` entry in
+  `[Unreleased]` → next release is 0.3.0-shaped, not 0.2.3**); `harness-pi-default` — built-in `DEFAULT_HARNESS`
+  flipped `claude`→`pi` per ADR 0001 D4 (Jari's config already said pi; this fixes config-less installs).
+- **Queue:** epics `code-pipeline` (obsolete) and `lifecycle-architecture-review` (done) closed with close notes;
+  new `skills`-lane tail issue `skills-stale-tbd-channels` (five bundled skills still claim publishing channels are
+  "TBD"). NEXT is unchanged: `skills` lane head `release-gate-on-ci` / `audit-no-user-specifics`.
+
+**— stint 4 below —**
+
+**✅ (2026-08-17, stint 4).** A **full round + release + a caught mistake**: four parallel headless
 spinoffs (one per lane), all landed on first spawn, no worker deaths; **v0.2.2 cut through every channel**; then CI
 caught that one of the four fixes was **incomplete**, and a fifth spinoff finished it. crates.io has `octl-core 0.2.2`
 + `orchestratectl 0.2.2`; the `v0.2.2` tag's Release CI is **green**, the crates.io publish job is **green**, and
