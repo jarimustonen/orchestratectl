@@ -9,6 +9,8 @@ lane_seq: 30
 commits:
 - hash: 47f308d
   summary: gate crates publishing on full CI checks
+- hash: 4dfcd4d
+  summary: harden release gate against mismatched publishes
 ---
 
 # CI must gate the release, not run alongside it
