@@ -304,7 +304,8 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
         .args(["doctor", "--output", "json"])
         .output()
         .unwrap();
-    assert!(doctor.status.success());
+    // Doctor may exit 1 when unrelated host dependencies are absent. Its JSON
+    // report remains the source of truth for the orphan checks under test.
     let doctor: Value = serde_json::from_slice(&doctor.stdout).unwrap();
     let checks = doctor["data"]["checks"].as_array().unwrap();
     for id in [
@@ -364,7 +365,6 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
         .args(["doctor", "--output", "json"])
         .output()
         .unwrap();
-    assert!(doctor.status.success());
     let doctor: Value = serde_json::from_slice(&doctor.stdout).unwrap();
     assert!(!doctor["data"]["checks"]
         .as_array()
