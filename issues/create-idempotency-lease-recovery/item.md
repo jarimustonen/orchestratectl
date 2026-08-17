@@ -2,7 +2,7 @@
 created: 2026-08-17
 updated: 2026-08-17
 type: improvement
-status: open
+status: in-progress
 priority: high
 commits:
 - hash: 44447b6
