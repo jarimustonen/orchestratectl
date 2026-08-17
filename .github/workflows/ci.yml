@@ -78,6 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -87,14 +88,22 @@ jobs:
             ~/.cargo/git/db
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
+      # nextest gives every test its own process. That isolation is load-bearing:
+      # this workspace has executable-stub fixtures in several unit-test modules,
+      # and a process-wide cargo-test binary can fork while another test still has
+      # a stub open for writing. The inherited fd can make Linux exec fail with
+      # ETXTBSY even after the writer closes its copy.
+      #
       # --release matches the project's quality bar (the release profile is the
       # shipped one). Overflow/debug-assert coverage is exercised by the msrv
-      # job below, which builds in the default dev profile.
+      # job below, which builds in the default dev profile. nextest does not run
+      # doctests, so keep those as an explicit, isolated cargo-test step.
       #
       # macOS picks up platform-sensitive paths (supervisor pid liveness,
       # tmux/unix-fd, kqueue-driven watchers) that Linux CI misses
       # (issue: macos-ci-matrix).
-      - run: cargo test --locked --release --workspace
+      - run: cargo nextest run --locked --release --workspace
+      - run: cargo test --locked --release --workspace --doc
 
   msrv:
     name: msrv (1.85)

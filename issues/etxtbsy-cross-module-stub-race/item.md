@@ -6,6 +6,9 @@ status: in-progress
 priority: high
 lane: lifecycle
 lane_seq: 2
+commits:
+- hash: b1be65d109c5cc1a27810dca7e683674bd85fe46
+  summary: start ETXTBSY cross-module race fix
 ---
 
 # ETXTBSY flake is cross-module: all executable-stub test fixtures share one fork/exec race, tmux-only mutex insufficient

@@ -118,6 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -127,7 +128,12 @@ jobs:
             ~/.cargo/git/db
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-      - run: cargo test --locked --release --workspace
+      # Match main CI's process-per-test isolation. Executable stubs in different
+      # unit-test modules otherwise share one cargo-test process, where fork can
+      # inherit another test's open write fd and make Linux exec return ETXTBSY.
+      - run: cargo nextest run --locked --release --workspace
+      # nextest intentionally excludes doctests; preserve cargo test's coverage.
+      - run: cargo test --locked --release --workspace --doc
 
   msrv:
     name: msrv (1.85)
