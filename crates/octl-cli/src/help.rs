@@ -335,7 +335,7 @@ pub(crate) const OUTPUT_ARG_ID: &str = "output";
 /// Id of the global `--json` shorthand. It is a real format selector, so
 /// `--help --json` must take the same structured-help path as
 /// `--help --output json`.
-const JSON_ARG_ID: &str = "json";
+pub(crate) const JSON_ARG_ID: &str = "json";
 
 /// Whether `arg` is *the* global `--output` flag — matched on id, long name,
 /// and global-ness together so a future subcommand-local arg that merely
@@ -381,6 +381,10 @@ pub enum HelpRequest {
     /// Both global output selectors were supplied. This is the same
     /// caller error normal command dispatch reports.
     ConflictingOutputFlags,
+    /// `--output` appeared in argv but clap's lenient parse could not
+    /// produce an output specification. Never let `--json` hide malformed
+    /// or valueless `--output` input.
+    InvalidOutput,
 }
 
 /// Synthetic id for the global `--depth` arg injected into the lenient-parse
@@ -462,14 +466,21 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
         Some(ValueSource::CommandLine) => matches.get_one::<OutputSpec>(OUTPUT_ARG_ID).cloned(),
         _ => None,
     };
-    // Unit callers may supply a deliberately minimal command tree without
-    // the CLI's global shorthand. Do not ask clap for a missing id: that
-    // panics rather than reporting an absent match.
-    let json_shorthand = root
-        .get_arguments()
-        .any(|arg| arg.get_id().as_str() == JSON_ARG_ID)
-        && matches.value_source(JSON_ARG_ID) == Some(ValueSource::CommandLine)
-        && matches.get_flag(JSON_ARG_ID);
+    // `ignore_errors(true)` intentionally tolerates malformed values while
+    // resolving a help path. Do not let that tolerance turn an explicit but
+    // invalid `--output` into successful `--json` help.
+    if output_was_supplied(args) && output_spec.is_none() {
+        return HelpRequest::InvalidOutput;
+    }
+    // `try_get_one` makes the minimal synthetic command trees used by unit
+    // tests safe too: asking a real `ArgMatches` for an absent id otherwise
+    // panics. The real CLI's `--json` remains global by declaration.
+    let json_shorthand = matches
+        .try_get_one::<bool>(JSON_ARG_ID)
+        .ok()
+        .flatten()
+        .is_some_and(|value| *value)
+        && matches.value_source(JSON_ARG_ID) == Some(ValueSource::CommandLine);
     let spec = match (output_spec, json_shorthand) {
         // Match normal command dispatch: a caller must choose exactly one
         // output selector, including on the early structured-help path.
@@ -734,10 +745,25 @@ fn value_names(arg: &Arg) -> Vec<String> {
 }
 
 fn default_values(arg: &Arg) -> Vec<String> {
+    // `--output`'s default is applied by the shared output resolver rather
+    // than clap (the field is an Option so `--json` can remain a distinct
+    // shorthand). Project that real effective default, not an empty list.
+    if is_output_arg(arg) {
+        return vec!["jsonl".to_string()];
+    }
     arg.get_default_values()
         .iter()
         .map(|v| v.to_string_lossy().into_owned())
         .collect()
+}
+
+/// Whether an explicit `--output` spelling occurs before `--` in raw argv.
+/// The lenient clap clone can discard a bad/missing value, so `ArgMatches`
+/// alone cannot distinguish that caller error from an absent selector.
+fn output_was_supplied(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--output" || arg.starts_with("--output="))
 }
 
 /// Accepted (enum) values, excluding any the author hid from help. Order is

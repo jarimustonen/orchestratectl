@@ -378,7 +378,9 @@ expression: value
         "is_global": true,
         "hidden": false,
         "deprecated": false,
-        "defaults": [],
+        "defaults": [
+          "jsonl"
+        ],
         "accepted_values": [
           "json",
           "jsonl",

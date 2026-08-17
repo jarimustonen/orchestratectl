@@ -206,6 +206,7 @@ fn output_flag_reports_custom_accepted_values_and_arity() {
     );
     assert_eq!(output["accepts_file_paths"], true);
     assert_eq!(output["is_global"], true);
+    assert_eq!(output["defaults"], serde_json::json!(["jsonl"]));
     assert_eq!(output["arity"]["min"], 1);
     assert_eq!(output["arity"]["max"], 1);
 }
@@ -323,18 +324,35 @@ fn output_equals_form_triggers_json_help() {
 
 #[test]
 fn json_and_output_are_conflicting_selectors_under_help_too() {
-    let assert = bin()
-        .args(["--help", "--json", "--output", "json"])
-        .assert()
-        .failure();
-    let out = assert.get_output();
-    assert!(out.stdout.is_empty(), "no help on stdout for a conflict");
-    let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
-    let v: Value = serde_json::from_str(stderr.trim()).expect("error envelope");
-    assert_eq!(
-        v["error"]["code"], "conflicting_output_flags",
-        "envelope: {v}"
-    );
+    for args in [
+        ["--help", "--json", "--output", "json"],
+        ["--output", "text", "--json", "--help"],
+    ] {
+        let assert = bin().args(args).assert().failure();
+        let out = assert.get_output();
+        assert!(out.stdout.is_empty(), "no help on stdout for a conflict");
+        let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+        let v: Value = serde_json::from_str(stderr.trim()).expect("error envelope");
+        assert_eq!(
+            v["error"]["code"], "conflicting_output_flags",
+            "envelope: {v}"
+        );
+    }
+}
+
+#[test]
+fn invalid_output_is_not_hidden_by_json_help() {
+    for args in [
+        &["--help", "--json", "--output", "not-a-format"][..],
+        &["--help", "--json", "--output"][..],
+    ] {
+        let assert = bin().args(args).assert().failure();
+        let out = assert.get_output();
+        assert!(out.stdout.is_empty(), "no help on stdout for bad output");
+        let stderr = String::from_utf8(out.stderr.clone()).expect("utf8");
+        let v: Value = serde_json::from_str(stderr.trim()).expect("error envelope");
+        assert_eq!(v["error"]["code"], "invalid_arguments", "envelope: {v}");
+    }
 }
 
 #[test]

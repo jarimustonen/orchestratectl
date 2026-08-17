@@ -190,7 +190,15 @@ pub fn run() -> ExitCode {
         crate::help::HelpRequest::ConflictingOutputFlags => {
             let err = CliError::user(
                 "conflicting_output_flags",
-                "--json cannot be used with --output; use exactly one output selector",
+                "--json cannot be used with --output; use at most one output selector",
+            );
+            err.emit();
+            return ExitCode::from(ExitKind::User as u8);
+        }
+        crate::help::HelpRequest::InvalidOutput => {
+            let err = CliError::user(
+                "invalid_arguments",
+                "--output requires a valid FMT|PATH value",
             );
             err.emit();
             return ExitCode::from(ExitKind::User as u8);
@@ -220,7 +228,7 @@ pub fn run() -> ExitCode {
         (Some(_), true) => {
             let err = CliError::user(
                 "conflicting_output_flags",
-                "--json cannot be used with --output; use exactly one output selector",
+                "--json cannot be used with --output; use at most one output selector",
             );
             err.emit();
             return ExitCode::from(ExitKind::User as u8);
@@ -822,6 +830,20 @@ mod tests {
             .expect("an arg with the OUTPUT_ARG_ID id exists on the root");
         assert_eq!(output.get_long(), Some("output"));
         assert!(output.is_global_set(), "--output must be global");
+    }
+
+    /// Keep the structured-help resolver's id tied to the real global
+    /// shorthand: a field/id rename must fail a test rather than quietly
+    /// falling back to text help.
+    #[test]
+    fn json_arg_id_matches_real_cli_tree() {
+        let cmd = Cli::command();
+        let json = cmd
+            .get_arguments()
+            .find(|a| a.get_id().as_str() == crate::help::JSON_ARG_ID)
+            .expect("an arg with the JSON_ARG_ID id exists on the root");
+        assert_eq!(json.get_long(), Some("json"));
+        assert!(json.is_global_set(), "--json must be global");
     }
 
     /// Underlying log writer that sleeps before each `write`, so the
