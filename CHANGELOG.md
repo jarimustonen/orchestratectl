@@ -6,15 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
 ### Removed
 
 - **Dead `octl-core` plan API (`cut-plan-module`).** **Breaking:** removed the unused Plan v3 schema module and its public re-exports from `octl-core`.
 
+### Added
+
+- **`config show` is now a layered, tolerant inspection surface (config schema v2) (`config-show-layered-view`).** Each key exposes the raw configured layers (file — including `[harness.per_kind]` — env, default) alongside the effective winner, with per-row validity and a `validation_error` instead of a hard exit on the invalid value the user is trying to debug; only unparseable TOML remains a hard error. File-layer validation no longer depends on whether `ORCHESTRATECTL_HARNESS` shadows it, so an invalid file value can neither kill the inspection nor hide behind env. The execution path keeps strict validation, and the `--show-secrets` warning now rides the JSON `warnings` envelope.
+
 ### Changed
 
 - **Fresh installations now launch workers with pi.dev by default (`harness-pi-default`).** The built-in harness fallback is `pi` rather than `claude`, per ADR 0001 D4; the existing flag, environment, and config precedence remains unchanged.
+- **Crates.io publishing is gated on the full CI test suite (`release-gate-on-ci`).** `publish-crates.yml` now runs the same gate CI applies to `main` (fmt, clippy, locked workspace tests, docs) plus a tag/manifest version-match check before any publish step, so a `vX.Y.Z` tag pushed onto a red or mismatched commit can no longer publish. `OSS-RELEASE.md` and `AGENTS.md` document the tag-triggered flow and the CI-green-gated tag push; the retired local two-crate `cargo publish` sequence is gone from the release docs.
 
 ### Fixed
+
+- **A hard-killed `run create` no longer leaves permanently unreclaimable staging state (`create-idempotency-lease-recovery`).** Pre-publication idempotency reservations now carry a durable creator lease (pid + start-time identity with a staleness bound), so a keyed retry can distinguish a live materializer from a dead one: it returns the original run when it published, atomically reclaims stale staging when the creator is provably dead, and fails closed with an actionable error when liveness is unverifiable. Parent `child.spawned` read repair makes keyed child publication idempotent across the two event logs; the unkeyed case is tracked as `recover-unkeyed-child-publication`.
 
 - **Tmux stub tests serialize writing and execution on Linux (`tmux-stub-etxtbsy-flake`).** A parallel test process can fork while another test still has a stub script open for writing; the forked child transiently inherits that descriptor before `exec`, so Linux rejects execution of the script with `ETXTBSY`. The fake-tmux fixture now holds a shared test-local mutex from stub creation through the test's tmux commands, eliminating that write-fd inheritance window for the whole fake-stub family.
 
@@ -448,5 +457,9 @@ behind-the-seam) that landed before the release.
   correctness blocker (the blocked-report source-relative net already
   covers committed-work preservation on the cancel path).
 
-[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jarimustonen/orchestratectl/releases/tag/v0.1.0
