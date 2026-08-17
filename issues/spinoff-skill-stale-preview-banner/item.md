@@ -1,8 +1,8 @@
 ---
 created: 2026-08-04
-updated: 2026-08-16
+updated: 2026-08-17
 type: bug
-status: open
+status: in-progress
 priority: normal
 lane: skills
 lane_seq: 10

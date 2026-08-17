@@ -8,24 +8,6 @@ schema_version: 1
 
 # octl-spawn-spinoff
 
-> ## ⚠️ PREVIEW — DO NOT INVOKE BLINDLY
->
-> The `orchestratectl run create --kind spinoff` surface documented here
-> is **not yet implemented**. It lands in the `all-kinds-spawn` issue.
-> Until then:
->
-> 1. Call `orchestratectl --help` and confirm the `run` subcommand is
->    listed. If it is not, **do not attempt the invocation below.**
-> 2. If the user is in a Claude Code environment, invoke the
->    `/worktree-spinoff` slash-command skill instead (it predates this
->    CLI and is the working path today).
-> 3. Otherwise, tell the user the spinoff surface is not yet shipped and
->    stop.
->
-> The rest of this file documents the forward contract so that, on the
-> day the CLI lands, agents can target the right invocation without a
-> skill update lagging behind.
-
 A **spinoff** is one autonomous agent run in its own git worktree, doing
 one well-scoped task, and merging itself back to the source branch when
 done. No interactive review. The canonical way to launch one is via
@@ -117,8 +99,6 @@ Standard error envelope on stderr, non-zero exit. Likely codes:
 - `branch_not_found` — `--source-branch` does not exist locally
 - `worktree_create_failed` — git refused (uncommitted changes,
   conflicting worktree)
-- `not_implemented` — the spinoff kind is not yet wired up in this
-  build; fall back to `/worktree-spinoff`
 
 ## Install or upgrade `orchestratectl`
 
