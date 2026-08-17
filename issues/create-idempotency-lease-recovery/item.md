@@ -13,6 +13,8 @@ commits:
   summary: mark create lease recovery in progress
 - hash: 177be48
   summary: recover interrupted create reservations
+- hash: ddaa1a9
+  summary: harden create lease recovery after multi-model review
 lane: lifecycle
 lane_seq: 5
 ---
