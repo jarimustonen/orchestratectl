@@ -1,12 +1,12 @@
 ---
 created: 2026-08-13
-updated: 2026-08-16
+updated: 2026-08-17
 type: improvement
 status: open
-priority: normal
+priority: high
 related: ['@stint-handoff-intake-check', '@stint-start-autonomous']
 lane: skills
-lane_seq: 40
+lane_seq: 1
 ---
 
 # Remove project-specific intake concepts leaked into stint-handoff + execution-DAG (keep these skills generic/open-source)
