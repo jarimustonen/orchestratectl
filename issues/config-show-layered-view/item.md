@@ -12,6 +12,8 @@ commits:
   summary: 'chore: start config layered inspection'
 - hash: cfc01bc1d5d826fa7db1144cfdcc0cd0845fd883
   summary: 'feat: add layered tolerant config inspection'
+- hash: ac7befcb775222e1bcce54ea09b3a4d7bfae5512
+  summary: 'fix: harden layered config diagnostics'
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
