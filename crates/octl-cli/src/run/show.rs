@@ -195,6 +195,10 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         } else {
             None
         };
+        let awaiting_input = node
+            .as_ref()
+            .and_then(|n| n.awaiting_input.as_ref())
+            .map(|open| crate::run::awaiting_input::AwaitingInputView::build(open, now));
         let landing = LandingFields {
             source_repo: manifest.source_repo.clone(),
             source_branch: manifest.source_branch.clone(),
@@ -212,6 +216,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             stall,
             stalled_idle_min,
             attention,
+            awaiting_input,
             landing,
         )))
     })
@@ -225,6 +230,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
         stall,
         stalled_idle_min,
         attention,
+        awaiting_input,
         landing,
     ) = match scanned {
         Some(v) => v,
@@ -276,7 +282,8 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             &stall,
             Some(crate::run::stalled::StallKind::Stillborn)
         ))
-        .with_attention(attention);
+        .with_attention(attention)
+        .with_awaiting_input(awaiting_input);
     let payload = ShowPayload {
         summary,
         manifest: ManifestView::from(&manifest),
@@ -329,6 +336,22 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                          if none is, `run cancel {}` and relaunch with an active orchestrator.",
                         payload.manifest.run_id
                     ),
+                }
+            }
+            if let Some(awaiting) = &payload.summary.awaiting_input_detail {
+                println!(
+                    "awaiting-input: true — {} open decision(s), idle {} min, escalated={}",
+                    awaiting.open_discussion_count,
+                    awaiting.pending_age_secs / 60,
+                    awaiting.escalated
+                );
+                for item in &awaiting.discussion_items {
+                    let topic = item.get("topic").and_then(Value::as_str).unwrap_or("?");
+                    let default = item
+                        .get("recommended_default")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    println!("  decision: {topic} (recommended default: {default})");
                 }
             }
             if let Some(att) = &payload.summary.attention {

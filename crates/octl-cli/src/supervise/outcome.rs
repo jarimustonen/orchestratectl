@@ -335,6 +335,7 @@ mod tests {
             worker_exit: None,
             pending_merge: None,
             first_death_at: None,
+            awaiting_input: None,
         }
     }
 

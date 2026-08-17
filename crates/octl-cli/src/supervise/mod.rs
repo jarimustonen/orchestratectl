@@ -721,6 +721,10 @@ pub fn dispatch(
     // still lets the supervisor exit rather than spinning forever.
     let mut notified = false;
     let mut notify_attempts: u32 = 0;
+    // In-process fast path for the non-terminal awaiting-input notification.
+    // The durable marker remains restart truth; this only avoids an exclusive
+    // lock + event-log scan on every tick after a generation is settled.
+    let mut awaiting_notified: Option<u64> = None;
 
     // Rate-limit state for the periodic lossy-drop warning (see
     // `maybe_warn_dropped`). The supervisor renders no envelope mid-run, so
@@ -1066,6 +1070,36 @@ pub fn dispatch(
                 error = %e.message,
                 "watchdog tick failed"
             );
+        }
+
+        // Explicit human-decision propagation. The worker records
+        // `node.awaiting_input` instead of blocking on stdin; after the durable
+        // event-time grace expires, fire the run's registered notify hook. Read
+        // manifest + node under one shared lock, then let the notifier re-check
+        // under its exclusive marker lock before firing (resolve races fail
+        // closed). This is non-terminal and never enters cleanup/outcome logic.
+        let awaiting_notify = RunLock::with_shared_lock(&paths.lock(), || {
+            let manifest = read_manifest_opt(&paths)?;
+            let nid = NodeId::parse_str("n-0001").expect("valid default node id");
+            let node = read_node_opt(&paths, &nid)?;
+            Ok(manifest.and_then(|m| {
+                node.and_then(|n| n.awaiting_input)
+                    .map(|open| (m.notify_cmd, crate::run::kind_kebab(m.kind), m.title, open))
+            }))
+        });
+        if let Ok(Some((cmd, kind, title, open))) = awaiting_notify {
+            if awaiting_notified != Some(open.event_seq)
+                && notify::maybe_fire_awaiting_input(
+                    &paths,
+                    &run_id,
+                    cmd.as_deref(),
+                    &open,
+                    kind,
+                    &title,
+                )
+            {
+                awaiting_notified = Some(open.event_seq);
+            }
         }
 
         // Fail-loud guard: a non-terminal run with no worker node and no
@@ -3552,6 +3586,7 @@ mod tests {
             worker_exit: None,
             pending_merge: None,
             first_death_at: None,
+            awaiting_input: None,
         }
     }
 

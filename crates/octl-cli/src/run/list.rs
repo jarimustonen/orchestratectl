@@ -172,10 +172,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             // Read best-effort: `run list` was manifest-only before, and it is a
             // diagnostic surface, so a corrupt `n-0001` file degrades to "no
             // attention" for this one run rather than aborting the whole listing.
-            let attention = if m.node_count == 1 {
+            let node = if m.node_count == 1 {
                 let node_id =
                     NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
-                let node = read_node_opt(&paths, &node_id).ok().flatten();
+                read_node_opt(&paths, &node_id).ok().flatten()
+            } else {
+                None
+            };
+            let attention = if m.node_count == 1 {
                 node.as_ref().and_then(|n| {
                     crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
                         // `is_attention_required` guarantees `worker_exit` is Some+clean.
@@ -195,10 +199,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             } else {
                 None
             };
-            Ok(Some((m, supervisor, stillborn, attention)))
+            let awaiting_input = node
+                .as_ref()
+                .and_then(|n| n.awaiting_input.as_ref())
+                .map(|open| crate::run::awaiting_input::AwaitingInputView::build(open, now));
+            Ok(Some((m, supervisor, stillborn, attention, awaiting_input)))
         })
         .map_err(from_core)?;
-        let (m, supervisor, stillborn, attention) = match scanned {
+        let (m, supervisor, stillborn, attention, awaiting_input) = match scanned {
             Some(v) => v,
             None => continue, // half-initialized run dir; skip silently
         };
@@ -214,7 +222,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .with_supervisor(supervisor)
             .with_stalled(stalled)
             .with_stillborn(stillborn)
-            .with_attention(attention);
+            .with_attention(attention)
+            .with_awaiting_input(awaiting_input);
         if let Some(filter) = &args.status {
             if &summary.status != filter {
                 continue;
@@ -265,6 +274,8 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                     format!("{} (stillborn)", r.status)
                 } else if r.stalled {
                     format!("{} (stalled)", r.status)
+                } else if r.awaiting_input {
+                    format!("{} (awaiting-input)", r.status)
                 } else if r.attention_required {
                     // A worker that exited cleanly but skipped `run merge` — a
                     // non-terminal run awaiting a manual finish, distinct from a

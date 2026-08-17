@@ -70,6 +70,8 @@ const ALLOWED_KINDS: &[&str] = &[
     "node.created",
     "node.status",
     "node.report",
+    "node.awaiting_input",
+    "node.input_resolved",
     "child.spawned",
     "supervisor.attached",
     "supervisor.cursor_advanced",
@@ -108,6 +110,8 @@ fn requires_node_id(kind: &str) -> bool {
         "node.created"
             | "node.status"
             | "node.report"
+            | "node.awaiting_input"
+            | "node.input_resolved"
             | "child.spawned"
             | "supervisor.attached"
             | "supervisor.cursor_advanced"
@@ -197,6 +201,58 @@ fn validate_data_ids(kind: &str, top_node_id: Option<&str>, data: &Value) -> Res
                 CliError::user("invalid_data_id", "data.child_run_id must be a string")
             })?;
             parse_run_id(s)?;
+        }
+    }
+    if kind == "node.input_resolved" && data.get("event_seq").and_then(Value::as_u64).is_none() {
+        return Err(CliError::user(
+            "schema_violation",
+            "node.input_resolved requires unsigned data.event_seq",
+        )
+        .with_expected(
+            json!({ "event_seq": "unsigned integer from awaiting_input_detail.event_seq" }),
+        ));
+    }
+    if kind == "node.awaiting_input" {
+        let items = data
+            .get("discussion_items")
+            .and_then(Value::as_array)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                CliError::user(
+                    "schema_violation",
+                    "node.awaiting_input requires a non-empty data.discussion_items array",
+                )
+            })?;
+        for (index, item) in items.iter().enumerate() {
+            let obj = item.as_object().ok_or_else(|| {
+                CliError::user(
+                    "schema_violation",
+                    format!("discussion_items[{index}] must be an object"),
+                )
+            })?;
+            let topic = obj.get("topic").and_then(Value::as_str).unwrap_or("");
+            let default = obj
+                .get("recommended_default")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let options = obj.get("options").and_then(Value::as_array);
+            if topic.trim().is_empty()
+                || default.trim().is_empty()
+                || !options.is_some_and(|values| {
+                    !values.is_empty()
+                        && values
+                            .iter()
+                            .all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+                        && values.iter().any(|v| v.as_str() == Some(default))
+                })
+            {
+                return Err(CliError::user(
+                    "schema_violation",
+                    format!(
+                        "discussion_items[{index}] requires non-empty topic, string options, and a recommended_default present in options"
+                    ),
+                ));
+            }
         }
     }
     Ok(())

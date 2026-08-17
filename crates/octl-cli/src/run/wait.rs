@@ -70,7 +70,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use octl_core::{read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths, Status, WorkerExit};
+use octl_core::{
+    read_manifest_opt, read_node_opt, AwaitingInput, NodeId, RunLock, RunPaths, Status, WorkerExit,
+};
 
 use crate::error::CliError;
 use crate::output::{self, OutputFormat, OutputSpec};
@@ -189,6 +191,15 @@ struct RunOutcome {
     /// machine reason rides in [`Self::error`]; the full resume context (worktree
     /// path, resume hint, pid, age) rides in [`Self::attention`].
     attention_required: bool,
+    /// Durable open human-decision request. `run wait` settles on this only
+    /// after its propagation grace has elapsed.
+    awaiting_input: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    awaiting_input_detail: Option<crate::run::awaiting_input::AwaitingInputView>,
+    /// True only when the post-grace request itself satisfied the wait, not
+    /// merely when an un-escalated sibling is visible in an `--any` outcome.
+    #[serde(skip)]
+    settled_awaiting_input: bool,
     /// Resume context for an attention-required run — worktree path, source
     /// branch, worker pid, pending age, and a one-line resume hint — so an AI
     /// caller that unblocks on `attention_required` can drive `run merge` from the
@@ -273,7 +284,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the latched stall / attention verdict.
     let mut outcomes = Vec::with_capacity(runs.len());
     for (i, (run_id, paths)) in runs.iter().enumerate() {
-        outcomes.push(read_outcome(run_id, paths, latched_settle[i])?);
+        outcomes.push(read_outcome(run_id, paths, latched_settle[i].clone())?);
     }
 
     // Decide the exit code from the assembled outcomes:
@@ -318,6 +329,8 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 /// pins a fixed cadence. Every sleep is clamped to the remaining timeout
 /// budget so the loop wakes right at the deadline rather than overshooting it
 /// (keeps the reported `waited_ms` ≈ the requested timeout).
+type ProgressKey = (Status, Option<StallKind>, bool, Option<u64>);
+
 fn wait_loop(
     runs: &[(String, RunPaths)],
     condition: Condition,
@@ -330,7 +343,7 @@ fn wait_loop(
     // Progress transitions key on `(status, stall, attention)` so a healthy
     // `pending` run going stillborn/orphaned OR attention-required (status
     // unchanged) still emits one progress line.
-    let mut prev: Vec<Option<(Status, Option<StallKind>, bool)>> = vec![None; runs.len()];
+    let mut prev: Vec<Option<ProgressKey>> = vec![None; runs.len()];
 
     loop {
         let mut settled = 0usize;
@@ -353,6 +366,7 @@ fn wait_loop(
             settle_now[i] = LatchedSettle {
                 stall: settle.stall,
                 attention: settle.attention,
+                awaiting_input: settle.awaiting_input.clone(),
             };
             // A run is settled when it reaches a terminal status, OR when it is
             // stalled (a supervisor that died — before creating any node, or
@@ -362,16 +376,26 @@ fn wait_loop(
             // `is_terminal()` alone would block the whole timeout in every one of
             // those cases (issues `run-wait-stillborn-run-not-detected`,
             // `run-wait-still`, `attention-required-run-surface`).
-            if settle.status.is_terminal() || settle.stall.is_some() || settle.attention {
+            if settle.status.is_terminal()
+                || settle.stall.is_some()
+                || settle.attention
+                || settle.awaiting_input.is_some()
+            {
                 settled += 1;
             }
-            let key = (settle.status, settle.stall, settle.attention);
+            let key = (
+                settle.status,
+                settle.stall,
+                settle.attention,
+                settle.awaiting_input.as_ref().map(|v| v.event_seq),
+            );
             if progress && prev[i] != Some(key) {
                 emit_progress(
                     run_id,
                     settle.status,
                     settle.stall.is_some(),
                     settle.attention,
+                    settle.awaiting_input.is_some(),
                 );
             }
             prev[i] = Some(key);
@@ -437,6 +461,8 @@ struct Settle {
     /// worker is attention-required (manual finish) even if its supervisor later
     /// died, which would otherwise read as `orphaned` (`run reattach`).
     attention: bool,
+    /// Exact explicit decision generation whose durable grace has elapsed.
+    awaiting_input: Option<AwaitingInput>,
 }
 
 /// The two non-terminal settle verdicts a poll can latch for a run — the stall
@@ -444,10 +470,11 @@ struct Settle {
 /// that ended the wait through to [`read_outcome`], so the reported outcome
 /// reflects the decision [`wait_loop`] acted on rather than a fresh probe a
 /// concurrent `run reattach` / `run merge` could have flipped.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct LatchedSettle {
     stall: Option<StallKind>,
     attention: bool,
+    awaiting_input: Option<AwaitingInput>,
 }
 
 /// Read a run's [`Settle`] snapshot under the shared lock. `None` when the run
@@ -476,6 +503,10 @@ fn current_settle(
         let node_id =
             NodeId::parse_str(DEFAULT_NODE_ID).expect("DEFAULT_NODE_ID is a valid node id");
         let node = read_node_opt(paths, &node_id)?;
+        let open = node.as_ref().and_then(|n| n.awaiting_input.as_deref());
+        let awaiting_input = open
+            .filter(|open| crate::run::awaiting_input::is_escalated(open.opened_at, now))
+            .cloned();
         let attention = node.as_ref().is_some_and(|n| {
             crate::run::attention::is_attention_required(n.status, n.worker_exit.as_ref())
         });
@@ -502,6 +533,7 @@ fn current_settle(
             status: m.status,
             stall,
             attention,
+            awaiting_input,
         }))
     })
     .map_err(from_core)
@@ -545,6 +577,9 @@ fn read_outcome(
             // so the told clean-exit fact is consistent with the status above.
             worker_exit: node.as_ref().and_then(|n| n.worker_exit),
             agent_pid: node.as_ref().and_then(|n| n.agent_pid),
+            awaiting_input: node
+                .as_ref()
+                .and_then(|n| n.awaiting_input.as_deref().cloned()),
             report: node.and_then(|n| n.last_report),
         })
     })
@@ -595,14 +630,26 @@ fn read_outcome(
     // stands. Attention-required takes precedence over a stall: a worker that
     // exited cleanly needs a manual finish (`run merge`), not `run reattach`, even
     // if its supervisor also died (which would otherwise read as `orphaned`).
-    let (stall, attention_required) = if status.is_terminal() {
-        (None, false)
-    } else if latched.attention {
-        (None, true)
+    let attention_required = !status.is_terminal() && latched.attention;
+    let stall = if status.is_terminal() || attention_required {
+        None
     } else {
-        (latched.stall, false)
+        latched.stall
     };
     let stalled = stall.is_some();
+    let settled_awaiting_input = !status.is_terminal() && latched.awaiting_input.is_some();
+    // Preserve the exact generation that woke the wait. On timeout or when an
+    // unrelated `--any` sibling settled, still expose the current open request
+    // immediately even if its grace has not elapsed.
+    let open = if status.is_terminal() {
+        None
+    } else {
+        latched
+            .awaiting_input
+            .as_ref()
+            .or(git_inputs.awaiting_input.as_ref())
+    };
+    let awaiting_input = open.is_some();
     // `error` explains a non-`done` settle. For failed/cancelled the §7.3 report
     // has no dedicated error field, so surface the cancel `reason` when present;
     // for a stalled settle (a `pending`/`running` run graded as a failure under
@@ -614,6 +661,8 @@ fn read_outcome(
         Some(crate::run::attention::ATTENTION_REASON.to_string())
     } else if let Some(kind) = stall {
         Some(stall_reason(kind).to_string())
+    } else if settled_awaiting_input {
+        Some(crate::run::awaiting_input::AWAITING_INPUT_REASON.to_string())
     } else if matches!(status, Status::Failed | Status::Cancelled) {
         report
             .as_ref()
@@ -650,6 +699,8 @@ fn read_outcome(
     // supervisor only ever stamps it on the failed-synthesis path, so a block on
     // a `done`/`cancelled` report is stale or spoofed and must not be surfaced (a
     // regular agent report can carry unknown fields — the validator permits them).
+    let awaiting_input_detail = open
+        .map(|open| crate::run::awaiting_input::AwaitingInputView::build(open, chrono::Utc::now()));
     let recoverable_work = if matches!(status, Status::Failed) {
         report
             .as_ref()
@@ -668,6 +719,9 @@ fn read_outcome(
         landed_method: signal.method.wire(),
         stalled,
         attention_required,
+        awaiting_input,
+        awaiting_input_detail,
+        settled_awaiting_input,
         attention,
         summary,
         error,
@@ -703,6 +757,7 @@ struct GitInputs {
     /// The reporting node's last-observed worker pid, for the attention resume
     /// context.
     agent_pid: Option<i32>,
+    awaiting_input: Option<octl_core::AwaitingInput>,
     report: Option<Value>,
 }
 
@@ -713,9 +768,12 @@ struct GitInputs {
 /// exited cleanly but skipped `run merge`). Non-settled runs (a still-progressing
 /// run under `--any`) are not graded: they never settled.
 fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
-    outcomes
-        .iter()
-        .any(|o| matches!(o.status, "failed" | "cancelled") || o.stalled || o.attention_required)
+    outcomes.iter().any(|o| {
+        matches!(o.status, "failed" | "cancelled")
+            || o.stalled
+            || o.attention_required
+            || o.settled_awaiting_input
+    })
 }
 
 /// Emit one compact JSONL transition line to **stderr** for `--progress`, so a
@@ -724,12 +782,19 @@ fn any_settled_error(outcomes: &[RunOutcome]) -> bool {
 /// verdicts so a run that goes stillborn/orphaned OR attention-required without a
 /// status change (it stays `pending`) still surfaces one line. Best-effort: a
 /// serialization failure is swallowed rather than aborting the wait.
-fn emit_progress(run_id: &str, status: Status, stalled: bool, attention_required: bool) {
+fn emit_progress(
+    run_id: &str,
+    status: Status,
+    stalled: bool,
+    attention_required: bool,
+    awaiting_input: bool,
+) {
     if let Ok(line) = serde_json::to_string(&serde_json::json!({
         "run_id": run_id,
         "status": status_kebab(status),
         "stalled": stalled,
         "attention_required": attention_required,
+        "awaiting_input": awaiting_input,
     })) {
         eprintln!("{line}");
     }
@@ -787,6 +852,13 @@ fn emit(data: &WaitData, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                         "  stalled=true (`run reattach {id}` or `run cancel {id}`)",
                         id = r.run_id
                     );
+                }
+                if r.awaiting_input {
+                    let count = r
+                        .awaiting_input_detail
+                        .as_ref()
+                        .map_or(0, |v| v.open_discussion_count);
+                    print!("  awaiting_input=true ({count} open decision(s))");
                 }
                 if r.attention_required {
                     // Non-terminal, deliberate: the worker finished but skipped
@@ -929,6 +1001,9 @@ mod tests {
             landed_method: "unverified",
             stalled: false,
             attention_required: false,
+            awaiting_input: false,
+            awaiting_input_detail: None,
+            settled_awaiting_input: false,
             attention: None,
             summary: None,
             error: None,
@@ -940,6 +1015,11 @@ mod tests {
         };
         let mk_attention = || RunOutcome {
             attention_required: true,
+            ..mk("pending")
+        };
+        let mk_awaiting = || RunOutcome {
+            awaiting_input: true,
+            settled_awaiting_input: true,
             ..mk("pending")
         };
         assert!(!any_settled_error(&[mk("done"), mk("done")]));
@@ -955,6 +1035,13 @@ mod tests {
         // settled error even though its status stays `pending`.
         assert!(any_settled_error(&[mk_attention()]));
         assert!(any_settled_error(&[mk("done"), mk_attention()]));
+        assert!(any_settled_error(&[mk_awaiting()]));
+        // Visible but pre-grace awaiting input on an unsettled `--any` sibling
+        // does not grade the completed sibling as an error.
+        assert!(!any_settled_error(&[RunOutcome {
+            awaiting_input: true,
+            ..mk("running")
+        }]));
     }
 
     #[test]

@@ -297,6 +297,8 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         "node.retry" => reduce_node_retry(paths, ev),
         "worker.exited" => reduce_worker_exited(paths, ev),
         "node.death_observed" => reduce_node_death_observed(paths, ev),
+        "node.awaiting_input" => reduce_node_awaiting_input(paths, ev),
+        "node.input_resolved" => reduce_node_input_resolved(paths, ev),
         KIND_MERGE_STARTED => reduce_merge_started(paths, ev),
         KIND_MERGE_ABORTED => reduce_merge_aborted(paths, ev),
         "child.spawned" => reduce_child_spawned(paths, ev),
@@ -317,7 +319,7 @@ pub(crate) fn reduce_event_to_ops(paths: &RunPaths, ev: &Event) -> Result<Vec<Pr
         // Mutates no projection — the event log is its only home — so it folds to
         // a clean no-op. Listed explicitly so the append path's transactional gate
         // runs the same no-op plan and the intent is documented here.
-        "run.notified" => Ok(vec![]),
+        "run.notified" | "run.awaiting_input_notified" => Ok(vec![]),
         // Best-effort teardown audit records from the supervisor's cleanup
         // path. Each mutates no projection — the event log is their only home —
         // so they fold to a clean no-op. Listed explicitly so the append path's
@@ -622,6 +624,7 @@ fn reduce_node_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>
         worker_exit: None,
         pending_merge: None,
         first_death_at: None,
+        awaiting_input: None,
     };
     let mut ops = vec![ProjectionOp::Node(n)];
     if let Some(mut m) = read_manifest_opt(paths)? {
@@ -710,6 +713,9 @@ fn reduce_node_retry(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> 
     // the dead attempt's timestamp (which would fire the backstop with no grace on
     // the fresh worker's first confirmed death). Issue `typed-supervisor-outcomes`.
     n.first_death_at = None;
+    // A retry is a new worker attempt. Never carry an unresolved question from
+    // the dead attempt onto the replacement worker.
+    n.awaiting_input = None;
     // The event carries its ABSOLUTE attempt number (the supervisor set it to
     // `retry_attempts + 1` at emit time). Assign it directly rather than a blind
     // `+= 1`: this makes the projection a pure function of the event, so a
@@ -749,6 +755,7 @@ fn reduce_node_status(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     // `merge-transaction-recovery` (/llm-review finding).
     if new_status.is_terminal() {
         n.pending_merge = None;
+        n.awaiting_input = None;
     }
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
@@ -831,6 +838,7 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             // clear it so recovery does not later re-examine a settled node
             // (issue `merge-transaction-recovery`).
             n.pending_merge = None;
+            n.awaiting_input = None;
             n.updated_at = ev.ts;
             return Ok(vec![ProjectionOp::Node(n)]);
         }
@@ -851,6 +859,10 @@ fn reduce_node_report(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
     let new_status = report_terminal_status(&events_path, ev)?;
     n.last_report = Some(ev.data.clone());
     n.status = new_status;
+    // A terminal report settles any open human-decision request. A blocked
+    // report still preserves the discussion in `last_report`, while avoiding a
+    // stale non-terminal awaiting-input flag on the settled node.
+    n.awaiting_input = None;
     // Any terminal outcome resolves an in-flight merge transaction: a successful
     // `explicit-merge` report completes it here (the normal, no-crash path), and
     // any other terminal report ends the node's lifecycle so no merge recovery
@@ -916,6 +928,10 @@ fn reduce_worker_exited(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp
         signal,
         at: ev.ts,
     });
+    // A departed worker cannot proceed on its recommended default. Clear its
+    // open request so clean-exit attention and crash/stall handling remain the
+    // actionable read-surface verdicts.
+    n.awaiting_input = None;
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -953,6 +969,140 @@ fn reduce_node_death_observed(paths: &RunPaths, ev: &Event) -> Result<Vec<Projec
         return Ok(vec![]);
     }
     n.first_death_at = Some(ev.ts);
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Fold an agent's explicit request for a human decision onto the node without
+/// changing its status. This is deliberately non-terminal: the worker may still
+/// resolve the fork itself or proceed with its stated default.
+///
+/// The first open signal wins until a matching `node.input_resolved` clears it,
+/// so retries or duplicate writes cannot move the grace clock forward. The
+/// event timestamp, not a caller-supplied payload timestamp, is the durable
+/// restart-safe anchor.
+fn reduce_node_awaiting_input(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    const MAX_ITEMS: usize = 8;
+    const MAX_TOPIC_CHARS: usize = 512;
+    const MAX_OPTIONS: usize = 16;
+    const MAX_OPTION_CHARS: usize = 256;
+
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    // Validate before every state-dependent no-op. An ignored duplicate or late
+    // event must still be structurally valid before it enters the durable log.
+    let items = ev
+        .data
+        .get("discussion_items")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty() && items.len() <= MAX_ITEMS)
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=node.awaiting_input requires 1..={MAX_ITEMS} `discussion_items`",
+                ev.seq
+            ),
+        })?;
+    for (index, item) in items.iter().enumerate() {
+        let obj = item.as_object().ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} discussion_items[{index}] must be an object",
+                ev.seq
+            ),
+        })?;
+        let topic = obj.get("topic").and_then(Value::as_str).unwrap_or("");
+        let default = obj
+            .get("recommended_default")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let options = obj.get("options").and_then(Value::as_array);
+        let options_valid = options.is_some_and(|values| {
+            !values.is_empty()
+                && values.len() <= MAX_OPTIONS
+                && values.iter().all(|v| {
+                    v.as_str().is_some_and(|s| {
+                        !s.trim().is_empty() && s.chars().count() <= MAX_OPTION_CHARS
+                    })
+                })
+                && values.iter().any(|v| v.as_str() == Some(default))
+        });
+        if topic.trim().is_empty()
+            || topic.chars().count() > MAX_TOPIC_CHARS
+            || default.trim().is_empty()
+            || !options_valid
+        {
+            return Err(Error::CorruptEventLog {
+                path: events_path.clone(),
+                reason: format!(
+                    "event seq={} discussion_items[{index}] requires bounded non-empty `topic`, 1..={MAX_OPTIONS} bounded string `options`, and a `recommended_default` present in options",
+                    ev.seq
+                ),
+            });
+        }
+    }
+
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    if n.status.is_terminal() || n.worker_exit.is_some() {
+        return Ok(vec![]);
+    }
+    if let Some(open) = n.awaiting_input.as_mut() {
+        // A later fork joins the current open generation without moving its
+        // restart-safe clock or notification key. Bound the aggregate too.
+        if open.discussion_items.len() + items.len() > MAX_ITEMS {
+            return Err(Error::CorruptEventLog {
+                path: events_path,
+                reason: format!(
+                    "event seq={} would exceed {MAX_ITEMS} open discussion items",
+                    ev.seq
+                ),
+            });
+        }
+        open.discussion_items.extend(items.iter().cloned());
+    } else {
+        n.awaiting_input = Some(Box::new(crate::schema::AwaitingInput {
+            opened_at: ev.ts,
+            event_seq: ev.seq,
+            discussion_items: items.clone(),
+        }));
+    }
+    n.updated_at = ev.ts;
+    Ok(vec![ProjectionOp::Node(n)])
+}
+
+/// Clear the current open decision request. `event_seq` is mandatory and
+/// fences the resolve to the generation the worker observed, so a delayed
+/// timeout cannot clear a newer question opened after the old one resolved.
+fn reduce_node_input_resolved(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>> {
+    let events_path = paths.events();
+    let node_id = require_envelope_node_id(&events_path, ev)?;
+    // Validate before the no-open no-op so malformed events never enter the log
+    // merely because their projection happens to be absent today.
+    let seq = ev
+        .data
+        .get("event_seq")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!(
+                "event seq={} kind=node.input_resolved requires unsigned `event_seq`",
+                ev.seq
+            ),
+        })?;
+    let mut n = match read_node_opt(paths, &node_id)? {
+        Some(n) => n,
+        None => return Ok(vec![]),
+    };
+    let Some(open) = n.awaiting_input.as_ref() else {
+        return Ok(vec![]);
+    };
+    if seq != open.event_seq {
+        return Ok(vec![]);
+    }
+    n.awaiting_input = None;
     n.updated_at = ev.ts;
     Ok(vec![ProjectionOp::Node(n)])
 }
@@ -1625,6 +1775,137 @@ mod tests {
         read_node_opt(paths, &NodeId::parse_str("n-0001").unwrap())
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn awaiting_input_clock_is_durable_first_write_wins_and_resolve_is_fenced() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxwd0000000000000000000w";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let nid = Some(NodeId::parse_str("n-0001").unwrap());
+        let opened_at: chrono::DateTime<Utc> = "2026-08-16T12:00:00Z".parse().unwrap();
+        let mut open = event(run_id);
+        open.seq = 3;
+        open.ts = opened_at;
+        open.kind = "node.awaiting_input".into();
+        open.node_id = nid.clone();
+        open.data = serde_json::json!({ "discussion_items": [{
+            "topic": "Which scope?",
+            "options": ["small", "large"],
+            "recommended_default": "small"
+        }] });
+        apply_event(&paths, &open).unwrap();
+        let first = read_n0001(&paths).awaiting_input.unwrap();
+        assert_eq!(first.opened_at, opened_at);
+        assert_eq!(first.event_seq, 3);
+
+        // A duplicate/restarted supervisor observation cannot restart the clock.
+        let mut duplicate = open.clone();
+        duplicate.seq = 4;
+        duplicate.ts = opened_at + chrono::Duration::hours(1);
+        apply_event(&paths, &duplicate).unwrap();
+        let still_first = read_n0001(&paths).awaiting_input.unwrap();
+        assert_eq!(still_first.opened_at, opened_at);
+        assert_eq!(still_first.event_seq, 3);
+
+        // A stale timeout for another generation cannot clear this request.
+        let mut stale = event(run_id);
+        stale.seq = 5;
+        stale.kind = "node.input_resolved".into();
+        stale.node_id = nid.clone();
+        stale.data = serde_json::json!({ "event_seq": 2 });
+        apply_event(&paths, &stale).unwrap();
+        assert!(read_n0001(&paths).awaiting_input.is_some());
+
+        let mut resolved = stale;
+        resolved.seq = 6;
+        resolved.data = serde_json::json!({ "event_seq": 3 });
+        apply_event(&paths, &resolved).unwrap();
+        assert!(read_n0001(&paths).awaiting_input.is_none());
+    }
+
+    #[test]
+    fn awaiting_input_rejects_missing_default_without_mutating_projection() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxwd0000000000000000000x";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let mut open = event(run_id);
+        open.seq = 3;
+        open.kind = "node.awaiting_input".into();
+        open.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        open.data = serde_json::json!({ "discussion_items": [{
+            "topic": "Which scope?", "options": ["small", "large"]
+        }] });
+        assert!(reduce_event_to_ops(&paths, &open).is_err());
+        assert!(read_n0001(&paths).awaiting_input.is_none());
+    }
+
+    #[test]
+    fn awaiting_input_validation_is_state_independent_and_worker_exit_clears_it() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxwd0000000000000000000y";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let nid = Some(NodeId::parse_str("n-0001").unwrap());
+
+        let mut open = event(run_id);
+        open.seq = 3;
+        open.kind = "node.awaiting_input".into();
+        open.node_id = nid.clone();
+        open.data = serde_json::json!({ "discussion_items": [{
+            "topic": "Which scope?", "options": ["small", "large"],
+            "recommended_default": "small"
+        }] });
+        apply_event(&paths, &open).unwrap();
+
+        let mut malformed_duplicate = open.clone();
+        malformed_duplicate.seq = 4;
+        malformed_duplicate.data = serde_json::json!({ "discussion_items": [] });
+        assert!(reduce_event_to_ops(&paths, &malformed_duplicate).is_err());
+
+        let mut exited = event(run_id);
+        exited.seq = 5;
+        exited.kind = "worker.exited".into();
+        exited.node_id = nid;
+        exited.data = serde_json::json!({ "exit_code": 0 });
+        apply_event(&paths, &exited).unwrap();
+        let node = read_n0001(&paths);
+        assert!(node.awaiting_input.is_none());
+        assert!(node.worker_exit.is_some());
+
+        let mut delayed_open = open;
+        delayed_open.seq = 6;
+        assert!(reduce_event_to_ops(&paths, &delayed_open)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn input_resolved_requires_generation_even_when_nothing_is_open() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxwd0000000000000000000z";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let mut resolved = event(run_id);
+        resolved.seq = 3;
+        resolved.kind = "node.input_resolved".into();
+        resolved.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        resolved.data = serde_json::json!({});
+        assert!(reduce_event_to_ops(&paths, &resolved).is_err());
+    }
+
+    #[test]
+    fn awaiting_input_default_must_be_one_of_options() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = "01jxwd00000000000000000010";
+        let paths = seed_run_with_node(&tmp, run_id);
+        let mut open = event(run_id);
+        open.seq = 3;
+        open.kind = "node.awaiting_input".into();
+        open.node_id = Some(NodeId::parse_str("n-0001").unwrap());
+        open.data = serde_json::json!({ "discussion_items": [{
+            "topic": "Which scope?", "options": ["small", "large"],
+            "recommended_default": "other"
+        }] });
+        assert!(reduce_event_to_ops(&paths, &open).is_err());
     }
 
     fn merge_started_event(run_id: &str, seq: u64, op_id: &str, expected: &str) -> Event {

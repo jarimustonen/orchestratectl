@@ -134,7 +134,10 @@ Flag rules:
   teardown — the push signal that tells this session the spinoff finished
   without you polling. The command runs via `sh -c` with `OCTL_RUN_ID`,
   `OCTL_STATUS`, `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in
-  its environment. Delivery is **at-least-once**: the healthy path fires
+  its environment. It also fires for an unresolved `node.awaiting_input` after
+  the grace window with `OCTL_STATUS=awaiting-input`, `OCTL_AWAITING_INPUT=1`,
+  and the discussion array in `OCTL_AWAITING_INPUT_JSON`. Delivery is
+  **at-least-once**: the healthy path fires
   once, but a supervisor crash mid-fire can re-fire on restart, so write a
   command that tolerates running more than once (an idempotent file
   write / notification, not something that double-counts). Pass it **only
@@ -196,6 +199,45 @@ Tell the user:
 When invoked from a driver, return the structured payload (run id, node
 id, branch, tmux window) to the calling skill instead of a human
 summary — the driver needs the IDs to poll completion.
+
+## Genuine decision forks: signal, never prompt
+
+An autonomous worker MUST NOT stop at an interactive stdin prompt. If a genuine
+human decision is unavoidable, write one or more report-shaped discussion items
+(`topic`, non-empty string `options`, and `recommended_default`) to JSON and
+open durable run state:
+
+```bash
+orchestratectl event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
+  --from-file /tmp/awaiting-input-${run_id}.json \
+  --idempotency-key "awaiting-input:${run_id}:<short-topic>"
+request_seq="$(orchestratectl --output json run show "$run_id" | \
+  jq -r '.data.awaiting_input_detail.event_seq')"
+```
+
+The file shape is
+`{"discussion_items":[{"topic":"…","options":["…"],"recommended_default":"…"}]}`.
+This makes `run show` / `run list` observable immediately; after three minutes
+(unless `OCTL_AWAITING_INPUT_GRACE_SECS` overrides it), `run wait` settles and a
+registered `--notify` hook fires with `OCTL_STATUS=awaiting-input` and
+`OCTL_AWAITING_INPUT_JSON`.
+
+Do not wait indefinitely. Either (a) wait at most five minutes without opening
+an interactive prompt, then emit `node.input_resolved` with
+`{"event_seq":$request_seq}` and proceed on the stated recommended default:
+
+```bash
+printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
+orchestratectl event create "$run_id" --kind node.input_resolved --node-id n-0001 \
+  --from-file /tmp/input-resolved-${run_id}.json
+```
+
+Alternatively, (b) immediately submit a terminal blocked
+report with `success:false` and the same `discussion_items` via
+`orchestratectl node report "$run_id" n-0001 --from-file <report>`. The blocked
+path preserves the branch and worktree for the human. If the fork resolves by
+other evidence before the timeout, emit the same generation-fenced
+`node.input_resolved` before continuing.
 
 ## Terminal report (mandatory)
 

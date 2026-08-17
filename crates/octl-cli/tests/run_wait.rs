@@ -751,6 +751,57 @@ fn attention_required_run_settles_promptly_without_terminalizing() {
     );
 }
 
+/// An explicit awaiting-input marker is visible on show/list immediately and,
+/// once its grace elapses, settles `run wait` without terminalizing the run.
+#[test]
+fn awaiting_input_surfaces_and_settles_after_grace() {
+    let home = TestHome::new();
+    let run = pending_run(&home, "awaiting-input");
+    add_node(&home, &run, "n-0001");
+    event_create(
+        &home,
+        &run,
+        "node.awaiting_input",
+        Some("n-0001"),
+        json!({ "discussion_items": [{
+            "topic": "Choose scope",
+            "options": ["small", "large"],
+            "recommended_default": "small"
+        }] }),
+    );
+
+    let show = run_ok(bin(&home).args(["--output", "json", "run", "show", &run]));
+    assert_eq!(show["data"]["awaiting_input"], true);
+    assert_eq!(show["data"]["open_discussion_count"], 1);
+    assert_eq!(
+        show["data"]["awaiting_input_detail"]["discussion_items"][0]["recommended_default"],
+        "small"
+    );
+    let list = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
+    let row = list["data"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["run_id"] == run)
+        .unwrap();
+    assert_eq!(row["awaiting_input"], true);
+    assert_eq!(row["open_discussion_count"], 1);
+
+    let out = run_ok(bin(&home).env("OCTL_AWAITING_INPUT_GRACE_SECS", "0").args([
+        "--output",
+        "json",
+        "run",
+        "wait",
+        &run,
+        "--timeout",
+        "2s",
+    ]));
+    let waited = &out["data"]["runs"][0];
+    assert_eq!(waited["status"], "pending");
+    assert_eq!(waited["awaiting_input"], true);
+    assert_eq!(waited["awaiting_input_detail"]["open_discussion_count"], 1);
+}
+
 /// Under `--fail-on-error`, an attention-required run grades as a failure
 /// (exit 3) even though its status is still `pending` — a caller that treats a
 /// met-but-not-`done` wait as failure notices the skipped merge.

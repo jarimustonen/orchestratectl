@@ -5,6 +5,7 @@
 //! single `dispatch` entry point called from `cli.rs`.
 
 pub mod attention;
+pub mod awaiting_input;
 pub mod cancel;
 pub mod create;
 pub mod dto;

@@ -55,8 +55,9 @@ pub use report::{
 };
 pub use schema::aggregate_terminal_status;
 pub use schema::{
-    is_run_id_prefix, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest, MergeTxn,
-    Node, NodeId, RunId, Status, WorkerExit, STATE_SCHEMA_VERSION, SUPPORTED_STATE_SCHEMAS,
+    is_run_id_prefix, AwaitingInput, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest,
+    MergeTxn, Node, NodeId, RunId, Status, WorkerExit, STATE_SCHEMA_VERSION,
+    SUPPORTED_STATE_SCHEMAS,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,

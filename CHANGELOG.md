@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Autonomous workers can now propagate genuine decision forks (`uncommonly-fuzzy-swing`).** A worker records a durable `node.awaiting_input` event carrying report-shaped discussion items with the question, options, and recommended default instead of blocking indefinitely on stdin. `run show` and `run list` expose the open request immediately; after a restart-safe three-minute grace, `run wait` settles and the existing `--notify` hook fires with awaiting-input context. `node.input_resolved` clears the generation safely, terminal reports and retries clear stale requests, and bundled spinoff guidance requires a bounded default-or-blocked-report path that preserves blocked work.
+
 ## [0.3.0] - 2026-08-17
 
 ### Removed

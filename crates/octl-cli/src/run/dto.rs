@@ -230,6 +230,7 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
 /// One row of `run list --json`.
 ///
 /// Owned: built inside each run's lock from a short-lived manifest.
+#[allow(clippy::struct_excessive_bools)] // orthogonal wire facts, not a state cross-product
 #[derive(Serialize)]
 pub struct RunSummary {
     pub run_id: String,
@@ -298,6 +299,15 @@ pub struct RunSummary {
     /// [`RunSummary::with_attention`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attention: Option<crate::run::attention::AttentionView>,
+    /// Durable, explicit signal that the worker needs a human decision. Unlike
+    /// `attention_required`, this is emitted while the worker is still alive and
+    /// carries the open report-shaped discussion objects.
+    pub awaiting_input: bool,
+    /// Number of open decision items. Kept at top level for cheap list filtering.
+    pub open_discussion_count: usize,
+    /// Full question/options/default context, omitted when no request is open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awaiting_input_detail: Option<crate::run::awaiting_input::AwaitingInputView>,
 }
 
 impl RunSummary {
@@ -352,6 +362,23 @@ impl RunSummary {
         self.attention = attention;
         self
     }
+
+    /// Attach an explicit open human-decision request. It is additive to liveness
+    /// hints: an orphaned supervisor still needs reattachment. Terminal runs
+    /// defensively suppress stale node-level requests.
+    #[must_use]
+    pub fn with_awaiting_input(
+        mut self,
+        awaiting: Option<crate::run::awaiting_input::AwaitingInputView>,
+    ) -> Self {
+        let awaiting = (!matches!(self.status.as_str(), "done" | "failed" | "cancelled"))
+            .then_some(awaiting)
+            .flatten();
+        self.awaiting_input = awaiting.is_some();
+        self.open_discussion_count = awaiting.as_ref().map_or(0, |v| v.open_discussion_count);
+        self.awaiting_input_detail = awaiting;
+        self
+    }
 }
 
 impl From<&Manifest> for RunSummary {
@@ -370,6 +397,9 @@ impl From<&Manifest> for RunSummary {
             stillborn: false,
             attention_required: false,
             attention: None,
+            awaiting_input: false,
+            open_discussion_count: 0,
+            awaiting_input_detail: None,
         }
     }
 }
@@ -467,8 +497,36 @@ mod tests {
                 "stalled": false,
                 "stillborn": false,
                 "attention_required": false,
+                "awaiting_input": false,
+                "open_discussion_count": 0,
             })
         );
+    }
+
+    #[test]
+    fn awaiting_input_is_additive_to_stall_but_suppressed_when_terminal() {
+        use octl_core::AwaitingInput;
+        let open = AwaitingInput {
+            opened_at: ts(),
+            event_seq: 9,
+            discussion_items: vec![json!({
+                "topic": "scope", "options": ["small"],
+                "recommended_default": "small"
+            })],
+        };
+        let view = crate::run::awaiting_input::AwaitingInputView::build(&open, ts());
+        let live = RunSummary::from(&sample())
+            .with_stalled(true)
+            .with_awaiting_input(Some(view.clone()));
+        assert!(live.stalled);
+        assert!(live.awaiting_input);
+        assert_eq!(live.awaiting_input_detail.unwrap().event_seq, 9);
+
+        let mut terminal = sample();
+        terminal.status = Status::Done;
+        let done = RunSummary::from(&terminal).with_awaiting_input(Some(view));
+        assert!(!done.awaiting_input);
+        assert_eq!(done.open_discussion_count, 0);
     }
 
     /// `with_attention(Some(..))` flips `attention_required` and nests the resume

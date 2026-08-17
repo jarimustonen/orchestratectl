@@ -35,8 +35,8 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use octl_core::{
-    append_and_apply_unlocked, find_prior_with_key, read_node_opt, NodeId, RunLock, RunPaths,
-    Status,
+    append_and_apply_unlocked, find_prior_with_key, read_manifest_opt, read_node_opt,
+    AwaitingInput, NodeId, RunLock, RunPaths, Status,
 };
 
 use crate::run::from_core;
@@ -162,6 +162,140 @@ pub fn maybe_fire(
     true
 }
 
+/// Fire the same registered hook for an unresolved human-decision request once
+/// its grace window has elapsed. The marker key includes the opening event seq,
+/// so resolve-then-reopen generations notify independently. The exclusive-lock
+/// re-read prevents a resolve racing the supervisor tick from producing a stale
+/// page.
+#[must_use]
+pub fn maybe_fire_awaiting_input(
+    paths: &RunPaths,
+    run_id: &str,
+    notify_cmd: Option<&str>,
+    candidate: &AwaitingInput,
+    kind: &str,
+    title: &str,
+) -> bool {
+    let Some(cmd) = notify_cmd else {
+        return true;
+    };
+    if !crate::run::awaiting_input::is_escalated(candidate.opened_at, chrono::Utc::now()) {
+        // Not settled: caller must keep this generation eligible on later ticks.
+        return false;
+    }
+    let guard = match RunLock::acquire(&paths.lock()) {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+                "could not lock run to fire awaiting-input hook; will retry");
+            return false;
+        }
+    };
+    let lock = guard.witness();
+    let node_id = NodeId::parse_str(DEFAULT_NODE_ID).expect("valid default node id");
+    let manifest_terminal = match read_manifest_opt(paths) {
+        Ok(Some(m)) => m.status.is_terminal(),
+        Ok(None) => return true,
+        Err(e) => {
+            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+                "could not re-read manifest for awaiting-input notification; will retry");
+            return false;
+        }
+    };
+    if manifest_terminal {
+        return true;
+    }
+    let fresh = match read_node_opt(paths, &node_id) {
+        Ok(Some(n)) if !n.status.is_terminal() && n.worker_exit.is_none() => n.awaiting_input,
+        Ok(Some(_) | None) => None,
+        Err(e) => {
+            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+                "could not re-read awaiting-input state; will retry");
+            return false;
+        }
+    };
+    let Some(fresh) = fresh.filter(|v| v.event_seq == candidate.event_seq) else {
+        return true;
+    };
+    if !crate::run::awaiting_input::is_escalated(fresh.opened_at, chrono::Utc::now()) {
+        return true;
+    }
+    let key = format!("supervisor-awaiting-input:{run_id}:{}", fresh.event_seq);
+    match find_prior_with_key(&lock, paths, "run.awaiting_input_notified", &key) {
+        Ok(Some(_)) => return true,
+        Ok(None) => {}
+        Err(e) => {
+            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+                "could not scan awaiting-input notification marker; will retry");
+            return false;
+        }
+    }
+    let details = serde_json::to_string(&fresh.discussion_items).unwrap_or_default();
+    let summary = fresh
+        .discussion_items
+        .first()
+        .and_then(|v| v.get("topic"))
+        .and_then(Value::as_str)
+        .unwrap_or("human decision required");
+    if !spawn_awaiting_hook(cmd, run_id, summary, &details, kind, title) {
+        return false;
+    }
+    if let Err(e) = append_and_apply_unlocked(
+        &lock,
+        paths,
+        "run.awaiting_input_notified",
+        None,
+        Some(&key),
+        json!({ "event_seq": fresh.event_seq }),
+    ) {
+        warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+            "awaiting-input hook fired but marker append failed (a restart may re-fire)");
+        return false;
+    }
+    true
+}
+
+fn spawn_awaiting_hook(
+    cmd: &str,
+    run_id: &str,
+    summary: &str,
+    details: &str,
+    kind: &str,
+    title: &str,
+) -> bool {
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(cmd)
+        .env("OCTL_RUN_ID", run_id)
+        .env("OCTL_STATUS", "awaiting-input")
+        .env("OCTL_SUMMARY", env_safe(summary, SUMMARY_MAX_CHARS))
+        .env("OCTL_RUN_KIND", kind)
+        .env("OCTL_RUN_TITLE", env_safe(title, TITLE_MAX_CHARS))
+        .env("OCTL_AWAITING_INPUT", "1")
+        // Reducer bounds keep this comfortably below environment limits. Never
+        // truncate a variable advertised as JSON mid-document.
+        .env("OCTL_AWAITING_INPUT_JSON", details)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            info!(target: "orchestratectl::supervise", run_id = %run_id,
+                "fired awaiting-input notify hook");
+            true
+        }
+        Err(e) => {
+            warn!(target: "orchestratectl::supervise", run_id = %run_id, error = %e,
+                "awaiting-input notify hook failed to spawn; will retry");
+            false
+        }
+    }
+}
+
 /// Spawn `sh -c <cmd>` with the completion context in its environment, and
 /// reap it on a detached thread so a fast hook never lingers as a zombie.
 ///
@@ -264,7 +398,7 @@ fn status_kebab(status: Status) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use octl_core::append_and_apply_event;
+    use octl_core::{append_and_apply_event, write_node};
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -373,6 +507,79 @@ mod tests {
             "hook must run and write the completion env into its output file"
         );
         assert_eq!(notified_count(&paths), 1, "exactly one marker recorded");
+    }
+
+    #[test]
+    fn awaiting_input_hook_fires_after_grace_and_dedups_generation() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(RID);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = RunPaths::new(dir, RID).unwrap();
+        append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({ "kind": "spinoff", "lifecycle": "autonomous", "title": "t" }),
+        )
+        .unwrap();
+        let nid = NodeId::parse_str(DEFAULT_NODE_ID).unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&nid),
+            None,
+            json!({ "kind": "spinoff" }),
+        )
+        .unwrap();
+        append_and_apply_event(
+            &paths,
+            "node.awaiting_input",
+            Some(&nid),
+            None,
+            json!({
+                "discussion_items": [{
+                    "topic": "Choose scope", "options": ["small", "large"],
+                    "recommended_default": "small"
+                }]
+            }),
+        )
+        .unwrap();
+        // Age the durable projection anchor without mutating process-global env.
+        // This fixture has no concurrent writer and its applied_seq is current.
+        let mut node = read_node_opt(&paths, &nid).unwrap().unwrap();
+        node.awaiting_input.as_mut().unwrap().opened_at =
+            chrono::Utc::now() - chrono::Duration::minutes(4);
+        write_node(&paths, &node).unwrap();
+        let open = node.awaiting_input.unwrap();
+        let out = tmp.path().join("awaiting.txt");
+        let cmd = format!(
+            "printf '%s|%s|%s' \"$OCTL_STATUS\" \"$OCTL_SUMMARY\" \"$OCTL_AWAITING_INPUT\" >> {}",
+            out.display()
+        );
+
+        assert!(maybe_fire_awaiting_input(
+            &paths,
+            RID,
+            Some(&cmd),
+            &open,
+            "spinoff",
+            "t"
+        ));
+        assert!(wait_for_content(&out, "awaiting-input|Choose scope|1"));
+        assert!(maybe_fire_awaiting_input(
+            &paths,
+            RID,
+            Some(&cmd),
+            &open,
+            "spinoff",
+            "t"
+        ));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "awaiting-input|Choose scope|1"
+        );
     }
 
     #[test]

@@ -91,6 +91,16 @@ follow-up questions. Include:
 If any of those are missing, ask the user before spawning. A spinoff
 that misinterprets the task wastes a worktree and a merge cycle.
 
+## Decision forks
+
+An autonomous worker never blocks on an interactive prompt. At a genuine fork,
+it records `node.awaiting_input` with a non-empty `discussion_items` array whose
+items carry `topic`, string `options`, and `recommended_default`. It then either
+resolves the marker with `node.input_resolved` and follows that default after a
+bounded five-minute wait, or submits a terminal `success:false` blocked report
+with the same discussion items. The signal is visible immediately and propagates
+to `run wait` / the registered notify hook after the grace window.
+
 ## Errors
 
 Standard error envelope on stderr, non-zero exit. Likely codes:

@@ -6,6 +6,7 @@ expression: v
 {
   "agent_pid": null,
   "agent_pid_start_time": null,
+  "awaiting_input": null,
   "base_sha": null,
   "branch": null,
   "children": [

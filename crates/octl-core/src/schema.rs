@@ -680,6 +680,31 @@ pub struct Node {
     /// `#[serde(default)]` keeps a node written before this field existed readable.
     #[serde(default)]
     pub first_death_at: Option<DateTime<Utc>>,
+    /// An open, agent-authored request for a human decision. The worker records
+    /// this through `node.awaiting_input` instead of blocking on interactive
+    /// stdin. It remains non-terminal and is cleared by `node.input_resolved`, a
+    /// terminal `node.report`, or `node.retry`.
+    ///
+    /// `opened_at` is stamped from the event envelope and is therefore a durable,
+    /// monotonic grace-window anchor that survives supervisor restarts. The
+    /// original discussion objects are retained verbatim so read surfaces and
+    /// notification hooks can carry the question, options, and recommended
+    /// default without inventing a second advisory schema.
+    #[serde(default)]
+    pub awaiting_input: Option<Box<AwaitingInput>>,
+}
+
+/// Durable open-discussion state projected from `node.awaiting_input`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AwaitingInput {
+    /// Timestamp of the first open signal in the current unresolved generation.
+    pub opened_at: DateTime<Utc>,
+    /// Event sequence that opened this generation, used to deduplicate its
+    /// delayed parent notification independently from later generations.
+    pub event_seq: u64,
+    /// Validated report-shaped discussion objects. Each carries `topic`,
+    /// `options`, and `recommended_default`.
+    pub discussion_items: Vec<Value>,
 }
 
 /// A durable, in-flight `run merge` transaction recorded by `merge.started`
