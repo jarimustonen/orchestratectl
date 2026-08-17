@@ -95,9 +95,9 @@ jobs:
       # ETXTBSY even after the writer closes its copy.
       #
       # --release matches the project's quality bar (the release profile is the
-      # shipped one). Overflow/debug-assert coverage is exercised by the msrv
-      # job below, which builds in the default dev profile. nextest does not run
-      # doctests, so keep those as an explicit, isolated cargo-test step.
+      # shipped one). The msrv job below separately checks the default-profile
+      # build at the supported Rust floor. nextest does not run doctests, so keep
+      # those as an explicit, isolated cargo-test step.
       #
       # macOS picks up platform-sensitive paths (supervisor pid liveness,
       # tmux/unix-fd, kqueue-driven watchers) that Linux CI misses

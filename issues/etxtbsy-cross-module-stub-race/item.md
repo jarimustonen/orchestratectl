@@ -9,6 +9,8 @@ lane_seq: 2
 commits:
 - hash: b1be65d109c5cc1a27810dca7e683674bd85fe46
   summary: start ETXTBSY cross-module race fix
+- hash: 2f7f0e72abb4ee6bbc4147330814d363a86464d3
+  summary: isolate CI and publish-gate tests with nextest
 ---
 
 # ETXTBSY flake is cross-module: all executable-stub test fixtures share one fork/exec race, tmux-only mutex insufficient
