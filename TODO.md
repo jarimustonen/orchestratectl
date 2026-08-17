@@ -8,88 +8,68 @@ holds only the **active handoff** and a **compact stint archive**.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.2.2 SHIPPED + CI GREEN — NEXT = `skills` lane, head `release-gate-on-ci` or `audit-no-user-specifics`**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.3.0 SHIPPED + CI GREEN — NEXT = `add-configurable-agent` ALONE, or `skills` head `audit-no-user-specifics`**)
 
-**✅ LATEST (2026-08-17, review session, after stint 4 — read first).** A Fable-driven repo review + doc cleanup
-session, run alongside a parallel `add-configurable-agent` design session (its `design.md` v2 landed in the same
-window, no collisions). What changed:
-- **Docs:** `AGENTS.md` rewritten for consistency (current header, tool-family section, promoted standing learnings,
-  fixed stale skill refs + invariant 3); `TODO.md` compressed (stints 1–3 → Stint archive; Piialiisa section removed on
-  Jari's call); **`README.md` rewritten** against the 0.2.2 reality (old one described v0.1.0 with five deleted skills).
-- **Code (2 spinoffs, both first-spawn, integrated gate green, deployed, doctor 1006/0/0):** `cut-plan-module` — the
-  dead 2013-line `octl-core/src/plan.rs` + its `lib.rs` re-exports removed (**breaking `Removed` entry in
-  `[Unreleased]` → next release is 0.3.0-shaped, not 0.2.3**); `harness-pi-default` — built-in `DEFAULT_HARNESS`
-  flipped `claude`→`pi` per ADR 0001 D4 (Jari's config already said pi; this fixes config-less installs).
-- **Queue:** epics `code-pipeline` (obsolete) and `lifecycle-architecture-review` (done) closed with close notes;
-  new `skills`-lane tail issue `skills-stale-tbd-channels` (five bundled skills still claim publishing channels are
-  "TBD"). NEXT is unchanged: `skills` lane head `release-gate-on-ci` / `audit-no-user-specifics`.
+**✅ (2026-08-17, stint 5 — this handoff).** Full round + release: **v0.3.0 cut through every channel** — and for the
+first time through the round's own new publish gate. 5 headless spinoffs (3 planned units + 2 CI-red fixes), **all
+landed first-spawn, no worker deaths**. crates.io has `octl-core 0.3.0` + `orchestratectl 0.3.0`; the `v0.3.0` tag's
+Release CI and crates-publish CI both **green**; main CI green on the tagged commit. Local binary **0.3.0**,
+`orchestratectl doctor` **1011 ok / 0 warn / 0 fail** (all three skill mirrors). `main` clean and pushed.
 
-**— stint 4 below —**
+**What landed (3 planned units, all 3 lane heads):**
+- **`release-gate-on-ci`** (skills, high) — `publish-crates.yml` now runs the FULL main-CI gate (fmt, snapshots,
+  clippy, tests both platforms, msrv, docs, deny) **plus a tag↔manifest version-match check** before any publish step;
+  a tag on a red or mismatched commit can no longer publish. `OSS-RELEASE.md` + `AGENTS.md` document the tag-triggered
+  flow; no doc anywhere still instructs a local `cargo publish`. **Proven live by this very release.**
+- **`create-idempotency-lease-recovery`** (lifecycle, high) — pre-publication idempotency reservations now carry a
+  durable creator lease (pid + start-time, staleness-bounded): a keyed retry returns the published original, reclaims
+  provably-dead staging atomically, or fails closed when unverifiable. Keyed parent-edge (`child.spawned`) read repair
+  included. Follow-up `recover-unkeyed-child-publication` was filed by the worker and **closed `wontfix` on Jari's
+  call** (cosmic-ray-class window; fan-out already mandates per-unit keys; consequence is bookkeeping, not data loss —
+  mechanism documented in the closed issue).
+- **`config-show-layered-view`** (surface; was stale-labelled `deferred`, un-deferred at round start) — `config show`
+  is now a layered, tolerant inspection surface (config schema **v2**): raw file/env/default layers per key incl.
+  `[harness.per_kind]` visible under env shadowing, per-row `valid`/`validation_error` instead of dying on the value
+  being debugged, file-layer validity independent of ambient env, `--show-secrets` warning via the JSON `warnings`
+  envelope. Execution-path strictness unchanged.
 
-**✅ (2026-08-17, stint 4).** A **full round + release + a caught mistake**: four parallel headless
-spinoffs (one per lane), all landed on first spawn, no worker deaths; **v0.2.2 cut through every channel**; then CI
-caught that one of the four fixes was **incomplete**, and a fifth spinoff finished it. crates.io has `octl-core 0.2.2`
-+ `orchestratectl 0.2.2`; the `v0.2.2` tag's Release CI is **green**, the crates.io publish job is **green**, and
-**main CI is green on all 8 jobs, both platforms**. Local binary **0.2.2**, `orchestratectl doctor` **997 ok / 0 warn
-/ 0 fail**. `main` clean.
+**⚠ TWO CI-RED INCIDENTS, both caught by CI after a green local+integrated gate, both fixed same-round (the release
+waited for green each time):**
+1. **`ci-red-release-mode-injection`** — CI tests run `--release`; the `OCTL_TEST_*` injection hooks in `run/create.rs`
+   are (deliberately) `cfg!(debug_assertions)`-gated, so a new lease-recovery test asserting on injection passed the
+   debug-mode local gate and failed both CI platforms. Fix: injection-dependent tests are skipped in release builds
+   (hooks stay debug-only — a production binary must never honor a test kill switch). **New blind-spot axis: the local
+   gate is debug-mode; CI is the only release-mode gate.**
+2. **`etxtbsy-cross-module-stub-race`** — the THIRD ETXTBSY occurrence. Stint 4's mutex serialized only the fake-tmux
+   family, but `run/merge.rs`, `git/repo.rs`, `supervise/capture.rs`, `supervise/cleanup.rs` also write exec stubs in
+   the same unit-test process; fork-inheritance leaks a write fd across module boundaries (hit
+   `multiplexer::tmux::tests::new_session_surfaces_nonzero` even though it HELD the tmux mutex). Structural fix:
+   **CI test jobs (ci.yml + publish-crates.yml) now run cargo-nextest, process-per-test** — the whole class is gone,
+   not re-mutexed; doctests preserved via a separate step. *(The stint-4 "kept HERE only" macOS/Linux ETXTBSY learning
+   is now superseded by this structural fix + the AGENTS.md release-gate rules; archive has the pointer.)*
 
-**What landed (5 units, 5 issues closed):**
-- **`pi-spinoff-batch`** (supervise→lifecycle, high) — the load-bearing fix. `run create` now **stages** the prompt and
-  durable projections outside the public run tree while `create.sh` blocks on workmux/tmux/harness startup, and
-  atomically publishes only after a live worker PID **and** `node.created` are durable. So a client timeout under a
-  concurrent batch can no longer leave a successful-looking `pending` manifest with zero nodes. Worker filed
-  `create-idempotency-lease-recovery` for the residual (hard-kill mid-create leaves reclaimable staging state).
-- **`cli-canon-help-json`** (cli-canon) — canon §14 closed. `--help --json` now emits the clap-**derived** help
-  envelope (not a hand-maintained literal), and malformed output selectors are rejected. That lane is now empty.
-- **`tmux-stub-etxtbsy-flake`** (multiplexer) — see the KEY LEARNING below; took **two** spinoffs.
-- **`spinoff-skill-stale-preview-banner` + `skill-install-force-symlink`** (skills, one worker, two commits) — stale
-  "NOT IMPLEMENTED" preview guidance removed; forced install now replaces a **dangling** symlink (non-following
-  metadata, since `path.exists()` follows links).
+**Release-mechanics notes (mechanics only — the rules live in `AGENTS.md`):** the gated tag push worked as designed
+(the first tag attempt was correctly withheld on red CI, twice); `gh run watch` dies on transient GitHub 504/429s, so
+follow a failed watch with an explicit `gh run view --json conclusion` re-check before concluding red — and a 429
+downloading a CI *action* (cargo-deny job, run 32041657942) is infra noise, not our failure. Also: the default
+`skill install --force` covers claude+pi only — after a version bump run `--agent codex` too or doctor shows 13 codex
+sync warns.
 
-**⚠ KEY LEARNING (kept HERE only, Jari's call — see note) — the local green gate runs on macOS and is STRUCTURALLY
-BLIND to a whole failure class; CI is the only gate that sees it.** `tmux-stub-etxtbsy-flake` is ETXTBSY: Linux refuses
-to exec a file while any process holds a write fd to it; **macOS does not enforce this at all**. So the first fix
-(`sync_all` + `drop` before `chmod`) passed its worker's full local gate AND the orchestrator's integrated gate on
-merged `main` (26 suites, 0 failures) — and CI still went red, with **two sibling tests** failing. The real cause was
-one level deeper: a **cross-thread fork/exec race** — cargo runs these tests as parallel threads in ONE process, so
-when thread A holds a write fd to its stub, thread B's `Command::spawn` forks and the child transiently inherits it;
-`O_CLOEXEC` closes it only at *exec*, so a live process holds a write handle during that window. The second spinoff
-confirmed this and fixed it structurally (a test-local mutex held from stub creation through the tmux calls),
-**verified green on `test (ubuntu-latest)`**. Corollaries: (1) for a platform-specific class, a green local run is
-**not evidence** — argue the fix on mechanism and confirm on CI; (2) "the tests pass" did not mean the fix was right,
-twice in a row. *Note: Jari's call at this wrap was NOT to promote this into `AGENTS.md` — the machines move to Linux
-shortly, so the blind spot resolves itself; kept here because it explains why the fix took two spinoffs.*
+**⏭ NEXT — `add-configurable-agent` ALONE (surface lane head, in-progress: design.md v2 is ready to implement), or the
+`skills` head `audit-no-user-specifics`.** `add-configurable-agent` is cross-cutting (config + `harness::select` +
+run-create) — **do not run it in parallel with any `lifecycle` unit** (see the steer blocks below, which are its
+working brief). `audit-no-user-specifics` (high, guards a public-artifact leak class) has now been head-adjacent for
+four stints — if the profile work doesn't start this round, do it. Cheap parallel partner for either: the `lifecycle`
+head `uncommonly-fuzzy-swing` (blocked-on-user-input propagation) — but NOT alongside `add-configurable-agent`.
 
-**⚠ Release-mechanics learning promoted to `AGENTS.md`.** v0.2.2 was published from a local `cargo publish` before CI
-had reported on the commit — luck, not process. The finding: `publish-crates.yml` already publishes both crates from
-CI, tag-triggered, so local publishing was redundant all along. The full rule ("DO NOT `cargo publish` locally — the
-tag push IS the publish", the gated tag-push one-liner, and the `release-gate-on-ci` hole) now lives in `AGENTS.md`'s
-operating policy; read it there before any release.
-
-**⚠ LANE-STRUCTURE FIX (this wrap) — `supervise` was a phantom lane; merged into `lifecycle`.** `lifecycle` is defined
-as "everything touching `run/*` or `supervise/*`", so a parallel `supervise` lane was definitionally overlapping. Not a
-prediction — **verified from git**: the `supervise` lane's only work (`pi-spinoff-batch`) landed **entirely in
-`crates/octl-cli/src/run/create.rs`** (247 lines), **zero files under `supervise/*`**. Its follow-up
-`create-idempotency-lease-recovery` inherits that surface, so it moved to `lifecycle` (seq 5, now the lane head).
-This is the same shape as the two integrated-main breakages in the archive below; the difference is it was caught
-**before** a spawn. **`lifecycle` is deliberately NOT split** despite depth 12 — the `run/*` vs `supervise/*` split has
-already failed once here (`supervisor-dies-before-worker-node`), so it stays the sequential spine and parallelism comes
-from the other lanes.
-
-**⏭ NEXT — `skills` lane.** Its head is `release-gate-on-ci` (filed this wrap), with `audit-no-user-specifics` right
-behind it — **both high, both guarding something irreversible** (crates.io permanence vs. leaking user-specific facts
-into a public artifact), and `audit-no-user-specifics` has now been head-adjacent for three stints. Pick either; they
-are one lane so they sequence anyway. Cheap parallel partners: `surface`/`config-show-layered-view` and the
-`lifecycle` head `create-idempotency-lease-recovery`.
-
-**Lanes (3 now — `multiplexer` and `cli-canon` both drained this round and vanished; lanes derive from issue
-frontmatter, so no cleanup was needed).** `lifecycle` (12), `skills` (5), `surface` (2). Realistic parallelism is
-therefore **3 units/round**, which matches what actually ran. **`cli-canon` will return** as the canon grows (§19+) —
-reuse the name.
+**Lanes (3):** `lifecycle` (11, head `uncommonly-fuzzy-swing`), `skills` (5, head `audit-no-user-specifics`),
+`surface` (1: only `add-configurable-agent`, in-progress). Realistic parallelism 2–3 units/round; only 2 if the
+profile work runs (it excludes `lifecycle`).
 
 **⚠ `add-configurable-agent` does NOT fit the lane model — read before scheduling it.** Jari's own feature request
 (named agent profiles: `expert`/`standard`/`implementer`/`secure`, with fallbacks + config layering). Laned `surface`
-seq 20, sequenced after `config-show-layered-view`, but it is **genuinely cross-cutting**: config surface **and**
+(now that lane's only item, `in-progress` — design.md v2 is done, implementation is next), but it is
+**genuinely cross-cutting**: config surface **and**
 `harness::select` **and** the run-create path (accepting a profile, recording resolved profile/model/fallback in run
 metadata). Run-create is `lifecycle` territory. **Do not run it in parallel with any `lifecycle` unit.** The schema has
 a `collision` field for exactly this, but it is **not implemented in `issuectl update`** and no issue uses it, so the
@@ -128,19 +108,10 @@ shown by `run show`**; (3) it must replace a genuinely unsafe workaround — pi 
 concurrent spawns, easy to leave mutated). Any design still requiring global-settings mutation has not solved it. pi
 accepts `--model "provider/id:<thinking>"` on its CLI, so passthrough is viable.
 
-**Triage sweep done at this wrap (`/triage-unlaned-issues`), DAG now 0 unlaned.**
-- **Laned:** `intake-bug-orchestratectl-169460ea27e7` (stale pending runs → `lifecycle`) — admitted and **re-scoped**:
-  this round's staged-create fix should stop NEW stillborn pendings, so what remains is (a) the ~7 already on disk and
-  (b) making a stale pending distinguishable from a live worker in `run list`. Corroborated again: `run list` returned
-  ~301KB dominated by old pendings, several from other repos. Plus `add-configurable-agent` (above).
-- **Closed:** `intake-bug-orchestratectl-bb9e417520dd` (`node show` wrong arg order → `{}` with exit 0) as
-  **cannot-reproduce** — verified against the **running 0.2.2 binary**: it now returns a proper
-  `unknown_subcommand_or_flag` envelope with exit 1. Filed against 0.2.0.
-- **Closed:** `run-wait-false-stillborn-slow-start` as **cannot-reproduce** on Jari's call — but note the precise
-  grounds: it **did genuinely occur** when filed (a worker documented 4 spawns, all falsely declared dead, all
-  recovering). It is closed because it **did not recur** — 5/5 waits correct this round after the staged-create fix,
-  including a 50-min and a 9-min wait. Plausible mechanism (sampling a run before its node existed) but **not verified
-  as causal**. Re-file readily if it returns.
+**Still open from the stint-4 triage sweep:** `intake-bug-orchestratectl-169460ea27e7` (lifecycle tail) — stale
+pending runs clutter `run list` (~301KB, several from other repos). Re-scoped at that wrap: the staged-create fix
+stops NEW stillborn pendings, so what remains is (a) cleaning the ~7 already on disk and (b) making a stale pending
+distinguishable from a live worker in `run list`.
 
 ---
 
@@ -175,6 +146,21 @@ layer, or `supervise/`, and before any release action.
 Full narratives live in git history of this file; canonical rules extracted from
 these stints are in `AGENTS.md`.
 
+- **Review session (2026-08-17, after stint 4).** Fable-driven repo review + doc cleanup, parallel to the
+  `add-configurable-agent` design session (design.md v2). `AGENTS.md` rewritten for consistency; `README.md` rewritten
+  against 0.2.2 reality; stints 1–3 compressed into this archive. Code: `cut-plan-module` (dead 2013-line
+  `octl-core/src/plan.rs` removed — the breaking entry that made the next release 0.3.0) + `harness-pi-default`
+  (built-in default flipped to `pi` per ADR 0001 D4). Epics `code-pipeline` + `lifecycle-architecture-review` closed.
+- **Stint 4 (2026-08-17, v0.2.2).** Full round + release + a caught mistake: 4 parallel spinoffs (all first-spawn),
+  v0.2.2 cut, then CI caught one fix incomplete and a 5th spinoff finished it. Landed: `pi-spinoff-batch` (staged
+  atomic run-create publication — the load-bearing fix), `cli-canon-help-json` (§14, clap-derived help envelope),
+  `tmux-stub-etxtbsy-flake` (took two spinoffs; its tmux-family mutex later proved too narrow — the class was killed
+  structurally in stint 5 by nextest process-per-test in CI), `spinoff-skill-stale-preview-banner` +
+  `skill-install-force-symlink`. Lane fix: phantom `supervise` lane merged into `lifecycle` (verified from git;
+  `lifecycle` deliberately NOT split despite depth). Origin of the "DO NOT `cargo publish` locally — the tag push IS
+  the publish" rule (promoted to `AGENTS.md` after v0.2.2 was luckily-unharmed published before CI reported). Triage
+  sweep: 2 closed cannot-reproduce (incl. `run-wait-false-stillborn-slow-start` — did occur when filed, did not recur
+  after staged-create; re-file readily), stale-pendings intake laned.
 - **Stint 3 (2026-08-17, v0.2.1).** Full round + release, 3 parallel spinoffs, all landed first-spawn.
   Landed: `spinoff-report-fields-null` (report read-back surface + docs in five skills — the four "null report" bugs
   were all read-surface errors), `run-create-long-title-stillborn` (branch names bounded to workmux's 50-byte
