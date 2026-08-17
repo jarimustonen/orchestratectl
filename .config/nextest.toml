@@ -1,0 +1,10 @@
+# The watchdog unit tests use a shared in-process mutex under libtest. Nextest
+# isolates their environment variables between processes, but without this group
+# it also runs every timeout-sensitive fake-tmux probe concurrently. On loaded CI
+# hosts those probes can exceed their production timeout and return `Unknown`.
+[test-groups.watchdog-tests]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/supervise::watchdog::tests::/)'
+test-group = 'watchdog-tests'

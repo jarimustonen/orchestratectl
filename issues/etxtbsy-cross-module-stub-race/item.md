@@ -11,6 +11,8 @@ commits:
   summary: start ETXTBSY cross-module race fix
 - hash: 2f7f0e72abb4ee6bbc4147330814d363a86464d3
   summary: isolate CI and publish-gate tests with nextest
+- hash: 49282c2
+  summary: apply review finding and correct MSRV gate description
 ---
 
 # ETXTBSY flake is cross-module: all executable-stub test fixtures share one fork/exec race, tmux-only mutex insufficient
