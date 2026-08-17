@@ -2,11 +2,12 @@
 created: 2026-08-13
 updated: 2026-08-17
 type: improvement
-status: open
+status: done
 priority: high
 related: ['@stint-handoff-intake-check', '@stint-start-autonomous']
 lane: skills
 lane_seq: 1
+closed: 2026-08-17
 ---
 
 # Remove project-specific intake concepts leaked into stint-handoff + execution-DAG (keep these skills generic/open-source)
@@ -55,3 +56,9 @@ on its own against the released generic skills.
 Design + downstream side live in the consuming project (epic `stint-management-layer`,
 issues `stint-intake-lifecycle`, `triage-bugs-handoff-reconcile`, and the `/wrap-up`↔
 `/triage-bugs` wiring). Supersedes the intake half of `stint-handoff-intake-check`.
+
+## Resolution
+
+### 2026-08-17T17:49:22Z · @issuectl
+
+Removed downstream intake vocabulary from bundled skills, retained generic stint autonomy and Markdown-DAG mechanics, and verified the skill tree is clean.

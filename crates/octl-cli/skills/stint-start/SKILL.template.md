@@ -1,6 +1,6 @@
 ---
 name: stint-start
-description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous — resume straight from the handoff-prepared agenda (the `## 🔄 Continue here` block + DAG, approved intake already folded in). Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT bug intake/triage; NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
+description: "Run one round of a work-session (työrupeama, 'stint') as the ORCHESTRATOR the user talks to. The round engine: orient (pull, read operating policy, ground-truth from git, merge the execution DAG) → plan → spawn worktrees that do the coding (never codes in this session) → own the single deploy when the project permits → report to the user in product-owner language → absorb feedback. Use when the user says 'aloitetaan rupeama', 'jatketaan @TODO.md', 'start a work session', 'let's do a round', 'do another round', or invokes bare `/stint-start`. Maximally autonomous — resume straight from the handoff-prepared agenda (`## 🔄 Continue here` + DAG). Generic across projects — reads all specifics from the repo's own AGENTS.md/TODO.md. NOT a worktree itself; NOT a single one-off coding task (use `/worktree`); NOT the terminal handoff/wrap-up (that is `/stint-handoff`)."
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -38,14 +38,6 @@ only this `SKILL.md`, so the linked file is not in context until you open it, an
 phases below reference its merge algorithm rather than repeating it. If the file is
 missing or unreadable, stop and report an incomplete skill install rather than improvising
 the DAG merge from memory.
-
-> **Intake is surfaced and folded in at handoff, not here.** This skill does **not**
-> triage incoming bug reports. New intake items are detected, listed to the human, and
-> folded into the next stint's agenda by **`/stint-handoff`** (its intake-check step) —
-> so by the time `/stint-start` runs, the approved items are already **normal planned
-> work** in the `## 🔄 Continue here` block + the execution DAG. Consume them from there;
-> do **not** expect the user to hand you bug slugs mid-start, and do **not** run triage.
-> `stint-start` keeps only the plain Phase-0 `git pull`.
 
 ## Standing discipline (holds across every phase)
 
@@ -133,9 +125,8 @@ the DAG merge from memory.
 ## Autonomy
 
 Autonomy is **maximal — just go**. `/stint-handoff` has already left the start fully
-prepared (the `## 🔄 Continue here` block + the execution DAG, with any approved intake
-items already folded in), so **trust that prepared state and start executing** — do not
-re-derive or re-confirm the plan with the user, and do not expect them to hand you slugs.
+prepared (the `## 🔄 Continue here` block + the execution DAG), so **trust that prepared
+state and start executing** — do not re-derive or re-confirm the plan with the user.
 Run orienting → planning → orchestration → deploy → report autonomously; narrate state
 changes and decisions, not internal deliberation. When a fact is missing, prefer reading
 it or logging a best-judgment decision and proceeding, rather than asking. Pause only
@@ -186,8 +177,7 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
 ### Phase 1 — Plan the round
 
 The work-list is **already prepared** — take it from the handoff-built `## 🔄 Continue
-here` block + the execution DAG (which includes any intake items the human acked and
-folded in at `/stint-handoff`). Fold in the `$ARGUMENTS` focus hint and any items the
+here` block + the execution DAG. Fold in the `$ARGUMENTS` focus hint and any items the
 user explicitly names this round, but do **not** re-ask the user to confirm the plan the
 handoff already supplied.
 
@@ -235,7 +225,7 @@ git** before counting it toward the deploy pile:
 
 | Unit shape | Spawn | Lands |
 |---|---|---|
-| Clear fix for an already-filed bug | `/worktree-spinoff --headless <slug>` (issue-driven; use the bare slug or `issuectl:<slug>`, **not** `#<slug>` — hyphenated Telegram slugs like `tg-bug-…` are not guaranteed to parse behind a `#`) | current branch (main) |
+| Clear fix for an already-filed bug | `/worktree-spinoff --headless <slug>` (issue-driven; use the bare slug or `issuectl:<slug>`, **not** `#<slug>` because hyphenated slugs are not guaranteed to parse behind a `#`) | current branch (main) |
 | Well-scoped autonomous task | `/worktree-spinoff --headless <task>` | current branch (main) |
 | Design-first single feature | `/worktree-code <task>` (human-reviewed, foreground) or `/worktree-spinoff --headless <task>` (autonomous) | current branch (main) |
 
@@ -291,10 +281,9 @@ git** before counting it toward the deploy pile:
     fold this in; until it ships, retry-with-harvest is the manual stand-in).
 - **Never write status into the DAG** — not even a spawn breadcrumb (that would leave
   `TODO.md` dirty across the phase and pollute the drift check). The worktree owns the
-  issue status lifecycle (`in-progress` → terminal `fixed`/`done`); any intake lifecycle
-  label was already resolved at handoff (an admitted item no longer carries
-  `needs-triage`). If the DAG also wrote status it would race those updates. Track which units you've launched this round in **conductor
-  memory** (the recorded run ids), not in the file. Pick the next unit by **recomputing**
+  issue status lifecycle (`in-progress` → terminal `fixed`/`done`). If the DAG also wrote
+  status it would race those updates. Track which units you've launched this round in
+  **conductor memory** (the recorded run ids), not in the file. Pick the next unit by **recomputing**
   the head-of-line from live `issuectl` status (see the shared
   [`AGENTS-EXECUTION-DAG.md`](AGENTS-EXECUTION-DAG.md)), never from the printed `▶`.
 - **Reserve collision files at launch, not at first commit.** A spawned worker does not
@@ -368,10 +357,6 @@ done. When the session's context is filling or the user asks to wrap up, **propo
   `/worktree-*` family.
 - **Does not write code** in this session — every change goes through a worktree.
 - **Not for a single one-off coding task** — that's `/worktree` (router).
-- **Not for bug intake / triage** — the round engine does not run it. New intake items
-  are surfaced and folded into the agenda at `/stint-handoff` (its intake-check step), so
-  they enter Phase 1 as already-planned work-list / DAG items, not as slugs the user hands
-  you mid-start.
 - **Not the terminal handoff/wrap-up** — that's `/stint-handoff` (update the `TODO.md`
   handoff block + final DAG merge, then `/wrap-up`).
 - **Not for bare** status / deploy — those are `/worktree-status` and the project deploy

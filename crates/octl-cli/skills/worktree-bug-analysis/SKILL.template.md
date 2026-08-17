@@ -1,6 +1,6 @@
 ---
 name: worktree-bug-analysis
-description: Spawn an autonomous READ-ONLY worktree via `orchestratectl run create --kind spinoff` that analyses ONE already-filed bug and writes its findings back into the issue — reproduce or explain the symptom, locate the responsible code (Read/Grep only), classify it (real bug / expected behaviour / cannot tell), estimate severity, and sketch what a fix would touch. Never changes application code; the only write is the issue update, which it self-merges. Use when you have an existing bug issue (slug) that needs understanding before a fix/defer/not-a-bug decision — typically spawned by `/triage-bugs`. For fixing a bug use `/worktree-bugfix`; for open-ended multi-source research use `/worktree-research`.
+description: Spawn an autonomous READ-ONLY worktree via `orchestratectl run create --kind spinoff` that analyses ONE already-filed bug and writes its findings back into the issue — reproduce or explain the symptom, locate the responsible code (Read/Grep only), classify it (real bug / expected behaviour / cannot tell), estimate severity, and sketch what a fix would touch. Never changes application code; the only write is the issue update, which it self-merges. Use when an existing bug issue needs understanding before a fix/defer/not-a-bug decision. For fixing a bug use `/worktree-bugfix`; for open-ended multi-source research use `/worktree-research`.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -24,9 +24,8 @@ autonomous-merge contract that this skill reuses verbatim.
 
 ## When to use
 
-- ✅ You have an **existing** bug issue slug (e.g. `tg-bug-<user>-<chat>-<msg-id>`)
-  that needs understanding before a fix/defer/not-a-bug decision.
-- ✅ Typically spawned by `/triage-bugs` (or `/stint`) to scope unclear bugs.
+- ✅ You have an **existing** bug issue slug that needs understanding before a
+  fix/defer/not-a-bug decision.
 - ❌ Fixing the bug → `/worktree-bugfix`.
 - ❌ Filing a new bug / any issue that does not yet exist — this skill never
   creates issues.
@@ -38,8 +37,8 @@ autonomous-merge contract that this skill reuses verbatim.
    bug's own `issues/<slug>/item.md` (and, if useful, `issues/<slug>/analysis.md`).
    Editing anything under the product source tree is a *fix* — out of scope.
 2. **Do not decide the disposition.** Classify and recommend; fix-now / defer /
-   not-a-bug stays with the user (via `/triage-bugs` / `/stint`). Do not close
-   the issue or change its triage label.
+   not-a-bug stays with the user. Do not close the issue or change its status or
+   disposition labels.
 3. **Autonomous, no user pause.** Like `worktree-spinoff`: investigate, update
    the issue, self-merge. Do NOT run `/wrap-up`.
 
@@ -119,8 +118,8 @@ Same shape as `worktree-spinoff` (`run_id`, `supervisor`, `kind: spinoff`,
   `orchestratectl run wait <run-id>`; the headless window is reachable with
   `tmux attach -t headless` if the user wants to watch.
 
-When driver-spawned (`/triage-bugs`, `/stint`), return the structured payload
-(run id, node id, branch) to the caller instead of a human summary.
+When spawned by another skill rather than invoked directly by the user, return the
+structured payload (run id, node id, branch) to the caller instead of a human summary.
 
 ## Terminal report (mandatory)
 
@@ -158,13 +157,15 @@ this once the issue update is committed:
    worktree/window/branch — do not run any manual tmux/git cleanup. On a merge
    conflict it exits non-zero with `error.code: "merge_failed"` and submits no
    report; resolve (or `/complex-rebase`) and re-run the same call. **Do not**
-   close the issue or change its triage label — the disposition is the user's.
+   close the issue or change its status or disposition labels — that decision is the
+   user's.
 
 ## Non-goals
 
 - Does NOT fix bugs or touch application code — that's `/worktree-bugfix`.
 - Does NOT create issues — it only updates an existing one.
-- Does NOT decide fix/defer/not-a-bug, close the issue, or change its triage label.
+- Does NOT decide fix/defer/not-a-bug, close the issue, or change its status or
+  disposition labels.
 - Does NOT run open-ended multi-source research — that's `/worktree-research`.
 
 ## Install or upgrade `orchestratectl`
@@ -178,5 +179,5 @@ user to upgrade and stop; **Newer** → `orchestratectl skill install --force`;
 ## Example
 
 ```
-/worktree-bug-analysis tg-bug-jari-12345-678
+/worktree-bug-analysis checkout-total-off-by-one
 ```
