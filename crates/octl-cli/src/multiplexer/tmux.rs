@@ -336,6 +336,7 @@ fn run_lenient(mut cmd: Command, label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
     /// Write a fake `tmux` script that records its argv to `<dir>/tmux.log` and
@@ -344,14 +345,17 @@ mod tests {
     fn fake_tmux(dir: &std::path::Path, body: &str) -> String {
         let path = dir.join("tmux");
         let log = dir.join("tmux.log");
-        std::fs::write(
-            &path,
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(
             format!(
                 "#!/bin/sh\necho \"$@\" >> {log}\n{body}\n",
                 log = log.display(),
-            ),
+            )
+            .as_bytes(),
         )
         .unwrap();
+        file.sync_all().unwrap();
+        drop(file);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path.to_string_lossy().into_owned()
     }

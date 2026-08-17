@@ -15,6 +15,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Bundled `octl-spawn-spinoff` guidance no longer describes the shipped spinoff surface as a preview (`spinoff-skill-stale-preview-banner`).** Removed the stale stop-gate and obsolete `not_implemented` fallback so agents invoke `run create --kind spinoff` directly.
 - **`skill install --force` now replaces dangling symlink destinations (`skill-install-force-symlink`).** Install preflight uses non-following metadata, so a broken link is treated as an existing destination and atomically replaced instead of failing during creation.
 - **Interrupted headless spinoff creation no longer publishes a stillborn run (`pi-spinoff-batch`).** `run create` now stages the prompt and durable projections outside the public run tree while `create.sh` blocks on workmux, tmux, and harness startup. It atomically publishes only after a live worker PID and `node.created` are durable, so a client timeout under a concurrent Pi batch cannot leave a successful-looking `pending` manifest with zero nodes. The parent-child event and idempotency commit point follow publication; private interrupted staging state remains available for diagnosis.
+- **Tmux stub tests no longer intermittently fail with `ETXTBSY` on Linux (`tmux-stub-etxtbsy-flake`).** The fake executable is now synced and closed before it is made executable and spawned.
 
 ## [0.2.1] - 2026-08-16
 

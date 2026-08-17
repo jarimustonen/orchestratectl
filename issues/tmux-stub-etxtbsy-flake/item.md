@@ -2,7 +2,7 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: bug
-status: open
+status: in-progress
 priority: high
 lane: multiplexer
 lane_seq: 10
