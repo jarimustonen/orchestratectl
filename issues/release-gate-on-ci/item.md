@@ -41,36 +41,59 @@ authoritative for portable defects and **silently blind** to platform-specific o
 in the release sequence consults CI, which is the only signal that covers Linux, the MSRV
 floor, and `cargo-deny`.
 
+## The local publish was redundant in the first place
+
+Investigated during the same handoff: **`.github/workflows/publish-crates.yml` already
+publishes both crates to crates.io from CI**, tag-triggered on `v[0-9]+.[0-9]+.[0-9]+*`, in
+dependency order, using the repo's `CARGO_REGISTRY_TOKEN` secret. The local `cargo publish`
+duplicated it. The CI job reported green only because it deliberately tolerates *"already
+exists on the crates.io index"* as success — so the redundancy was invisible.
+
+That reframes the fix from "remember to check CI before publishing" to **"stop publishing
+locally at all"**, which is structural rather than a rule an agent must remember. This is
+already recorded in `AGENTS.md` (the "DO NOT `cargo publish` locally" bullet, 2026-08-17).
+
 ## Expected
 
-The release sequence should make CI a **hard gate** rather than a parallel activity: push
-the release commit, wait for CI to go green on it, and only then publish and tag. The
-mechanism is cheap:
+With local publishing removed, **the tag push becomes the single irreversible act**, so it
+is the step to gate:
 
 ```bash
-git push && \
-  gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status && \
-  cargo publish -p octl-core --locked   # ... then orchestratectl, then the tag
+gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status \
+  && git push origin "vX.Y.Z"
 ```
 
-`--exit-status` is the load-bearing part: it exits non-zero on a red run, so the `&&` chain
-breaks and no publish happens. Note the existing `AGENTS.md` warning about never piping a
-command whose exit status gates an `&&` chain — the same discipline applies here.
+`--exit-status` is load-bearing: a red run exits non-zero, so `&&` never reaches the tag
+push. (Same discipline as the existing `AGENTS.md` rule about never piping a command whose
+exit status gates an `&&` chain.)
+
+**The remaining hole, and the real deliverable of this issue:** `publish-crates.yml`
+self-verifies with only `cargo build --release` — **not the test suite**. So a tag pushed
+onto a red commit still publishes. Gating at tag-push time is a convention; gating inside
+the workflow is enforcement. Prefer the latter.
 
 ## Acceptance criteria
 
-- [ ] `AGENTS.md` records CI-green-on-the-release-commit as a **precondition of publishing**,
-      alongside the existing green-gate and `--locked` rules, with the reasoning inline.
-- [ ] `AGENTS.md` records that the local gate runs on macOS and therefore cannot see
-      Linux-only failure classes (ETXTBSY named as the worked example), so a green local run
-      is not evidence for that class.
-- [ ] The concrete `gh run watch --exit-status` snippet is documented in the release
-      mechanics (`OSS-RELEASE.md` and/or `AGENTS.md`) so it is copy-pasteable.
-- [ ] The `/oss-release` path and any bundled release guidance reflect the same ordering.
+- [ ] `publish-crates.yml` runs the test suite (at minimum `cargo test --workspace --locked`,
+      ideally the same gate CI applies to `main`) **before** any publish step, so a tag on a
+      red commit cannot publish. This is the load-bearing item.
+- [ ] `AGENTS.md` records CI-green-on-the-tagged-commit as a precondition of the tag push.
+      *(Done 2026-08-17 — verify it still matches the workflow.)*
+- [ ] The `gh run watch --exit-status` snippet is documented in the release mechanics
+      (`OSS-RELEASE.md` and/or `AGENTS.md`) so it is copy-pasteable.
+      *(Done 2026-08-17 in `AGENTS.md`; `OSS-RELEASE.md` still owes it.)*
+- [ ] `OSS-RELEASE.md`, the `/oss-release` path, and any bundled release guidance stop
+      describing a local two-crate `cargo publish` and reflect the tag-triggered CI flow.
 
 ## Notes
 
-Filed at Jari's request during the stint-4 handoff, after he asked both "should this be an
-issue somewhere?" (the macOS blind spot) and "is there an easy way to make sure?" (the
-publish ordering). Laned to `skills` because the deliverable is documentation//skill-surface
-prose, not supervisor or run-state code.
+Filed at Jari's request during the stint-4 handoff, after he asked "is there an easy way to
+fix this?" about the publish ordering. Laned to `skills` because the largest part of the
+deliverable is documentation / release-mechanics prose; the one code change is a workflow
+file, which collides with nothing else in the DAG.
+
+**Deliberately NOT in scope:** documenting that the local gate runs on macOS and is blind to
+Linux-only failure classes. Jari's call at the same handoff — the machines are moving to
+Linux shortly, so the blind spot resolves itself and a note about it would be stale on
+arrival. The ETXTBSY incident that exposed it is recorded in `TODO.md` as a KEY LEARNING for
+context.
