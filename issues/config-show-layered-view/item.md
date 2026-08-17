@@ -7,6 +7,11 @@ priority: normal
 epic: lifecycle-architecture-review
 lane_seq: 10
 lane: surface
+commits:
+- hash: 856cef6
+  summary: 'chore: start config layered inspection'
+- hash: cfc01bc1d5d826fa7db1144cfdcc0cd0845fd883
+  summary: 'feat: add layered tolerant config inspection'
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
