@@ -7,6 +7,8 @@ priority: high
 commits:
 - hash: 44447b6
   summary: stage creates before publishing workers
+- hash: 30f31a3
+  summary: stage creates before publishing workers
 ---
 
 # Recover interrupted run-create reservations and child publication
