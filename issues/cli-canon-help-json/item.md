@@ -1,8 +1,8 @@
 ---
 created: 2026-08-16
 updated: 2026-08-17
-type: improvement
-status: in-progress
+type: bug
+status: fixed
 priority: normal
 labels: [cli-canon, tooling]
 lane: cli-canon
@@ -12,6 +12,9 @@ commits:
   summary: 'fix(help): honor global --json with --help'
 - hash: 8c9745824f58665d8411548adca6af3afe60a701
   summary: 'fix(help): keep shorthand resolver lint-clean'
+- hash: b7a2e957d017728bd538bd9f812e93b8d0c17c82
+  summary: 'fix(help): reject malformed selectors under --json'
+closed: 2026-08-17
 ---
 
 # cli-canon: §14 --help --json machine-readable help
