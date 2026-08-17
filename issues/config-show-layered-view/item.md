@@ -2,7 +2,7 @@
 created: 2026-08-16
 updated: 2026-08-17
 type: improvement
-status: in-progress
+status: done
 priority: normal
 epic: lifecycle-architecture-review
 lane_seq: 10
@@ -18,6 +18,7 @@ commits:
   summary: 'test: pin config schema v2 in version contract'
 - hash: 6fd9e278c47c94e319791e5e5fe7c4c8b5806f7f
   summary: 'docs: fix config inspection intra-doc link'
+closed: 2026-08-17
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
