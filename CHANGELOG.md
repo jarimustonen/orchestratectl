@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-17
+
 ### Added
 
 - **`--help --json` now uses the global JSON shorthand (`cli-canon-help-json`).** `orchestratectl --help --json` and drill-down forms such as `orchestratectl run create --json --help` emit the schema-versioned, clap-derived help envelope rather than text help, matching `--help --output json`. Supplying both output selectors remains a structured caller error.
