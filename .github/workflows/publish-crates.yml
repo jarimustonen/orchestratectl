@@ -24,14 +24,50 @@ name: Publish to crates.io
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  # Manual runs are always dry-runs. Only a version-tag push may publish.
   workflow_dispatch:
-    inputs:
-      dry-run:
-        description: "Run cargo publish --dry-run instead of publishing"
-        required: false
-        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crates-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  release-version:
+    name: release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify workspace version, core pin, and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace_version="$(awk -F'"' '
+            /^\[workspace\.package\]/ { in_package=1; next }
+            /^\[/ { in_package=0 }
+            in_package && /^version[[:space:]]*=/ { print $2; exit }
+          ' Cargo.toml)"
+          core_pin="$(sed -nE 's/^octl-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/octl-cli/Cargo.toml)"
+
+          if [[ -z "$workspace_version" ]]; then
+            echo "workspace version not found" >&2
+            exit 1
+          fi
+          if [[ "$core_pin" != "$workspace_version" ]]; then
+            echo "octl-core pin '$core_pin' does not match workspace version '$workspace_version'" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$workspace_version" ]]; then
+            echo "tag '$GITHUB_REF_NAME' does not match workspace version 'v$workspace_version'" >&2
+            exit 1
+          fi
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -135,7 +171,7 @@ jobs:
 
   publish:
     name: cargo publish (workspace, dep-order)
-    needs: [fmt, version-snapshots, clippy, test, msrv, doc, deny]
+    needs: [release-version, fmt, version-snapshots, clippy, test, msrv, doc, deny]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +179,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Publish (dry-run)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry-run == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -152,19 +188,18 @@ jobs:
           # index, so a dry-run only covers the leaf crate.
 
       - name: Publish (dep-order)
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry-run != 'true') }}
+        if: ${{ github.event_name == 'push' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
 
           # Publish a crate, tolerating "already exists on crates.io index" as
-          # success. The engine (`orchestratectl release cut`) publishes both
-          # crates directly, and the version-tag push ALSO triggers this workflow,
-          # so a crate version is frequently already on the index by the time CI
-          # runs. A plain `cargo publish` exits 101 in that case; under `set -e`
-          # that would abort the step and mark a fully-successful release RED.
-          # Any OTHER failure (network, auth, verification) still propagates.
+          # success. This makes a workflow re-run recover after octl-core reached
+          # the index but orchestratectl did not. A plain `cargo publish` exits
+          # 101 in that case; under `set -e` that would abort the retry. The
+          # release-version gate prevents a mismatched tag from being hidden by
+          # this tolerance. Any OTHER failure still propagates.
           publish() {
             local pkg="$1"
             local out rc

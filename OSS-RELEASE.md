@@ -33,10 +33,10 @@ docs_site: none
   Rust toolchain, so it stays a `rust` target, not a separate `binary` ecosystem.
 - **targets: one crates.io target (`orchestratectl`) via cargo-publish** — the crate registry is
   crates.io and `.github/workflows/publish-crates.yml` publishes the workspace members from CI
-  (`octl-core` then `orchestratectl`; the CLI depends on `octl-core = "=0.1.0"`, so the library
-  publishes first). Both crates are `publish = true`. NOTE the repo ALSO ships prebuilt binaries
-  via **cargo-dist** as a separate CI-driven channel; see Release notes. That channel is not the
-  crates.io registry target and is intentionally not modeled as this `target`.
+  (`octl-core` then `orchestratectl`; the CLI pins `octl-core` exactly to the shared workspace
+  version, so the library publishes first). Both crates are `publish = true`. NOTE the repo ALSO
+  ships prebuilt binaries via **cargo-dist** as a separate CI-driven channel; see Release notes.
+  That channel is not the crates.io registry target and is intentionally not modeled as this `target`.
 - **release.layout: single** — the workspace shares one version (`workspace.package.version =
   0.1.0`); both crates version and tag together, and cargo-dist treats them as one application
   (`orchestratectl` with `octl-core` as its published dependency). Not `monorepo` (which implies
@@ -100,19 +100,27 @@ docs_site: none
   altered). Validated against ossctl 0.5.0 (`contract validate` + `release plan --bump
   minor`) and by a scratch 0.1.8→0.2.0 bump whose diff was exactly the three snapshots.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
-  cannot be undone: a version can be yanked but never re-used or overwritten. Verify both
-  crates' `version`/dependency pins before pushing the release tag. Never publish either crate
-  locally. `.github/workflows/publish-crates.yml` owns the dependency-ordered crates.io publish.
+  cannot be undone: a version can be yanked but never re-used or overwritten. Never publish
+  either crate locally. `.github/workflows/publish-crates.yml` verifies the workspace version,
+  exact `octl-core` pin, and release tag before it owns the dependency-ordered crates.io publish.
 - **CI-green tag gate.** Commit and push the finalized changelog, workspace version, `octl-core`
-  pin, lockfile, and refreshed `version_*` snapshots. Then wait for main CI on that commit and
-  push the release tag only if it succeeds:
+  pin, lockfile, and refreshed `version_*` snapshots. Then wait for main CI on that exact commit
+  and push the release tag only if it succeeds:
   ```bash
-  gh run watch "$(gh run list --branch main --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status \
-    && git push origin "vX.Y.Z"
+  sha="$(git rev-parse HEAD)"
+  for _ in $(seq 60); do
+    id="$(gh run list --workflow ci.yml --branch main --commit "$sha" --event push --limit 1 --json databaseId -q '.[0].databaseId')"
+    test -n "$id" && test "$id" != null && break
+    sleep 5
+  done
+  test -n "${id:-}" && test "$id" != null || { echo "no main CI run for $sha" >&2; exit 1; }
+  gh run watch "$id" --exit-status && git push origin "vX.Y.Z"
   ```
-  `--exit-status` and `&&` are load-bearing. In addition, `publish-crates.yml` repeats the full
-  main CI gate and its publish job depends on every gate job, so a tag pushed incorrectly still
-  cannot publish from a red commit.
+  The SHA and workflow filters prevent a concurrent push or an older run from producing a false
+  green. `--exit-status` and `&&` are load-bearing. In addition, `publish-crates.yml` repeats the
+  full main CI gate and its crates.io publish job depends on every gate job. Cargo-dist's
+  `release.yml` runs independently, so this pre-tag check remains load-bearing for the binary
+  and tap channel too.
 - **Two distribution channels, one tag.** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,
