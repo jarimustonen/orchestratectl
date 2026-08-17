@@ -101,10 +101,21 @@ fn config_show_json_pins_payload_and_default_layers() {
         .collect();
     assert_eq!(
         fields,
-        BTreeSet::from(["schema_version_config", "path", "exists", "keys"])
+        BTreeSet::from([
+            "schema_version_config",
+            "path",
+            "exists",
+            "valid",
+            "invalid_layer_count",
+            "keys",
+            "unrecognized",
+        ])
     );
     assert_eq!(data["schema_version_config"], 2);
     assert_eq!(data["exists"], false);
+    assert_eq!(data["valid"], true);
+    assert_eq!(data["invalid_layer_count"], 0);
+    assert_eq!(data["unrecognized"], serde_json::json!([]));
 
     let names: Vec<&str> = data["keys"]
         .as_array()
@@ -217,7 +228,9 @@ fn config_show_invalid_file_value_is_visible_and_successful() {
         .contains("unknown harness 'gpt'"));
     assert_eq!(row["layers"][0]["value"], "gpt");
     assert_eq!(row["layers"][0]["valid"], false);
-    assert!(!envelope["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(envelope["data"]["valid"], false);
+    assert_eq!(envelope["data"]["invalid_layer_count"], 1);
+    assert_eq!(envelope["warnings"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -236,7 +249,62 @@ fn config_show_env_does_not_launder_invalid_file_value() {
     assert_eq!(row["valid"], true);
     assert_eq!(row["layers"][1]["value"], "gpt");
     assert_eq!(row["layers"][1]["valid"], false);
-    assert!(!envelope["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(envelope["data"]["valid"], false);
+    assert_eq!(envelope["data"]["invalid_layer_count"], 1);
+    assert_eq!(envelope["warnings"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn config_show_invalid_env_is_reported_once() {
+    let home = TempDir::new().unwrap();
+    let mut command = bin(home.path());
+    command.env("ORCHESTRATECTL_HARNESS", "gpt");
+    let envelope = envelope_json(command.args(["config", "show", "--output", "json"]));
+    assert_eq!(envelope["data"]["invalid_layer_count"], 1);
+    let warnings = envelope["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0]
+        .as_str()
+        .unwrap()
+        .contains("ORCHESTRATECTL_HARNESS"));
+}
+
+#[test]
+fn config_show_whitespace_value_matches_execution_normalization() {
+    let home = TempDir::new().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[harness]\ndefault = \" pi \"\n",
+    )
+    .unwrap();
+    let data = show_json(bin(home.path()).args(["config", "show", "--output", "json"]));
+    let row = key(&data, "harness.default");
+    assert_eq!(row["effective_value"], "pi");
+    assert_eq!(row["layers"][0]["value"], " pi ");
+    assert_eq!(row["valid"], true);
+}
+
+#[test]
+fn config_show_unrecognized_entries_are_separate_and_keys_stay_unique() {
+    let home = TempDir::new().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[harness]\nresearch = \"pi\"\n\n[harness.per_kind]\ndefault = \"pi\"\n",
+    )
+    .unwrap();
+    let envelope = envelope_json(bin(home.path()).args(["config", "show", "--output", "json"]));
+    let data = &envelope["data"];
+    let names: Vec<&str> = data["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["key"].as_str().unwrap())
+        .collect();
+    let unique: BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(names.len(), unique.len());
+    assert_eq!(data["unrecognized"].as_array().unwrap().len(), 2);
+    assert_eq!(data["valid"], false);
+    assert_eq!(data["invalid_layer_count"], 2);
 }
 
 #[test]
@@ -279,6 +347,7 @@ fn config_show_text_is_human_readable_and_layered() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("path:"), "text output: {stdout:?}");
     assert!(stdout.contains("exists: false"), "text output: {stdout:?}");
+    assert!(stdout.contains("valid:  true"), "text output: {stdout:?}");
     assert!(stdout.contains("harness.default = pi (default, valid)"));
     assert!(stdout.contains("* default pi"), "text layers: {stdout:?}");
 }

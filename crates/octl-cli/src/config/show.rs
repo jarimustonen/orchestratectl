@@ -21,7 +21,10 @@ use serde::Serialize;
 
 use crate::config::{config_path, CONFIG_SCHEMA_VERSION};
 use crate::error::CliError;
-use crate::harness::{select::HARNESS_ENV, DEFAULT_HARNESS, KNOWN_HARNESSES};
+use crate::harness::{
+    select::{validate_harness_name, HarnessNameError, HARNESS_ENV},
+    DEFAULT_HARNESS, KNOWN_HARNESSES,
+};
 use crate::output::{self, OutputFormat, OutputSpec};
 use crate::run::kind_kebab;
 
@@ -39,8 +42,22 @@ struct ConfigShowPayload {
     schema_version_config: u32,
     path: String,
     exists: bool,
-    /// Known effective keys followed by any unrecognized harness entries.
+    /// True only when every physical layer is valid and no schema-invalid
+    /// harness entry was found.
+    valid: bool,
+    invalid_layer_count: usize,
+    /// Known precedence keys. `key` is unique within this array.
     keys: Vec<ConfigKey>,
+    /// Parseable file entries that the strict harness schema would reject.
+    unrecognized: Vec<UnrecognizedConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct UnrecognizedConfig {
+    origin_key: String,
+    value: String,
+    valid: bool,
+    validation_error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,27 +124,16 @@ impl ConfigKey {
             .first_mut()
             .expect("every known config key has a built-in default layer");
         effective.active = true;
+        let effective_value = validate_harness_name(&effective.value)
+            .map_or_else(|_| effective.value.clone(), str::to_owned);
         Self {
             key: key.into(),
-            effective_value: effective.value.clone(),
+            effective_value,
             effective_source: effective.source,
             valid: effective.valid,
             validation_error: effective.validation_error.clone(),
             secret: false,
             layers,
-        }
-    }
-
-    fn invalid_only(key: impl Into<String>, mut layer: ConfigLayer) -> Self {
-        layer.active = true;
-        Self {
-            key: key.into(),
-            effective_value: layer.value.clone(),
-            effective_source: layer.source,
-            valid: false,
-            validation_error: layer.validation_error.clone(),
-            secret: false,
-            layers: vec![layer],
         }
     }
 }
@@ -167,16 +173,20 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
     }
 
     // Parseable but schema-invalid entries are inspection data, not fatal
-    // errors. Preserve them as rows rather than hiding a typo from the caller.
+    // errors. Keep them outside `keys`, whose logical key identifiers stay
+    // unique and always describe a real precedence stack.
+    let mut unrecognized = Vec::new();
     if let Some((value, error)) = raw.section_error {
-        keys.push(ConfigKey::invalid_only(
-            "harness",
-            ConfigLayer::invalid_file(value, "harness".into(), error),
-        ));
+        unrecognized.push(UnrecognizedConfig {
+            origin_key: "harness".into(),
+            value,
+            valid: false,
+            validation_error: error,
+        });
     }
     for (name, value) in raw.unknown {
-        let origin = format!("harness.{name}");
-        let error = if name == "per_kind" {
+        let origin_key = format!("harness.{name}");
+        let validation_error = if name == "per_kind" {
             format!(
                 "expected [harness.per_kind] table, found {}",
                 value.type_str()
@@ -184,64 +194,49 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
         } else {
             "unknown key in [harness]; expected default or per_kind".into()
         };
-        keys.push(ConfigKey::invalid_only(
-            origin.clone(),
-            ConfigLayer::invalid_file(raw_value(&value), origin, error),
-        ));
+        unrecognized.push(UnrecognizedConfig {
+            origin_key,
+            value: raw_value(&value),
+            valid: false,
+            validation_error,
+        });
     }
     for (name, value) in raw
         .per_kind
         .iter()
         .filter(|(name, _)| !Kind::WIRE_NAMES.contains(&name.as_str()))
     {
-        let key = format!("harness.{name}");
-        keys.push(ConfigKey::invalid_only(
-            key,
-            ConfigLayer::invalid_file(
-                raw_value(value),
-                format!("harness.per_kind.{name}"),
-                format!(
-                    "unknown run kind '{name}'; valid kinds: {}",
-                    Kind::WIRE_NAMES.join(", ")
-                ),
+        unrecognized.push(UnrecognizedConfig {
+            origin_key: format!("harness.per_kind.{name}"),
+            value: raw_value(value),
+            valid: false,
+            validation_error: format!(
+                "unknown run kind '{name}'; valid kinds: {}",
+                Kind::WIRE_NAMES.join(", ")
             ),
-        ));
+        });
     }
 
     let mut command_warnings = warnings.to_vec();
-    let mut seen_invalid_layers = BTreeSet::new();
-    for key in &keys {
-        for layer in key.layers.iter().filter(|layer| !layer.valid) {
-            let warning = format!(
-                "{} {} value '{}' is invalid: {}",
-                layer.origin_key.as_deref().unwrap_or(&key.key),
-                layer.source,
-                layer.value,
-                layer.validation_error.as_deref().unwrap_or("invalid value")
-            );
-            if seen_invalid_layers.insert(warning.clone()) {
-                command_warnings.push(warning);
-            }
-        }
-    }
-
     let any_secret = keys.iter().any(|key| key.secret);
-    if !show_secrets {
-        for key in keys.iter_mut().filter(|key| key.secret) {
-            key.effective_value = REDACTED.to_string();
-            for layer in &mut key.layers {
-                layer.value = REDACTED.to_string();
-            }
-        }
-    } else {
+    if show_secrets {
         add_show_secrets_warning(any_secret, &mut command_warnings);
+    } else {
+        for key in keys.iter_mut().filter(|key| key.secret) {
+            redact_secret_key(key);
+        }
     }
+    let invalid_layer_count =
+        append_validation_warnings(&keys, &unrecognized, &mut command_warnings);
 
     let payload = ConfigShowPayload {
         schema_version_config: CONFIG_SCHEMA_VERSION,
         path: path.display().to_string(),
         exists: path.exists(),
+        valid: invalid_layer_count == 0,
+        invalid_layer_count,
         keys,
+        unrecognized,
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -250,6 +245,7 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
         OutputFormat::Text => {
             println!("path:   {}", payload.path);
             println!("exists: {}", payload.exists);
+            println!("valid:  {}", payload.valid);
             for key in &payload.keys {
                 let validity = if key.valid { "valid" } else { "INVALID" };
                 println!(
@@ -272,6 +268,10 @@ pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result
                         println!("      validation_error: {error}");
                     }
                 }
+            }
+            for entry in &payload.unrecognized {
+                println!("{} = {} (file, INVALID)", entry.origin_key, entry.value);
+                println!("      validation_error: {}", entry.validation_error);
             }
             output::emit_text_warnings(&command_warnings);
         }
@@ -313,6 +313,58 @@ fn file_harness_layer(value: &toml::Value, origin: &str) -> ConfigLayer {
     }
 }
 
+fn redact_secret_key(key: &mut ConfigKey) {
+    key.effective_value = REDACTED.into();
+    if key.validation_error.is_some() {
+        key.validation_error = Some("invalid secret value (redacted)".into());
+    }
+    for layer in &mut key.layers {
+        layer.value = REDACTED.into();
+        if layer.validation_error.is_some() {
+            layer.validation_error = Some("invalid secret value (redacted)".into());
+        }
+    }
+}
+
+fn append_validation_warnings(
+    keys: &[ConfigKey],
+    unrecognized: &[UnrecognizedConfig],
+    warnings: &mut Vec<String>,
+) -> usize {
+    let mut physical_invalid = BTreeSet::new();
+    for key in keys {
+        for layer in key.layers.iter().filter(|layer| !layer.valid) {
+            let origin = layer.origin_key.as_deref().unwrap_or_else(|| {
+                if layer.source == "env" {
+                    HARNESS_ENV
+                } else {
+                    &key.key
+                }
+            });
+            physical_invalid.insert((
+                layer.source.to_string(),
+                origin.to_string(),
+                layer.value.clone(),
+                layer.validation_error.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    for entry in unrecognized {
+        physical_invalid.insert((
+            "file".into(),
+            entry.origin_key.clone(),
+            entry.value.clone(),
+            entry.validation_error.clone(),
+        ));
+    }
+    for (source, origin, value, error) in &physical_invalid {
+        warnings.push(format!(
+            "{origin} ({source}) value '{value}' is invalid: {error}"
+        ));
+    }
+    physical_invalid.len()
+}
+
 fn add_show_secrets_warning(any_secret: bool, warnings: &mut Vec<String>) {
     if any_secret {
         // JSON warnings belong in the stdout envelope (§10), never stderr.
@@ -321,27 +373,25 @@ fn add_show_secrets_warning(any_secret: bool, warnings: &mut Vec<String>) {
 }
 
 fn harness_validation_error(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        Some(format!(
+    match validate_harness_name(value) {
+        Ok(_) => None,
+        Err(HarnessNameError::Empty) => Some(format!(
             "empty harness name; known harnesses: {}",
             KNOWN_HARNESSES.join(", ")
-        ))
-    } else if KNOWN_HARNESSES.contains(&value) {
-        None
-    } else {
-        Some(format!(
-            "unknown harness '{value}'; known harnesses: {}",
+        )),
+        Err(HarnessNameError::Unknown) => Some(format!(
+            "unknown harness '{}'; known harnesses: {}",
+            value.trim(),
             KNOWN_HARNESSES.join(", ")
-        ))
+        )),
     }
 }
 
 fn raw_value(value: &toml::Value) -> String {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}")))
+    value.as_str().map_or_else(
+        || serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}")),
+        str::to_owned,
+    )
 }
 
 fn load_raw_harness(path: &Path) -> Result<RawHarness, CliError> {
@@ -419,5 +469,30 @@ mod tests {
             warnings,
             ["--show-secrets: secret-valued config keys are shown in plaintext"]
         );
+    }
+
+    #[test]
+    fn secret_redaction_scrubs_values_errors_and_warnings() {
+        let mut key = ConfigKey::from_layers(
+            "token",
+            vec![ConfigLayer::invalid_file(
+                "hunter2".into(),
+                "token".into(),
+                "invalid token 'hunter2'".into(),
+            )],
+        );
+        key.secret = true;
+        redact_secret_key(&mut key);
+        let mut warnings = Vec::new();
+        append_validation_warnings(&[key], &[], &mut warnings);
+        let rendered = warnings.join(" ");
+        assert!(!rendered.contains("hunter2"));
+        assert!(rendered.contains(REDACTED));
+    }
+
+    #[test]
+    fn harness_validation_normalizes_like_execution() {
+        assert_eq!(validate_harness_name(" pi "), Ok("pi"));
+        assert_eq!(harness_validation_error(" pi "), None);
     }
 }

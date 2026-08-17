@@ -315,7 +315,7 @@ expression: value
             "long": "show-secrets",
             "long_aliases": [],
             "short_aliases": [],
-            "help": "Reveal secret-valued keys instead of redacting them. Emits a warning to stderr. No config key is secret today, so this is a forward-compatible no-op on the current surface",
+            "help": "Reveal secret-valued keys instead of redacting them. Emits a warning on stderr in text mode or in the JSON warnings envelope. No config key is secret today, so this is a forward-compatible no-op on the current surface",
             "value_names": [],
             "takes_value": false,
             "multiple": false,

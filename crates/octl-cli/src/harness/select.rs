@@ -131,14 +131,34 @@ pub fn resolve_with(
 
 /// Validate `raw` against [`super::KNOWN_HARNESSES`] and wrap it with its source,
 /// or fail with a structured error that names both the bad value and the layer.
-fn finish(raw: &str, source: HarnessSource) -> Result<HarnessChoice, CliError> {
+/// Validate and normalize a harness token exactly as execution does. Every
+/// source trims surrounding whitespace before the registry lookup.
+pub(crate) fn validate_harness_name(raw: &str) -> Result<&str, HarnessNameError> {
     let name = raw.trim();
-    // An empty value (e.g. `--harness ""`, or `ORCHESTRATECTL_HARNESS=` reaching
-    // the flag path) deserves a clear message rather than the confusing
-    // "unknown harness ''". (An empty env value is already treated as unset one
-    // layer up in `resolve_with`; this catches the explicit-empty cases.)
     if name.is_empty() {
-        return Err(CliError::user(
+        Err(HarnessNameError::Empty)
+    } else if super::KNOWN_HARNESSES.contains(&name) {
+        Ok(name)
+    } else {
+        Err(HarnessNameError::Unknown)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HarnessNameError {
+    Empty,
+    Unknown,
+}
+
+fn finish(raw: &str, source: HarnessSource) -> Result<HarnessChoice, CliError> {
+    match validate_harness_name(raw) {
+        Ok(name) => Ok(HarnessChoice {
+            name: name.to_string(),
+            source,
+        }),
+        // An empty value deserves a clear message rather than the confusing
+        // "unknown harness ''". Empty env is treated as unset before this call.
+        Err(HarnessNameError::Empty) => Err(CliError::user(
             "invalid_harness",
             format!(
                 "empty harness name (from {}); known harnesses: {}",
@@ -146,25 +166,21 @@ fn finish(raw: &str, source: HarnessSource) -> Result<HarnessChoice, CliError> {
                 super::KNOWN_HARNESSES.join(", ")
             ),
         )
-        .with_expected(serde_json::json!(super::KNOWN_HARNESSES)));
+        .with_expected(serde_json::json!(super::KNOWN_HARNESSES))),
+        Err(HarnessNameError::Unknown) => {
+            let name = raw.trim();
+            Err(CliError::user(
+                "invalid_harness",
+                format!(
+                    "unknown harness '{name}' (from {}); known harnesses: {}",
+                    source.as_str(),
+                    super::KNOWN_HARNESSES.join(", ")
+                ),
+            )
+            .with_invalid_value(name)
+            .with_expected(serde_json::json!(super::KNOWN_HARNESSES)))
+        }
     }
-    if super::KNOWN_HARNESSES.contains(&name) {
-        return Ok(HarnessChoice {
-            name: name.to_string(),
-            source,
-        });
-    }
-    let expected = serde_json::json!(super::KNOWN_HARNESSES);
-    Err(CliError::user(
-        "invalid_harness",
-        format!(
-            "unknown harness '{name}' (from {}); known harnesses: {}",
-            source.as_str(),
-            super::KNOWN_HARNESSES.join(", ")
-        ),
-    )
-    .with_invalid_value(name)
-    .with_expected(expected))
 }
 
 #[cfg(test)]

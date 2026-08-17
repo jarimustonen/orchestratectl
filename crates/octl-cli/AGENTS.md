@@ -84,8 +84,11 @@ neither ever mutates `config.toml`. Lives in `config/{mod,path,show}.rs` (the
   `harness.default` and each creatable `harness.<kind>`, plus rows for
   unrecognized harness entries. Every row carries `effective_value`,
   `effective_source`, effective `valid` / `validation_error`, and an ordered
-  `layers` stack (highest precedence first). Each layer carries its own
-  validity, `active`, and a file-only `origin_key`, so
+  `layers` stack (highest precedence first). `keys[].key` is unique. Parseable
+  entries rejected by the strict harness schema live separately in
+  `unrecognized[]`, and the payload carries top-level `valid` and
+  `invalid_layer_count`. Each layer carries its own validity, `active`, and a
+  file-only `origin_key`, so
   `harness.per_kind.research` remains visible and independently validated when
   `ORCHESTRATECTL_HARNESS` shadows it. Invalid parseable values produce envelope
   warnings and exit 0; unreadable or syntactically invalid TOML remains fatal.

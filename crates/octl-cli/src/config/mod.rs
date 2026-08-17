@@ -64,6 +64,11 @@ pub mod show;
 /// `schema_version_config` field on `config path` / `config show`). Bumped
 /// independently of the run-state schema so an agent can pin the shape of the
 /// config surface (AGENTS-AI-FIRST-CLI §10).
+///
+/// Version history:
+/// - v1: effective-only `value` / `source` rows.
+/// - v2: layered rows with independent validity, a unique `keys` collection,
+///   unrecognized file entries, and a top-level validity summary.
 pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 
 /// The `config` noun — read-only layered inspection of the configuration
@@ -77,8 +82,9 @@ pub enum ConfigAction {
     /// Secret-valued keys are redacted unless `--show-secrets` is given.
     Show {
         /// Reveal secret-valued keys instead of redacting them. Emits a
-        /// warning to stderr. No config key is secret today, so this is a
-        /// forward-compatible no-op on the current surface.
+        /// warning on stderr in text mode or in the JSON warnings envelope.
+        /// No config key is secret today, so this is a forward-compatible
+        /// no-op on the current surface.
         #[arg(long)]
         show_secrets: bool,
     },
