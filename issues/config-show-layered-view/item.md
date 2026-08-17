@@ -1,13 +1,12 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-17
 type: improvement
 status: open
 priority: normal
 epic: lifecycle-architecture-review
-labels: [deferred]
-lane: surface
 lane_seq: 10
+lane: surface
 ---
 
 # config show: layered/raw inspection that tolerates invalid values
