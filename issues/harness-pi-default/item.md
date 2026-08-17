@@ -3,10 +3,11 @@ created: 2026-08-17
 updated: 2026-08-17
 type: improvement
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 lane: surface
 lane_seq: 15
+closed: 2026-08-17
 ---
 
 # Make pi the built-in default harness per ADR 0001 D4
