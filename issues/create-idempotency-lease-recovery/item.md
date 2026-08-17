@@ -11,6 +11,8 @@ commits:
   summary: stage creates before publishing workers
 - hash: 70e21ad
   summary: mark create lease recovery in progress
+- hash: 177be48
+  summary: recover interrupted create reservations
 lane: lifecycle
 lane_seq: 5
 ---

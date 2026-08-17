@@ -113,7 +113,7 @@ fn interrupted_create_never_publishes_a_zero_node_run() {
     write_exec(
         &create_sh,
         &format!(
-            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do sleep 1; done\n",
+            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do :; done\n",
             script_pid.display(),
             ready.display()
         ),
@@ -214,7 +214,7 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
     write_exec(
         &create_sh,
         &format!(
-            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do sleep 1; done\n",
+            "#!/bin/bash\necho $$ > '{}'\ntouch '{}'\nwhile :; do :; done\n",
             script_pid.display(),
             ready.display()
         ),
@@ -243,6 +243,7 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
     let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("ORCHESTRATECTL_HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
         .args([
             "--output",
             "json",
@@ -263,6 +264,31 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
 
     creator.kill().unwrap();
     creator.wait().unwrap();
+
+    // The CLI owner is dead but create.sh still inherits the materializer
+    // flock. A retry must continue refusing rather than deleting live staging.
+    let orphan_retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
+        .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "live",
+            "--idempotency-key",
+            "live-key",
+        ])
+        .output()
+        .unwrap();
+    assert!(!orphan_retry.status.success());
+    let orphan_error: Value = serde_json::from_slice(&orphan_retry.stderr).unwrap();
+    assert_eq!(orphan_error["error"]["code"], "idempotency_creator_live");
+
     if let Ok(pid) = std::fs::read_to_string(&script_pid).map(|s| s.trim().parse::<i32>().unwrap())
     {
         unsafe { libc::kill(pid, libc::SIGKILL) };

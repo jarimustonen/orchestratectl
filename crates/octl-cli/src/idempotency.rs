@@ -27,10 +27,13 @@
 //! owner is never raced. Legacy run-id-only records remain replayable after
 //! publication, but cannot be reclaimed because they carry no owner identity.
 
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
@@ -86,6 +89,89 @@ pub struct CreatorLease {
     pub pid: u32,
     pub pid_start_secs: Option<u64>,
     pub started_at: DateTime<Utc>,
+    /// Absolute path of the inherited materializer flock. New creators hold
+    /// this lock in both the CLI and create.sh process tree until publication.
+    #[serde(default)]
+    pub materializer_lease_path: Option<String>,
+}
+
+/// Lifetime lease inherited by create.sh. Clearing `FD_CLOEXEC` is load-bearing:
+/// if the Rust creator is `SIGKILLed`, a still-running materializer keeps the flock
+/// held, so a retry cannot reclaim or delete its staging state.
+pub struct MaterializerLease {
+    file: File,
+    path: PathBuf,
+}
+
+impl MaterializerLease {
+    pub fn acquire(root: &Path, run_id: &str) -> Result<Self, CliError> {
+        let dir = root.join("idempotency").join("materializers");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| CliError::system("io_error", format!("mkdir {}: {e}", dir.display())))?;
+        let path = dir.join(format!("{run_id}.lease"));
+        let mut opts = OpenOptions::new();
+        opts.create(true).read(true).write(true).truncate(false);
+        octl_core::nofollow(&mut opts);
+        let file = opts
+            .open(&path)
+            .map_err(|e| CliError::system("io_error", format!("open {}: {e}", path.display())))?;
+        FileExt::lock(&file)
+            .map_err(|e| CliError::system("lock_error", format!("lock {}: {e}", path.display())))?;
+        // SAFETY: F_GETFD/F_SETFD only inspect/update this valid owned fd.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+        if flags < 0
+            || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) }
+                < 0
+        {
+            return Err(CliError::system(
+                "io_error",
+                format!(
+                    "make {} inheritable: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                ),
+            ));
+        }
+        Ok(Self { file, path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for MaterializerLease {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseLiveness {
+    Live,
+    Dead,
+    Unverifiable,
+}
+
+pub fn materializer_liveness(path: &str) -> LeaseLiveness {
+    let path = Path::new(path);
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true);
+    octl_core::nofollow(&mut opts);
+    let file = match opts.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LeaseLiveness::Unverifiable,
+        Err(_) => return LeaseLiveness::Unverifiable,
+    };
+    match FileExt::try_lock(&file) {
+        Ok(()) => {
+            let _ = FileExt::unlock(&file);
+            LeaseLiveness::Dead
+        }
+        Err(TryLockError::WouldBlock) => LeaseLiveness::Live,
+        Err(TryLockError::Error(_)) => LeaseLiveness::Unverifiable,
+    }
 }
 
 /// Durable value stored in a keyed reservation.
@@ -112,7 +198,15 @@ impl ReservationRecord {
     }
 }
 
-#[cfg(test)]
+pub fn lookup(
+    repo: Option<&str>,
+    branch: Option<&str>,
+    key: &str,
+) -> Result<Option<ReservationRecord>, CliError> {
+    let root = home::root_dir()?;
+    lookup_in(&root, repo, branch, key)
+}
+
 fn lookup_in(
     root: &Path,
     repo: Option<&str>,
@@ -138,6 +232,7 @@ pub enum Reservation {
 #[must_use]
 pub enum Reclaim {
     Reclaimed,
+    Published,
     Changed(ReservationRecord),
 }
 
@@ -185,8 +280,21 @@ fn reserve_in(
         if let Some(existing) = read_record(&p)? {
             return Ok(Reservation::AlreadyReserved(existing));
         }
-        write_record_atomic(&p, record)?;
-        Ok(Reservation::Reserved)
+        if write_record_exclusive(&p, record)? {
+            Ok(Reservation::Reserved)
+        } else {
+            read_record(&p)?
+                .map(Reservation::AlreadyReserved)
+                .ok_or_else(|| {
+                    CliError::system(
+                        "io_error",
+                        format!(
+                            "reservation {} vanished after claim contention",
+                            p.display()
+                        ),
+                    )
+                })
+        }
     })
 }
 
@@ -199,9 +307,18 @@ pub fn reclaim(
     key: &str,
     observed: &ReservationRecord,
     replacement: &ReservationRecord,
+    published_manifest: &Path,
 ) -> Result<Reclaim, CliError> {
     let root = home::root_dir()?;
-    reclaim_in(&root, repo, branch, key, observed, replacement)
+    reclaim_in(
+        &root,
+        repo,
+        branch,
+        key,
+        observed,
+        replacement,
+        published_manifest,
+    )
 }
 
 fn reclaim_in(
@@ -211,8 +328,17 @@ fn reclaim_in(
     key: &str,
     observed: &ReservationRecord,
     replacement: &ReservationRecord,
+    published_manifest: &Path,
 ) -> Result<Reclaim, CliError> {
     with_key_lock(root, repo, branch, key, || {
+        if published_manifest.try_exists().map_err(|e| {
+            CliError::system(
+                "io_error",
+                format!("check {}: {e}", published_manifest.display()),
+            )
+        })? {
+            return Ok(Reclaim::Published);
+        }
         let p = file_path_in(root, repo, branch, key);
         match read_record(&p)? {
             Some(current) if current == *observed => {
@@ -221,8 +347,19 @@ fn reclaim_in(
             }
             Some(current) => Ok(Reclaim::Changed(current)),
             None => {
-                write_record_atomic(&p, replacement)?;
-                Ok(Reclaim::Reclaimed)
+                if write_record_exclusive(&p, replacement)? {
+                    Ok(Reclaim::Reclaimed)
+                } else {
+                    read_record(&p)?.map(Reclaim::Changed).ok_or_else(|| {
+                        CliError::system(
+                            "io_error",
+                            format!(
+                                "reservation {} vanished after reclaim contention",
+                                p.display()
+                            ),
+                        )
+                    })
+                }
             }
         }
     })
@@ -257,12 +394,23 @@ fn read_record(path: &Path) -> Result<Option<ReservationRecord>, CliError> {
         }
     };
     if raw.trim_start().starts_with('{') {
-        serde_json::from_str(&raw).map(Some).map_err(|e| {
+        let record: ReservationRecord = serde_json::from_str(&raw).map_err(|e| {
             CliError::system(
                 "idempotency_record_invalid",
                 format!("parse {}: {e}", path.display()),
             )
-        })
+        })?;
+        if record.schema_version != 1 {
+            return Err(CliError::system(
+                "idempotency_record_unsupported",
+                format!(
+                    "reservation {} has unsupported schema_version {} (supported: 1)",
+                    path.display(),
+                    record.schema_version
+                ),
+            ));
+        }
+        Ok(Some(record))
     } else {
         // Backward compatibility: old records contained only the run id. They
         // can replay a published run, but `creator: None` makes an unpublished
@@ -276,18 +424,62 @@ fn read_record(path: &Path) -> Result<Option<ReservationRecord>, CliError> {
     }
 }
 
+/// Publish an absent reservation with a hard-link CAS. The key flock is the
+/// normal serialization mechanism; the link is an independent backstop on a
+/// filesystem/mount that fails to honour advisory locking.
+fn write_record_exclusive(path: &Path, record: &ReservationRecord) -> Result<bool, CliError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| CliError::system("io_error", format!("{} has no parent", path.display())))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| CliError::system("io_error", format!("mkdir {}: {e}", parent.display())))?;
+    let tmp = parent.join(format!(
+        ".tmp-claim-{}",
+        key_hash(None, None, &record.run_id)
+    ));
+    let _guard = TempFileGuard(tmp.clone());
+    let bytes = serde_json::to_vec(record)
+        .map_err(|e| CliError::system("io_error", format!("serialize reservation: {e}")))?;
+    let mut opts = OpenOptions::new();
+    opts.create(true).truncate(true).write(true);
+    octl_core::nofollow(&mut opts);
+    let mut file = opts
+        .open(&tmp)
+        .map_err(|e| CliError::system("io_error", format!("create {}: {e}", tmp.display())))?;
+    file.write_all(&bytes)
+        .map_err(|e| CliError::system("io_error", format!("write {}: {e}", tmp.display())))?;
+    file.sync_all()
+        .map_err(|e| CliError::system("io_error", format!("fsync {}: {e}", tmp.display())))?;
+    match std::fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            fsync_dir(parent);
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(CliError::system(
+            "io_error",
+            format!("link {} to {}: {e}", tmp.display(), path.display()),
+        )),
+    }
+}
+
 fn write_record_atomic(path: &Path, record: &ReservationRecord) -> Result<(), CliError> {
     let parent = path
         .parent()
         .ok_or_else(|| CliError::system("io_error", format!("{} has no parent", path.display())))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| CliError::system("io_error", format!("mkdir {}: {e}", parent.display())))?;
-    let tmp = parent.join(format!(".tmp-{}-{}", record.run_id, std::process::id()));
+    let name = path.file_name().and_then(|v| v.to_str()).ok_or_else(|| {
+        CliError::system("io_error", format!("{} has no file name", path.display()))
+    })?;
+    // Deterministic per-key temp: the key flock excludes concurrent writers, and
+    // truncate safely reuses a partial temp abandoned by SIGKILL/power loss.
+    let tmp = parent.join(format!(".tmp-write-{name}"));
     let _guard = TempFileGuard(tmp.clone());
     let bytes = serde_json::to_vec(record)
         .map_err(|e| CliError::system("io_error", format!("serialize reservation: {e}")))?;
     let mut opts = std::fs::OpenOptions::new();
-    opts.create_new(true).write(true);
+    opts.create(true).truncate(true).write(true);
     octl_core::nofollow(&mut opts);
     let mut file = opts
         .open(&tmp)
@@ -304,6 +496,35 @@ fn write_record_atomic(path: &Path, record: &ReservationRecord) -> Result<(), Cl
     })?;
     fsync_dir(parent);
     Ok(())
+}
+
+/// Clear inherited cleanup obligations after every listed staging directory
+/// has been removed. Ownership-checked so a stale creator cannot rewrite a
+/// reservation already reclaimed by another process.
+pub fn finish_stale_cleanup(
+    repo: Option<&str>,
+    branch: Option<&str>,
+    key: &str,
+    run_id: &str,
+) -> Result<(), CliError> {
+    let root = home::root_dir()?;
+    with_key_lock(&root, repo, branch, key, || {
+        let path = file_path_in(&root, repo, branch, key);
+        let Some(mut record) = read_record(&path)? else {
+            return Ok(());
+        };
+        if record.run_id != run_id {
+            return Err(CliError::system(
+                "idempotency_owner_changed",
+                format!("reservation changed before stale cleanup completed for {run_id}"),
+            ));
+        }
+        if !record.stale_run_ids.is_empty() {
+            record.stale_run_ids.clear();
+            write_record_atomic(&path, &record)?;
+        }
+        Ok(())
+    })
 }
 
 /// Release a reservation made by [`reserve`], but ONLY if it still points at
@@ -370,6 +591,7 @@ mod tests {
                 pid,
                 pid_start_secs: Some(u64::from(pid)),
                 started_at: Utc::now(),
+                materializer_lease_path: None,
             },
         )
     }
@@ -517,8 +739,9 @@ mod tests {
             Reservation::Reserved
         ));
 
+        let unpublished = root.join("unpublished-manifest");
         assert!(matches!(
-            reclaim_in(root, None, None, key, &stale, &replacement).unwrap(),
+            reclaim_in(root, None, None, key, &stale, &replacement, &unpublished,).unwrap(),
             Reclaim::Reclaimed
         ));
         assert_eq!(
@@ -528,7 +751,7 @@ mod tests {
 
         let third = record("01runccccccccccccccccccccccccc", 3);
         assert!(matches!(
-            reclaim_in(root, None, None, key, &stale, &third).unwrap(),
+            reclaim_in(root, None, None, key, &stale, &third, &unpublished).unwrap(),
             Reclaim::Changed(current) if current == replacement
         ));
     }

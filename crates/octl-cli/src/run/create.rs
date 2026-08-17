@@ -45,6 +45,7 @@ struct ReservationGuard {
     key: String,
     run_id: String,
     armed: bool,
+    preserve_cleanup_obligation: bool,
 }
 
 impl ReservationGuard {
@@ -55,7 +56,7 @@ impl ReservationGuard {
 
 impl Drop for ReservationGuard {
     fn drop(&mut self) {
-        if self.armed {
+        if self.armed && !self.preserve_cleanup_obligation {
             let _ = idempotency::release(
                 self.repo.as_deref(),
                 self.branch.as_deref(),
@@ -319,14 +320,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // the reservation and replay the winner's run instead of spawning a
     // duplicate. Skipped on dry-run (handled above — dry-run persists nothing).
     let mut reclaimed_staging_runs = Vec::new();
+    let mut materializer_lease = None;
     let mut reservation: Option<ReservationGuard> = if let Some(key) =
         args.idempotency_key.as_deref()
     {
+        let lease = idempotency::MaterializerLease::acquire(&root, &run_id)?;
         let creator = idempotency::CreatorLease {
             pid: std::process::id(),
             pid_start_secs: crate::supervise::watchdog::pid_start_time(std::process::id()),
             started_at: Utc::now(),
+            materializer_lease_path: Some(lease.path().display().to_string()),
         };
+        materializer_lease = Some(lease);
         let proposed = idempotency::ReservationRecord::new(&run_id, creator);
         let mut observed = match idempotency::reserve(
             args.source_repo.as_deref(),
@@ -361,14 +366,51 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     });
                 }
                 ExistingReservation::CreatorLive => {
-                    return Err(CliError::system(
-                            "idempotency_creator_live",
-                            format!(
-                                "idempotency key is being materialized by live creator pid {} for run {}; retry after that create finishes",
-                                existing.creator.as_ref().map_or(0, |c| c.pid), existing.run_id
-                            ),
-                        )
-                        .with_invalid_value(existing.run_id));
+                    let wait_ms = std::env::var("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .unwrap_or(30_000);
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+                    loop {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(CliError::system(
+                                "idempotency_creator_live",
+                                format!(
+                                    "idempotency key is still being materialized by live creator pid {} for run {} after {wait_ms}ms; retry later",
+                                    existing.creator.as_ref().map_or(0, |c| c.pid), existing.run_id
+                                ),
+                            )
+                            .with_invalid_value(existing.run_id));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        let Some(current) = idempotency::lookup(
+                            args.source_repo.as_deref(),
+                            args.source_branch.as_deref(),
+                            key,
+                        )?
+                        else {
+                            // The owner failed cleanly and released. Attempt our
+                            // proposal again through the authoritative reserve.
+                            observed = match idempotency::reserve(
+                                args.source_repo.as_deref(),
+                                args.source_branch.as_deref(),
+                                key,
+                                &proposed,
+                            )? {
+                                idempotency::Reservation::Reserved => None,
+                                idempotency::Reservation::AlreadyReserved(value) => Some(value),
+                            };
+                            break;
+                        };
+                        if !matches!(
+                            classify_existing_reservation(&root, &current, Utc::now())?,
+                            ExistingReservation::CreatorLive
+                        ) {
+                            observed = Some(current);
+                            break;
+                        }
+                    }
                 }
                 ExistingReservation::Unverifiable => {
                     return Err(CliError::system(
@@ -382,21 +424,28 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                 }
                 ExistingReservation::CreatorDead => {
                     let mut replacement = proposed.clone();
-                    replacement.stale_run_ids = existing.stale_run_ids.clone();
+                    replacement
+                        .stale_run_ids
+                        .clone_from(&existing.stale_run_ids);
                     replacement.stale_run_ids.push(existing.run_id.clone());
                     replacement.stale_run_ids.sort();
                     replacement.stale_run_ids.dedup();
+                    let existing_id = parse_run_id(&existing.run_id)?;
+                    let published_manifest =
+                        octl_core::run_dir(&root, &existing_id).join("manifest.json");
                     match idempotency::reclaim(
                         args.source_repo.as_deref(),
                         args.source_branch.as_deref(),
                         key,
                         &existing,
                         &replacement,
+                        &published_manifest,
                     )? {
                         idempotency::Reclaim::Reclaimed => {
                             reclaimed_staging_runs = replacement.stale_run_ids;
                             break;
                         }
+                        idempotency::Reclaim::Published => observed = Some(existing),
                         idempotency::Reclaim::Changed(current) => observed = Some(current),
                     }
                 }
@@ -414,11 +463,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             key: key.to_string(),
             run_id: run_id.clone(),
             armed: true,
+            preserve_cleanup_obligation: !reclaimed_staging_runs.is_empty(),
         })
     } else {
         None
     };
 
+    // Keep the inheritable materializer lease alive through create.sh and the
+    // publication rename. The binding is intentionally read here so lints and
+    // future refactors cannot shorten its lifetime before publication.
+    let _materializer_lease = materializer_lease.as_ref();
     ensure_root(&root).map_err(from_core)?;
     // A run becomes externally visible only when its fully materialized state
     // is renamed from this sibling root into `<root>/runs`. In particular, a
@@ -445,6 +499,21 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                     format!("remove reclaimed staging run {}: {e}", stale_dir.display()),
                 ));
             }
+        }
+    }
+    if !reclaimed_staging_runs.is_empty() {
+        let key = args
+            .idempotency_key
+            .as_deref()
+            .expect("reclaimed staging requires an idempotency key");
+        idempotency::finish_stale_cleanup(
+            args.source_repo.as_deref(),
+            args.source_branch.as_deref(),
+            key,
+            &run_id,
+        )?;
+        if let Some(g) = reservation.as_mut() {
+            g.preserve_cleanup_obligation = false;
         }
     }
 
@@ -586,14 +655,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // retry after child publication can therefore repair this exact parent
         // edge without deduping a distinct child or appending it twice.
         let edge_key = format!("child-spawned:{run_id}");
-        octl_core::append_and_apply_event(
+        append_child_spawned_if_missing(
             &parent_paths,
-            "child.spawned",
-            Some(parent_node_id_typed.as_ref().expect("is_child")),
-            Some(&edge_key),
+            parent_node_id_typed.as_ref().expect("is_child"),
+            &run_id,
+            &edge_key,
             child_data,
-        )
-        .map_err(from_core)?;
+        )?;
         Ok(())
     };
 
@@ -609,8 +677,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // Deterministic integration-test seam for the cross-log crash window.
         // It is reachable only through the test-only skeleton path, never for a
         // production materialization.
-        if std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok()
-            && std::env::var("OCTL_TEST_FAIL_AFTER_PUBLISH").is_ok()
+        if cfg!(debug_assertions)
+            && std::env::var("OCTL_TEST_SKIP_MATERIALIZE").is_ok_and(|v| v == "1")
+            && std::env::var("OCTL_TEST_FAIL_AFTER_PUBLISH").is_ok_and(|v| v == "1")
         {
             return Err(CliError::system(
                 "test_fail_after_publish",
@@ -828,6 +897,13 @@ fn classify_existing_reservation_with(
     let Some(creator) = record.creator.as_ref() else {
         return Ok(ExistingReservation::Unverifiable);
     };
+    if let Some(path) = creator.materializer_lease_path.as_deref() {
+        return Ok(match idempotency::materializer_liveness(path) {
+            idempotency::LeaseLiveness::Live => ExistingReservation::CreatorLive,
+            idempotency::LeaseLiveness::Dead => ExistingReservation::CreatorDead,
+            idempotency::LeaseLiveness::Unverifiable => ExistingReservation::Unverifiable,
+        });
+    }
     let live = owner_live(creator.pid, creator.pid_start_secs);
     match (live, creator.pid_start_secs) {
         (false, _) => Ok(ExistingReservation::CreatorDead),
@@ -886,15 +962,38 @@ fn repair_parent_child_publication(
         "child_title": manifest.title,
     });
     let key = format!("child-spawned:{child_id}");
-    octl_core::append_and_apply_event(
-        &parent_paths,
-        "child.spawned",
-        Some(parent_node_id),
-        Some(&key),
-        data,
-    )
-    .map_err(from_core)?;
-    Ok(())
+    append_child_spawned_if_missing(&parent_paths, parent_node_id, child_id, &key, data)
+}
+
+/// Append one parent edge while remaining compatible with pre-keyed logs. The
+/// parent lock covers both the legacy child-id scan and the append, so a repair
+/// cannot race another repair into writing a duplicate edge.
+fn append_child_spawned_if_missing(
+    parent_paths: &octl_core::RunPaths,
+    parent_node_id: &octl_core::NodeId,
+    child_run_id: &str,
+    edge_key: &str,
+    data: Value,
+) -> Result<(), CliError> {
+    octl_core::RunLock::with_lock(parent_paths, |lock| {
+        let events = octl_core::read_all_events(&parent_paths.events())?;
+        if events.iter().any(|event| {
+            event.kind == "child.spawned"
+                && event.data.get("child_run_id").and_then(Value::as_str) == Some(child_run_id)
+        }) {
+            return Ok(());
+        }
+        octl_core::append_and_apply_unlocked(
+            lock,
+            parent_paths,
+            "child.spawned",
+            Some(parent_node_id),
+            Some(edge_key),
+            data,
+        )?;
+        Ok(())
+    })
+    .map_err(from_core)
 }
 
 /// Atomically publish a fully materialized staging run into the public run
@@ -1238,6 +1337,7 @@ mod tests {
                 pid: 42,
                 pid_start_secs: Some(100),
                 started_at: started,
+                materializer_lease_path: None,
             },
         );
         assert_eq!(
@@ -1260,6 +1360,7 @@ mod tests {
                 pid: 42,
                 pid_start_secs: Some(100),
                 started_at: started,
+                materializer_lease_path: None,
             },
         );
         assert_eq!(
@@ -1278,6 +1379,7 @@ mod tests {
                 pid: 42,
                 pid_start_secs: None,
                 started_at: started,
+                materializer_lease_path: None,
             },
         );
         assert_eq!(
@@ -1297,6 +1399,7 @@ mod tests {
                 pid: 42,
                 pid_start_secs: Some(100),
                 started_at: started,
+                materializer_lease_path: None,
             },
         );
         let dir = root.path().join("runs").join(&record.run_id);
@@ -1308,6 +1411,55 @@ mod tests {
             })
             .unwrap(),
             ExistingReservation::Published(dir)
+        );
+    }
+
+    #[test]
+    fn child_edge_repair_recognizes_legacy_unkeyed_event() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run_id = "01jxsnap000000000000000000";
+        let dir = tmp.path().join(run_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = octl_core::RunPaths::new(dir, run_id).unwrap();
+        let node = parse_node_id("n-0001").unwrap();
+        octl_core::append_and_apply_event(
+            &paths,
+            "run.created",
+            None,
+            None,
+            json!({"kind":"spinoff","lifecycle":"autonomous","title":"parent"}),
+        )
+        .unwrap();
+        octl_core::append_and_apply_event(
+            &paths,
+            "node.created",
+            Some(&node),
+            None,
+            json!({"kind":"spinoff"}),
+        )
+        .unwrap();
+        let child_id = "01jxsnap000000000000000001";
+        let data = json!({
+            "child_run_id": child_id,
+            "child_node_id": "n-0001",
+            "child_kind": "spinoff",
+            "child_title": "child"
+        });
+        octl_core::append_and_apply_event(&paths, "child.spawned", Some(&node), None, data.clone())
+            .unwrap();
+
+        append_child_spawned_if_missing(
+            &paths,
+            &node,
+            child_id,
+            &format!("child-spawned:{child_id}"),
+            data,
+        )
+        .unwrap();
+        let events = octl_core::read_all_events(&paths.events()).unwrap();
+        assert_eq!(
+            events.iter().filter(|e| e.kind == "child.spawned").count(),
+            1
         );
     }
 
