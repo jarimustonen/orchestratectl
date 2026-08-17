@@ -3,10 +3,11 @@ created: 2026-08-17
 updated: 2026-08-17
 type: chore
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 lane: core
 lane_seq: 10
+closed: 2026-08-17
 ---
 
 # Cut the dead plan module from octl-core's public API
