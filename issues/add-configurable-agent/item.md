@@ -93,5 +93,28 @@ Concrete syntax datum: pi accepts `--model "provider/id:<thinking>"` on its CLI,
 
 Reported context (why this is an orchestration lever, not a nicety): a terra worker gave up twice on a large semantic seam; a sol worker finished it in one pass.
 
+### 2026-08-17T10:48:17Z · @orchestrator
+
+DESIGN CONSTRAINT (Jari, 2026-08-17) — `secure` is ORTHOGONAL to the capability ladder, not a rung on it. Read this before designing selection or fallback.
+
+The other roles (ultra-capable / capable / fast) sit on ONE axis: how capable the model is. `secure` does not. Its defining property is that it **runs locally**, so the data never leaves the machine, which is what makes it safe for personal data, API key CONTENTS, credentials, and similar. Jari's note: it is deliberately LOW capability — that is an accepted cost, not a defect. Two axes, not four tiers:
+
+  capability:   fast  <  capable  <  ultra-capable
+  data residency: local (confined)  |  remote (leaves the machine)
+
+WHY THIS MATTERS — the fallback rule, and it is a safety rule, not a preference:
+
+**A `secure` profile MUST NOT fall back to a remote model, ever.** The whole point of selecting it is that the payload stays on the machine; a fallback that silently escalates to a cloud model would exfiltrate exactly the data the choice was protecting, and would do so at the moment things are already going wrong (the preferred agent was unavailable). Concretely:
+- Fallback chains must be constrained to the same residency class. A local profile's fallbacks must themselves be local.
+- If no local fallback is available, the correct behaviour is to **fail with an actionable error**, NOT to degrade to a remote agent. 'Exhausted fallbacks' is already in this issue's acceptance criteria — for `secure` it must be reached rather than escaped.
+- 'Retry one tier up' escalation (the terra→sol case in the merged intake note) is a CAPABILITY-axis operation and must never cross the residency axis.
+
+WHY THIS ALSO CHANGES AUTOMATIC SELECTION. This issue currently says planning should match work to 'capability tiers and fallbacks'. That is insufficient: capability is a property of the TASK'S DIFFICULTY, whereas residency is a property of the DATA THE TASK TOUCHES. A purely capability-driven planner will never pick `secure` correctly, because a task involving credentials is not thereby a hard task — it is often trivial. So the design needs a way to express task data-sensitivity (a flag on run create, a profile request, or a marker in the brief) that constrains the residency axis independently of the capability choice. Do not fold sensitivity into the capability ranking.
+
+Naming implication: a role set presented as a single ordered ladder (expert/standard/implementer/secure) invites exactly the wrong mental model. Consider expressing residency as a separate attribute of a profile (e.g. `local: true` / a residency class) rather than leaving it implicit in one role's name, so the constraint is machine-checkable at fallback-resolution time instead of relying on the implementer remembering which role is special.
+
+Example given: `secure` → `pi-gemma` (local).
+
+
 
 

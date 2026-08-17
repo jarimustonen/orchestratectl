@@ -99,6 +99,20 @@ capability layer first, add raw flags only if a concrete need survives it. Note 
 (terra gave up twice, sol finished in one pass) *argues for* the tier framing — "retry one tier up" is portable where
 two hardcoded vendor IDs are not.
 
+**◆ AND `secure` IS ORTHOGONAL TO THAT LADDER — a safety constraint, not a naming quibble (Jari, same wrap).** The
+other roles differ in *capability*; `secure` differs in **data residency**: it runs **locally**, so the payload never
+leaves the machine, which is what makes it safe for personal data and API-key **contents**. It is deliberately *low*
+capability — accepted cost, not a defect. Two axes (`fast < capable < ultra-capable` × `local | remote`), not four
+rungs. The consequence that matters: **a `secure` profile must NEVER fall back to a remote model.** A fallback that
+silently escalates to the cloud would exfiltrate exactly the data the choice was protecting, precisely when things are
+already failing. Fallback chains must stay inside the same residency class, and exhausting them must **fail with an
+actionable error rather than degrade**. "Retry one tier up" is a capability-axis move and must not cross the residency
+axis. It also breaks the issue's capability-driven auto-selection: capability follows task *difficulty*, residency
+follows *what data the task touches* — and a credentials task is usually trivial, so a difficulty-ranking planner will
+never pick `secure` correctly. The design needs an explicit task-sensitivity signal. Recommendation recorded on the
+issue: model residency as a **machine-checkable profile attribute** (e.g. `local: true`), not as one role's name, so
+the fallback resolver can enforce it instead of relying on the implementer remembering which role is special.
+
 **`intake-feature-orchestratectl-d0c82ab27c9d` closed duplicate into `add-configurable-agent`**, content transcribed
 first. It contributed three requirements the feature issue lacked: (1) the per-run override is the **primitive** and a
 valid **MVP slice that may land first**; (2) the resolved profile/model/fallback must be **recorded on the manifest and
