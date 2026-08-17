@@ -1,19 +1,50 @@
 # orchestratectl
 
-Rust CLI + TUI for orchestrating AI-agent workflows — worktrees, fan-out,
-orchestrate, LLM-skills — with status navigation, discussion resolution,
-and spin-off management.
+Rust CLI for orchestrating autonomous AI-agent workflows on a developer's
+machine. It spawns agents into isolated git worktrees (kinds: `spinoff`,
+`research`, `technical-decision`, `fan-out`), supervises them with a
+per-run supervisor process, and merges their work back via `run merge`.
+State is file-based under `~/.orchestratectl/runs/<run-id>/` (append-only
+`events.jsonl` + flock-guarded projections), so any UI can present the
+same canonical source of truth. The orchestration semantics ship as
+bundled skills (`/worktree-spinoff`, `/worktree-research`,
+`/worktree-technical-decision`, `/fan-out`, `/stint-start`,
+`/stint-handoff`, …) installed with `orchestratectl skill install`.
 
-Replaces (and runs alongside, until MVP is stable) the existing skill
-family: `/worktree-*`, `/orchestrate`, `/fan-out`, and the orchestration
-side of `/llm-*` skills. State is file-based under
-`~/.orchestratectl/runs/<run-id>/` so any UI (TUI now, macOS-native later)
-can present the same canonical source of truth.
+The 0.2 series is the "thin supervisor" simplification (ADR
+`docs/decisions/0001-thin-supervisor-vs-harden.md`): told-not-guessed —
+`run merge` is the only success truth, terminal outcomes are typed tables,
+and the old inference heuristics (activity clocks, git-reconcile probes,
+kind-derived interactivity) are deleted. The former TUI/discussion/
+orchestrate/code-pipeline surfaces were cut in that release; do not
+resurrect them without a new decision.
+
+## Tool family (the stack this repo belongs to)
+
+orchestratectl is one component in a family of AI-first CLIs that share the
+same conventions. What each one owns in THIS repo:
+
+- **issuectl** — issue tracking. Owns `issues/`, `issues/AGENTS.md`,
+  `.issuectl/AGENTS.md`, and the `/issue` skill. The execution DAG
+  (`lane:`/`lane_seq:` frontmatter, `issuectl dag`) is the scheduling
+  source of truth.
+- **ossctl** — OSS release engine. Owns the approved `OSS-RELEASE.md`
+  contract and the `/oss-*` skills. It can NOT yet cut this project's
+  releases (multi-crate workspace unsupported; blocker filed as
+  `release-rust-workspace-multicrate` in `~/Sources/ossctl`) — releases
+  are cut by hand per the release bullets below. Prefer closing that
+  blocker over cutting more by hand.
+- **project-canon** — ships the `/ai-first-cli-canon` skill (see below).
+- **glasspad** — publishes rich HTML views to Jari's browser
+  (`glasspad publish`); used for dashboards/reports, not part of the build.
+- **intakectl** — routes bug/feature intake (e.g. Jari via Telegram) into
+  `intake-{bug,feature}-orchestratectl-*` issues in this repo; they arrive
+  with `needs-triage` and are folded via `/stint-handoff` /
+  `/triage-unlaned-issues`.
 
 ## CLI Design Principles
 
 Use the `/ai-first-cli-canon` skill shipped by `project-canon` as the maintained AI-first CLI canon. It is the binding reference for CLI surface work: strict input validation, `--json` output, JSONL logs, no interactive prompts, informative errors and composable commands. Do not keep or edit a repo-local `ai-first-cli-canon` copy; update the canon in `~/Sources/project-canon` and reinstall the skill from the released tool.
-
 
 ## Gitignored directories
 
@@ -53,7 +84,7 @@ Read by `/stint-start` Phase 0 (the round engine; `/stint` was split 2026-08-04 
 Every project-specific fact an orchestrator needs:
 
 - **Release cadence (default posture, since 2026-08-04).** This project **ships real releases, often** — cut one whenever something production-ready lands, don't batch changes into a big release. Two channels, both driven from the approved `OSS-RELEASE.md` contract and **both triggered by pushing a `vX.Y.Z` tag**: **crates.io** via `publish-crates.yml` in CI (`octl-core` first, then `orchestratectl` — the CLI depends on `octl-core = "=<version>"`; do NOT run `cargo publish` locally, see the dedicated bullet below), and **prebuilt binaries + the per-tool Homebrew tap `jarimustonen/orchestratectl`** via cargo-dist (CI builds the mac target on the self-hosted `hauis` runner). End state: `brew install jarimustonen/orchestratectl/orchestratectl`. The `/oss-release` skill orchestrates the whole thing; mechanics live in `OSS-RELEASE.md` + `dist-workspace.toml`. Before a release, finalize `CHANGELOG.md` (`[Unreleased]` → dated version).
-- **In-tool "deploy" (a stint's local reflection).** Distinct from a release: to reflect a CLI-surface / SKILL change in the *running* binary, do a **local rebuild** — `cargo install --path crates/octl-cli --force --locked && orchestratectl skill install --force && orchestratectl doctor` (expect 0 fail / 0 warn). **`--locked` is mandatory, not optional** (2026-08-16): without it `cargo install` re-resolves dependencies from scratch instead of using the workspace `Cargo.lock`, pulls `time 0.3.55` (requires rustc 1.88) against our 1.85 MSRV floor, and fails to compile — the `time` pin that KEY LEARNING #1 established protects the workspace build but NOT a fresh-resolving `cargo install`. Chain the three commands with `&&` **without** piping to `tail`/`head`: a pipe makes the shell see the pager's exit status, so a failed install silently continues to `skill install` and `doctor`, both of which then report green about a binary that was never replaced. Verify the result (`ls -l ~/.cargo/bin/orchestratectl`), and note that `/opt/homebrew/bin/orchestratectl` may also exist from the tap — `~/.cargo/bin` precedes it on PATH.
+- **In-tool "deploy" (a stint's local reflection).** Distinct from a release: to reflect a CLI-surface / SKILL change in the *running* binary, do a **local rebuild** — `cargo install --path crates/octl-cli --force --locked && orchestratectl skill install --force && orchestratectl doctor` (expect 0 fail / 0 warn). **`--locked` is mandatory, not optional** (2026-08-16): without it `cargo install` re-resolves dependencies from scratch instead of using the workspace `Cargo.lock`, pulls `time 0.3.55` (requires rustc 1.88) against our 1.85 MSRV floor, and fails to compile — the workspace `time = 0.3.41` pin (see the MSRV bullet below) protects the workspace build but NOT a fresh-resolving `cargo install`. Chain the three commands with `&&` **without** piping to `tail`/`head`: a pipe makes the shell see the pager's exit status, so a failed install silently continues to `skill install` and `doctor`, both of which then report green about a binary that was never replaced. Verify the result (`ls -l ~/.cargo/bin/orchestratectl`), and note that `/opt/homebrew/bin/orchestratectl` may also exist from the tap — `~/.cargo/bin` precedes it on PATH.
 - **Release / deploy autonomy — fully autonomous, no ask (Jari, 2026-08-05).** local rebuild is always fine. **Pushing `main` is always allowed for this project (no ask)** — this deliberately overrides the global "never push without being asked" default for orchestratectl. **Cutting a release is ALSO fully autonomous now: the agent may push a `vX.Y.Z` release tag without asking, and may decide independently when a release is warranted** (per the release-often cadence above). The former `/oss-release` **approval boundary is removed** for this project — there is no remaining human-confirmation gate on the release action. *(Autonomy is unchanged; what changed 2026-08-17 is the mechanism — the tag push is now the single release action, because CI does the publishing. See the "DO NOT `cargo publish` locally" bullet below.)* The agent still executes it *correctly and deliberately* (right version, changelog finalized, snapshots regenerated, tree clean, **main CI green on the commit being tagged**) — autonomy means no permission prompt, not less care. crates.io publishes remain permanent (yank-only), so verify before publishing; that is a correctness duty, not an approval gate.
 - **DO NOT `cargo publish` locally — pushing the tag IS the publish (2026-08-17).** `.github/workflows/publish-crates.yml` is tag-triggered (`v[0-9]+.[0-9]+.[0-9]+*`) and already publishes **both** crates to crates.io in dependency order from CI, using the repo's `CARGO_REGISTRY_TOKEN` secret — no local token, no hand-ordered two-crate sequence. A local `cargo publish` duplicates it; the CI job then only *looks* green because it tolerates "already exists on the crates.io index" as success. The correct sequence is: finalize CHANGELOG + bump the workspace version + the `octl-core` pin + regenerate the `version_*` insta snapshots → commit → push → **wait for main CI green on that commit** → push the `vX.Y.Z` tag → CI publishes the crates (`publish-crates.yml`) and builds the binaries/tap (`release.yml`) in parallel. **The tag push is the irreversible act** (crates.io is yank-only), so it is the step that must be gated:
   ```bash
@@ -64,7 +95,11 @@ Every project-specific fact an orchestrator needs:
 - **Green gate (run before merging any worktree):** `cargo fmt --all`, `cargo clippy --workspace --all-targets` (no NEW warnings), `cargo test --workspace` (green), and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` (green — CI's `docs` job denies broken intra-doc links, and `cargo test`/`clippy` do NOT catch them). CLI-surface / bundled-skill changes also need the insta snapshot loop — see `crates/octl-cli/CLAUDE.md`. **A symbol-removing cut MUST run the doc check:** deleting a module/fn leaves any `[`crate::…`]` doc-link to it dangling → red `docs` job. (2026-08-15: `cut-run-kinds-discussion-machinery` removed `spinoff::approve` but left an intra-doc link to it in `proc.rs`; the round's test/clippy gate was green, `main` docs went red — `ci-red-main`. Fixed same session; the doc check is now part of every gate to prevent recurrence.)
 - **Integrated gate (run after a multi-worktree round, before deploy):** re-run `cargo test --workspace` on the *integrated* `main` once all the round's branches have landed. Per-worktree green does NOT imply integrated green: a test-isolation flake can stay latent until several workers' tests coexist in one run. (2026-07-25: five workers each passed their own gate, but `supervise::notify::tests::fires_hook_with_completion_env` — an order-dependent TOCTOU on an async hook file — failed only in the combined suite; caught by the integrated gate, fixed as `notify-test-toctou-flake`.) The gate also catches a distinct failure mode: a **lane misprediction** — a DAG lane assignment predicts an issue's *likely*-touched hot files, but a fix can legitimately land elsewhere, so two "disjoint-lane" spinoffs can silently collide. (2026-08-10: `supervisor-dies-before-worker-node` (Lane A, predicted `supervise/*`) actually landed in `run/*` — `run list`/`run show`/`RunSummary` — colliding with `run-wait-still` (Lane E); each was green alone but integrated `main` failed to **compile** (`E0425 stillborn`). Caught by the integrated gate, fixed via a follow-up spinoff.) Lesson: never skip the integrated gate for "independent" parallel units, and prefer sequencing any two units that might both touch the `run show` / `RunSummary` DTO surface.
 - **Hot / correctness-sensitive files (sequence edits; never parallelize worktrees that touch the same one):** `crates/octl-core/src/{events,lock,reducer,schema}.rs` and `crates/octl-cli/src/supervise/*`. (The code-pipeline modules `crates/octl-cli/src/{floor,pipeline}/*` and the harness heavy layer were DELETED 2026-08-14 by `cut-pipeline-floor-harness-heavy`; only the light `harness/{mod,prompt,select,support}.rs` claude+pi launcher remains — no longer a hot cluster.) See "State integrity invariants".
+- **MSRV / `time` pin (standing constraint).** RUSTSEC-2026-0009 (`time` stack-exhaustion DoS) is fixed only in `time ≥0.3.47`, but every such version requires rustc 1.88 > our 1.85 MSRV floor. `time` is transitive-only (via `tracing-appender`; we never parse untrusted time input, so the advisory is not exploitable here). Resolution: `time` pinned to `0.3.41` + a scoped `deny.toml` ignore of RUSTSEC-2026-0009. Re-evaluate (unpin + drop the ignore) if/when MSRV moves to ≥1.88. Corollary: bumping a dep to clear a `cargo-deny` advisory can silently blow the MSRV — always re-check the `msrv (1.85)` CI job, not just ubuntu.
 - **Coding happens in worktrees, never in the orchestrator/stint session.** Spawn `/worktree-spinoff <issue-slug>` (headless for batches > 3; see the macOS PTY note). **Verify every landing from git** — `run` status can lag reality.
+- **Verify against the running binary before spending a worker.** Bug reports (intake or old issues) routinely describe a defect the current release already fixed, or a read-surface mistake (`last_report` vs `report`, `data.runs[]` vs `data.<field>`). Reproduce against the installed binary first; three stints in a row this closed issues without code.
+- **Filing bar for review residuals.** An automated review pass that files every "deferred residual" manufactures un-work. A residual becomes an issue only with (a) an observed occurrence or (b) a self-contained, readable description — never a bare pointer to a gitignored `history/` file.
+- **Worker deaths are transient — retry with harvest.** Re-spawn and adopt the preserved branch (review → adopt → complete → merge), never hand-merge unreviewed work. Heavy-LLM units legitimately take 54–96 min; a long run is not a hang.
 - **Test accounts / reset:** n/a (no external test accounts).
 
 ## Harness boundary: non-blocking waits are NOT an orchestratectl dependency
@@ -78,7 +113,7 @@ Decided 2026-08-16 by **homebase ADR 0011** (`~/Sources/homebase/docs/decisions/
 
 ## Spinoff workflow + lifecycle
 
-Use `/worktree-spinoff <issue-slug>` for bug fixes / improvements; the bundled SKILL handles the whole loop end-to-end: spawn → work → merge (`orchestratectl run merge`) → self-cleanup (tmux window + worktree + branch all gone). Same for `/worktree-research`, `/worktree-bugfix`, `/worktree-technical-decision`, `/worktree-make-skill`. Interactive `/worktree-code` works the same way but waits for the user's explicit `/worktree-merge`.
+Use `/worktree-spinoff <issue-slug>` for bug fixes / improvements; the bundled SKILL handles the whole loop end-to-end: spawn → work → merge (`orchestratectl run merge`) → self-cleanup (tmux window + worktree + branch all gone). Same for `/worktree-research`, `/worktree-technical-decision`, `/worktree-bug-analysis` (read-only analysis), and `/fan-out` units. For hands-on review, create the run with `--interactive` — the supervisor then never auto-terminalizes and waits for an explicit `/worktree-merge` (`run merge`) or `run cancel`. (The pre-0.2 `worktree-code` / `worktree-bugfix` / `worktree-make-skill` kinds and skills were cut; interactivity is the `--interactive` flag, not a kind.)
 
 After any CLI surface or SKILL.template.md change, **re-deploy** so the running binary + on-disk skills reflect the edit:
 
@@ -107,7 +142,7 @@ Use `--headless` (or `--tmux-session <name>`) on `orchestratectl run create` to 
 
 ## State integrity invariants
 
-These invariants govern correctness of the on-disk run state and the autonomous-spinoff loop. The first five were established by the 2026-06-29 pre-publication campaign (`B1.1–B1.4`, `C1`, the in-session safety bugs); the sixth (merge-transaction recovery) landed with the thin-supervisor A2 work. They are easy to violate from inside a hot code path without realising it. Read them before touching the reducer, the lock layer, or the `run merge` / supervisor cleanup paths.
+These seven invariants govern correctness of the on-disk run state and the autonomous-spinoff loop. The first five were established by the 2026-06-29 pre-publication campaign; six (merge-transaction recovery) and seven (typed terminal outcomes) landed with the thin-supervisor 0.2 work (A2 / A6). They are easy to violate from inside a hot code path without realising it. Read them before touching the reducer, the lock layer, or the `run merge` / supervisor cleanup paths.
 
 1. **`applied_seq` watermark**
    (`crates/octl-core/src/events.rs`)
@@ -119,7 +154,7 @@ These invariants govern correctness of the on-disk run state and the autonomous-
 
 3. **`LOCK_SH` on every multi-file read path**
    (`crates/octl-core/src/lock.rs::with_shared_lock`)
-   Every reader that touches more than one of `manifest.json` / `nodes/*` / `discussions/*` / `spinoffs/*` in one decision wraps the scan in `RunLock::with_shared_lock`. The reducer holds the exclusive lock while it writes; without the shared lock a reader can observe a half-applied projection set. Don't add new readers that skip it.
+   Every reader that touches more than one of `manifest.json` / `nodes/*` in one decision wraps the scan in `RunLock::with_shared_lock`. The reducer holds the exclusive lock while it writes; without the shared lock a reader can observe a half-applied projection set. Don't add new readers that skip it.
 
 4. **Progress polling branches on `manifest.status`, NOT `lifecycle`**
    (every `crates/octl-cli/skills/*/SKILL.template.md`, and any agent prose elsewhere)
