@@ -1,12 +1,13 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 orchestratectl 0.2.2
 commit:                  [COMMIT]
 envelope schema:         1
 supported envelopes:     1
-config schemas:          1
+config schemas:          2
 help schemas:            3
 skill schemas:           1
 state schema version:    1

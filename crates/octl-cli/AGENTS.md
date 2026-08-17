@@ -79,20 +79,24 @@ neither ever mutates `config.toml`. Lives in `config/{mod,path,show}.rs` (the
 - **`config path`** prints the config file location with `exists` (true/false —
   the file need not exist; the caller wants the *path*, e.g. "where do I write
   settings?").
-- **`config show`** prints the *effective resolved* config as per-key rows: one
-  `harness.default` (the section-level default, via
-  `harness::select::resolve_default`) plus one `harness.<kind>` per creatable run
-  kind (via `resolve_with`). Each row carries `value`, `source`
-  (`env | file | default` — the `flag` layer is per-invocation, never a `config
-  show` source), and a `secret` flag. **The harness precedence is reused
-  verbatim** — `config show` never re-implements resolution, so an
-  `ORCHESTRATECTL_HARNESS` override honestly shows every row as `source: "env"`
-  (the effective picture, not the shadowed file value). A bad harness value in
-  the file fails loudly (`invalid_harness`), same as `run create`.
+- **`config show`** parses raw TOML into a tolerant inspection model, separate
+  from the strict execution loader. It emits one known row for
+  `harness.default` and each creatable `harness.<kind>`, plus rows for
+  unrecognized harness entries. Every row carries `effective_value`,
+  `effective_source`, effective `valid` / `validation_error`, and an ordered
+  `layers` stack (highest precedence first). Each layer carries its own
+  validity, `active`, and a file-only `origin_key`, so
+  `harness.per_kind.research` remains visible and independently validated when
+  `ORCHESTRATECTL_HARNESS` shadows it. Invalid parseable values produce envelope
+  warnings and exit 0; unreadable or syntactically invalid TOML remains fatal.
+  The strict `Config` loader and `harness::select` resolver used by `run create`
+  are unchanged and still reject invalid execution values.
 
 Secret redaction (§8) is wired but currently inert: every key is `secret: false`
 today, so `--show-secrets` reveals nothing and warns only when a secret key
-actually exists. Both payloads carry `schema_version_config`
+actually exists. In JSON mode that warning is part of the stdout `warnings`
+envelope; in text mode it is rendered as a `warning:` line on stderr. Both
+payloads carry `schema_version_config`
 (`config::CONFIG_SCHEMA_VERSION`), independent of the run-state schema. The
 `CREATABLE_KINDS` list in `show.rs` is drift-guarded against `Kind::WIRE_NAMES`
 by a unit test. Help snapshot: `help_json__config_help_json.snap`; behavior

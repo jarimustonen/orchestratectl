@@ -7,10 +7,11 @@
 //! - [`Config`] / [`config_path`] — the loader for the `file` layer, consumed by
 //!   the harness resolver ([`crate::harness::select`]).
 //! - The `config` subcommand ([`ConfigAction`], [`dispatch`]) — `config path`
-//!   prints the file location and `config show` prints the *effective resolved*
-//!   configuration with a per-key `source` (`env | file | default`), so an AI
-//!   caller can reason about **why** a value is what it is (§8). Read-only: it
-//!   never mutates the file. Verbs live in [`show`] and [`path`].
+//!   prints the file location and `config show` prints a tolerant, layered view
+//!   of raw and effective values (`env > file > default`), including validity
+//!   for every layer. This inspection path does not weaken strict execution
+//!   validation. Read-only: it never mutates the file. Verbs live in [`show`]
+//!   and [`path`].
 //!
 //! Location: `<ORCHESTRATECTL_HOME or ~/.orchestratectl>/config.toml`. The file
 //! is entirely optional; a missing or empty file yields [`Config::default`], so
@@ -63,17 +64,17 @@ pub mod show;
 /// `schema_version_config` field on `config path` / `config show`). Bumped
 /// independently of the run-state schema so an agent can pin the shape of the
 /// config surface (AGENTS-AI-FIRST-CLI §10).
-pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 
-/// The `config` noun — read-only inspection of the effective configuration
+/// The `config` noun — read-only layered inspection of the configuration
 /// (AGENTS-AI-FIRST-CLI §8). Never mutates `config.toml`.
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
     /// Print the config file location (whether or not the file exists).
     Path,
-    /// Print the effective resolved configuration with a per-key source
-    /// (`env | file | default`). Secret-valued keys are redacted unless
-    /// `--show-secrets` is given.
+    /// Print raw layered and effective configuration with per-layer validity.
+    /// Invalid values are reported as warnings rather than hiding the value.
+    /// Secret-valued keys are redacted unless `--show-secrets` is given.
     Show {
         /// Reveal secret-valued keys instead of redacting them. Emits a
         /// warning to stderr. No config key is secret today, so this is a

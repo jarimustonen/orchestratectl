@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
+assertion_line: 66
 expression: value
 ---
 {
@@ -212,7 +213,7 @@ expression: value
       },
       {
         "command": "orchestratectl config show",
-        "about": "Print the effective resolved configuration with a per-key source (`env | file | default`). Secret-valued keys are redacted unless `--show-secrets` is given",
+        "about": "Print raw layered and effective configuration with per-layer validity. Invalid values are reported as warnings rather than hiding the value. Secret-valued keys are redacted unless `--show-secrets` is given",
         "aliases": [],
         "hidden": false,
         "deprecated": false,
