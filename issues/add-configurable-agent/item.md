@@ -123,3 +123,24 @@ Design pass done 2026-08-17: design.md v2 in this issue dir. Draft was reviewed 
 
 
 
+
+### 2026-08-18T00:00:00Z · @jari
+
+**The local/`secure` profile is genuinely WEAK, and the design should treat that as its
+defining property rather than an inconvenience.** Jari's steer at the stint-6 review:
+
+- Do not size the local profile's role by what would be convenient; size it by what a weak
+  model can actually be trusted to finish. It should be given tasks that are **so small and
+  so unambiguous that it never occurs to it to do anything other than the task itself**.
+- Concretely worth considering: a local-residency profile should not be able to — or should
+  not know how to — **spawn further worktrees**. Removing the capability is more robust than
+  relying on a weak model to decline to use it. Treat this as a capability restriction
+  attached to the residency class, not as prompt guidance.
+- This accepts a real risk knowingly: we are deferring the whole agent-profile configuration
+  feature, so until it lands there is nothing enforcing any of the above. That is an accepted
+  exposure, not an oversight.
+
+Scheduling: the feature stays DEFERRED for now (it is cross-cutting and needs a round of its
+own; it cannot share a round with any `lifecycle` unit). This note records the constraint so
+whoever implements slices A–D designs the residency class with the capability restriction in
+mind from the start, rather than retrofitting it.
