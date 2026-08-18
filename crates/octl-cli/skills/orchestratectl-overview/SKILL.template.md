@@ -130,9 +130,6 @@ first invocation in a session, run
   - **Shell installer**:
     `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
 
-  (Publishing channels are TBD; the placeholders above mirror
-  `issuectl` conventions and will be replaced once the release pipeline
-  ships.)
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
   originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
