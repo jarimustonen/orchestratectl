@@ -79,9 +79,9 @@ now); it pairs naturally with `run-branch-name-ulid-entropy`. `audit-no-user-spe
 saw 6 stale pending runs, **most of them from other repos**, which is exactly the reported symptom.
 
 **Release-mechanics notes (mechanics only — rules live in `AGENTS.md`):** the gated tag push worked as designed both
-times. Reading crates.io's API **requires a `User-Agent` header** — without one it returns null and looks like a failed
-publish (this cost a false alarm this round). After a version bump run `skill install --force` for `--agent codex` too,
-or doctor shows codex sync warnings.
+times. Both releases were cut **by hand**; ossctl supports this workspace, so wiring it in (`adopt-ossctl-release-cut`)
+removes a per-release spinoff from every round. After a version bump run `skill install --force` for `--agent codex`
+too, or doctor shows codex sync warnings.
 
 ---
 
