@@ -144,8 +144,7 @@ these stints are in `AGENTS.md`.
   were all read-surface errors), `run-create-long-title-stillborn` (branch names bounded to workmux's 50-byte
   window-name input), `cli-canon-version-schemas` (§10: `supported_schemas` in `version`). Closed without code:
   `cli-canon-config` (already shipped in 0.2.0). Origin of the `--locked`-is-mandatory + never-`| tail` deploy rules
-  (now in `AGENTS.md`). Verified: `ossctl release plan` still can't cut this two-crate workspace
-  (`release-rust-workspace-multicrate` in ~/Sources/ossctl remains the blocker). ADR 0011 (homebase) boundary recorded
+  (now in `AGENTS.md`). ADR 0011 (homebase) boundary recorded
   in `AGENTS.md`: no pi-processes dependency.
 - **Stint 2 (2026-08-16, triage-only).** 39 unscheduled issues → 24 closed, 15 laned; whole queue verified against
   current code. Two-thirds of the queue was not real work: 4 "bugs" were the same report-read-surface mistake, 11 were
