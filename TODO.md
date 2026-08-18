@@ -8,113 +8,80 @@ holds only the **active handoff** and a **compact stint archive**.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-17 (**v0.3.0 SHIPPED + CI GREEN — NEXT = `add-configurable-agent` ALONE, or `skills` head `audit-no-user-specifics`**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-18 (**v0.4.0 + v0.4.1 SHIPPED — stint 6 was the round that fixed the gate that kept letting CI go red**)
 
-**✅ (2026-08-17, stint 5 — this handoff).** Full round + release: **v0.3.0 cut through every channel** — and for the
-first time through the round's own new publish gate. 5 headless spinoffs (3 planned units + 2 CI-red fixes), **all
-landed first-spawn, no worker deaths**. crates.io has `octl-core 0.3.0` + `orchestratectl 0.3.0`; the `v0.3.0` tag's
-Release CI and crates-publish CI both **green**; main CI green on the tagged commit. Local binary **0.3.0**,
-`orchestratectl doctor` **1011 ok / 0 warn / 0 fail** (all three skill mirrors). `main` clean and pushed.
+**✅ (2026-08-18, stint 6 — this handoff).** Biggest round so far: **8 units landed, every one first-spawn, zero
+worker deaths**, and **two releases** cut through the gated pipeline. crates.io has `octl-core 0.4.1` +
+`orchestratectl 0.4.1`; both tags' publish-crates and release CI green; main CI green on each tagged commit. Local
+binary **0.4.1**, commit-verified equal to `HEAD`, `orchestratectl doctor` **1047 ok / 0 warn / 0 fail** (all three
+skill mirrors). `main` clean and pushed.
 
-**What landed (3 planned units, all 3 lane heads):**
-- **`release-gate-on-ci`** (skills, high) — `publish-crates.yml` now runs the FULL main-CI gate (fmt, snapshots,
-  clippy, tests both platforms, msrv, docs, deny) **plus a tag↔manifest version-match check** before any publish step;
-  a tag on a red or mismatched commit can no longer publish. `OSS-RELEASE.md` + `AGENTS.md` document the tag-triggered
-  flow; no doc anywhere still instructs a local `cargo publish`. **Proven live by this very release.**
-- **`create-idempotency-lease-recovery`** (lifecycle, high) — pre-publication idempotency reservations now carry a
-  durable creator lease (pid + start-time, staleness-bounded): a keyed retry returns the published original, reclaims
-  provably-dead staging atomically, or fails closed when unverifiable. Keyed parent-edge (`child.spawned`) read repair
-  included. Follow-up `recover-unkeyed-child-publication` was filed by the worker and **closed `wontfix` on Jari's
-  call** (cosmic-ray-class window; fan-out already mandates per-unit keys; consequence is bookkeeping, not data loss —
-  mechanism documented in the closed issue).
-- **`config-show-layered-view`** (surface; was stale-labelled `deferred`, un-deferred at round start) — `config show`
-  is now a layered, tolerant inspection surface (config schema **v2**): raw file/env/default layers per key incl.
-  `[harness.per_kind]` visible under env shadowing, per-row `valid`/`validation_error` instead of dying on the value
-  being debugged, file-layer validity independent of ambient env, `--show-secrets` warning via the JSON `warnings`
-  envelope. Execution-path strictness unchanged.
+**What landed:**
+- **`stint-skills-drop-intake-specifics`** — downstream bug-intake vocabulary (specific labels, tool, slug schemas)
+  removed from the bundled stint skills; the generic autonomy tightening kept.
+- **`stint-skills-issuectl-dag`** — the big one. `/stint-start` + `/stint-handoff` now read lane order, dependencies,
+  collision tokens and spawnability from `issuectl dag --json` (`--reservations` supported), and the retired
+  `AGENTS-EXECUTION-DAG.md` companion is deleted from all three mirrors. Its stale markdown-DAG guidance had been
+  contradicting actual practice on *every* stint-start.
+- **`uncommonly-fuzzy-swing`** — an autonomous worker that hits a genuine decision fork now writes a durable
+  `node.awaiting_input` event (report-shaped `topic`/`options`/`recommended_default`), visible instantly on
+  `run show`/`run list`; after a restart-safe 180 s grace (`OCTL_AWAITING_INPUT_GRACE_SECS`) `run wait` settles and
+  `--notify` fires with `OCTL_STATUS=awaiting-input`. `node.input_resolved` is generation-fenced by `event_seq`. The
+  worker must not block on stdin: it proceeds on its stated default or files a blocked report (work preserved).
+- **`run-show-null-worktree-path`** — pending materialized runs expose `worktree_path` + `source_branch`.
+- **`align-green-gate`** (see the incident section) and **`skills-stale-tbd-channels`** (the obsolete
+  "publishing channels are TBD" hedge removed from five templates; the live channels verified).
+- Two test-only CI-red fixes.
 
-**⚠ TWO CI-RED INCIDENTS, both caught by CI after a green local+integrated gate, both fixed same-round (the release
-waited for green each time):**
-1. **`ci-red-release-mode-injection`** — CI tests run `--release`; the `OCTL_TEST_*` injection hooks in `run/create.rs`
-   are (deliberately) `cfg!(debug_assertions)`-gated, so a new lease-recovery test asserting on injection passed the
-   debug-mode local gate and failed both CI platforms. Fix: injection-dependent tests are skipped in release builds
-   (hooks stay debug-only — a production binary must never honor a test kill switch). **New blind-spot axis: the local
-   gate is debug-mode; CI is the only release-mode gate.**
-2. **`etxtbsy-cross-module-stub-race`** — the THIRD ETXTBSY occurrence. Stint 4's mutex serialized only the fake-tmux
-   family, but `run/merge.rs`, `git/repo.rs`, `supervise/capture.rs`, `supervise/cleanup.rs` also write exec stubs in
-   the same unit-test process; fork-inheritance leaks a write fd across module boundaries (hit
-   `multiplexer::tmux::tests::new_session_surfaces_nonzero` even though it HELD the tmux mutex). Structural fix:
-   **CI test jobs (ci.yml + publish-crates.yml) now run cargo-nextest, process-per-test** — the whole class is gone,
-   not re-mutexed; doctests preserved via a separate step. *(The stint-4 "kept HERE only" macOS/Linux ETXTBSY learning
-   is now superseded by this structural fix + the AGENTS.md release-gate rules; archive has the pointer.)*
+**⚠ THE ROUND'S REAL FINDING — the documented local gate was systematically weaker than CI, and that is now fixed.**
+Three consecutive stints had a CI-red that a green local gate missed, each in a *different* gap: stint 5 release-mode
+injection hooks; stint 6 `clippy::pedantic` `format_push_string` (CI runs `-D warnings`); stint 6 a test asserting
+`doctor`'s **global exit status**, which passes on a dev box with tmux + a harness installed and fails on a bare
+runner. That is a gate defect, not bad luck. **The green gate in `AGENTS.md` is now CI's exact commands**
+(`cargo fmt --all --check`; `cargo clippy --locked --workspace --all-targets -- -D warnings`;
+`cargo nextest run --locked --release --workspace`; `cargo test --locked --release --workspace --doc`;
+`RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`), the integrated gate matches, and both carry an
+explicit warning that **a developer machine is not a bare CI runner** — tool-sensitive tests must be exercised with a
+stripped `PATH`. The round's own integrated gate ran on those commands: 1000/1000 green.
 
-**Release-mechanics notes (mechanics only — the rules live in `AGENTS.md`):** the gated tag push worked as designed
-(the first tag attempt was correctly withheld on red CI, twice); `gh run watch` dies on transient GitHub 504/429s, so
-follow a failed watch with an explicit `gh run view --json conclusion` re-check before concluding red — and a 429
-downloading a CI *action* (cargo-deny job, run 32041657942) is infra noise, not our failure. Also: the default
-`skill install --force` covers claude+pi only — after a version bump run `--agent codex` too or doctor shows 13 codex
-sync warns.
+**⚠ AND A WORKER DESTROYED THE USER'S INSTALLED BINARY — TWICE, hours apart.** A worker ran
+`cargo install --path crates/octl-cli` from inside its worktree, overwriting the global
+`~/.cargo/bin/orchestratectl` and recording the worktree as install source. The binary later vanished entirely, `PATH`
+silently fell through to a **stale Homebrew tap build from an older release**, and that stale binary reinstalled
+**pre-migration** bundled skills over the corrected ones — partially undoing the round's work. `doctor` reported
+`0 warn` throughout, because a stale binary validates its own stale skills. It recurred *after* a brief explicitly
+forbade it, so prose in one brief is not enough. Now standing policy in `AGENTS.md` + three skill templates: workers
+use `cargo build --release` and invoke `./target/release/orchestratectl` by explicit path; global
+`cargo install`/`cargo uninstall` is an orchestrator-only action. **The deploy step now asserts the installed binary's
+commit equals `git rev-parse HEAD`** — a plausible version string proved nothing, and that check is the only reason
+this was caught.
 
-**⏭ NEXT — `add-configurable-agent` ALONE (surface lane head, in-progress: design.md v2 is ready to implement), or the
-`skills` head.** `add-configurable-agent` is cross-cutting (config + `harness::select` + run-create) — **do not run it
-in parallel with any `lifecycle` unit** (see the steer blocks below, which are its working brief). The `skills` lane
-was re-headed at this wrap on Jari's call: **`stint-skills-drop-intake-specifics` → `stint-skills-issuectl-dag`
-first** — the bundled stint skills' stale `AGENTS-EXECUTION-DAG.md` guidance (markdown-DAG merge, `deferred`
-exclusion) actively contradicts current practice and misleads EVERY stint-start, so killing it outranks
-`audit-no-user-specifics` (which has waited four stints and stays right behind; note the `deferred` label itself was
-retired — `intake-feature-issuectl-4f9dbc60a05e` in issuectl covers the doctor check). Cheap parallel partner for
-either: the `lifecycle` head `uncommonly-fuzzy-swing` — but NOT alongside `add-configurable-agent`.
+**◆ JARI'S DECISIONS THIS ROUND.**
+1. Green gate → CI's commands. Done (above).
+2. Workers may and should exercise their builds, but **inside their own worktree**, never into the global toolchain.
+   Done (above) — this was Jari's own proposed shape.
+3. **x86_64 macOS is deliberately NOT supported.** An earlier claim in this session that the release had a missing-Mac
+   gap was **wrong**: `dist-workspace.toml` + `OSS-RELEASE.md` declare exactly `aarch64-apple-darwin`,
+   `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, and the releases match. No action.
+4. **`add-configurable-agent` stays deferred**, knowingly. Jari's steer is now recorded **on the issue itself** (not
+   duplicated here): the local/`secure` profile is *genuinely weak*, so it should be given tasks so small and
+   unambiguous that it never occurs to it to do anything else — and worth considering that it simply **cannot / does
+   not know how to spawn further worktrees**, since removing the capability beats trusting a weak model to decline it.
+   Residency remains a machine-checkable profile attribute, never a fallback that can escalate to remote. Deferring is
+   an accepted, stated risk. It is cross-cutting (config + `harness::select` + run-create) and wants a round of its own;
+   design.md v2 is ready to implement.
 
-**Lanes (3):** `lifecycle` (11, head `uncommonly-fuzzy-swing`), `skills` (5, head
-`stint-skills-drop-intake-specifics`), `surface` (1: only `add-configurable-agent`, in-progress). Realistic
-parallelism 2–3 units/round; only 2 if the profile work runs (it excludes `lifecycle`).
+**⏭ NEXT.** Consult `issuectl dag` for what to pick — this file no longer states it. Context a fresh agent will want:
+`run-prefix-collision` is a **real, observed** bug, not speculation (two concurrently created runs shared their first
+10 ID characters; a worker nearly reported against the wrong run, and three colliding prefixes exist on disk right
+now); it pairs naturally with `run-branch-name-ulid-entropy`. `audit-no-user-specifics` has now waited five stints.
+`intake-bug-orchestratectl-169460ea27e7` (stale pendings cluttering `run list`) is confirmed still live — preflight
+saw 6 stale pending runs, **most of them from other repos**, which is exactly the reported symptom.
 
-**⚠ `add-configurable-agent` does NOT fit the lane model — read before scheduling it.** Jari's own feature request
-(named agent profiles: `expert`/`standard`/`implementer`/`secure`, with fallbacks + config layering). Laned `surface`
-(now that lane's only item, `in-progress` — design.md v2 is done, implementation is next), but it is
-**genuinely cross-cutting**: config surface **and**
-`harness::select` **and** the run-create path (accepting a profile, recording resolved profile/model/fallback in run
-metadata). Run-create is `lifecycle` territory. **Do not run it in parallel with any `lifecycle` unit.** The schema has
-a `collision` field for exactly this, but it is **not implemented in `issuectl update`** and no issue uses it, so the
-warning lives in the issue body instead (filed upstream as `intake-feature-issuectl-769ae85ab662`).
-
-**◆ DESIGN STEER ON `add-configurable-agent` (Jari, at this wrap) — capability names are the interface, raw model IDs
-are at most an escape hatch.** The system should be driven by a small set of capability tiers (roughly *ultra-capable /
-capable / fast / security-conscious*), configurable but shipping **sensible defaults for both the role set and the
-mapping**, so it works with no config file present. Consequence: the issue's `expert`/`standard`/`implementer`/`secure`
-examples are **capability tiers, not Jari's fleet baked in** — the model IDs there are illustrative config, never
-built-in defaults (same leak class `audit-no-user-specifics` exists to catch). **Open, NOT decided:** whether to also
-expose raw `--model` / `--effort` flags — Jari is explicitly unsure. Recommendation recorded on the issue: build the
-capability layer first, add raw flags only if a concrete need survives it. Note the merged intake's escalation case
-(terra gave up twice, sol finished in one pass) *argues for* the tier framing — "retry one tier up" is portable where
-two hardcoded vendor IDs are not.
-
-**◆ AND `secure` IS ORTHOGONAL TO THAT LADDER — a safety constraint, not a naming quibble (Jari, same wrap).** The
-other roles differ in *capability*; `secure` differs in **data residency**: it runs **locally**, so the payload never
-leaves the machine, which is what makes it safe for personal data and API-key **contents**. It is deliberately *low*
-capability — accepted cost, not a defect. Two axes (`fast < capable < ultra-capable` × `local | remote`), not four
-rungs. The consequence that matters: **a `secure` profile must NEVER fall back to a remote model.** A fallback that
-silently escalates to the cloud would exfiltrate exactly the data the choice was protecting, precisely when things are
-already failing. Fallback chains must stay inside the same residency class, and exhausting them must **fail with an
-actionable error rather than degrade**. "Retry one tier up" is a capability-axis move and must not cross the residency
-axis. It also breaks the issue's capability-driven auto-selection: capability follows task *difficulty*, residency
-follows *what data the task touches* — and a credentials task is usually trivial, so a difficulty-ranking planner will
-never pick `secure` correctly. The design needs an explicit task-sensitivity signal. Recommendation recorded on the
-issue: model residency as a **machine-checkable profile attribute** (e.g. `local: true`), not as one role's name, so
-the fallback resolver can enforce it instead of relying on the implementer remembering which role is special.
-
-**`intake-feature-orchestratectl-d0c82ab27c9d` closed duplicate into `add-configurable-agent`**, content transcribed
-first. It contributed three requirements the feature issue lacked: (1) the per-run override is the **primitive** and a
-valid **MVP slice that may land first**; (2) the resolved profile/model/fallback must be **recorded on the manifest and
-shown by `run show`**; (3) it must replace a genuinely unsafe workaround — pi reads its model from the **global**
-`~/.pi/agent/settings.json`, so per-spawn selection today means rewriting that file and restoring it (racy under
-concurrent spawns, easy to leave mutated). Any design still requiring global-settings mutation has not solved it. pi
-accepts `--model "provider/id:<thinking>"` on its CLI, so passthrough is viable.
-
-**Still open from the stint-4 triage sweep:** `intake-bug-orchestratectl-169460ea27e7` (lifecycle tail) — stale
-pending runs clutter `run list` (~301KB, several from other repos). Re-scoped at that wrap: the staged-create fix
-stops NEW stillborn pendings, so what remains is (a) cleaning the ~7 already on disk and (b) making a stale pending
-distinguishable from a live worker in `run list`.
+**Release-mechanics notes (mechanics only — rules live in `AGENTS.md`):** the gated tag push worked as designed both
+times. Reading crates.io's API **requires a `User-Agent` header** — without one it returns null and looks like a failed
+publish (this cost a false alarm this round). After a version bump run `skill install --force` for `--agent codex` too,
+or doctor shows codex sync warnings.
 
 ---
 
@@ -149,6 +116,14 @@ layer, or `supervise/`, and before any release action.
 Full narratives live in git history of this file; canonical rules extracted from
 these stints are in `AGENTS.md`.
 
+- **Stint 5 (2026-08-17, v0.3.0).** Full round + release, 5 headless spinoffs (3 planned + 2 CI-red fixes), all
+  first-spawn. Landed: `release-gate-on-ci` (publish-crates.yml now repeats the full main-CI gate + a tag/manifest
+  version-match check before any publish step — proven live by that release), `create-idempotency-lease-recovery`
+  (durable creator lease on pre-publication reservations; follow-up `recover-unkeyed-child-publication` closed
+  `wontfix` on Jari's call), `config-show-layered-view` (config schema v2, layered tolerant inspection). Two CI-reds:
+  `ci-red-release-mode-injection` (debug-only `OCTL_TEST_*` hooks vs CI's `--release`) and
+  `etxtbsy-cross-module-stub-race` (the third ETXTBSY; killed structurally by moving CI to cargo-nextest
+  process-per-test rather than re-mutexing). Both are inputs to the stint-6 green-gate fix.
 - **Review session (2026-08-17, after stint 4).** Fable-driven repo review + doc cleanup, parallel to the
   `add-configurable-agent` design session (design.md v2). `AGENTS.md` rewritten for consistency; `README.md` rewritten
   against 0.2.2 reality; stints 1–3 compressed into this archive. Code: `cut-plan-module` (dead 2013-line
