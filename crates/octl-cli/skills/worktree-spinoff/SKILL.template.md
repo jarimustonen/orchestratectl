@@ -76,11 +76,26 @@ self-contained. Include:
 
 1. **Goal** — one sentence on what to deliver.
 2. **Context** — files, modules, constraints. Quote relative paths.
-3. **Done criteria** — concrete and verifiable (tests pass, no new
-   clippy warnings, specific file exists).
-4. **Quality bar** — does the spinoff need to run `/llm-review` before
+3. **Done criteria** — concrete and verifiable. Copy the repository's exact
+   green-gate commands from its `AGENTS.md`; never substitute a debug build or a
+   looser warning policy. In orchestratectl itself the worker runs `cargo fmt
+   --all --check`, `cargo clippy --locked --workspace --all-targets -- -D
+   warnings`, `cargo nextest run --locked --release --workspace`, `cargo test
+   --locked --release --workspace --doc`, and `RUSTDOCFLAGS="-D warnings" cargo
+   doc --locked --workspace --no-deps`. Nextest and doctests are separate because
+   nextest does not run doctests. The orchestrator or machine setup provisions
+   nextest with `cargo install cargo-nextest --locked`; a worker reports it
+   missing rather than installing globally. Treat ambient `tmux`, harness binaries, and
+   other local tools as suspect; approximate a bare CI runner with a stripped
+   `PATH` for tool-sensitive tests.
+4. **Worker-local build safety** — a worker may run `cargo build --release` and
+   exercise `./target/release/orchestratectl …` from its own worktree. It MUST
+   NOT run `cargo install --path …`, install orchestratectl from a registry, or
+   run `cargo uninstall`: global toolchain mutation belongs only to the
+   orchestrator after integration.
+5. **Quality bar** — does the spinoff need to run `/llm-review` before
    merging? Default is no review for spinoffs.
-5. **Terminal report** — the brief MUST end with the mandatory closing
+6. **Terminal report** — the brief MUST end with the mandatory closing
    `orchestratectl run merge` step (see "Terminal report (mandatory)"
    below), which merges the branch and submits the terminal report in one
    call. Without it the run never reaches `completed` and the worktree
@@ -492,8 +507,7 @@ first invocation in a session, run
 
 - **Missing**: install one of:
   - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
-  - **Cargo** (any platform with a Rust toolchain): `cargo install orchestratectl`
-  - **Shell installer** (no toolchain):
+  - **Shell installer**:
     `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
 
   (Publishing channels are TBD; the placeholders above mirror
@@ -501,9 +515,8 @@ first invocation in a session, run
   ships.)
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl`,
-  `cargo install orchestratectl --force`, or re-run the shell
-  installer). Stop and wait — the `run create --kind spinoff` flag
+  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+  re-run the shell installer). Stop and wait — the `run create --kind spinoff` flag
   surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of
   what this skill was written for. The whole bundled skill catalog has

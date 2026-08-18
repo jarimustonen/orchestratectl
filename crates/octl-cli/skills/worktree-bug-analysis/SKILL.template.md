@@ -79,6 +79,11 @@ the read-only hard constraints above **and** end with the mandatory closing
      fix sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
      and link it.
    - Commit with plain `git` and a `Refs-Issue: <slug>` trailer.
+   - If reproducing requires a local orchestratectl build, use `cargo build
+     --release` and invoke `./target/release/orchestratectl …` explicitly. A
+     worker MUST NOT run `cargo install --path …`, install orchestratectl from a
+     registry, or run `cargo uninstall`; global tool mutation belongs only to
+     the orchestrator after integration.
 3. **Done criteria** — the issue carries the analysis; the branch is committed
    and merged back; no application code changed.
 
@@ -172,8 +177,9 @@ this once the issue update is committed:
 
 This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the first
 invocation in a session, run `orchestratectl version --output json`, compare
-`.data.version` to `{{CLI_VERSION}}`: **Missing** → install; **Older** → tell the
-user to upgrade and stop; **Newer** → `orchestratectl skill install --force`;
+`.data.version` to `{{CLI_VERSION}}`: **Missing** → install via Homebrew or the
+shell installer; **Older** → tell the user to upgrade and stop; **Newer** →
+`orchestratectl skill install --force`;
 **Equal** → proceed.
 
 ## Example

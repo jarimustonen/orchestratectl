@@ -74,6 +74,12 @@ Include in the brief:
    inline.
 5. **Done criteria** — file at `research/<slug>.md` exists, committed,
    merged back to source branch.
+6. **Worker-local tool safety** — if repository inspection requires building
+   orchestratectl, use `cargo build --release` and invoke
+   `./target/release/orchestratectl …` explicitly. A worker MUST NOT run `cargo
+   install --path …`, install orchestratectl from a registry, or run `cargo
+   uninstall`; global tool mutation belongs only to the orchestrator after
+   integration.
 
 Long prompts → temp file + `--prompt-file <path>`.
 
@@ -243,7 +249,7 @@ first invocation in a session, run
 `orchestratectl version --output json`, compare `.data.version` to
 `{{CLI_VERSION}}`, and:
 
-- **Missing**: install via Homebrew / Cargo / shell installer (see the
+- **Missing**: install via Homebrew or the shell installer (see the
   contract-template skills like `worktree-spinoff` for channels).
 - **Older**: tell the user to upgrade and stop.
 - **Newer**: `orchestratectl skill install --force` (or just

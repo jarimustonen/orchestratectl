@@ -206,16 +206,15 @@ the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Missing**: install one of:
   - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
-  - **Cargo** (any platform with a Rust toolchain): `cargo install orchestratectl`
-  - **Shell installer** (no toolchain):
+  - **Shell installer**:
     `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
 
   (Publishing channels are TBD; the placeholders above mirror `issuectl`
   conventions and will be replaced once the release pipeline ships.)
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl`,
-  `cargo install orchestratectl --force`, or re-run the shell installer).
+  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+  re-run the shell installer).
   Stop and wait — the `run merge` flag surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of what
   this skill was written for. The whole bundled skill catalog has moved

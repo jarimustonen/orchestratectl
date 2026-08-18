@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled worker guidance now verifies the artifact CI ships (`align-green-gate`).** Worktree briefs use the locked release-mode nextest, doctest, clippy, and rustdoc gate, and workers build and invoke their worktree-local binary instead of mutating the user's global orchestratectl installation.
+
 ## [0.4.0] - 2026-08-17
 
 ### Fixed

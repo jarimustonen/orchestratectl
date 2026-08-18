@@ -75,7 +75,8 @@ docs_site: none
      To do it by hand (e.g. a manual bump outside the engine), run the same hook:
      ```bash
      INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
-     cargo test --workspace
+     cargo nextest run --locked --release --workspace
+     cargo test --locked --release --workspace --doc
      ```
   Skipping step 2 turned `main` CI red *after* the v0.1.8 tag was already cut (the
   local integrated gate ran before the bump). The `version-snapshots` CI job and

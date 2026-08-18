@@ -59,11 +59,27 @@ The template should include:
 2. **Input path** — the source the unit reads (the enumerated input).
 3. **Output path** — the disjoint file the unit writes. Use the unit
    id or a hash so two unit ids cannot collide.
-4. **Done criteria** — output file exists, committed.
-5. **No spin-offs, no discuss items** — children should run silently
+4. **Done criteria** — output file exists, committed. If a unit changes code,
+   copy the repository's exact green gate from `AGENTS.md`, including release
+   mode, lockfile enforcement, and warnings-as-errors; do not replace it with a
+   debug-mode `cargo test`. For orchestratectl this is `cargo fmt --all --check`,
+   `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo
+   nextest run --locked --release --workspace`, `cargo test --locked --release
+   --workspace --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --locked
+   --workspace --no-deps`. Doctests stay separate because nextest does not run
+   them. The orchestrator or machine setup provisions nextest with `cargo
+   install cargo-nextest --locked`; a child reports it missing rather than
+   installing globally. Tool-sensitive tests should approximate bare CI with a
+   stripped `PATH`.
+5. **Worker-local build safety** — a child may run `cargo build --release` and
+   exercise `./target/release/orchestratectl …` in its own worktree. It MUST NOT
+   run `cargo install --path …`, install orchestratectl from a registry, or run
+   `cargo uninstall`; only the orchestrator may mutate global tools after
+   integration.
+6. **No spin-offs, no discuss items** — children should run silently
    to completion; surfacing every receipt OCR run as a discussion
    item drowns the user.
-6. **Closing step** — every child MUST end with a single
+7. **Closing step** — every child MUST end with a single
    `orchestratectl run merge "$run_id"` call (see "Terminal report
    (mandatory)" below), which merges the unit back AND submits its
    terminal report in one step. Without that report the unit's node
@@ -294,7 +310,7 @@ This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
 `.data.version` from `orchestratectl version --output json` to
 `{{CLI_VERSION}}`:
 
-- **Missing**: install via Homebrew / Cargo / shell installer.
+- **Missing**: install via Homebrew or the shell installer.
 - **Older**: ask the user to upgrade; stop — fan-out child-spawn
   semantics may have changed.
 - **Newer**: `orchestratectl skill install --force` (or just `fan-out

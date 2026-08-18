@@ -79,6 +79,12 @@ If any of the above is missing, ask **once** before spawning.
    merged back. No code changes unless the ADR mandates them (and
    even then, prefer a follow-up bugfix / code worktree to keep the
    ADR commit clean).
+6. **Worker-local tool safety** — if evidence gathering requires building
+   orchestratectl, use `cargo build --release` and invoke
+   `./target/release/orchestratectl …` explicitly. A worker MUST NOT run `cargo
+   install --path …`, install orchestratectl from a registry, or run `cargo
+   uninstall`; global tool mutation belongs only to the orchestrator after
+   integration.
 
 ### 3. Create the run
 
@@ -250,7 +256,7 @@ This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
 `.data.version` from `orchestratectl version --output json` to
 `{{CLI_VERSION}}`:
 
-- **Missing**: install via Homebrew / Cargo / shell installer.
+- **Missing**: install via Homebrew or the shell installer.
 - **Older**: ask the user to upgrade; stop.
 - **Newer**: `orchestratectl skill install --force` (or just
   `worktree-technical-decision --force`).
