@@ -170,3 +170,7 @@ these stints are in `AGENTS.md`.
   `AGENTS.md`.
 
 ---
+
+## Piialiisan bugiraportit
+
+- [ ] 🐛 Piialiisan bugiraportti: run create omits source_repo from fresh run manifest — jari via Telegram ([`intake-bug-orchestratectl-19a653fff4c9`](issues/intake-bug-orchestratectl-19a653fff4c9/item.md))
