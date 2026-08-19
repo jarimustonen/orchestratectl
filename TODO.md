@@ -170,7 +170,3 @@ these stints are in `AGENTS.md`.
   `AGENTS.md`.
 
 ---
-
-## Piialiisan bugiraportit
-
-- [ ] 🐛 Piialiisan bugiraportti: Worker that exits without run merge is indistinguishable from a healthy… — jari via Telegram ([`intake-bug-orchestratectl-9efd3de5753c`](issues/intake-bug-orchestratectl-9efd3de5753c/item.md))
