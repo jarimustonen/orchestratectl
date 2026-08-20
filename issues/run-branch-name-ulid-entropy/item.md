@@ -1,12 +1,12 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-20
 type: bug
 status: open
 priority: normal
 related: ['@run-create-long-title-stillborn']
 lane: lifecycle
-lane_seq: 25
+lane_seq: 5
 ---
 
 # Use ULID entropy in run-create branch names
