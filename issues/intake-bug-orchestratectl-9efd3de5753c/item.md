@@ -3,9 +3,11 @@ created: 2026-08-18
 updated: 2026-08-20
 type: bug
 reporter: jari
-status: untriaged
+status: open
 priority: normal
 provenance: agent-homebase-wrapup
+lane: lifecycle
+lane_seq: 35
 ---
 
 # Worker that exits without run merge is indistinguishable from a healthy…

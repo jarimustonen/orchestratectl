@@ -1,10 +1,12 @@
 ---
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-20
 type: feature
 reporter: jari
 status: open
 priority: normal
+lane: cli
+lane_seq: 20
 ---
 
 # doctor cannot detect that it is validating stale skills with a stale binary

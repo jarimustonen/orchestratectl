@@ -1,10 +1,12 @@
 ---
 created: 2026-08-18
-updated: 2026-08-18
+updated: 2026-08-20
 type: task
 reporter: jari
 status: open
 priority: normal
+lane: release
+lane_seq: 10
 ---
 
 # Adopt ossctl for cutting this project's releases
