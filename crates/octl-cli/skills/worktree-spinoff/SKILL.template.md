@@ -94,7 +94,13 @@ self-contained. Include:
    run `cargo uninstall`: global toolchain mutation belongs only to the
    orchestrator after integration.
 5. **Quality bar** — does the spinoff need to run `/llm-review` before
-   merging? Default is no review for spinoffs.
+   merging? Default is no review for spinoffs. `run create` prepends generated
+   run context to every worker brief, including custom `--prompt-file` input.
+   That context carries the exact run id and the hard issue-filing boundary:
+   worker-filed issues use `issuectl intake file`, are born unlaned, and review
+   findings carry machine-visible AI-review provenance plus available metadata.
+   Do not weaken that rule or tell a worker to execute an `/assess-findings`-
+   staged `issuectl create` command verbatim.
 6. **Terminal report** — the brief MUST end with the mandatory closing
    `orchestratectl run merge` step (see "Terminal report (mandatory)"
    below), which merges the branch and submits the terminal report in one

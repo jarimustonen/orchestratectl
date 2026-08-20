@@ -32,12 +32,15 @@ an unmigrated or incompatible project rather than falling back to prose.
 - **Read scheduling, never duplicate it.** Use `issuectl dag --json` for lane order,
   dependency state, collision tokens, computed heads, and spawnability. Do not copy those
   fields into the handoff narrative.
-- **Scrutinise spin-off quality before folding.** Before filing or adding a
+- **Scrutinise spin-off quality before folding.** Before filing a
   review-generated spin-off (from `/llm-review`, a review panel, or an
-  `/assess-findings` cascade) to the next stint's agenda, weigh it critically against real
-  value. Early-maturity review passes tend to over-produce low-value "find something to
-  polish" suggestions, and in practice a large majority of such cascade spin-offs get
-  dropped rather than kept.
+  `/assess-findings` cascade), weigh it critically against real value. Early-maturity
+  review passes over-produce low-value polish suggestions; file only an observed
+  occurrence or a self-contained problem with credible impact. A finding that survives
+  uses `issuectl intake file`, is born unlaned, and carries machine-visible `ai-review`
+  provenance plus available run/target/model/assessment/severity/confidence metadata.
+  Named model agreement stays a list, never a corroboration score. Do not add the new
+  issue to the next stint's agenda: the human lane-or-close sweep owns scheduling.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 - **Read worker reports before writing the next handoff.** A terminal report is persisted as
   `last_report` on its node. For a single-worker run, prefer the public

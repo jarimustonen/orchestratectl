@@ -2889,6 +2889,29 @@ mod tests {
     }
 
     #[test]
+    fn worktree_and_handoff_skills_pin_unlaned_review_filing_boundary() {
+        let spinoff = SKILLS
+            .iter()
+            .find(|s| s.name == "worktree-spinoff")
+            .unwrap()
+            .body;
+        assert!(spinoff.contains("issuectl intake file"));
+        assert!(spinoff.contains("born unlaned"));
+        assert!(spinoff.contains("AI-review provenance"));
+        assert!(spinoff.contains("`/assess-findings`"));
+
+        let handoff = SKILLS
+            .iter()
+            .find(|s| s.name == "stint-handoff")
+            .unwrap()
+            .body;
+        assert!(handoff.contains("issuectl intake file"));
+        assert!(handoff.contains("human lane-or-close sweep owns scheduling"));
+        assert!(handoff.contains("Named model agreement stays a list"));
+        assert!(handoff.contains("severity/confidence metadata"));
+    }
+
+    #[test]
     fn codex_companion_path_derives_shared_subdir() {
         // Default layout: sibling `_shared/` next to the flat prompt file.
         assert_eq!(

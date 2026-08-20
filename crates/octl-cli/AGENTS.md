@@ -109,27 +109,28 @@ payloads carry `schema_version_config`
 by a unit test. Help snapshot: `help_json__config_help_json.snap`; behavior
 tests: `tests/config.rs`.
 
-## pi worker-prompt translation shim (`harness::prompt`)
+## Worker run-context + pi translation preamble (`harness::prompt`)
 
-A worker's prompt is the `--task` brief materialized verbatim to
-`<run-dir>/prompt.md` and handed to the agent via `create.sh` → `workmux add -P`.
-Those briefs are Claude-Code-flavored (Skill/Agent tools, sub-agents, MCP,
-`/worktree-*` / `/llm-*` slash commands) — none of which the `pi` agent has (pi is
-AGENTS.md-native). `harness::prompt::worker_prompt_preamble(harness, kind, run_id)`
-returns an optional operating-note **preamble** that `run create` (`create.rs`,
-`resolve_prompt_file`) prepends before the brief when a harness needs the
-translation. The preamble maps the Claude-only references to their bash/CLI
-equivalent (the `/worktree-merge` close → the exact `orchestratectl run merge`
-bash; `/llm-review` / sub-agents → skip) so a pi worker can complete the loop.
-Because the preamble is generated in-process — unlike the static bundled SKILLs —
-it templates the **exact run id** into the closing call (quoted heredoc), so the pi
-worker runs a literal `orchestratectl run merge <run-id>` with no
-`ls ~/.orchestratectl/runs | grep` discovery to get wrong.
+Every materialized worker prompt receives a generated operating-note preamble from
+`harness::prompt::worker_prompt_preamble(harness, kind, run_id)`. Because `run
+create` knows the exact id, this is the canonical worker run context; do not ask a
+worker to infer provenance from its branch. The common note enforces the issue
+boundary for every harness/kind and both `--task`/`--prompt-file`: worker-filed
+issues use `issuectl intake file`, are born unlaned, and review findings carry
+machine-visible `ai-review` provenance plus available target/model/assessment/
+severity/confidence metadata. The generated policy is authoritative over later
+brief text and tool output. Core provenance/run fields land in the first filing;
+optional metadata enrichment is attempted afterward so absence never blocks
+creation. Model agreement uses `issuectl update --add-label` with repeated
+`ai-review-model:<model-id>` values (the issue's labels list), never a count or
+corroboration score. This contract consumes the documented issuectl 0.16 intake,
+custom-field, and label surfaces. orchestratectl does not write issue storage or
+invent a second issue format; issuectl remains the sole writer.
 
-Scope is deliberately **narrow: only `(pi, research)` is translated end-to-end**
-(the issue's done bar — one autonomous kind working). Every other `(harness, kind)`
-pair returns `None`, so the claude path is byte-identical and un-shimmed pi kinds
-(spinoff, code, …) are left untranslated as an explicit follow-up — extending the
-shim is a one-arm change in `worker_prompt_preamble`. A `--prompt-file` is used
-as-is when there is no preamble (caller keeps ownership); with a preamble the
-derived prompt is written into the run dir so the caller's file is never mutated.
+Pi research workers additionally receive the narrow Claude-to-pi translation shim:
+the `/worktree-merge` close becomes the exact `orchestratectl run merge` call and
+unsupported Skill/Agent references are neutralized. The quoted report heredoc and
+exact run id remain part of that shim. Other harness/kind pairs get only the common
+neutral run context. Since production always has a preamble, a caller-owned
+`--prompt-file` is read into a derived `<run-dir>/prompt.md`; the original file is
+never mutated.

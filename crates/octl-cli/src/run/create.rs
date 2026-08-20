@@ -552,18 +552,15 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // caller supplied one outside the run dir (in which case we use the
     // file as-is so they keep ownership over it). When
     // `--skip-materialize` is set there's no spawn, no prompt.
-    // Translate the worker-facing prompt for harnesses that need it (the pi
-    // shim — Claude-flavored SKILL references mapped to bash/CLI, with the exact
-    // run id templated into the closing call). The explicit claude harness gets
-    // no preamble, so its prompt.md remains byte-identical to before.
-    let prompt_preamble =
-        crate::harness::prompt::worker_prompt_preamble(&harness.name, args.kind, &run_id);
+    // Add the exact run context and issue-filing boundary to every worker.
+    // Harnesses that need translation (currently pi research) receive that note
+    // in the same generated preamble.
     let prompt_path = match prompt_source {
-        Some(src) => Some(resolve_prompt_file(
-            &staging_dir,
-            src,
-            prompt_preamble.as_deref(),
-        )?),
+        Some(src) => {
+            let preamble =
+                crate::harness::prompt::worker_prompt_preamble(&harness.name, args.kind, &run_id);
+            Some(resolve_prompt_file(&staging_dir, src, &preamble)?)
+        }
         None => None,
     };
 
@@ -1200,37 +1197,27 @@ fn resolve_prompt_source(
     }
 }
 
-/// Materialize the worker's prompt, optionally prepending a harness-specific
-/// preamble (the pi translation shim — see [`crate::harness::prompt`]).
+/// Materialize the worker's prompt with generated run context (and any harness
+/// translation; see [`crate::harness::prompt`]).
 ///
-/// With no preamble (`None`, the claude path) the behaviour is unchanged: a
-/// `--task` is written to `<run-dir>/prompt.md`, and a caller-supplied
-/// `--prompt-file` is used **as-is** so the caller keeps ownership of it. When a
-/// preamble is present the derived prompt (`preamble + "\n\n" + brief`) is always
-/// written into the run dir — for a `--prompt-file` too, so the caller's file is
-/// never mutated.
+/// The derived prompt (`preamble + "\n\n" + brief`) is always written into the
+/// run dir. A caller-owned `--prompt-file` is read but never mutated.
 fn resolve_prompt_file(
     run_dir: &std::path::Path,
     src: PromptSource,
-    preamble: Option<&str>,
+    preamble: &str,
 ) -> Result<PathBuf, CliError> {
-    match (src, preamble) {
-        (PromptSource::Task(t), None) => spawn::write_prompt_file(run_dir, &t),
-        (PromptSource::Task(t), Some(pre)) => {
-            spawn::write_prompt_file(run_dir, &format!("{pre}\n\n{t}"))
-        }
-        (PromptSource::File(p), None) => Ok(p),
-        (PromptSource::File(p), Some(pre)) => {
-            let contents = std::fs::read_to_string(&p).map_err(|e| {
-                CliError::user(
-                    "prompt_file_not_readable",
-                    format!("could not read --prompt-file {}: {e}", p.display()),
-                )
-                .with_invalid_value(p.display().to_string())
-            })?;
-            spawn::write_prompt_file(run_dir, &format!("{pre}\n\n{contents}"))
-        }
-    }
+    let brief = match src {
+        PromptSource::Task(t) => t,
+        PromptSource::File(p) => std::fs::read_to_string(&p).map_err(|e| {
+            CliError::user(
+                "prompt_file_not_readable",
+                format!("could not read --prompt-file {}: {e}", p.display()),
+            )
+            .with_invalid_value(p.display().to_string())
+        })?,
+    };
+    spawn::write_prompt_file(run_dir, &format!("{preamble}\n\n{brief}"))
 }
 
 /// Longest ASCII workmux handle that survives its tmux-window naming path.
@@ -1575,41 +1562,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prompt_file_task_no_preamble_is_verbatim() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let p = resolve_prompt_file(dir.path(), PromptSource::Task("do the thing".into()), None)
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(p).unwrap(), "do the thing");
-    }
-
-    #[test]
     fn resolve_prompt_file_task_with_preamble_prepends() {
         let dir = tempfile::TempDir::new().unwrap();
         let preamble =
-            crate::harness::prompt::worker_prompt_preamble("pi", Kind::Research, "01JXRUNID000")
-                .unwrap();
+            crate::harness::prompt::worker_prompt_preamble("pi", Kind::Research, "01JXRUNID000");
         let p = resolve_prompt_file(
             dir.path(),
             PromptSource::Task("research WAL implementations".into()),
-            Some(&preamble),
+            &preamble,
         )
         .unwrap();
         let body = std::fs::read_to_string(p).unwrap();
-        // The shim leads; the original brief follows after a blank line.
-        assert!(body.starts_with("# Operating note — pi research worker"));
+        // Common run context leads, then the harness shim, then the brief.
+        assert!(body.starts_with("# Orchestratectl run context"));
+        assert!(body.contains("# Operating note — pi research worker"));
         assert!(body.contains("orchestratectl run merge 01JXRUNID000"));
         assert!(body.trim_end().ends_with("research WAL implementations"));
-    }
-
-    #[test]
-    fn resolve_prompt_file_uses_caller_file_verbatim_without_preamble() {
-        // No preamble: a --prompt-file is used as-is (caller keeps ownership),
-        // not copied into the run dir.
-        let dir = tempfile::TempDir::new().unwrap();
-        let caller = dir.path().join("caller-prompt.md");
-        std::fs::write(&caller, "caller-owned brief").unwrap();
-        let p = resolve_prompt_file(dir.path(), PromptSource::File(caller.clone()), None).unwrap();
-        assert_eq!(p, caller);
     }
 
     #[test]
@@ -1620,14 +1588,9 @@ mod tests {
         let caller = dir.path().join("caller-prompt.md");
         std::fs::write(&caller, "caller-owned brief").unwrap();
         let preamble =
-            crate::harness::prompt::worker_prompt_preamble("pi", Kind::Research, "01JXRUNID000")
-                .unwrap();
-        let p = resolve_prompt_file(
-            dir.path(),
-            PromptSource::File(caller.clone()),
-            Some(&preamble),
-        )
-        .unwrap();
+            crate::harness::prompt::worker_prompt_preamble("pi", Kind::Research, "01JXRUNID000");
+        let p =
+            resolve_prompt_file(dir.path(), PromptSource::File(caller.clone()), &preamble).unwrap();
         assert_ne!(
             p, caller,
             "derived prompt must be a new file in the run dir"
@@ -1637,7 +1600,8 @@ mod tests {
             "caller-owned brief"
         );
         let body = std::fs::read_to_string(p).unwrap();
-        assert!(body.starts_with("# Operating note — pi research worker"));
+        assert!(body.starts_with("# Orchestratectl run context"));
+        assert!(body.contains("# Operating note — pi research worker"));
         assert!(body.trim_end().ends_with("caller-owned brief"));
     }
 
