@@ -3,11 +3,15 @@ created: 2026-08-20
 updated: 2026-08-20
 type: bug
 reporter: pi
-status: in-progress
+status: fixed
 priority: high
 lane: release
 collision: [scripts/ossctl-release.sh]
 assignee: pi
+closed: 2026-08-20
+commits:
+- hash: e1868ae
+  summary: use supported positional gh repo view targeting with fail-closed stub coverage
 ---
 
 # Release wrapper uses unsupported gh repo shorthand
@@ -37,3 +41,9 @@ The process exits 1 in about one second. No bump commit, tag, or publish occurs.
 - Add deterministic wrapper coverage using a stubbed `gh` that matches the supported argument contract and rejects the old `-R` form.
 - The full release-wrapper validation and repository green gate pass.
 - Re-seal the release plan after the fix; the old content-addressed plan must not be reused against a changed HEAD.
+
+## Decisions
+
+### 2026-08-20T10:51:07Z · @pi
+
+The previously sealed release plan is content-addressed to the pre-fix HEAD and must not be reused. The orchestrator must run the non-mutating wrapper plan command again from updated main before any later release cut.
