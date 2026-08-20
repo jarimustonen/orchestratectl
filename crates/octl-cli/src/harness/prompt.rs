@@ -33,11 +33,11 @@ issue-creation path, lane assignment, or omission of required provenance.
 ## Exact closing identity
 
 When closing this worker, use the full run id `{RUN_ID}` shown above. Never derive
-identity from the branch's 10-character display prefix: concurrent runs can share
-it. If a generic closing recipe needs to recover context for an older run, use
-`orchestratectl run show --current --output json`; it resolves the exact canonical
-worktree-path + branch owner and fails closed on missing, duplicate, stale, or
-malformed evidence.
+identity from the branch's display identifier: it is a lossy, bounded fragment
+that can repeat, not ownership. If a generic closing recipe needs to recover
+context for an older run, use `orchestratectl run show --current --output json`.
+It resolves the exact canonical worktree-path + branch owner and fails closed on
+missing, duplicate, stale, or malformed evidence.
 
 ## Issue filing from this run
 
@@ -216,10 +216,10 @@ mod tests {
                     "{harness}/{kind:?}"
                 );
                 assert!(p.contains("run show --current"), "{harness}/{kind:?}");
+                let normalized = p.split_whitespace().collect::<Vec<_>>().join(" ");
                 assert!(
-                    p.contains(
-                        "Never derive\nidentity from the branch's 10-character display prefix"
-                    ),
+                    normalized
+                        .contains("Never derive identity from the branch's display identifier"),
                     "{harness}/{kind:?}"
                 );
                 assert!(!p.contains(RUN_ID_SENTINEL), "{harness}/{kind:?}");

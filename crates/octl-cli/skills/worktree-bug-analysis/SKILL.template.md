@@ -135,8 +135,8 @@ the terminal `node report` in the same call; until it runs the run stays
 this once the issue update is committed:
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's collision-prone short
-   prefix:
+   durable node ownership record, never the branch's display identifier (it is a
+   lossy bounded fragment that can repeat, not ownership):
 
    ```bash
    run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {

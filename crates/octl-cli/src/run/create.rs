@@ -21,7 +21,7 @@ use chrono::{Duration, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use octl_core::{ensure_root, new_run_id, Kind, Lifecycle};
+use octl_core::{ensure_root, new_run_id, Kind, Lifecycle, RunId};
 
 use crate::error::CliError;
 use crate::idempotency;
@@ -713,7 +713,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // top-level and child runs alike, so neither can strand a visible 0-node
     // `pending` run. The cleanup is helper-wrapped so both failure arms (the
     // create.sh non-zero exit and the PID-liveness re-check) share it.
-    let branch_name = derive_branch_name(args.kind, &run_id, &title);
+    let branch_name = derive_branch_name(args.kind, &run_id_typed, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
         // Launch the worker under the resolved harness's workmux agent. The
@@ -1227,18 +1227,25 @@ fn resolve_prompt_file(
 /// looks up the untruncated branch-derived name. Keep the *input* to both sides
 /// within the bound instead of loosening create.sh's authoritative lookup.
 const MAX_WORKMUX_WINDOW_NAME_BYTES: usize = 50;
+const BRANCH_DISPLAY_ID_CHARS: usize = 10;
+const BRANCH_PREFIX_BYTES: usize = "wt/".len() + BRANCH_DISPLAY_ID_CHARS + "-".len();
+const MIN_BRANCH_SLUG_BYTES: usize = 16;
+const _: () = assert!(BRANCH_DISPLAY_ID_CHARS <= RunId::LEN);
+const _: () = assert!(BRANCH_PREFIX_BYTES + MIN_BRANCH_SLUG_BYTES <= MAX_WORKMUX_WINDOW_NAME_BYTES);
 
-/// Build the branch name we hand to create.sh. We keep the convention
-/// the skill family uses (`wt/<short-id>-<slug>`) so windows produced
-/// by `orchestratectl` and `/worktree-code` look identical in tmux.
-fn derive_branch_name(kind: Kind, run_id: &str, title: &str) -> String {
-    let short = run_id
-        .to_ascii_lowercase()
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(10)
-        .collect::<String>();
-    let prefix = format!("wt/{short}-");
+/// Build the bounded branch name handed to create.sh.
+///
+/// The display identifier uses the last ten ULID characters: 50 bits from the
+/// randomness field. Taking the old first ten characters encoded only the
+/// millisecond timestamp and let same-millisecond runs with the same retained
+/// slug collide. The identifier is display metadata, not run identity;
+/// ownership discovery uses the recorded worktree path and branch.
+fn derive_branch_name(kind: Kind, run_id: &RunId, title: &str) -> String {
+    // RunId guarantees a canonical 26-byte lowercase Crockford ULID, so this
+    // fixed byte slice cannot underflow or split a character boundary.
+    let entropy_start = RunId::LEN - BRANCH_DISPLAY_ID_CHARS;
+    let display_id = &run_id.as_str()[entropy_start..];
+    let prefix = format!("wt/{display_id}-");
     let slug: String = title
         .to_ascii_lowercase()
         .chars()
@@ -1347,6 +1354,10 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn branch_name(kind: Kind, run_id: &str, title: &str) -> String {
+        derive_branch_name(kind, &parse_run_id(run_id).unwrap(), title)
+    }
 
     #[test]
     fn dead_creator_reservation_is_reclaimable_without_waiting() {
@@ -1486,35 +1497,71 @@ mod tests {
 
     #[test]
     fn derive_branch_basic() {
-        let b = derive_branch_name(
+        let b = branch_name(
             Kind::Spinoff,
-            "01JX1NS7H8AAAAA9BBBBBBBBBB",
+            "01jx1ns7h8aaaaa9bbbbbbbbbb",
             "Login redirect bug",
         );
-        assert!(b.starts_with("wt/"));
-        assert!(b.ends_with("login-redirect-bug"), "got {b}");
+        assert_eq!(b, "wt/bbbbbbbbbb-login-redirect-bug");
+    }
+
+    #[test]
+    fn derive_branch_uses_entropy_for_same_millisecond_and_retained_slug() {
+        let timestamp = "01jx1ns7h8";
+        let first = format!("{timestamp}0000000000000000");
+        let second = format!("{timestamp}0000000000000001");
+        let shared_prefix = "same normalized title ".repeat(4);
+        let first_title = format!("{shared_prefix}first tail");
+        let second_title = format!("{shared_prefix}second tail");
+
+        let first_branch = branch_name(Kind::Spinoff, &first, &first_title);
+        let second_branch = branch_name(Kind::Spinoff, &second, &second_title);
+
+        assert_ne!(first_branch, second_branch);
+        assert_eq!(first_branch.len(), MAX_WORKMUX_WINDOW_NAME_BYTES);
+        assert_eq!(second_branch.len(), MAX_WORKMUX_WINDOW_NAME_BYTES);
+        assert_eq!(
+            first_branch,
+            "wt/0000000000-same-normalized-title-same-normalize"
+        );
+        assert_eq!(
+            second_branch,
+            "wt/0000000001-same-normalized-title-same-normalize"
+        );
+    }
+
+    #[test]
+    fn derive_branch_uses_the_ulid_randomness_suffix_not_a_resolvable_prefix() {
+        let run_id = "01jx1ns7h8aaaaa9bbbbbbbbbb";
+        let branch = branch_name(Kind::Spinoff, run_id, "t");
+        let display_id = branch
+            .strip_prefix("wt/")
+            .unwrap()
+            .split('-')
+            .next()
+            .unwrap();
+
+        assert_eq!(display_id, &run_id[RunId::LEN - BRANCH_DISPLAY_ID_CHARS..]);
+        assert!(!run_id.starts_with(display_id));
     }
 
     #[test]
     fn derive_branch_empty_title_uses_kind() {
-        let b = derive_branch_name(Kind::Research, "01JX1234567890ABCDE", "   !!!  ");
+        let b = branch_name(Kind::Research, "01jx1234567890abcde1234567", "   !!!  ");
         assert!(b.ends_with("research"));
     }
 
     #[test]
     fn derive_branch_caps_the_flat_workmux_window_name_at_exact_boundary() {
-        let run_id = "01JX1NS7H8AAAAA9BBBBBBBBBB";
+        let run_id = "01jx1ns7h8aaaaa9bbbbbbbbbb";
         let at_limit = "x".repeat(36);
         let over_limit = format!("{at_limit}y");
-        let expected = format!("wt/01jx1ns7h8-{at_limit}");
+        let expected = format!("wt/bbbbbbbbbb-{at_limit}");
 
-        assert_eq!(
-            derive_branch_name(Kind::Spinoff, run_id, &at_limit),
-            expected
-        );
+        assert_eq!(branch_name(Kind::Spinoff, run_id, &at_limit), expected);
         assert_eq!(expected.len(), MAX_WORKMUX_WINDOW_NAME_BYTES);
         assert_eq!(
-            derive_branch_name(Kind::Spinoff, run_id, &over_limit),
+            branch_name(Kind::Spinoff, run_id, &over_limit),
             expected,
             "one byte over the workmux limit must derive the same bounded name"
         );
@@ -1522,12 +1569,12 @@ mod tests {
 
     #[test]
     fn derive_branch_normalizes_unicode_whitespace_and_quotes_before_bounding() {
-        let b = derive_branch_name(
+        let b = branch_name(
             Kind::Spinoff,
-            "01JX1NS7H8AAAAA9BBBBBBBBBB",
+            "01jx1ns7h8aaaaa9bbbbbbbbbb",
             "  Café \"quoted\"  and ‘spaced’  ",
         );
-        assert_eq!(b, "wt/01jx1ns7h8-caf-quoted-and-spaced");
+        assert_eq!(b, "wt/bbbbbbbbbb-caf-quoted-and-spaced");
         assert!(b.is_ascii());
         assert!(!b.contains(char::is_whitespace));
         assert!(!b.contains(['\'', '\"']));
@@ -1536,9 +1583,9 @@ mod tests {
     #[test]
     fn derive_branch_drops_a_separator_at_the_truncation_boundary() {
         let title = format!("{} y", "x".repeat(35));
-        let branch = derive_branch_name(Kind::Spinoff, "01JX1NS7H8AAAAA9BBBBBBBBBB", &title);
+        let branch = branch_name(Kind::Spinoff, "01jx1ns7h8aaaaa9bbbbbbbbbb", &title);
 
-        assert_eq!(branch, format!("wt/01jx1ns7h8-{}", "x".repeat(35)));
+        assert_eq!(branch, format!("wt/bbbbbbbbbb-{}", "x".repeat(35)));
         assert_eq!(branch.len(), MAX_WORKMUX_WINDOW_NAME_BYTES - 1);
         assert!(!branch.ends_with('-'));
     }

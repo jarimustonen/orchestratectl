@@ -276,8 +276,8 @@ So the brief MUST instruct the spinoff to run this **once the work is
 committed and ready to land, before its session ends**:
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's 10-character display
-   prefix (concurrent runs can share it):
+   durable node ownership record, never the branch's display identifier (it is a
+   lossy bounded fragment that can repeat, not ownership):
 
    ```bash
    run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {

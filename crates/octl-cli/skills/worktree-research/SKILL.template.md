@@ -158,8 +158,9 @@ matter, so it passes a `--report-file` carrying the full §7.3 payload
 (the file is validated **before** the merge runs).
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
-   durable node ownership record, never the branch's 10-character display
-   prefix (concurrent runs can share it). The node id defaults to `n-0001`:
+   durable node ownership record, never the branch's display identifier (it is a
+   lossy bounded fragment that can repeat, not ownership). The node id defaults
+   to `n-0001`:
 
    ```bash
    run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {

@@ -135,6 +135,32 @@ fn each_worktree_resolves_only_its_full_run_id_when_old_prefix_collides() {
 }
 
 #[test]
+fn legacy_and_entropy_branch_formats_both_resolve_by_exact_ownership() {
+    let home = TempDir::new().unwrap();
+    let repos = TempDir::new().unwrap();
+    let legacy_branch = format!("wt/{OLD_PREFIX}-legacy");
+    let entropy_id = &RUN_B[RUN_B.len() - 10..];
+    let entropy_branch = format!("wt/{entropy_id}-entropy");
+    assert!(!RUN_B.starts_with(entropy_id));
+
+    let (legacy_worktree, entropy_worktree) =
+        linked_worktrees(repos.path(), &legacy_branch, &entropy_branch);
+    seed_run(home.path(), RUN_A, &legacy_worktree, &legacy_branch);
+    seed_run(home.path(), RUN_B, &entropy_worktree, &entropy_branch);
+
+    for (cwd, expected) in [(&legacy_worktree, RUN_A), (&entropy_worktree, RUN_B)] {
+        let output = show_current(&home, cwd);
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["data"]["run_id"], expected);
+    }
+}
+
+#[test]
 fn duplicate_exact_path_claims_fail_closed() {
     let home = TempDir::new().unwrap();
     let repos = TempDir::new().unwrap();

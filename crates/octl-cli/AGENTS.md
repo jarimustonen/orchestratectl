@@ -137,12 +137,19 @@ never mutated.
 
 ## Exact worker ownership discovery (`run show --current`)
 
-Worker branches retain a 10-character run-id prefix only for display; it is never
-identity. `run show --current` finds the git worktree root without shelling out,
-then scans durable node projections under each run's shared lock for the exact
-canonical `worktree_path` and corroborating branch. It returns the ordinary `run
-show` payload for exactly one owner. Missing, duplicate, stale or absent branch, malformed node, detached HEAD, and
-unreadable evidence have informative errors and all fail closed. Existing runs
+New worker branches carry a compact 10-character identifier from the ULID's
+randomness field; legacy branches may retain the old timestamp-only prefix.
+Neither format is authoritative ownership and neither should be used as a run-id
+argument. A legacy fragment is a syntactically valid prefix and may be ambiguous;
+a new entropy fragment may also be accepted when it resembles a prefix but does
+not identify its owning run. The entropy format also does not preserve
+chronological branch sorting. Use an authoritative full id or the exact `run
+show --current` ownership resolver. It finds the git worktree root without
+shelling out, then scans durable node projections under each run's
+shared lock for the exact canonical `worktree_path` and corroborating branch. It
+returns the ordinary `run show` payload for exactly one owner. Missing,
+duplicate, stale or absent branch, malformed node, detached HEAD, and unreadable
+evidence have informative errors and all fail closed. Existing runs
 remain compatible when they carry the normal recorded worktree path and branch;
 a legacy branchless projection is refused because a reused path alone cannot
 prove ownership. Every bundled worker closing recipe uses this surface; freshly

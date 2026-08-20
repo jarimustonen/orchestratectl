@@ -56,8 +56,8 @@ it defines the run / supervisor / node vocabulary this skill assumes.
 ### 1. Resolve the exact owning run id
 
 `run merge` takes the full run id. Resolve it from the current worktree's
-durable node ownership record — never from the branch's 10-character display
-prefix, which concurrent runs can share:
+durable node ownership record — never from the branch's display identifier,
+which is a lossy bounded fragment that can repeat, not ownership:
 
 ```bash
 run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {

@@ -152,8 +152,8 @@ take exactly one of them before its session ends:
   the tie and re-spawns.
 
 1. **Resolve the exact owning run id and node id** from inside the
-   worktree. Use the durable node ownership record, never the branch's
-   collision-prone 10-character display prefix:
+   worktree. Use the durable node ownership record, never the branch's display
+   identifier, which is a lossy bounded fragment that can repeat, not ownership:
 
    ```bash
    run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {

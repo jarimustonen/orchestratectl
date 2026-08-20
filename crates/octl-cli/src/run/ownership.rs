@@ -1,7 +1,7 @@
 //! Exact owning-run discovery for `run show --current`.
 //!
-//! A worker branch contains only a display prefix of its run id. That prefix is
-//! not identity: concurrent ULIDs can share it. Ownership is instead resolved
+//! A worker branch contains only a compact ULID-derived display identifier (or
+//! the legacy timestamp prefix). It is not identity. Ownership is instead resolved
 //! from the durable node projection whose recorded worktree path is exactly the
 //! current git worktree root. The checked-out branch is used as corroborating
 //! evidence, not as a fuzzy selector.
