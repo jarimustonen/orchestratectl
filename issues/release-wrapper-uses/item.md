@@ -3,10 +3,11 @@ created: 2026-08-20
 updated: 2026-08-20
 type: bug
 reporter: pi
-status: open
+status: in-progress
 priority: high
 lane: release
 collision: [scripts/ossctl-release.sh]
+assignee: pi
 ---
 
 # Release wrapper uses unsupported gh repo shorthand

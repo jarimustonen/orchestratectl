@@ -41,6 +41,9 @@ jobs:
       # v0.1.8 release, can slip onto `main` after a tag is cut. This is a
       # dependency-free grep check, so it flags the mismatch in seconds.
       - run: ./scripts/check-version-snapshots.sh
+      # Uses strict git/gh/ossctl stubs and stops before release state or refs can
+      # be mutated. Its minimal PATH catches undeclared preflight dependencies.
+      - run: ./scripts/test-ossctl-release.sh
 
   clippy:
     name: clippy

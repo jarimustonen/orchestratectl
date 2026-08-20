@@ -47,7 +47,7 @@ canonical_github_repo() {
 assert_repo_identity() {
   local origin_repo gh_repo
   origin_repo="$(canonical_github_repo "$(git remote get-url origin)")"
-  gh_repo="$(gh repo view -R "$expected_repo" --json nameWithOwner -q .nameWithOwner)"
+  gh_repo="$(gh repo view "$expected_repo" --json nameWithOwner -q .nameWithOwner)"
   [[ "$origin_repo" == "$expected_repo" && "$gh_repo" == "$expected_repo" ]] || {
     echo "release repository mismatch: origin=$origin_repo gh=$gh_repo expected=$expected_repo" >&2
     exit 1
