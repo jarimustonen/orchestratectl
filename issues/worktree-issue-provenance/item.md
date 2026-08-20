@@ -1,10 +1,14 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-20
 type: improvement
-status: open
+status: done
 priority: high
 lane: lifecycle
+closed: 2026-08-20
+commits:
+- hash: 3b549ee
+  summary: inject authoritative unlaned review-provenance policy into worker prompts
 ---
 
 # Worktree-filed issues must not be laned and must record AI-review provenance
@@ -68,11 +72,30 @@ damage if it does — using provenance only as supporting context. Neither half 
 other has shipped: this repo's change must stand alone (unlaned + visible source is useful even
 with no consumer), and the triage skill must degrade gracefully when the metadata is absent.
 
-## Acceptance
+## Acceptance Criteria
 
-- An issue filed by an agent from inside a run is never laned at creation.
-- Its source is machine-visibly marked as an AI review finding.
-- Where a review and assessment produced them, model names, review target, assessment outcome,
+- [x] An issue filed by an agent from inside a run is never laned at creation.
+- [x] Its source is machine-visibly marked as an AI review finding.
+- [x] Where a review and assessment produced them, model names, review target, assessment outcome,
   severity/confidence, and the originating run are recorded on the issue.
-- Multi-model agreement is recorded as a list of models, not as a corroboration score.
-- Absent metadata degrades gracefully — a missing field never blocks filing.
+- [x] Multi-model agreement is recorded as a list of models, not as a corroboration score.
+- [x] Absent metadata degrades gracefully — a missing field never blocks filing.
+
+## Tests Run
+
+- [x] `cargo fmt --all --check`
+- [x] `cargo clippy --locked --workspace --all-targets -- -D warnings`
+- [x] `cargo nextest run --locked --release --workspace`
+- [x] `cargo test --locked --release --workspace --doc`
+- [x] `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`
+- [x] Worker prompt materialization test under stripped `PATH=/bin`
+- [x] issuectl 0.16 temporary-repository contract probe for unlaned intake, provenance fields, and model labels
+- [x] Bundled-skill snapshot loop (`cargo test -p orchestratectl`; no snapshots changed)
+
+## Implementation Notes
+
+`run create` now injects authoritative run context into every materialized worker prompt. The
+policy uses issuectl intake for unlaned filing, records a stable review source and originating
+run in the core call, and enriches optional review metadata afterward. Named models are appended
+to the issue's labels list, never collapsed into a corroboration score. `/llm-review` and
+`/assess-findings` confirmed seven localized improvements; all were applied.
