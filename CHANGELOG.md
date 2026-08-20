@@ -427,7 +427,7 @@ behind-the-seam) that landed before the release.
   trailing whitespace-only lines instead of choking.
 - **`run create --headless` no longer crashes create.sh** (`5ce764d`):
   Rust-side regression tests pin the `--parent-session` forwarding
-  contract; the homebase-side fix landed alongside.
+  contract; the corresponding external integration fix landed alongside.
 - **Orchestrated child worktrees fork from `--source-branch`**
   (`145905f`): not from `main`, so `/orchestrate` DAG dependencies hold.
 - **Failed `create.sh` no longer leaves a phantom child** (`438aa29`):

@@ -120,7 +120,7 @@ a Claude worker.
     "lifecycle": "autonomous",
     "node_id": "n-...",
     "tmux_window": "🔬 wt/<title>",
-    "worktree_path": "/Users/<you>/.../worktrees/<title>",
+    "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
     "branch": "wt/<title>"
   }
 }

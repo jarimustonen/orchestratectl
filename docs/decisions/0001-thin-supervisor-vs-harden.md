@@ -2,12 +2,12 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-13
-- **Deciders:** Jari (product owner) + the `arch-redesign-design-session` `/llm-workshop` (gemini-3.1-pro, gpt-5.6-sol, deepseek-v4-pro — all "revise": direction sound, negative-case mechanics folded in as A1–A6)
+- **Deciders:** product owner + the `arch-redesign-design-session` `/llm-workshop` (gemini-3.1-pro, gpt-5.6-sol, deepseek-v4-pro — all "revise": direction sound, negative-case mechanics folded in as A1–A6)
 - **Epic:** `lifecycle-architecture-review` (Lane F) · **Phase 3** (the decision point) · **◆ DECISION-2**
 - **Supersedes/gated by:** `arch-redesign-design-session` (Phase 2) · **◆ DECISION-1** (`target-state-0.2.md`)
 - **Target release:** **0.2.0** (the simplification) + **0.2.1** (the deferred pi.dev self-reporting plugin)
 
-> This ADR **records** a decision already made with Jari in the design session; it does not
+> This ADR **records** a decision already made with the product owner in the design session; it does not
 > re-open it. Its second job is the **per-issue re-triage** of the gated Lane A + Lane E
 > backlog against the decided model (§7). The authoritative design is
 > [`issues/lifecycle-architecture-review/design.md`](../../issues/lifecycle-architecture-review/design.md);
@@ -165,7 +165,7 @@ terminal-report `discussion_items[]`/`spinoff_proposals[]` fields.
 - Implemented **as a default + config, not a hard engine coupling** (critique B1): hard-wiring
   "claude ⟺ interactive" into an engine that otherwise knows only topology would itself be a
   capability-scoped constraint. The engine stays topology-only; the harness choice is a
-  launcher-level default Jari controls. Product intent is expressed as the default, not enforced
+  launcher-level default the operator controls. Product intent is expressed as the default, not enforced
   by a special-case branch.
 
 ### D5 — What survives (the essential residue)
@@ -192,7 +192,7 @@ non-destructive resume/cancel guidance — it flags, it does not terminalize or 
 ### D7 — Migration: clean break + doctor sweep
 
 **No backward compatibility — clean break in 0.2.0.** Justification: single-user internal tool;
-every call site (bundled skills + Jari's habits) updates in the same release; a deprecation
+every call site (bundled skills + operator configuration) updates in the same release; a deprecation
 window would mean carrying *both* surfaces — the exact dead-weight drag 0.2 removes. `doctor` is
 the migration mechanism, in two tiers:
 
@@ -270,22 +270,22 @@ layer (the store) is kept verbatim. The read surface stops re-deriving health.
 
 **Negative / accepted.** The two watched risks below. Plus: the manual resume/finish path (A3)
 replaces an *automatic* rescue with a human-invoked one — accepted because stuck runs surface at
-PO-review cadence and are made visible by A5 (Jari also wanted a "resume this worktree" command
+PO-review cadence and are made visible by A5 (a "resume this worktree" command was also requested
 independently). And the supervisor-liveness bucket is not solved in 0.2.0 — it is explicitly
 deferred to the 0.2.1 lease.
 
-### Watched risks (noted, not designed away — Jari's call)
+### Watched risks (noted, not designed away — product-owner decision)
 
 1. **Web-tools default-on = exfil / prompt-injection surface** (critique B2). Every worker,
    including code-fix workers with no web need, can reach the network → data-exfiltration and
-   prompt-injection exposure. **Accepted for now** (single-user tool; Jari confirmed "all can
-   open web tools"). **What would change the call:** multi-user use, or handling untrusted
+   prompt-injection exposure. **Accepted for now** (single-user tool; the product owner confirmed all workers may
+   open web tools). **What would change the call:** multi-user use, or handling untrusted
    repos/inputs → switch to **recipe-declared static capabilities** (research declares web;
    bugfix does not), which is also cleaner "told-not-guessed".
 
 2. **0.2.0 is a big-bang breaking release** (critique B3). It bundles the supervisor rewrite +
    ~20k-LOC deletion + schema/event removal + harness-default migration + recipe repackaging +
-   migration tooling in one release → poor fault isolation. **Accepted** (Jari: "ei haittaa").
+   migration tooling in one release → poor fault isolation. **Accepted** by the product owner.
    **Mitigation available if it bites:** the layered sequencing above (subtractive cuts →
    thin supervisor → visibility → recipes → tooling), each behind a green integrated gate, so a
    regression bisects to one layer rather than the whole release.

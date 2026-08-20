@@ -1,3 +1,5 @@
 history/
 target/
 .claude/scheduled_tasks.lock
+.claude/skills/ai-first-cli-canon/
+.codex/prompts/ai-first-cli-canon.md

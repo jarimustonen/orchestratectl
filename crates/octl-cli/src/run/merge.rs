@@ -2,7 +2,7 @@
 //!
 //! Closes the spawn → work → merge → cleanup loop end-to-end inside
 //! orchestratectl (issue `bundle-worktree-merge`). Before this verb the
-//! merge half lived in the homebase `/worktree-merge` bash skill, which
+//! merge half lived in an external `/worktree-merge` bash skill, which
 //! had no knowledge of the run: it merged, but never submitted a terminal
 //! `node.report`, so the supervisor kept polling and (for interactive
 //! kinds) never tore the window down. `run merge` does both halves in one
@@ -64,7 +64,7 @@ use crate::run::{from_core, parse_node_id, reattach, require_nonempty, run_paths
 use crate::supervise::cleanup;
 
 /// The bundled merge backend, embedded at compile time so the binary is
-/// self-contained (the homebase `merge.sh` is sunset). Materialized to a
+/// self-contained (the external `merge.sh` is sunset). Materialized to a
 /// temp file and executed per invocation. Tests override the resolved
 /// script via `OCTL_MERGE_SH`, mirroring `spawn.rs`'s `OCTL_CREATE_SH`.
 const MERGE_SH: &str = include_str!("../../scripts/merge.sh");

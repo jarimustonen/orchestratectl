@@ -9,8 +9,8 @@
 # worktree + tmux window + branch. `run merge` wraps it, then submits the terminal
 # `node.report` so the supervisor can wind the run down.
 #
-# It descends from homebase `~/.claude/skills/worktree-merge/scripts/merge.sh`
-# (now sunset). Keep the cleanup subshell: it is the proven path that handles
+# It descends from the now-sunset external worktree-merge skill.
+# Keep the cleanup subshell: it is the proven path that handles
 # the lingering-cwd race (a shell still parked inside the worktree) via
 # detach + sleep + `--force`. The per-run supervisor also runs a best-effort
 # cleanup on the terminal report; the two race and either finishing first

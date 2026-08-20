@@ -7,7 +7,6 @@ version = "0.4.1"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-authors = ["Jari Mustonen"]
 repository = "https://github.com/jarimustonen/orchestratectl"
 homepage = "https://github.com/jarimustonen/orchestratectl"
 description = "Rust CLI for orchestrating AI-agent workflows on a developer's machine."

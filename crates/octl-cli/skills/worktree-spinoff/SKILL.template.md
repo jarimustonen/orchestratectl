@@ -175,13 +175,13 @@ Flag rules:
   "schema_version": 1,
   "data": {
     "run_id": "01HZ...",
-    "dir": "/Users/<you>/.orchestratectl/runs/01HZ...",
+    "dir": "$HOME/.orchestratectl/runs/01HZ...",
     "supervisor": 12345,
     "kind": "spinoff",
     "lifecycle": "autonomous",
     "node_id": "n-...",
     "tmux_window": "🚀 wt/<title>",
-    "worktree_path": "/Users/<you>/.../worktrees/<title>",
+    "worktree_path": "$HOME/repos/<repo>/worktrees/<title>",
     "branch": "wt/<title>"
   }
 }

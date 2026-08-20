@@ -14,7 +14,7 @@ lifecycle:
 
 1. **Rebase + merge** the worktree branch onto its source (via the bundled
    merge backend — the same rebase/`flock`/`workmux merge` mechanics the
-   old homebase `merge.sh` used; concurrent merges from `/fan-out` units
+   old external `merge.sh` used; concurrent merges from `/fan-out` units
    are still serialized by the cross-worktree lock).
 2. **Submit the terminal `node report`** stamped `via: "explicit-merge"`,
    so the per-run supervisor winds the run down.

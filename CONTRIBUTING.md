@@ -1,7 +1,7 @@
 # Contributing to orchestratectl
 
-This is a personal-but-public project — issues and pull requests are
-welcome. The repo is small and the contribution loop is short; please
+Issues and pull requests are welcome. The repo is small and the
+contribution loop is short; please
 read this file before opening either.
 
 ## Before you file an issue
@@ -49,8 +49,8 @@ read this file before opening either.
   ```
 - `issues/<slug>/item.md` — every issue + epic (flat layout, no
   numeric prefix, status in frontmatter).
-- `ai-first-cli-canon` — CLI design canon, shared with the
-  `homebase` repo; treat as canonical, not a project-local doc.
+- `/ai-first-cli-canon` — externally maintained CLI design canon; treat the
+  installed skill as canonical, not a project-local copy.
 
 ## License
 
