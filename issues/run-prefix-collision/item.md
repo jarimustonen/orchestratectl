@@ -1,10 +1,14 @@
 ---
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-08-20
 type: bug
-status: open
+status: fixed
 priority: normal
 lane: cli
+closed: 2026-08-20
+commits:
+- hash: dda5e39
+  summary: resolve worker runs by exact worktree ownership
 ---
 
 # Run-ID prefix collisions can select the wrong owning run
@@ -27,8 +31,14 @@ That selected the unrelated run. The worker avoided merging/reporting against th
 
 Run discovery from inside a worktree must identify exactly one owning run even when concurrent ULIDs share the first ten characters. Prefer durable full-run metadata or an exact branch-to-node lookup rather than increasing a probabilistic prefix.
 
-## Acceptance
+## Acceptance Criteria
 
-- The worker closing instructions and any helper implementation cannot select another run on prefix collision.
-- A regression test creates two runs with the same current short prefix and proves each worktree resolves its own full run ID.
-- Existing run-merge behavior remains compatible.
+- [x] The worker closing instructions and any helper implementation cannot select another run on prefix collision.
+- [x] A regression test creates two runs with the same current short prefix and proves each worktree resolves its own full run ID.
+- [x] Existing run-merge behavior remains compatible.
+
+## Resolution
+
+### 2026-08-20T08:17:37Z · @issuectl
+
+Added run show --current exact canonical worktree/branch ownership resolution, replaced every bundled short-prefix closing recipe, and covered the observed colliding ULIDs with real linked-worktree tests.
