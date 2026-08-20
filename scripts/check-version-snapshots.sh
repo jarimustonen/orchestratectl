@@ -63,11 +63,14 @@ check_snapshot() {
   fi
 
   found_any=0
+  missing_required=0
   bad_versions=""
   for pattern in "$@"; do
+    pattern_found=0
     while IFS= read -r match; do
       [ -n "$match" ] || continue
       found_any=1
+      pattern_found=1
       ver="$(printf '%s' "$match" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?')"
       if [ "$ver" != "$ws_version" ]; then
         case " $bad_versions " in
@@ -78,12 +81,19 @@ check_snapshot() {
     done <<EOF
 $(grep -oE "$pattern" "$snap" || true)
 EOF
+    if [ "$pattern_found" -eq 0 ]; then
+      missing_required=1
+    fi
   done
 
   if [ "$found_any" -eq 0 ]; then
     echo "check-version-snapshots: $name contains no recognizable version field" >&2
     status=1
-  elif [ -n "$bad_versions" ]; then
+  elif [ "$missing_required" -ne 0 ]; then
+    echo "check-version-snapshots: $name is missing an expected version field" >&2
+    status=1
+  fi
+  if [ -n "$bad_versions" ]; then
     echo "check-version-snapshots: $name encodes version(s)$bad_versions, expected $ws_version" >&2
     status=1
   fi
