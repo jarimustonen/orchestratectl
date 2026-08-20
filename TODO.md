@@ -8,80 +8,29 @@ holds only the **active handoff** and a **compact stint archive**.
 
 ---
 
-## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-18 (**v0.4.0 + v0.4.1 SHIPPED — stint 6 was the round that fixed the gate that kept letting CI go red**)
+## 🔄 Continue here (ALOITA TÄSTÄ), 2026-08-20 (**stint 7: nine units landed; v0.5.0 release integration exposed three fail-closed defects; final checkpoint fix still live**)
 
-**✅ (2026-08-18, stint 6 — this handoff).** Biggest round so far: **8 units landed, every one first-spawn, zero
-worker deaths**, and **two releases** cut through the gated pipeline. crates.io has `octl-core 0.4.1` +
-`orchestratectl 0.4.1`; both tags' publish-crates and release CI green; main CI green on each tagged commit. Local
-binary **0.4.1**, commit-verified equal to `HEAD`, `orchestratectl doctor` **1047 ok / 0 warn / 0 fail** (all three
-skill mirrors). `main` clean and pushed.
+**Current ownership — resolve this first.** Headless spinoff `01m0fggg0zg9a5ezcdgpeq5r4g`
+(`release-wrapper-held-tag`, issue `release-wrapper-rejects`) is still **pending with a live supervisor** and owns its preserved worktree at
+`/Users/jari/Sources/orchestratectl__worktrees/wt-cdgpeq5r4g-release-wrapper-held-tag`. It is fixing the release wrapper's held-tag checkpoint recognition. No terminal report exists and `landed` is unverified. Start by running `orchestratectl run wait 01m0fggg0zg9a5ezcdgpeq5r4g`, then read the full `run show` report and require `landed: true`; do not spawn duplicate release work while it owns the task.
 
-**What landed:**
-- **`stint-skills-drop-intake-specifics`** — downstream bug-intake vocabulary (specific labels, tool, slug schemas)
-  removed from the bundled stint skills; the generic autonomy tightening kept.
-- **`stint-skills-issuectl-dag`** — the big one. `/stint-start` + `/stint-handoff` now read lane order, dependencies,
-  collision tokens and spawnability from `issuectl dag --json` (`--reservations` supported), and the retired
-  `AGENTS-EXECUTION-DAG.md` companion is deleted from all three mirrors. Its stale markdown-DAG guidance had been
-  contradicting actual practice on *every* stint-start.
-- **`uncommonly-fuzzy-swing`** — an autonomous worker that hits a genuine decision fork now writes a durable
-  `node.awaiting_input` event (report-shaped `topic`/`options`/`recommended_default`), visible instantly on
-  `run show`/`run list`; after a restart-safe 180 s grace (`OCTL_AWAITING_INPUT_GRACE_SECS`) `run wait` settles and
-  `--notify` fires with `OCTL_STATUS=awaiting-input`. `node.input_resolved` is generation-fenced by `event_seq`. The
-  worker must not block on stdin: it proceeds on its stated default or files a blocked report (work preserved).
-- **`run-show-null-worktree-path`** — pending materialized runs expose `worktree_path` + `source_branch`.
-- **`align-green-gate`** (see the incident section) and **`skills-stale-tbd-channels`** (the obsolete
-  "publishing channels are TBD" hedge removed from five templates; the live channels verified).
-- Two test-only CI-red fixes.
+**What landed and is pushed.** Nine implementation/fix units completed, all reviewed and green in their own workers:
+- public-artifact audit removed personal/private defaults and metadata, added release build-path remapping, and closed `audit-no-user-specifics`;
+- `doctor-report-binary-commit` discloses the running build commit and warns (never fails) on applicable repo-HEAD mismatch;
+- the release contract now truthfully declares both CI-published crates plus cargo-dist GitHub Releases and Homebrew;
+- `worktree-issue-provenance` forces worker-filed findings to be unlaned with machine-visible run/review provenance and optional assessment/model metadata;
+- `run-prefix-collision` resolves the owning run by exact worktree identity, and `run-branch-name-ulid-entropy` gives new worker branches 50 bits of ULID randomness;
+- `adopt-ossctl-release-cut` added the resumable `scripts/ossctl-release.sh` flow and deterministic snapshot bump hook;
+- two real-cut defects found by the new path were fixed: unsupported `gh repo view -R` targeting (`release-wrapper-uses`) and the snapshot hook's silent exit 1 when snapshots genuinely changed (`bump-hook-fails`).
 
-**⚠ THE ROUND'S REAL FINDING — the documented local gate was systematically weaker than CI, and that is now fixed.**
-Three consecutive stints had a CI-red that a green local gate missed, each in a *different* gap: stint 5 release-mode
-injection hooks; stint 6 `clippy::pedantic` `format_push_string` (CI runs `-D warnings`); stint 6 a test asserting
-`doctor`'s **global exit status**, which passes on a dev box with tmux + a harness installed and fails on a bare
-runner. That is a gate defect, not bad luck. **The green gate in `AGENTS.md` is now CI's exact commands**
-(`cargo fmt --all --check`; `cargo clippy --locked --workspace --all-targets -- -D warnings`;
-`cargo nextest run --locked --release --workspace`; `cargo test --locked --release --workspace --doc`;
-`RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`), the integrated gate matches, and both carry an
-explicit warning that **a developer machine is not a bare CI runner** — tool-sensitive tests must be exercised with a
-stripped `PATH`. The round's own integrated gate ran on those commands: 1000/1000 green.
+**Release state — nothing published.** v0.5.0 is **not shipped**. Two ossctl journals are deliberately abandoned and must never be resumed:
+- `01M0FD8FSTMGYG8YTV92WMWC87`: bump hook failed before a bump commit/tag;
+- `01M0FG88NAKBJ7Y3QNFZEHRM4K`: bump/dry-run/build/delegation succeeded and the safety hook correctly held the local tag, but the wrapper expected `current_phase=tag` while ossctl 0.9 records `current_phase=null` + failed tag phase. The remote tag was absent, zero targets were published, the journal was abandoned, and the unpublished local `v0.5.0` tag was deleted.
+There are currently zero in-flight ossctl releases. After the live fix lands: run the full exact green gate again, sync/push `main`, perform the orchestrator-only commit-verified local deploy, seal a **fresh** `scripts/ossctl-release.sh plan minor`, and cut only that new plan. Never reuse the three earlier plan IDs or either abandoned journal.
 
-**⚠ AND A WORKER DESTROYED THE USER'S INSTALLED BINARY — TWICE, hours apart.** A worker ran
-`cargo install --path crates/octl-cli` from inside its worktree, overwriting the global
-`~/.cargo/bin/orchestratectl` and recording the worktree as install source. The binary later vanished entirely, `PATH`
-silently fell through to a **stale Homebrew tap build from an older release**, and that stale binary reinstalled
-**pre-migration** bundled skills over the corrected ones — partially undoing the round's work. `doctor` reported
-`0 warn` throughout, because a stale binary validates its own stale skills. It recurred *after* a brief explicitly
-forbade it, so prose in one brief is not enough. Now standing policy in `AGENTS.md` + three skill templates: workers
-use `cargo build --release` and invoke `./target/release/orchestratectl` by explicit path; global
-`cargo install`/`cargo uninstall` is an orchestrator-only action. **The deploy step now asserts the installed binary's
-commit equals `git rev-parse HEAD`** — a plausible version string proved nothing, and that check is the only reason
-this was caught.
+**Local/deployed truth.** `main` is clean and pushed at `95fcdff` (the active issue filing commit). The installed binary remains 0.4.1 from commit `46f1aa1`; before the active issue-only commit it was verified with all 39 skill mirrors and doctor **1106 ok / 0 warn / 0 fail**. Treat deploy equality as currently stale/unverified because `HEAD` moved after that check; rebuild after the active fix lands. The full integrated CI-equivalent gate was green repeatedly through the landed bump-hook fix.
 
-**◆ JARI'S DECISIONS THIS ROUND.**
-1. Green gate → CI's commands. Done (above).
-2. Workers may and should exercise their builds, but **inside their own worktree**, never into the global toolchain.
-   Done (above) — this was Jari's own proposed shape.
-3. **x86_64 macOS is deliberately NOT supported.** An earlier claim in this session that the release had a missing-Mac
-   gap was **wrong**: `dist-workspace.toml` + `OSS-RELEASE.md` declare exactly `aarch64-apple-darwin`,
-   `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, and the releases match. No action.
-4. **`add-configurable-agent` stays deferred**, knowingly. Jari's steer is now recorded **on the issue itself** (not
-   duplicated here): the local/`secure` profile is *genuinely weak*, so it should be given tasks so small and
-   unambiguous that it never occurs to it to do anything else — and worth considering that it simply **cannot / does
-   not know how to spawn further worktrees**, since removing the capability beats trusting a weak model to decline it.
-   Residency remains a machine-checkable profile attribute, never a fallback that can escalate to remote. Deferring is
-   an accepted, stated risk. It is cross-cutting (config + `harness::select` + run-create) and wants a round of its own;
-   design.md v2 is ready to implement.
-
-**⏭ NEXT.** Consult `issuectl dag` for what to pick — this file no longer states it. Context a fresh agent will want:
-`run-prefix-collision` is a **real, observed** bug, not speculation (two concurrently created runs shared their first
-10 ID characters; a worker nearly reported against the wrong run, and three colliding prefixes exist on disk right
-now); it pairs naturally with `run-branch-name-ulid-entropy`. `audit-no-user-specifics` has now waited five stints.
-`intake-bug-orchestratectl-169460ea27e7` (stale pendings cluttering `run list`) is confirmed still live — preflight
-saw 6 stale pending runs, **most of them from other repos**, which is exactly the reported symptom.
-
-**Release-mechanics notes (mechanics only — rules live in `AGENTS.md`):** the gated tag push worked as designed both
-times. Both releases were cut **by hand**; ossctl supports this workspace, so wiring it in (`adopt-ossctl-release-cut`)
-removes a per-release spinoff from every round. After a version bump run `skill install --force` for `--agent codex`
-too, or doctor shows codex sync warnings.
+**Unscheduled intake context.** The round produced `achingly-keen-camp` (a run cannot identify its repository after worktree teardown), and external intake added `intake-bug-orchestratectl-19a653fff4c9` plus a run-list repo-filter request. They remain for the normal lane-or-close intake sweep; do not silently pull them into release recovery. `add-configurable-agent` remains deliberately deferred under the product decision recorded on its issue.
 
 ---
 
