@@ -3,10 +3,14 @@ created: 2026-08-18
 updated: 2026-08-20
 type: feature
 reporter: jari
-status: open
+status: done
 priority: normal
 lane: cli
 lane_seq: 20
+closed: 2026-08-20
+commits:
+- hash: 2c465ab
+  summary: disclose binary build commit in doctor
 ---
 
 # doctor cannot detect that it is validating stale skills with a stale binary
@@ -58,3 +62,9 @@ i.e. the same hazard class is already modelled in a sibling tool.
 `cargo install`, and workers are prohibited from global installs (they build and run
 `./target/release/orchestratectl` from their own worktree). This issue is about making the
 tool disclose it rather than relying on the operator remembering the check.
+
+## Resolution
+
+### 2026-08-20T06:33:51Z · @issuectl
+
+Implemented and verified with the full green gate; mismatch remains advisory and non-applicable contexts remain informational.
