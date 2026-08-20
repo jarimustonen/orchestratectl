@@ -53,19 +53,23 @@ it defines the run / supervisor / node vocabulary this skill assumes.
 3. `orchestratectl version --output json` once per session; compare
    `.data.version` to `{{CLI_VERSION}}` (see "Install or upgrade").
 
-### 1. Discover the run id
+### 1. Resolve the exact owning run id
 
-`run merge` takes the run id. Derive it from the branch — the branch is
-`wt/<short>-<slug>`, where `<short>` is the first 10 alphanumerics of the
-run id:
+`run merge` takes the full run id. Resolve it from the current worktree's
+durable node ownership record — never from the branch's 10-character display
+prefix, which concurrent runs can share:
 
 ```bash
-short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+  echo "failed to resolve exact owning run id" >&2
+  exit 1
+}
 ```
 
-If that yields nothing, this branch is not an orchestratectl-managed run —
-stop and tell the user; do not improvise a merge.
+`--current` requires exactly one node whose canonical worktree path and recorded
+branch match this checkout. Missing, duplicate, stale, or malformed evidence is
+an error. If it fails, stop and report the error; do not guess or improvise a
+merge.
 
 ### 2. (Optional) Write a structured report
 
@@ -180,8 +184,12 @@ Likely codes:
     `--source`.
   - **Lock timeout** — another merge held the cross-worktree lock past
     600s; retry.
-- `run_not_found` — the run id (derived in step 1) names no run. Re-check
-  the branch prefix; this may not be an orchestratectl-managed worktree.
+- `run_owner_not_found` / `run_owner_ambiguous` / `run_owner_stale` /
+  `run_owner_malformed` — exact `--current` ownership resolution failed. Stop;
+  the command deliberately refuses to guess among missing, conflicting, stale,
+  or unreadable evidence.
+- `run_not_found` — the exact run id resolved in step 1 no longer names a run;
+  it may have been torn down concurrently.
 - `no_worktree` / `no_branch` — the node has no worktree/branch recorded
   (a driver node, not a worker) — driver nodes are not merged.
 - `schema_violation` / `report_file_invalid_json` /
@@ -228,8 +236,7 @@ the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 ```
 # Minimal: a spinoff worktree merges back to its recorded source with an
 # auto-generated report.
-short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || exit 1
 orchestratectl run merge "$run_id"
 
 # Structured: a research worktree merges and delivers a §7.3 report.

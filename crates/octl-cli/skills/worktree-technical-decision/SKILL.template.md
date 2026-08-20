@@ -151,15 +151,20 @@ take exactly one of them before its session ends:
   unresolved trade-off. The branch stays unmerged until the user breaks
   the tie and re-spawns.
 
-1. **Discover the run id and node id** from inside the worktree. The
-   branch is `wt/<short>-<slug>`, where `<short>` is the first 10
-   alphanumerics of the run id:
+1. **Resolve the exact owning run id and node id** from inside the
+   worktree. Use the durable node ownership record, never the branch's
+   collision-prone 10-character display prefix:
 
    ```bash
-   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+     echo "failed to resolve exact owning run id" >&2
+     exit 1
+   }
    node_id="n-0001"   # a single-worker kind always has exactly one node
    ```
+
+   This fails closed on missing, duplicate, stale, or malformed ownership
+   evidence. If it fails, stop and report the error; do not guess a run id.
 
 2. **Write the §7.3 payload** to a temp file. These exact field names are
    what the supervisor consumes — do NOT use `discuss`,

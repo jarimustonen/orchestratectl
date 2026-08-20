@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
+assertion_line: 66
 expression: value
 ---
 {
@@ -157,7 +158,7 @@ expression: value
       },
       {
         "command": "orchestratectl run show",
-        "about": "Show one run's manifest and counters",
+        "about": "Show one run's manifest and counters. Pass an id, or use `--current` inside a worker worktree to resolve its exact owning run from durable node ownership metadata (never from the branch's short run-id prefix)",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

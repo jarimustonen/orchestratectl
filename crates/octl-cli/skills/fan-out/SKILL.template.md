@@ -194,14 +194,19 @@ A typical fan-out unit runs silently and has nothing structured to
 surface, so the minimal form is what the unit brief should instruct each
 child to run **as its final action, before its session ends**:
 
-1. **Discover the run id** from inside the worktree. The branch is
-   `wt/<short>-<slug>`, where `<short>` is the first 10 alphanumerics of
-   the run id:
+1. **Resolve the exact owning run id** from inside the worktree. Use the
+   durable node ownership record, never the branch's collision-prone
+   10-character display prefix:
 
    ```bash
-   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+     echo "failed to resolve exact owning run id" >&2
+     exit 1
+   }
    ```
+
+   This fails closed on missing, duplicate, stale, or malformed ownership
+   evidence. If it fails, stop and report the error; do not guess a run id.
 
 2. **Merge and report in one step.** No `--source` is needed — the
    fan-out source/integration branch is the child's recorded

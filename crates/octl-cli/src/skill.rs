@@ -2889,6 +2889,38 @@ mod tests {
     }
 
     #[test]
+    fn bundled_worker_closing_recipes_never_use_short_prefix_discovery() {
+        for skill in SKILLS {
+            for forbidden in [
+                "grep -m1",
+                "ls -1 ~/.orchestratectl/runs/",
+                "([0-9a-z]{10})",
+            ] {
+                assert!(
+                    !skill.body.contains(forbidden),
+                    "{} contains vulnerable run-id discovery {forbidden:?}",
+                    skill.name
+                );
+            }
+        }
+        for name in [
+            "worktree-merge",
+            "worktree-spinoff",
+            "worktree-research",
+            "worktree-bug-analysis",
+            "worktree-technical-decision",
+            "fan-out",
+        ] {
+            let skill = SKILLS.iter().find(|s| s.name == name).unwrap();
+            assert!(skill.body.contains("run show --current"), "{name}");
+            assert!(
+                skill.body.contains("failed to resolve exact owning run id"),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn worktree_and_handoff_skills_pin_unlaned_review_filing_boundary() {
         let spinoff = SKILLS
             .iter()

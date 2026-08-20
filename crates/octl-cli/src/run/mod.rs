@@ -14,6 +14,7 @@ pub mod landed;
 pub mod list;
 pub mod merge;
 pub mod merge_recovery;
+pub mod ownership;
 pub mod reattach;
 pub mod salvage;
 pub mod show;
@@ -162,8 +163,18 @@ pub enum RunAction {
         #[arg(long)]
         kind: Option<String>,
     },
-    /// Show one run's manifest and counters.
-    Show { run_id: String },
+    /// Show one run's manifest and counters. Pass an id, or use `--current`
+    /// inside a worker worktree to resolve its exact owning run from durable
+    /// node ownership metadata (never from the branch's short run-id prefix).
+    Show {
+        #[arg(required_unless_present = "current", conflicts_with = "current")]
+        run_id: Option<String>,
+        /// Resolve the exact run whose node records the current git worktree and
+        /// checked-out branch. Missing, duplicate, stale, or malformed evidence
+        /// is an error; this never falls back to a run-id prefix.
+        #[arg(long)]
+        current: bool,
+    },
     /// Cancel a run (all live nodes → `run.status: cancelled`), or a single
     /// live node with `--node <id>` (branch-preserving; the run stays live
     /// while siblings run and the supervisor rolls it up once every node
@@ -333,7 +344,18 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             spec,
             warnings,
         }),
-        RunAction::Show { run_id } => show::run(&run_id, spec, warnings),
+        RunAction::Show { run_id, current } => {
+            let run_id = if current {
+                let root = crate::home::root_dir()?;
+                let cwd = std::env::current_dir().map_err(|e| {
+                    CliError::system("io_error", format!("read current directory: {e}"))
+                })?;
+                ownership::resolve_current(&root, &cwd)?.to_string()
+            } else {
+                run_id.expect("clap requires run_id unless --current")
+            };
+            show::run(&run_id, spec, warnings)
+        }
         RunAction::Cancel { run_id, node, note } => {
             cancel::run(&run_id, node.as_deref(), note.as_deref(), spec, warnings)
         }

@@ -134,12 +134,19 @@ the terminal `node report` in the same call; until it runs the run stays
 `pending` and the window never closes. The brief MUST instruct the worker to run
 this once the issue update is committed:
 
-1. **Discover the run id** from inside the worktree:
+1. **Resolve the exact owning run id** from inside the worktree. Use the
+   durable node ownership record, never the branch's collision-prone short
+   prefix:
 
    ```bash
-   short="$(git rev-parse --abbrev-ref HEAD | sed -E 's#^wt/([0-9a-z]{10}).*#\1#')"
-   run_id="$(ls -1 ~/.orchestratectl/runs/ | grep -m1 "^${short}")"
+   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+     echo "failed to resolve exact owning run id" >&2
+     exit 1
+   }
    ```
+
+   This fails closed on missing, duplicate, stale, or malformed ownership
+   evidence. If it fails, stop and report the error; do not guess a run id.
 
 2. **Write the §7.3 payload** to a temp file — `success: true`, `summary` = the
    one-line verdict (e.g. "real bug, medium sev, in <area>"), the three arrays

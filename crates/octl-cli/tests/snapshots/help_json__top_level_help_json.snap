@@ -3516,11 +3516,40 @@ expression: value
           },
           {
             "command": "orchestratectl run show",
-            "about": "Show one run's manifest and counters",
+            "about": "Show one run's manifest and counters. Pass an id, or use `--current` inside a worker worktree to resolve its exact owning run from durable node ownership metadata (never from the branch's short run-id prefix)",
             "aliases": [],
             "hidden": false,
             "deprecated": false,
             "flags": [
+              {
+                "name": "current",
+                "long": "current",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Resolve the exact run whose node records the current git worktree and checked-out branch. Missing, duplicate, stale, or malformed evidence is an error; this never falls back to a run-id prefix",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
               {
                 "name": "help",
                 "long": "help",
@@ -3621,7 +3650,7 @@ expression: value
                   "RUN_ID"
                 ],
                 "index": 1,
-                "required": true,
+                "required": false,
                 "multiple": false,
                 "accepted_values": [],
                 "accepts_file_paths": false,
