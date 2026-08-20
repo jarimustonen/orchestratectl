@@ -3,10 +3,14 @@ created: 2026-08-18
 updated: 2026-08-20
 type: task
 reporter: jari
-status: open
+status: done
 priority: normal
 lane: release
 lane_seq: 10
+closed: 2026-08-20
+commits:
+- hash: 481d75b064dfff1f498d9e07c4028d26b4694a94
+  summary: adopt resumable ossctl release cuts
 ---
 
 # Adopt ossctl for cutting this project's releases
@@ -41,3 +45,9 @@ round.
 The next release is cut through ossctl, and `AGENTS.md` describes that flow rather than the
 manual one. crates.io publishes are permanent (yank-only), so the first ossctl-driven cut is
 verified at least as carefully as a hand cut.
+
+## Resolution
+
+### 2026-08-20T09:59:02Z · @issuectl
+
+Wiring validated with ossctl 0.9 non-mutating plan, simulated bump hook, two-round LLM review/assessment, and the exact green gate.
