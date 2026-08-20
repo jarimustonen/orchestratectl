@@ -3,10 +3,14 @@ created: 2026-08-20
 updated: 2026-08-20
 type: bug
 reporter: pi
-status: open
+status: fixed
 priority: high
 lane: release
 collision: [scripts/ossctl-bump-hook.sh]
+closed: 2026-08-20
+commits:
+- hash: d242b18
+  summary: make release snapshot bump hook succeed
 ---
 
 # Bump hook fails after updating version snapshots
@@ -40,3 +44,9 @@ The hook then exits 1 and ossctl reports `bump_hook failed (1)`. The error outpu
 - Add deterministic regression coverage for the changed-snapshot success path and failure guards.
 - The full repository green gate passes.
 - Do not create/push a real tag or publish anything from the fix worker. A fresh content-addressed release plan is required after landing.
+
+## Resolution
+
+### 2026-08-20T11:43:29Z · @issuectl
+
+Fixed the silent successful-regeneration exit status, retained fail-closed guards, and added clean-checkout regression coverage.
