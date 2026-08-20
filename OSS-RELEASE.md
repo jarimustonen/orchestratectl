@@ -4,13 +4,16 @@ status: approved
 maturity: mvp
 ecosystems: [rust]
 targets:
-  - {ecosystem: rust, package: orchestratectl, registry: crates.io, adapter: cargo-publish}
+  - {ecosystem: rust, package: octl-core,      registry: crates.io,   adapter: cargo-publish-ci}
+  - {ecosystem: rust, package: orchestratectl, registry: crates.io,   adapter: cargo-publish-ci}
   - {ecosystem: rust, package: orchestratectl, registry: gh-releases, adapter: cargo-dist}
+  - {ecosystem: rust, package: orchestratectl, registry: homebrew,    adapter: cargo-dist}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
 release: {model: gated, layout: single, bump_hook: "INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots"}
 distribution:
   adapter: cargo-dist
+  gh_releases: true
   installers: [shell, homebrew]
   homebrew_tap: jarimustonen/homebrew-orchestratectl
   platforms: [aarch64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
@@ -31,12 +34,13 @@ docs_site: none
 - **ecosystems: [rust]** — a two-crate Cargo workspace (`crates/octl-core`, `crates/octl-cli`);
   no other package manifests. `binary` is not additive — the binary is distributed via the
   Rust toolchain, so it stays a `rust` target, not a separate `binary` ecosystem.
-- **targets: one crates.io target (`orchestratectl`) via cargo-publish** — the crate registry is
-  crates.io and `.github/workflows/publish-crates.yml` publishes the workspace members from CI
-  (`octl-core` then `orchestratectl`; the CLI pins `octl-core` exactly to the shared workspace
-  version, so the library publishes first). Both crates are `publish = true`. NOTE the repo ALSO
-  ships prebuilt binaries via **cargo-dist** as a separate CI-driven channel; see Release notes.
-  That channel is not the crates.io registry target and is intentionally not modeled as this `target`.
+- **targets: four declared release legs** — `.github/workflows/publish-crates.yml` publishes
+  both crates.io packages from tag-triggered CI (`octl-core` then `orchestratectl`; the CLI pins
+  `octl-core` exactly to the shared workspace version), so each crate is declared separately with
+  `cargo-publish-ci`. The same tag triggers cargo-dist's generated `release.yml`, which creates the
+  GitHub Release and publishes the Homebrew formula. Those two cargo-dist-owned channels are also
+  explicit targets so the engine observes the complete release surface without becoming a second
+  writer.
 - **release.layout: single** — the workspace shares one version (`workspace.package.version =
   0.1.0`); both crates version and tag together, and cargo-dist treats them as one application
   (`orchestratectl` with `octl-core` as its published dependency). Not `monorepo` (which implies
