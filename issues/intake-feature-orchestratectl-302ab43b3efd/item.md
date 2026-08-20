@@ -1,13 +1,12 @@
 ---
 created: 2026-08-14
-updated: 2026-08-15
+updated: 2026-08-20
 type: feature
 reporter: jari
 status: duplicate
 priority: normal
 labels:
 - via:agent-homebase-wrapup
-- needs-triage
 closed: 2026-08-15
 ---
 
