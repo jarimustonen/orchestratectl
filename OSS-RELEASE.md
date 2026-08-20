@@ -10,7 +10,7 @@ targets:
   - {ecosystem: rust, package: orchestratectl, registry: homebrew,    adapter: cargo-dist}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
-release: {model: gated, layout: single, bump_hook: "INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots"}
+release: {model: gated, layout: single, bump_hook: "./scripts/ossctl-bump-hook.sh"}
 distribution:
   adapter: cargo-dist
   gh_releases: true
@@ -66,66 +66,48 @@ docs_site: none
 - **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
 
 ## Release notes
-- **Bumping the workspace version has TWO in-repo obligations, not one.** After
-  editing `[workspace.package] version` in `Cargo.toml`, do BOTH before tagging:
-  1. **Finalize `CHANGELOG.md`** — move `[Unreleased]` → the dated version header
-     (see the operating-policy "finalize CHANGELOG" step; `/oss-release-cut` runs
-     `oss-changelog --finalize`).
-  2. **Refresh the `version_*` insta snapshots** — the `version` command output is
-     snapshotted (`crates/octl-cli/tests/snapshots/envelope_snapshots__version_{text,json,jsonl}.snap`),
-     so those fixtures bake in the literal crate version and go stale on a bump.
-     This step is now **automated** at cut time by the declared `release.bump_hook`
-     (see below) — no manual accept is needed on a `ossctl release cut --bump …`.
-     To do it by hand (e.g. a manual bump outside the engine), run the same hook:
-     ```bash
-     INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
-     cargo nextest run --locked --release --workspace
-     cargo test --locked --release --workspace --doc
-     ```
-  Skipping step 2 turned `main` CI red *after* the v0.1.8 tag was already cut (the
-  local integrated gate ran before the bump). The `version-snapshots` CI job and
-  `scripts/check-version-snapshots.sh` now fail loudly on this mismatch — run the
-  script locally after any bump for a fast pre-publish check.
-- **`release.bump_hook` — auto-regenerate the `version_*` snapshots on a `--bump` cut.**
-  ossctl 0.5.0's `release cut --bump major|minor|patch` bumps `[workspace.package]
-  version`, rewrites the intra-workspace `=<ver>` pin, refreshes `Cargo.lock`,
-  finalizes the CHANGELOG, then runs the contract's `release.bump_hook` (`sh -c`, cwd
-  = repo root, AFTER the version edit) and **folds its file changes into the bump
-  commit**. The declared hook is:
-  ```
-  INSTA_UPDATE=always cargo test -p orchestratectl --test envelope_snapshots
-  ```
-  `INSTA_UPDATE=always` makes `insta` rewrite the mismatched snapshots **in place** and
-  pass (exit 0) — dependency-free (does NOT require `cargo-insta`, which is not present
-  in the cut/CI environment) and needs no `.snap.new` find/mv accept loop. Scoped to the
-  `envelope_snapshots` test — the only one that embeds the crate version — so a version
-  bump only rewrites the three `version_{text,json,jsonl}` snapshots and nothing else. It
-  never edits `[workspace.package] version`, so it satisfies the executor's post-hook
-  guard (the cut **fails closed** if the hook exits non-zero or leaves the version
-  altered). Validated against ossctl 0.5.0 (`contract validate` + `release plan --bump
-  minor`) and by a scratch 0.1.8→0.2.0 bump whose diff was exactly the three snapshots.
+- **ossctl 0.9.x owns the release transaction.** `scripts/ossctl-release.sh plan
+  major|minor|patch` seals a non-mutating plan. The plan's bump phase updates
+  `[workspace.package].version`, rewrites `orchestratectl`'s exact `octl-core =
+  "=<version>"` pin, refreshes `Cargo.lock`, finalizes `CHANGELOG.md`, runs the
+  declared hook, and commits the result. Both crates.io targets are
+  `cargo-publish-ci`; the GitHub Release and Homebrew targets are `cargo-dist`.
+  Consequently the host never runs `cargo publish`: the one version tag delegates
+  all four publish legs to CI, and the engine observes their results at verify.
+- **`release.bump_hook` deterministically regenerates and reviews version fixtures.**
+  `./scripts/ossctl-bump-hook.sh` runs the locked `envelope_snapshots` test with
+  `INSTA_UPDATE=always`, rejects pending `.snap.new` files and unrelated snapshot
+  edits, and runs `scripts/check-version-snapshots.sh`. Its changes are folded into
+  ossctl's bump commit. The hook never installs or mutates a global binary or skill.
+- **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** ossctl
+  0.9 creates the bump commit inside its clean checkout and otherwise proceeds
+  directly to tag push, so the wrapper temporarily rejects only that push. The
+  resulting journalled failure leaves the local tag on the exact bump commit. The
+  wrapper fast-forwards and pushes `main`, waits for `ci.yml` filtered by that exact
+  SHA and `event=push`, then invokes `release resume` only after `gh run watch
+  --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
+  A red or missing main run leaves the release untagged remotely and resumable only
+  through `scripts/ossctl-release.sh resume <run-id>`. The wrapper is deliberately
+  pinned to 0.9.x because its checkpoint depends on that engine's journal and Git
+  protocol; revalidate the hold before accepting a newer minor version.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
   cannot be undone: a version can be yanked but never re-used or overwritten. Never publish
   either crate locally. `.github/workflows/publish-crates.yml` verifies the workspace version,
   exact `octl-core` pin, and release tag before it owns the dependency-ordered crates.io publish.
-- **CI-green tag gate.** Commit and push the finalized changelog, workspace version, `octl-core`
-  pin, lockfile, and refreshed `version_*` snapshots. Then wait for main CI on that exact commit
-  and push the release tag only if it succeeds:
+- **CI-green tag gate.** From clean, synchronized `main`, seal and inspect the JSON plan,
+  then pass its id back to the wrapper:
   ```bash
-  sha="$(git rev-parse HEAD)"
-  for _ in $(seq 60); do
-    id="$(gh run list --workflow ci.yml --branch main --commit "$sha" --event push --limit 1 --json databaseId -q '.[0].databaseId')"
-    test -n "$id" && test "$id" != null && break
-    sleep 5
-  done
-  test -n "${id:-}" && test "$id" != null || { echo "no main CI run for $sha" >&2; exit 1; }
-  gh run watch "$id" --exit-status && git push origin "vX.Y.Z"
+  scripts/ossctl-release.sh plan patch > /tmp/release-plan.json
+  jq . /tmp/release-plan.json
+  scripts/ossctl-release.sh cut "$(jq -r .data.plan_id /tmp/release-plan.json)"
   ```
-  The SHA and workflow filters prevent a concurrent push or an older run from producing a false
-  green. `--exit-status` and `&&` are load-bearing. In addition, `publish-crates.yml` repeats the
-  full main CI gate and its crates.io publish job depends on every gate job. Cargo-dist's
-  `release.yml` runs independently, so this pre-tag check remains load-bearing for the binary
-  and tap channel too.
+  During `cut`, the wrapper verifies that the local tag points at the journalled bump commit,
+  fast-forwards `main` to that commit, pushes `main`, and filters `gh run list` by workflow,
+  branch, **exact SHA**, and `event=push`. `gh run watch "$id" --exit-status && ossctl release
+  resume …` is load-bearing: only a green run can resume the held tag push. Do not replace the
+  wrapper with a direct `ossctl release cut`, bare `ossctl release resume` while the tag is local,
+  or `git push <tag>`; each bypasses this project's pre-tag gate. `publish-crates.yml` repeats the full gate for crates.io, while cargo-dist's
+  independent `release.yml` makes the pre-tag main check necessary for binaries and Homebrew.
 - **Two distribution channels, one tag.** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,

@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Release cuts now run through ossctl's resumable engine (`adopt-ossctl-release-cut`).** The engine owns the two-crate version bump, exact internal pin, lockfile, changelog, and version snapshots; a held tag-push checkpoint preserves the exact-SHA main-CI gate before CI publishes crates, binaries, and Homebrew artifacts.
+
 ## [0.4.1] - 2026-08-18
 
 ### Changed
