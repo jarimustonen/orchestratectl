@@ -1,15 +1,17 @@
 //! The MVP check set (AGENTS-AI-FIRST-CLI §18).
 //!
-//! Five categories, each in its own module, each emitting one
+//! Six categories, each in its own module, each emitting one
 //! [`CheckResult`] per finding (never
 //! summarized into one):
 //!
+//! - [`binary`] — `binary.commit`: build commit and applicable repo HEAD drift.
 //! - [`schema`] — `schema.runs.<id>`: every run manifest deserializes.
 //! - [`skill`] — `skill.sync.<name>`: on-disk skill `cli_version` matches.
 //! - [`deps`] — `dep.<bin>`: each shelled-out binary is on `PATH`.
 //! - [`config`] — `config.home`: the orchestratectl home resolves.
 //! - [`data`] — `data.orphan-supervisor.<id>`: no dead supervisor PIDs.
 
+pub mod binary;
 pub mod config;
 pub mod data;
 pub mod deps;
@@ -31,9 +33,10 @@ pub struct Ctx {
 
 /// Run every check category in a deterministic order and return the flat
 /// list of findings. Order is category-then-discovery so the text/jsonl
-/// stream reads top-down (config, deps, schema, skill, data).
+/// stream reads top-down (binary, config, deps, schema, skill, data).
 pub fn run_all(ctx: &Ctx) -> Vec<CheckResult> {
     let mut out = Vec::new();
+    out.extend(binary::check(ctx));
     out.extend(config::check(ctx));
     out.extend(deps::check(ctx));
     out.extend(schema::check(ctx));

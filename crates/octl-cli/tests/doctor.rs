@@ -62,6 +62,7 @@ fn bin(env: &Env) -> Command {
     cmd.env("HOME", env.home.path());
     cmd.env("ORCHESTRATECTL_HOME", &env.orch);
     cmd.env("PATH", env.path.path());
+    cmd.env_remove("GIT_BIN");
     cmd
 }
 
@@ -84,6 +85,180 @@ fn find_check<'a>(checks: &'a [Value], id: &str) -> &'a Value {
         .iter()
         .find(|c| c["id"] == id)
         .unwrap_or_else(|| panic!("no check with id {id}; got {checks:?}"))
+}
+
+fn running_binary_commit(env: &Env) -> String {
+    let out = bin(env)
+        .args(["--output", "json", "version"])
+        .output()
+        .expect("spawn version");
+    assert!(out.status.success(), "version failed: {out:?}");
+    let value: Value = serde_json::from_slice(&out.stdout).expect("version json");
+    value["data"]["commit"].as_str().unwrap().to_owned()
+}
+
+fn fake_orchestratectl_checkout(env: &Env) -> PathBuf {
+    let root = env.home.path().join("source");
+    std::fs::create_dir_all(root.join("crates/octl-cli")).unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(
+        root.join("crates/octl-cli/Cargo.toml"),
+        "[package]\nname = \"orchestratectl\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+    root
+}
+
+fn stub_git_head(env: &Env, root: &Path, head: &str) {
+    let script = format!(
+        "#!/bin/sh\nif [ \"$3\" = rev-parse ] && [ \"$4\" = --show-toplevel ]; then\n  printf '%s\\n' '{}'\nelif [ \"$3\" = rev-parse ] && [ \"$4\" = HEAD ]; then\n  printf '%s\\n' '{}'\nelse\n  exit 1\nfi\n",
+        root.display(), head
+    );
+    let path = env.path.path().join("git");
+    std::fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn binary_commit_matches_applicable_repository_head() {
+    let env = setup();
+    let root = fake_orchestratectl_checkout(&env);
+    let commit = running_binary_commit(&env);
+    assert_eq!(
+        commit.len(),
+        40,
+        "build commit must be a full SHA: {commit}"
+    );
+    assert!(
+        commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "build commit must be hexadecimal: {commit}"
+    );
+    stub_git_head(&env, &root, &commit);
+
+    let out = bin(&env)
+        .current_dir(&root)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn doctor");
+    assert!(out.status.success(), "matching commit should pass: {out:?}");
+    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
+    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
+    assert_eq!(check["status"], "ok");
+    assert_eq!(check["details"]["binary_commit"], commit);
+    assert_eq!(check["details"]["repository_head"], commit);
+    assert_eq!(check["details"]["comparison"], "match");
+}
+
+#[test]
+fn binary_commit_mismatch_warns_without_failing() {
+    let env = setup();
+    let root = fake_orchestratectl_checkout(&env);
+    let head = "0000000000000000000000000000000000000000";
+    stub_git_head(&env, &root, head);
+
+    let out = bin(&env)
+        .current_dir(&root)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn doctor");
+    assert!(
+        out.status.success(),
+        "mismatch warning must not fail: {out:?}"
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
+    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
+    assert_eq!(check["status"], "warn");
+    assert_eq!(check["details"]["repository_head"], head);
+    assert_eq!(check["details"]["comparison"], "mismatch");
+    assert!(check["message"].as_str().unwrap().contains(head));
+
+    let text = bin(&env)
+        .current_dir(&root)
+        .args(["--output", "text", "doctor"])
+        .output()
+        .expect("spawn text doctor");
+    assert!(text.status.success());
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(stdout.contains("WARN binary.commit"));
+    assert!(stdout.contains("differs from repository HEAD"));
+}
+
+#[test]
+fn binary_commit_is_disclosed_when_repository_comparison_is_not_applicable() {
+    let env = setup();
+    let commit = running_binary_commit(&env);
+    let out = bin(&env)
+        .current_dir(env.home.path())
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn doctor");
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
+    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
+    assert_eq!(check["status"], "ok");
+    assert_eq!(check["details"]["binary_commit"], commit);
+    assert_eq!(check["details"]["repository_head"], Value::Null);
+    assert_eq!(check["details"]["comparison"], "not_applicable");
+}
+
+#[test]
+fn binary_commit_is_not_compared_in_a_foreign_git_repository() {
+    let env = setup();
+    let root = env.home.path().join("foreign-source");
+    std::fs::create_dir_all(root.join("crates/octl-cli")).unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(
+        root.join("crates/octl-cli/Cargo.toml"),
+        "[package]\nname = \"another-cli\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+    stub_git_head(&env, &root, "1111111111111111111111111111111111111111");
+
+    let out = bin(&env)
+        .current_dir(&root)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn doctor");
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
+    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
+    assert_eq!(check["status"], "ok");
+    assert_eq!(check["details"]["comparison"], "not_applicable");
+}
+
+#[test]
+fn binary_commit_reports_unavailable_when_applicable_head_cannot_be_read() {
+    let env = setup();
+    let root = fake_orchestratectl_checkout(&env);
+    let script = format!(
+        "#!/bin/sh\nif [ \"$3\" = rev-parse ] && [ \"$4\" = --show-toplevel ]; then\n  printf '%s\\n' '{}'\nelse\n  exit 1\nfi\n",
+        root.display()
+    );
+    let git = env.path.path().join("git");
+    std::fs::write(&git, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let out = bin(&env)
+        .current_dir(&root)
+        .args(["--output", "json", "doctor"])
+        .output()
+        .expect("spawn doctor");
+    assert!(out.status.success());
+    let value: Value = serde_json::from_slice(&out.stdout).expect("doctor json");
+    let check = find_check(value["data"]["checks"].as_array().unwrap(), "binary.commit");
+    assert_eq!(check["status"], "ok");
+    assert_eq!(check["details"]["repository_head"], Value::Null);
+    assert_eq!(check["details"]["comparison"], "unavailable");
 }
 
 #[test]

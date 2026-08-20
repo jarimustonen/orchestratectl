@@ -2,6 +2,10 @@
 
 The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `event tail`, `skill install`, etc.) per `ai-first-cli-canon`. Bundled SKILLs live under `skills/<name>/SKILL.template.md` and are embedded via `build.rs` + `include_str!`.
 
+## `doctor` binary build provenance
+
+`doctor` always emits the stable `binary.commit` check first. Its optional `details` object exposes `binary_commit`, `repository_head`, and `comparison` (`match`, `mismatch`, `unavailable`, or `not_applicable`) so machine callers never scrape hashes from prose. When cwd is inside an orchestratectl checkout, a recorded build commit that differs from `HEAD` is a WARN, never a FAIL; branch and released-binary mismatches are legitimate. Outside this project's checkout, or when either reference cannot be established, the check remains informational. It never offers an autonomous fix or manages the installed binary.
+
 ## `skill install` dual-homes into pi.dev (`~/.pi/agent/skills/`)
 
 A default `skill install` (plain, `--force`, or `--agent all`, without `--dest`) writes each skill's `SKILL.md` to **two** locations: the Claude Code path `~/.claude/skills/<name>/SKILL.md` AND a pi.dev mirror at `~/.pi/agent/skills/<name>/SKILL.md`. pi discovers skills from a per-skill dir just like Claude and invokes them as `/skill:<name>`; bare `/name` cross-references resolve via pi's injected available-skills list, so **only the install target differs: no body/link rewrite**. The pi mirror is byte-identical to the Claude `SKILL.md`. Because pi uses a per-skill directory like Claude, any bundled companion resources also mirror as byte-identical siblings of `SKILL.md`; their lifecycle is tracked in the out-of-band provenance record. This prevents a skill that requires a bundled sibling from aborting under pi. The current catalog bundles no companions. The pi mirror carries no in-dir provenance marker. Mirroring is skipped for a custom `--dest` and for `--agent codex` alone. See `src/skill.rs` `cmd_install`.

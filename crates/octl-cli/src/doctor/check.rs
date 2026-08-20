@@ -22,8 +22,9 @@ pub enum CheckStatus {
 }
 
 /// A single diagnostic finding. `safe_fix` is the internal handle the
-/// `--fix` applier branches on; it is never serialized — the wire shape
-/// is exactly `{id, status, message, fix_suggestion?}` per §18.
+/// `--fix` applier branches on; it is never serialized. `details` carries
+/// optional check-specific structured observations, so agents do not need to
+/// scrape values such as commit hashes from `message`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckResult {
     pub id: String,
@@ -31,6 +32,8 @@ pub struct CheckResult {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix_suggestion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
     #[serde(skip)]
     pub safe_fix: Option<FixAction>,
 }
@@ -42,6 +45,7 @@ impl CheckResult {
             status: CheckStatus::Ok,
             message: message.into(),
             fix_suggestion: None,
+            details: None,
             safe_fix: None,
         }
     }
@@ -56,6 +60,7 @@ impl CheckResult {
             status: CheckStatus::Warn,
             message: message.into(),
             fix_suggestion: Some(fix_suggestion.into()),
+            details: None,
             safe_fix: None,
         }
     }
@@ -70,8 +75,15 @@ impl CheckResult {
             status: CheckStatus::Fail,
             message: message.into(),
             fix_suggestion: Some(fix_suggestion.into()),
+            details: None,
             safe_fix: None,
         }
+    }
+
+    /// Attach stable, check-specific machine-readable observations.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     /// Attach a safe, auto-applicable fix (the §18 `--fix` subset).
