@@ -45,11 +45,12 @@ canonical_github_repo() {
 }
 
 assert_repo_identity() {
-  local origin_repo gh_repo
+  local origin_repo push_repo gh_repo
   origin_repo="$(canonical_github_repo "$(git remote get-url origin)")"
+  push_repo="$(canonical_github_repo "$(git remote get-url --push --all origin)")"
   gh_repo="$(gh repo view "$expected_repo" --json nameWithOwner -q .nameWithOwner)"
-  [[ "$origin_repo" == "$expected_repo" && "$gh_repo" == "$expected_repo" ]] || {
-    echo "release repository mismatch: origin=$origin_repo gh=$gh_repo expected=$expected_repo" >&2
+  [[ "$origin_repo" == "$expected_repo" && "$push_repo" == "$expected_repo" && "$gh_repo" == "$expected_repo" ]] || {
+    echo "release repository mismatch: origin=$origin_repo push=$push_repo gh=$gh_repo expected=$expected_repo" >&2
     exit 1
   }
 }
@@ -77,7 +78,7 @@ read_run_coordinates() {
     echo "journalled bump commit is unavailable locally: $bump_commit" >&2
     exit 2
   }
-  [[ "$(git rev-parse "$tag^{commit}")" == "$bump_commit" ]] || {
+  [[ "$(git rev-parse --verify "refs/tags/$tag^{commit}")" == "$bump_commit" ]] || {
     echo "local release tag $tag does not point at journalled bump commit $bump_commit" >&2
     exit 2
   }
@@ -176,19 +177,143 @@ assert_remote_tag_absent() {
   }
 }
 
+held_checkpoint_path() {
+  local git_common_path git_common
+  [[ "$run_id" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
+    echo "invalid release run id: $run_id" >&2
+    exit 2
+  }
+  git_common_path="$(git rev-parse --git-common-dir)" || {
+    echo "cannot locate the Git common directory" >&2
+    exit 2
+  }
+  git_common="$(cd "$git_common_path" && pwd -P)" || {
+    echo "cannot resolve the Git common directory: $git_common_path" >&2
+    exit 2
+  }
+  printf '%s/ossctl-held-tags/%s.json\n' "$git_common" "$run_id"
+}
+
+assert_held_journal() {
+  local show_json="$1"
+  jq -e --arg tag "$tag" '
+    .data.state.status == "in_progress" and
+    (.data.state | has("current_phase")) and .data.state.current_phase == null and
+    ([.data.state.phases[] | {phase, outcome}]) == [
+      {"phase":"bump","outcome":"ok"},
+      {"phase":"dry_run","outcome":"ok"},
+      {"phase":"build","outcome":"ok"},
+      {"phase":"publish","outcome":"ok"},
+      {"phase":"tag","outcome":"failed"}
+    ] and
+    (.data.state.tags | keys) == [$tag] and
+    .data.state.tags[$tag].created_local == true and
+    .data.state.tags[$tag].pushed_remote == false and
+    .data.state.tags[$tag].github_release == false and
+    .data.state.tags[$tag].github_release_delegated == false and
+    .data.last_seq == .data.state.applied_seq and
+    ([.data.recent_events[] |
+      if .kind == "phase_entered" and .phase == "tag" then "entered:tag"
+      elif .kind == "tag_created_local" then "created:" + .tag
+      elif .kind == "phase_completed" and .phase == "tag" then "completed:tag:" + .outcome
+      elif (.phase? == "tag") or (.kind | startswith("tag_")) or (.kind | startswith("github_release_"))
+        then "unexpected:" + .kind
+      else empty end
+    ]) == ["entered:tag", "created:" + $tag, "completed:tag:failed"] and
+    ([.data.recent_events[-3:][] | {kind, phase, tag, outcome}]) == [
+      {kind:"phase_entered", phase:"tag", tag:null, outcome:null},
+      {kind:"tag_created_local", phase:null, tag:$tag, outcome:null},
+      {kind:"phase_completed", phase:"tag", tag:null, outcome:"failed"}
+    ] and
+    .data.recent_events[-1].kind == "phase_completed" and
+    .data.recent_events[-1].phase == "tag" and
+    .data.recent_events[-1].outcome == "failed"
+  ' <<<"$show_json" >/dev/null || {
+    echo "run $run_id is not the exact ossctl 0.9 held-tag journal" >&2
+    exit 2
+  }
+}
+
+assert_hook_marker() {
+  local marker="$1" tag_oid tag_commit line
+  local -a lines=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lines[${#lines[@]}]="$line"
+  done <"$marker"
+  [[ ${#lines[@]} -eq 6 ]] || {
+    echo "pre-push marker must contain exactly six fields" >&2
+    exit 2
+  }
+  [[ "${lines[0]}" == origin &&
+     "$(canonical_github_repo "${lines[1]}")" == "$expected_repo" &&
+     "${lines[2]}" == "refs/tags/$tag" &&
+     "${lines[4]}" == "refs/tags/$tag" &&
+     "${lines[5]}" =~ ^0+$ && ${#lines[5]} -eq ${#lines[3]} ]] || {
+    echo "pre-push marker does not attest the expected new-tag push to origin" >&2
+    exit 2
+  }
+  tag_oid="$(git rev-parse --verify "refs/tags/$tag")" || {
+    echo "local release tag $tag is absent or invalid" >&2
+    exit 2
+  }
+  tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || {
+    echo "local release tag $tag does not resolve to a commit" >&2
+    exit 2
+  }
+  [[ "${lines[3]}" == "$tag_oid" && "$tag_commit" == "$bump_commit" ]] || {
+    echo "pre-push marker/local tag coordinates do not match journalled bump commit $bump_commit" >&2
+    exit 2
+  }
+}
+
+record_held_checkpoint() {
+  local marker="$1" checkpoint_dir checkpoint_tmp held_checkpoint
+  held_checkpoint="$(held_checkpoint_path)"
+  checkpoint_dir="$(dirname "$held_checkpoint")"
+  mkdir -p "$checkpoint_dir"
+  chmod 700 "$checkpoint_dir"
+  checkpoint_tmp="$(mktemp "$checkpoint_dir/.${run_id}.XXXXXX")"
+  chmod 600 "$checkpoint_tmp"
+  jq -n \
+    --arg run_id "$run_id" --arg tag "$tag" --arg bump_commit "$bump_commit" \
+    --arg marker_name "$(sed -n '1p' "$marker")" \
+    --arg marker_remote "$(sed -n '2p' "$marker")" \
+    --arg marker_local_ref "$(sed -n '3p' "$marker")" \
+    --arg marker_local_oid "$(sed -n '4p' "$marker")" \
+    --arg marker_remote_ref "$(sed -n '5p' "$marker")" \
+    --arg marker_remote_oid "$(sed -n '6p' "$marker")" \
+    '{schema_version:1, run_id:$run_id, tag:$tag, bump_commit:$bump_commit,
+      marker:[$marker_name,$marker_remote,$marker_local_ref,$marker_local_oid,$marker_remote_ref,$marker_remote_oid]}' \
+    >"$checkpoint_tmp"
+  mv "$checkpoint_tmp" "$held_checkpoint"
+}
+
+assert_recorded_checkpoint() {
+  local checkpoint
+  checkpoint="$(held_checkpoint_path)"
+  jq -e --arg run_id "$run_id" --arg tag "$tag" --arg bump_commit "$bump_commit" '
+    .schema_version == 1 and .run_id == $run_id and .tag == $tag and .bump_commit == $bump_commit and
+    (.marker | type == "array" and length == 6)
+  ' "$checkpoint" >/dev/null 2>&1 || {
+    echo "run $run_id has no valid wrapper-recorded pre-push hold evidence" >&2
+    exit 2
+  }
+  assert_hook_marker <(jq -r '.marker[]' "$checkpoint")
+}
+
 resume_after_gate() {
   local show_json remote_tag pushed_remote
   show_json="$(show_run "$run_id")"
   read_run_coordinates "$show_json"
-  pushed_remote="$(jq -er --arg tag "$tag" '.data.state.tags[$tag].pushed_remote' <<<"$show_json")"
+  pushed_remote="$(jq -r --arg tag "$tag" '.data.state.tags[$tag].pushed_remote' <<<"$show_json")"
+  [[ "$pushed_remote" == true || "$pushed_remote" == false ]] || {
+    echo "run $run_id has an invalid pushed_remote tag state" >&2
+    exit 2
+  }
 
   if [[ "$pushed_remote" == false ]]; then
-    jq -e --arg tag "$tag" '
-      .data.state.current_phase == "tag" and .data.state.tags[$tag].created_local == true
-    ' <<<"$show_json" >/dev/null || {
-      echo "run $run_id is not at the held pre-tag checkpoint" >&2
-      exit 2
-    }
+    assert_held_journal "$show_json"
+    assert_recorded_checkpoint
     assert_remote_tag_absent
     advance_main_to_bump
     git fetch origin +refs/heads/main:refs/remotes/origin/main
@@ -198,6 +323,8 @@ resume_after_gate() {
     }
     validate_bump_tree
     wait_for_exact_main_ci "$bump_commit"
+    assert_recorded_checkpoint
+    assert_repo_identity
     assert_remote_tag_absent
     ossctl release resume "$run_id" --json
   else
@@ -217,6 +344,7 @@ resume_after_gate() {
     exit 2
   }
   ossctl release verify "$run_id" --json
+  rm -f "$(held_checkpoint_path)"
 }
 
 require_command git
@@ -340,24 +468,14 @@ HOOK
     ' <<<"$list_json")"
     show_json="$(show_run "$run_id")"
     read_run_coordinates "$show_json"
-    held_remote="$(canonical_github_repo "$(sed -n '2p' "$marker")")"
-    [[ "$held_remote" == "$expected_repo" ]] || {
-      echo "ossctl attempted to push the release tag to $held_remote, expected $expected_repo" >&2
-      exit 2
-    }
+    assert_hook_marker "$marker"
     assert_remote_tag_absent
-    jq -e --arg tag "$tag" '
-      .data.state.current_phase == "tag" and
-      .data.state.tags[$tag].created_local == true and
-      .data.state.tags[$tag].pushed_remote == false
-    ' <<<"$show_json" >/dev/null || {
-      echo "cut did not stop at the expected pre-push checkpoint; inspect run $run_id" >&2
-      exit 2
-    }
+    assert_held_journal "$show_json"
     git merge-base --is-ancestor "$base_commit" "$bump_commit" || {
       echo "journalled bump commit is not descended from sealed main" >&2
       exit 2
     }
+    record_held_checkpoint "$marker"
 
     advance_main_to_bump
     resume_after_gate

@@ -26,7 +26,7 @@ case "$*" in
   "rev-parse --show-toplevel")
     printf '%s\n' "$GIT_STUB_ROOT"
     ;;
-  "remote get-url origin")
+  "remote get-url origin"|"remote get-url --push --all origin")
     printf '%s\n' "$GIT_STUB_ORIGIN"
     ;;
   *)
@@ -118,7 +118,7 @@ assert_supported_gh_call() {
 }
 
 assert_git_calls() {
-  local expected=$'rev-parse --show-toplevel\nremote get-url origin'
+  local expected=$'rev-parse --show-toplevel\nremote get-url origin\nremote get-url --push --all origin'
   local actual
   actual="$(cat "$tmp/git.log")"
   [[ "$actual" == "$expected" ]] || {
@@ -165,7 +165,7 @@ set -e
 }
 assert_supported_gh_call
 assert_git_calls
-grep -Fx 'release repository mismatch: origin=jarimustonen/orchestratectl gh=unrelated-owner/unrelated-repo expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+grep -Fx 'release repository mismatch: origin=jarimustonen/orchestratectl push=jarimustonen/orchestratectl gh=unrelated-owner/unrelated-repo expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
   echo "GitHub repository mismatch did not emit the expected diagnostic" >&2
   cat "$tmp/stderr" >&2
   exit 1
@@ -184,7 +184,7 @@ set -e
 }
 assert_supported_gh_call
 assert_git_calls
-grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo gh=jarimustonen/orchestratectl expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo push=unrelated-owner/unrelated-repo gh=jarimustonen/orchestratectl expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
   echo "origin repository mismatch did not emit the expected diagnostic" >&2
   cat "$tmp/stderr" >&2
   exit 1
@@ -202,4 +202,5 @@ set -e
   exit 1
 }
 
-echo "release wrapper repository preflight tests passed"
+"$repo_root/scripts/test-ossctl-release-held-tag.sh"
+echo "release wrapper tests passed"
