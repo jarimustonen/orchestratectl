@@ -1,11 +1,16 @@
 ---
 created: 2026-08-16
-updated: 2026-08-16
+updated: 2026-08-20
 type: task
-status: open
+status: done
 priority: high
 lane: skills
 lane_seq: 50
+closed: 2026-08-20
+closed_by: pi
+commits:
+- hash: acc2859
+  summary: remove user-specific facts from shipped artifacts
 ---
 
 # Audit: no user-specific facts in a public artifact
@@ -120,4 +125,8 @@ KORJAUS edelliseen muistiinpanoon: `lane_seq 50` EI aseta tätä lanen viimeisek
 
 Se on puolustettavissa — julkisen artefaktin vuototarkistus on aidosti kiireellinen — mutta se EI ole se järjestys jota tavoittelin. Jos haluat sen lanen loppuun halpojen korjausten jälkeen, laske prioriteetti: `issuectl update audit-no-user-specifics --priority normal`. Sama mekanismi selittää miksi `lifecycle`-lanen kärki on `uncommonly-fuzzy-swing` eikä `shell-quote-dedup`.
 
+## Resolution
 
+### 2026-08-20T06:50:06Z · @pi
+
+Completed the full shipped-artifact audit. Source, metadata/defaults, root docs, release/scaffold configuration, generated cargo-dist workflow, tests/fixtures, bundled skill templates, installed-skill content, and package manifests were inspected. Genuine user-specific facts were removed: personal authorship/contact metadata, private repository/provenance names, personal source-root assumptions, and the private runner hostname. The only surviving account-handle occurrences in shipped scope are required public coordinates for the GitHub repositories and Homebrew taps; reserved example emails, $HOME paths, vendor bot identity, and canonical Linuxbrew paths were classified as neutral. cargo package produced 26-file octl-core and 163-file orchestratectl archives; both archive scans were clean. A release build using the generated HOME/GITHUB_WORKSPACE remaps passed a strings scan with no audited values, and GitHub private vulnerability reporting was enabled and verified. /llm-review and /assess-findings were completed; confirmed localized findings were applied (preserve RUSTFLAGS, remap both build roots, ignore regenerated canon copies, verify the private reporting channel, restore public ADR provenance, and use portable $HOME examples). The skill insta loop completed with zero snapshot changes to accept, and every snapshot was therefore unchanged. The exact green gate passed: fmt, clippy -D warnings, release nextest (1000 passed, 1 skipped), doctests, and rustdoc -D warnings. Tool-sensitive suites also passed under a stripped PATH (44/44). The tracked issue archive/TODO/history remain outside the issue-defined shipped scope and are absent from Cargo packages, dist assets, Homebrew output, and installed skills.
