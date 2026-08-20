@@ -3,10 +3,14 @@ created: 2026-08-20
 updated: 2026-08-20
 type: bug
 reporter: pi
-status: open
+status: fixed
 priority: high
 lane: release
 collision: [scripts/ossctl-release.sh]
+closed: 2026-08-20
+commits:
+- hash: '8735041'
+  summary: accept proven ossctl 0.9 held-tag journal
 ---
 
 # Release wrapper rejects held tag checkpoint
@@ -40,3 +44,9 @@ The wrapper currently requires `current_phase == "tag"`, so it cannot reach `adv
 - Remain fail-closed for missing marker, wrong remote, unexpected phase/event history, absent/moved local tag, or any remote tag.
 - Add an end-to-end stubbed release journal regression matching the real `current_phase:null` state.
 - Run the full green gate. Do not create/push a real release tag or publish from the worker; a fresh plan is required.
+
+## Resolution
+
+### 2026-08-20T12:29:09Z · @issuectl
+
+Recognize only the real null-current-phase tag failure when the hook marker, exact journal/event history, local tag and bump coordinates, canonical remote, and remote absence all agree. Added stripped-PATH end-to-end negative coverage.
