@@ -1,14 +1,13 @@
 ---
 created: 2026-08-15
-updated: 2026-08-16
+updated: 2026-08-20
 type: task
 status: obsolete
 priority: normal
 epic: lifecycle-architecture-review
 related: ['@merge-transaction-recovery']
-labels: [deferred]
-closed: 2026-08-16
 closed_by: claude
+closed: 2026-08-16
 ---
 
 # run merge recovery for terminal-Failed watchdog-adoption merge path

@@ -5,9 +5,8 @@ type: bug
 reporter: jari
 status: cannot-reproduce
 priority: normal
-labels:
-- via:agent-homebase-wrapup
 closed: 2026-08-17
+provenance: agent-homebase-wrapup
 ---
 
 # node show accepts wrong argument order silently: returns {} with exit 0

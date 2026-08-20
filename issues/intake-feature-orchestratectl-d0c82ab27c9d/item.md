@@ -5,9 +5,8 @@ type: feature
 reporter: jari
 status: duplicate
 priority: normal
-labels:
-- via:agent-homebase-wrapup
 closed: 2026-08-17
+provenance: agent-homebase-wrapup
 ---
 
 # run create: per-run worker model override (harness args), without mutat…

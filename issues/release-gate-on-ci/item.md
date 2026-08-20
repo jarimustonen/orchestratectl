@@ -91,7 +91,7 @@ the workflow is enforcement. Prefer the latter.
 - [ ] `OSS-RELEASE.md`, the `/oss-release` path, and any bundled release guidance stop
       describing a local two-crate `cargo publish` and reflect the tag-triggered CI flow.
 
-## Notes
+## Comments
 
 Filed at Jari's request during the stint-4 handoff, after he asked "is there an easy way to
 fix this?" about the publish ordering. Laned to `skills` because the largest part of the

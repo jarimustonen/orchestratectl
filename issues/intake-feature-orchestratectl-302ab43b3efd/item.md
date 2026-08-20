@@ -5,9 +5,8 @@ type: feature
 reporter: jari
 status: duplicate
 priority: normal
-labels:
-- via:agent-homebase-wrapup
 closed: 2026-08-15
+provenance: agent-homebase-wrapup
 ---
 
 # run show --output json surfaces terminal report as "none"; report lives…

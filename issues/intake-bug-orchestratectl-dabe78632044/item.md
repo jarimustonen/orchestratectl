@@ -5,10 +5,9 @@ type: bug
 reporter: jari
 status: duplicate
 priority: normal
-labels:
-- via:agent-homebase-wrapup
-closed: 2026-08-16
 closed_by: claude
+closed: 2026-08-16
+provenance: agent-homebase-wrapup
 ---
 
 # run create timeout can leave a supervisorless pending run with no nodes

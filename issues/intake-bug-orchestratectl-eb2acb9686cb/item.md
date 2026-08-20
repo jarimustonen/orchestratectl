@@ -5,10 +5,9 @@ type: bug
 reporter: jari
 status: cannot-reproduce
 priority: normal
-labels:
-- via:agent-homebase-wrapup
-closed: 2026-08-16
 closed_by: claude
+closed: 2026-08-16
+provenance: agent-homebase-wrapup
 ---
 
 # run wait --output json returns null terminal fields for a settled run

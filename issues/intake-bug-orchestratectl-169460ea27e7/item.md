@@ -1,13 +1,12 @@
 ---
 created: 2026-08-16
-updated: 2026-08-17
+updated: 2026-08-20
 type: bug
 reporter: jari
 status: open
 priority: normal
-labels:
-- via:agent-homebase-wrapup
 lane: lifecycle
+provenance: agent-homebase-wrapup
 ---
 
 # stale pending runs clutter run list and look like live workers

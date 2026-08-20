@@ -1,13 +1,12 @@
 ---
 created: 2026-08-15
-updated: 2026-08-16
+updated: 2026-08-20
 type: bug
 status: wontfix
 priority: normal
 epic: lifecycle-architecture-review
-labels: [deferred]
-closed: 2026-08-16
 closed_by: claude
+closed: 2026-08-16
 ---
 
 # Non-merge teardown TOCTOU: HEAD can move between the safety probe and worktree removal

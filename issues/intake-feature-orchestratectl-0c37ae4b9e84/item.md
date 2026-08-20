@@ -5,10 +5,9 @@ type: feature
 reporter: jari
 status: wontfix
 priority: normal
-labels:
-- via:agent-homebase-wrapup
-closed: 2026-08-14
 closed_by: stint-orchestrator
+closed: 2026-08-14
+provenance: agent-homebase-wrapup
 ---
 
 # Auto-land an idle spinoff whose work is committed and merges cleanly
