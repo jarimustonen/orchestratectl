@@ -11,6 +11,8 @@ closed: 2026-08-21
 commits:
 - hash: 1596dd2
   summary: distinguish untriaged work from explicit deferral
+- hash: fe6ea2e
+  summary: distinguish untriaged work from explicit deferral after rebase
 ---
 
 # Distinguish untriaged work from explicit deferral
