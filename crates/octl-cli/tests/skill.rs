@@ -806,6 +806,98 @@ fn skill_install_default_stamps_provenance_marker() {
 }
 
 #[test]
+fn bundled_stint_guidance_distinguishes_untriaged_from_explicit_deferral() {
+    fn normalized(body: &str) -> String {
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    let home = mk_home();
+    for skill in ["stint-start", "stint-handoff"] {
+        let out = bin(&home)
+            .args([
+                "skill", "install", skill, "--agent", "all", "--output", "json",
+            ])
+            .output()
+            .expect("spawn");
+        assert!(out.status.success(), "install {skill} failed: {out:?}");
+    }
+
+    let start_path = home.path().join(".claude/skills/stint-start/SKILL.md");
+    let start_raw = std::fs::read_to_string(&start_path).unwrap();
+    let start = normalized(&start_raw);
+    assert!(
+        start.contains("candidate awaiting that gate stays `status: untriaged` with no `lane`, `lane_seq`, or `collision` assignment"),
+        "stint-start must preserve unaccepted candidates as untriaged and unscheduled"
+    );
+    assert!(
+        start.contains("`status: deferred` is reserved for an explicit human/product decision"),
+        "stint-start must reserve deferred for an explicit human/product disposition"
+    );
+    assert!(
+        start.contains("mechanically says `spawnable: true`; never launch it until it has passed the human lane-or-close gate"),
+        "stint-start must not execute mechanically spawnable unscheduled rows"
+    );
+    assert!(
+        start.contains("Omission from this round alone authorizes no lifecycle change"),
+        "stint-start must not treat round omission as a deferral"
+    );
+    assert!(
+        start.contains("on human acceptance for execution, move the issue from `untriaged` to the project's accepted active status and assign its lane metadata; on an explicit human/product “not now” decision, set `deferred` and remove `lane`, `lane_seq`, and every scheduling `collision` assignment"),
+        "stint-start must move lifecycle and scheduling state together"
+    );
+    assert!(
+        start.contains("Launch only a lane issue whose own `spawnable` field is true **and** whose status is an executable, triaged status"),
+        "stint-start must status-gate the operative launch rule"
+    );
+    assert!(
+        !start.contains("Leave deferred or out-of-plan entries unscheduled"),
+        "stint-start must not restore the retired conflating guidance"
+    );
+
+    let handoff_path = home.path().join(".claude/skills/stint-handoff/SKILL.md");
+    let handoff_raw = std::fs::read_to_string(&handoff_path).unwrap();
+    let handoff = normalized(&handoff_raw);
+    assert!(
+        handoff.contains("unaccepted candidate stays `status: untriaged`, with no `lane`, `lane_seq`, or `collision` assignment"),
+        "stint-handoff must preserve review candidates as untriaged and unscheduled"
+    );
+    assert!(
+        handoff.contains("status is reserved for an explicit human/product “worthwhile, but not now” disposition"),
+        "stint-handoff must reserve deferred for explicit product disposition"
+    );
+    assert!(
+        handoff.contains("mechanical `spawnable: true` does not make it executable; it must pass human triage, move to an accepted active status, and gain a lane"),
+        "stint-handoff must not present unscheduled rows as executable"
+    );
+    assert!(
+        handoff.contains("is created with no lane assignment"),
+        "stint-handoff must not conflate no lane with the literal unlaned lane"
+    );
+    assert!(
+        !handoff.contains("Leave deferred or out-of-plan entries unscheduled"),
+        "stint-handoff must not contain the retired conflating guidance"
+    );
+
+    for (skill, claude_raw) in [("stint-start", start_raw), ("stint-handoff", handoff_raw)] {
+        let pi = std::fs::read_to_string(
+            home.path()
+                .join(format!(".pi/agent/skills/{skill}/SKILL.md")),
+        )
+        .unwrap();
+        assert_eq!(pi, claude_raw, "{skill} pi mirror must match Claude");
+
+        let codex = normalized(
+            &std::fs::read_to_string(home.path().join(format!(".codex/prompts/{skill}.md")))
+                .unwrap(),
+        );
+        assert!(
+            codex.contains("status: untriaged") && codex.contains("status: deferred"),
+            "{skill} Codex mirror must carry the lifecycle distinction"
+        );
+    }
+}
+
+#[test]
 fn skill_install_default_dual_homes_into_pi() {
     // A default `skill install` writes the claude copy AND mirrors the same
     // SKILL.md into pi.dev's per-skill dir (`~/.pi/agent/skills/<name>/`),

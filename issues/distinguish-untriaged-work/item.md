@@ -13,8 +13,6 @@ collision: [crates/octl-cli/skills/stint-start/SKILL.template.md]
 
 ## Description
 
-## Description
-
 The bundled stint-start instruction currently says: “Leave deferred or out-of-plan entries unscheduled.” This conflates two distinct states and allowed migrated review residuals to become `status: deferred` while retaining lane metadata. issuectl treats deferred as active-class, so a deferred lane head was then reported spawnable and serialized the lifecycle lane.
 
 Maintainer clarification, 2026-08-20:

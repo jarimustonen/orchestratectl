@@ -58,12 +58,23 @@ fall back to a prose schedule.
   `TODO.md` or recompute what the command already derives. A command failure, malformed
   envelope, missing blocker, self-dependency, or cycle makes the schedule invalid: stop
   before selecting or spawning work. A dependency is satisfied only by a delivering
-  terminal status. In the default schema, `fixed` and `done` deliver; `wontfix`,
-  `obsolete`, `cannot-reproduce`, and `duplicate` do not. Use the consuming project's
-  equivalents if it customizes statuses. An entry in `.data.unscheduled` has no executable
-  lane. Assign a conservative lane only when you intend to run that issue this round, or
-  use the reserved `unlaned` lane only when it is confirmed parallel-safe. Leave deferred
-  or out-of-plan entries unscheduled and report them.
+  terminal status. In the default schema, `fixed` and `done` deliver; `untriaged`,
+  `deferred`, `wontfix`, `obsolete`, `cannot-reproduce`, and `duplicate` do not. Use the
+  consuming project's equivalents if it customizes statuses.
+- **Triage state is not scheduling state.** An entry in `.data.unscheduled` has no
+  executable lane, even if that row mechanically says `spawnable: true`; never launch it
+  until it has passed the human lane-or-close gate, moved to the project's accepted active
+  status, and gained a lane. An unaccepted review residual, out-of-plan finding, or other
+  candidate awaiting that gate stays `status: untriaged` with no `lane`, `lane_seq`, or
+  `collision` assignment. Omission from this round alone authorizes no lifecycle change.
+  `status: deferred` is reserved for an explicit human/product decision that an accepted
+  worthwhile item is “not now”; deferred work also stays unscheduled. The reserved
+  `unlaned` lane is an executable, parallel-safe lane value, not the absence of a lane; use
+  it only after human acceptance when the work is confirmed parallel-safe. A lane member
+  carrying `untriaged`, `deferred`, or the consuming project's equivalent non-executable
+  disposition is malformed metadata, not work: never announce or launch it as a head,
+  even if issuectl mechanically reports `spawnable: true`; report the inconsistency and
+  stop before selecting from that schedule.
 - **Autonomous spinoffs run headless.** Every self-merging spinoff you spawn directly
   (`/worktree-spinoff`) passes `--headless`, so the round's workers land in the detached
   `headless` tmux session instead of cluttering the user's window list; attach with
@@ -143,7 +154,11 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
 - an **ambiguous file collision** — sequence the units, never guess parallel (Phase 1);
 - the **landing-verification** warning — a `landed`/manual-check disagreement blocks, and
   `landed_method: unverified` is never grounds to auto-respawn or auto-deploy;
-- **cold start** with no prepared plan (Phase 1) — a single planning pass, not invention.
+- **cold start** with no prepared plan (Phase 1) — a single planning pass, not invention;
+- **human disposition** — never infer acceptance, closure, or deferral from backlog
+  presence, prepared narrative, omission from a round, an empty frontier, or mechanical
+  spawnability. Only an explicit human/product disposition can move a candidate through
+  the lane-or-close gate.
 
 ## Phases
 
@@ -177,7 +192,11 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
    This bootstrap read is also the schema gate: confirm `.data.lanes[]`,
    `.data.unscheduled`, and numeric `.data.spawnable_heads` exist, and lane issues carry
    `collision` arrays plus Boolean `spawnable` values. If any field is absent, stop as
-   incompatible rather than guessing. Inspect `orchestratectl run list --output json` and
+   incompatible rather than guessing. If an `untriaged`, `deferred`, or equivalent
+   non-executable disposition appears in `.data.lanes[]`, report its slug as a scheduling
+   inconsistency and stop before announcing heads, selecting, or spawning; lane presence
+   and `spawnable: true` do not prove human acceptance. Inspect `orchestratectl run list
+   --output json` and
    the relevant `run show` records for
    every live or resumable run. Map each run's issue slug through the first DAG response,
    then replace `reservations` with the exact issuectl hold-array shape, one object per
@@ -225,17 +244,28 @@ Then:
   must be sequenced in one lane; disjoint units can use different lanes. Shared resources
   across lanes belong in each issue's `collision` list. If disjointness is unclear,
   sequence the units.
-- **Update issue metadata for the round.** File any planned unit that is not yet an issue.
-  Use the validated CLI operations, for example `issuectl update <slug> --lane <lane>
-  --lane-seq <n> --add-blocked-by <blocker> --add-collision <token> --json`; repeat the
-  additive flags as needed rather than replacing lists. Never edit a second scheduling
-  copy in prose. Only mutate an issue that is not yet owned by a live worktree because a
-  concurrent issuectl write races that worker; otherwise defer the metadata change until
-  it lands. Deferred work remains represented by issue status/metadata and is not pulled
-  into the round unless the prepared intent names it. Commit every rewritten issue path
-  by exact name, never `git add -A`, before Phase 2 and verify a clean tree. Re-run
-  `issuectl dag --json --reservations "$reservations"` and use its computed order,
-  blockers, heads, and spawnability as the plan.
+- **Update issue metadata for the round.** File any human-accepted planned unit that is
+  not yet an issue. Use the validated CLI operations, for example `issuectl update <slug>
+  --lane <lane> --lane-seq <n> --add-blocked-by <blocker> --add-collision <token> --json`;
+  repeat the additive flags as needed rather than replacing lists. Never edit a second
+  scheduling copy in prose. Only mutate an issue that is not yet owned by a live worktree
+  because a concurrent issuectl write races that worker; otherwise postpone the metadata
+  change until it lands. Do not schedule an unaccepted residual, out-of-plan finding, or
+  candidate merely because it appears in `.data.unscheduled`, says `spawnable: true`, or
+  is named in prepared intent; leave it `untriaged` and free of lane, lane-sequence, and
+  collision assignments until the human lane-or-close gate accepts it. A disposition
+  change is also a scheduling change: on human acceptance for execution, move the issue
+  from `untriaged` to the project's accepted active status and assign its lane metadata;
+  on an explicit human/product “not now” decision, set `deferred` and remove `lane`,
+  `lane_seq`, and every scheduling `collision` assignment. Use only operations advertised
+  by the validated `issuectl update --help`, perform the status and scheduling changes
+  together, and never leave a non-executable disposition holding a lane. The live-worktree
+  guard above still applies. Omission from this round authorizes neither transition. A
+  deferred issue remains unscheduled and is not pulled into a round merely because
+  prepared intent names it—the human/product disposition must first change. Commit every
+  rewritten issue path by exact name, never `git add -A`, before Phase 2 and verify a clean
+  tree. Re-run `issuectl dag --json --reservations "$reservations"` and use its computed
+  order, blockers, heads, and spawnability as the plan.
 - **Classify each unit:** a clear, well-scoped bug/task → direct autonomous fix; a
   big or genuinely ambiguous feature → design-first.
 - **Announce the plan** in one short message (which units, what's parallel vs
@@ -308,10 +338,13 @@ git** before counting it toward the deploy pile:
   JSON passed to issuectl contains each hold's `lane` and `collision` fields. Before every
   subsequent pick, materialize the complete current hold array and pass it in the same
   shell invocation, for example `reservations='[...]'; issuectl dag --json --reservations
-  "$reservations"`. Launch only a lane issue whose
-  own `spawnable` field is true, and separately exclude every slug already held in
-  conductor memory because the reservation schema carries resource tokens, not issue
-  identity. issuectl treats `unlaned` as parallel-safe, so a hold carrying that lane does
+  "$reservations"`. Launch only a lane issue whose own `spawnable` field is true **and**
+  whose status is an executable, triaged status in the consuming project's schema; never
+  launch `untriaged`, `deferred`, or an equivalent non-executable disposition even if it
+  is lane-assigned and mechanically spawnable. Treat that combination as the scheduling
+  inconsistency defined above. Separately exclude every slug already held in conductor
+  memory because the reservation schema carries resource tokens, not issue identity.
+  issuectl treats `unlaned` as parallel-safe, so a hold carrying that lane does
   not reserve other `unlaned` issues; collision tokens and the separate slug guard still
   apply. Do not release a hold merely because `run wait` returned: awaiting-input or
   recoverable runs can settle while retaining resumable work. Resolve awaiting-input

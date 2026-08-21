@@ -37,10 +37,16 @@ an unmigrated or incompatible project rather than falling back to prose.
   `/assess-findings` cascade), weigh it critically against real value. Early-maturity
   review passes over-produce low-value polish suggestions; file only an observed
   occurrence or a self-contained problem with credible impact. A finding that survives
-  uses `issuectl intake file`, is born unlaned, and carries machine-visible `ai-review`
-  provenance plus available run/target/model/assessment/severity/confidence metadata.
-  Named model agreement stays a list, never a corroboration score. Do not add the new
-  issue to the next stint's agenda: the human lane-or-close sweep owns scheduling.
+  uses `issuectl intake file`, is created with no lane assignment, and carries
+  machine-visible `ai-review` provenance plus available run/target/model/assessment/
+  severity/confidence metadata.
+  Named model agreement stays a list, never a corroboration score. The resulting
+  unaccepted candidate stays `status: untriaged`, with no `lane`, `lane_seq`, or
+  `collision` assignment. Do not add it to the next stint's agenda: the
+  human lane-or-close sweep owns scheduling and acceptance. “Not selected this round” is
+  not permission to set
+  `status: deferred`; that status is reserved for an explicit human/product “worthwhile,
+  but not now” disposition, and deferred work also remains unscheduled.
 - **Ask conversationally.** Never `AskUserQuestion` (global CLAUDE.md).
 - **Read worker reports before writing the next handoff.** A terminal report is persisted as
   `last_report` on its node. For a single-worker run, prefer the public
@@ -82,19 +88,30 @@ an unmigrated or incompatible project rather than falling back to prose.
 1. **Read the live schedule.** After preflight proves there are no ownership holds, run
    `issuectl dag --json --reservations '[]'` and read `.data.lanes[]`,
    `.data.unscheduled`, and `.data.spawnable_heads`. If the command fails, its JSON is
-   malformed, or the graph has a missing blocker, self-dependency, or cycle, record the
-   verification failure for the narrative and continue only through the narrative commit;
-   do not call `/wrap-up` or declare the handoff complete. Do not mutate issue scheduling
-   during terminal wrap or encode a workaround in `TODO.md`.
+   malformed, the graph has a missing blocker, self-dependency, or cycle, or an
+   `untriaged`, `deferred`, or equivalent non-executable disposition appears in
+   `.data.lanes[]`, record the verification failure and affected slug for the narrative and
+   continue only through the narrative commit; lane presence and mechanical
+   `spawnable: true` never make that row executable. Do not call `/wrap-up` or declare the
+   handoff complete. Do not mutate issue scheduling during terminal wrap or encode a
+   workaround in `TODO.md`.
 2. **Update only the `TODO.md` handoff narrative** (`## 🔄 Continue here` / `ALOITA
    TÄSTÄ`) so a fresh agent can resume from `jatketaan @TODO.md`: where the round left
    off, what landed, what is live, the intended product direction, and unresolved
-   decisions. Issue slugs may provide context, including a concise "needs scheduling
-   triage" note for unscheduled active work or a run-ownership fact from preflight.
-   Recording that verification failed and naming involved slugs is an unresolved decision,
-   not a copied schedule. Do not describe any issue as currently ready,
-   blocked, headed, or spawnable, and do not copy lane order, dependency edges, collision
-   values, computed-head flags, or spawnability into this file.
+   decisions. Issue slugs may provide context, including a concise “awaiting human
+   lane-or-close triage” note for unscheduled `untriaged` candidates, an explicit
+   human/product “not now” note for unscheduled `deferred` work, or a run-ownership fact
+   from preflight. Mark triage mentions as context only: they are not accepted, scheduled,
+   executable, or part of the prepared execution agenda. Keep the states distinct; never
+   convert an out-of-plan or merely unselected candidate to deferred during handoff.
+   Recording that verification failed and naming involved slugs—including a
+   non-executable disposition found in a lane—is an unresolved decision, not a copied
+   schedule. Otherwise do not describe any issue as currently ready, blocked, headed, or
+   spawnable, and do not copy lane order, dependency edges, collision values,
+   computed-head flags, or spawnability into this file. In particular, an unscheduled
+   row's mechanical `spawnable: true` does not make it executable; it must pass human
+   triage, move to an accepted active status, and gain a lane before a future round may
+   launch it.
 3. **Commit the handoff update immediately, on its own**: `git add TODO.md` (that exact
    path, not `git add -A`) and commit before the next step, so it is not folded into
    `/wrap-up`'s mixed commit or left dangling. If the narrative did not change, do not
