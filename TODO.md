@@ -123,3 +123,4 @@ these stints are in `AGENTS.md`.
 ## Piialiisan bugiraportit
 
 - [ ] 🐛 Piialiisan bugiraportti: run create omits source_repo from fresh run manifest — jari via Telegram ([`intake-bug-orchestratectl-19a653fff4c9`](issues/intake-bug-orchestratectl-19a653fff4c9/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: run show cannot identify a run repository once its worktree is gone — jari via Telegram ([`intake-feature-orchestratectl-f706c536df01`](issues/intake-feature-orchestratectl-f706c536df01/item.md))
