@@ -72,7 +72,8 @@ cat >"$tmp/bin/ossctl" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$OSSCTL_STUB_LOG"
 if [[ "$*" == "version --json" ]]; then
-  printf '%s\n' '{"data":{"version":"0.9.0"}}'
+  jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.0}" --arg commit "${OSSCTL_STUB_COMMIT:-a35b9917fc65a6354fe855b7c956521b47669907}" \
+    '{schema_version:1,data:{version:$version,commit:$commit,schema_version:1}}'
   exit 0
 fi
 if [[ "${1:-}" == release && "${2:-}" == show ]]; then
@@ -96,6 +97,8 @@ run_wrapper() {
     GIT_STUB_ROOT="$tmp/work" \
     GIT_STUB_ORIGIN="$origin" \
     OSSCTL_STUB_LOG="$tmp/ossctl.log" \
+    OSSCTL_STUB_VERSION="${OSSCTL_STUB_VERSION:-0.10.0}" \
+    OSSCTL_STUB_COMMIT="${OSSCTL_STUB_COMMIT:-a35b9917fc65a6354fe855b7c956521b47669907}" \
     GH_STUB_REPO="$gh_repo" \
     "$repo_root/scripts/ossctl-release.sh" resume test-run \
     >"$tmp/stdout" 2>"$tmp/stderr"
@@ -190,6 +193,55 @@ grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo pus
   exit 1
 }
 assert_no_release_show
+
+for unsupported in 0.10.1 0.11.0 1.0.0; do
+  reset_logs
+  set +e
+  OSSCTL_STUB_VERSION="$unsupported" run_wrapper
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || {
+    echo "unsupported ossctl $unsupported did not fail closed (status=$status)" >&2
+    exit 1
+  }
+  grep -F "ossctl 0.9.0 or validated 0.10.0 required; found $unsupported" "$tmp/stderr" >/dev/null || {
+    echo "unsupported ossctl $unsupported emitted the wrong diagnostic" >&2
+    cat "$tmp/stderr" >&2
+    exit 1
+  }
+  test ! -s "$tmp/gh.log" || { echo "unsupported ossctl $unsupported reached repository preflight" >&2; exit 1; }
+done
+
+reset_logs
+set +e
+OSSCTL_STUB_COMMIT=0000000000000000000000000000000000000000 run_wrapper
+status=$?
+set -e
+[[ "$status" -eq 1 ]] || { echo "unvalidated ossctl 0.10.0 commit did not fail closed" >&2; exit 1; }
+grep -F "ossctl 0.10.0 protocol was validated at commit" "$tmp/stderr" >/dev/null
+
+reset_logs
+set +e
+run_wrapper jarimustonen/orchestratectl
+status=$?
+set -e
+[[ "$status" -eq 42 ]] || { echo "valid version did not recover after version rejection tests" >&2; exit 1; }
+
+for abandoned in 01M0FD8FSTMGYG8YTV92WMWC87 01M0FG88NAKBJ7Y3QNFZEHRM4K; do
+  reset_logs
+  set +e
+  env -i HOME="$tmp/home" PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GIT_STUB_LOG="$tmp/git.log" \
+    GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/orchestratectl.git \
+    OSSCTL_STUB_LOG="$tmp/ossctl.log" OSSCTL_STUB_VERSION=0.10.0 \
+    OSSCTL_STUB_COMMIT=a35b9917fc65a6354fe855b7c956521b47669907 \
+    GH_STUB_REPO=jarimustonen/orchestratectl "$repo_root/scripts/ossctl-release.sh" resume "$abandoned" \
+    >"$tmp/stdout" 2>"$tmp/stderr"
+  status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || { echo "abandoned run $abandoned was not blocked (status=$status)" >&2; exit 1; }
+  grep -F "release run $abandoned is permanently abandoned and must never be resumed" "$tmp/stderr" >/dev/null
+  ! grep -F "release show" "$tmp/ossctl.log" >/dev/null || { echo "abandoned run $abandoned reached release show" >&2; exit 1; }
+done
 
 set +e
 env -i PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GH_STUB_REPO=unused \

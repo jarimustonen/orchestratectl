@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Safe wrapper around ossctl 0.9's resumable release engine.
+# Safe wrapper around the validated ossctl 0.9.0/0.10.0 resumable protocol.
 # It pauses a bump cut at tag push, advances main to the bump commit, waits for
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
 
 readonly expected_repo="jarimustonen/orchestratectl"
+readonly ossctl_0_10_commit="a35b9917fc65a6354fe855b7c956521b47669907"
+readonly -a never_resume_runs=(
+  "01M0FD8FSTMGYG8YTV92WMWC87"
+  "01M0FG88NAKBJ7Y3QNFZEHRM4K"
+)
+ossctl_version=""
 run_id=""
 tag=""
 bump_commit=""
@@ -24,16 +30,61 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || { echo "required command not found: $1" >&2; exit 1; }
 }
 
-require_ossctl_0_9() {
-  local version
-  version="$(ossctl version --json | jq -er '.data.version')"
-  jq -en --arg version "$version" '
-    ($version | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)$")) as $v |
-    ($v.major | tonumber) == 0 and ($v.minor | tonumber) == 9
-  ' >/dev/null || {
-    echo "ossctl 0.9.x required; found $version (revalidate the pre-tag protocol before widening this range)" >&2
-    exit 1
+require_supported_ossctl() {
+  local version_json commit
+  version_json="$(ossctl version --json)"
+  ossctl_version="$(jq -er '
+    if .schema_version == 1 and .data.schema_version == 1
+    then .data.version
+    else error("unsupported version envelope")
+    end
+  ' <<<"$version_json")"
+  commit="$(jq -er '.data.commit // ""' <<<"$version_json")"
+  case "$ossctl_version" in
+    0.9.0)
+      ;;
+    0.10.0)
+      [[ "$commit" == "$ossctl_0_10_commit" ]] || {
+        echo "ossctl 0.10.0 protocol was validated at commit $ossctl_0_10_commit; found commit ${commit:-<missing>}" >&2
+        exit 1
+      }
+      ;;
+    *)
+      echo "ossctl 0.9.0 or validated 0.10.0 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+assert_run_may_resume() {
+  local blocked
+  for blocked in "${never_resume_runs[@]}"; do
+    [[ "$run_id" != "$blocked" ]] || {
+      echo "release run $run_id is permanently abandoned and must never be resumed" >&2
+      exit 2
+    }
+  done
+}
+
+release_plan_bump_level() {
+  local plan_id="$1" git_common plan_file level
+  [[ "$plan_id" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "invalid release plan id: $plan_id" >&2
+    exit 2
   }
+  git_common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+  plan_file="$git_common/ossctl/plans/$plan_id.json"
+  level="$(jq -er --arg plan_id "$plan_id" '
+    if .plan.plan_id == $plan_id and
+       (.plan.bump.level == "major" or .plan.bump.level == "minor" or .plan.bump.level == "patch")
+    then .plan.bump.level
+    else error("plan coordinates mismatch")
+    end
+  ' "$plan_file" 2>/dev/null)" || {
+    echo "sealed ossctl 0.10 plan $plan_id has no validated bump level" >&2
+    exit 2
+  }
+  printf '%s\n' "$level"
 }
 
 validate_level() {
@@ -229,7 +280,7 @@ assert_held_journal() {
     .data.recent_events[-1].phase == "tag" and
     .data.recent_events[-1].outcome == "failed"
   ' <<<"$show_json" >/dev/null || {
-    echo "run $run_id is not the exact ossctl 0.9 held-tag journal" >&2
+    echo "run $run_id is not the exact validated ossctl held-tag journal" >&2
     exit 2
   }
 }
@@ -352,7 +403,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 require_command ossctl
 require_command jq
-require_ossctl_0_9
+require_supported_ossctl
 
 command="${1:-}"
 case "$command" in
@@ -382,6 +433,7 @@ case "$command" in
     require_command gh
     assert_repo_identity
     run_id="$2"
+    assert_run_may_resume
     resume_after_gate
     ;;
 
@@ -450,9 +502,18 @@ HOOK
     git tag -d "$probe_tag" >/dev/null
     rm -rf "$hooks/probe.git"
 
+    cut_args=(release cut --plan "$plan_id")
+    if [[ "$ossctl_version" == 0.10.0 ]]; then
+      # 0.10 revalidates the sealed bump input at cut time. Read it only from
+      # the engine's content-addressed plan and let ossctl verify the seal.
+      bump_level="$(release_plan_bump_level "$plan_id")"
+      cut_args+=(--bump "$bump_level")
+    fi
+    cut_args+=(--json)
+
     if OSSCTL_PRETAG_MARKER="$marker" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$hooks" \
-      ossctl release cut --plan "$plan_id" --json; then
+      ossctl "${cut_args[@]}"; then
       echo "safety stop failed: release cut passed the tag boundary before exact-SHA CI" >&2
       exit 2
     fi

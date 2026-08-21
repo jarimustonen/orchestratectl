@@ -3,7 +3,7 @@ created: 2026-08-21
 updated: 2026-08-21
 type: bug
 reporter: jari
-status: open
+status: in-progress
 priority: high
 related: ['@release-wrapper-rejects', '@adopt-ossctl-release-cut']
 lane: release

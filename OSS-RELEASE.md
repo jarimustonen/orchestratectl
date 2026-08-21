@@ -66,7 +66,7 @@ docs_site: none
 - **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
 
 ## Release notes
-- **ossctl 0.9.x owns the release transaction.** `scripts/ossctl-release.sh plan
+- **The validated ossctl 0.9.0/0.10.0 protocol owns the release transaction.** `scripts/ossctl-release.sh plan
   major|minor|patch` seals a non-mutating plan. The plan's bump phase updates
   `[workspace.package].version`, rewrites `orchestratectl`'s exact `octl-core =
   "=<version>"` pin, refreshes `Cargo.lock`, finalizes `CHANGELOG.md`, runs the
@@ -79,17 +79,20 @@ docs_site: none
   `INSTA_UPDATE=always`, rejects pending `.snap.new` files and unrelated snapshot
   edits, and runs `scripts/check-version-snapshots.sh`. Its changes are folded into
   ossctl's bump commit. The hook never installs or mutates a global binary or skill.
-- **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** ossctl
-  0.9 creates the bump commit inside its clean checkout and otherwise proceeds
+- **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** The
+  validated ossctl 0.9.0/0.10.0 protocol creates the bump commit inside its clean checkout and otherwise proceeds
   directly to tag push, so the wrapper temporarily rejects only that push. The
   resulting journalled failure leaves the local tag on the exact bump commit. The
   wrapper fast-forwards and pushes `main`, waits for `ci.yml` filtered by that exact
   SHA and `event=push`, then invokes `release resume` only after `gh run watch
   --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
   A red or missing main run leaves the release untagged remotely and resumable only
-  through `scripts/ossctl-release.sh resume <run-id>`. The wrapper is deliberately
-  pinned to 0.9.x because its checkpoint depends on that engine's journal and Git
-  protocol; revalidate the hold before accepting a newer minor version.
+  through `scripts/ossctl-release.sh resume <run-id>`. The wrapper admits only
+  exact protocol versions proven against this checkpoint: 0.9.0 and ossctl 0.10.0
+  commit `a35b9917fc65a6354fe855b7c956521b47669907`. For 0.10, it reads the bump
+  level from the engine's sealed, content-addressed plan and supplies the now-required
+  matching `release cut --bump` input; ossctl still verifies the seal. Any other
+  version/build or journal near-miss fails closed and requires revalidation.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
   cannot be undone: a version can be yanked but never re-used or overwritten. Never publish
   either crate locally. `.github/workflows/publish-crates.yml` verifies the workspace version,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end regression for the ossctl 0.9 intentionally-held tag journal.
+# End-to-end regression for the validated ossctl 0.10 intentionally-held tag journal.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -78,7 +78,7 @@ cat >"$tmp/bin/ossctl" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$OSSCTL_STUB_LOG"
 if [[ "$*" == 'version --json' ]]; then
-  printf '%s\n' '{"data":{"version":"0.9.0"}}'
+  printf '%s\n' '{"schema_version":1,"data":{"version":"0.10.0","commit":"a35b9917fc65a6354fe855b7c956521b47669907","schema_version":1}}'
   exit 0
 fi
 if [[ "$*" == "release show $RUN_ID --json" ]]; then
