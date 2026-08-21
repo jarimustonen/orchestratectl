@@ -3,10 +3,14 @@ created: 2026-08-21
 updated: 2026-08-21
 type: task
 reporter: jari
-status: open
+status: done
 priority: high
 lane: skills
 collision: [crates/octl-cli/skills/stint-start/SKILL.template.md]
+closed: 2026-08-21
+commits:
+- hash: 1596dd2
+  summary: distinguish untriaged work from explicit deferral
 ---
 
 # Distinguish untriaged work from explicit deferral
@@ -25,8 +29,14 @@ The three migrated residuals `shell-quote-dedup`, `run-merge-stamp`, and `enforc
 
 ## Acceptance Criteria
 
-- Bundled stint guidance states the distinction above unambiguously.
-- Work selection never treats an unscheduled row's mechanical `spawnable:true` as executable; it must first pass triage and gain a lane.
-- Deferred is described as an explicit human/product disposition, never an agent-created parking state.
-- Relevant stint templates/mirrors and deterministic skill checks/snapshots are updated consistently.
-- The exact repository green gate passes.
+- [x] Bundled stint guidance states the distinction above unambiguously.
+- [x] Work selection never treats an unscheduled row's mechanical `spawnable:true` as executable; it must first pass triage and gain a lane.
+- [x] Deferred is described as an explicit human/product disposition, never an agent-created parking state.
+- [x] Relevant stint templates/mirrors and deterministic skill checks/snapshots are updated consistently.
+- [x] The exact repository green gate passes.
+
+## Resolution
+
+### 2026-08-21T13:45:58Z · @issuectl
+
+Bundled stint guidance now keeps unaccepted candidates untriaged and unscheduled, reserves deferred for explicit human/product disposition, rejects mechanical spawnability without an executable lane/status, and pins Claude/pi/Codex output semantics. Full repository green gate passed under a stripped PATH.
