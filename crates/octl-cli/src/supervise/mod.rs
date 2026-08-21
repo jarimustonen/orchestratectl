@@ -143,7 +143,7 @@ fn agent_respawn_max_failures() -> u32 {
         Ok(v) => v
             .trim()
             .parse::<u32>()
-            .map_or(AGENT_RESPAWN_MAX_FAILURES, |n| n),
+            .unwrap_or(AGENT_RESPAWN_MAX_FAILURES),
         Err(_) => AGENT_RESPAWN_MAX_FAILURES,
     }
 }
@@ -151,10 +151,7 @@ fn agent_respawn_max_failures() -> u32 {
 /// The effective max retry attempts, honoring [`AGENT_RETRY_MAX_ATTEMPTS_ENV`].
 fn agent_retry_max_attempts() -> u32 {
     match std::env::var(AGENT_RETRY_MAX_ATTEMPTS_ENV) {
-        Ok(v) => v
-            .trim()
-            .parse::<u32>()
-            .map_or(AGENT_RETRY_MAX_ATTEMPTS, |n| n),
+        Ok(v) => v.trim().parse::<u32>().unwrap_or(AGENT_RETRY_MAX_ATTEMPTS),
         Err(_) => AGENT_RETRY_MAX_ATTEMPTS,
     }
 }
