@@ -86,6 +86,8 @@ exit 99
 STUB
 chmod +x "$tmp/bin/ossctl"
 
+readonly test_run_id="01M0JA657EJJJYC7J7230JF42N"
+
 run_wrapper() {
   local gh_repo="${1:-jarimustonen/orchestratectl}"
   local origin="${2:-git@github.com:jarimustonen/orchestratectl.git}"
@@ -100,7 +102,7 @@ run_wrapper() {
     OSSCTL_STUB_VERSION="${OSSCTL_STUB_VERSION:-0.10.0}" \
     OSSCTL_STUB_COMMIT="${OSSCTL_STUB_COMMIT:-a35b9917fc65a6354fe855b7c956521b47669907}" \
     GH_STUB_REPO="$gh_repo" \
-    "$repo_root/scripts/ossctl-release.sh" resume test-run \
+    "$repo_root/scripts/ossctl-release.sh" resume "$test_run_id" \
     >"$tmp/stdout" 2>"$tmp/stderr"
 }
 
@@ -150,7 +152,7 @@ set -e
 }
 assert_supported_gh_call
 assert_git_calls
-grep -Fx 'release show test-run --json' "$tmp/ossctl.log" >/dev/null || {
+grep -Fx "release show $test_run_id --json" "$tmp/ossctl.log" >/dev/null || {
   echo "successful repository preflight did not reach release show sentinel" >&2
   cat "$tmp/ossctl.log" >&2
   exit 1
@@ -194,7 +196,7 @@ grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo pus
 }
 assert_no_release_show
 
-for unsupported in 0.10.1 0.11.0 1.0.0; do
+for unsupported in 0.9.0 0.10.1 0.11.0 1.0.0; do
   reset_logs
   set +e
   OSSCTL_STUB_VERSION="$unsupported" run_wrapper
@@ -204,7 +206,7 @@ for unsupported in 0.10.1 0.11.0 1.0.0; do
     echo "unsupported ossctl $unsupported did not fail closed (status=$status)" >&2
     exit 1
   }
-  grep -F "ossctl 0.9.0 or validated 0.10.0 required; found $unsupported" "$tmp/stderr" >/dev/null || {
+  grep -F "validated ossctl 0.10.0 required; found $unsupported" "$tmp/stderr" >/dev/null || {
     echo "unsupported ossctl $unsupported emitted the wrong diagnostic" >&2
     cat "$tmp/stderr" >&2
     exit 1

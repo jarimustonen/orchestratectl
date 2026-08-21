@@ -40,15 +40,17 @@ registry publication, or global installation was touched.
 
 ## Wrapper conclusions
 
-The 0.10 held-tag journal and marker coordinates are byte-shape compatible with
-the strict 0.9 checkpoint assertion. The wrapper admits only exact 0.9.0 and the
-validated 0.10.0 commit, rejects future versions/builds, validates 0.10's sealed
+The 0.10 held-tag journal and marker coordinates match the strict checkpoint
+assertion. The wrapper admits only the validated 0.10.0 commit, rejects every
+other version/build, extracts 0.10's sealed
 bump input, and keeps all existing journal/event/tag/checkpoint/exact-main-SHA
 checks. The two abandoned v0.5.0 run IDs are explicitly denied by `resume` before
 `release show`.
 
 Automated coverage is split into fast stripped-PATH near-miss tests and
-`scripts/test-ossctl-release-0.10-protocol.sh`, which uses the real installed
-engine and a local remote to reach the held checkpoint, then proves the release
+`scripts/test-ossctl-release-0.10-protocol.sh`, which uses isolated HOME,
+Cargo home, temp directory, and local remote with the real installed engine. It
+proves seal tampering is rejected before a journal, reaches the held checkpoint,
+asserts the exact-SHA CI query and required `--bump` argv, and proves the release
 tag is absent remotely. It intentionally stops at the fake exact-SHA CI lookup
 and never resumes the tag.

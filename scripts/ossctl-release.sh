@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Safe wrapper around the validated ossctl 0.9.0/0.10.0 resumable protocol.
+# Safe wrapper around the validated ossctl 0.10.0 resumable protocol.
 # It pauses a bump cut at tag push, advances main to the bump commit, waits for
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
@@ -40,27 +40,25 @@ require_supported_ossctl() {
     end
   ' <<<"$version_json")"
   commit="$(jq -er '.data.commit // ""' <<<"$version_json")"
-  case "$ossctl_version" in
-    0.9.0)
-      ;;
-    0.10.0)
-      [[ "$commit" == "$ossctl_0_10_commit" ]] || {
-        echo "ossctl 0.10.0 protocol was validated at commit $ossctl_0_10_commit; found commit ${commit:-<missing>}" >&2
-        exit 1
-      }
-      ;;
-    *)
-      echo "ossctl 0.9.0 or validated 0.10.0 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
-      exit 1
-      ;;
-  esac
+  [[ "$ossctl_version" == 0.10.0 ]] || {
+    echo "validated ossctl 0.10.0 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
+    exit 1
+  }
+  [[ "$commit" == "$ossctl_0_10_commit" ]] || {
+    echo "ossctl 0.10.0 protocol was validated at commit $ossctl_0_10_commit; found commit ${commit:-<missing>}" >&2
+    exit 1
+  }
 }
 
 assert_run_may_resume() {
-  local blocked
+  local candidate="$1" blocked
+  [[ "$candidate" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || {
+    echo "invalid release run id: $candidate" >&2
+    exit 2
+  }
   for blocked in "${never_resume_runs[@]}"; do
-    [[ "$run_id" != "$blocked" ]] || {
-      echo "release run $run_id is permanently abandoned and must never be resumed" >&2
+    [[ "$candidate" != "$blocked" ]] || {
+      echo "release run $candidate is permanently abandoned and must never be resumed" >&2
       exit 2
     }
   done
@@ -248,6 +246,7 @@ held_checkpoint_path() {
 assert_held_journal() {
   local show_json="$1"
   jq -e --arg tag "$tag" '
+    .data.state.schema_version == 5 and
     .data.state.status == "in_progress" and
     (.data.state | has("current_phase")) and .data.state.current_phase == null and
     ([.data.state.phases[] | {phase, outcome}]) == [
@@ -354,6 +353,7 @@ assert_recorded_checkpoint() {
 
 resume_after_gate() {
   local show_json remote_tag pushed_remote
+  assert_run_may_resume "$run_id"
   show_json="$(show_run "$run_id")"
   read_run_coordinates "$show_json"
   pushed_remote="$(jq -r --arg tag "$tag" '.data.state.tags[$tag].pushed_remote' <<<"$show_json")"
@@ -377,6 +377,7 @@ resume_after_gate() {
     assert_recorded_checkpoint
     assert_repo_identity
     assert_remote_tag_absent
+    assert_run_may_resume "$run_id"
     ossctl release resume "$run_id" --json
   else
     remote_tag="$(remote_tag_commit)"
@@ -386,6 +387,7 @@ resume_after_gate() {
     }
     # The irreversible boundary is already crossed. Continue only this journal;
     # never create or push a replacement tag.
+    assert_run_may_resume "$run_id"
     ossctl release resume "$run_id" --json
   fi
 
@@ -433,7 +435,6 @@ case "$command" in
     require_command gh
     assert_repo_identity
     run_id="$2"
-    assert_run_may_resume
     resume_after_gate
     ;;
 

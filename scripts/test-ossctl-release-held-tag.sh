@@ -16,7 +16,7 @@ version="$(awk -F'"' '/^version = / { print $2; exit }' "$repo_root/Cargo.toml")
 tag="v$version"
 bump_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 tag_oid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-run_id=01M0TESTHELD00000000000000
+run_id=01M0JA657EJJJYC7J7230JF42N
 
 cat >"$tmp/bin/git" <<'STUB'
 #!/usr/bin/env bash
