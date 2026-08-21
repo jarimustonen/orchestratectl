@@ -1,12 +1,10 @@
 ---
 created: 2026-08-15
-updated: 2026-08-20
+updated: 2026-08-21
 type: feature
-status: deferred
+status: untriaged
 priority: normal
 epic: lifecycle-architecture-review
-lane_seq: 50
-lane: lifecycle
 ---
 
 # run merge should stamp Fixes-Issue trailer into the landing commit

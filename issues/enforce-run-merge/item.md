@@ -1,12 +1,10 @@
 ---
 created: 2026-08-15
-updated: 2026-08-20
+updated: 2026-08-21
 type: improvement
-status: deferred
+status: untriaged
 priority: normal
 epic: lifecycle-architecture-review
-lane_seq: 80
-lane: lifecycle
 ---
 
 # Enforce run merge (prevent raw-git self-merge) instead of only detecting it

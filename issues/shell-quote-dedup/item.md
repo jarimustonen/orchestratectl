@@ -1,12 +1,10 @@
 ---
 created: 2026-08-15
-updated: 2026-08-20
+updated: 2026-08-21
 type: improvement
-status: deferred
+status: untriaged
 priority: normal
 epic: lifecycle-architecture-review
-lane_seq: 10
-lane: lifecycle
 ---
 
 # Dedupe shell_single_quote across run resume hints
