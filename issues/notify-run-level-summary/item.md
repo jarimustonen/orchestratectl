@@ -1,13 +1,15 @@
 ---
 created: 2026-07-24
-updated: 2026-08-16
+updated: 2026-08-22
 type: improvement
-status: open
+status: wontfix
 priority: normal
 related: ['@no-completion-notification-to-parent']
 labels: [keep-0.2]
 lane: lifecycle
 lane_seq: 70
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # Run-level completion summary for --notify (multi-node runs)
@@ -45,3 +47,9 @@ multi-node `--notify` consumer actually exists.
 ### 2026-08-13T11:10:42Z · @adr-decision-2
 
 KEEP-and-fix: Fan-out + notify survive; a run-level multi-node completion summary applies. Surface survives the thin model; fix is model-independent. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-22T17:37:26Z · @jari
+
+No observed multi-node notify consumer needs this aggregate summary. Do not build speculative reducer/schema machinery; file a concrete issue if a real consumer later demonstrates the need.

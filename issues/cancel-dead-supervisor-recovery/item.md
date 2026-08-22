@@ -1,13 +1,15 @@
 ---
 created: 2026-07-03
-updated: 2026-08-16
+updated: 2026-08-22
 type: improvement
-status: open
+status: wontfix
 priority: normal
 related: ['@supervisor-dead-merge-no-teardown']
 labels: [defer-0.2.1]
 lane: lifecycle
 lane_seq: 90
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # Extend dead-supervisor liveness recovery to run cancel
@@ -23,3 +25,9 @@ Follow-up spinoff from supervisor-dead-merge-no-teardown (fix 979b794/62948c8). 
 ### 2026-08-13T11:10:30Z · @adr-decision-2
 
 DEFER-to-0.2.1: Dead-supervisor recovery is the lease's job. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-22T17:37:26Z · @jari
+
+This was a review-derived cleanup concern rather than an observed product failure. Current cancellation terminalizes durably; preserved resources are fail-safe. Refile from a concrete occurrence if dead-supervisor cancellation causes material harm.

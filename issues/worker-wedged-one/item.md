@@ -1,9 +1,11 @@
 ---
 created: 2026-08-21
-updated: 2026-08-21
+updated: 2026-08-22
 type: feature
-status: open
+status: obsolete
 priority: normal
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # A worker wedged on one long-running command is invisible to supervision
@@ -71,3 +73,9 @@ orchestratectl 0.4.1 (commit c15d6af4e12e728ce102a933ce17f9f4c2f18dee), macOS, `
 
 Close when a worker blocked on a single command for hours is distinguishable from a healthy
 one through `run show` / `run wait` alone, without attaching to the tmux pane.
+
+## Resolution
+
+### 2026-08-22T17:37:43Z · @jari
+
+The incident remains valuable evidence, but the proposed remedies are superseded by @worker-telemetry-protocol. Preserve this report as the concrete long-command case; do not implement a separate silence heuristic or command-timeout feature from it.

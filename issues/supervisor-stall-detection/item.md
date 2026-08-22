@@ -1,12 +1,14 @@
 ---
 created: 2026-08-11
-updated: 2026-08-16
+updated: 2026-08-22
 type: bug
-status: open
+status: wontfix
 priority: normal
 labels: [defer-0.2.1]
 lane: lifecycle
 lane_seq: 30
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # supervisor reports stalled:false through a multi-hour silent agent hang; run wait default timeout (6h) is too long to surface it
@@ -35,3 +37,9 @@ Any worker that wedges early (before its first commit) — e.g. a hung network c
 ### 2026-08-13T11:10:30Z · @adr-decision-2
 
 DEFER-to-0.2.1: Supervisor-liveness bucket — a silent-hang is detected by the supervisor lease. The clean answer is the pi.dev self-report/lease plugin (0.2.1), not the 0.2.0 thin core. Recorded by ADR 0001 (docs/decisions/0001-thin-supervisor-vs-harden.md).
+
+## Resolution
+
+### 2026-08-22T17:37:26Z · @jari
+
+The observed need is real, but activity/silence heuristics were already removed because they could not classify progress reliably. Superseded by @worker-telemetry-protocol, which will design a told-fact, harness-neutral lease/status contract and a separate pi.dev adapter. Silence will not infer terminal outcomes.

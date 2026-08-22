@@ -1,13 +1,15 @@
 ---
 created: 2026-08-18
-updated: 2026-08-20
+updated: 2026-08-22
 type: bug
 reporter: jari
-status: open
+status: wontfix
 priority: normal
 provenance: agent-homebase-wrapup
 lane: lifecycle
 lane_seq: 35
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # Worker that exits without run merge is indistinguishable from a healthy…
@@ -39,3 +41,9 @@ Expected:
 
 Impact: a stalled autonomous run looks identical to a slow one; callers wait on `run wait`
 indefinitely and a human must inspect tmux panes to notice.
+
+## Resolution
+
+### 2026-08-22T17:37:26Z · @jari
+
+The current product already records worker.exited and surfaces a clean worker exit without run merge as attention_required. No separate implementation is wanted; close the historical symptom rather than rebuilding it.

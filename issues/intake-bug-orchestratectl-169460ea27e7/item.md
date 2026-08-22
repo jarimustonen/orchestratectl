@@ -1,12 +1,14 @@
 ---
 created: 2026-08-16
-updated: 2026-08-20
+updated: 2026-08-22
 type: bug
 reporter: jari
-status: open
+status: obsolete
 priority: normal
 lane: lifecycle
 provenance: agent-homebase-wrapup
+closed: 2026-08-22
+closed_by: jari
 ---
 
 # stale pending runs clutter run list and look like live workers
@@ -64,3 +66,9 @@ Side observation, possibly related and possibly its own bug: `orchestratectl nod
 ### 2026-08-17T08:14:16Z · @orchestrator
 
 Admitted to the plan 2026-08-17 (needs-triage removed) and RE-SCOPED. This round's `pi-spinoff-batch` fix (staged run creation, released in 0.2.2) should stop NEW stillborn pending runs from being published at all, so the prevention half is done. What remains and is what this issue now covers: (a) the ~7 already-accumulated stale pending runs on disk, and (b) the listing/presentation side — a stale pending must be distinguishable at a glance from a live worker in `run list`. Corroborated again this session: `run list` returned ~301KB dominated by old pendings, several belonging to other repos, which is the signal /stint-start's preflight reads.
+
+## Resolution
+
+### 2026-08-22T17:37:26Z · @jari
+
+Staged creation prevents new stillborn rows, and current run surfaces explicitly mark old rows stillborn/stalled. Remaining cross-repository list clutter is tracked separately through repository identity/filter work.

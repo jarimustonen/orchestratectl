@@ -1,6 +1,6 @@
 ---
 created: 2026-08-12
-updated: 2026-08-16
+updated: 2026-08-22
 type: feature
 status: open
 priority: normal
@@ -8,55 +8,50 @@ lane: skills
 lane_seq: 30
 ---
 
-# Failed or partial consult review inside a worktree is a hard failure
+# Surface actionable tool failures to the spawning agent
 
 ## Description
 
-A failed **or partial** `consult-llm`-backed review call inside a worktree must be
-a **hard failure** — the worktree agent must halt and surface it, never rationalize
-proceeding on partial results.
+A worktree must not hide, rationalize, or silently downgrade a tool or required sub-workflow failure. The spawning agent needs an explicit, actionable account of what failed and enough bounded context to decide whether the work can continue, should be retried, or warrants a bug report.
 
-## Why (real incident)
+This is guidance for the bundled worktree workflows, not a new supervisor failure state or node-report schema.
 
-A headless worktree ran a 4-model × 2-round review. Only DeepSeek's section
-survived in the captured output (the other 3 models scrolled off a Claude Code
-background-task `.output` rolling scrollback). The agent then reasoned "DeepSeek's
-findings are substantive and representative" and applied must-fixes on **1 of 4**
-models as if it were the panel verdict — rather than re-running.
+## Observed incident
 
-Two distinct problems:
-1. **Output truncation** — a Claude Code harness artifact (background scrollback).
-   Mitigated at the skill layer (homebase `consult-llm` / `llm-consult` skills now
-   redirect multi-model output to a file + assert N `## Model:` headers, commit
-   `0a31df9`), and it goes away under pi.dev's task capture. Not orchestratectl's job.
-2. **Rationalizing a shrunken panel** — a *judgment* failure the harness change does
-   NOT fix. This is orchestratectl's concern: the worktree agent contract must make
-   a failed/partial required review a hard failure, not a "proceed with what we got."
+A required four-model review produced only one surviving model section after consumer-side output truncation. The worker treated that partial result as representative and continued. The immediate capture problem was fixed elsewhere, but the general judgment failure remains: missing required output was not surfaced honestly to the spawning agent.
 
-## Policy to encode
+## Generic policy
 
-Inside any worktree that runs a `consult-llm`-backed review (llm-review-panel,
-llm-consult, llm-panel, llm-debate, llm-collab — used by `bugfix`, `spinoff`,
-`orchestrated`, `code`, `research` kinds):
+When a tool, command, external service, or required review/sub-workflow fails or returns detectably incomplete output:
 
-- **Non-zero `consult-llm` exit** → hard failure.
-- **Partial panel** (an N-model call yielding < N `## Model:` headers) → incomplete:
-  re-run once; if still incomplete, **hard failure**.
-- A hard failure means: **halt the review step and surface it** — in the terminal
-  `node report` (and for `orchestrated` children, propagate to the parent supervisor
-  so the DAG reacts). **Never** synthesize from a partial panel, present one surviving
-  model as the group verdict, or silently continue because a re-run is "expensive."
+- never claim that the affected step completed successfully;
+- retry only when the workflow already defines a bounded retry;
+- distinguish a required-step failure from an optional/advisory failure;
+- required-step failure stops that step, but does not automatically force the whole run into a generic failed state when a useful handoff is possible;
+- optional failure may allow work to continue, but must still be disclosed in the final report;
+- do not present partial output as the complete result or silently substitute one surviving source for a requested panel;
+- propagate the failure to the spawning agent in the terminal report or blocked handoff.
 
-## Implementation surface
+## Required failure context
 
-- The worktree-kind `SKILL.template.md` files under
-  `crates/octl-cli/skills/worktree-*/` (the ones whose flow runs a review) — add the
-  hard-failure rule to their review/self-review step.
-- The `node report` contract — a way to mark "required review failed" so the
-  supervisor / parent reacts rather than treating the node as success.
+The report should contain a concise `Tool/sub-workflow failure` section with enough information to assess and file a bug without rediscovery:
 
-## Related
+- tool or sub-workflow name and the purpose for which it was invoked;
+- expected result or completeness condition;
+- observed exit/error/incompleteness signal;
+- bounded retry attempts and their outcomes;
+- which task step is blocked or potentially unreliable;
+- whether any work continued, and why that was safe;
+- relevant bounded stderr/output excerpt and a stable artifact/log path when available;
+- a suggested owner/surface for a possible bug report, without filing one automatically.
 
-- homebase commit `0a31df9` (skill-layer completeness check — the detection half).
-- raine/consult-llm — NO upstream change needed; the truncation was a consumer-side
-  harness artifact, not a consult-llm bug.
+Secrets, credentials, personal data, and unbounded logs must not be copied into the report.
+
+## Acceptance criteria
+
+- Applicable bundled worktree workflow templates carry the generic disclosure rule.
+- A required failed or incomplete tool result cannot be described as completed.
+- The spawning agent receives enough structured prose to decide retry, recovery, or bug filing.
+- The rule permits a blocked/recoverable handoff instead of forcing every tool error to terminal failure.
+- Tests or snapshots cover required failure, optional failure with continuation, partial panel output, bounded retry exhaustion, and secret-safe context.
+- No new CLI event or node-report schema is introduced unless implementation proves prose cannot carry the requirement.

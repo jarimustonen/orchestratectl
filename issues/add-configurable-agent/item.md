@@ -1,6 +1,6 @@
 ---
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-08-22
 type: feature
 reporter: jari
 status: in-progress
@@ -8,6 +8,7 @@ priority: normal
 labels: [configuration, agents]
 lane: surface
 lane_seq: 20
+collision: [run-create]
 ---
 
 # Add configurable agent profiles
@@ -144,3 +145,9 @@ Scheduling: the feature stays DEFERRED for now (it is cross-cutting and needs a 
 own; it cannot share a round with any `lifecycle` unit). This note records the constraint so
 whoever implements slices A–D designs the residency class with the capability restriction in
 mind from the start, rather than retrofitting it.
+
+## Decisions
+
+### 2026-08-22T17:37:43Z · @jari
+
+Product decision 2026-08-21: this capability is wanted, not speculative backlog. Keep it scheduled. Sequence it deliberately against @worker-telemetry-protocol and @end-end-stint because all three shape harness capability, policy, and run creation; the shared run-create collision token prevents accidental parallel implementation.
