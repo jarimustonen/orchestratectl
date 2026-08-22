@@ -85,8 +85,11 @@ follow-up questions. Include:
    paths.
 3. **Done criteria** — concrete, verifiable. "All tests pass" or "no
    `clippy::pedantic` warnings introduced."
-4. **Quality bar** — does the spinoff need to run `/llm-review`? Should
-   it merge itself or hand off?
+4. **Quality bar** — does the spinoff need to run `/llm-review`?
+5. **Failure and closing contract** — copy the disclosure contract below into
+   the brief. The brief ends with exactly one terminal path: completed work
+   reports through `run merge`; work blocked by a required failure reports
+   directly with `success: false` and does not merge.
 
 If any of those are missing, ask the user before spawning. A spinoff
 that misinterprets the task wastes a worktree and a merge cycle.
@@ -100,6 +103,49 @@ resolves the marker with `node.input_resolved` and follows that default after a
 bounded five-minute wait, or submits a terminal `success:false` blocked report
 with the same discussion items. The signal is visible immediately and propagates
 to `run wait` / the registered notify hook after the grace window.
+
+## Terminal report (mandatory)
+
+The worker MUST take exactly one terminal path, never both. Completed,
+mergeable work writes the existing §7.3 report payload with top-level `success:
+true`, then runs `orchestratectl run merge "$run_id" --report-file
+/tmp/node-report-${run_id}.json`. Work blocked by a required failed or incomplete
+step takes the direct-report path below and does not merge. Omitting both paths
+leaves the run unterminated.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this single-worker run). An **optional/advisory** failure may continue only
+when the deliverable is independently complete and safe; disclose it in the
+full `success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
+
+Requested completeness is a contract. A requested panel with a missing model
+section, truncation marker, malformed output, or missing expected artifact is
+incomplete, not representative consensus. Retry only when existing workflow
+policy authorizes a finite bound; if none does, do not retry. Record each attempt
+and its outcome, then take the required or optional path at exhaustion.
+
+Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
+`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
+attempts of the same one: tool/workflow and purpose; expected completeness;
+observed exit/error/incompleteness; attempts; affected step; whether work
+continued and why safe; suggested bug surface; and a stable artifact/log path
+when available. Put actionable retry/recover/accept/file steps in item-level
+`options`. Keep the complete entry, including options, at most 2 KiB. Include
+only a short redacted excerpt; never include secrets, credentials, personal
+data, environment dumps, or unbounded logs. Set top-level `summary` and
+`success` to distinguish blocked from completed; do not put them inside the
+discussion item. Existing prose fields suffice, so do not add a schema or
+supervisor state.
 
 ## Errors
 

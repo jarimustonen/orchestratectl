@@ -85,6 +85,9 @@ If any of the above is missing, ask **once** before spawning.
    install --path …`, install orchestratectl from a registry, or run `cargo
    uninstall`; global tool mutation belongs only to the orchestrator after
    integration.
+7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
+   into the brief. In particular, an incomplete required lens panel blocks the
+   decision; surviving responses cannot stand in for the requested panel.
 
 ### 3. Create the run
 
@@ -135,8 +138,8 @@ supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
 pending` forever, and the tmux window never closes — the user sees a
 worktree that looks stuck when the work is actually done.
 
-There are two closing paths, and the brief MUST instruct the agent to
-take exactly one of them before its session ends:
+There are two closing paths, and the brief MUST instruct the agent to take
+exactly one terminal path, never both, before its session ends:
 
 - **Decision made + ADR committed → close with `run merge`.** A single
   `orchestratectl run merge` rebases + merges the worktree branch into
@@ -235,6 +238,41 @@ This step is **not optional**. A successful merge needs the report in
 the same `run merge` call; a blocked run needs the direct `node report`.
 Either way, no terminal report leaves the run dangling with no
 structured outcome for the caller to read.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this single-worker run). An **optional/advisory** failure may continue only
+when the ADR is independently complete and safe; disclose it in the full
+`success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never a minimal auto-report.
+
+Requested completeness is a contract. A requested panel with a missing model
+section, truncation marker, malformed output, or missing expected artifact is
+incomplete, not representative consensus. A required incomplete lens panel
+cannot support an Accepted ADR. Retry only when existing workflow policy
+authorizes a finite bound; if none does, do not retry. Record each attempt and
+its outcome, then take the required or optional path at exhaustion.
+
+Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
+`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
+attempts of the same one: tool/workflow and purpose; expected completeness;
+observed exit/error/incompleteness; attempts; affected step; whether work
+continued and why safe; suggested bug surface; and a stable artifact/log path
+when available. Put actionable retry/recover/accept/file steps in item-level
+`options`. Keep the complete entry, including options, at most 2 KiB. Include
+only a short redacted excerpt; never include secrets, credentials, personal
+data, environment dumps, or unbounded logs. Set top-level `summary` and
+`success` to distinguish blocked from completed; do not put them inside the
+discussion item. Existing prose fields suffice, so do not add a schema or
+supervisor state.
 
 ## Issue Management
 

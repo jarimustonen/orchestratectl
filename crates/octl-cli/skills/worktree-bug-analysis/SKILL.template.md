@@ -61,8 +61,9 @@ is missing, abort with a clear error. This skill does not create issues.
 ### 2. Build the read-only brief
 
 The brief must be self-contained (a spinoff cannot ask follow-ups). It MUST carry
-the read-only hard constraints above **and** end with the mandatory closing
-`orchestratectl run merge` step (see "Terminal report" below). Include:
+the read-only hard constraints above **and** end with exactly one terminal path:
+completed analysis uses `orchestratectl run merge`; analysis blocked by a
+required failure uses direct `node report` without merging. Include:
 
 1. **Objective** — understand and scope the bug in `issues/<slug>/item.md`; do
    NOT fix it, do NOT change application code; write findings back into the issue.
@@ -86,6 +87,10 @@ the read-only hard constraints above **and** end with the mandatory closing
      the orchestrator after integration.
 3. **Done criteria** — the issue carries the analysis; the branch is committed
    and merged back; no application code changed.
+4. **Tool/sub-workflow failure policy** — copy the disclosure contract below
+   into the brief. A required failed/incomplete repro or inspection step cannot
+   be claimed complete; optional failure may continue only when safe and
+   disclosed.
 
 Long brief → temp file + `--prompt-file <path>` (`mktemp -t bug-analysis-XXXXXX.md`).
 
@@ -128,11 +133,13 @@ structured payload (run id, node id, branch) to the caller instead of a human su
 
 ## Terminal report (mandatory)
 
-Closing is **one call** — identical to `worktree-spinoff`/`worktree-research`.
-`orchestratectl run merge` rebases + merges the branch into its source and submits
-the terminal `node report` in the same call; until it runs the run stays
-`pending` and the window never closes. The brief MUST instruct the worker to run
-this once the issue update is committed:
+A bug-analysis worker MUST take exactly one terminal path, never both.
+Completed, mergeable analysis uses `orchestratectl run merge`, which merges and
+submits the report in one call. Analysis blocked by a required failed or
+incomplete step does **not** merge; it submits a direct `success: false` report
+under "Tool and sub-workflow failure disclosure" below. Omitting both paths
+leaves the run pending. For the completed path, run the following once the issue
+update is committed:
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
    durable node ownership record, never the branch's display identifier (it is a
@@ -171,6 +178,40 @@ this once the issue update is committed:
    report; resolve (or `/complex-rebase`) and re-run the same call. **Do not**
    close the issue or change its status or disposition labels — that decision is the
    user's.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this single-worker run). An **optional/advisory** failure may continue only
+when the issue analysis is independently complete and safe; disclose it in the
+full `success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
+
+Requested completeness is a contract. A missing requested reproduction,
+inspection result, attachment, or expected artifact is incomplete and cannot be
+presented as complete. Retry only when existing workflow policy authorizes a
+finite bound; if none does, do not retry. Record each attempt and its outcome,
+then take the required or optional path at exhaustion.
+
+Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
+`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
+attempts of the same one: tool/workflow and purpose; expected completeness;
+observed exit/error/incompleteness; attempts; affected step; whether work
+continued and why safe; suggested bug surface; and a stable artifact/log path
+when available. Put actionable retry/recover/accept/file steps in item-level
+`options`. Keep the complete entry, including options, at most 2 KiB. Include
+only a short redacted excerpt; never include secrets, credentials, personal
+data, environment dumps, or unbounded logs. Set top-level `summary` and
+`success` to distinguish blocked from completed; do not put them inside the
+discussion item. Existing prose fields suffice, so do not add a schema or
+supervisor state.
 
 ## Non-goals
 

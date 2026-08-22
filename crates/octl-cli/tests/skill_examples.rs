@@ -190,6 +190,125 @@ fn validation_has_no_side_effects() {
     );
 }
 
+/// Documentation-contract smoke test for every bundled workflow that creates a
+/// worker brief. Assertions are scoped to the copyable section so unrelated
+/// prose cannot mask a broken blocked-handoff recipe.
+#[test]
+fn worker_skill_failure_disclosure_sections_are_self_contained() {
+    const WORKER_SKILLS: [&str; 6] = [
+        "fan-out",
+        "octl-spawn-spinoff",
+        "worktree-bug-analysis",
+        "worktree-research",
+        "worktree-spinoff",
+        "worktree-technical-decision",
+    ];
+
+    for skill in WORKER_SKILLS {
+        let path = skills_dir().join(skill).join("SKILL.template.md");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let section = markdown_section(&body, "## Tool and sub-workflow failure disclosure")
+            .unwrap_or_else(|| panic!("{} is missing the disclosure section", path.display()));
+        let required = [
+            // Required failure takes the existing non-merge terminal path.
+            "**required**",
+            "`success: false`",
+            "Do not call `run merge`",
+            "orchestratectl node report",
+            "--from-file",
+            // Optional failure can continue only through a full disclosure.
+            "**optional/advisory**",
+            "may continue only",
+            "`success: true`",
+            "--report-file",
+            // Detectable incompleteness and bounded retry exhaustion.
+            "Requested completeness is a contract",
+            "incomplete",
+            "Retry only",
+            "finite bound",
+            "exhaustion",
+            // Existing report fields carry bounded, secret-safe context.
+            "discussion_items[]",
+            "Tool/sub-workflow failure —",
+            "`options`",
+            "do not put them inside the",
+            "KiB",
+            "secrets, credentials",
+            "artifact/log",
+            "do not add a schema or",
+        ];
+        for phrase in required {
+            assert!(
+                section.contains(phrase),
+                "{} disclosure section is missing {phrase:?}",
+                path.display()
+            );
+        }
+        assert!(
+            body.contains("copy the disclosure contract below"),
+            "{} does not require the spawning brief to carry the contract",
+            path.display()
+        );
+        assert!(
+            body.contains("exactly one terminal path"),
+            "{} does not make merge and blocked handoff exclusive",
+            path.display()
+        );
+    }
+
+    // Panel completeness is workflow-specific, not boilerplate forced into
+    // generic bug-analysis or fan-out prompts.
+    for skill in [
+        "octl-spawn-spinoff",
+        "worktree-research",
+        "worktree-spinoff",
+        "worktree-technical-decision",
+    ] {
+        let path = skills_dir().join(skill).join("SKILL.template.md");
+        let body = std::fs::read_to_string(&path).expect("read panel workflow");
+        let section = markdown_section(&body, "## Tool and sub-workflow failure disclosure")
+            .expect("panel workflow disclosure section");
+        assert!(section.contains("model"));
+        assert!(section.contains("not representative consensus"));
+    }
+}
+
+#[test]
+fn failure_disclosure_command_shapes_match_the_binary() {
+    let home = TempDir::new().expect("temp ORCHESTRATECTL_HOME");
+    validate(
+        &[
+            "node".into(),
+            "report".into(),
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+            "n-0001".into(),
+            "--from-file".into(),
+            "/tmp/report.json".into(),
+        ],
+        &home,
+    )
+    .expect("blocked report command shape");
+    validate(
+        &[
+            "run".into(),
+            "merge".into(),
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+            "--report-file".into(),
+            "/tmp/report.json".into(),
+        ],
+        &home,
+    )
+    .expect("successful report command shape");
+}
+
+fn markdown_section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
+    let start = body.find(heading)? + heading.len();
+    let rest = &body[start..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
 /// Run `orchestratectl <argv…> --help` against the real binary, sandboxed into
 /// `home`. `Ok(())` iff the invocation's shape is accepted (exit 0); otherwise
 /// `Err` carries the binary's error `code` + `message` for the report.

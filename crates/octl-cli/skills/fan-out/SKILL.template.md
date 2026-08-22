@@ -76,16 +76,20 @@ The template should include:
    run `cargo install --path …`, install orchestratectl from a registry, or run
    `cargo uninstall`; only the orchestrator may mutate global tools after
    integration.
-6. **No spin-offs, no discuss items** — children should run silently
-   to completion; surfacing every receipt OCR run as a discussion
-   item drowns the user.
-7. **Closing step** — every child MUST end with a single
-   `orchestratectl run merge "$run_id"` call (see "Terminal report
-   (mandatory)" below), which merges the unit back AND submits its
-   terminal report in one step. Without that report the unit's node
-   never reaches `completed`, the driver never sees `child.report`, and
-   that slot stays occupied — stalling the whole batch at the
-   concurrency limit.
+6. **No routine spin-offs or discuss items** — children should run silently
+   to completion; surfacing every successful receipt OCR run as a discussion
+   item drowns the user. Failed or incomplete tools/sub-workflows are the
+   exception and must follow the disclosure contract below.
+7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
+   into every unit brief and state any finite child-local tool retry bound. A
+   required incomplete unit cannot claim success; optional failure may continue
+   only when independently safe and disclosed. Child-local tool retries are
+   separate from the driver's whole-unit retry budget.
+8. **Closing step** — every child MUST take exactly one terminal path, never
+   both (see "Terminal report (mandatory)" below). Completed units merge and
+   report through `orchestratectl run merge`; units blocked by a required
+   failure do not merge and submit a direct `success: false` report. Taking
+   neither path prevents `child.report` and leaves the concurrency slot held.
 
 ### 2. Create the driver run
 
@@ -142,12 +146,20 @@ Per-unit notes:
 The driver tails its own event log and the manifest:
 
 - Up to `<C>` units in `status: running` at any moment.
-- On a child completing (`status: done`, `child.report`
-  arrives), mark the unit `done` in the manifest and spawn the next
-  pending unit.
-- On a child failing, retry the unit up to N times with the same
-  idempotency key. If it still fails, mark `failed` in the manifest
-  and continue; surface the count at the end.
+- On each `child.report`, inspect its top-level `success`. With `success: true`,
+  mark the unit `done`, retain any `Tool/sub-workflow failure —` disclosure from
+  an optional failure, and spawn the next unit. With `success: false`, take the
+  failed-attempt path and retain its disclosure.
+- Retry a failed unit up to the finite whole-unit count chosen in the driver
+  brief (state whether it counts total attempts or retries after the first),
+  using the same idempotency key. This budget is separate from child-local tool
+  retries. On exhaustion mark the unit `failed` and continue independent units.
+- Retain disclosures from every attempt, including an attempt later superseded
+  by success and a successful unit that continued after an optional failure.
+  The aggregate report identifies unit and attempt and never reduces these to a
+  failed count. If any required unit remains failed, aggregate `success` is
+  `false`; continuing other units preserves results but does not make the
+  requested batch complete.
 - On driver interruption (Ctrl-C, supervisor crash), `orchestratectl
   run reattach <driver-run-id>` rebuilds state from the manifest +
   event log and resumes from the first non-`done` unit.
@@ -181,18 +193,15 @@ Tell the user:
 
 ## Terminal report (mandatory)
 
-The merge **is** the closing step for a child unit. A single
-`orchestratectl run merge "$run_id"` rebases + merges the unit's branch
-back into its source branch AND submits the terminal report (stamped
-`via: "explicit-merge"`) in one call. Until that report lands the child's
-supervisor keeps polling, the unit never reaches `completed`, the driver
-never sees `child.report`, and the slot stays occupied — so the batch
-stalls at the concurrency limit instead of fanning out the next pending
-unit.
+A child MUST take exactly one terminal path, never both. A completed unit uses
+`orchestratectl run merge`, which merges the branch and submits the terminal
+report stamped `via: "explicit-merge"`. A unit blocked by a required failed or
+incomplete step does **not** merge and submits a direct `success: false` report
+under "Tool and sub-workflow failure disclosure" below. Either report releases
+the concurrency slot; omitting both stalls the batch.
 
-A typical fan-out unit runs silently and has nothing structured to
-surface, so the minimal form is what the unit brief should instruct each
-child to run **as its final action, before its session ends**:
+A typical successful fan-out unit has nothing structured to surface, so it may
+use the minimal completed path as its final action:
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
    durable node ownership record, never the branch's display identifier (it is a
@@ -260,9 +269,42 @@ child to run **as its final action, before its session ends**:
      `worktree-spinoff` for the full per-field shape if a unit genuinely
      needs to surface one.
 
-This closing step is **not optional**. A merged unit with no report holds
-its concurrency slot forever — and `run merge` is what submits that
-report, so there is nothing extra to run after it.
+A terminal report is **not optional**. Completed work with no `run merge`, or
+blocked work with no direct `node report`, holds its concurrency slot forever.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the unit brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this child run). An **optional/advisory** failure may continue only when the
+unit output is independently complete and safe; disclose it in the full
+`success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal form.
+
+Requested completeness is a contract. A missing required command result,
+source, or expected artifact is incomplete and cannot be presented as complete.
+Retry only when this unit brief authorizes a finite bound; if none does, do not
+retry. Record each attempt and its outcome, then take the required or optional
+path at exhaustion. The driver separately owns whole-unit retries.
+
+Create one aggregate `discussion_items[]` entry for the child whose `topic`
+starts `Tool/sub-workflow failure —`. Cover every distinct failure, coalescing
+repeated attempts of the same one: tool/workflow and purpose; expected
+completeness; observed exit/error/incompleteness; attempts; affected step;
+whether work continued and why safe; suggested bug surface; and a stable
+artifact/log path when available. Put actionable retry/recover/accept/file steps
+in item-level `options`. Keep the complete entry, including options, at most 2
+KiB. Include only a short redacted excerpt; never include secrets, credentials,
+personal data, environment dumps, or unbounded logs. Set top-level `summary` and
+`success` to distinguish blocked from completed; do not put them inside the
+discussion item. Existing prose fields suffice, so do not add a schema or
+supervisor state.
 
 ## Issue Management
 

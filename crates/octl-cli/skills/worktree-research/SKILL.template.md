@@ -80,6 +80,9 @@ Include in the brief:
    install --path …`, install orchestratectl from a registry, or run `cargo
    uninstall`; global tool mutation belongs only to the orchestrator after
    integration.
+7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
+   into the brief. Required source/tool failure cannot be claimed complete;
+   optional failure may continue only when independently safe and disclosed.
 
 Long prompts → temp file + `--prompt-file <path>`.
 
@@ -146,16 +149,13 @@ Tell the user:
 
 ## Terminal report (mandatory)
 
-Closing is **one call**. `orchestratectl run merge` owns the entire
-merge-and-report step: it rebases + merges the worktree branch into its
-source branch, then submits the terminal `node report` itself (stamped
-`via: "explicit-merge"`). The run stays alive until that report lands —
-until then the per-run supervisor keeps polling, `orchestratectl run
-show` reads `status: pending`, and the tmux window never closes. So
-the brief MUST instruct the agent to run the single closing call below
-before its session ends. A research worktree's summary and wrap-up
-matter, so it passes a `--report-file` carrying the full §7.3 payload
-(the file is validated **before** the merge runs).
+A research worker MUST take exactly one terminal path, never both. Completed,
+mergeable research uses `orchestratectl run merge`, which merges and submits the
+terminal report stamped `via: "explicit-merge"`. Research blocked by a required
+failed or incomplete step does **not** merge; it submits a direct `success:
+false` report under "Tool and sub-workflow failure disclosure" below. Omitting
+both paths leaves the run alive. The completed path passes a `--report-file`
+carrying the full §7.3 payload (validated **before** the merge).
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
    durable node ownership record, never the branch's display identifier (it is a
@@ -223,8 +223,43 @@ matter, so it passes a `--report-file` carrying the full §7.3 payload
    Resolve the conflict (or run `/complex-rebase`) and re-run the same
    `run merge` call.
 
-This step is **not optional**. No closing call leaves the run dangling,
-with no structured outcome for the caller to read.
+A terminal report is **not optional**. Completed work with no `run merge`, or
+blocked work with no direct `node report`, leaves the run dangling with no
+structured outcome for the caller to read.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this single-worker run). An **optional/advisory** failure may continue only
+when the report is independently complete and safe; disclose it in the full
+`success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
+
+Requested completeness is a contract. A requested panel with a missing model
+section, truncation marker, malformed output, or missing expected artifact is
+incomplete, not representative consensus. Retry only when existing workflow
+policy authorizes a finite bound; if none does, do not retry. Record each attempt
+and its outcome, then take the required or optional path at exhaustion.
+
+Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
+`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
+attempts of the same one: tool/workflow and purpose; expected completeness;
+observed exit/error/incompleteness; attempts; affected step; whether work
+continued and why safe; suggested bug surface; and a stable artifact/log path
+when available. Put actionable retry/recover/accept/file steps in item-level
+`options`. Keep the complete entry, including options, at most 2 KiB. Include
+only a short redacted excerpt; never include secrets, credentials, personal
+data, environment dumps, or unbounded logs. Set top-level `summary` and
+`success` to distinguish blocked from completed; do not put them inside the
+discussion item. Existing prose fields suffice, so do not add a schema or
+supervisor state.
 
 ## Issue Management
 

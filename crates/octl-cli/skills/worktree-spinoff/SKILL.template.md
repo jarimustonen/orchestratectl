@@ -101,11 +101,15 @@ self-contained. Include:
    findings carry machine-visible AI-review provenance plus available metadata.
    Do not weaken that rule or tell a worker to execute an `/assess-findings`-
    staged `issuectl create` command verbatim.
-6. **Terminal report** — the brief MUST end with the mandatory closing
-   `orchestratectl run merge` step (see "Terminal report (mandatory)"
-   below), which merges the branch and submits the terminal report in one
-   call. Without it the run never reaches `completed` and the worktree
-   dangles.
+6. **Tool/sub-workflow failure policy** — copy the disclosure contract below
+   into the brief. A required failed or detectably incomplete step cannot be
+   claimed complete; an optional failure may continue only when safe and must
+   still be disclosed in the terminal report.
+7. **Terminal report** — the brief MUST end with exactly one terminal path
+   (see "Terminal report (mandatory)" below): completed work merges and reports
+   through `orchestratectl run merge`; work blocked by a required failure does
+   not merge and submits a direct `success: false` report. Taking neither path
+   leaves the run unterminated and the worktree dangling.
 
 If the prompt is longer than ~2 KB or contains characters that complicate
 shell quoting, write it to a temp file and pass `--prompt-file
@@ -262,18 +266,16 @@ other evidence before the timeout, emit the same generation-fenced
 
 ## Terminal report (mandatory)
 
-Closing a spinoff is now **one call**. `orchestratectl run merge` owns
-the entire closing step: it rebases + merges the worktree branch into
-its source branch, then submits the terminal `node report` itself
-(stamped `via: "explicit-merge"`). There is no separate
-`/worktree-merge` step and no separate `node report` call — the merge
-*is* the closing call. Until it runs the run stays alive: the per-run
-supervisor keeps polling, `orchestratectl run show` reads `status:
-pending`, and the tmux window never closes — the user sees a worktree
-that looks stuck when the work is actually done.
+A spinoff MUST take exactly one terminal path, never both. Completed,
+mergeable work uses `orchestratectl run merge`, which rebases + merges the
+branch and submits the terminal `node report` stamped `via: "explicit-merge"`.
+Work blocked by a required failed or incomplete step does **not** call `run
+merge`; it submits a direct `success: false` report as specified in "Tool and
+sub-workflow failure disclosure" below. Omitting both paths leaves the run
+alive and the worktree dangling.
 
-So the brief MUST instruct the spinoff to run this **once the work is
-committed and ready to land, before its session ends**:
+For the completed path, the brief instructs the spinoff to run the following
+once the work is committed and ready to land, before its session ends:
 
 1. **Resolve the exact owning run id** from inside the worktree. Use the
    durable node ownership record, never the branch's display identifier (it is a
@@ -354,9 +356,42 @@ committed and ready to land, before its session ends**:
    deeply-diverged branches) and re-run `orchestratectl run merge
    "$run_id" --report-file /tmp/node-report-${run_id}.json`.
 
-This step is **not optional**. A finished worktree with no `run merge`
-call leaves the run dangling, unmerged, with no structured outcome for
-the caller to read.
+A terminal report is **not optional**. Completed work with no `run merge`, or
+blocked work with no direct `node report`, leaves the run dangling with no
+structured outcome for the caller to read.
+
+## Tool and sub-workflow failure disclosure
+
+Before closing, inventory every failed or detectably incomplete tool, command,
+external service, review, panel, or delegated workflow.
+
+A step **required** by the brief or done criteria that remains failed or
+incomplete always blocks this attempt. Do not call `run merge`. Write the
+existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
+`success: false`, then submit it with `orchestratectl node report "$run_id"
+n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
+in this single-worker run). An **optional/advisory** failure may continue only
+when the deliverable is independently complete and safe; disclose it in the
+full `success: true` report passed to `orchestratectl run merge "$run_id"
+--report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
+
+Requested completeness is a contract. A requested panel with a missing model
+section, truncation marker, malformed output, or missing expected artifact is
+incomplete, not representative consensus. Retry only when existing workflow
+policy authorizes a finite bound; if none does, do not retry. Record each attempt
+and its outcome, then take the required or optional path at exhaustion.
+
+Create one aggregate `discussion_items[]` entry for the run whose `topic` starts
+`Tool/sub-workflow failure —`. Cover every distinct failure, coalescing repeated
+attempts of the same one: tool/workflow and purpose; expected completeness;
+observed exit/error/incompleteness; attempts; affected step; whether work
+continued and why safe; suggested bug surface; and a stable artifact/log path
+when available. Put actionable retry/recover/accept/file steps in item-level
+`options`. Keep the complete entry, including options, at most 2 KiB. Include
+only a short redacted excerpt; never copy secrets, credentials, personal data,
+environment dumps, or unbounded logs. Set top-level `summary` and `success` to
+distinguish blocked from completed; do not put them inside the discussion item.
+Existing prose fields suffice, so do not add a schema or terminal state.
 
 ## Issue Management
 

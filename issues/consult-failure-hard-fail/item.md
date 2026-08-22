@@ -2,7 +2,7 @@
 created: 2026-08-12
 updated: 2026-08-22
 type: feature
-status: open
+status: in-progress
 priority: normal
 lane: skills
 lane_seq: 30
