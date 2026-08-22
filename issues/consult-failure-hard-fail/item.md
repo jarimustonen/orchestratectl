@@ -2,10 +2,14 @@
 created: 2026-08-12
 updated: 2026-08-22
 type: feature
-status: in-progress
+status: done
 priority: normal
 lane: skills
 lane_seq: 30
+closed: 2026-08-22
+commits:
+- hash: 440116cf069a2e82faa6818a901c20daecef9cee
+  summary: disclose incomplete worker subworkflows
 ---
 
 # Surface actionable tool failures to the spawning agent
@@ -57,11 +61,11 @@ The report should contain a concise `Tool/sub-workflow failure` section with eno
 
 Secrets, credentials, personal data, and unbounded logs must not be copied into the report.
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- Applicable bundled worktree workflow templates carry the generic disclosure rule.
-- A required failed or incomplete tool result cannot be described as completed.
-- The spawning agent receives the disclosure through the existing terminal report and enough structured prose to decide retry, recovery, or bug filing.
-- The rule permits a blocked/recoverable handoff instead of forcing every tool error to terminal failure.
-- Tests or snapshots cover required failure, optional failure with continuation, partial panel output, bounded retry exhaustion, and secret-safe context.
-- No new CLI event or node-report schema is introduced unless implementation proves prose cannot carry the requirement.
+- [x] Applicable bundled worktree workflow templates carry the generic disclosure rule.
+- [x] A required failed or incomplete tool result cannot be described as completed.
+- [x] The spawning agent receives the disclosure through the existing terminal report and enough structured prose to decide retry, recovery, or bug filing.
+- [x] The rule permits a blocked/recoverable handoff instead of forcing every tool error to terminal failure.
+- [x] Tests or snapshots cover required failure, optional failure with continuation, partial panel output, bounded retry exhaustion, and secret-safe context.
+- [x] No new CLI event or node-report schema is introduced unless implementation proves prose cannot carry the requirement.
