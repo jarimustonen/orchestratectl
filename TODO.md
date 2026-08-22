@@ -32,6 +32,8 @@ There are currently zero in-flight ossctl releases. After the live fix lands: ru
 
 **Unscheduled intake context.** The round produced `achingly-keen-camp` (a run cannot identify its repository after worktree teardown), and external intake added `intake-bug-orchestratectl-19a653fff4c9` plus a run-list repo-filter request. They remain for the normal lane-or-close intake sweep; do not silently pull them into release recovery. `add-configurable-agent` remains deliberately deferred under the product decision recorded on its issue.
 
+**Watch-only deploy observation.** Twice, the first `orchestratectl version` immediately after a successful `cargo install --force` briefly reported the replaced binary's old commit; the same command reported the new commit moments later without another install. The mandatory equality gate failed closed, and no orchestratectl-side cause or unsafe acceptance was observed. Take no implementation action now. If it recurs, preserve the exact command/timing/path evidence and re-evaluate `considerably-utter-deer`; do not weaken or silently retry the provenance gate.
+
 ---
 
 ## Scheduling
