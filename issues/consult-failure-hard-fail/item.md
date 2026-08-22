@@ -32,6 +32,16 @@ When a tool, command, external service, or required review/sub-workflow fails or
 - do not present partial output as the complete result or silently substitute one surviving source for a requested panel;
 - propagate the failure to the spawning agent in the terminal report or blocked handoff.
 
+## Existing communication channel
+
+Reuse the existing terminal `node.report`; do not invent a second worker-to-spawner message path:
+
+- completed work includes the failure disclosure in the report file passed to `orchestratectl run merge --report-file`;
+- work that cannot safely complete submits a direct blocked `orchestratectl node report` with `success: false`, the failure disclosure, and any `recoverable_work` / `discussion_items` context;
+- the spawning agent reads the same durable report through `run show` / `run wait` and decides whether to retry, recover, continue, or file a bug.
+
+The report is communication, not an automatic severity verdict. A tool error alone must not create a new supervisor terminal state or bypass the existing typed outcome and work-preservation rules.
+
 ## Required failure context
 
 The report should contain a concise `Tool/sub-workflow failure` section with enough information to assess and file a bug without rediscovery:
@@ -51,7 +61,7 @@ Secrets, credentials, personal data, and unbounded logs must not be copied into 
 
 - Applicable bundled worktree workflow templates carry the generic disclosure rule.
 - A required failed or incomplete tool result cannot be described as completed.
-- The spawning agent receives enough structured prose to decide retry, recovery, or bug filing.
+- The spawning agent receives the disclosure through the existing terminal report and enough structured prose to decide retry, recovery, or bug filing.
 - The rule permits a blocked/recoverable handoff instead of forcing every tool error to terminal failure.
 - Tests or snapshots cover required failure, optional failure with continuation, partial panel output, bounded retry exhaustion, and secret-safe context.
 - No new CLI event or node-report schema is introduced unless implementation proves prose cannot carry the requirement.

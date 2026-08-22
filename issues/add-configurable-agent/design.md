@@ -1,9 +1,13 @@
 # Design: configurable agent profiles
 
-Status: v2 (2026-08-17) — revised after a 4-role LLM panel
-(architect / security / maintainability / test-strategist; synthesis in
-`history/2026-08-17-panel-add-configurable-agent.md`, gitignored — the
-binding resolutions are folded into this document).
+Status: v2 historical baseline (2026-08-17) — **not approved for implementation**.
+It was revised after a 4-role LLM panel (architect / security /
+maintainability / test-strategist; synthesis in
+`history/2026-08-17-panel-add-configurable-agent.md`, gitignored). Before any
+slice below is implemented, revise this design after `worker-telemetry-protocol`
+so autonomous eligibility, telemetry support, pi adapter requirements, and
+interactive-only Claude operation are explicit. The combined result then stops
+at `worker-control-plane-review` for Jari's approval.
 Issue: `add-configurable-agent`.
 
 ## 1. Problem and constraints (told, not re-derived)

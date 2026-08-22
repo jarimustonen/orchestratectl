@@ -3,12 +3,13 @@ created: 2026-08-17
 updated: 2026-08-22
 type: feature
 reporter: jari
-status: in-progress
+status: open
 priority: normal
 labels: [configuration, agents]
 lane: surface
 lane_seq: 20
 collision: [run-create]
+blocked_by: ['@worker-telemetry-protocol']
 ---
 
 # Add configurable agent profiles
@@ -18,6 +19,12 @@ collision: [run-create]
 ## Goal
 
 Add user-configurable agent profiles so `orchestratectl` can select named capability roles rather than hard-coding a single harness/model choice. Profiles describe the available model fleet and let orchestration planning choose an appropriate agent for each run.
+
+## Current delivery phase — design refresh only
+
+Do not implement the existing slices yet. First wait for `@worker-telemetry-protocol` to complete its design, then revise `design.md` so profile resolution, autonomous eligibility, telemetry capability, interactive-only Claude support, fallback, and effective-policy observability form one coherent model.
+
+When that revision is complete, stop at `@worker-control-plane-review`. Production implementation slices are filed and scheduled only after Jari approves the combined telemetry + profile design there.
 
 ## Configuration
 
@@ -151,3 +158,7 @@ mind from the start, rather than retrofitting it.
 ### 2026-08-22T17:37:43Z · @jari
 
 Product decision 2026-08-21: this capability is wanted, not speculative backlog. Keep it scheduled. Sequence it deliberately against @worker-telemetry-protocol and @end-end-stint because all three shape harness capability, policy, and run creation; the shared run-create collision token prevents accidental parallel implementation.
+
+### 2026-08-22T17:50:02Z · @jari
+
+Execution order supersedes the earlier implementation-ready wording: complete @worker-telemetry-protocol design first; then revise this profile design only; then stop at @worker-control-plane-review for combined human approval. Do not spawn implementation slices before that checkpoint.
