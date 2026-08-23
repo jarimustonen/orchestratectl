@@ -40,3 +40,8 @@ The deploy policy intentionally treats commit equality as load-bearing, so retry
 ### 2026-08-23T07:45:55Z · @orchestrator
 
 Recurrence on 2026-08-23 after installing HEAD f268f884035391888b6ec9984bd84c2fa3ac7954. The authorized chained deploy completed `cargo install --path crates/octl-cli --force --locked`, then exited 1 at the immediate expected-vs-actual commit equality test before `ls`, skill install, or doctor. The chain did not print the mismatching actual value. An explicit diagnostic probe immediately afterward resolved `/Users/jari/.cargo/bin/orchestratectl` and reported the expected f268f884 commit without any reinstall or file mutation. The failed attempt remains a failed deploy; this note records the recurrence before any fresh attempt.
+
+### 2026-08-23T07:48:25Z · @orchestrator
+
+Immediate fresh deploy attempt after recording the recurrence also failed closed. Exact captured values after Cargo reported replacement complete: expected=b58e271297ccaf5ce554715540a0e1c1468bd102, actual=8b7e4474663112255ec949901d998c6274d1ce10 (the published v0.5.0 commit). The next explicit diagnostic probe, without reinstall or mutation, resolved the same ~/.cargo/bin path and reported b58e271 correctly. Skill install and doctor did not run. Treat local deploy as blocked; do not normalize this into an implicit retry.
+
