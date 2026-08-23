@@ -61,9 +61,13 @@ case "$*" in
     ;;
   "push origin refs/tags/v"*)
     printf '%s\n' "$*" >>"$TAG_PUSH_LOG"
-    # Keep the transport local while supplying the production remote coordinate
-    # to the wrapper-created hook. The wrapper already probes this hook through
-    # a real local Git push before ossctl reaches this path.
+    if [[ "${ALLOW_TAG_PUSH:-0}" == 1 ]]; then
+      # Resume crosses the boundary only to the fixture's local bare origin.
+      exec "$REAL_GIT" "$@"
+    fi
+    # Keep the cut transport local while supplying the production remote
+    # coordinate to the wrapper-created hook. The wrapper already probes this
+    # hook through a real local Git push before ossctl reaches this path.
     ref="${3:-}"
     local_ref="${ref%%:*}"
     remote_ref="${ref#*:}"
@@ -94,8 +98,24 @@ if [[ "$*" == 'repo view jarimustonen/orchestratectl --json nameWithOwner -q .na
   exit 0
 fi
 if [[ "$*" == run\ list* ]]; then
-  echo reached-exact-sha-ci-gate >&2
-  exit 42
+  if [[ "${GH_MODE:-pretag}" == pretag ]]; then
+    echo reached-exact-sha-ci-gate >&2
+    exit 42
+  fi
+  branch=''
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --branch ]]; then branch="$2"; break; fi
+    shift
+  done
+  [[ "$branch" == v* ]] || { echo "gh protocol stub: missing tag branch" >&2; exit 98; }
+  sha="$($REAL_GIT -C "$REPO_PATH" rev-list -n 1 "$branch")"
+  jq -n --arg branch "$branch" --arg sha "$sha" \
+    '[{databaseId:9001,status:"completed",conclusion:"failure",headBranch:$branch,headSha:$sha,url:"https://example.invalid/actions/9001"}]'
+  exit 0
+fi
+if [[ "$*" == run\ view* ]]; then
+  printf '%s\n' '{"status":"completed","conclusion":"failure","url":"https://example.invalid/actions/9001","jobs":[{"name":"fixture delegated publish","status":"completed","conclusion":"failure"}]}'
+  exit 0
 fi
 echo "gh protocol stub: unexpected arguments: $*" >&2
 exit 98
@@ -120,6 +140,7 @@ run_env=(
   GIT_STUB_LOG="$tmp/git.log"
   TAG_PUSH_LOG="$tmp/tag-push.log"
   GH_STUB_LOG="$tmp/gh.log"
+  REPO_PATH="$tmp/repo"
   GIT_CONFIG_GLOBAL=/dev/null
   GIT_CONFIG_NOSYSTEM=1
   GIT_TERMINAL_PROMPT=0
@@ -229,6 +250,51 @@ jq -e --arg tag "$tag" '
 test -z "$(git -C "$tmp/repo" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
 test -s "$tmp/repo/.git/ossctl-held-tags/$run_id.json"
 
-# The wrapper must have supplied 0.10.1's matching --bump argument: reaching
-# the tag checkpoint proves cut revalidated and executed the sealed bump plan.
-echo "ossctl 0.10.1 real protocol test passed (held $run_id at $tag; remote tag absent)"
+# Exercise the actual 0.10.1 resume JSONL and verify envelope after the safe
+# boundary. The release tag is pushed only to the local bare origin. Controlled
+# failed workflow observations stop verify immediately, without registry/network
+# observation, while proving resume's tag transition and verify's new delegated
+# run fields.
+set +e
+(
+  cd "$tmp/repo"
+  "${run_env[@]}" ALLOW_TAG_PUSH=1 GH_MODE=delegated-failed \
+    ossctl release resume "$run_id" --json
+) >"$tmp/resume.jsonl" 2>"$tmp/resume.stderr"
+resume_status=$?
+set -e
+[[ "$resume_status" -eq 2 ]] || {
+  echo "isolated resume should stop on the controlled delegated CI failure (status=$resume_status)" >&2
+  cat "$tmp/resume.stderr" >&2
+  exit 1
+}
+jq -e '.error.code == "delegated_run_failed"' "$tmp/resume.stderr" >/dev/null
+jq -s -e --arg tag "$tag" '
+  any(.[]; .kind == "tag_pushed_remote" and .tag == $tag) and
+  any(.[]; .kind == "phase_completed" and .phase == "tag" and .outcome == "ok") and
+  any(.[]; .kind == "phase_entered" and .phase == "verify")
+' "$tmp/resume.jsonl" >/dev/null
+[[ "$(git -C "$tmp/repo" ls-remote origin "refs/tags/$tag" | awk '{print $1}')" == "$bump_commit" ]]
+(
+  cd "$tmp/repo"
+  "${run_env[@]}" ALLOW_TAG_PUSH=1 GH_MODE=delegated-failed \
+    ossctl release show "$run_id" --json >"$tmp/show-resumed.json"
+  "${run_env[@]}" ALLOW_TAG_PUSH=1 GH_MODE=delegated-failed \
+    ossctl release verify "$run_id" --json >"$tmp/verify.json"
+)
+jq -e --arg tag "$tag" '
+  .data.state.tags[$tag].pushed_remote == true and
+  ([.data.state.phases[] | select(.phase == "tag") | .outcome] | last) == "ok" and
+  .data.state.current_phase == null
+' "$tmp/show-resumed.json" >/dev/null
+jq -e '
+  .schema_version == 1 and .data.summary.delegated_failed > 0 and
+  .data.summary.unknown == .data.summary.reconciled and
+  (.data.targets | length > 0) and
+  (.data.targets | all(.outcome == "unknown" and .delegated_run.status == "failed"))
+' "$tmp/verify.json" >/dev/null
+
+# The wrapper must have supplied 0.10.1's matching --bump argument; the complete
+# fixture proves held-tag, resume, and read-only verify surfaces without a real
+# remote release or registry publish.
+echo "ossctl 0.10.1 real protocol test passed (held and locally resumed $run_id at $tag; production remote untouched)"
