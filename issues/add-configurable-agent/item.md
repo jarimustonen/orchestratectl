@@ -1,15 +1,19 @@
 ---
 created: 2026-08-17
-updated: 2026-08-22
+updated: 2026-08-23
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 labels: [configuration, agents]
 lane: surface
 lane_seq: 20
 collision: [run-create]
 blocked_by: ['@worker-telemetry-protocol']
+commits:
+- hash: 8bad164
+  summary: unify agent profiles with telemetry policy
+review_status: requested
 ---
 
 # Add configurable agent profiles
@@ -152,6 +156,11 @@ Scheduling: the feature stays DEFERRED for now (it is cross-cutting and needs a 
 own; it cannot share a round with any `lifecycle` unit). This note records the constraint so
 whoever implements slices A–D designs the residency class with the capability restriction in
 mind from the start, rather than retrofitting it.
+
+### 2026-08-23T07:15:30Z · @pi
+
+Design refresh completed against the landed hybrid telemetry protocol in commit 8bad164. A four-model critical review plus two cross-review rounds was assessed and justified corrections were folded into design.md. The design now separates declared capability/residency from probed telemetry and permission evidence, fails restricted/local candidates closed until enforcement is approved, pins requested/effective policy and attempt provenance, and keeps telemetry advisory. Production work remains unauthorized; next step is the combined human checkpoint @worker-control-plane-review.
+
 
 ## Decisions
 
