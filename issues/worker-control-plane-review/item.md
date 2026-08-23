@@ -11,6 +11,9 @@ lane_seq: 50
 collision: [run-create]
 blocked_by: ['@worker-telemetry-protocol', '@add-configurable-agent']
 review_status: requested
+commits:
+- hash: 695e82d
+  summary: Prepare worker control-plane approval checkpoint
 ---
 
 # Review worker telemetry and agent profiles as one control plane
