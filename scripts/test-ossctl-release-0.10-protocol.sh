@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Safe real-engine protocol test for the exact ossctl 0.10.0 build admitted by
-# scripts/ossctl-release.sh. Uses only a local bare remote and stops at the
+# Safe real-engine protocol test for the exact fleet ossctl 0.10.1 build admitted
+# by scripts/ossctl-release.sh. Uses only a local bare remote and stops at the
 # exact-SHA CI lookup, before the held release tag can be pushed.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly expected_commit="a35b9917fc65a6354fe855b7c956521b47669907"
+readonly expected_commit="6879e040a520a7a9c6196ed77791b4f2f10ad6f4"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ossctl-010-protocol.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
@@ -16,9 +16,9 @@ real_ossctl="$(command -v ossctl)"
 version_json="$($real_ossctl version --json)"
 jq -e --arg commit "$expected_commit" '
   .schema_version == 1 and .data.schema_version == 1 and
-  .data.version == "0.10.0" and .data.commit == $commit
+  .data.version == "0.10.1" and .data.commit == $commit
 ' <<<"$version_json" >/dev/null || {
-  echo "test requires the validated ossctl 0.10.0 commit $expected_commit" >&2
+  echo "test requires the validated ossctl 0.10.1 commit $expected_commit" >&2
   exit 1
 }
 
@@ -198,7 +198,7 @@ grep -Fx "$expected_gh" "$tmp/gh.log" >/dev/null || {
   exit 1
 }
 grep -Fx "release cut --plan $plan_id --bump minor --json" "$tmp/ossctl.log" >/dev/null || {
-  echo "wrapper did not pass the sealed minor bump input to ossctl 0.10" >&2
+  echo "wrapper did not pass the sealed minor bump input to ossctl 0.10.1" >&2
   cat "$tmp/ossctl.log" >&2
   exit 1
 }
@@ -229,6 +229,6 @@ jq -e --arg tag "$tag" '
 test -z "$(git -C "$tmp/repo" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
 test -s "$tmp/repo/.git/ossctl-held-tags/$run_id.json"
 
-# The wrapper must have supplied 0.10's required --bump argument: reaching the
-# tag checkpoint proves cut revalidated and executed the sealed bump plan.
-echo "ossctl 0.10 real protocol test passed (held $run_id at $tag; remote tag absent)"
+# The wrapper must have supplied 0.10.1's matching --bump argument: reaching
+# the tag checkpoint proves cut revalidated and executed the sealed bump plan.
+echo "ossctl 0.10.1 real protocol test passed (held $run_id at $tag; remote tag absent)"

@@ -72,7 +72,7 @@ cat >"$tmp/bin/ossctl" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$OSSCTL_STUB_LOG"
 if [[ "$*" == "version --json" ]]; then
-  jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.0}" --arg commit "${OSSCTL_STUB_COMMIT:-a35b9917fc65a6354fe855b7c956521b47669907}" \
+  jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.1}" --arg commit "${OSSCTL_STUB_COMMIT:-6879e040a520a7a9c6196ed77791b4f2f10ad6f4}" \
     '{schema_version:1,data:{version:$version,commit:$commit,schema_version:1}}'
   exit 0
 fi
@@ -99,8 +99,8 @@ run_wrapper() {
     GIT_STUB_ROOT="$tmp/work" \
     GIT_STUB_ORIGIN="$origin" \
     OSSCTL_STUB_LOG="$tmp/ossctl.log" \
-    OSSCTL_STUB_VERSION="${OSSCTL_STUB_VERSION:-0.10.0}" \
-    OSSCTL_STUB_COMMIT="${OSSCTL_STUB_COMMIT:-a35b9917fc65a6354fe855b7c956521b47669907}" \
+    OSSCTL_STUB_VERSION="${OSSCTL_STUB_VERSION:-0.10.1}" \
+    OSSCTL_STUB_COMMIT="${OSSCTL_STUB_COMMIT:-6879e040a520a7a9c6196ed77791b4f2f10ad6f4}" \
     GH_STUB_REPO="$gh_repo" \
     "$repo_root/scripts/ossctl-release.sh" resume "$test_run_id" \
     >"$tmp/stdout" 2>"$tmp/stderr"
@@ -196,7 +196,7 @@ grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo pus
 }
 assert_no_release_show
 
-for unsupported in 0.9.0 0.10.1 0.11.0 1.0.0; do
+for unsupported in 0.9.0 0.10.2 0.11.0 1.0.0; do
   reset_logs
   set +e
   OSSCTL_STUB_VERSION="$unsupported" run_wrapper
@@ -206,7 +206,7 @@ for unsupported in 0.9.0 0.10.1 0.11.0 1.0.0; do
     echo "unsupported ossctl $unsupported did not fail closed (status=$status)" >&2
     exit 1
   }
-  grep -F "validated ossctl 0.10.0 required; found $unsupported" "$tmp/stderr" >/dev/null || {
+  grep -F "validated ossctl 0.10.0 or 0.10.1 required; found $unsupported" "$tmp/stderr" >/dev/null || {
     echo "unsupported ossctl $unsupported emitted the wrong diagnostic" >&2
     cat "$tmp/stderr" >&2
     exit 1
@@ -214,28 +214,36 @@ for unsupported in 0.9.0 0.10.1 0.11.0 1.0.0; do
   test ! -s "$tmp/gh.log" || { echo "unsupported ossctl $unsupported reached repository preflight" >&2; exit 1; }
 done
 
-reset_logs
-set +e
-OSSCTL_STUB_COMMIT=0000000000000000000000000000000000000000 run_wrapper
-status=$?
-set -e
-[[ "$status" -eq 1 ]] || { echo "unvalidated ossctl 0.10.0 commit did not fail closed" >&2; exit 1; }
-grep -F "ossctl 0.10.0 protocol was validated at commit" "$tmp/stderr" >/dev/null
+for validated in \
+  '0.10.0:a35b9917fc65a6354fe855b7c956521b47669907' \
+  '0.10.1:6879e040a520a7a9c6196ed77791b4f2f10ad6f4'; do
+  version="${validated%%:*}"
+  commit="${validated#*:}"
 
-reset_logs
-set +e
-run_wrapper jarimustonen/orchestratectl
-status=$?
-set -e
-[[ "$status" -eq 42 ]] || { echo "valid version did not recover after version rejection tests" >&2; exit 1; }
+  reset_logs
+  set +e
+  OSSCTL_STUB_VERSION="$version" OSSCTL_STUB_COMMIT=0000000000000000000000000000000000000000 run_wrapper
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || { echo "unvalidated ossctl $version commit did not fail closed" >&2; exit 1; }
+  grep -F "ossctl $version is not the exact build validated for the held-tag protocol" "$tmp/stderr" >/dev/null
+  test ! -s "$tmp/gh.log" || { echo "unvalidated ossctl $version build reached repository preflight" >&2; exit 1; }
+
+  reset_logs
+  set +e
+  OSSCTL_STUB_VERSION="$version" OSSCTL_STUB_COMMIT="$commit" run_wrapper
+  status=$?
+  set -e
+  [[ "$status" -eq 42 ]] || { echo "validated ossctl $version build was rejected" >&2; exit 1; }
+done
 
 for abandoned in 01M0FD8FSTMGYG8YTV92WMWC87 01M0FG88NAKBJ7Y3QNFZEHRM4K; do
   reset_logs
   set +e
   env -i HOME="$tmp/home" PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GIT_STUB_LOG="$tmp/git.log" \
     GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/orchestratectl.git \
-    OSSCTL_STUB_LOG="$tmp/ossctl.log" OSSCTL_STUB_VERSION=0.10.0 \
-    OSSCTL_STUB_COMMIT=a35b9917fc65a6354fe855b7c956521b47669907 \
+    OSSCTL_STUB_LOG="$tmp/ossctl.log" OSSCTL_STUB_VERSION=0.10.1 \
+    OSSCTL_STUB_COMMIT=6879e040a520a7a9c6196ed77791b4f2f10ad6f4 \
     GH_STUB_REPO=jarimustonen/orchestratectl "$repo_root/scripts/ossctl-release.sh" resume "$abandoned" \
     >"$tmp/stdout" 2>"$tmp/stderr"
   status=$?

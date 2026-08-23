@@ -66,7 +66,7 @@ docs_site: none
 - **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
 
 ## Release notes
-- **The pinned ossctl 0.10.0 protocol owns the release transaction.** `scripts/ossctl-release.sh plan
+- **The pinned ossctl 0.10.0/0.10.1 protocol owns the release transaction.** `scripts/ossctl-release.sh plan
   major|minor|patch` seals a non-mutating plan. The plan's bump phase updates
   `[workspace.package].version`, rewrites `orchestratectl`'s exact `octl-core =
   "=<version>"` pin, refreshes `Cargo.lock`, finalizes `CHANGELOG.md`, runs the
@@ -80,7 +80,7 @@ docs_site: none
   edits, and runs `scripts/check-version-snapshots.sh`. Its changes are folded into
   ossctl's bump commit. The hook never installs or mutates a global binary or skill.
 - **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** The
-  pinned ossctl 0.10.0 protocol creates the bump commit inside its clean checkout and otherwise proceeds
+  pinned ossctl 0.10 protocol creates the bump commit inside its clean checkout and otherwise proceeds
   directly to tag push, so the wrapper temporarily rejects only that push. The
   resulting journalled failure leaves the local tag on the exact bump commit. The
   wrapper fast-forwards and pushes `main`, waits for `ci.yml` filtered by that exact
@@ -88,8 +88,9 @@ docs_site: none
   --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
   A red or missing main run leaves the release untagged remotely and resumable only
   through `scripts/ossctl-release.sh resume <run-id>`. The wrapper admits only
-  to ossctl 0.10.0 commit `a35b9917fc65a6354fe855b7c956521b47669907`,
-  proven against this checkpoint. It reads the bump
+  ossctl 0.10.0 commit `a35b9917fc65a6354fe855b7c956521b47669907` and ossctl 0.10.1 commit
+  `6879e040a520a7a9c6196ed77791b4f2f10ad6f4`, each proven against this checkpoint.
+  It reads the bump
   level from the engine's sealed, content-addressed plan and supplies the now-required
   matching `release cut --bump` input; ossctl still verifies the seal. Any other
   version/build or journal near-miss fails closed and requires revalidation.

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Safe wrapper around the validated ossctl 0.10.0 resumable protocol.
+# Safe wrapper around the validated ossctl 0.10.0/0.10.1 resumable protocol.
 # It pauses a bump cut at tag push, advances main to the bump commit, waits for
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
 
 readonly expected_repo="jarimustonen/orchestratectl"
-readonly ossctl_0_10_commit="a35b9917fc65a6354fe855b7c956521b47669907"
+readonly ossctl_0_10_0_commit="a35b9917fc65a6354fe855b7c956521b47669907"
+readonly ossctl_0_10_1_commit="6879e040a520a7a9c6196ed77791b4f2f10ad6f4"
 readonly -a never_resume_runs=(
   "01M0FD8FSTMGYG8YTV92WMWC87"
   "01M0FG88NAKBJ7Y3QNFZEHRM4K"
@@ -40,14 +41,17 @@ require_supported_ossctl() {
     end
   ' <<<"$version_json")"
   commit="$(jq -er '.data.commit // ""' <<<"$version_json")"
-  [[ "$ossctl_version" == 0.10.0 ]] || {
-    echo "validated ossctl 0.10.0 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
-    exit 1
-  }
-  [[ "$commit" == "$ossctl_0_10_commit" ]] || {
-    echo "ossctl 0.10.0 protocol was validated at commit $ossctl_0_10_commit; found commit ${commit:-<missing>}" >&2
-    exit 1
-  }
+  case "$ossctl_version:$commit" in
+    "0.10.0:$ossctl_0_10_0_commit"|"0.10.1:$ossctl_0_10_1_commit") ;;
+    *)
+      if [[ "$ossctl_version" == 0.10.0 || "$ossctl_version" == 0.10.1 ]]; then
+        echo "ossctl $ossctl_version is not the exact build validated for the held-tag protocol; found commit ${commit:-<missing>}" >&2
+      else
+        echo "validated ossctl 0.10.0 or 0.10.1 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
+      fi
+      exit 1
+      ;;
+  esac
 }
 
 assert_run_may_resume() {
@@ -504,12 +508,11 @@ HOOK
     rm -rf "$hooks/probe.git"
 
     cut_args=(release cut --plan "$plan_id")
-    if [[ "$ossctl_version" == 0.10.0 ]]; then
-      # 0.10 revalidates the sealed bump input at cut time. Read it only from
-      # the engine's content-addressed plan and let ossctl verify the seal.
-      bump_level="$(release_plan_bump_level "$plan_id")"
-      cut_args+=(--bump "$bump_level")
-    fi
+    # The admitted 0.10 builds revalidate the sealed bump input at cut time.
+    # Read it only from the engine's content-addressed plan and let ossctl
+    # independently verify the seal.
+    bump_level="$(release_plan_bump_level "$plan_id")"
+    cut_args+=(--bump "$bump_level")
     cut_args+=(--json)
 
     if OSSCTL_PRETAG_MARKER="$marker" \
