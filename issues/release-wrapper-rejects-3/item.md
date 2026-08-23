@@ -7,6 +7,9 @@ priority: high
 lane: release
 lane_seq: 20
 collision: [scripts/ossctl-release.sh]
+commits:
+- hash: 1d2e6fb2bb498bdf08ac6b2ced0d2bd68c880aa8
+  summary: 'fix: validate ossctl 0.10.1 release protocol'
 ---
 
 # Release wrapper rejects ossctl 0.10.1
