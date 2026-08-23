@@ -3,7 +3,7 @@ created: 2026-08-22
 updated: 2026-08-22
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 related: ['@supervisor-stall-detection', '@worker-wedged-one', '@end-end-stint', '@add-configurable-agent']
 lane: lifecycle
@@ -19,7 +19,7 @@ collision: [run-create]
 
 Design the smallest reliable worker-status protocol for autonomous orchestratectl runs. Replace process/activity heuristics with facts explicitly emitted by a harness adapter. The first adapter is a separately packaged pi.dev extension; orchestratectl remains harness-neutral and owns the durable run state.
 
-The protocol should make a live-but-wedged autonomous worker distinguishable from one that is actively thinking or running a tool, without inferring success, failure, or teardown authority from silence alone.
+The protocol reports the latest lifecycle state explicitly told by a harness adapter and whether that adapter has refreshed recently. It does not diagnose progress or distinguish a healthy long-running operation from a wedged one; adding such inference would recreate the removed stall heuristics. Silence must not imply success, failure, retry, or teardown authority.
 
 ## Product shape
 
