@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Safe wrapper around the validated ossctl 0.10.0/0.10.1 resumable protocol.
+# Safe wrapper around the validated Shipshape 0.10.1 resumable protocol.
 # It pauses a bump cut at tag push, advances main to the bump commit, waits for
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
 
 readonly expected_repo="jarimustonen/orchestratectl"
-readonly ossctl_0_10_0_commit="a35b9917fc65a6354fe855b7c956521b47669907"
-readonly ossctl_0_10_1_commit="6879e040a520a7a9c6196ed77791b4f2f10ad6f4"
+readonly shipshape_0_10_1_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
 readonly -a never_resume_runs=(
   "01M0FD8FSTMGYG8YTV92WMWC87"
   "01M0FG88NAKBJ7Y3QNFZEHRM4K"
 )
-ossctl_version=""
+shipshape_version=""
 run_id=""
 tag=""
 bump_commit=""
@@ -19,10 +18,10 @@ bump_commit=""
 usage() {
   cat >&2 <<'EOF'
 usage:
-  scripts/ossctl-release.sh plan <major|minor|patch>
-  scripts/ossctl-release.sh cut <plan-id>
-  scripts/ossctl-release.sh resume <run-id>
-  scripts/ossctl-release.sh verify <run-id>
+  scripts/shipshape-release.sh plan <major|minor|patch>
+  scripts/shipshape-release.sh cut <plan-id>
+  scripts/shipshape-release.sh resume <run-id>
+  scripts/shipshape-release.sh verify <run-id>
 EOF
   exit 1
 }
@@ -31,23 +30,23 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || { echo "required command not found: $1" >&2; exit 1; }
 }
 
-require_supported_ossctl() {
+require_supported_shipshape() {
   local version_json commit
-  version_json="$(ossctl version --json)"
-  ossctl_version="$(jq -er '
+  version_json="$(shipshape version --json)"
+  shipshape_version="$(jq -er '
     if .schema_version == 1 and .data.schema_version == 1
     then .data.version
     else error("unsupported version envelope")
     end
   ' <<<"$version_json")"
   commit="$(jq -er '.data.commit // ""' <<<"$version_json")"
-  case "$ossctl_version:$commit" in
-    "0.10.0:$ossctl_0_10_0_commit"|"0.10.1:$ossctl_0_10_1_commit") ;;
+  case "$shipshape_version:$commit" in
+    "0.10.1:$shipshape_0_10_1_commit") ;;
     *)
-      if [[ "$ossctl_version" == 0.10.0 || "$ossctl_version" == 0.10.1 ]]; then
-        echo "ossctl $ossctl_version is not the exact build validated for the held-tag protocol; found commit ${commit:-<missing>}" >&2
+      if [[ "$shipshape_version" == 0.10.1 ]]; then
+        echo "shipshape $shipshape_version is not the exact build validated for the held-tag protocol; found commit ${commit:-<missing>}" >&2
       else
-        echo "validated ossctl 0.10.0 or 0.10.1 required; found $ossctl_version (revalidate the pre-tag protocol before accepting another version)" >&2
+        echo "validated Shipshape 0.10.1 required; found $shipshape_version (revalidate the pre-tag protocol before accepting another version)" >&2
       fi
       exit 1
       ;;
@@ -83,7 +82,7 @@ release_plan_bump_level() {
     else error("plan coordinates mismatch")
     end
   ' "$plan_file" 2>/dev/null)" || {
-    echo "sealed ossctl 0.10 plan $plan_id has no validated bump level" >&2
+    echo "sealed Shipshape 0.10.1 plan $plan_id has no validated bump level" >&2
     exit 2
   }
   printf '%s\n' "$level"
@@ -109,7 +108,7 @@ assert_repo_identity() {
 }
 
 show_run() {
-  ossctl release show "$1" --json
+  shipshape release show "$1" --json
 }
 
 read_run_coordinates() {
@@ -231,6 +230,8 @@ assert_remote_tag_absent() {
 }
 
 held_checkpoint_path() {
+  # The wrapper-owned namespace moved only after all legacy held cuts were
+  # drained; engine plans and journals remain in the permanent ossctl namespace.
   local git_common_path git_common
   [[ "$run_id" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
     echo "invalid release run id: $run_id" >&2
@@ -244,7 +245,7 @@ held_checkpoint_path() {
     echo "cannot resolve the Git common directory: $git_common_path" >&2
     exit 2
   }
-  printf '%s/ossctl-held-tags/%s.json\n' "$git_common" "$run_id"
+  printf '%s/shipshape-held-tags/%s.json\n' "$git_common" "$run_id"
 }
 
 assert_held_journal() {
@@ -283,7 +284,7 @@ assert_held_journal() {
     .data.recent_events[-1].phase == "tag" and
     .data.recent_events[-1].outcome == "failed"
   ' <<<"$show_json" >/dev/null || {
-    echo "run $run_id is not the exact validated ossctl held-tag journal" >&2
+    echo "run $run_id is not the exact validated shipshape held-tag journal" >&2
     exit 2
   }
 }
@@ -382,7 +383,7 @@ resume_after_gate() {
     assert_repo_identity
     assert_remote_tag_absent
     assert_run_may_resume "$run_id"
-    ossctl release resume "$run_id" --json
+    shipshape release resume "$run_id" --json
   else
     remote_tag="$(remote_tag_commit)"
     [[ "$remote_tag" == "$bump_commit" ]] || {
@@ -392,7 +393,7 @@ resume_after_gate() {
     # The irreversible boundary is already crossed. Continue only this journal;
     # never create or push a replacement tag.
     assert_run_may_resume "$run_id"
-    ossctl release resume "$run_id" --json
+    shipshape release resume "$run_id" --json
   fi
 
   remote_tag="$(remote_tag_commit)"
@@ -400,38 +401,38 @@ resume_after_gate() {
     echo "remote tag $tag points at ${remote_tag:-<missing>}, expected CI-validated $bump_commit" >&2
     exit 2
   }
-  ossctl release verify "$run_id" --json
+  shipshape release verify "$run_id" --json
   rm -f "$(held_checkpoint_path)"
 }
 
 require_command git
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
-require_command ossctl
+require_command shipshape
 require_command jq
-require_supported_ossctl
+require_supported_shipshape
 
 command="${1:-}"
 case "$command" in
   plan)
     [[ $# -eq 2 ]] || usage
     validate_level "$2"
-    ossctl release list --json | jq -e '
+    shipshape release list --json | jq -e '
       .data.in_flight_count == 0 and (.data.unreadable | length) == 0
     ' >/dev/null || { echo "an active or unreadable release run must be reconciled before planning" >&2; exit 1; }
-    ossctl contract show --json --require-approved >/dev/null
-    ossctl contract validate --json >/dev/null
-    ossctl audit --json | jq -e '[.data.gaps[] | select(.severity == "blocking")] | length == 0' >/dev/null || {
+    shipshape contract show --json --require-approved >/dev/null
+    shipshape contract validate --json >/dev/null
+    shipshape audit --json | jq -e '[.data.gaps[] | select(.severity == "blocking")] | length == 0' >/dev/null || {
       echo "blocking OSS readiness gaps prevent a release" >&2
       exit 1
     }
     test -z "$(git status --porcelain)" || { echo "working tree must be clean" >&2; exit 1; }
-    exec ossctl release plan --bump "$2" --json
+    exec shipshape release plan --bump "$2" --json
     ;;
 
   verify)
     [[ $# -eq 2 ]] || usage
-    exec ossctl release verify "$2" --json
+    exec shipshape release verify "$2" --json
     ;;
 
   resume)
@@ -464,16 +465,16 @@ case "$command" in
     }
     base_commit="$(git rev-parse HEAD)"
 
-    list_json="$(ossctl release list --json)"
+    list_json="$(shipshape release list --json)"
     jq -e '.data.in_flight_count == 0 and (.data.unreadable | length) == 0' <<<"$list_json" >/dev/null || {
       echo "an active or unreadable release run must be reconciled before cutting" >&2
       exit 1
     }
 
     git_common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
-    hooks="$(mktemp -d "$git_common/ossctl-pretag.XXXXXX")"
+    hooks="$(mktemp -d "$git_common/shipshape-pretag.XXXXXX")"
     marker="$hooks/tag-push-blocked"
-    probe_tag="v0.0.0-ossctl-pretag-probe"
+    probe_tag="v0.0.0-shipshape-pretag-probe"
     cleanup() {
       git tag -d "$probe_tag" >/dev/null 2>&1 || true
       rm -rf "$hooks"
@@ -484,7 +485,7 @@ case "$command" in
 set -euo pipefail
 while read -r local_ref local_oid remote_ref remote_oid; do
   if [[ "$local_ref" == refs/tags/v* || "$remote_ref" == refs/tags/v* ]]; then
-    printf '%s\n' "$1" "$2" "$local_ref" "$local_oid" "$remote_ref" "$remote_oid" >"$OSSCTL_PRETAG_MARKER"
+    printf '%s\n' "$1" "$2" "$local_ref" "$local_oid" "$remote_ref" "$remote_oid" >"$SHIPSHAPE_PRETAG_MARKER"
     echo "release tag held locally until main CI is green on its exact commit" >&2
     exit 75
   fi
@@ -496,7 +497,7 @@ HOOK
     # Prove Git resolves the absolute hooksPath on a real (local-only) tag push.
     git init --quiet --bare "$hooks/probe.git"
     git tag "$probe_tag" HEAD
-    if OSSCTL_PRETAG_MARKER="$marker" \
+    if SHIPSHAPE_PRETAG_MARKER="$marker" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$hooks" \
       git push "$hooks/probe.git" "refs/tags/$probe_tag" >/dev/null 2>&1; then
       echo "pre-push safety hook did not reject a version tag" >&2
@@ -508,25 +509,25 @@ HOOK
     rm -rf "$hooks/probe.git"
 
     cut_args=(release cut --plan "$plan_id")
-    # The admitted 0.10 builds revalidate the sealed bump input at cut time.
-    # Read it only from the engine's content-addressed plan and let ossctl
+    # The admitted Shipshape 0.10.1 build revalidates the sealed bump input at cut time.
+    # Read it only from the engine's content-addressed plan and let shipshape
     # independently verify the seal.
     bump_level="$(release_plan_bump_level "$plan_id")"
     cut_args+=(--bump "$bump_level")
     cut_args+=(--json)
 
-    if OSSCTL_PRETAG_MARKER="$marker" \
+    if SHIPSHAPE_PRETAG_MARKER="$marker" \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$hooks" \
-      ossctl "${cut_args[@]}"; then
+      shipshape "${cut_args[@]}"; then
       echo "safety stop failed: release cut passed the tag boundary before exact-SHA CI" >&2
       exit 2
     fi
     test -s "$marker" || {
-      echo "cut failed before the pre-tag checkpoint; inspect ossctl output and release list" >&2
+      echo "cut failed before the pre-tag checkpoint; inspect shipshape output and release list" >&2
       exit 1
     }
 
-    list_json="$(ossctl release list --json)"
+    list_json="$(shipshape release list --json)"
     run_id="$(jq -er --arg plan "$plan_id" '
       [.data.runs[] | select(.plan_id == $plan and .in_flight)] |
       if length == 1 then .[0].run_id else error("expected one in-flight run for plan") end

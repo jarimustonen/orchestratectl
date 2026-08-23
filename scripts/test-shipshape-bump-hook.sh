@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/ossctl-bump-hook-test.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-bump-hook-test.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 mkdir -p "$tmp/home" "$tmp/system-bin"
@@ -44,7 +44,7 @@ EOF
 make_fixture() {
   local fixture="$1" mode="$2"
   mkdir -p "$fixture/scripts" "$fixture/$snap_dir" "$fixture/bin"
-  cp "$repo_root/scripts/ossctl-bump-hook.sh" "$fixture/scripts/"
+  cp "$repo_root/scripts/shipshape-bump-hook.sh" "$fixture/scripts/"
   cp "$repo_root/scripts/check-version-snapshots.sh" "$fixture/scripts/"
   if [[ "$mode" == unchanged-valid ]]; then
     write_snapshots "$fixture" 0.5.0
@@ -135,7 +135,7 @@ run_case() {
     cd "$fixture"
     env -i HOME="$tmp/home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
       HOOK_TEST_MODE="$mode" PATH="$fixture/bin:$tmp/system-bin:/usr/bin:/bin" \
-      ./scripts/ossctl-bump-hook.sh
+      ./scripts/shipshape-bump-hook.sh
   ) >"$stdout" 2>"$stderr"
   local status=$?
   set -e
@@ -163,4 +163,4 @@ run_case partial 1 "encodes version(s) 0.4.1, expected 0.5.0"
 run_case unchanged-valid 1 "version bump did not regenerate expected snapshot"
 run_case cargo-failure 93 "cargo stub: simulated snapshot failure"
 
-echo "ossctl bump hook tests passed"
+echo "shipshape bump hook tests passed"

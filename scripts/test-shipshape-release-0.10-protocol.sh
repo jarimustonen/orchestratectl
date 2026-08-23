@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
-# Safe real-engine protocol test for the exact fleet ossctl 0.10.1 build admitted
-# by scripts/ossctl-release.sh. The production-coordinate cut stops at the
-# exact-SHA CI lookup; resume pushes only to an asserted local bare origin.
+# Manual real-engine protocol gate for the exact Shipshape 0.10.1 build admitted
+# by scripts/shipshape-release.sh. It is intentionally not ordinary CI: callers
+# must supply that exact binary without installing it globally. The
+# production-coordinate cut stops at the exact-SHA CI lookup; resume pushes only
+# to an asserted local bare origin.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly expected_commit="6879e040a520a7a9c6196ed77791b4f2f10ad6f4"
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/ossctl-010-protocol.XXXXXX")"
+readonly expected_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-010-protocol.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/cargo"
 
 real_git="$(command -v git)"
-real_ossctl="$(command -v ossctl)"
-version_json="$($real_ossctl version --json)"
+real_shipshape="$(command -v shipshape)"
+version_json="$($real_shipshape version --json)"
 jq -e --arg commit "$expected_commit" '
   .schema_version == 1 and .data.schema_version == 1 and
   .data.version == "0.10.1" and .data.commit == $commit
 ' <<<"$version_json" >/dev/null || {
-  echo "test requires the validated ossctl 0.10.1 commit $expected_commit" >&2
+  echo "test requires the validated shipshape 0.10.1 commit $expected_commit" >&2
   exit 1
 }
 
 test -z "$(git -C "$repo_root" status --porcelain)" || {
-  echo "real ossctl protocol test requires a clean source tree" >&2
+  echo "real shipshape protocol test requires a clean source tree" >&2
   exit 1
 }
 
@@ -39,13 +41,13 @@ for tool in cargo rustc rustdoc; do
   test -x "$toolchain_bin/$tool" || { echo "active toolchain is missing $tool" >&2; exit 1; }
   ln -s "$toolchain_bin/$tool" "$tmp/bin/$tool"
 done
-cat >"$tmp/bin/ossctl" <<'STUB'
+cat >"$tmp/bin/shipshape" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$OSSCTL_ARGV_LOG"
-exec "$OSSCTL_REAL_BIN" "$@"
+printf '%s\n' "$*" >>"$SHIPSHAPE_ARGV_LOG"
+exec "$SHIPSHAPE_REAL_BIN" "$@"
 STUB
-chmod +x "$tmp/bin/ossctl"
+chmod +x "$tmp/bin/shipshape"
 for tool in dist cargo-dist; do
   tool_path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
   ln -s "$tool_path" "$tmp/bin/$tool"
@@ -79,7 +81,7 @@ case "$*" in
     fi
     # Keep the cut transport local while supplying the production remote
     # coordinate to the wrapper-created hook. The wrapper already probes this
-    # hook through a real local Git push before ossctl reaches this path.
+    # hook through a real local Git push before shipshape reaches this path.
     ref="${3:-}"
     local_ref="${ref%%:*}"
     remote_ref="${ref#*:}"
@@ -89,7 +91,7 @@ case "$*" in
     printf '%s %s %s %s\n' "$local_ref" "$oid" "$remote_ref" "$zeros" |
       "$GIT_CONFIG_VALUE_0/pre-push" origin git@github.com:jarimustonen/orchestratectl.git
     ;;
-  "push origin HEAD:refs/heads/main"|push\ */probe.git\ refs/tags/v0.0.0-ossctl-pretag-probe)
+  "push origin HEAD:refs/heads/main"|push\ */probe.git\ refs/tags/v0.0.0-shipshape-pretag-probe)
     exec "$REAL_GIT" "$@"
     ;;
   push\ *)
@@ -150,8 +152,8 @@ run_env=(
   TMPDIR="$tmp"
   PATH="$tmp/bin:/usr/bin:/bin"
   REAL_GIT="$real_git"
-  OSSCTL_REAL_BIN="$real_ossctl"
-  OSSCTL_ARGV_LOG="$tmp/ossctl.log"
+  SHIPSHAPE_REAL_BIN="$real_shipshape"
+  SHIPSHAPE_ARGV_LOG="$tmp/shipshape.log"
   GIT_STUB_LOG="$tmp/git.log"
   TAG_PUSH_LOG="$tmp/tag-push.log"
   GH_STUB_LOG="$tmp/gh.log"
@@ -162,13 +164,13 @@ run_env=(
 
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ossctl contract show --json --require-approved |
+  "${run_env[@]}" shipshape contract show --json --require-approved |
     jq -e '(.data.targets | length > 0) and
       (.data.targets | all(.adapter == "cargo-publish-ci" or .adapter == "cargo-dist"))' >/dev/null || {
       echo "refusing real protocol cut: every publish target must be delegated to CI" >&2
       exit 1
     }
-  "${run_env[@]}" ./scripts/ossctl-release.sh plan minor >"$tmp/plan.json"
+  "${run_env[@]}" ./scripts/shipshape-release.sh plan minor >"$tmp/plan.json"
 )
 plan_id="$(jq -er '.data.plan_id' "$tmp/plan.json")"
 jq -e '
@@ -186,27 +188,27 @@ mv "$tmp/plan.tampered.json" "$plan_file"
 set +e
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ossctl release cut --plan "$plan_id" --bump major --json
+  "${run_env[@]}" shipshape release cut --plan "$plan_id" --bump major --json
 ) >"$tmp/tamper.stdout" 2>"$tmp/tamper.stderr"
 tamper_status=$?
 set -e
-[[ "$tamper_status" -ne 0 ]] || { echo "ossctl accepted a plan with an invalid seal" >&2; exit 1; }
+[[ "$tamper_status" -ne 0 ]] || { echo "shipshape accepted a plan with an invalid seal" >&2; exit 1; }
 mv "$tmp/plan.original.json" "$plan_file"
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ossctl release list --json |
+  "${run_env[@]}" shipshape release list --json |
     jq -e '.data.in_flight_count == 0 and (.data.unreadable | length) == 0' >/dev/null
 )
 
 set +e
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ./scripts/ossctl-release.sh cut "$plan_id"
+  "${run_env[@]}" ./scripts/shipshape-release.sh cut "$plan_id"
 ) >"$tmp/cut.stdout" 2>"$tmp/cut.stderr"
 status=$?
 set -e
 [[ "$status" -eq 42 ]] || {
-  echo "real ossctl cut did not stop at the isolated exact-SHA CI gate (status=$status)" >&2
+  echo "real shipshape cut did not stop at the isolated exact-SHA CI gate (status=$status)" >&2
   cat "$tmp/cut.stderr" >&2
   exit 1
 }
@@ -214,7 +216,7 @@ grep -F reached-exact-sha-ci-gate "$tmp/cut.stderr" >/dev/null
 
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ossctl release list --json >"$tmp/list.json"
+  "${run_env[@]}" shipshape release list --json >"$tmp/list.json"
 )
 run_id="$(jq -er --arg plan "$plan_id" '
   [.data.runs[] | select(.plan_id == $plan and .in_flight)] |
@@ -222,7 +224,7 @@ run_id="$(jq -er --arg plan "$plan_id" '
 ' "$tmp/list.json")"
 (
   cd "$tmp/repo"
-  "${run_env[@]}" ossctl release show "$run_id" --json >"$tmp/show.json"
+  "${run_env[@]}" shipshape release show "$run_id" --json >"$tmp/show.json"
 )
 tag="$(jq -er '.data.state.tags | keys | if length == 1 then .[0] else error("one tag required") end' "$tmp/show.json")"
 bump_commit="$(jq -er '.data.state.bump.commit' "$tmp/show.json")"
@@ -232,9 +234,9 @@ grep -Fx "$expected_gh" "$tmp/gh.log" >/dev/null || {
   cat "$tmp/gh.log" >&2
   exit 1
 }
-grep -Fx "release cut --plan $plan_id --bump minor --json" "$tmp/ossctl.log" >/dev/null || {
-  echo "wrapper did not pass the sealed minor bump input to ossctl 0.10.1" >&2
-  cat "$tmp/ossctl.log" >&2
+grep -Fx "release cut --plan $plan_id --bump minor --json" "$tmp/shipshape.log" >/dev/null || {
+  echo "wrapper did not pass the sealed minor bump input to shipshape 0.10.1" >&2
+  cat "$tmp/shipshape.log" >&2
   exit 1
 }
 [[ "$(wc -l <"$tmp/tag-push.log" | tr -d ' ')" == 1 ]] || {
@@ -262,7 +264,7 @@ jq -e --arg tag "$tag" '
 ' "$tmp/show.json" >/dev/null
 [[ "$(git -C "$tmp/repo" rev-parse "$tag^{commit}")" == "$bump_commit" ]]
 test -z "$(git -C "$tmp/repo" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
-test -s "$tmp/repo/.git/ossctl-held-tags/$run_id.json"
+test -s "$tmp/repo/.git/shipshape-held-tags/$run_id.json"
 
 # Exercise the actual 0.10.1 resume JSONL and verify envelope after the safe
 # boundary. The release tag is pushed only to the local bare origin. Controlled
@@ -274,7 +276,7 @@ set +e
   cd "$tmp/repo"
   "${run_env[@]}" ALLOW_TAG_PUSH=1 GH_MODE=delegated-failed \
     FIXTURE_ORIGIN="$tmp/origin.git" EXPECTED_TAG="$tag" EXPECTED_BUMP_COMMIT="$bump_commit" \
-    ossctl release resume "$run_id" --json
+    shipshape release resume "$run_id" --json
 ) >"$tmp/resume.jsonl" 2>"$tmp/resume.stderr"
 resume_status=$?
 set -e
@@ -293,7 +295,7 @@ local_tag_object="$(git -C "$tmp/repo" rev-parse "refs/tags/$tag")"
 remote_tag_object="$(git -C "$tmp/repo" ls-remote origin "refs/tags/$tag" | awk '{print $1}')"
 remote_tag_commit="$(git -C "$tmp/repo" ls-remote origin "refs/tags/$tag^{}" | awk '{print $1}')"
 [[ "$(git -C "$tmp/repo" cat-file -t "$local_tag_object")" == tag ]] || {
-  echo "ossctl did not create an annotated release tag" >&2
+  echo "shipshape did not create an annotated release tag" >&2
   exit 1
 }
 [[ "$remote_tag_object" == "$local_tag_object" && "$remote_tag_commit" == "$bump_commit" ]] || {
@@ -304,10 +306,10 @@ remote_tag_commit="$(git -C "$tmp/repo" ls-remote origin "refs/tags/$tag^{}" | a
   cd "$tmp/repo"
   "${run_env[@]}" GH_MODE=delegated-failed FIXTURE_ORIGIN="$tmp/origin.git" \
     EXPECTED_TAG="$tag" EXPECTED_BUMP_COMMIT="$bump_commit" \
-    ossctl release show "$run_id" --json >"$tmp/show-resumed.json"
+    shipshape release show "$run_id" --json >"$tmp/show-resumed.json"
   "${run_env[@]}" GH_MODE=delegated-failed FIXTURE_ORIGIN="$tmp/origin.git" \
     EXPECTED_TAG="$tag" EXPECTED_BUMP_COMMIT="$bump_commit" \
-    ossctl release verify "$run_id" --json >"$tmp/verify.json"
+    shipshape release verify "$run_id" --json >"$tmp/verify.json"
 )
 jq -e --arg tag "$tag" '
   .schema_version == 1 and .data.state.schema_version == 5 and
@@ -335,4 +337,4 @@ jq -e '
 # The wrapper must have supplied 0.10.1's matching --bump argument; the complete
 # fixture proves held-tag, resume, and read-only verify surfaces without a real
 # remote release or registry publish.
-echo "ossctl 0.10.1 real protocol test passed (held and locally resumed $run_id at $tag; production remote untouched)"
+echo "shipshape 0.10.1 real protocol test passed (held and locally resumed $run_id at $tag; production remote untouched)"

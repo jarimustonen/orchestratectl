@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deterministic project hook for ossctl's engine-owned version bump.
-# Runs inside ossctl's clean release checkout after manifest/pin/lock/changelog edits.
+# Deterministic project hook for shipshape's engine-owned version bump.
+# Runs inside shipshape's clean release checkout after manifest/pin/lock/changelog edits.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -13,7 +13,7 @@ snapshots=(
   "$snapshot_dir/envelope_snapshots__version_text.snap"
 )
 
-state_dir="$(mktemp -d "${TMPDIR:-/tmp}/ossctl-bump-hook.XXXXXX")"
+state_dir="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-bump-hook.XXXXXX")"
 cleanup() { rm -rf "$state_dir"; }
 trap cleanup EXIT
 
@@ -27,7 +27,7 @@ for index in "${!snapshots[@]}"; do
 done
 
 # Preserve the complete non-version-snapshot state across the test. This catches
-# tracked, staged, and untracked side effects while allowing ossctl's pre-hook
+# tracked, staged, and untracked side effects while allowing shipshape's pre-hook
 # manifest/lock/changelog edits to remain exactly as they were.
 exclude_args=()
 for snapshot in "${snapshots[@]}"; do
@@ -100,5 +100,5 @@ for index in "${!snapshots[@]}"; do
   esac
 done
 
-echo "ossctl bump hook regenerated and validated ${#snapshots[@]} version snapshots"
+echo "shipshape bump hook regenerated and validated ${#snapshots[@]} version snapshots"
 exit 0

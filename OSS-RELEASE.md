@@ -10,7 +10,7 @@ targets:
   - {ecosystem: rust, package: orchestratectl, registry: homebrew,    adapter: cargo-dist}
 versioning: semver
 changelog: {mode: curated, source: issuectl-trailers}
-release: {model: gated, layout: single, bump_hook: "./scripts/ossctl-bump-hook.sh"}
+release: {model: gated, layout: single, bump_hook: "./scripts/shipshape-bump-hook.sh"}
 distribution:
   adapter: cargo-dist
   gh_releases: true
@@ -66,7 +66,7 @@ docs_site: none
 - **docs_site: none** — no docs-site generator detected; a docs site is a production-tier concern.
 
 ## Release notes
-- **The pinned ossctl 0.10.0/0.10.1 protocol owns the release transaction.** `scripts/ossctl-release.sh plan
+- **The pinned Shipshape 0.10.1 protocol owns the release transaction.** `scripts/shipshape-release.sh plan
   major|minor|patch` seals a non-mutating plan. The plan's bump phase updates
   `[workspace.package].version`, rewrites `orchestratectl`'s exact `octl-core =
   "=<version>"` pin, refreshes `Cargo.lock`, finalizes `CHANGELOG.md`, runs the
@@ -75,26 +75,25 @@ docs_site: none
   Consequently the host never runs `cargo publish`: the one version tag delegates
   all four publish legs to CI, and the engine observes their results at verify.
 - **`release.bump_hook` deterministically regenerates and reviews version fixtures.**
-  `./scripts/ossctl-bump-hook.sh` runs the locked `envelope_snapshots` test with
+  `./scripts/shipshape-bump-hook.sh` runs the locked `envelope_snapshots` test with
   `INSTA_UPDATE=always`, rejects pending `.snap.new` files and unrelated snapshot
   edits, and runs `scripts/check-version-snapshots.sh`. Its changes are folded into
-  ossctl's bump commit. The hook never installs or mutates a global binary or skill.
+  Shipshape's bump commit. The hook never installs or mutates a global binary or skill.
 - **The exact-SHA pre-tag gate is implemented as a resumable checkpoint.** The
-  pinned ossctl 0.10 protocol creates the bump commit inside its clean checkout and otherwise proceeds
+  pinned Shipshape 0.10.1 protocol creates the bump commit inside its clean checkout and otherwise proceeds
   directly to tag push, so the wrapper temporarily rejects only that push. The
   resulting journalled failure leaves the local tag on the exact bump commit. The
   wrapper fast-forwards and pushes `main`, waits for `ci.yml` filtered by that exact
   SHA and `event=push`, then invokes `release resume` only after `gh run watch
   --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
   A red or missing main run leaves the release untagged remotely and resumable only
-  through `scripts/ossctl-release.sh resume <run-id>`. The wrapper admits only
-  ossctl 0.10.0 commit `a35b9917fc65a6354fe855b7c956521b47669907` (historically validated in
-  `release-wrapper-rejects-2`) and ossctl 0.10.1 commit
-  `6879e040a520a7a9c6196ed77791b4f2f10ad6f4` (current fleet validation), each
-  proven against this checkpoint.
-  It reads the bump
+  through `scripts/shipshape-release.sh resume <run-id>`. The wrapper admits only
+  Shipshape 0.10.1 commit `3e46568d6969701c5fea82fb134b62aa17121cbe` from the retained
+  `jarimustonen/ossctl` source repository. Re-pinning requires a passing manual
+  `scripts/test-shipshape-release-0.10-protocol.sh` run against the candidate build,
+  recorded in the issue that changes the pin. It reads the bump
   level from the engine's sealed, content-addressed plan and supplies the now-required
-  matching `release cut --bump` input; ossctl still verifies the seal. Any other
+  matching `release cut --bump` input; Shipshape still verifies the seal. Any other
   version/build or journal near-miss fails closed and requires revalidation.
 - **crates.io publishes are permanent.** Publishing `octl-core@<v>` and `orchestratectl@<v>`
   cannot be undone: a version can be yanked but never re-used or overwritten. Never publish
@@ -103,15 +102,15 @@ docs_site: none
 - **CI-green tag gate.** From clean, synchronized `main`, seal and inspect the JSON plan,
   then pass its id back to the wrapper:
   ```bash
-  scripts/ossctl-release.sh plan patch > /tmp/release-plan.json
+  scripts/shipshape-release.sh plan patch > /tmp/release-plan.json
   jq . /tmp/release-plan.json
-  scripts/ossctl-release.sh cut "$(jq -r .data.plan_id /tmp/release-plan.json)"
+  scripts/shipshape-release.sh cut "$(jq -r .data.plan_id /tmp/release-plan.json)"
   ```
   During `cut`, the wrapper verifies that the local tag points at the journalled bump commit,
   fast-forwards `main` to that commit, pushes `main`, and filters `gh run list` by workflow,
-  branch, **exact SHA**, and `event=push`. `gh run watch "$id" --exit-status && ossctl release
+  branch, **exact SHA**, and `event=push`. `gh run watch "$id" --exit-status && shipshape release
   resume …` is load-bearing: only a green run can resume the held tag push. Do not replace the
-  wrapper with a direct `ossctl release cut`, bare `ossctl release resume` while the tag is local,
+  wrapper with a direct `shipshape release cut`, bare `shipshape release resume` while the tag is local,
   or `git push <tag>`; each bypasses this project's pre-tag gate. `publish-crates.yml` repeats the full gate for crates.io, while cargo-dist's
   independent `release.yml` makes the pre-tag main check necessary for binaries and Homebrew.
 - **Two distribution channels, one tag.** Pushing `vX.Y.Z` triggers both channels. (1)

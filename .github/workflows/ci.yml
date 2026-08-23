@@ -43,10 +43,10 @@ jobs:
       - run: ./scripts/check-version-snapshots.sh
       # Exercises the changed-snapshot success path and every hook file guard
       # against a real temporary git fixture with a deterministic cargo stub.
-      - run: ./scripts/test-ossctl-bump-hook.sh
-      # Uses strict git/gh/ossctl stubs and stops before release state or refs can
+      - run: ./scripts/test-shipshape-bump-hook.sh
+      # Uses strict git/gh/shipshape stubs and stops before release state or refs can
       # be mutated. Its minimal PATH catches undeclared preflight dependencies.
-      - run: ./scripts/test-ossctl-release.sh
+      - run: ./scripts/test-shipshape-release.sh
 
   clippy:
     name: clippy

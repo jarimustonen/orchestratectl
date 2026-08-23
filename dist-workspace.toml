@@ -13,7 +13,7 @@ github-build-setup = "../build-setup.yml"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
 # Homebrew tap repository for the auto-generated formula.
-# Per-tool tap convention (matches homebrew-ossctl / homebrew-issuectl):
+# Per-tool tap convention (matches homebrew-shipshape / homebrew-issuectl):
 # repo `homebrew-orchestratectl` → `brew install jarimustonen/orchestratectl/orchestratectl`.
 tap = "jarimustonen/homebrew-orchestratectl"
 # Publish jobs to run in CI

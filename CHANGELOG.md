@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
+
 ## [0.5.1] - 2026-08-23
 
 ## [0.5.0] - 2026-08-21
