@@ -3,7 +3,7 @@ created: 2026-08-17
 updated: 2026-08-23
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 labels: [configuration, agents]
 lane: surface
@@ -14,6 +14,8 @@ commits:
 - hash: 8bad164
   summary: unify agent profiles with telemetry policy
 review_status: requested
+closed: 2026-08-23
+closed_by: orchestrator
 ---
 
 # Add configurable agent profiles
@@ -171,3 +173,9 @@ Product decision 2026-08-21: this capability is wanted, not speculative backlog.
 ### 2026-08-22T17:50:02Z · @jari
 
 Execution order supersedes the earlier implementation-ready wording: complete @worker-telemetry-protocol design first; then revise this profile design only; then stop at @worker-control-plane-review for combined human approval. Do not spawn implementation slices before that checkpoint.
+
+## Resolution
+
+### 2026-08-23T07:17:17Z · @orchestrator
+
+Current delivery phase completed: design.md was refreshed against the landed telemetry protocol and is now frozen for the joint worker-control-plane human checkpoint. Production implementation remains unauthorized and will be represented by separately approved slices only after that checkpoint.
