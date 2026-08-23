@@ -1,14 +1,19 @@
 ---
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-08-23
 type: feature
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 related: ['@supervisor-stall-detection', '@worker-wedged-one', '@end-end-stint', '@add-configurable-agent']
 lane: lifecycle
 lane_seq: 30
 collision: [run-create]
+closed: 2026-08-23
+closed_by: pi
+commits:
+- hash: b414f40
+  summary: Phase 1 worker telemetry design and feasibility
 ---
 
 # Harness-neutral worker telemetry protocol with a pi.dev adapter
@@ -57,15 +62,15 @@ This is distinct from the rejected custom background-job manager. It reports the
 - Record the design and split implementation into independently reviewable issues.
 - Stop for human review before implementing the production protocol or extension.
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- The design is based on told adapter facts, not inferred process activity.
-- Silence can surface missing telemetry but cannot terminalize a run or delete work.
-- The pi adapter can report tool lifecycle and keepalive through public APIs without blocking the agent turn.
-- Unsupported harnesses are represented honestly; Claude autonomous runs are not silently treated as telemetry-capable.
-- The contract is harness-neutral and usable by a future adapter without pi-specific fields.
-- The external package boundary and installation/trust model are explicit.
-- The design includes failure injection for adapter crash, pi crash, orchestratectl unavailability, delayed/duplicate heartbeat, stale attempt, long healthy tool execution, and clean agent settlement.
+- [x] The design is based on told adapter facts, not inferred process activity.
+- [x] Silence can surface missing telemetry but cannot terminalize a run or delete work.
+- [x] The pi adapter can report tool lifecycle and keepalive through public APIs without blocking the agent turn.
+- [x] Unsupported harnesses are represented honestly; Claude autonomous runs are not silently treated as telemetry-capable.
+- [x] The contract is harness-neutral and usable by a future adapter without pi-specific fields.
+- [x] The external package boundary and installation/trust model are explicit.
+- [x] The design includes failure injection for adapter crash, pi crash, orchestratectl unavailability, delayed/duplicate heartbeat, stale attempt, long healthy tool execution, and clean agent settlement.
 
 ## Related work
 
@@ -74,3 +79,9 @@ This is distinct from the rejected custom background-job manager. It reports the
 - `@end-end-stint` (durable stint/checkpoint lifecycle)
 - `@add-configurable-agent` (harness capability and autonomous/interactive selection)
 - `@pi-background-jobs-extension` (obsolete; records the separate rejected background-job design)
+
+## Resolution
+
+### 2026-08-23T06:44:41Z · @pi
+
+Phase 1 design and feasibility slice completed. Production work remains blocked on human review; five implementation candidates were filed untriaged for lane-or-close disposition.
