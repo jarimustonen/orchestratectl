@@ -32,14 +32,28 @@ do not install tools, push a GitHub tag, or publish a registry artifact.
 - 0.10.1 changes fresh-plan sealing and delegated-destination observation, but
   does not change the held pre-tag journal protocol. Resume still crosses the
   irreversible boundary by pushing the already-created tag; verify remains the
-  engine-owned reconciliation surface. The isolated test exercises their JSON
-  and journal transitions against controlled local/stub destinations.
+  engine-owned reconciliation surface. The isolated test exercises the resumed
+  JSONL and journal transition against a local remote, then forces all four
+  delegated workflow observations to a deterministic failed state. Engine
+  `resume` fails its verification barrier; standalone read-only `verify` exits
+  successfully with four explicit failed/unknown target reports.
+
+## Validation limits
+
+The post-tag fixture intentionally proves the failure barrier, not a successful
+publication: no crates.io, GitHub Release, or Homebrew destination is made to
+look published. Successful destination reconciliation remains ossctl's own
+adapter/engine coverage and the production cut's mandatory verify phase. The
+real installed-binary exercise covers current fleet build 0.10.1; the immutable
+0.10.0 build's real-engine evidence remains recorded in predecessor issue
+`release-wrapper-rejects-2` and its validation document.
 
 ## Fail-closed conclusions
 
 The wrapper continues to admit the previously validated 0.10.0 build and now
-also admits only the exact fleet 0.10.1 build above. It rejects future versions,
-same-version rebuilds, malformed version envelopes, abandoned run ids, absent
+also admits only the exact fleet 0.10.1 version/commit identity above. It rejects
+future versions, mismatched version/commit identities, malformed version
+envelopes, abandoned run ids, absent
 or mismatched wrapper checkpoints, changed tag coordinates, remote tag presence,
 non-descendant bumps, journal phase/event near-misses, repository mismatches,
 and CI runs that do not attest the exact main SHA. No version range or protocol

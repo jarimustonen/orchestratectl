@@ -72,8 +72,13 @@ cat >"$tmp/bin/ossctl" <<'STUB'
 set -euo pipefail
 printf '%s\n' "$*" >>"$OSSCTL_STUB_LOG"
 if [[ "$*" == "version --json" ]]; then
-  jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.1}" --arg commit "${OSSCTL_STUB_COMMIT:-6879e040a520a7a9c6196ed77791b4f2f10ad6f4}" \
-    '{schema_version:1,data:{version:$version,commit:$commit,schema_version:1}}'
+  if [[ "${OSSCTL_STUB_OMIT_COMMIT:-0}" == 1 ]]; then
+    jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.1}" \
+      '{schema_version:1,data:{version:$version,schema_version:1}}'
+  else
+    jq -n --arg version "${OSSCTL_STUB_VERSION:-0.10.1}" --arg commit "${OSSCTL_STUB_COMMIT:-6879e040a520a7a9c6196ed77791b4f2f10ad6f4}" \
+      '{schema_version:1,data:{version:$version,commit:$commit,schema_version:1}}'
+  fi
   exit 0
 fi
 if [[ "${1:-}" == release && "${2:-}" == show ]]; then
@@ -101,6 +106,7 @@ run_wrapper() {
     OSSCTL_STUB_LOG="$tmp/ossctl.log" \
     OSSCTL_STUB_VERSION="${OSSCTL_STUB_VERSION:-0.10.1}" \
     OSSCTL_STUB_COMMIT="${OSSCTL_STUB_COMMIT:-6879e040a520a7a9c6196ed77791b4f2f10ad6f4}" \
+    OSSCTL_STUB_OMIT_COMMIT="${OSSCTL_STUB_OMIT_COMMIT:-0}" \
     GH_STUB_REPO="$gh_repo" \
     "$repo_root/scripts/ossctl-release.sh" resume "$test_run_id" \
     >"$tmp/stdout" 2>"$tmp/stderr"
@@ -236,6 +242,28 @@ for validated in \
   set -e
   [[ "$status" -eq 42 ]] || { echo "validated ossctl $version build was rejected" >&2; exit 1; }
 done
+
+for invalid_pair in \
+  '0.10.0:6879e040a520a7a9c6196ed77791b4f2f10ad6f4' \
+  '0.10.1:a35b9917fc65a6354fe855b7c956521b47669907'; do
+  reset_logs
+  set +e
+  OSSCTL_STUB_VERSION="${invalid_pair%%:*}" OSSCTL_STUB_COMMIT="${invalid_pair#*:}" run_wrapper
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || { echo "cross-pair ossctl identity $invalid_pair did not fail closed" >&2; exit 1; }
+  grep -F "is not the exact build validated for the held-tag protocol" "$tmp/stderr" >/dev/null
+  test ! -s "$tmp/gh.log" || { echo "cross-pair ossctl identity $invalid_pair reached repository preflight" >&2; exit 1; }
+done
+
+reset_logs
+set +e
+OSSCTL_STUB_VERSION=0.10.1 OSSCTL_STUB_OMIT_COMMIT=1 run_wrapper
+status=$?
+set -e
+[[ "$status" -eq 1 ]] || { echo "ossctl identity with a missing commit did not fail closed" >&2; exit 1; }
+grep -F 'found commit <missing>' "$tmp/stderr" >/dev/null
+test ! -s "$tmp/gh.log" || { echo "ossctl identity with a missing commit reached repository preflight" >&2; exit 1; }
 
 for abandoned in 01M0FD8FSTMGYG8YTV92WMWC87 01M0FG88NAKBJ7Y3QNFZEHRM4K; do
   reset_logs

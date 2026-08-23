@@ -88,8 +88,10 @@ docs_site: none
   --exit-status` succeeds. Resume pushes the already-created tag and CI owns publish.
   A red or missing main run leaves the release untagged remotely and resumable only
   through `scripts/ossctl-release.sh resume <run-id>`. The wrapper admits only
-  ossctl 0.10.0 commit `a35b9917fc65a6354fe855b7c956521b47669907` and ossctl 0.10.1 commit
-  `6879e040a520a7a9c6196ed77791b4f2f10ad6f4`, each proven against this checkpoint.
+  ossctl 0.10.0 commit `a35b9917fc65a6354fe855b7c956521b47669907` (historically validated in
+  `release-wrapper-rejects-2`) and ossctl 0.10.1 commit
+  `6879e040a520a7a9c6196ed77791b4f2f10ad6f4` (current fleet validation), each
+  proven against this checkpoint.
   It reads the bump
   level from the engine's sealed, content-addressed plan and supplies the now-required
   matching `release cut --bump` input; ossctl still verifies the seal. Any other

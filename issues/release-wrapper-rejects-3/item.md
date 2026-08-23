@@ -16,8 +16,6 @@ commits:
 
 ## Description
 
-## Description
-
 The owned-CLI release sweep found genuinely releasable orchestratectl patch content for v0.5.1, but `scripts/ossctl-release.sh` fails closed because it admits only ossctl 0.10.0 commit `a35b9917…` while the fleet-managed installed release is ossctl 0.10.1.
 
 The wrapper's version pin is intentionally a protocol safety gate. Revalidate 0.10.1 against every held-tag, journal, exact-SHA CI, resume, and verify assumption before widening it. Repository policy grants fully autonomous release cuts once the wrapper and exact plan are valid; there is no human approval gate.
