@@ -1,15 +1,16 @@
 ---
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-08-23
 type: task
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 related: ['@worker-telemetry-protocol', '@add-configurable-agent', '@end-end-stint']
 lane: lifecycle
 lane_seq: 50
 collision: [run-create]
 blocked_by: ['@worker-telemetry-protocol', '@add-configurable-agent']
+review_status: requested
 ---
 
 # Review worker telemetry and agent profiles as one control plane
@@ -62,3 +63,9 @@ Produce a short integration review under this issue that:
 - `@worker-telemetry-protocol`
 - `@add-configurable-agent`
 - `@end-end-stint`
+
+## Agent Runs
+
+### 2026-08-23T07:35:48Z · @pi
+
+Prepared integration-review.md from both prerequisite designs. Four-model /llm-review with two cross-review rounds was assessed; all eight surviving findings were corrected. The document remains a recommendation-only checkpoint, leaves all five telemetry candidates untriaged and unchanged, creates no profile slices, and requests Jari’s explicit approve / amend / reject decision.
