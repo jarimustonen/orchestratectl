@@ -1,0 +1,31 @@
+---
+created: 2026-08-24
+updated: 2026-08-24
+type: task
+status: untriaged
+priority: normal
+provenance: other
+provenance_detail: Observed missing external-package dependency during orchestratectl worker control-plane E2E rollout
+source_ref: orchestratectl:01m0sxn5pfrtybkgyqrkvzspsm/follow-up:external-pi-worker-telemetry-adapter
+originating_run: 01m0sxn5pfrtybkgyqrkvzspsm
+originating_run_kind: spinoff
+---
+
+# Deliver the external pi worker-telemetry adapter package
+
+## Description
+
+## Problem
+
+The separately owned production pi.dev worker-telemetry adapter package does not yet exist in the available source tree or installed pi package set. The orchestratectl repository publishes `contracts/worker-telemetry-v1/` and validates it with a harness-neutral fake driver, but that does not execute real pi lifecycle hooks, package installation, coalescing timers, or shutdown callbacks.
+
+## Required delivery
+
+Create and publish the external pi package that consumes `contracts/worker-telemetry-v1/` and uses only documented public pi hooks. Run the contract's `adapter_sequences` in the package with a virtual monotonic clock and fake sender, including event storms, long tools, endpoint failures, refresh, and bounded shutdown. Validate an ordinary package install only in an isolated temporary home/package root, never against user-global pi or orchestratectl state.
+
+## Completion evidence
+
+- Package source and release identity are named.
+- All adapter-owned conformance sequences pass in the package.
+- An isolated installation launches configured autonomous pi and emits accepted samples through the public endpoint.
+- Failure disclosure and rollback are demonstrated without changing global pi settings or installed orchestratectl.

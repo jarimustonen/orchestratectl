@@ -54,6 +54,9 @@ fn write_json(home: &TempDir, name: &str, value: &Value) -> PathBuf {
 }
 
 fn create_run_and_node(home: &TempDir) -> String {
+    let worktree = home.path().join("fixture-work");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join("agent-work.txt"), b"preserve me").unwrap();
     let created = success_json(bin(home).args([
         "--output",
         "json",
@@ -65,7 +68,15 @@ fn create_run_and_node(home: &TempDir) -> String {
         "telemetry-contract-fixture",
     ]));
     let run_id = created["data"]["run_id"].as_str().unwrap().to_string();
-    let node = write_json(home, "node.json", &json!({"kind": "spinoff"}));
+    let node = write_json(
+        home,
+        "node.json",
+        &json!({
+            "kind": "spinoff",
+            "worktree_path": worktree,
+            "branch": "wt/telemetry-contract-fixture"
+        }),
+    );
     success_json(bin(home).args([
         "--output",
         "json",
@@ -92,18 +103,158 @@ fn contract_endpoint_args() -> Vec<String> {
         .collect()
 }
 
+/// Fake adapter boundary used by repository E2E tests.
+///
+/// It deliberately contains no pi hooks, event translation, timers, or
+/// production adapter logic: it only invokes the argv published by the public
+/// contract and writes one caller-supplied request byte sequence to stdin.
+struct PublicTelemetryEndpointDriver<'a> {
+    home: &'a TempDir,
+}
+
+impl PublicTelemetryEndpointDriver<'_> {
+    fn submit(&self, bytes: &[u8]) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+            .env_remove("PATH")
+            .env_remove("OCTL_RUN_ID")
+            .env_remove("OCTL_NODE_ID")
+            .env_remove("OCTL_ATTEMPT")
+            .env("ORCHESTRATECTL_HOME", self.home.path())
+            .args(contract_endpoint_args())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn public telemetry endpoint with stripped environment");
+        use std::io::Write as _;
+        // An oversized request may be rejected before the pipe is fully drained.
+        if let Err(error) = child.stdin.take().unwrap().write_all(bytes) {
+            assert!(
+                bytes.len() > 4096 && error.kind() == std::io::ErrorKind::BrokenPipe,
+                "unexpected telemetry stdin error: {error}"
+            );
+        }
+        child.wait_with_output().unwrap()
+    }
+}
+
 fn update_from_bytes(home: &TempDir, bytes: &[u8]) -> Output {
-    let mut child = bin(home)
-        .args(contract_endpoint_args())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn telemetry endpoint");
-    use std::io::Write as _;
-    // An oversized request may be rejected before the pipe is fully drained.
-    let _ = child.stdin.take().unwrap().write_all(bytes);
-    child.wait_with_output().unwrap()
+    PublicTelemetryEndpointDriver { home }.submit(bytes)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CanonicalControlSnapshot {
+    /// Every non-telemetry run-owned file, keyed by path relative to the run.
+    run_files: BTreeMap<PathBuf, Vec<u8>>,
+    /// The advisory subtree is tracked separately so an accepted request may
+    /// replace exactly its one sample while no other artifact can hide there.
+    telemetry_files: BTreeMap<PathBuf, Vec<u8>>,
+    /// Full simulated agent worktree. Cleanup must not add, remove, or alter
+    /// work merely because advisory input arrived.
+    work_files: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+fn collect_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn recurse(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).expect("read fixture directory") {
+            let entry = entry.expect("read fixture entry");
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                recurse(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(&path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    if root.is_dir() {
+        recurse(root, root, &mut files);
+    }
+    files
+}
+
+fn canonical_control_snapshot(home: &TempDir, run_id: &str) -> CanonicalControlSnapshot {
+    let run = home.path().join("runs").join(run_id);
+    let telemetry = run.join("telemetry");
+    let mut run_files = collect_files(&run);
+    run_files.retain(|path, _| {
+        path.components()
+            .next()
+            .is_none_or(|part| part.as_os_str() != "telemetry")
+    });
+    CanonicalControlSnapshot {
+        run_files,
+        telemetry_files: collect_files(&telemetry),
+        work_files: collect_files(&home.path().join("fixture-work")),
+    }
+}
+
+/// Public-surface proof that advisory input did not settle or land the run.
+/// A recursive inventory of all non-telemetry run files proves no report,
+/// retry, merge transaction, outcome input, cleanup event, or other durable
+/// control artifact was added, removed, or changed. The external marker proves
+/// cleanup did not delete or alter simulated agent work.
+fn assert_control_plane_unchanged(
+    home: &TempDir,
+    run_id: &str,
+    before: &CanonicalControlSnapshot,
+    allow_sample_replace: bool,
+    case: &str,
+) {
+    let after = canonical_control_snapshot(home, run_id);
+    assert_eq!(after.run_files, before.run_files, "{case}: control files");
+    assert_eq!(after.work_files, before.work_files, "{case}: agent work");
+    if allow_sample_replace {
+        assert_eq!(
+            after.telemetry_files.len(),
+            1,
+            "{case}: telemetry file count"
+        );
+        assert!(
+            after.telemetry_files.contains_key(Path::new("n-0001.json")),
+            "{case}: accepted update wrote more than its one sample"
+        );
+    } else {
+        assert_eq!(
+            after.telemetry_files, before.telemetry_files,
+            "{case}: rejected update changed telemetry"
+        );
+    }
+    let shown = success_json(bin(home).args(["--output", "json", "run", "show", run_id]));
+    assert_eq!(shown["data"]["status"], "pending", "{case}");
+    assert_eq!(shown["data"]["landed"], false, "{case}");
+    assert!(shown["data"]["report"].is_null(), "{case}");
+
+    let waited = output(bin(home).args([
+        "--output",
+        "json",
+        "run",
+        "wait",
+        run_id,
+        "--timeout",
+        "10ms",
+    ]));
+    assert_eq!(waited.status.code(), Some(2), "{case}: run wait settled");
+    let wait_json: Value = serde_json::from_slice(&waited.stdout).unwrap();
+    assert_eq!(wait_json["data"]["condition"], "all", "{case}");
+    assert_eq!(wait_json["data"]["runs"][0]["run_id"], run_id, "{case}");
+    assert_eq!(wait_json["data"]["runs"][0]["status"], "pending", "{case}");
+    let after_reads = canonical_control_snapshot(home, run_id);
+    assert_eq!(
+        after_reads.run_files, before.run_files,
+        "{case}: read surfaces mutated control files"
+    );
+    assert_eq!(
+        after_reads.work_files, before.work_files,
+        "{case}: read surfaces mutated agent work"
+    );
+    assert_eq!(
+        after_reads.telemetry_files, after.telemetry_files,
+        "{case}: read surfaces mutated telemetry"
+    );
 }
 
 fn error_envelope(result: &Output) -> Value {
@@ -229,10 +380,19 @@ fn endpoint_fixtures_execute_against_the_exact_public_command() {
                 .unwrap_or(0),
         );
         if let Some(prior) = setup.get("prior_sample") {
+            let before_seed = canonical_control_snapshot(&home, &run_id);
             let request = request_for_context(prior.clone(), &run_id);
             let seeded = update_from_bytes(&home, &serde_json::to_vec(&request).unwrap());
             assert!(seeded.status.success(), "{id}: seed prior sample");
+            assert_control_plane_unchanged(
+                &home,
+                &run_id,
+                &before_seed,
+                true,
+                &format!("{id}: prior sample"),
+            );
         }
+        let control_before = canonical_control_snapshot(&home, &run_id);
 
         let bytes = if let Some(generator) = case.get("request_generator") {
             generated_request(generator, &run_id)
@@ -308,6 +468,13 @@ fn endpoint_fixtures_execute_against_the_exact_public_command() {
             assert_eq!(&row["attempt"], &expected["prior_attempt"], "{id}");
             assert_eq!(row["sample"], "current", "{id}");
         }
+        assert_control_plane_unchanged(
+            &home,
+            &run_id,
+            &control_before,
+            expected["accepted"] == true,
+            id,
+        );
     }
 }
 
@@ -514,6 +681,7 @@ fn accepted_reference_trace_payloads_fit_the_real_endpoint() {
         let id = sequence["id"].as_str().unwrap();
         let home = TempDir::new().unwrap();
         let run_id = create_run_and_node(&home);
+        let control_before = canonical_control_snapshot(&home, &run_id);
         let mut last_accepted = None;
         for (index, send) in sends.iter().enumerate() {
             if results[index]["result"] != "accepted" {
@@ -535,8 +703,16 @@ fn accepted_reference_trace_payloads_fit_the_real_endpoint() {
                 "{id}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
+            assert_control_plane_unchanged(
+                &home,
+                &run_id,
+                &control_before,
+                true,
+                &format!("{id}: send {index}"),
+            );
             last_accepted = Some(send["payload"].clone());
         }
+        let had_accepted = last_accepted.is_some();
         if let Some(expected) = last_accepted {
             let shown = success_json(bin(&home).args(["--output", "json", "run", "show", &run_id]));
             let row = telemetry_row(&shown, "n-0001");
@@ -554,6 +730,7 @@ fn accepted_reference_trace_payloads_fit_the_real_endpoint() {
                 }
             }
         }
+        assert_control_plane_unchanged(&home, &run_id, &control_before, had_accepted, id);
     }
 }
 
