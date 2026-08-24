@@ -21,11 +21,11 @@ Integrity: the record is **loaded and validated before any file is written** (`l
 
 ## Insta snapshot test loop
 
-Many integration tests in `tests/` use `insta` for envelope / help / skill-catalog snapshots. After any CLI surface change (added flag, renamed verb, new bundled skill, edited error message), running `cargo test -p octl-cli` produces `.snap.new` files for every diff. Accept them with:
+Many integration tests in `tests/` use `insta` for envelope / help / skill-catalog snapshots. After any CLI surface change (added flag, renamed verb, new bundled skill, edited error message), running `cargo test -p orchestratectl` produces `.snap.new` files for every diff. Accept them with:
 
 ```bash
 find crates/octl-cli/tests/snapshots -name "*.new" -exec sh -c 'mv "$1" "${1%.new}"' _ {} \;
-cargo test -p octl-cli
+cargo test -p orchestratectl
 ```
 
 Often takes **2–3 rounds** because the first accept-pass reveals further drifts only visible once earlier snapshots settle. Re-run the loop until `cargo test -p octl-cli` is green.

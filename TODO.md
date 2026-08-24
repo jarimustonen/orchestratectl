@@ -14,7 +14,7 @@ holds only the **active handoff** and a **compact stint archive**.
 
 **What landed and shipped.** `distinguish-untriaged-work` now keeps unaccepted intake distinct from explicit human deferral. The release wrapper recognizes the proven ossctl 0.9 held-tag checkpoint, and its pre-tag protocol was separately revalidated for exactly ossctl 0.10.0 while preserving the exact-SHA CI gate and abandoned-run rejection. The full integrated gate passed after both fixes. v0.5.0 was then published through the tag-triggered pipeline to crates.io, GitHub Release, cargo-dist binaries, and Homebrew; release run `01M0JF9T187YJVNZAT2STRCZGH` is completed with all four targets verified and no in-flight release. The two earlier failed journals remain abandoned and must never be resumed.
 
-**Local/deployed truth.** `main` was clean and synchronized before this handoff edit. The installed binary is the published v0.5.0 release build (`8b7e447`); all post-tag source changes are issue/TODO planning only, so no product redeploy is required. The last full skill synchronization and doctor completed at **1131 ok / 0 warn / 0 fail**. Twice during earlier Cargo installs, the first immediate version probe briefly reported the replaced binary's old commit before the same probe corrected itself; the gate failed closed. Take no implementation action unless that exact transient symptom recurs, and never weaken or silently retry the provenance check.
+**Repository-local truth.** `main` was clean and synchronized before this handoff edit. Normal repository work has no stint deploy step: source HEAD is validated with repository-local builds and explicit `./target/release/orchestratectl …`, without replacing the user's installed release or bundled instructions. Installation and upgrades belong to the published distribution channels, outside repository build/test work.
 
 **Agreed product direction — design the whole worker control plane before implementation.** First, `worker-telemetry-protocol` designs a harness-neutral told-fact lease/status contract and a separate pi.dev adapter; silence may mean stale telemetry but never inferred success, failure, or teardown, and Claude remains explicit-interactive unless it gains a real adapter. Second, `add-configurable-agent` revises its historical profile design against that protocol, including telemetry capability, autonomy eligibility, residency, fallback, and effective-policy provenance. Third, `worker-control-plane-review` presents both designs together for Jari's explicit approval. Only after that checkpoint are production implementation slices filed and scheduled. `end-end-stint` remains the wider durable start → work → handoff → user-checkpoint loop that must consume, not duplicate, these decisions.
 
@@ -44,8 +44,8 @@ issuectl ls --status in-progress
 ## Invariants + operating policy
 
 The **7 state-integrity invariants** and the stint operating policy (release
-mechanics, deploy, green gate + integrated gate, hot files, standing learnings)
-live in the root `AGENTS.md`. Read them before touching the reducer, the lock
+mechanics, repository-local validation, green gate + integrated gate, hot files,
+standing learnings) live in the root `AGENTS.md`. Read them before touching the reducer, the lock
 layer, or `supervise/`, and before any release action.
 
 ---
@@ -82,8 +82,8 @@ these stints are in `AGENTS.md`.
   Landed: `spinoff-report-fields-null` (report read-back surface + docs in five skills — the four "null report" bugs
   were all read-surface errors), `run-create-long-title-stillborn` (branch names bounded to workmux's 50-byte
   window-name input), `cli-canon-version-schemas` (§10: `supported_schemas` in `version`). Closed without code:
-  `cli-canon-config` (already shipped in 0.2.0). Origin of the `--locked`-is-mandatory + never-`| tail` deploy rules
-  (now in `AGENTS.md`). ADR 0011 (homebase) boundary recorded
+  `cli-canon-config` (already shipped in 0.2.0). This stint also exposed now-retired source-tree local-deploy rules;
+  normal repository work no longer installs the tool. ADR 0011 (homebase) boundary recorded
   in `AGENTS.md`: no pi-processes dependency.
 - **Stint 2 (2026-08-16, triage-only).** 39 unscheduled issues → 24 closed, 15 laned; whole queue verified against
   current code. Two-thirds of the queue was not real work: 4 "bugs" were the same report-read-surface mistake, 11 were

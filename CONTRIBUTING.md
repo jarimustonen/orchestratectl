@@ -40,13 +40,10 @@ read this file before opening either.
   Library crate; new public items get rustdoc (the crate carries
   `#![warn(missing_docs)]`).
 - `crates/octl-cli/` — the `orchestratectl` binary and the bundled
-  SKILL.md files (`crates/octl-cli/skills/`). After any CLI surface or
-  SKILL.template.md edit, re-deploy locally:
-  ```bash
-  cargo install --path crates/octl-cli --force
-  orchestratectl skill install --force
-  orchestratectl doctor
-  ```
+  SKILL.md files (`crates/octl-cli/skills/`). Validate CLI-surface edits with a
+  repository-local build and explicit `./target/release/orchestratectl …`
+  invocations. For `SKILL.template.md` edits, run and review the insta snapshot
+  loop documented in `crates/octl-cli/AGENTS.md`; no install is needed.
 - `issues/<slug>/item.md` — every issue + epic (flat layout, no
   numeric prefix, status in frontmatter).
 - `/ai-first-cli-canon` — externally maintained CLI design canon; treat the

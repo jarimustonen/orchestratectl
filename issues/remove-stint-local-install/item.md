@@ -3,10 +3,11 @@ created: 2026-08-24
 updated: 2026-08-24
 type: task
 reporter: jari
-status: open
+status: done
 priority: normal
 lane: policy
 lane_seq: 10
+closed: 2026-08-24
 ---
 
 # Remove stint local source installation
@@ -30,9 +31,15 @@ Jari decided 2026-08-23 that building this repository does not imply installing 
 - State clearly that installed release binaries are upgraded through the distribution channel, outside repository build/test work.
 - Close `considerably-utter-deer` as obsolete after policy documentation lands: the transient post-`cargo install --path` provenance probe no longer occurs in the supported stint workflow.
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- No normal stint instruction invokes `cargo install --path crates/octl-cli` or mutates global orchestratectl installation/installed skills.
-- Green-gate and release rules remain intact.
-- Documentation distinguishes repository-local build/test from distribution-channel installation.
-- The stale provenance intake is closed obsolete with this policy decision recorded.
+- [x] No normal stint instruction invokes `cargo install --path crates/octl-cli` or mutates global orchestratectl installation/installed skills.
+- [x] Green-gate and release rules remain intact.
+- [x] Documentation distinguishes repository-local build/test from distribution-channel installation.
+- [x] The stale provenance intake is closed obsolete with this policy decision recorded.
+
+## Resolution
+
+### 2026-08-24T08:04:08Z · @issuectl
+
+Updated root operating policy, active handoff, contributor guidance, and bundled workflow instructions: repository work has no stint deploy step, validates local artifacts explicitly, and never mutates the installed orchestratectl or bundled skills. Release publication remains tag/CI driven.

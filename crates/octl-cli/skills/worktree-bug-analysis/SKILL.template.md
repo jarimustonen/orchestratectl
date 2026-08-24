@@ -81,10 +81,11 @@ required failure uses direct `node report` without merging. Include:
      and link it.
    - Commit with plain `git` and a `Refs-Issue: <slug>` trailer.
    - If reproducing requires a local orchestratectl build, use `cargo build
-     --release` and invoke `./target/release/orchestratectl …` explicitly. A
-     worker MUST NOT run `cargo install --path …`, install orchestratectl from a
-     registry, or run `cargo uninstall`; global tool mutation belongs only to
-     the orchestrator after integration.
+     --release` and invoke `./target/release/orchestratectl …` explicitly.
+     During repository work, neither workers nor the orchestrator may create,
+     replace, remove, or modify the user's installed orchestratectl or bundled
+     skills by any mechanism, including any `cargo install`, `cargo uninstall`,
+     Homebrew, manual-copy, or `skill install` variant.
 3. **Done criteria** — the issue carries the analysis; the branch is committed
    and merged back; no application code changed.
 4. **Tool/sub-workflow failure policy** — copy the disclosure contract below
@@ -225,10 +226,12 @@ supervisor state.
 
 This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the first
 invocation in a session, run `orchestratectl version --output json`, compare
-`.data.version` to `{{CLI_VERSION}}`: **Missing** → install via Homebrew or the
-shell installer; **Older** → tell the user to upgrade and stop; **Newer** →
-`orchestratectl skill install --force`;
-**Equal** → proceed.
+`.data.version` to `{{CLI_VERSION}}`: **Missing** → tell the user to install
+through a published distribution channel outside this repository workflow and
+stop; **Older** → tell the user to upgrade and stop; **Newer** → tell
+the user the installed skill is stale and stop (refreshing bundled instructions
+is published-tool maintenance outside repository work; never run `skill install`
+as part of this workflow); **Equal** → proceed.
 
 ## Example
 

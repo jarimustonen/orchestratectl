@@ -74,12 +74,13 @@ Include in the brief:
    inline.
 5. **Done criteria** — file at `research/<slug>.md` exists, committed,
    merged back to source branch.
-6. **Worker-local tool safety** — if repository inspection requires building
-   orchestratectl, use `cargo build --release` and invoke
-   `./target/release/orchestratectl …` explicitly. A worker MUST NOT run `cargo
-   install --path …`, install orchestratectl from a registry, or run `cargo
-   uninstall`; global tool mutation belongs only to the orchestrator after
-   integration.
+6. **Repository-local tool safety** — if repository inspection requires
+   building orchestratectl, use `cargo build --release` and invoke
+   `./target/release/orchestratectl …` explicitly. During repository work,
+   neither workers nor the orchestrator may create, replace, remove, or modify
+   the user's installed orchestratectl or bundled skills by any mechanism,
+   including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
+   `skill install` variant.
 7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
    into the brief. Required source/tool failure cannot be claimed complete;
    optional failure may continue only when independently safe and disclosed.
@@ -289,11 +290,12 @@ first invocation in a session, run
 `orchestratectl version --output json`, compare `.data.version` to
 `{{CLI_VERSION}}`, and:
 
-- **Missing**: install via Homebrew or the shell installer (see the
-  contract-template skills like `worktree-spinoff` for channels).
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
 - **Older**: tell the user to upgrade and stop.
-- **Newer**: `orchestratectl skill install --force` (or just
-  `worktree-research --force`).
+- **Newer**: tell the user the installed skill is stale and stop. Refreshing
+  installed bundled instructions is published-tool maintenance outside
+  repository work; never run `skill install` as part of this workflow.
 - **Equal**: proceed.
 
 ## Example

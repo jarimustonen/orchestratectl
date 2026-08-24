@@ -71,11 +71,12 @@ The template should include:
    install cargo-nextest --locked`; a child reports it missing rather than
    installing globally. Tool-sensitive tests should approximate bare CI with a
    stripped `PATH`.
-5. **Worker-local build safety** — a child may run `cargo build --release` and
-   exercise `./target/release/orchestratectl …` in its own worktree. It MUST NOT
-   run `cargo install --path …`, install orchestratectl from a registry, or run
-   `cargo uninstall`; only the orchestrator may mutate global tools after
-   integration.
+5. **Repository-local build safety** — a child may run `cargo build --release`
+   and exercise `./target/release/orchestratectl …` in its own worktree. During
+   repository work, neither children nor the orchestrator may create, replace,
+   remove, or modify the user's installed orchestratectl or bundled skills by
+   any mechanism, including any `cargo install`, `cargo uninstall`, Homebrew,
+   manual-copy, or `skill install` variant.
 6. **No routine spin-offs or discuss items** — children should run silently
    to completion; surfacing every successful receipt OCR run as a discussion
    item drowns the user. Failed or incomplete tools/sub-workflows are the
@@ -357,11 +358,13 @@ This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
 `.data.version` from `orchestratectl version --output json` to
 `{{CLI_VERSION}}`:
 
-- **Missing**: install via Homebrew or the shell installer.
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
 - **Older**: ask the user to upgrade; stop — fan-out child-spawn
   semantics may have changed.
-- **Newer**: `orchestratectl skill install --force` (or just `fan-out
-  --force`).
+- **Newer**: tell the user the installed skill is stale and stop. Refreshing
+  installed bundled instructions is published-tool maintenance outside
+  repository work; never run `skill install` as part of this workflow.
 - **Equal**: proceed.
 
 ## Example

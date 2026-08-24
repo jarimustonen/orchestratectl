@@ -125,21 +125,15 @@ first invocation in a session, run
 `orchestratectl version --output json`, parse the JSON, and read
 `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
-- **Missing**: install one of:
-  - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
-  - **Shell installer**:
-    `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
 
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
   originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
   re-run the shell installer). Stop and wait — schema / CLI surface may have changed.
-- **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of
-  what this skill was written for. The whole bundled skill catalog has
-  moved with the binary, so refresh all of them — not just this one:
-  `orchestratectl skill install --force` (default agent is `claude`;
-  pass `--agent codex` for Codex or `--agent all` for both). To refresh
-  only this skill, run
-  `orchestratectl skill install orchestratectl-overview --force`.
-  Continue once the skills match.
+- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
+  stale and stop. Refreshing installed bundled instructions is published-tool
+  maintenance outside repository work; never run `skill install` as part of
+  this workflow.
 - **Equal**: proceed normally.

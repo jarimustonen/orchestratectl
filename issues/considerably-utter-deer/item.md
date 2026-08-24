@@ -1,13 +1,15 @@
 ---
 created: 2026-08-21
-updated: 2026-08-23
+updated: 2026-08-24
 type: bug
 reporter: pi
-status: untriaged
+status: obsolete
 priority: normal
 provenance: other
 provenance_detail: orchestrator runtime observation
 source_ref: stint:2026-08-21/deploy-first-version-stale
+closed: 2026-08-24
+disposition_note: The symptom was real, but source-tree Cargo installation is no longer a supported stint path. Repository work now uses local artifacts without replacing the installed binary or bundled instructions, so no silent-retry or bounded provenance-probe protocol is needed here.
 ---
 
 # First version check after cargo install can report the replaced binary's stale commit
@@ -45,3 +47,6 @@ Recurrence on 2026-08-23 after installing HEAD f268f884035391888b6ec9984bd84c2fa
 
 Immediate fresh deploy attempt after recording the recurrence also failed closed. Exact captured values after Cargo reported replacement complete: expected=b58e271297ccaf5ce554715540a0e1c1468bd102, actual=8b7e4474663112255ec949901d998c6274d1ce10 (the published v0.5.0 commit). The next explicit diagnostic probe, without reinstall or mutation, resolved the same ~/.cargo/bin path and reported b58e271 correctly. Skill install and doctor did not run. Treat local deploy as blocked; do not normalize this into an implicit retry.
 
+### 2026-08-24T08:04:08Z · @intake
+
+Obsolete: The symptom was real, but source-tree Cargo installation is no longer a supported stint path. Repository work now uses local artifacts without replacing the installed binary or bundled instructions, so no silent-retry or bounded provenance-probe protocol is needed here.

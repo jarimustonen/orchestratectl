@@ -88,11 +88,12 @@ self-contained. Include:
    missing rather than installing globally. Treat ambient `tmux`, harness binaries, and
    other local tools as suspect; approximate a bare CI runner with a stripped
    `PATH` for tool-sensitive tests.
-4. **Worker-local build safety** — a worker may run `cargo build --release` and
-   exercise `./target/release/orchestratectl …` from its own worktree. It MUST
-   NOT run `cargo install --path …`, install orchestratectl from a registry, or
-   run `cargo uninstall`: global toolchain mutation belongs only to the
-   orchestrator after integration.
+4. **Repository-local build safety** — a worker may run `cargo build --release`
+   and exercise `./target/release/orchestratectl …` from its own worktree.
+   During repository work, neither workers nor the orchestrator may create,
+   replace, remove, or modify the user's installed orchestratectl or bundled
+   skills by any mechanism, including any `cargo install`, `cargo uninstall`,
+   Homebrew, manual-copy, or `skill install` variant.
 5. **Quality bar** — does the spinoff need to run `/llm-review` before
    merging? Default is no review for spinoffs. `run create` prepends generated
    run context to every worker brief, including custom `--prompt-file` input.
@@ -551,23 +552,18 @@ first invocation in a session, run
 `orchestratectl version --output json`, parse the JSON, and read
 `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
-- **Missing**: install one of:
-  - **Homebrew** (macOS/Linux): `brew install jarimustonen/orchestratectl/orchestratectl`
-  - **Shell installer**:
-    `curl -LsSf https://github.com/jarimustonen/orchestratectl/releases/latest/download/orchestratectl-installer.sh | sh`
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
 
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
   originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
   re-run the shell installer). Stop and wait — the `run create --kind spinoff` flag
   surface may have changed.
-- **Newer than `{{CLI_VERSION}}`**: the installed binary is ahead of
-  what this skill was written for. The whole bundled skill catalog has
-  moved with the binary, so refresh all of them:
-  `orchestratectl skill install --force` (add `--agent codex` for Codex
-  or `--agent all` for both). To refresh only this skill, run
-  `orchestratectl skill install worktree-spinoff --force`. Continue
-  once the skills match.
+- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
+  stale and stop. Refreshing installed bundled instructions is published-tool
+  maintenance outside repository work; never run `skill install` as part of
+  this workflow.
 - **Equal**: proceed normally.
 
 ## Examples

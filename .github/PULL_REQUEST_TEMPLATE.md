@@ -26,9 +26,9 @@ All must pass locally before review (CI enforces them):
       [`AGENTS-AI-FIRST-CLI.md`](../AGENTS-AI-FIRST-CLI.md) — `--json` output,
       JSONL logs, strict input validation, informative error envelopes, no
       interactive prompts.
-- [ ] CLI-surface or `SKILL.template.md` changes: re-deployed locally
-      (`cargo install --path crates/octl-cli --force && orchestratectl skill install --force && orchestratectl doctor`)
-      and the insta snapshots are updated.
+- [ ] CLI-surface or `SKILL.template.md` changes: validated with repository-local
+      artifacts and the documented insta snapshot loop; no installed orchestratectl
+      binary or bundled-skill set was changed for this work.
 - [ ] Commits are focused (one concern each).
 
 ## Notes for reviewers

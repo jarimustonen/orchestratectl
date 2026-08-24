@@ -79,12 +79,13 @@ If any of the above is missing, ask **once** before spawning.
    merged back. No code changes unless the ADR mandates them (and
    even then, prefer a follow-up bugfix / code worktree to keep the
    ADR commit clean).
-6. **Worker-local tool safety** — if evidence gathering requires building
+6. **Repository-local tool safety** — if evidence gathering requires building
    orchestratectl, use `cargo build --release` and invoke
-   `./target/release/orchestratectl …` explicitly. A worker MUST NOT run `cargo
-   install --path …`, install orchestratectl from a registry, or run `cargo
-   uninstall`; global tool mutation belongs only to the orchestrator after
-   integration.
+   `./target/release/orchestratectl …` explicitly. During repository work,
+   neither workers nor the orchestrator may create, replace, remove, or modify
+   the user's installed orchestratectl or bundled skills by any mechanism,
+   including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
+   `skill install` variant.
 7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
    into the brief. In particular, an incomplete required lens panel blocks the
    decision; surviving responses cannot stand in for the requested panel.
@@ -299,10 +300,12 @@ This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
 `.data.version` from `orchestratectl version --output json` to
 `{{CLI_VERSION}}`:
 
-- **Missing**: install via Homebrew or the shell installer.
+- **Missing**: tell the user to install through a published distribution channel
+  outside this repository workflow, then stop.
 - **Older**: ask the user to upgrade; stop.
-- **Newer**: `orchestratectl skill install --force` (or just
-  `worktree-technical-decision --force`).
+- **Newer**: tell the user the installed skill is stale and stop. Refreshing
+  installed bundled instructions is published-tool maintenance outside
+  repository work; never run `skill install` as part of this workflow.
 - **Equal**: proceed.
 
 ## Example
