@@ -29,6 +29,7 @@ pub mod projections;
 pub mod reducer;
 pub mod report;
 pub mod schema;
+pub mod telemetry;
 
 #[cfg(test)]
 mod stress_tests;
@@ -58,6 +59,13 @@ pub use schema::{
     is_run_id_prefix, AwaitingInput, ChildRef, Event, IdValidationError, Kind, Lifecycle, Manifest,
     MergeTxn, Node, NodeId, RunId, Status, WorkerExit, STATE_SCHEMA_VERSION,
     SUPPORTED_STATE_SCHEMAS,
+};
+pub use telemetry::{
+    parse_telemetry_update, read_telemetry, read_telemetry_with_clock, update_telemetry,
+    update_telemetry_with_clock, SystemTelemetryClock, TelemetryAccepted, TelemetryClock,
+    TelemetryError, TelemetrySampleStatus, TelemetryState, TelemetryUpdate, TelemetryView,
+    TELEMETRY_FRESHNESS_SECS, TELEMETRY_MAX_BYTES, TELEMETRY_PROTOCOL_VERSION,
+    TELEMETRY_SCHEMA_VERSION,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,
