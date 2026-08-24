@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -10,7 +11,8 @@ expression: value
     "supervisor": "not-spawned-dry-run",
     "kind": "research",
     "lifecycle": "autonomous",
-    "dry_run": true
+    "dry_run": true,
+    "selection": "legacy-unrecorded"
   },
   "warnings": []
 }

@@ -19,8 +19,9 @@
 //! config-file layer in the tool — before it, configuration was purely
 //! environment-variable driven (see `home.rs`).
 //!
-//! Today it carries exactly one section, `[harness]`, consumed by
-//! `run create --harness` (see [`crate::harness::select`]):
+//! It carries legacy `[harness]` aliases plus user-owned `[profile]` selection
+//! and `[profiles.<name>]` executable definitions, consumed by
+//! `run create --profile` / `--harness` (see [`crate::harness::profile`]):
 //!
 //! ```toml
 //! [harness]
@@ -107,14 +108,98 @@ pub fn dispatch(
 ///
 /// Deliberately NOT `deny_unknown_fields` at the top level: an unknown *section*
 /// (e.g. a future `[ui]` written by a newer build sharing the same home) must not
-/// brick an older build's `run create`. Strictness lives one level down on
-/// [`HarnessConfig`], where an unknown *key* in `[harness]` IS a typo worth
-/// failing on.
+/// brick an older build's `run create`. Strictness lives inside every known
+/// harness/profile section and candidate.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct Config {
-    /// `[harness]` — harness-selection defaults for `run create`.
+    /// `[harness]` — legacy harness-selection aliases for `run create`.
     #[serde(default)]
     pub harness: HarnessConfig,
+    /// `[profile]` — user-level profile selection defaults.
+    #[serde(default)]
+    pub profile: ProfileSelectionConfig,
+    /// `[profiles.<name>]` — user-owned executable definitions. Repository
+    /// configuration is parsed through [`RepoConfig`] and cannot define these.
+    #[serde(default)]
+    pub profiles: BTreeMap<String, AgentProfile>,
+}
+
+/// User/repository profile-name defaults. This section contains names only;
+/// executable content belongs exclusively to user [`Config::profiles`].
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSelectionConfig {
+    #[serde(default)]
+    pub default: Option<String>,
+    #[serde(default)]
+    pub per_kind: BTreeMap<String, String>,
+}
+
+/// A user-owned executable profile.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProfile {
+    pub description: String,
+    pub capability: ProfileCapability,
+    pub residency: ProfileResidency,
+    pub agents: Vec<AgentCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileCapability {
+    Fast,
+    Capable,
+    UltraCapable,
+}
+
+impl ProfileCapability {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Capable => "capable",
+            Self::UltraCapable => "ultra-capable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileResidency {
+    Local,
+    Remote,
+}
+
+impl ProfileResidency {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+}
+
+/// One ordered argv candidate. `command` is argv, never a shell string.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCandidate {
+    pub harness: String,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub telemetry: Option<String>,
+}
+
+/// Selection-only repository configuration from `<repo>/.orchestratectl.toml`.
+/// `deny_unknown_fields` is load-bearing: `[profiles]`, commands, argv, adapter
+/// paths, and residency reclassification all fail rather than becoming trusted
+/// executable input from a checkout.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RepoConfig {
+    #[serde(default)]
+    pub profile: ProfileSelectionConfig,
 }
 
 /// The `[harness]` section: a global default plus per-kind overrides.
@@ -177,23 +262,218 @@ impl Config {
         // dynamic `per_kind` map keys, so validate them here — a typo'd kind
         // (`reserach = "pi"`) is a mistake the user wants surfaced, not silently
         // ignored at lookup time.
-        for key in config.harness.per_kind.keys() {
-            if !octl_core::Kind::WIRE_NAMES.contains(&key.as_str()) {
-                return Err(CliError::user(
-                    "invalid_config",
+        validate_kind_keys(path, "harness.per_kind", &config.harness.per_kind)?;
+        validate_kind_keys(path, "profile.per_kind", &config.profile.per_kind)?;
+        validate_profile_reference(path, config.profile.default.as_deref())?;
+        for value in config.profile.per_kind.values() {
+            validate_profile_reference(path, Some(value))?;
+        }
+        validate_profiles(path, &config.profiles)?;
+        Ok(config)
+    }
+}
+
+impl RepoConfig {
+    /// Load selection-only repository configuration. A missing file is empty;
+    /// malformed or executable-bearing repository configuration fails closed.
+    pub fn load_from(path: &std::path::Path) -> Result<Self, CliError> {
+        const MAX_REPOSITORY_CONFIG_BYTES: u64 = 64 * 1024;
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => {
+                return Err(CliError::system(
+                    "repository_config_unreadable",
                     format!(
-                        "config file {} has an unknown run kind '{}' in [harness.per_kind]; \
-                         valid kinds: {}",
-                        path.display(),
-                        key,
-                        octl_core::Kind::WIRE_NAMES.join(", ")
+                        "could not inspect repository config {}: {e}",
+                        path.display()
                     ),
-                )
-                .with_invalid_value(key.clone()));
+                ));
             }
+        };
+        if !metadata.file_type().is_file() || metadata.len() > MAX_REPOSITORY_CONFIG_BYTES {
+            return Err(CliError::user(
+                "invalid_repository_config",
+                format!(
+                    "repository config {} must be a regular file no larger than {MAX_REPOSITORY_CONFIG_BYTES} bytes",
+                    path.display()
+                ),
+            ));
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            CliError::system(
+                "repository_config_unreadable",
+                format!("could not read repository config {}: {e}", path.display()),
+            )
+        })?;
+        if text.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        let config: Self = toml::from_str(&text).map_err(|e| {
+            CliError::user(
+                "invalid_repository_config",
+                format!(
+                    "repository config {} is selection-only and is not valid: {}; executable profiles, commands, argv, adapter paths, and residency belong only in the user config",
+                    path.display(),
+                    e.message()
+                ),
+            )
+        })?;
+        validate_kind_keys(path, "profile.per_kind", &config.profile.per_kind)?;
+        validate_profile_reference(path, config.profile.default.as_deref())?;
+        for value in config.profile.per_kind.values() {
+            validate_profile_reference(path, Some(value))?;
         }
         Ok(config)
     }
+}
+
+fn validate_kind_keys(
+    path: &std::path::Path,
+    section: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    for key in values.keys() {
+        if !octl_core::Kind::WIRE_NAMES.contains(&key.as_str()) {
+            return Err(CliError::user(
+                "invalid_config",
+                format!(
+                    "config file {} has an unknown run kind '{key}' in [{section}]; valid kinds: {}",
+                    path.display(),
+                    octl_core::Kind::WIRE_NAMES.join(", ")
+                ),
+            )
+            .with_invalid_value(key.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn valid_profile_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 63
+        && bytes[0].is_ascii_lowercase()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+        && !name.ends_with('-')
+        && !name.contains("--")
+}
+
+fn validate_profile_reference(path: &std::path::Path, value: Option<&str>) -> Result<(), CliError> {
+    if let Some(name) = value {
+        if !valid_profile_name(name) {
+            return Err(CliError::user(
+                "invalid_profile_name",
+                format!(
+                    "config file {} has invalid profile name '{name}'; expected lowercase letters/digits with single hyphens, starting with a letter (max 63 characters)",
+                    path.display()
+                ),
+            )
+            .with_invalid_value(name));
+        }
+    }
+    Ok(())
+}
+
+fn validate_profiles(
+    path: &std::path::Path,
+    profiles: &BTreeMap<String, AgentProfile>,
+) -> Result<(), CliError> {
+    for (name, profile) in profiles {
+        validate_profile_reference(path, Some(name))?;
+        if profile.description.trim().is_empty() || profile.description.len() > 512 {
+            return Err(CliError::user(
+                "invalid_profile",
+                format!("profile '{name}' description must be 1..=512 characters"),
+            ));
+        }
+        if profile.agents.is_empty() || profile.agents.len() > 8 {
+            return Err(CliError::user(
+                "invalid_profile",
+                format!("profile '{name}' agents must contain 1..=8 candidates"),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (index, candidate) in profile.agents.iter().enumerate() {
+            if !crate::harness::KNOWN_HARNESSES.contains(&candidate.harness.as_str()) {
+                return Err(CliError::user(
+                    "invalid_profile",
+                    format!(
+                        "profile '{name}' candidate {index} has unknown harness '{}'; expected pi or claude",
+                        candidate.harness
+                    ),
+                )
+                .with_invalid_value(&candidate.harness));
+            }
+            if candidate.command.is_empty() || candidate.command.len() > 32 {
+                return Err(CliError::user(
+                    "invalid_profile",
+                    format!(
+                        "profile '{name}' candidate {index} command must contain 1..=32 argv items"
+                    ),
+                ));
+            }
+            let mut total = 0usize;
+            for arg in &candidate.command {
+                if arg.is_empty() || arg.len() > 4096 || arg.contains('\0') {
+                    return Err(CliError::user(
+                        "invalid_profile",
+                        format!("profile '{name}' candidate {index} has an empty, oversized, or NUL-containing argv item"),
+                    ));
+                }
+                total = total.saturating_add(arg.len());
+            }
+            if total > 16_384 {
+                return Err(CliError::user(
+                    "invalid_profile",
+                    format!("profile '{name}' candidate {index} command exceeds 16384 bytes"),
+                ));
+            }
+            let executable = std::path::Path::new(&candidate.command[0]);
+            if executable.components().count() > 1 && !executable.is_absolute() {
+                return Err(CliError::user(
+                    "invalid_profile",
+                    format!("profile '{name}' candidate {index} executable must be absolute or a bare PATH name; relative paths with separators are ambiguous"),
+                )
+                .with_invalid_value(&candidate.command[0]));
+            }
+            match (candidate.harness.as_str(), candidate.telemetry.as_deref()) {
+                (_, None) | ("pi", Some("worker-v1")) => {}
+                ("pi", Some(value)) => {
+                    return Err(CliError::user(
+                        "invalid_profile",
+                        format!("profile '{name}' candidate {index} has unknown telemetry '{value}'; expected worker-v1"),
+                    )
+                    .with_invalid_value(value));
+                }
+                ("claude", Some(_)) => {
+                    return Err(CliError::user(
+                        "invalid_profile",
+                        format!("profile '{name}' candidate {index}: telemetry is supported only for pi"),
+                    ));
+                }
+                _ => {
+                    return Err(CliError::user(
+                        "invalid_profile",
+                        format!("profile '{name}' candidate {index} has an unsupported harness/telemetry combination"),
+                    ));
+                }
+            }
+            if !seen.insert((
+                candidate.harness.clone(),
+                candidate.command.clone(),
+                candidate.telemetry.clone(),
+            )) {
+                return Err(CliError::user(
+                    "invalid_profile",
+                    format!("profile '{name}' contains duplicate candidate {index}"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -285,6 +565,79 @@ spinoff = "claude"
         assert_eq!(
             cfg.harness.per_kind.get("research").map(String::as_str),
             Some("pi")
+        );
+    }
+
+    #[test]
+    fn parses_and_round_trips_strict_profile_argv() {
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            r#"
+[profiles.secure]
+description = "Local fictional worker"
+capability = "fast"
+residency = "local"
+agents = [{ harness = "pi", command = ["/opt/fictional pi", "--model", "tiny"], telemetry = "worker-v1" }]
+[profile]
+default = "secure"
+"#,
+        );
+        let cfg = Config::load_from(&p).unwrap();
+        assert_eq!(
+            cfg.profiles["secure"].agents[0].command,
+            ["/opt/fictional pi", "--model", "tiny"]
+        );
+        assert_eq!(cfg.profiles["secure"].residency, ProfileResidency::Local);
+    }
+
+    #[test]
+    fn rejects_unbounded_unknown_and_contradictory_profile_content() {
+        let dir = TempDir::new().unwrap();
+        for body in [
+            r#"[profiles.bad]
+description="x"
+capability="capable"
+residency="remote"
+agents=[]
+"#,
+            r#"[profiles.bad]
+description="x"
+capability="capable"
+residency="remote"
+agents=[{harness="claude",command=["claude"],telemetry="worker-v1"}]
+"#,
+            r#"[profiles.bad]
+description="x"
+capability="capable"
+residency="remote"
+agents=[{harness="pi",command=["pi"],surprise=true}]
+"#,
+        ] {
+            let p = write(&dir, body);
+            assert!(Config::load_from(&p).is_err(), "accepted {body}");
+        }
+    }
+
+    #[test]
+    fn repository_config_accepts_selection_and_rejects_executable_definitions() {
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "[profile]\ndefault=\"secure\"\n[profile.per_kind]\nspinoff=\"capable\"\n",
+        );
+        assert_eq!(
+            RepoConfig::load_from(&p)
+                .unwrap()
+                .profile
+                .default
+                .as_deref(),
+            Some("secure")
+        );
+        let p = write(&dir, "[profiles.secure]\nresidency=\"local\"\n");
+        assert_eq!(
+            RepoConfig::load_from(&p).unwrap_err().code,
+            "invalid_repository_config"
         );
     }
 

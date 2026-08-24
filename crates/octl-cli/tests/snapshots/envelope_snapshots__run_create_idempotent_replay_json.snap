@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 {
@@ -10,7 +11,8 @@ expression: value
     "supervisor": "recorded-on-prior-run",
     "kind": "spinoff",
     "lifecycle": "autonomous",
-    "idempotent_replay": true
+    "idempotent_replay": true,
+    "selection": "legacy-unrecorded"
   },
   "warnings": []
 }

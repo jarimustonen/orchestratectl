@@ -96,6 +96,12 @@ pub enum RunAction {
         /// the run and shown by `run show` / `run list --json`.
         #[arg(long)]
         harness: Option<String>,
+        /// Select a user-owned executable profile from
+        /// `$ORCHESTRATECTL_HOME/config.toml`. Overrides environment and
+        /// repository/user defaults. Conflicts with the legacy `--harness`
+        /// alias at the same precedence level.
+        #[arg(long)]
+        profile: Option<String>,
         /// Mark this run **interactive** (human-driven). The supervisor then
         /// never auto-terminalizes or auto-tears-down from a dead pid or a worker
         /// exit — it waits for an explicit `run merge` (→ teardown) or `run
@@ -305,6 +311,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             harness,
+            profile,
             interactive,
             no_hooks,
             headless,
@@ -326,6 +333,7 @@ pub fn dispatch(action: RunAction, spec: &OutputSpec, warnings: &[String]) -> Re
             prompt_file,
             layout,
             harness,
+            profile,
             interactive,
             no_hooks,
             headless,

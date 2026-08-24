@@ -262,6 +262,7 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
             message,
             invalid_value,
             expected,
+            details: None,
         });
     }
 

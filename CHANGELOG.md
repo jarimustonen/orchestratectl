@@ -4,11 +4,17 @@ All notable changes to `orchestratectl` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- oss-changelog:unreleased-start -->
 ## [Unreleased]
+
+### Added
+
+- **Worker selection can resolve user-owned executable profiles (`worker-profile-config-resolver`).** `run create --profile` now selects bounded capability/residency profiles from user config, enforces autonomous pi+`worker-v1` eligibility with deterministic non-weakening fallback, and records the requested and selected choice across dry-run, create, and `run show`; repository config remains selection-only and legacy no-profile runs stay readable.
 
 ### Changed
 
 - **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
+<!-- oss-changelog:unreleased-end -->
 
 ## [0.5.1] - 2026-08-23
 

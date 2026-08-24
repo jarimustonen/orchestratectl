@@ -37,6 +37,10 @@ pub struct ErrorBody {
     pub invalid_value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<serde_json::Value>,
+    /// Command-specific observed context, distinct from valid replacement
+    /// values in `expected`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<serde_json::Value>>,
 }
 
 #[derive(Debug)]
@@ -46,6 +50,7 @@ pub struct CliError {
     pub message: String,
     pub invalid_value: Option<String>,
     pub expected: Option<serde_json::Value>,
+    pub details: Option<Box<serde_json::Value>>,
 }
 
 impl CliError {
@@ -57,6 +62,7 @@ impl CliError {
             message: message.into(),
             invalid_value: None,
             expected: None,
+            details: None,
         }
     }
 
@@ -67,6 +73,7 @@ impl CliError {
             message: message.into(),
             invalid_value: None,
             expected: None,
+            details: None,
         }
     }
 
@@ -82,6 +89,11 @@ impl CliError {
         self
     }
 
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(Box::new(details));
+        self
+    }
+
     fn payload(&self) -> ErrorPayload {
         let dropped = crate::cli::dropped_log_events();
         ErrorPayload {
@@ -91,6 +103,7 @@ impl CliError {
                 message: self.message.clone(),
                 invalid_value: self.invalid_value.clone(),
                 expected: self.expected.clone(),
+                details: self.details.clone(),
             },
             dropped_log_events: (dropped > 0).then_some(dropped),
         }

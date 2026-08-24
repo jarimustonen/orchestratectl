@@ -429,6 +429,7 @@ fn boot_supervisor(run_id: &str) -> Result<SupervisorBoot, CliError> {
                 message: format!("no run with id {run_id}"),
                 invalid_value: Some(run_id.to_string()),
                 expected: None,
+                details: None,
             });
         }
         // A run recorded under a kind removed in 0.2 is read-only (ADR §D7): do
@@ -2605,8 +2606,10 @@ fn respawn_agent(
         // the manifest), so a retry never silently drops back to claude. `None`
         // (legacy manifest / claude) keeps workmux's default agent, unchanged.
         agent: manifest
-            .harness
-            .as_deref()
+            .agent_selection
+            .as_ref()
+            .map(|selection| selection.selected.harness.as_str())
+            .or(manifest.harness.as_deref())
             .and_then(crate::harness::workmux_agent),
         branch: &branch,
         prompt_file: &prompt_path,

@@ -403,6 +403,30 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             }
             println!("kind:          {}", payload.manifest.kind);
             println!("lifecycle:     {}", payload.manifest.lifecycle);
+            match &payload.manifest.selection {
+                crate::run::dto::AgentSelectionView::Recorded(selection) => {
+                    println!(
+                        "profile:       {} (source {}, {})",
+                        selection.profile, selection.selection_source, selection.interaction
+                    );
+                    if let Some(requested) = selection.requested_harness.as_deref() {
+                        println!("requested-harness: {requested}");
+                    }
+                    println!(
+                        "agent:         candidate {} / {}",
+                        selection.selected.candidate_index, selection.selected.harness
+                    );
+                    for skipped in &selection.fallback {
+                        println!(
+                            "skipped:       candidate {} / {} — {}",
+                            skipped.candidate_index, skipped.harness, skipped.reason
+                        );
+                    }
+                }
+                crate::run::dto::AgentSelectionView::Legacy(value) => {
+                    println!("profile:       {value}");
+                }
+            }
             println!("created_at:    {}", payload.manifest.created_at);
             println!("updated_at:    {}", payload.manifest.updated_at);
             println!("nodes:         {}", payload.counts.nodes);

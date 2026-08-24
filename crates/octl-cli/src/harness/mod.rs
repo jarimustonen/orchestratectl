@@ -17,6 +17,7 @@
 //! conformance suite and the aider / claude-deepseek adapters) was cut in the
 //! 0.2 simplification; only the launcher survives.
 
+pub mod profile;
 pub mod prompt;
 pub mod select;
 // Test-only shared machinery (a process-wide env lock). Gated at the declaration

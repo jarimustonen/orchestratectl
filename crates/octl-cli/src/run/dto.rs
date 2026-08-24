@@ -200,6 +200,9 @@ pub struct ManifestView<'a> {
     /// recorded at `run create`. `null` for a legacy run created before harness
     /// selection existed.
     pub harness: Option<&'a str>,
+    /// Recorded create-time profile resolution, or the explicit legacy marker
+    /// for manifests that predate/profile-opt out of this metadata.
+    pub selection: AgentSelectionView<'a>,
     pub node_count: u32,
     pub parent_run_id: Option<&'a RunId>,
     pub parent_node_id: Option<&'a NodeId>,
@@ -220,11 +223,22 @@ impl<'a> From<&'a Manifest> for ManifestView<'a> {
             source_branch: m.source_branch.as_deref(),
             worktree_root: m.worktree_root.as_deref(),
             harness: m.harness.as_deref(),
+            selection: m.agent_selection.as_ref().map_or(
+                AgentSelectionView::Legacy("legacy-unrecorded"),
+                AgentSelectionView::Recorded,
+            ),
             node_count: m.node_count,
             parent_run_id: m.parent_run_id.as_ref(),
             parent_node_id: m.parent_node_id.as_ref(),
         }
     }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum AgentSelectionView<'a> {
+    Recorded(&'a octl_core::AgentSelection),
+    Legacy(&'static str),
 }
 
 /// One row of `run list --json`.
@@ -467,6 +481,7 @@ mod tests {
             managed_tmux_session: None,
             notify_cmd: None,
             harness: None,
+            agent_selection: None,
             node_count: 0,
             parent_run_id: None,
             parent_node_id: None,
@@ -492,6 +507,7 @@ mod tests {
                 "source_branch": null,
                 "worktree_root": null,
                 "harness": null,
+                "selection": "legacy-unrecorded",
                 "node_count": 0,
                 "parent_run_id": null,
                 "parent_node_id": null,

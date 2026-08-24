@@ -76,24 +76,6 @@ impl HarnessChoice {
 /// The environment variable that mirrors `--harness` (§8 flag↔env naming).
 pub const HARNESS_ENV: &str = "ORCHESTRATECTL_HARNESS";
 
-/// Resolve the harness for a `run create`, loading the config file and reading
-/// the environment. Thin wrapper over [`resolve_with`] that supplies the two
-/// ambient inputs; the pure resolver is unit-tested directly.
-pub fn resolve(kind: Kind, flag: Option<&str>) -> Result<HarnessChoice, CliError> {
-    // The flag is top precedence and must be self-sufficient: a `--harness pi`
-    // run never consults config.toml or the env, so we neither read them nor fail
-    // on a broken one when the flag is present. This also means an idempotent
-    // replay that carries `--harness` is not held hostage to ambient config that
-    // drifted after the original run was created. Only the lower layers below
-    // touch disk / the environment.
-    if let Some(raw) = flag {
-        return finish(raw, HarnessSource::Flag);
-    }
-    let config = Config::load()?;
-    let env = std::env::var(HARNESS_ENV).ok();
-    resolve_with(kind, None, env.as_deref(), &config)
-}
-
 /// The pure precedence resolver: given the explicit flag, the env value, and the
 /// loaded config, pick the harness and record its source. Every resolved name is
 /// validated; an invalid value at any layer is a [`CliError`] that names the
@@ -197,6 +179,7 @@ mod tests {
                     .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                     .collect::<BTreeMap<_, _>>(),
             },
+            ..Config::default()
         }
     }
 

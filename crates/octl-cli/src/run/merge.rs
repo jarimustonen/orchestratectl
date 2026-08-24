@@ -1117,6 +1117,7 @@ fn run_merge_sh(
             message: format!("merge.sh exited {exit_code} merging {branch}: {detail}"),
             invalid_value: Some(branch.to_string()),
             expected: None,
+            details: None,
         });
     }
     Ok(())

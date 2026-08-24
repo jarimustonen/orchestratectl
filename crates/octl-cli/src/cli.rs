@@ -365,6 +365,7 @@ fn handle_clap_error(e: clap::Error, logging_warnings: &[String]) -> ExitCode {
         message,
         invalid_value: None,
         expected: None,
+        details: None,
     };
     err.emit();
     crate::output::emit_text_warnings(logging_warnings);

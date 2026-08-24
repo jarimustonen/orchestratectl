@@ -9,6 +9,7 @@ status:        pending
 landed:        false (unverified)
 kind:          spinoff
 lifecycle:     autonomous
+profile:       legacy-unrecorded
 created_at:    [TS]
 updated_at:    [TS]
 nodes:         1

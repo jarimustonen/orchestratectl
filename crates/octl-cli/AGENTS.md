@@ -48,31 +48,38 @@ After `cargo test -p octl-cli` finishes, `pgrep -lf "orchestratectl.*supervise"`
 
 It stubs the two shell-out boundaries through the production override hooks — `OCTL_CREATE_SH` (`run::spawn`) and `OCTL_MERGE_SH` (`run::merge`) — and points `TMUX_BIN`/`GIT_BIN` at nonexistent paths so the supervisor's tmux liveness probe reads `Unknown` (PID liveness governs → the live stub agent stays `Alive` until the merge terminalizes the node) and every teardown step is a lenient no-op. The stub agent (a `sleep`) is reaped by an `AgentGuard` on drop, panic-safe, alongside `TestHome`'s supervisor reaper. No new test-only hook was needed; adding lifecycle scenarios (failure path, concurrency, reattach) means extending this file.
 
-## `run create --harness` (worker harness selection)
+## `run create --profile` / legacy `--harness` (worker selection)
 
-`run create --harness <name>` picks which agent runtime launches the worker in its
-tmux pane — `pi` (built-in default) | `claude` (non-default opt-in), from the
-`harness::KNOWN_HARNESSES` registry. Per ADR 0001 D4, pi.dev is the universal
-default for autonomous and interactive runs. The mechanism is deliberately narrow:
-the resolved harness maps to a **workmux agent** (`harness::workmux_agent`) forwarded
-to `create.sh` as `--agent <name>` (→ `workmux add -a`). `pi` maps to an explicit
-`--agent pi`; `claude` maps to `None`, retaining workmux's own configured default
-agent for an explicit claude selection. The supervisor/merge/report path is
-harness-agnostic, so every worker rides the exact same lifecycle.
+Executable profiles are defined only in the user-owned
+`$ORCHESTRATECTL_HOME/config.toml` as `[profiles.<name>]`. Each strict profile has
+`description`, `capability = "fast" | "capable" | "ultra-capable"`,
+`residency = "local" | "remote"`, and 1–8 ordered `agents` with bounded argv.
+Candidates use `harness = "pi" | "claude"`; only pi may declare
+`telemetry = "worker-v1"`. `<repo-root>/.orchestratectl.toml` is parsed through a
+selection-only schema and may contain `[profile]` defaults/per-kind names, but
+any executable definitions, argv, adapter paths, or residency fields fail.
 
-Precedence (AGENTS-AI-FIRST-CLI §8), resolved per run in `harness::select`:
-**flag `--harness` > env `ORCHESTRATECTL_HARNESS` > `config.toml` `[harness]`
-(per-kind override, then section default) > built-in default (`pi`)**. The config
-file (`config.toml` under the resolved home — `$ORCHESTRATECTL_HOME` or
-`~/.orchestratectl`; `config/mod.rs`) is the tool's first config-file layer; a user
-can set `[harness.per_kind] research = "claude"` as an opt-in (per-kind keys are
-validated against the known run kinds at load, so a typo fails loudly). The resolved
-harness is folded onto `manifest.harness` (from the `run.created` event, which also
-carries `harness_source` for provenance) and surfaced on `run show` / `run list
---json`. `harness::select::resolve_with` is the pure, unit-tested resolver;
-`resolve` supplies the ambient config+env.
+Selection precedence is `--profile`/legacy `--harness` > mirrored environment >
+repository per-kind > user per-kind > repository default > user default. Profile
+and legacy harness selectors at one level conflict. A legacy harness selector is
+only an alias for a same-named user profile whose candidates all use that
+harness; it never synthesizes argv. Installations with no `[profiles]` retain the
+pre-profile harness behavior.
 
-`--harness pi` requires a `pi` agent configured in workmux.
+Before mutation, candidates are checked in order for `executable_missing`, then
+(for autonomous runs) `autonomous_harness_unsupported`, then
+`telemetry_unsupported`. Autonomous accepts only pi+`worker-v1`; explicit
+interactive accepts pi or Claude. Fallback cannot leave a profile (and therefore
+cannot change residency), launch/runtime failures never advance it, and retry
+reads the recorded candidate rather than current config. Dry-run/create/run show
+surface the compact selection; old/no-profile manifests show
+`legacy-unrecorded` without invented history.
+
+The selected harness still maps to a workmux agent for the current launcher:
+`pi` forwards `create.sh --agent pi`; `claude` keeps workmux's configured default.
+`manifest.harness` remains for compatibility while `manifest.agent_selection`
+pins the full profile candidate. A no-profile `--harness pi` still requires a
+`pi` agent configured in workmux.
 
 ## `config` noun (read-only config inspection)
 
@@ -96,8 +103,8 @@ neither ever mutates `config.toml`. Lives in `config/{mod,path,show}.rs` (the
   `harness.per_kind.research` remains visible and independently validated when
   `ORCHESTRATECTL_HARNESS` shadows it. Invalid parseable values produce envelope
   warnings and exit 0; unreadable or syntactically invalid TOML remains fatal.
-  The strict `Config` loader and `harness::select` resolver used by `run create`
-  are unchanged and still reject invalid execution values.
+  The strict execution loader additionally validates profile definitions; the
+  profile resolver used by `run create` still rejects invalid execution values.
 
 Secret redaction (§8) is wired but currently inert: every key is `secret: false`
 today, so `--show-secrets` reveals nothing and warns only when a secret key

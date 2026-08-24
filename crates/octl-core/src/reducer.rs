@@ -479,6 +479,23 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
         reason: "run.created missing/invalid `lifecycle`".into(),
     })?;
     let title = want_str(&events_path, ev, d, "title")?.to_string();
+    let agent_selection: Option<crate::schema::AgentSelection> = d
+        .get("agent_selection")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| Error::CorruptEventLog {
+            path: events_path.clone(),
+            reason: format!("run.created invalid `agent_selection`: {e}"),
+        })?;
+    if let Some(selection) = &agent_selection {
+        selection
+            .validate()
+            .map_err(|reason| Error::CorruptEventLog {
+                path: events_path.clone(),
+                reason: format!("run.created invalid `agent_selection`: {reason}"),
+            })?;
+    }
     let m = Manifest {
         schema_version: STATE_SCHEMA_VERSION,
         // Created at the watermark floor; the append path advances it to this
@@ -513,6 +530,7 @@ fn reduce_run_created(paths: &RunPaths, ev: &Event) -> Result<Vec<ProjectionOp>>
             .and_then(Value::as_str)
             .map(str::to_string),
         harness: d.get("harness").and_then(Value::as_str).map(str::to_string),
+        agent_selection,
         node_count: 0,
         parent_run_id: opt_run_id(&events_path, ev, d, "parent_run_id")?,
         parent_node_id: opt_node_id(&events_path, ev, d, "parent_node_id")?,

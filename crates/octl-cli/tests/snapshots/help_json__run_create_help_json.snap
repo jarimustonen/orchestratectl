@@ -460,6 +460,35 @@ expression: value
         }
       },
       {
+        "name": "profile",
+        "long": "profile",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Select a user-owned executable profile from `$ORCHESTRATECTL_HOME/config.toml`. Overrides environment and repository/user defaults. Conflicts with the legacy `--harness` alias at the same precedence level",
+        "value_names": [
+          "PROFILE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
         "name": "prompt_file",
         "long": "prompt-file",
         "long_aliases": [],

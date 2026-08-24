@@ -3,6 +3,7 @@ source: crates/octl-core/tests/reducer_snapshots.rs
 expression: manifest_v
 ---
 {
+  "agent_selection": null,
   "applied_seq": 5,
   "created_at": "<ts>",
   "harness": null,

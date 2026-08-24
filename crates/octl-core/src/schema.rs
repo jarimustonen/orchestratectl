@@ -442,6 +442,159 @@ where
     })
 }
 
+/// Compact profile resolution recorded at create time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSelection {
+    /// Compact selection schema version (currently 1).
+    pub schema_version: u32,
+    /// Requested and selected user profile name.
+    pub profile: String,
+    /// Precedence layer that supplied the request.
+    pub selection_source: String,
+    /// Explicit create-time interaction mode.
+    pub interaction: String,
+    /// Declared profile capability tier.
+    pub capability: String,
+    /// Declared profile residency class.
+    pub residency: String,
+    /// Legacy harness alias requested at the winning layer, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_harness: Option<String>,
+    /// First statically eligible candidate.
+    pub selected: SelectedAgentCandidate,
+    /// Earlier candidates and their single deterministic skip reasons.
+    #[serde(default)]
+    pub fallback: Vec<SkippedAgentCandidate>,
+}
+
+/// Exact selected candidate pinned for launch and retry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SelectedAgentCandidate {
+    /// Zero-based position in the profile's ordered candidate list.
+    pub candidate_index: u8,
+    /// Selected harness (`pi` or `claude`).
+    pub harness: String,
+    /// Exact user-owned argv; never a shell string.
+    pub command: Vec<String>,
+    /// Declared telemetry adapter protocol, when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<String>,
+}
+
+/// One rejected candidate and its first applicable reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkippedAgentCandidate {
+    /// Zero-based position in the profile's ordered candidate list.
+    pub candidate_index: u8,
+    /// Candidate harness.
+    pub harness: String,
+    /// Stable skip reason code.
+    pub reason: String,
+}
+
+impl AgentSelection {
+    /// Validate semantic bounds and closed vocabularies at the durable event
+    /// boundary, independently of the user-config parser that constructed it.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != 1 {
+            return Err(format!(
+                "unsupported selection schema_version {}",
+                self.schema_version
+            ));
+        }
+        let name = self.profile.as_bytes();
+        if name.is_empty()
+            || name.len() > 63
+            || !name[0].is_ascii_lowercase()
+            || !name
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+            || self.profile.ends_with('-')
+            || self.profile.contains("--")
+        {
+            return Err("invalid profile name".into());
+        }
+        if !matches!(
+            self.selection_source.as_str(),
+            "cli"
+                | "environment"
+                | "repository-per-kind"
+                | "user-per-kind"
+                | "repository-default"
+                | "user-default"
+        ) {
+            return Err("invalid selection_source".into());
+        }
+        if !matches!(
+            self.interaction.as_str(),
+            "autonomous" | "explicit-interactive"
+        ) || !matches!(
+            self.capability.as_str(),
+            "fast" | "capable" | "ultra-capable"
+        ) || !matches!(self.residency.as_str(), "local" | "remote")
+        {
+            return Err("invalid interaction, capability, or residency".into());
+        }
+        validate_selected_candidate(&self.selected)?;
+        if self.interaction == "autonomous"
+            && (self.selected.harness != "pi"
+                || self.selected.telemetry.as_deref() != Some("worker-v1"))
+        {
+            return Err("autonomous selection requires pi with worker-v1 telemetry".into());
+        }
+        if self.selected.candidate_index >= 8
+            || self.fallback.len() != usize::from(self.selected.candidate_index)
+        {
+            return Err("candidate index/count exceeds profile bound".into());
+        }
+        let mut prior = None;
+        for (expected_index, skipped) in self.fallback.iter().enumerate() {
+            if usize::from(skipped.candidate_index) != expected_index
+                || prior.is_some_and(|value| skipped.candidate_index <= value)
+                || !matches!(skipped.harness.as_str(), "pi" | "claude")
+                || !matches!(
+                    skipped.reason.as_str(),
+                    "executable_missing"
+                        | "autonomous_harness_unsupported"
+                        | "telemetry_unsupported"
+                )
+            {
+                return Err("invalid fallback candidate index, harness, or reason".into());
+            }
+            if skipped.reason == "autonomous_harness_unsupported"
+                && (self.interaction != "autonomous" || skipped.harness == "pi")
+            {
+                return Err("inconsistent autonomous harness skip reason".into());
+            }
+            if skipped.reason == "telemetry_unsupported"
+                && (self.interaction != "autonomous" || skipped.harness != "pi")
+            {
+                return Err("inconsistent telemetry skip reason".into());
+            }
+            prior = Some(skipped.candidate_index);
+        }
+        Ok(())
+    }
+}
+
+fn validate_selected_candidate(candidate: &SelectedAgentCandidate) -> Result<(), String> {
+    if !matches!(candidate.harness.as_str(), "pi" | "claude")
+        || candidate.command.is_empty()
+        || candidate.command.len() > 32
+        || candidate
+            .command
+            .iter()
+            .any(|arg| arg.is_empty() || arg.len() > 4096 || arg.contains('\0'))
+        || candidate.command.iter().map(String::len).sum::<usize>() > 16_384
+    {
+        return Err("invalid selected harness or command".into());
+    }
+    match (candidate.harness.as_str(), candidate.telemetry.as_deref()) {
+        (_, None) | ("pi", Some("worker-v1")) => Ok(()),
+        _ => Err("invalid selected telemetry declaration".into()),
+    }
+}
+
 /// `manifest.json` (design.md §1.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -519,6 +672,12 @@ pub struct Manifest {
     /// were all `claude`. Surfaced on `run show` / `run list --json`.
     #[serde(default)]
     pub harness: Option<String>,
+    /// Compact create-time profile resolution. `None` keeps manifests written
+    /// before profile selection readable without inventing requested/selected
+    /// history. Retry and read paths consume this recorded value; they never
+    /// re-resolve current configuration.
+    #[serde(default)]
+    pub agent_selection: Option<AgentSelection>,
     /// Number of nodes created in this run (denormalized counter).
     pub node_count: u32,
     /// Run that spawned this run, if it is itself a child.
@@ -1187,5 +1346,47 @@ mod id_tests {
         let mut v = vec![b.clone(), a.clone()];
         v.sort();
         assert_eq!(v, vec![a, b]);
+    }
+}
+
+#[cfg(test)]
+mod agent_selection_validation_tests {
+    use super::*;
+
+    fn valid() -> AgentSelection {
+        AgentSelection {
+            schema_version: 1,
+            profile: "capable".into(),
+            selection_source: "cli".into(),
+            interaction: "autonomous".into(),
+            capability: "capable".into(),
+            residency: "remote".into(),
+            requested_harness: None,
+            selected: SelectedAgentCandidate {
+                candidate_index: 1,
+                harness: "pi".into(),
+                command: vec!["pi".into()],
+                telemetry: Some("worker-v1".into()),
+            },
+            fallback: vec![SkippedAgentCandidate {
+                candidate_index: 0,
+                harness: "claude".into(),
+                reason: "autonomous_harness_unsupported".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn durable_selection_rejects_impossible_state() {
+        assert!(valid().validate().is_ok());
+        let mut invalid = valid();
+        invalid.selected.candidate_index = 200;
+        assert!(invalid.validate().is_err());
+        let mut invalid = valid();
+        invalid.fallback[0].reason = "made_up".into();
+        assert!(invalid.validate().is_err());
+        let mut invalid = valid();
+        invalid.selected.harness = "claude".into();
+        assert!(invalid.validate().is_err());
     }
 }

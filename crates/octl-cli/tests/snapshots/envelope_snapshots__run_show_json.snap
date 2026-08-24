@@ -47,6 +47,7 @@ expression: value
       "source_branch": null,
       "worktree_root": null,
       "harness": "pi",
+      "selection": "legacy-unrecorded",
       "node_count": 1,
       "parent_run_id": null,
       "parent_node_id": null

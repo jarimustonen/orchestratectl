@@ -50,6 +50,201 @@ fn create(home: &TempDir, kind: &str, title: &str) -> String {
         .to_string()
 }
 
+fn write_profiles(home: &TempDir) {
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+[profiles.capable]
+description = "General fictional worker"
+capability = "capable"
+residency = "remote"
+agents = [
+  { harness = "claude", command = ["/bin/sh"] },
+  { harness = "pi", command = ["/bin/sh", "--fictional"], telemetry = "worker-v1" },
+]
+
+[profile]
+default = "capable"
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn profile_resolution_matches_dry_run_persisted_create_and_show() {
+    let home = TestHome::new();
+    write_profiles(&home);
+
+    let dry = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "preview",
+        "--dry-run",
+    ]));
+    let selection = &dry["data"]["selection"];
+    assert_eq!(selection["schema_version"], 1);
+    assert_eq!(selection["profile"], "capable");
+    assert_eq!(selection["selection_source"], "user-default");
+    assert_eq!(selection["interaction"], "autonomous");
+    assert_eq!(selection["selected"]["candidate_index"], 1);
+    assert_eq!(selection["selected"]["harness"], "pi");
+    assert_eq!(
+        selection["selected"]["command"],
+        json!(["/bin/sh", "--fictional"])
+    );
+    assert_eq!(
+        selection["fallback"][0]["reason"],
+        "autonomous_harness_unsupported"
+    );
+    assert!(
+        !home.path().join("runs").exists(),
+        "dry-run created run state"
+    );
+
+    let created = run_ok(bin(&home).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "stored",
+    ]));
+    assert_eq!(created["data"]["selection"], *selection);
+    let run_id = created["data"]["run_id"].as_str().unwrap();
+    let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", run_id]));
+    assert_eq!(shown["data"]["manifest"]["selection"], *selection);
+}
+
+#[test]
+fn idempotent_profile_replay_uses_recorded_selection_after_config_drift() {
+    let home = TestHome::new();
+    write_profiles(&home);
+    let first = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "replay",
+        "--idempotency-key",
+        "profile-replay",
+    ]));
+    let recorded = first["data"]["selection"].clone();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "this is no longer valid toml = [",
+    )
+    .unwrap();
+    let replay = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "replay",
+        "--idempotency-key",
+        "profile-replay",
+    ]));
+    assert_eq!(replay["data"]["idempotent_replay"], true);
+    assert_eq!(replay["data"]["selection"], recorded);
+}
+
+#[test]
+fn exhausted_profile_returns_full_compact_attempt_without_mutation() {
+    let home = TestHome::new();
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"[profiles.secure]
+description="Local"
+capability="fast"
+residency="local"
+agents=[{harness="pi",command=["definitely-missing-octl-fixture"],telemetry="worker-v1"}]
+[profile]
+default="secure"
+"#,
+    )
+    .unwrap();
+    let (code, error) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "none",
+        "--dry-run",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["code"], "profile_candidates_exhausted");
+    let selection = &error["error"]["details"]["selection"];
+    assert_eq!(selection["profile"], "secure");
+    assert_eq!(selection["interaction"], "autonomous");
+    assert!(selection["selected"].is_null());
+    assert_eq!(selection["fallback"][0]["reason"], "executable_missing");
+    assert!(!home.path().join("runs").exists());
+}
+
+#[test]
+fn explicit_invalid_source_repo_fails_instead_of_reading_cwd_config() {
+    let home = TestHome::new();
+    write_profiles(&home);
+    let missing = home.path().join("missing-repo");
+    let (code, error) = run_fail(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "bad-root",
+        "--profile",
+        "capable",
+        "--source-repo",
+        missing.to_str().unwrap(),
+        "--dry-run",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["code"], "invalid_source_repo");
+}
+
+#[test]
+fn repository_config_is_selection_only_and_cannot_define_commands() {
+    let home = TestHome::new();
+    write_profiles(&home);
+    let repo = TempDir::new().unwrap();
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::write(
+        repo.path().join(".orchestratectl.toml"),
+        r#"[profiles.evil]
+description = "checkout executable"
+capability = "fast"
+residency = "local"
+agents = [{ harness = "pi", command = ["/bin/sh"], telemetry = "worker-v1" }]
+"#,
+    )
+    .unwrap();
+    let (code, error) = run_fail(bin(&home).current_dir(repo.path()).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "reject",
+        "--dry-run",
+    ]));
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["code"], "invalid_repository_config");
+    assert!(!home.path().join("runs").exists());
+}
+
 fn create_node(home: &TempDir, run_id: &str, node_id: &str) {
     let node_file = home.path().join(format!("{node_id}-created.json"));
     std::fs::write(

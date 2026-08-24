@@ -92,11 +92,12 @@ pub struct Args<'a> {
     pub agent_startup_timeout: u32,
     pub parent_run_id: Option<String>,
     pub parent_node_id: Option<String>,
-    /// Raw `--harness <name>` flag, if given. The top layer of the
-    /// flag > env > config > default precedence resolved in
-    /// [`crate::harness::select::resolve`]; `None` falls through to
-    /// `ORCHESTRATECTL_HARNESS`, then `config.toml`, then the built-in `claude`.
+    /// Raw legacy `--harness <name>` selector. In profile mode it aliases a
+    /// same-named user profile whose candidates all use that harness; with no
+    /// configured profiles it preserves the pre-profile harness resolver.
     pub harness: Option<String>,
+    /// User-owned executable profile requested by `--profile`.
+    pub profile: Option<String>,
     /// Mark the run **interactive** (`--interactive`). Sets the run's how-run
     /// [`Lifecycle`] to [`Lifecycle::Interactive`], recorded on `run.created`, so
     /// the supervisor waits for an explicit `run merge` / `run cancel` and never
@@ -137,6 +138,14 @@ struct CreatedPayload<'a> {
     idempotent_replay: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dry_run: Option<bool>,
+    selection: SelectionView<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum SelectionView<'a> {
+    Recorded(&'a octl_core::AgentSelection),
+    Legacy(&'static str),
 }
 
 #[derive(Serialize)]
@@ -205,12 +214,73 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         lifecycle_for(args.kind)
     };
 
-    // Resolve the harness (flag > env > config > default) up front so an invalid
-    // `--harness` / `ORCHESTRATECTL_HARNESS` / config value fails fast before we
-    // touch disk — same fail-fast contract as `--notify` / `--tmux-session`
-    // below. Recorded on the run as provenance and mapped to the worker's workmux
-    // agent at spawn (issue `run-create-harness-flag`).
-    let harness = crate::harness::select::resolve(args.kind, args.harness.as_deref())?;
+    // Idempotent replay is a read of an already-published resource, not a new
+    // resolution. Short-circuit before loading config or probing PATH so config
+    // drift cannot change or prevent the recorded answer.
+    if !args.dry_run {
+        if let Some(key) = args.idempotency_key.as_deref() {
+            if let Some(existing) = idempotency::lookup(
+                args.source_repo.as_deref(),
+                args.source_branch.as_deref(),
+                key,
+            )? {
+                let root = crate::home::root_dir()?;
+                if let ExistingReservation::Published(dir) =
+                    classify_existing_reservation(&root, &existing, Utc::now())?
+                {
+                    repair_parent_child_publication(&root, &dir)?;
+                    let existing_id = parse_run_id(&existing.run_id)?;
+                    let paths = run_paths_exact(&root, &existing_id)?;
+                    let manifest = octl_core::RunLock::with_shared_lock(&paths.lock(), || {
+                        octl_core::read_manifest_opt(&paths)
+                    })
+                    .map_err(from_core)?
+                    .ok_or_else(|| {
+                        CliError::system(
+                            "run_not_published",
+                            format!("published run {} has no manifest", existing.run_id),
+                        )
+                    })?;
+                    let parent_run_id = manifest.parent_run_id.as_ref().map(ToString::to_string);
+                    let parent_node_id = manifest.parent_node_id.as_ref().map(ToString::to_string);
+                    return emit(EmitInput {
+                        run_id: &existing.run_id,
+                        dir: dir.display().to_string(),
+                        kind: manifest.kind,
+                        lifecycle: manifest.lifecycle,
+                        parent_run_id: parent_run_id.as_deref(),
+                        parent_node_id: parent_node_id.as_deref(),
+                        node_id: None,
+                        spawn: None,
+                        supervisor_pid: None,
+                        idempotent_replay: Some(true),
+                        dry_run: None,
+                        selection: manifest.agent_selection.as_ref(),
+                        spec: args.spec,
+                        warnings: args.warnings,
+                    });
+                }
+            }
+        }
+    }
+
+    // Resolve user-owned profiles and deterministic static fallback before any
+    // mutation. With no configured profiles this deliberately returns the old
+    // harness-only launcher for backward compatibility.
+    let explicit_interaction = if args.interactive {
+        Lifecycle::Interactive
+    } else {
+        Lifecycle::Autonomous
+    };
+    let resolution = crate::harness::profile::resolve(
+        args.kind,
+        explicit_interaction,
+        args.profile.as_deref(),
+        args.harness.as_deref(),
+        args.source_repo.as_deref(),
+    )?;
+    let harness = &resolution.harness;
+    let agent_selection = resolution.selection.as_ref();
 
     // Validate the optional completion hook up front (fail fast, before we
     // touch disk): an all-whitespace `--notify` is a caller mistake. `None`
@@ -304,6 +374,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             supervisor_pid: None,
             idempotent_replay: None,
             dry_run: Some(true),
+            selection: agent_selection,
             spec: args.spec,
             warnings: args.warnings,
         });
@@ -349,11 +420,24 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             match classify_existing_reservation(&root, &existing, Utc::now())? {
                 ExistingReservation::Published(dir) => {
                     repair_parent_child_publication(&root, &dir)?;
+                    let existing_id = parse_run_id(&existing.run_id)?;
+                    let existing_paths = run_paths_exact(&root, &existing_id)?;
+                    let manifest =
+                        octl_core::RunLock::with_shared_lock(&existing_paths.lock(), || {
+                            octl_core::read_manifest_opt(&existing_paths)
+                        })
+                        .map_err(from_core)?
+                        .ok_or_else(|| {
+                            CliError::system(
+                                "run_not_published",
+                                format!("published run {} has no manifest", existing.run_id),
+                            )
+                        })?;
                     return emit(EmitInput {
                         run_id: &existing.run_id,
                         dir: dir.display().to_string(),
-                        kind: args.kind,
-                        lifecycle,
+                        kind: manifest.kind,
+                        lifecycle: manifest.lifecycle,
                         parent_run_id: parent_run_id.as_deref(),
                         parent_node_id: parent_node_id.as_deref(),
                         node_id: None,
@@ -361,6 +445,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
                         supervisor_pid: None,
                         idempotent_replay: Some(true),
                         dry_run: None,
+                        selection: manifest.agent_selection.as_ref(),
                         spec: args.spec,
                         warnings: args.warnings,
                     });
@@ -606,6 +691,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "harness_source".into(),
         Value::String(harness.source.as_str().into()),
     );
+    if let Some(selection) = agent_selection {
+        data.insert(
+            "agent_selection".into(),
+            serde_json::to_value(selection).expect("agent selection serializes"),
+        );
+    }
     if let Some(v) = args.task.as_deref() {
         data.insert("task".into(), Value::String(v.into()));
     }
@@ -702,6 +793,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             supervisor_pid: None,
             idempotent_replay: None,
             dry_run: None,
+            selection: agent_selection,
             spec: args.spec,
             warnings: args.warnings,
         });
@@ -852,6 +944,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         supervisor_pid,
         idempotent_replay: None,
         dry_run: None,
+        selection: agent_selection,
         spec: args.spec,
         warnings: args.warnings,
     })
@@ -1288,6 +1381,7 @@ struct EmitInput<'a> {
     supervisor_pid: Option<u32>,
     idempotent_replay: Option<bool>,
     dry_run: Option<bool>,
+    selection: Option<&'a octl_core::AgentSelection>,
     spec: &'a OutputSpec,
     warnings: &'a [String],
 }
@@ -1314,6 +1408,10 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
         branch: i.spawn.map(|s| s.branch.as_str()),
         idempotent_replay: i.idempotent_replay,
         dry_run: i.dry_run,
+        selection: i.selection.map_or(
+            SelectionView::Legacy("legacy-unrecorded"),
+            SelectionView::Recorded,
+        ),
     };
     match i.spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
@@ -1323,6 +1421,28 @@ fn emit(i: EmitInput<'_>) -> Result<(), CliError> {
             println!("run-id: {}", payload.run_id);
             println!("dir:    {}", payload.dir);
             println!("kind:   {}", kind_kebab(i.kind));
+            match &payload.selection {
+                SelectionView::Recorded(selection) => {
+                    println!(
+                        "profile: {} (source {}, {})",
+                        selection.profile, selection.selection_source, selection.interaction
+                    );
+                    if let Some(requested) = selection.requested_harness.as_deref() {
+                        println!("requested-harness: {requested}");
+                    }
+                    println!(
+                        "agent:   candidate {} / {}",
+                        selection.selected.candidate_index, selection.selected.harness
+                    );
+                    for skipped in &selection.fallback {
+                        println!(
+                            "skipped: candidate {} / {} — {}",
+                            skipped.candidate_index, skipped.harness, skipped.reason
+                        );
+                    }
+                }
+                SelectionView::Legacy(value) => println!("profile: {value}"),
+            }
             match &payload.supervisor {
                 SupervisorField::Pid(p) => println!("status: running  (supervisor pid {p})"),
                 SupervisorField::Note(n) => println!("status: pending  (supervisor: {n})"),
