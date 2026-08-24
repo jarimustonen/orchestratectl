@@ -2,7 +2,7 @@
 created: 2026-08-22
 updated: 2026-08-24
 type: task
-status: in-progress
+status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
@@ -13,6 +13,10 @@ lane: worker-control-plane
 lane_seq: 20
 blocked_by: ['@worker-telemetry-core-control']
 collision: [octl-core-schema, run-show-dto, run-list-dto]
+closed: 2026-08-24
+commits:
+- hash: e29aa47
+  summary: Expose advisory worker telemetry CLI surfaces
 ---
 
 # Implement worker telemetry CLI and read surfaces
