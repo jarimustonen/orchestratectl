@@ -1,236 +1,185 @@
 # Worker control-plane integration review
 
-**Checkpoint:** review requested; no human decision or production authorization is
-recorded here.
-
+**Decision:** approved with simplifications on 2026-08-23; source designs revised
 **Inputs:** [worker telemetry protocol](../worker-telemetry-protocol/design.md) and
-[configurable agent profiles](../add-configurable-agent/design.md).
+[configurable agent profiles](../add-configurable-agent/design.md)
+**Implementation:** proposal recorded below; filing and scheduling remain separate actions
 
-## Recommendation
+## Recorded decision
 
-Approve the shared boundary with the amendments and conservative v1 answers
-below. This is a recommendation, not Jari's approval.
+Jari's binding decision from the owning issue is:
 
-The coherent core is:
+> Approved with simplifications on 2026-08-23. Binding product decisions: (1)
+> remove the agent-permission/operation-set model; agents have full normal
+> rights; (2) telemetry is a keep-it-simple advisory feature that tells the
+> calling agent last reported activity and freshness so that caller can judge
+> the situation—telemetry does not itself become success truth; (3) initially
+> only pi with the adapter is autonomous, while Claude remains
+> explicit-interactive; (4) fallback never weakens residency or telemetry
+> requirements; (5) the existing local secure profile is usable now without
+> special enforced restrictions, and tighter enforcement may come later; (6)
+> executable agent commands live only in user-owned config; (7) requested and
+> selected agent choice is plainly visible; (8) agent failure disclosure is
+> accepted. Revise the source designs and implementation split to this simpler
+> scope before implementation.
 
-- capability, declared residency, interaction, permission requirement,
-  telemetry requirement, and probed support remain separate dimensions;
-- autonomous launch requires a trusted compatible telemetry adapter and any
-  required permission-enforcement evidence; fallback never weakens a constraint;
-- pi with the separately packaged adapter is the only expected initial
-  autonomous harness; Claude remains available through explicit interactive
-  selection without fabricated telemetry;
-- create records requested and effective policy with field-level provenance;
-  retry reuses that policy and candidate instead of re-resolving or advancing;
-- telemetry is advisory. It cannot supply progress, success, failure, retry,
-  `run wait`, merge, terminal-outcome, or teardown truth.
+The revised designs treat this as a deletion decision, not as permission to
+rename the rejected machinery.
 
-For initial remote profiles, the recommended interpretation of `standard` is the
-existing unrestricted model-visible operation surface: it requires trusted
-launch-plan binding, but no restrictive operation-set enforcement. A
-`restricted-local` candidate requires separate mechanical enforcement and stays
-ineligible until that boundary is approved and demonstrated.
+## Approved product boundary
 
-## Cross-design reconciliation
+The combined v1 is small:
 
-The designs do not duplicate terminal or policy truth, but approval should carry
-these amendments back to the source documents:
+- A user-owned profile defines capability, residency, and an ordered list of
+  agent commands. Repository config may only select a profile by name.
+- Agents run with normal user rights. There are no permission sets, operation
+  sets, restricted-local gates, tool filtering, command sandboxes, trusted
+  launch contracts, or claims that a local profile is mechanically unable to
+  spawn another agent.
+- The existing local `secure` profile is usable. Its behavior comes from its
+  configured model and instructions, not an orchestratectl security boundary.
+- Autonomous selection accepts only a user-configured pi candidate declaring the
+  v1 adapter. Claude is eligible only when interaction is explicitly
+  interactive until a real Claude adapter exists.
+- Fallback stays within the selected profile and never weakens its residency or
+  an autonomous telemetry requirement. Runtime failure does not advance
+  fallback; retry keeps the recorded candidate.
+- Output records the requested profile/harness, selected candidate/harness, and
+  concise skipped-candidate reasons. It does not build a provenance graph.
+- Telemetry stores one bounded last-told state plus server-stamped freshness.
+  The calling agent may consider that evidence when deciding its next action.
 
-1. **Launch composition is not telemetry-adapter work.** Correct configurable
-   profiles §10: the adapter retains all telemetry §14 responsibilities—public pi
-   event translation, adapter-local tool state, timer/single-flight queue,
-   privacy filtering, probe implementation and compatibility output, packaging,
-   and lease sending. It does not establish its own trust identity, compose the
-   final harness launch, enforce permissions, or own durable/terminal truth.
-   Jari must choose whether harness-specific composition lives directly in
-   orchestratectl or behind a separately versioned launch contract.
-2. **Trust precedes execution.** Reorder telemetry §9 steps 3–4: authenticate the
-   operator-owned registry entry, probe executable/package, trusted root,
-   version/integrity, and harness binding before executing the bounded probe.
-   Probe output establishes compatibility only. Revalidate the same identity
-   before launch.
-3. **Optional adapters receive authority too.** Telemetry §4 currently describes
-   capability issue only for telemetry-required attempts, while profiles §5/§6
-   correctly issue it whenever a compatible adapter is selected, including
-   interactive pi. Key issuance to selected adapter support, not to `required`.
-4. **Legacy output is a public-contract decision.** Pre-gate records cannot be
-   relabeled supported or unsupported. Recommended representation: a versioned
-   `policy: {recording: "legacy-unrecorded"}` variant, no invented telemetry
-   requirement/support, `sample=absent`, and a separate
-   `telemetry_policy_unrecorded_nodes` count; exclude those nodes from required
-   and supported denominators. This amends `run show/list` JSON, not the
-   open/update wire protocol. Jari must confirm the shape with grandfathering.
-5. **Environment cleanup must preserve reload semantics.** Telemetry §9's
-   best-effort capability-path scrubbing cannot erase the only path needed for
-   §4's required `open` on later pi `session_start` reload/new/resume/fork.
-   Retain attempt access for the pi process unless a public runtime mechanism can
-   both hide it from model-visible children and make it available to each new
-   adapter incarnation. Do not promise an unsafe or impossible scrub.
-6. **Use precise terminal wording.** `run merge` is the only success truth, not
-   the only terminal path. Told failing `worker.exited`, the fixed-grace
-   confirmed-dead backstop, cancellation, and typed non-success outcomes remain
-   independent of telemetry and interaction mode.
+The adapter remains harness-specific, but the update contract and read view are
+harness-neutral. V1 deliberately omits package attestation, trusted roots,
+probe executables, capability secrets, epoch/sequence fencing, and permission
+brokering. Those mechanisms do not create a meaningful boundary against agents
+that already have normal same-user rights.
 
-### State and fencing
+## State-integrity boundary
 
-- Requested/effective policy and provenance are immutable create-time facts.
-- Per-attempt revalidation evidence is appended; it never rewrites create-time
-  policy or support evidence.
-- Telemetry control—attempt, generation, capability hash, revocation, current
-  client and epoch—is authoritative run state under existing lock/reducer rules.
-- The accepted sample, including accepted client sequence/body used for
-  idempotency and conflict detection, is a replaceable projection. Its loss or
-  corruption never reconstructs control and requires a new open where specified.
-- The capability file and bearer lifetime are orchestratectl-owned,
-  attempt-scoped material. Only the adapter's in-memory secret copy is
-  disposable. Adapter tool map, timer, queue, and next-sequence allocator are
-  incarnation-local.
-- Attempt/generation/secret fence retries; client/epoch/sequence fence pi
-  incarnations. A takeover clears old-sample eligibility.
-- Reports, told exits, merge transactions/recovery, typed outcomes, and cleanup
-  guards remain the only settlement and teardown inputs.
+Advisory does not mean authoritative. Telemetry cannot by itself:
 
-### Constraints and retained risks
+- append or synthesize `node.report`;
+- change node or manifest status;
+- prove success, failure, merge, or landing;
+- satisfy `run wait`;
+- select or trigger retry; or
+- classify a typed outcome or authorize cleanup.
 
-Fallback is create-time only. It never crosses profiles, local→remote,
-autonomous-required→unsupported, or stricter→weaker permissions. Runtime failure
-and retry never advance the chain. Repository config cannot define executable
-profiles, adapters, trust grants, residency, permissions, or support.
+`run merge` remains the only success truth. Told exits, cancellation, the fixed
+confirmed-dead grace, merge transaction/recovery, typed outcomes, and existing
+work-preservation guards remain the canonical non-telemetry paths.
 
-The design does **not** sandbox arbitrary same-user code, prove local network
-confinement or model quality, eliminate the final same-user check-to-exec race,
-or make pi extensions less than full-user-permission code. Dry-run executes an
-authenticated external probe and is no-run/no-mutation, not globally
-side-effect-free. Requiring the one pinned adapter makes autonomous availability
-sensitive to package/runtime/entry drift; hard-pinned retries may require a new
-run. Interactive Claude remains diagnostically opaque to this telemetry surface.
-The CLI endpoint also costs about 120 unchanged refresh subprocesses per
-hour/node, with 1,800 accepted updates/hour/node only as the saturated ceiling;
-contention and fsync benchmarks remain rollout gates.
+This boundary still permits caller judgment. For example, a calling agent may
+wait after a fresh `tool_running` observation or inspect a stale worker. Any
+subsequent mutation must use an existing explicit command and obey that
+command's ordinary rules; the reducer never acts on telemetry alone.
 
 ## End-to-end flows
 
-### Autonomous pi with the external adapter
+### Autonomous pi
 
-1. `run create` derives autonomous lifecycle from the absence of explicit
-   `--interactive`, resolves profile constraints and `telemetry=required`, and
-   records every selected, derived, conflicting, and shadowed input.
-2. Resolution checks at most the bounded candidate set. It preserves profile
-   residency and permissions, authenticates adapter/executable identity before
-   probe execution, applies per-probe plus aggregate count/output/time budgets,
-   and records selected/skipped/untried reasons. Exhaustion fails before worker
-   materialization.
-3. The first fully eligible pi candidate becomes an immutable effective policy
-   and final launch plan. `standard` binds the existing unrestricted surface;
-   restricted sets additionally require verified composition. Identity is
-   revalidated immediately before materialization.
-4. Orchestratectl creates owner-only attempt authority outside the worktree and
-   launches the exact pi executable with ambient extension discovery disabled
-   and the exact adapter entry enabled. Capability creation failure aborts before
-   materialization. Failure after creation revokes/removes authority, records the
-   existing typed launch-aborted/failure path, preserves work, and never tries a
-   later candidate.
-5. At each `session_start`, the adapter opens an incarnation. Public pi events
-   feed its bounded local state; a single-flight queue sends state changes and
-   30-second refreshes. Under current attempt/client/epoch fencing,
-   orchestratectl accepts higher sequences, idempotently acknowledges an
-   identical repeated sequence/body, and rejects conflicts or stale writers. A
-   takeover exposes `awaiting_first_sample`, never the old sample as current.
-6. `run show` presents immutable policy/provenance, separate per-attempt evidence,
-   and telemetry `requirement/support/sample`. `settled`, `shutdown`, stale,
-   absent, invalid, or clock-unreliable observations leave status unchanged.
-   `run wait` ignores telemetry.
-7. Successful completion is established only by `run merge` and its recorded
-   transaction/report. Told failing exit or the confirmed-dead grace produces
-   existing typed crash outcomes. Typed outcome and cleanup safety code alone
-   decide teardown; terminalization revokes attempt authority.
-8. Retry preflights the recorded executable, adapter, protocol, and permissions
-   without holding the run lock across subprocesses. Under lock it compares the
-   attempt/status snapshot, increments the absolute attempt, durably revokes old
-   authority, rotates generation and secret, issues a new capability, and spawns
-   the same recorded plan. Post-transition failure is a typed failed launch and
-   never revives old authority.
+1. Resolve the requested user profile and interaction mode.
+2. Preserve profile residency while walking its bounded candidate list.
+3. Skip in deterministic order: `executable_missing`; then
+   `autonomous_harness_unsupported` for non-pi; then `telemetry_unsupported` for
+   pi without `worker-v1`.
+4. Record and launch the selected user-owned command, supplying only exact
+   run/node/attempt identity for the adapter.
+5. The external pi adapter translates documented public lifecycle events into
+   `agent_active`, `tool_running`, `settled`, or `shutdown`, sends state changes,
+   and refreshes every 30 seconds.
+6. Orchestratectl validates the current attempt and atomically replaces one
+   bounded sample. `run show` reports the last told state, age, and current/stale
+   freshness using observational wording.
+7. Completion and teardown continue through `run merge`, told failures, typed
+   outcomes, and existing cleanup guards. Telemetry changes none of them.
 
-### Explicit-interactive Claude without telemetry
+A missing executable, adapter launch failure, or worker failure uses the accepted
+existing failure disclosure. It does not trigger a more elaborate provenance or
+fallback mechanism.
 
-1. `--interactive --harness claude` (or an equivalent eligible profile) records
-   interaction from the CLI; harness never implies lifecycle.
-2. Telemetry is optional. Claude has no adapter, so it is eligible only for this
-   interactive path with `support=unsupported`; no probe result, capability, or
-   sample is fabricated.
-3. Orchestratectl freezes and launches the ordinary Claude base command without
-   mutating global settings. `run show` records the effective policy and displays
-   `requirement=optional, support=unsupported, sample=absent`.
-4. Unsupported/absent telemetry and pane loss alone are not success, failure, or
-   teardown authority. Success still requires `run merge`; a told failing
-   `worker.exited` or the existing confirmed-dead backstop may produce the
-   existing typed crash outcome independently of telemetry. Existing explicit
-   cancellation and work-preservation behavior is unchanged.
+### Explicit-interactive Claude
+
+1. Resolve `--interactive` and the selected user-owned Claude command.
+2. Launch without claiming adapter support.
+3. Show `requirement=optional`, `support=unsupported`, `sample=absent`.
+4. Keep the run interactive until explicit `run merge` or `run cancel`; absent
+   telemetry has no outcome or teardown meaning.
+
+### Local `secure`
+
+A user-defined local profile is selected and launched under the same rules. It is
+not rejected for lacking a restricted operation set. Autonomous local use still
+needs a pi+adapter candidate; interactive local use does not. Fallback cannot
+leave the profile's local residency.
 
 ## Ownership
 
-| Owner | Owns | Must not own |
+| Owner | Owns | Does not own |
 |---|---|---|
-| External pi adapter | Public-event translation, local tool state, timer/queue, privacy filtering, probe implementation/output, package compatibility, lease sender | Trust establishment, permissions, durable run truth, outcomes, background jobs |
-| Harness-neutral orchestratectl telemetry protocol | DTO/version negotiation, capability issue/revoke, fencing, bounded sample, read surfaces, doctor diagnostics, conformance fixtures | pi internals, progress/wedge inference, settlement |
-| Profile/config resolver | Trusted definition/selection layers, orthogonal constraints, candidate eligibility/fallback, requested/effective policy and provenance | Samples, retry inference, repo executable definitions |
-| Harness launch-composition boundary (owner is a Jari decision) | Canonical executable binding, final argv/environment, ambient extension policy, model-visible operation set, permission evidence | Event interpretation, terminal outcomes, repository trust grants |
-| Durable run state | Immutable policy, per-attempt evidence, authoritative telemetry control, existing event projections | Adapter queues or bearer secret in public policy |
-| Existing merge/terminal paths | Told exit, merge transaction/recovery, explicit report, typed outcome table, cleanup safety | Profile or telemetry shortcuts |
-| Later end-to-end stint lifecycle | Deliberate adapter installation, integrated validation, rollout/rollback and migration operation | Worker auto-install; new protocol semantics |
+| User config | Executable profile definitions, commands, adapter argv, declared capability/residency | Canonical run outcomes |
+| Repository config | Profile-name selection only | Commands, adapter paths, executable definitions |
+| Profile resolver | Precedence, bounded candidate order, residency/telemetry-preserving fallback, compact requested/selected output | Permissions, package trust, samples |
+| External pi adapter | Public pi event translation, bounded in-memory tool tracking, coalescing/refresh, privacy filtering | Durable truth, outcomes, teardown |
+| Orchestratectl telemetry | Strict update DTO, current-attempt check, bounded atomic sample, freshness/read surfaces | Progress diagnosis, retry, settlement |
+| Existing run control | Reports, told exits, merge transaction/recovery, typed outcomes, cleanup safety | Telemetry shortcuts |
 
-## Decision for Jari
+## Post-decision assessment of existing telemetry candidates
 
-Choose **approve recommended answers**, **approve with named amendments**, or
-**reject/return for redesign**. Approval must identify the selected answers; the
-recommendation alone records no decision.
+These five items remain `untriaged`, unlaned, and unchanged. The table is an
+implementation-candidate assessment for later human disposition, not an
+acceptance, dependency edit, or scheduling action.
 
-| Decision routed here | Recommended v1 answer | Consequence if deferred or changed |
+| Candidate | Decision | Smallest scope under the simplified design |
 |---|---|---|
-| 1. Restricted-local operation set and feasibility | Keep `secure` visible but ineligible; define the useful closed operation set and accept enforcement evidence before launch | Local profiles remain unavailable; allowing them without evidence weakens the stated boundary |
-| 2. Launch-composition ownership | Orchestratectl-owned harness boundary, separate from telemetry | A separate contract adds version/release coordination and must be designed first |
-| 3. Adapter registry/trust | User/operator-owned registry under `$ORCHESTRATECTL_HOME`; owner-only definitions; authenticated root/probe/package/entry/harness binding before probe; exact integrity identity | No autonomous candidate can be trusted until these semantics are fixed |
-| 4. Repository authority and precedence | Disable repo selection in v1; a present repo profile key fails `repo_selection_not_authorized`; retain CLI/env/user selection | Repo convenience waits; enabling it requires a grant/ceiling model and confirmation of specificity-first precedence |
-| 5. Reserved roles and aliases | Reserve `ultra-capable`, `capable`, `fast`, `secure`; fixed semantic metadata, replaceable candidate lists; do not retain `expert`/`standard`/`implementer` aliases in v1 | Alias compatibility or different replacement rules require a documented mapping |
-| 6. Optional telemetry | Deterministically attach a selected trusted compatible adapter; otherwise unrestricted interactive launch proceeds honestly without telemetry | Making optional probe failures fatal would reduce interactive availability |
-| 7. Retry and migration transaction | Hard-pin/fail-on-drift; confirm prepare/commit ordering above; grandfather pre-gate retry behavior; require explicit future re-resolution; use one atomic release gate after adapter availability | A temporary feature gate needs explicit diagnostics, rollback and a removal release; no gate may falsely label unsupported workers eligible |
-| 8. Public launch metadata and credentials | Persist unredacted base/final argv and package integrity as public run metadata; exclude capability material/private diagnostics; no profile secret interpolation | Explainability wins over argv secrecy; users must keep credentials out of argv, or v1 needs a separately designed secret-reference/redaction contract |
-| 9. Built-in fleet mapping | Vendor-neutral remote capability roles using current harness aliases; `secure` is an unavailable local placeholder, not a confinement claim | Vendor-specific defaults leak fleet policy; no universal local candidate exists |
-| 10. Raw model/effort escape hatch | Omit `--model`/`--effort` in v1 | One-off vendor selection waits for a concrete need and equivalent provenance rules |
-| 11. Legacy read shape and autonomous enforcement premise | Use the versioned legacy representation above; accept that trusted telemetry is an observability eligibility gate despite remaining outcome-advisory | A different shape affects JSON consumers; weakening the gate would require redesign, not fallback |
+| `worker-telemetry-core-control` | **Reshape** | Keep only strict run/node/current-attempt validation, one bounded atomically replaced sample, server timestamps/freshness, corruption handling, and negative reducer/outcome tests. Drop capability files, secrets, reducer-projected telemetry control, open/incarnation epochs, client sequences, and authorization claims. |
+| `worker-telemetry-cli-surfaces` | **Reshape** | Implement one strict `node telemetry update` flags/JSON endpoint plus per-node `run show` and bounded `run list` freshness views. Drop `open`, capability-file transport, sequence idempotency, elaborate error-action classes, and any `run wait` integration. |
+| `worker-telemetry-harness-enforcement` | **Reshape** | Reduce to static create-time eligibility: autonomous candidates must be user-configured pi+`worker-v1`; Claude is explicit-interactive; fallback preserves residency/telemetry; failures remain plainly disclosed. Drop trusted package roots, integrity/probe negotiation, ambient-extension suppression, launch attestation, and permission enforcement. |
+| `worker-telemetry-pi-adapter` | **Reshape** | Keep a small external pi extension using documented events, sanitized four-state translation, 30/90-second refresh/freshness, single-flight coalescing, bounded shutdown, and fake-endpoint tests. Drop probe executables, package provenance requirements, open/reopen fencing, immutable sequence retries, and permission-aware launch integration. |
+| `worker-telemetry-e2e-rollout` | **Reshape** | Validate autonomous pi, explicit-interactive Claude, local-profile behavior, stale/missing/corrupt samples, old attempts, event storms, clocks, endpoint/worker failure, and the negative outcome/cleanup invariants. Keep a modest subprocess/lock-load check and rollout notes; drop security-boundary, capability-path, package-integrity, and launch-attestation tests. |
 
-The operation set, registry write/trusted-root semantics, aggregate resolver
-budget, retry/grandfathering behavior, and legacy public shape are approval-time
-contract decisions. Capability-file protections and telemetry v1 limits already
-specified by the telemetry design are normative. Internal module layout, private
-DTO organization, and test organization may remain evidence-driven implementation
-choices.
+## Post-approval implementation split
 
-**Material tradeoffs:** the recommendation maximizes explainability and prevents
-silent policy weakening, but removes autonomous Claude after migration, leaves
-local and repo-selected profiles unavailable, makes the pinned adapter an
-availability dependency, exposes user-supplied argv in durable output, and makes
-identity-drifted runs non-retryable without a new run.
+This is a proposal for independently reviewable slices, not issue filing or
+scheduling. It leaves the five existing candidates' tracker metadata unchanged.
 
-**Approval would authorize only:** record the chosen amendments in the source
-designs; consider each existing telemetry candidate through its separate human
-lane-or-close disposition; and define/file new profile candidates only after the
-approved ownership and trust decisions are recorded. Approval does not itself
-accept, lane, schedule, start, install, enable, or release anything.
+1. **Telemetry core** — reshape `worker-telemetry-core-control` to the bounded
+   sample and current-attempt rules in the table above.
+2. **Telemetry CLI/read surfaces** — reshape
+   `worker-telemetry-cli-surfaces`; depends on telemetry core.
+3. **Profile config and resolver** — a future, not-yet-filed profile candidate
+   for user-only executable definitions, selection precedence, deterministic
+   fallback, and compact requested/selected recording. It owns the first
+   `run create` change and is sequenced before autonomous eligibility.
+4. **Autonomous eligibility** — reshape
+   `worker-telemetry-harness-enforcement`; depends on profile config/resolver and
+   telemetry CLI/read surfaces. It is the second and only other `run create`
+   slice, so the two cannot run in parallel.
+5. **External pi adapter** — reshape `worker-telemetry-pi-adapter`; depends on
+   the telemetry update endpoint and may proceed independently of the profile
+   resolver once that contract is stable.
+6. **End-to-end rollout** — reshape `worker-telemetry-e2e-rollout`; depends on
+   all preceding slices and verifies the integrated boundary.
 
-## Smallest safe post-approval dependency shape
+No profile issue is filed yet. Human disposition, lane assignment, and concrete
+dependency edits remain separate from this design checkpoint.
 
-If and only if later candidates are separately accepted and scheduled, the
-smallest technical dependency shape is: freeze protocol/trust fixtures → prove
-core fencing and advisory persistence → expose the bounded endpoint/read contract
-→ prove the external adapter against that contract → prove trusted launch
-eligibility → add profile/config resolution and provenance → validate rollout and
-migration end to end. This is dependency guidance, not a schedule or scope
-assignment to an existing issue; shared schema, reducer, `run create`, retry, and
-CLI DTO surfaces must be sequenced.
+## Review acceptance checklist
 
-The five existing items remain untriaged and unchanged:
-`worker-telemetry-core-control`, `worker-telemetry-cli-surfaces`,
-`worker-telemetry-harness-enforcement`, `worker-telemetry-pi-adapter`, and
-`worker-telemetry-e2e-rollout`. This review neither accepts nor expands them and
-creates no profile implementation slice.
+The source designs now agree that:
+
+- agents have normal rights and no rejected permission model survives under a
+  different name;
+- telemetry is simple, told, fresh/stale, and useful to caller judgment without
+  becoming reducer authority;
+- only adapted pi is initially autonomous and Claude is explicit-interactive;
+- fallback preserves residency and required telemetry;
+- local `secure` is usable without enforced restrictions;
+- executable definitions are user-owned and repository config is selection-only;
+- requested/selected choice and fallback reason are plainly visible without
+  elaborate provenance; and
+- existing simple failure disclosure is sufficient.
+
+Production code, bundled workflows, statuses of the five candidates, their lane
+fields, and their dependency fields are outside this document change.
