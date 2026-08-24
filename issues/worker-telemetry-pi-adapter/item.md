@@ -2,7 +2,7 @@
 created: 2026-08-22
 updated: 2026-08-24
 type: task
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
@@ -13,6 +13,10 @@ lane: worker-telemetry-adapter
 lane_seq: 10
 blocked_by: ['@worker-telemetry-cli-surfaces']
 collision: [external-pi-adapter-package]
+closed: 2026-08-24
+commits:
+- hash: 79b9cbe
+  summary: Publish worker telemetry adapter contract and conformance fixtures
 ---
 
 # Define external pi telemetry adapter contract
@@ -46,3 +50,9 @@ Define and validate the contract for a small external pi extension/package that 
 
 - `issues/worker-telemetry-protocol/design.md` §§2–6 and §8.
 - `issues/worker-control-plane-review/integration-review.md` — external-package ownership boundary.
+
+## Resolution
+
+### 2026-08-24T11:09:56Z · @issuectl
+
+Published the typed v1 wire contract and harness-neutral virtual trace fixtures, validated representative requests against the real public endpoint, and kept pi runtime/event handling in the separately owned package. Full Rust gate and multi-model review passed.
