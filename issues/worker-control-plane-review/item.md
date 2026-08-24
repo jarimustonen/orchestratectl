@@ -1,6 +1,6 @@
 ---
 created: 2026-08-22
-updated: 2026-08-23
+updated: 2026-08-24
 type: task
 reporter: jari
 status: in-progress
@@ -72,3 +72,9 @@ Produce a short integration review under this issue that:
 ### 2026-08-23T07:35:48Z · @pi
 
 Prepared integration-review.md from both prerequisite designs. Four-model /llm-review with two cross-review rounds was assessed; all eight surviving findings were corrected. The document remains a recommendation-only checkpoint, leaves all five telemetry candidates untriaged and unchanged, creates no profile slices, and requests Jari’s explicit approve / amend / reject decision.
+
+## Decisions
+
+### 2026-08-24T07:39:07Z · @jari
+
+Approved with simplifications on 2026-08-23. Binding product decisions: (1) remove the agent-permission/operation-set model; agents have full normal rights; (2) telemetry is a keep-it-simple advisory feature that tells the calling agent last reported activity and freshness so that caller can judge the situation—telemetry does not itself become success truth; (3) initially only pi with the adapter is autonomous, while Claude remains explicit-interactive; (4) fallback never weakens residency or telemetry requirements; (5) the existing local secure profile is usable now without special enforced restrictions, and tighter enforcement may come later; (6) executable agent commands live only in user-owned config; (7) requested and selected agent choice is plainly visible; (8) agent failure disclosure is accepted. Revise the source designs and implementation split to this simpler scope before implementation.
