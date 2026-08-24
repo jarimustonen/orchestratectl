@@ -3,17 +3,20 @@ created: 2026-08-22
 updated: 2026-08-24
 type: task
 reporter: jari
-status: in-progress
+status: done
 priority: normal
 related: ['@worker-telemetry-protocol', '@add-configurable-agent', '@end-end-stint']
 lane: lifecycle
 lane_seq: 50
 collision: [run-create]
 blocked_by: ['@worker-telemetry-protocol', '@add-configurable-agent']
-review_status: requested
+review_status: approved
 commits:
 - hash: 695e82d
   summary: Prepare worker control-plane approval checkpoint
+- hash: 3b1e20e
+  summary: 'docs: simplify worker control-plane design'
+closed: 2026-08-24
 ---
 
 # Review worker telemetry and agent profiles as one control plane
@@ -78,3 +81,9 @@ Prepared integration-review.md from both prerequisite designs. Four-model /llm-r
 ### 2026-08-24T07:39:07Z · @jari
 
 Approved with simplifications on 2026-08-23. Binding product decisions: (1) remove the agent-permission/operation-set model; agents have full normal rights; (2) telemetry is a keep-it-simple advisory feature that tells the calling agent last reported activity and freshness so that caller can judge the situation—telemetry does not itself become success truth; (3) initially only pi with the adapter is autonomous, while Claude remains explicit-interactive; (4) fallback never weakens residency or telemetry requirements; (5) the existing local secure profile is usable now without special enforced restrictions, and tighter enforcement may come later; (6) executable agent commands live only in user-owned config; (7) requested and selected agent choice is plainly visible; (8) agent failure disclosure is accepted. Revise the source designs and implementation split to this simpler scope before implementation.
+
+## Resolution
+
+### 2026-08-24T08:09:00Z · @issuectl
+
+Applied the 2026-08-23 simplification to both source designs and the integration review. Four-model review plus two cross-review rounds found eight justified fidelity gaps; all were corrected without restoring rejected permission, trust, launch-enforcement, or provenance complexity. The five telemetry candidates remain untriaged and unchanged, and the profile slice remains proposal-only.
