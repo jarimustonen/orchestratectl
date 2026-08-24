@@ -1,20 +1,48 @@
 ---
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-08-24
 type: task
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design
 source_ref: orchestratectl:01m0ncfdymcb0y72241p4q8nsz/implementation-candidate:adapter
 originating_run: 01m0ncfdymcb0y72241p4q8nsz
 originating_run_kind: spinoff
+lane: worker-telemetry-adapter
+lane_seq: 10
+blocked_by: ['@worker-telemetry-cli-surfaces']
+collision: [external-pi-adapter-package]
 ---
 
-# Build the external pi worker telemetry adapter package
+# Define external pi telemetry adapter contract
 
 ## Description
 
-Create the separately owned pi.dev telemetry package specified by `issues/worker-telemetry-protocol/design.md`; no adapter implementation belongs in orchestratectl.
+Define and validate the contract for a small external pi extension/package that depends only on orchestratectl's stable public telemetry update endpoint. No adapter runtime or pi extension production code belongs in this repository.
 
-Use only documented public pi ExtensionAPI lifecycle events and `pi.exec`. Implement the normative told-state precedence, bounded active-tool map/wire metadata, 30/90-second hybrid lease, one-send-per-two-seconds coalescing, immutable sequence retries, idempotent open/reopen/stop behavior, privacy filtering, bounded shutdown flush, and a non-interactive version/integrity probe. Package it as a pinned, reviewable npm/git release with peer dependencies and conformance/failure tests. Never inspect pi sessions/logs, private managers/EventBus, or background-process internals. This candidate remains untriaged until human protocol approval.
+## Repository scope
+
+- Publish the stable public adapter contract: request/response DTO, four-state precedence, 30/90-second refresh/freshness bounds, tool metadata grammar and bounds, 4 KiB cap, two-second send floor, single-flight rule, exact `OCTL_RUN_ID`/`OCTL_NODE_ID`/`OCTL_ATTEMPT` environment names, and privacy exclusions.
+- Provide bounded conformance fixtures against the real public endpoint, including valid/invalid payloads, old attempts, endpoint failure, refresh, and event-storm-shaped update sequences.
+- Keep the fixtures harness-neutral so the separately owned package can consume them.
+
+## External package obligations
+
+- Use only documented public pi lifecycle events to translate activity into `agent_active`, `tool_running`, `settled`, or `shutdown` with the approved precedence.
+- Keep bounded in-memory tool pairing, send only sanitized tool name/count metadata, coalesce event storms with at most one send in flight, and refresh unchanged state every 30 seconds.
+- Call only the public telemetry command with supplied identity; bound send frequency and shutdown flush so telemetry cannot block the agent turn indefinitely.
+- Test duplicate/unmatched events, endpoint failure, event storms, long tools, refresh, privacy filtering, and shutdown in the owning external package.
+
+## Acceptance criteria
+
+- The repository contract and conformance fixtures pass against the implemented public endpoint.
+- This repository contains no adapter runtime, pi event-handling implementation, orchestratectl internal import, pi private manager/EventBus access, process-manager integration, session JSONL access, or private-log access.
+- Payloads exclude tool arguments, commands, paths, output, prompts, errors, provider/model/session identity, and call IDs.
+- Endpoint failure leaves the prior sample to become stale and never becomes run truth.
+- No probe executable, package provenance/integrity requirement, trusted root, open/reopen fencing, immutable client sequence, launch attestation, or permission-aware integration is added.
+
+## References
+
+- `issues/worker-telemetry-protocol/design.md` §§2–6 and §8.
+- `issues/worker-control-plane-review/integration-review.md` — external-package ownership boundary.

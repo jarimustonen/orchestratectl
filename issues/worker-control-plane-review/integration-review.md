@@ -127,9 +127,10 @@ leave the profile's local residency.
 
 ## Post-decision assessment of existing telemetry candidates
 
-These five items remain `untriaged`, unlaned, and unchanged. The table is an
-implementation-candidate assessment for later human disposition, not an
-acceptance, dependency edit, or scheduling action.
+At this design checkpoint these five items remained `untriaged`, unlaned, and
+unchanged. The table recorded an implementation-candidate assessment for later
+human disposition; it was not itself an acceptance, dependency edit, or
+scheduling action.
 
 | Candidate | Decision | Smallest scope under the simplified design |
 |---|---|---|
@@ -162,8 +163,16 @@ scheduling. It leaves the five existing candidates' tracker metadata unchanged.
 6. **End-to-end rollout** — reshape `worker-telemetry-e2e-rollout`; depends on
    all preceding slices and verifies the integrated boundary.
 
-No profile issue is filed yet. Human disposition, lane assignment, and concrete
-dependency edits remain separate from this design checkpoint.
+At this design checkpoint no profile issue had been filed. Human disposition,
+lane assignment, and concrete dependency edits remained separate actions.
+
+## Implementation disposition — 2026-08-24
+
+The later planning action `reshape-worker-control-plane-dag` accepted and
+reshaped the five candidates, filed `worker-profile-config-resolver`, and added
+the conservative execution metadata. This status note does not alter the
+recorded product decision above; the live issuectl DAG is the scheduling source
+of truth.
 
 ## Review acceptance checklist
 
