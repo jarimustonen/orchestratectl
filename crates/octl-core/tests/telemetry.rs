@@ -57,15 +57,52 @@ fn node_value(status: &str, attempt: u32) -> Value {
     })
 }
 
+fn manifest_value(applied_seq: u64) -> Value {
+    json!({
+        "schema_version":1,"applied_seq":applied_seq,"run_id":RUN,"kind":"spinoff",
+        "lifecycle":"autonomous","title":"fixture","status":"running",
+        "created_at":"2026-08-24T11:00:00Z","updated_at":"2026-08-24T11:00:00Z",
+        "source_repo":null,"source_branch":null,"worktree_root":null,
+        "managed_tmux_session":null,"notify_cmd":null,"harness":"pi","node_count":1,
+        "parent_run_id":null,"parent_node_id":null
+    })
+}
+
+fn canonical_events() -> Vec<u8> {
+    let events = [
+        json!({"ts":"2026-08-24T11:00:00Z","seq":1,"kind":"run.created","run_id":RUN,
+            "data":{"kind":"spinoff","lifecycle":"autonomous","title":"fixture"}}),
+        json!({"ts":"2026-08-24T11:00:01Z","seq":2,"kind":"node.created","run_id":RUN,
+            "node_id":NODE,"data":{"kind":"spinoff","task":"fixture"}}),
+        json!({"ts":"2026-08-24T11:00:02Z","seq":3,"kind":"node.status","run_id":RUN,
+            "node_id":NODE,"data":{"status":"running"}}),
+        json!({"ts":"2026-08-24T11:00:03Z","seq":4,"kind":"run.status","run_id":RUN,
+            "data":{"status":"running"}}),
+    ];
+    let mut bytes = Vec::new();
+    for event in events {
+        bytes.extend(serde_json::to_vec(&event).unwrap());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
 fn setup(status: &str, attempt: u32) -> (TempDir, RunPaths) {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("run");
     fs::create_dir_all(root.join("nodes")).unwrap();
+    fs::write(root.join(".lock"), []).unwrap();
     fs::write(
         root.join("nodes/n-0001.json"),
         serde_json::to_vec(&node_value(status, attempt)).unwrap(),
     )
     .unwrap();
+    fs::write(
+        root.join("manifest.json"),
+        serde_json::to_vec(&manifest_value(4)).unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("events.jsonl"), canonical_events()).unwrap();
     let paths = RunPaths::new(root, RUN).unwrap();
     (temp, paths)
 }
@@ -352,14 +389,7 @@ fn telemetry_has_no_event_projection_outcome_wait_merge_retry_or_cleanup_effect(
 #[test]
 fn unapplied_event_tail_fails_closed_without_advancing_watermark() {
     let (_temp, paths) = setup("running", 0);
-    let manifest = json!({
-        "schema_version":1,"applied_seq":0,"run_id":RUN,"kind":"spinoff",
-        "lifecycle":"autonomous","title":"fixture","status":"running",
-        "created_at":"2026-08-24T11:00:00Z","updated_at":"2026-08-24T11:00:00Z",
-        "source_repo":null,"source_branch":null,"worktree_root":null,
-        "managed_tmux_session":null,"notify_cmd":null,"harness":"pi","node_count":1,
-        "parent_run_id":null,"parent_node_id":null
-    });
+    let manifest = manifest_value(0);
     fs::write(paths.manifest(), serde_json::to_vec(&manifest).unwrap()).unwrap();
     let tail = json!({
         "ts":"2026-08-24T12:00:00Z","seq":1,"kind":"audit.fixture",
@@ -377,7 +407,7 @@ fn unapplied_event_tail_fails_closed_without_advancing_watermark() {
             &update(0, TelemetryState::AgentActive),
             &FixedClock(time(0))
         ),
-        Err(TelemetryError::RunStateBehind)
+        Err(TelemetryError::RunStateNotCurrent)
     ));
     assert_eq!(fs::read(paths.manifest()).unwrap(), manifest_before);
     assert_eq!(
@@ -385,12 +415,368 @@ fn unapplied_event_tail_fails_closed_without_advancing_watermark() {
         node_before
     );
     assert!(!sample_path(&paths).exists());
-    assert_eq!(
-        read_telemetry_with_clock(&paths, &NODE.parse().unwrap(), &FixedClock(time(0)))
-            .unwrap()
-            .sample,
-        TelemetrySampleStatus::Invalid
+    assert!(matches!(
+        read_telemetry_with_clock(&paths, &NODE.parse().unwrap(), &FixedClock(time(0))),
+        Err(TelemetryError::RunStateNotCurrent)
+    ));
+}
+
+#[test]
+fn direct_updates_revalidate_shape_identity_and_metadata_without_mutation() {
+    let (_temp, paths) = setup("running", 0);
+    let mut bad = update(0, TelemetryState::Settled);
+    bad.active_tool_count = Some(1);
+    assert!(matches!(
+        update_telemetry_with_clock(&paths, &bad, &FixedClock(time(0))),
+        Err(TelemetryError::InvalidMetadata(_))
+    ));
+    bad = update(0, TelemetryState::Settled);
+    bad.run_id = "02jxsnap000000000000000000".parse().unwrap();
+    assert!(matches!(
+        update_telemetry_with_clock(&paths, &bad, &FixedClock(time(0))),
+        Err(TelemetryError::RunMismatch { .. })
+    ));
+    assert!(!sample_path(&paths).exists());
+}
+
+#[test]
+fn metadata_and_strict_json_boundaries_are_pinned() {
+    for (count, accepted) in [(1, true), (32, true), (33, false)] {
+        let mut candidate = update(0, TelemetryState::ToolRunning);
+        candidate.active_tool_count = Some(count);
+        assert_eq!(
+            update_telemetry_with_clock(&setup("running", 0).1, &candidate, &FixedClock(time(0)))
+                .is_ok(),
+            accepted
+        );
+    }
+    for (length, accepted) in [(64, true), (65, false)] {
+        let (_temp, paths) = setup("running", 0);
+        let mut candidate = update(0, TelemetryState::ToolRunning);
+        candidate.active_tool_count = Some(1);
+        candidate.tool_name = Some("a".repeat(length));
+        assert_eq!(
+            update_telemetry_with_clock(&paths, &candidate, &FixedClock(time(0))).is_ok(),
+            accepted
+        );
+    }
+    let duplicate = format!(
+        "{{\"schema_version\":1,\"schema_version\":1,\"protocol_version\":1,\"run_id\":\"{RUN}\",\"node_id\":\"{NODE}\",\"attempt\":0,\"state\":\"settled\"}}"
     );
+    assert!(matches!(
+        parse_telemetry_update(duplicate.as_bytes()),
+        Err(TelemetryError::InvalidRequest(_))
+    ));
+}
+
+#[test]
+fn missing_or_ahead_canonical_state_fails_closed() {
+    let (_temp, paths) = setup("running", 0);
+    fs::remove_file(paths.manifest()).unwrap();
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Settled),
+            &FixedClock(time(0))
+        ),
+        Err(TelemetryError::RunStateNotCurrent)
+    ));
+
+    fs::write(
+        paths.manifest(),
+        serde_json::to_vec(&manifest_value(5)).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        read_telemetry_with_clock(&paths, &NODE.parse().unwrap(), &FixedClock(time(0))),
+        Err(TelemetryError::RunStateNotCurrent)
+    ));
+    assert!(!sample_path(&paths).exists());
+}
+
+#[test]
+fn update_of_nonexistent_run_does_not_create_run_or_lock() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("missing-run");
+    let paths = RunPaths::new(&root, RUN).unwrap();
+    assert!(update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::Settled),
+        &FixedClock(time(0))
+    )
+    .is_err());
+    assert!(!root.exists());
+}
+
+#[test]
+fn same_state_backward_clock_preserves_anchor_and_reports_unreliable_until_catchup() {
+    let (_temp, paths) = setup("running", 0);
+    let request = update(0, TelemetryState::ToolRunning);
+    update_telemetry_with_clock(&paths, &request, &FixedClock(time(100))).unwrap();
+    update_telemetry_with_clock(&paths, &request, &FixedClock(time(90))).unwrap();
+    let value = stored(&paths);
+    assert_eq!(value["state_since"], "2026-08-24T12:01:40Z");
+    assert_eq!(value["received_at"], "2026-08-24T12:01:30Z");
+    let node_id = NODE.parse().unwrap();
+    let unreliable = read_telemetry_with_clock(&paths, &node_id, &FixedClock(time(99))).unwrap();
+    assert_eq!(unreliable.sample, TelemetrySampleStatus::ClockUnreliable);
+    assert_eq!(unreliable.age_ms, None);
+    let caught_up = read_telemetry_with_clock(&paths, &node_id, &FixedClock(time(100))).unwrap();
+    assert_eq!(caught_up.sample, TelemetrySampleStatus::Current);
+    assert_eq!(caught_up.age_ms, Some(10_000));
+    assert_eq!(caught_up.state_elapsed_ms, Some(0));
+}
+
+#[test]
+fn clock_overflow_rejects_without_replacing_prior_sample() {
+    let (_temp, paths) = setup("running", 0);
+    update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::AgentActive),
+        &FixedClock(time(0)),
+    )
+    .unwrap();
+    let before = fs::read(sample_path(&paths)).unwrap();
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Settled),
+            &FixedClock(DateTime::<Utc>::MAX_UTC)
+        ),
+        Err(TelemetryError::ClockOverflow)
+    ));
+    assert_eq!(fs::read(sample_path(&paths)).unwrap(), before);
+}
+
+#[test]
+fn semantic_corruption_is_invalid_and_operational_io_errors_propagate() {
+    let (_temp, paths) = setup("running", 0);
+    let node_id = NODE.parse().unwrap();
+    update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::Settled),
+        &FixedClock(time(0)),
+    )
+    .unwrap();
+    for (field, value) in [
+        ("run_id", json!("02jxsnap000000000000000000")),
+        ("node_id", json!("n-9999")),
+        ("protocol_version", json!(2)),
+        ("expires_at", json!("2026-08-24T12:01:29Z")),
+    ] {
+        let mut value_sample = stored(&paths);
+        value_sample[field] = value;
+        fs::write(
+            sample_path(&paths),
+            serde_json::to_vec(&value_sample).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_telemetry_with_clock(&paths, &node_id, &FixedClock(time(1)))
+                .unwrap()
+                .sample,
+            TelemetrySampleStatus::Invalid,
+            "field {field}"
+        );
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Settled),
+            &FixedClock(time(0)),
+        )
+        .unwrap();
+    }
+
+    fs::remove_file(sample_path(&paths)).unwrap();
+    fs::create_dir(sample_path(&paths)).unwrap();
+    assert!(matches!(
+        read_telemetry_with_clock(&paths, &node_id, &FixedClock(time(0))),
+        Err(TelemetryError::Core(_))
+    ));
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Settled),
+            &FixedClock(time(0))
+        ),
+        Err(TelemetryError::Core(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn telemetry_symlinks_are_rejected_without_touching_targets() {
+    use std::os::unix::fs::symlink;
+    let (temp, paths) = setup("running", 0);
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, paths.root.join("telemetry")).unwrap();
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Settled),
+            &FixedClock(time(0))
+        ),
+        Err(TelemetryError::Core(octl_core::Error::SymlinkSubdir {
+            name: "telemetry",
+            ..
+        }))
+    ));
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+
+    fs::remove_file(paths.root.join("telemetry")).unwrap();
+    fs::create_dir(paths.root.join("telemetry")).unwrap();
+    let target = temp.path().join("target.json");
+    fs::write(&target, b"unchanged").unwrap();
+    symlink(&target, sample_path(&paths)).unwrap();
+    assert!(update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::Settled),
+        &FixedClock(time(0))
+    )
+    .is_err());
+    assert_eq!(fs::read(target).unwrap(), b"unchanged");
+}
+
+#[test]
+fn concurrent_replacement_never_exposes_partial_or_mixed_samples() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let (_temp, paths) = setup("running", 0);
+    update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::AgentActive),
+        &FixedClock(time(0)),
+    )
+    .unwrap();
+    let root = paths.root.clone();
+    let barrier = Arc::new(Barrier::new(3));
+    let writer_barrier = Arc::clone(&barrier);
+    let writer_root = root.clone();
+    let writer = thread::spawn(move || {
+        let writer_paths = RunPaths::new(writer_root, RUN).unwrap();
+        writer_barrier.wait();
+        for index in 1..=100 {
+            let state = if index % 2 == 0 {
+                TelemetryState::AgentActive
+            } else {
+                TelemetryState::Settled
+            };
+            update_telemetry_with_clock(&writer_paths, &update(0, state), &FixedClock(time(index)))
+                .unwrap();
+        }
+    });
+    let mut readers = Vec::new();
+    for _ in 0..2 {
+        let reader_barrier = Arc::clone(&barrier);
+        let reader_root = root.clone();
+        readers.push(thread::spawn(move || {
+            let reader_paths = RunPaths::new(reader_root, RUN).unwrap();
+            let node_id = NODE.parse().unwrap();
+            reader_barrier.wait();
+            for _ in 0..200 {
+                let view =
+                    read_telemetry_with_clock(&reader_paths, &node_id, &FixedClock(time(100)))
+                        .unwrap();
+                assert_ne!(view.sample, TelemetrySampleStatus::Invalid);
+                assert!(matches!(
+                    view.state,
+                    Some(TelemetryState::AgentActive | TelemetryState::Settled)
+                ));
+            }
+        }));
+    }
+    writer.join().unwrap();
+    for reader in readers {
+        reader.join().unwrap();
+    }
+}
+
+#[test]
+fn terminal_and_retry_races_serialize_with_telemetry_validation() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    // Terminal race.
+    let (_temp, paths) = setup("running", 0);
+    let root = paths.root.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let event_barrier = Arc::clone(&barrier);
+    let event_root = root.clone();
+    let terminal = thread::spawn(move || {
+        let event_paths = RunPaths::new(event_root, RUN).unwrap();
+        event_barrier.wait();
+        octl_core::append_and_apply_event(
+            &event_paths,
+            "node.status",
+            Some(&NODE.parse().unwrap()),
+            None,
+            json!({"status":"done"}),
+        )
+        .unwrap();
+    });
+    barrier.wait();
+    let result = update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::Shutdown),
+        &FixedClock(time(0)),
+    );
+    terminal.join().unwrap();
+    assert!(result.is_ok() || matches!(result, Err(TelemetryError::TerminalNode { .. })));
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::Shutdown),
+            &FixedClock(time(1))
+        ),
+        Err(TelemetryError::TerminalNode { .. })
+    ));
+
+    // Retry race.
+    let (_temp, paths) = setup("running", 0);
+    let root = paths.root.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let event_barrier = Arc::clone(&barrier);
+    let event_root = root.clone();
+    let retry = thread::spawn(move || {
+        let event_paths = RunPaths::new(event_root, RUN).unwrap();
+        event_barrier.wait();
+        octl_core::append_and_apply_event(
+            &event_paths,
+            "node.retry",
+            Some(&NODE.parse().unwrap()),
+            None,
+            json!({"attempt":1,"branch":"wt/retry","worktree_path":"/tmp/retry"}),
+        )
+        .unwrap();
+    });
+    barrier.wait();
+    let result = update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::ToolRunning),
+        &FixedClock(time(0)),
+    );
+    retry.join().unwrap();
+    assert!(result.is_ok() || matches!(result, Err(TelemetryError::AttemptMismatch { .. })));
+    assert!(matches!(
+        update_telemetry_with_clock(
+            &paths,
+            &update(0, TelemetryState::ToolRunning),
+            &FixedClock(time(1))
+        ),
+        Err(TelemetryError::AttemptMismatch {
+            expected: 1,
+            found: 0
+        })
+    ));
+    if sample_path(&paths).exists() {
+        assert_eq!(
+            read_telemetry_with_clock(&paths, &NODE.parse().unwrap(), &FixedClock(time(1)))
+                .unwrap()
+                .sample,
+            TelemetrySampleStatus::Absent
+        );
+    }
 }
 
 #[test]

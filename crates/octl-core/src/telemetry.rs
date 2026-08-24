@@ -140,10 +140,10 @@ pub enum TelemetryError {
         /// Request identity.
         found: RunId,
     },
-    /// Canonical projections lag the event log, so exact attempt/terminal
-    /// validation cannot be proven without a canonical recovery writer.
-    #[error("run projections lag events; retry after canonical state recovery")]
-    RunStateBehind,
+    /// Canonical projections and the event log are not synchronized, so exact
+    /// attempt/terminal validation cannot be proven.
+    #[error("canonical run state is not synchronized with the event log")]
+    RunStateNotCurrent,
     /// The named node does not exist.
     #[error("no node {node_id} in this run")]
     NodeNotFound {
@@ -283,12 +283,14 @@ pub fn update_telemetry_with_clock(
         });
     }
 
-    let guard = RunLock::acquire(&paths.lock())?;
+    // Unlike the canonical creating lock path, telemetry must never resurrect
+    // a deleted/unknown run merely by trying to validate it.
+    let guard = RunLock::acquire_existing(&paths.lock())?;
     // Telemetry must neither observe stale canonical state nor heal it by
     // advancing applied_seq. Fail closed and let an ordinary event writer own
     // crash-tail recovery.
     if !canonical_projections_current(paths)? {
-        return Err(TelemetryError::RunStateBehind);
+        return Err(TelemetryError::RunStateNotCurrent);
     }
     let node = match crate::read_node_opt(paths, &update.node_id)? {
         Some(node) => node,
@@ -316,7 +318,10 @@ pub fn update_telemetry_with_clock(
         .checked_add_signed(Duration::seconds(TELEMETRY_FRESHNESS_SECS))
         .ok_or(TelemetryError::ClockOverflow)?;
     let path = checked_telemetry_file(paths, &update.node_id)?;
-    let prior = read_stored(&path).ok().flatten();
+    let prior = match read_stored(&path)? {
+        StoredRead::Valid(sample) => Some(sample),
+        StoredRead::Absent | StoredRead::Corrupt => None,
+    };
     let state_since = prior
         .filter(|sample| {
             valid_stored_shape(sample, paths, &update.node_id)
@@ -364,23 +369,26 @@ pub fn read_telemetry_with_clock(
     node_id: &NodeId,
     clock: &impl TelemetryClock,
 ) -> Result<TelemetryView, TelemetryError> {
-    RunLock::<Shared>::with_shared_lock(&paths.lock(), || {
+    let result = RunLock::<Shared>::with_shared_lock(&paths.lock(), || {
         if !canonical_projections_current(paths)? {
-            return Ok(TelemetryView::bare(TelemetrySampleStatus::Invalid));
+            return Ok(None);
         }
         let node = read_node(paths, node_id)?;
         let path = checked_telemetry_file(paths, node_id)?;
-        let Some(sample) = (match read_stored(&path) {
-            Ok(sample) => sample,
-            Err(_) => return Ok(TelemetryView::bare(TelemetrySampleStatus::Invalid)),
-        }) else {
-            return Ok(TelemetryView::bare(TelemetrySampleStatus::Absent));
+        let sample = match read_stored(&path)? {
+            StoredRead::Absent => {
+                return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Absent)))
+            }
+            StoredRead::Corrupt => {
+                return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Invalid)))
+            }
+            StoredRead::Valid(sample) => sample,
         };
         if !valid_stored_shape(&sample, paths, node_id) {
-            return Ok(TelemetryView::bare(TelemetrySampleStatus::Invalid));
+            return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Invalid)));
         }
         if sample.attempt != node.retry_attempts {
-            return Ok(TelemetryView::bare(TelemetrySampleStatus::Absent));
+            return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Absent)));
         }
         let now = clock.now();
         let clock_bad = now < sample.received_at || now < sample.state_since;
@@ -391,7 +399,7 @@ pub fn read_telemetry_with_clock(
         } else {
             TelemetrySampleStatus::Current
         };
-        Ok(TelemetryView {
+        Ok(Some(TelemetryView {
             sample: status,
             state: Some(sample.state),
             age_ms: (!clock_bad).then(|| (now - sample.received_at).num_milliseconds()),
@@ -399,20 +407,17 @@ pub fn read_telemetry_with_clock(
             attempt: Some(sample.attempt),
             active_tool_count: sample.active_tool_count,
             tool_name: sample.tool_name,
-        })
-    })
-    .map_err(TelemetryError::from)
+        }))
+    })?;
+    result.ok_or(TelemetryError::RunStateNotCurrent)
 }
 
 fn canonical_projections_current(paths: &RunPaths) -> Result<bool, Error> {
     let Some(manifest) = crate::read_manifest_opt(paths)? else {
-        // A node without a manifest is already malformed state; retaining this
-        // tolerance keeps low-level fixtures useful and does not weaken a real
-        // run, whose run.created projection always supplies the watermark.
-        return Ok(true);
+        return Ok(false);
     };
     let events = paths.checked_events()?;
-    Ok(manifest.applied_seq >= crate::recover_last_seq(&events)?)
+    Ok(manifest.applied_seq == crate::recover_last_seq(&events)?)
 }
 
 fn validate_update_shape(update: &TelemetryUpdate) -> Result<(), TelemetryError> {
@@ -477,11 +482,10 @@ fn valid_stored_shape(sample: &StoredTelemetrySample, paths: &RunPaths, node_id:
         && sample.protocol_version == TELEMETRY_PROTOCOL_VERSION
         && sample.run_id == paths.run_id
         && sample.node_id == *node_id
-        && sample.expires_at
-            == sample
-                .received_at
-                .checked_add_signed(Duration::seconds(TELEMETRY_FRESHNESS_SECS))
-                .unwrap_or(sample.received_at)
+        && sample
+            .received_at
+            .checked_add_signed(Duration::seconds(TELEMETRY_FRESHNESS_SECS))
+            .is_some_and(|expected| sample.expires_at == expected)
         && validate_metadata(
             sample.state,
             sample.active_tool_count,
@@ -513,13 +517,21 @@ fn checked_telemetry_file(paths: &RunPaths, node_id: &NodeId) -> Result<PathBuf,
     Ok(path)
 }
 
-fn read_stored(path: &Path) -> Result<Option<StoredTelemetrySample>, Error> {
+enum StoredRead {
+    Absent,
+    Corrupt,
+    Valid(StoredTelemetrySample),
+}
+
+fn read_stored(path: &Path) -> Result<StoredRead, Error> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     nofollow(&mut options);
     let mut file = match options.open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StoredRead::Absent)
+        }
         Err(error) => return Err(Error::io(path, error)),
     };
     let mut bytes = Vec::new();
@@ -528,15 +540,10 @@ fn read_stored(path: &Path) -> Result<Option<StoredTelemetrySample>, Error> {
         .read_to_end(&mut bytes)
         .map_err(|error| Error::io(path, error))?;
     if bytes.len() > TELEMETRY_MAX_BYTES {
-        return Err(Error::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "telemetry sample exceeds 4 KiB",
-            ),
-        });
+        return Ok(StoredRead::Corrupt);
     }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| Error::json(path, error))
+    Ok(match serde_json::from_slice(&bytes) {
+        Ok(sample) => StoredRead::Valid(sample),
+        Err(_) => StoredRead::Corrupt,
+    })
 }

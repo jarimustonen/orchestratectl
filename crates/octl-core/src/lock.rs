@@ -114,6 +114,30 @@ impl RunLock<Exclusive> {
         })
     }
 
+    /// Acquire the exclusive lock on an existing lock file without creating
+    /// either the lock file or its parent run directory.
+    ///
+    /// This is for mutation endpoints that must reject a missing/deleted run
+    /// without resurrecting it as an empty directory. A canonical run has a
+    /// `.lock` because its event creation path acquired the ordinary exclusive
+    /// lock before publishing projections. Like [`RunLock::acquire`], this
+    /// rejects symlinks and blocks until the exclusive lock is available.
+    pub fn acquire_existing(lock_path: &Path) -> Result<Self> {
+        reject_symlink(lock_path, || Error::SymlinkStateFile {
+            name: "lock",
+            path: lock_path.to_path_buf(),
+        })?;
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).truncate(false);
+        crate::paths::nofollow(&mut opts);
+        let file = opts.open(lock_path).map_err(|e| Error::io(lock_path, e))?;
+        <File as FileExt>::lock(&file).map_err(|e| Error::io(lock_path, e))?;
+        Ok(Self {
+            file: Some(file),
+            _mode: PhantomData,
+        })
+    }
+
     /// Mint a [`LockedRun`] witness proving this exclusive guard holds the
     /// run's `flock`. The witness borrows `self`, so the borrow checker forbids
     /// it from outliving the guard (and thus the lock). Use this for the
@@ -256,6 +280,19 @@ mod tests {
         let paths = fresh_paths(&tmp);
         let got = RunLock::with_lock(&paths, |_witness: &LockedRun| Ok(7u8)).unwrap();
         assert_eq!(got, 7);
+    }
+
+    #[test]
+    fn acquire_existing_never_creates_missing_state() {
+        let tmp = TempDir::new().unwrap();
+        let run = tmp.path().join("missing-run");
+        let lock = run.join(".lock");
+        assert!(RunLock::acquire_existing(&lock).is_err());
+        assert!(!run.exists(), "no-create acquire must not author a run dir");
+
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(&lock, []).unwrap();
+        assert!(RunLock::acquire_existing(&lock).is_ok());
     }
 
     /// A manually-held exclusive guard ([`RunLock::acquire`]) can mint a witness
