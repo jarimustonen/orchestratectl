@@ -1,0 +1,359 @@
+{
+  "schema_version": 1,
+  "contract": "orchestratectl.worker-telemetry-adapter",
+  "substitution": {
+    "$RUN_ID": "the isolated test run identity",
+    "$NODE_ID": "the isolated non-terminal test node identity"
+  },
+  "endpoint_setup": {
+    "default": { "node_id": "n-0001", "current_attempt": 0, "terminal": false },
+    "current_attempt": "semantic precondition; each harness establishes it through its own test facilities",
+    "prior_sample": "submit this valid request before the case"
+  },
+  "trace_semantics": {
+    "execution_owner": "external adapter package",
+    "repository_role": "validate fixture consistency and submit reference payloads to the public endpoint; do not execute adapter timing",
+    "clock": "virtual monotonic milliseconds with t=0 at the first step",
+    "steps": "inject lifecycle inputs in listed order at at_ms",
+    "sender_results": "stubbed subprocess completion inputs keyed by zero-based send_index",
+    "expected_sends": "exhaustive ordered subprocess starts through observation_window_ms; no unlisted start is allowed in that window",
+    "expected_send_time": "exact in virtual time; real-clock package tests choose their own scheduler tolerance",
+    "send_payload": "desired snapshot fields only; identity and request versions are added from the contract environment",
+    "tie_order": [
+      "apply scheduled sender completions",
+      "apply listed lifecycle steps",
+      "derive the newest desired snapshot",
+      "run eligible floor, refresh, and shutdown actions",
+      "record subprocess starts"
+    ],
+    "refresh": "anchored to every subprocess start; failure starts no immediate retry; overdue periods coalesce to one send",
+    "shutdown_return_by_ms": "external harness must observe the shutdown callback return no later than this virtual time"
+  },
+  "event_vocabulary": {
+    "session_open": "the harness session becomes live",
+    "turn_start": "an automatic agent run begins",
+    "turn_settled": "the automatic agent run settles",
+    "tool_open": "a tool execution begins and carries fixture-local tool_ref and public tool_name",
+    "tool_close": "a tool execution ends and carries fixture-local tool_ref",
+    "session_close": "the harness session shuts down",
+    "refresh_due": "the unchanged-snapshot refresh deadline is reached"
+  },
+  "endpoint_cases": [
+    {
+      "id": "valid-settled-current-attempt",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled"
+      },
+      "expect": { "accepted": true, "stored_state": "settled" }
+    },
+    {
+      "id": "valid-tool-running-without-metadata",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running"
+      },
+      "expect": { "accepted": true, "stored_state": "tool_running" }
+    },
+    {
+      "id": "valid-sanitary-single-tool",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 1, "tool_name": "functions.bash"
+      },
+      "expect": {
+        "accepted": true, "stored_state": "tool_running",
+        "stored_active_tool_count": 1, "stored_tool_name": "functions.bash"
+      }
+    },
+    {
+      "id": "valid-tool-name-at-length-bound",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 1,
+        "tool_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expect": {
+        "accepted": true, "stored_state": "tool_running", "stored_active_tool_count": 1,
+        "stored_tool_name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "id": "valid-multiple-tools-without-name",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 32
+      },
+      "expect": { "accepted": true, "stored_state": "tool_running", "stored_active_tool_count": 32 }
+    },
+    {
+      "id": "invalid-unknown-field",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled", "progress": 50
+      },
+      "expect": { "error_code": "invalid_telemetry_request" }
+    },
+    {
+      "id": "invalid-private-payload-field",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 1, "tool_name": "bash", "command": "printf private"
+      },
+      "expect": { "error_code": "invalid_telemetry_request" }
+    },
+    {
+      "id": "invalid-schema-version",
+      "request": {
+        "schema_version": 2, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled"
+      },
+      "expect": { "error_code": "unsupported_telemetry_schema" }
+    },
+    {
+      "id": "invalid-protocol-version",
+      "request": {
+        "schema_version": 1, "protocol_version": 2, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled"
+      },
+      "expect": { "error_code": "unsupported_telemetry_protocol" }
+    },
+    {
+      "id": "invalid-attempt-type",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": "0", "state": "settled"
+      },
+      "expect": { "error_code": "invalid_telemetry_request" }
+    },
+    {
+      "id": "invalid-metadata-on-settled",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled", "active_tool_count": 1
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-name-without-count",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running", "tool_name": "bash"
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-name-with-multiple-count",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 2, "tool_name": "bash"
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-count-zero",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running", "active_tool_count": 0
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-count-overflow",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running", "active_tool_count": 33
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-name",
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "tool_running",
+        "active_tool_count": 1, "tool_name": "path/to/tool"
+      },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "invalid-tool-name-too-long",
+      "request_generator": { "kind": "tool_name_length", "length": 65 },
+      "expect": { "error_code": "invalid_telemetry_metadata" }
+    },
+    {
+      "id": "valid-current-attempt-after-retry",
+      "setup": { "current_attempt": 1 },
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 1, "state": "agent_active"
+      },
+      "expect": { "accepted": true, "stored_state": "agent_active", "stored_attempt": 1 }
+    },
+    {
+      "id": "invalid-old-attempt",
+      "setup": { "current_attempt": 1 },
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "agent_active"
+      },
+      "expect": { "error_code": "telemetry_attempt_mismatch", "expected_attempt": 1 }
+    },
+    {
+      "id": "same-node-rejection-preserves-prior-sample",
+      "setup": {
+        "prior_sample": {
+          "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+          "node_id": "$NODE_ID", "attempt": 0, "state": "agent_active"
+        }
+      },
+      "request": {
+        "schema_version": 1, "protocol_version": 1, "run_id": "$RUN_ID",
+        "node_id": "$NODE_ID", "attempt": 0, "state": "settled", "active_tool_count": 1
+      },
+      "expect": {
+        "error_code": "invalid_telemetry_metadata", "prior_state": "agent_active",
+        "prior_attempt": 0, "run_status": "pending"
+      }
+    },
+    {
+      "id": "invalid-oversize",
+      "request_generator": { "kind": "repeated_byte", "byte_value": 32, "count": 4097 },
+      "expect": { "error_code": "telemetry_input_too_large", "maximum_bytes": 4096 }
+    }
+  ],
+  "adapter_sequences": [
+    {
+      "id": "four-state-precedence",
+      "observation_window_ms": 50,
+      "steps": [
+        { "at_ms": 0, "event": "session_open", "expect_state": "settled" },
+        { "at_ms": 10, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 20, "event": "tool_open", "tool_ref": "tool-a", "tool_name": "bash", "expect_state": "tool_running", "expect_active_tool_count": 1, "expect_tool_name": "bash" },
+        { "at_ms": 30, "event": "turn_settled", "expect_state": "tool_running" },
+        { "at_ms": 40, "event": "tool_close", "tool_ref": "tool-a", "expect_state": "settled" },
+        { "at_ms": 50, "event": "session_close", "expect_state": "shutdown" }
+      ]
+    },
+    {
+      "id": "duplicate-and-unmatched-tool-events",
+      "observation_window_ms": 40,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 10, "event": "tool_close", "tool_ref": "tool-missing", "expect_state": "agent_active" },
+        { "at_ms": 20, "event": "tool_open", "tool_ref": "tool-a", "tool_name": "read", "expect_state": "tool_running", "expect_active_tool_count": 1, "expect_tool_name": "read" },
+        { "at_ms": 30, "event": "tool_open", "tool_ref": "tool-a", "tool_name": "private-duplicate-name", "expect_state": "tool_running", "expect_active_tool_count": 1, "expect_tool_name": "read" },
+        { "at_ms": 40, "event": "tool_close", "tool_ref": "tool-a", "expect_state": "agent_active" }
+      ]
+    },
+    {
+      "id": "event-storm-single-flight-coalescing",
+      "observation_window_ms": 2100,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 25, "event": "tool_open", "tool_ref": "tool-a", "tool_name": "read", "expect_state": "tool_running" },
+        { "at_ms": 30, "event": "tool_open", "tool_ref": "tool-b", "tool_name": "grep", "expect_state": "tool_running" },
+        { "at_ms": 35, "event": "tool_close", "tool_ref": "tool-a", "expect_state": "tool_running" },
+        { "at_ms": 40, "event": "tool_close", "tool_ref": "tool-b", "expect_state": "agent_active" },
+        { "at_ms": 45, "event": "turn_settled", "expect_state": "settled" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 500, "result": "accepted" },
+        { "send_index": 1, "complete_at_ms": 2100, "result": "accepted" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "agent_active" } },
+        { "start_ms": 2000, "payload": { "state": "settled" } }
+      ]
+    },
+    {
+      "id": "unchanged-long-tool-refresh",
+      "observation_window_ms": 62100,
+      "steps": [
+        { "at_ms": 0, "event": "tool_open", "tool_ref": "tool-long", "tool_name": "functions.bash", "expect_state": "tool_running" },
+        { "at_ms": 62000, "event": "tool_close", "tool_ref": "tool-long", "expect_state": "settled" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 100, "result": "accepted" },
+        { "send_index": 1, "complete_at_ms": 30100, "result": "accepted" },
+        { "send_index": 2, "complete_at_ms": 60100, "result": "accepted" },
+        { "send_index": 3, "complete_at_ms": 62100, "result": "accepted" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "tool_running", "active_tool_count": 1, "tool_name": "functions.bash" } },
+        { "start_ms": 30000, "reason": "refresh", "payload": { "state": "tool_running", "active_tool_count": 1, "tool_name": "functions.bash" } },
+        { "start_ms": 60000, "reason": "refresh", "payload": { "state": "tool_running", "active_tool_count": 1, "tool_name": "functions.bash" } },
+        { "start_ms": 62000, "payload": { "state": "settled" } }
+      ]
+    },
+    {
+      "id": "failed-refresh-keeps-desired-snapshot",
+      "observation_window_ms": 30100,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 30000, "event": "refresh_due", "expect_state": "agent_active" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 100, "result": "accepted" },
+        { "send_index": 1, "complete_at_ms": 30100, "result": "endpoint_failure" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "agent_active" } },
+        { "start_ms": 30000, "reason": "refresh", "payload": { "state": "agent_active" } }
+      ]
+    },
+    {
+      "id": "shutdown-bypasses-send-floor",
+      "observation_window_ms": 400,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 300, "event": "session_close", "expect_state": "shutdown" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 100, "result": "accepted" },
+        { "send_index": 1, "complete_at_ms": 400, "result": "accepted" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "agent_active" } },
+        { "start_ms": 300, "reason": "shutdown_flush", "payload": { "state": "shutdown" } }
+      ],
+      "shutdown_return_by_ms": 400
+    },
+    {
+      "id": "shutdown-waits-behind-in-flight-within-budget",
+      "observation_window_ms": 600,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 100, "event": "session_close", "expect_state": "shutdown" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 500, "result": "accepted" },
+        { "send_index": 1, "complete_at_ms": 600, "result": "accepted" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "agent_active" } },
+        { "start_ms": 500, "reason": "shutdown_flush", "payload": { "state": "shutdown" } }
+      ],
+      "shutdown_return_by_ms": 600
+    },
+    {
+      "id": "bounded-shutdown-behind-hung-send",
+      "observation_window_ms": 2100,
+      "steps": [
+        { "at_ms": 0, "event": "turn_start", "expect_state": "agent_active" },
+        { "at_ms": 100, "event": "session_close", "expect_state": "shutdown" }
+      ],
+      "sender_results": [
+        { "send_index": 0, "complete_at_ms": 5000, "result": "timeout" }
+      ],
+      "expected_sends": [
+        { "start_ms": 0, "payload": { "state": "agent_active" } }
+      ],
+      "shutdown_return_by_ms": 2100
+    }
+  ]
+}

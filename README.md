@@ -107,6 +107,12 @@ orchestratectl event tail <run-id> --follow  # stream the event log
 orchestratectl config show                   # effective config with per-key source
 ```
 
+External worker harnesses can report bounded advisory activity through the
+public `node telemetry update` endpoint. Its stable, runtime-neutral v1 DTO and
+conformance fixtures live in
+[`contracts/worker-telemetry-v1/`](contracts/worker-telemetry-v1/). The adapter
+runtime is intentionally owned outside this repository.
+
 ## Bundled skills
 
 | Skill | Purpose |

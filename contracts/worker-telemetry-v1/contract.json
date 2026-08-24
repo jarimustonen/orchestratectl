@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "contract": "orchestratectl.worker-telemetry-adapter",
+  "protocol_version": 1,
+  "compatibility": {
+    "schema_version_scope": "this contract document and conformance fixture format",
+    "protocol_version_scope": "telemetry request semantics",
+    "request_changes": "adding, removing, or changing a request field or enum requires a protocol_version bump",
+    "response_changes": "consumers must tolerate additive success and error envelope fields",
+    "fixture_changes": "new cases may be added without a schema_version bump only when they exercise already-normative protocol_version 1 behavior"
+  },
+  "environment": {
+    "read_by": "adapter",
+    "captured_once": true,
+    "run_id": { "name": "OCTL_RUN_ID", "type": "non-empty string" },
+    "node_id": { "name": "OCTL_NODE_ID", "type": "non-empty string" },
+    "attempt": {
+      "name": "OCTL_ATTEMPT",
+      "type": "canonical unsigned decimal string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maximum": 4294967295
+    },
+    "invalid_behavior": "if any value is missing, empty, or invalid, send nothing for the session and record only a local diagnostic",
+    "identity_source": "lifecycle events never override environment identity; the endpoint reads identity only from the request"
+  },
+  "endpoint": {
+    "argv": [
+      "orchestratectl",
+      "node",
+      "telemetry",
+      "update",
+      "--input-file",
+      "-",
+      "--output",
+      "json"
+    ],
+    "stdin": "one UTF-8 JSON object; trailing JSON values are rejected",
+    "request_max_bytes": 4096,
+    "request_max_bytes_inclusive": true,
+    "request_size_checked": "before parsing",
+    "success": { "exit_code": 0, "stream": "stdout", "envelope_schema_version": 1 },
+    "failure": {
+      "exit_code": "nonzero",
+      "stream": "stderr",
+      "envelope_schema_version": 1,
+      "required_error_fields": ["code", "message"],
+      "codes_are_additive": true,
+      "consumer_behavior": "treat every code, including an unknown future code, as diagnostic endpoint failure"
+    }
+  },
+  "request": {
+    "type": "object",
+    "additional_properties": "reject with invalid_telemetry_request",
+    "fields": {
+      "schema_version": { "type": "integer", "const": 1, "required": true },
+      "protocol_version": { "type": "integer", "const": 1, "required": true },
+      "run_id": { "type": "string", "required": true },
+      "node_id": { "type": "string", "required": true },
+      "attempt": { "type": "integer", "minimum": 0, "maximum": 4294967295, "required": true },
+      "state": {
+        "type": "string",
+        "enum": ["agent_active", "tool_running", "settled", "shutdown"],
+        "required": true
+      },
+      "active_tool_count": { "type": "integer", "minimum": 1, "maximum": 32, "required": false },
+      "tool_name": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+        "ascii_only": true,
+        "required": false
+      }
+    },
+    "constraints": [
+      {
+        "id": "metadata_requires_tool_running",
+        "rule": "active_tool_count or tool_name present implies state=tool_running",
+        "error_code": "invalid_telemetry_metadata"
+      },
+      {
+        "id": "tool_name_requires_explicit_single_count",
+        "rule": "tool_name present implies active_tool_count is present and equals 1",
+        "error_code": "invalid_telemetry_metadata"
+      }
+    ]
+  },
+  "success_response": {
+    "type": "object",
+    "required_fields": ["schema_version", "data", "warnings"],
+    "additional_fields": "allow",
+    "fields": {
+      "schema_version": { "type": "integer", "const": 1 },
+      "warnings": { "type": "array" },
+      "data": {
+        "type": "object",
+        "additional_fields": "allow",
+        "required_fields": ["accepted", "run_id", "node_id", "attempt", "received_at", "expires_at"],
+        "fields": {
+          "accepted": { "type": "boolean", "const": true },
+          "run_id": { "type": "string" },
+          "node_id": { "type": "string" },
+          "attempt": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "received_at": { "type": "string", "format": "RFC3339 timestamp" },
+          "expires_at": { "type": "string", "format": "RFC3339 timestamp", "authority": "server" }
+        }
+      }
+    }
+  },
+  "fixture_error_codes": {
+    "policy": "representative, additive, and not exhaustive",
+    "codes": [
+      "invalid_telemetry_request",
+      "invalid_telemetry_metadata",
+      "telemetry_input_too_large",
+      "unsupported_telemetry_schema",
+      "unsupported_telemetry_protocol",
+      "telemetry_attempt_mismatch",
+      "node_not_found",
+      "telemetry_node_terminal"
+    ]
+  },
+  "timing": {
+    "adapter_clock": "monotonic",
+    "refresh_interval_ms": 30000,
+    "refresh_anchor": "last subprocess start, including a failed or timed-out send",
+    "missed_refreshes": "coalesce to one newest-snapshot send when eligible",
+    "freshness_ms": 90000,
+    "freshness_authority": "server",
+    "send_floor_ms": 2000,
+    "send_floor_measurement": "inclusive start-to-start",
+    "shutdown_bypasses_send_floor": true,
+    "shutdown_flush_timeout_ms": 2000,
+    "maximum_in_flight": 1
+  },
+  "state_precedence": ["shutdown", "tool_running", "agent_active", "settled"],
+  "desired_snapshot": {
+    "fields": ["state", "active_tool_count", "tool_name"],
+    "change_rule": "a change to any field is immediately send-eligible subject to the send floor and single-flight rule",
+    "sampled_at": "subprocess start after coalescing"
+  },
+  "tool_metadata": {
+    "allowed_state": "tool_running",
+    "active_tool_count_min": 1,
+    "active_tool_count_max": 32,
+    "overflow": "when more than 32 tools are active, omit both active_tool_count and tool_name",
+    "tool_name_pattern": "^[A-Za-z0-9_.:-]{1,64}$",
+    "invalid_tool_name": "omit rather than transform",
+    "tool_name_only_when_active_tool_count": 1,
+    "multiple_tools": "omit tool_name",
+    "tool_running_without_metadata": "valid"
+  },
+  "public_lifecycle_bindings": {
+    "pi": {
+      "session_open": "session_start",
+      "turn_start": "agent_start",
+      "turn_settled": "agent_settled",
+      "tool_open": "tool_execution_start",
+      "tool_close": "tool_execution_end",
+      "session_close": "session_shutdown"
+    }
+  },
+  "privacy": {
+    "allowed_payload_fields": [
+      "schema_version",
+      "protocol_version",
+      "run_id",
+      "node_id",
+      "attempt",
+      "state",
+      "active_tool_count",
+      "tool_name"
+    ],
+    "excluded": [
+      "tool arguments",
+      "commands",
+      "paths",
+      "tool results",
+      "message text",
+      "prompts",
+      "output",
+      "errors",
+      "provider identity",
+      "model identity",
+      "session identity",
+      "tool call IDs"
+    ]
+  },
+  "normative_properties": [
+    {
+      "id": "failure_ages_prior_sample",
+      "statement": "Endpoint or spawn failure never clears or reinterprets a prior sample; without a later accepted refresh it ages to stale at received_at + freshness_ms."
+    },
+    {
+      "id": "telemetry_is_not_run_truth",
+      "statement": "Telemetry never changes status, reports, wait settlement, retry, merge, outcomes, or cleanup."
+    }
+  ]
+}
