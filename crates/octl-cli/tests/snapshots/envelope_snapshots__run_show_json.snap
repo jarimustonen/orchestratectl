@@ -26,6 +26,14 @@ expression: value
     "attention_required": false,
     "awaiting_input": false,
     "open_discussion_count": 0,
+    "telemetry_available": true,
+    "telemetry_counts": {
+      "absent": 1,
+      "current": 0,
+      "stale": 0,
+      "clock_unreliable": 0,
+      "invalid": 0
+    },
     "manifest": {
       "schema_version": 1,
       "run_id": "[RUN_ID]",
@@ -46,6 +54,12 @@ expression: value
     "counts": {
       "nodes": 1
     },
+    "telemetry": [
+      {
+        "node_id": "n-0001",
+        "sample": "absent"
+      }
+    ],
     "landed": false,
     "landed_method": "unverified",
     "report": null

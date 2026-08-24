@@ -10,6 +10,7 @@ pub mod dto;
 pub mod list;
 pub mod report;
 pub mod show;
+pub mod telemetry;
 
 use std::path::PathBuf;
 
@@ -29,6 +30,11 @@ pub enum NodeAction {
     },
     /// Print one node's JSON projection.
     Show { run_id: String, node_id: String },
+    /// Update one bounded, advisory last-told worker telemetry sample.
+    Telemetry {
+        #[command(subcommand)]
+        action: TelemetryAction,
+    },
     /// Agent self-submission of a structured terminal report (§7.3).
     Report {
         run_id: String,
@@ -47,6 +53,38 @@ pub enum NodeAction {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum TelemetryAction {
+    /// Replace the current attempt's advisory telemetry sample.
+    Update {
+        /// Exact run id. Required unless --input-file is used.
+        #[arg(long, required_unless_present = "input_file")]
+        run_id: Option<String>,
+        /// Exact node id. Required unless --input-file is used.
+        #[arg(long, required_unless_present = "input_file")]
+        node_id: Option<String>,
+        /// Absolute current attempt. Required unless --input-file is used.
+        #[arg(long, required_unless_present = "input_file")]
+        attempt: Option<u32>,
+        /// Last-told activity. Required unless --input-file is used.
+        #[arg(long, value_enum, required_unless_present = "input_file")]
+        state: Option<telemetry::StateArg>,
+        /// Bounded active tool count (1-32), only for `tool_running`.
+        #[arg(long, conflicts_with = "input_file")]
+        active_tool_count: Option<u8>,
+        /// Sanitized tool name, only when active-tool-count is 1.
+        #[arg(long, conflicts_with = "input_file")]
+        tool_name: Option<String>,
+        /// Strict v1 JSON request path, or '-' for stdin. Maximum raw size: 4096 bytes.
+        #[arg(
+            long,
+            value_name = "PATH|-",
+            conflicts_with_all = ["run_id", "node_id", "attempt", "state", "active_tool_count", "tool_name"]
+        )]
+        input_file: Option<PathBuf>,
+    },
+}
+
 pub fn dispatch(
     action: NodeAction,
     spec: &OutputSpec,
@@ -60,6 +98,27 @@ pub fn dispatch(
             warnings,
         }),
         NodeAction::Show { run_id, node_id } => show::run(&run_id, &node_id, spec, warnings),
+        NodeAction::Telemetry { action } => match action {
+            TelemetryAction::Update {
+                run_id,
+                node_id,
+                attempt,
+                state,
+                active_tool_count,
+                tool_name,
+                input_file,
+            } => telemetry::update(telemetry::Args {
+                run_id,
+                node_id,
+                attempt,
+                state,
+                active_tool_count,
+                tool_name,
+                input_file,
+                spec,
+                warnings,
+            }),
+        },
         NodeAction::Report {
             run_id,
             node_id,

@@ -1185,7 +1185,7 @@ expression: value
       },
       {
         "command": "orchestratectl node",
-        "about": "List nodes, show a node, or submit a structured terminal report",
+        "about": "List/show nodes, update advisory telemetry, or submit a terminal report",
         "aliases": [],
         "hidden": false,
         "deprecated": false,
@@ -1777,6 +1777,440 @@ expression: value
               }
             ],
             "subcommands": []
+          },
+          {
+            "command": "orchestratectl node telemetry",
+            "about": "Update one bounded, advisory last-told worker telemetry sample",
+            "aliases": [],
+            "hidden": false,
+            "deprecated": false,
+            "flags": [
+              {
+                "name": "help",
+                "long": "help",
+                "short": "h",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Print help",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "json",
+                "long": "json",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "output",
+                "long": "output",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                "value_names": [
+                  "FMT|PATH"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": true,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "jsonl"
+                ],
+                "accepted_values": [
+                  "json",
+                  "jsonl",
+                  "text"
+                ],
+                "accepts_file_paths": true,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              }
+            ],
+            "positionals": [],
+            "subcommands": [
+              {
+                "command": "orchestratectl node telemetry update",
+                "about": "Replace the current attempt's advisory telemetry sample",
+                "aliases": [],
+                "hidden": false,
+                "deprecated": false,
+                "flags": [
+                  {
+                    "name": "active_tool_count",
+                    "long": "active-tool-count",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Bounded active tool count (1-32), only for `tool_running`",
+                    "value_names": [
+                      "ACTIVE_TOOL_COUNT"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [
+                      "input_file"
+                    ],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "attempt",
+                    "long": "attempt",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Absolute current attempt. Required unless --input-file is used",
+                    "value_names": [
+                      "ATTEMPT"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [
+                      "input_file"
+                    ],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "help",
+                    "long": "help",
+                    "short": "h",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Print help",
+                    "value_names": [],
+                    "takes_value": false,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 0,
+                      "max": 0,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "input_file",
+                    "long": "input-file",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Strict v1 JSON request path, or '-' for stdin. Maximum raw size: 4096 bytes",
+                    "value_names": [
+                      "PATH|-"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": true,
+                    "conflicts_with": [
+                      "active_tool_count",
+                      "attempt",
+                      "node_id",
+                      "run_id",
+                      "state",
+                      "tool_name"
+                    ],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "json",
+                    "long": "json",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+                    "value_names": [],
+                    "takes_value": false,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": true,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [
+                      "false"
+                    ],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 0,
+                      "max": 0,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "node_id",
+                    "long": "node-id",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Exact node id. Required unless --input-file is used",
+                    "value_names": [
+                      "NODE_ID"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [
+                      "input_file"
+                    ],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "output",
+                    "long": "output",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+                    "value_names": [
+                      "FMT|PATH"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": true,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [
+                      "jsonl"
+                    ],
+                    "accepted_values": [
+                      "json",
+                      "jsonl",
+                      "text"
+                    ],
+                    "accepts_file_paths": true,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "run_id",
+                    "long": "run-id",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Exact run id. Required unless --input-file is used",
+                    "value_names": [
+                      "RUN_ID"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [
+                      "input_file"
+                    ],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "state",
+                    "long": "state",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Last-told activity. Required unless --input-file is used",
+                    "value_names": [
+                      "STATE"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [
+                      "agent_active",
+                      "tool_running",
+                      "settled",
+                      "shutdown"
+                    ],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [],
+                    "requires": [],
+                    "required_unless_present": [
+                      "input_file"
+                    ],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  },
+                  {
+                    "name": "tool_name",
+                    "long": "tool-name",
+                    "long_aliases": [],
+                    "short_aliases": [],
+                    "help": "Sanitized tool name, only when active-tool-count is 1",
+                    "value_names": [
+                      "TOOL_NAME"
+                    ],
+                    "takes_value": true,
+                    "multiple": false,
+                    "required": false,
+                    "is_global": false,
+                    "hidden": false,
+                    "deprecated": false,
+                    "defaults": [],
+                    "accepted_values": [],
+                    "accepts_file_paths": false,
+                    "conflicts_with": [
+                      "input_file"
+                    ],
+                    "requires": [],
+                    "required_unless_present": [],
+                    "arity": {
+                      "min": 1,
+                      "max": 1,
+                      "repeated": false,
+                      "multi_value": false,
+                      "require_equals": false
+                    }
+                  }
+                ],
+                "positionals": [],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

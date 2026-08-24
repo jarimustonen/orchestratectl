@@ -314,6 +314,48 @@ fn timeout_without_terminal_run_exits_two() {
 }
 
 #[test]
+fn fresh_tool_telemetry_does_not_satisfy_run_wait() {
+    let home = TestHome::new();
+    let pending = pending_run(&home, "telemetry-is-not-settlement");
+    add_node(&home, &pending, "n-0001");
+    run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "node",
+        "telemetry",
+        "update",
+        "--run-id",
+        &pending,
+        "--node-id",
+        "n-0001",
+        "--attempt",
+        "0",
+        "--state",
+        "tool_running",
+        "--active-tool-count",
+        "1",
+        "--tool-name",
+        "bash",
+    ]));
+
+    let value = run_exit(
+        bin(&home).args([
+            "--output",
+            "json",
+            "run",
+            "wait",
+            &pending,
+            "--timeout",
+            "500ms",
+        ]),
+        2,
+    );
+    assert_eq!(value["data"]["condition"], "all");
+    assert_eq!(value["data"]["runs"][0]["status"], "pending");
+    assert!(value["data"]["waited_ms"].as_u64().unwrap() >= 400);
+}
+
+#[test]
 fn fail_on_error_with_failed_run_exits_three() {
     let home = TestHome::new();
     let failed = settle_run(

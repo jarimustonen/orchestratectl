@@ -71,7 +71,7 @@ enum Command {
         #[command(subcommand)]
         action: crate::event::EventAction,
     },
-    /// List nodes, show a node, or submit a structured terminal report.
+    /// List/show nodes, update advisory telemetry, or submit a terminal report.
     Node {
         #[command(subcommand)]
         action: crate::node::NodeAction,

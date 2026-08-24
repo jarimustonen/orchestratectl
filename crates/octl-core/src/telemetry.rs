@@ -373,43 +373,83 @@ pub fn read_telemetry_with_clock(
         if !canonical_projections_current(paths)? {
             return Ok(None);
         }
-        let node = read_node(paths, node_id)?;
-        let path = checked_telemetry_file(paths, node_id)?;
-        let sample = match read_stored(&path)? {
-            StoredRead::Absent => {
-                return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Absent)))
-            }
-            StoredRead::Corrupt => {
-                return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Invalid)))
-            }
-            StoredRead::Valid(sample) => sample,
-        };
-        if !valid_stored_shape(&sample, paths, node_id) {
-            return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Invalid)));
-        }
-        if sample.attempt != node.retry_attempts {
-            return Ok(Some(TelemetryView::bare(TelemetrySampleStatus::Absent)));
-        }
-        let now = clock.now();
-        let clock_bad = now < sample.received_at || now < sample.state_since;
-        let status = if clock_bad {
-            TelemetrySampleStatus::ClockUnreliable
-        } else if now >= sample.expires_at {
-            TelemetrySampleStatus::Stale
-        } else {
-            TelemetrySampleStatus::Current
-        };
-        Ok(Some(TelemetryView {
-            sample: status,
-            state: Some(sample.state),
-            age_ms: (!clock_bad).then(|| (now - sample.received_at).num_milliseconds()),
-            state_elapsed_ms: (!clock_bad).then(|| (now - sample.state_since).num_milliseconds()),
-            attempt: Some(sample.attempt),
-            active_tool_count: sample.active_tool_count,
-            tool_name: sample.tool_name,
-        }))
+        read_telemetry_locked(paths, node_id, clock.now()).map(Some)
     })?;
     result.ok_or(TelemetryError::RunStateNotCurrent)
+}
+
+/// Read every projected node's telemetry under one shared lock and one
+/// canonical-currency check. This is the bounded read-surface API for callers
+/// that need per-run rows or counts; it avoids recursively locking and rescanning
+/// the event log once per node.
+///
+/// A crash-tailed canonical projection cannot prove current attempts and
+/// returns [`TelemetryError::RunStateNotCurrent`]. Malformed bounded sample
+/// contents still classify as `invalid`; canonical projection, path-integrity,
+/// and operational I/O errors propagate instead of masquerading as sample
+/// corruption.
+pub fn read_all_telemetry(
+    paths: &RunPaths,
+) -> Result<Vec<(NodeId, TelemetryView)>, TelemetryError> {
+    read_all_telemetry_with_clock(paths, &SystemTelemetryClock)
+}
+
+/// [`read_all_telemetry`] with an injected read clock.
+pub fn read_all_telemetry_with_clock(
+    paths: &RunPaths,
+    clock: &impl TelemetryClock,
+) -> Result<Vec<(NodeId, TelemetryView)>, TelemetryError> {
+    let result = RunLock::<Shared>::with_shared_lock(&paths.lock(), || {
+        let node_ids = projected_node_ids(paths)?;
+        if !canonical_projections_current(paths)? {
+            return Ok(None);
+        }
+        let now = clock.now();
+        let mut rows = Vec::with_capacity(node_ids.len());
+        for node_id in node_ids {
+            let view = read_telemetry_locked(paths, &node_id, now)?;
+            rows.push((node_id, view));
+        }
+        Ok(Some(rows))
+    })?;
+    result.ok_or(TelemetryError::RunStateNotCurrent)
+}
+
+fn read_telemetry_locked(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    now: DateTime<Utc>,
+) -> Result<TelemetryView, Error> {
+    let node = read_node(paths, node_id)?;
+    let path = checked_telemetry_file(paths, node_id)?;
+    let sample = match read_stored(&path)? {
+        StoredRead::Absent => return Ok(TelemetryView::bare(TelemetrySampleStatus::Absent)),
+        StoredRead::Corrupt => return Ok(TelemetryView::bare(TelemetrySampleStatus::Invalid)),
+        StoredRead::Valid(sample) => sample,
+    };
+    if !valid_stored_shape(&sample, paths, node_id) {
+        return Ok(TelemetryView::bare(TelemetrySampleStatus::Invalid));
+    }
+    if sample.attempt != node.retry_attempts {
+        return Ok(TelemetryView::bare(TelemetrySampleStatus::Absent));
+    }
+    let clock_bad = now < sample.received_at || now < sample.state_since;
+    let status = if clock_bad {
+        TelemetrySampleStatus::ClockUnreliable
+    } else if now >= sample.expires_at {
+        TelemetrySampleStatus::Stale
+    } else {
+        TelemetrySampleStatus::Current
+    };
+    Ok(TelemetryView {
+        sample: status,
+        state: Some(sample.state),
+        age_ms: (!clock_bad).then(|| (now - sample.received_at).num_milliseconds()),
+        state_elapsed_ms: (!clock_bad).then(|| (now - sample.state_since).num_milliseconds()),
+        attempt: Some(sample.attempt),
+        active_tool_count: sample.active_tool_count,
+        tool_name: sample.tool_name,
+    })
 }
 
 fn canonical_projections_current(paths: &RunPaths) -> Result<bool, Error> {
@@ -500,6 +540,36 @@ fn ensure_size(what: &'static str, bytes: usize) -> Result<(), TelemetryError> {
     } else {
         Err(TelemetryError::TooLarge { what, bytes })
     }
+}
+
+fn projected_node_ids(paths: &RunPaths) -> Result<Vec<NodeId>, Error> {
+    paths.guard_root()?;
+    let dir = paths.nodes_dir();
+    reject_symlink(&dir, || Error::SymlinkSubdir {
+        name: "nodes",
+        path: dir.clone(),
+    })?;
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(Error::io(&dir, error)),
+    };
+    let mut ids = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| Error::io(&dir, error))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Ok(node_id) = NodeId::parse_str(stem) {
+            ids.push(node_id);
+        }
+    }
+    ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    Ok(ids)
 }
 
 fn checked_telemetry_file(paths: &RunPaths, node_id: &NodeId) -> Result<PathBuf, Error> {

@@ -158,8 +158,6 @@ as authoritative state.
 
 ```json
 {
-  "requirement": "required",
-  "support": "configured",
   "sample": "current",
   "state": "tool_running",
   "age_ms": 12200,
@@ -170,12 +168,11 @@ as authoritative state.
 }
 ```
 
-- `requirement` is derived rather than stored: autonomous interaction means
-  `required`, and explicit-interactive means `optional`; it describes the
-  create-time selection condition only, with no run-state effect when absent;
-- `support` is `configured | unsupported` from the selected candidate, not from
-  whether samples happen to arrive; and
 - `sample` is `absent | current | stale | clock_unreliable | invalid`.
+- `requirement` and `support` are deliberately not emitted by this telemetry
+  slice. A later profile-selection slice may derive them from a recorded
+  candidate once that candidate model exists; sample arrival must never be used
+  to guess either value.
 
 On every read, a stored sample whose attempt differs from the node's current
 attempt renders as `absent` regardless of its receive time. It is never shown as

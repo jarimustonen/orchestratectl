@@ -2,7 +2,7 @@
 created: 2026-08-22
 updated: 2026-08-24
 type: task
-status: open
+status: in-progress
 priority: normal
 provenance: other
 provenance_detail: Phase 1 implementation candidate from worker telemetry design

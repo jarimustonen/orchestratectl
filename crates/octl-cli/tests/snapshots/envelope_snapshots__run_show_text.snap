@@ -1,5 +1,6 @@
 ---
 source: crates/octl-cli/tests/envelope_snapshots.rs
+assertion_line: 233
 expression: value
 ---
 run-id:        [RUN_ID]
@@ -11,4 +12,5 @@ lifecycle:     autonomous
 created_at:    [TS]
 updated_at:    [TS]
 nodes:         1
+telemetry:     n-0001: telemetry absent; run status unchanged
 supervisor:    (none recorded)

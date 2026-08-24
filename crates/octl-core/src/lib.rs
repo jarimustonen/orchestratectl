@@ -61,11 +61,11 @@ pub use schema::{
     SUPPORTED_STATE_SCHEMAS,
 };
 pub use telemetry::{
-    parse_telemetry_update, read_telemetry, read_telemetry_with_clock, update_telemetry,
-    update_telemetry_with_clock, SystemTelemetryClock, TelemetryAccepted, TelemetryClock,
-    TelemetryError, TelemetrySampleStatus, TelemetryState, TelemetryUpdate, TelemetryView,
-    TELEMETRY_FRESHNESS_SECS, TELEMETRY_MAX_BYTES, TELEMETRY_PROTOCOL_VERSION,
-    TELEMETRY_SCHEMA_VERSION,
+    parse_telemetry_update, read_all_telemetry, read_all_telemetry_with_clock, read_telemetry,
+    read_telemetry_with_clock, update_telemetry, update_telemetry_with_clock, SystemTelemetryClock,
+    TelemetryAccepted, TelemetryClock, TelemetryError, TelemetrySampleStatus, TelemetryState,
+    TelemetryUpdate, TelemetryView, TELEMETRY_FRESHNESS_SECS, TELEMETRY_MAX_BYTES,
+    TELEMETRY_PROTOCOL_VERSION, TELEMETRY_SCHEMA_VERSION,
 };
 
 /// Ensure the orchestratectl root directory exists (`<root>/runs`,

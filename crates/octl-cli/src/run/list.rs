@@ -93,6 +93,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let stillborn_grace = stillborn_list_grace();
 
     let mut out: Vec<RunSummary> = Vec::new();
+    let mut output_warnings = args.warnings.to_vec();
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -232,21 +233,34 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             .with_stillborn(stillborn)
             .with_attention(attention)
             .with_awaiting_input(awaiting_input);
-        if let Some(filter) = &args.status {
-            if &summary.status != filter {
-                continue;
-            }
+        // Filter the exact DTO values while still avoiding telemetry I/O for
+        // excluded rows.
+        if args
+            .status
+            .as_ref()
+            .is_some_and(|filter| &summary.status != filter)
+            || args
+                .kind
+                .as_ref()
+                .is_some_and(|filter| &summary.kind != filter)
+        {
+            continue;
         }
-        if let Some(filter) = &args.kind {
-            if &summary.kind != filter {
-                continue;
-            }
+        // Advisory scan failures never suppress the canonical row and never
+        // masquerade as invalid samples; availability + an envelope warning
+        // preserve the distinction.
+        let (telemetry_counts, telemetry_warning) = crate::run::telemetry::read_counts(&paths);
+        if let Some(error) = telemetry_warning.as_deref() {
+            output_warnings.push(format!(
+                "telemetry unavailable for run {}: {error}; run status unchanged",
+                m.run_id
+            ));
         }
-        out.push(summary);
+        out.push(summary.with_telemetry_counts(telemetry_counts, telemetry_warning.is_none()));
     }
 
     out.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-    emit(out, args.spec, args.warnings)
+    emit(out, args.spec, &output_warnings)
 }
 
 fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
@@ -293,14 +307,19 @@ fn emit(runs: Vec<RunSummary>, spec: &OutputSpec, warnings: &[String]) -> Result
                     r.status.clone()
                 };
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\ttelemetry=absent:{},current:{},stale:{},clock_unreliable:{},invalid:{};run_status=unchanged",
                     r.run_id,
                     r.kind,
                     r.lifecycle,
                     status,
                     r.node_count,
                     sup,
-                    output::escape_one_line(&r.title)
+                    output::escape_one_line(&r.title),
+                    r.telemetry_counts.absent,
+                    r.telemetry_counts.current,
+                    r.telemetry_counts.stale,
+                    r.telemetry_counts.clock_unreliable,
+                    r.telemetry_counts.invalid,
                 );
             }
             output::emit_text_warnings(warnings);

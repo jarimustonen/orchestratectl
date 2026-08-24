@@ -311,6 +311,12 @@ pub struct RunSummary {
     pub awaiting_input: bool,
     /// Number of open decision items. Kept at top level for cheap list filtering.
     pub open_discussion_count: usize,
+    /// Whether the advisory telemetry scan completed. False never changes or
+    /// suppresses canonical run fields; the envelope warning explains why.
+    pub telemetry_available: bool,
+    /// Bounded observational counts of advisory samples by freshness state.
+    /// Meaningful when `telemetry_available` is true; never affects lifecycle.
+    pub telemetry_counts: crate::run::telemetry::TelemetryCounts,
     /// Full question/options/default context, omitted when no request is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub awaiting_input_detail: Option<crate::run::awaiting_input::AwaitingInputView>,
@@ -376,6 +382,19 @@ impl RunSummary {
         self
     }
 
+    /// Attach bounded telemetry freshness counts. This setter has no access to
+    /// any lifecycle or outcome field by design.
+    #[must_use]
+    pub fn with_telemetry_counts(
+        mut self,
+        telemetry_counts: crate::run::telemetry::TelemetryCounts,
+        available: bool,
+    ) -> Self {
+        self.telemetry_available = available;
+        self.telemetry_counts = telemetry_counts;
+        self
+    }
+
     /// Attach an explicit open human-decision request. It is additive to liveness
     /// hints: an orphaned supervisor still needs reattachment. Terminal runs
     /// defensively suppress stale node-level requests.
@@ -414,6 +433,8 @@ impl From<&Manifest> for RunSummary {
             attention: None,
             awaiting_input: false,
             open_discussion_count: 0,
+            telemetry_available: false,
+            telemetry_counts: crate::run::telemetry::TelemetryCounts::default(),
             awaiting_input_detail: None,
         }
     }
@@ -516,6 +537,14 @@ mod tests {
                 "attention_required": false,
                 "awaiting_input": false,
                 "open_discussion_count": 0,
+                "telemetry_available": false,
+                "telemetry_counts": {
+                    "absent": 0,
+                    "current": 0,
+                    "stale": 0,
+                    "clock_unreliable": 0,
+                    "invalid": 0
+                },
             })
         );
     }

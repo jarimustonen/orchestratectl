@@ -31,6 +31,9 @@ struct ShowPayload<'a> {
     summary: crate::run::dto::RunSummary,
     manifest: ManifestView<'a>,
     counts: Counts,
+    /// Per-node last-told activity and freshness. Observational only: every row
+    /// explicitly leaves the run status unchanged.
+    telemetry: Vec<crate::run::telemetry::NodeTelemetryView>,
     /// Rebase-robust landing signal for the reporting node: true when the
     /// worker's committed work has landed in the target, confirmed by patch-id
     /// equivalence against the *current* target tip (`git cherry`) — NOT by
@@ -241,6 +244,17 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             );
         }
     };
+    // Telemetry gets its own complete shared-lock scan. It is deliberately
+    // outside the canonical status/attention/outcome tuple above: this module
+    // can enrich output but cannot become an input to those decisions.
+    let (telemetry, telemetry_warning) = crate::run::telemetry::read_views(&paths);
+    let mut output_warnings = warnings.to_vec();
+    if let Some(error) = telemetry_warning.as_deref() {
+        output_warnings.push(format!(
+            "telemetry unavailable for run {}: {error}; run status unchanged",
+            manifest.run_id
+        ));
+    }
     // Git-verified `landed` (issue `landing-signal-reliable-after-rebase`),
     // computed outside the shared lock: the rebase-robust signal a caller should
     // trust instead of hand-rolling `git merge-base --is-ancestor`.
@@ -284,11 +298,16 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             Some(crate::run::stalled::StallKind::Stillborn)
         ))
         .with_attention(attention)
-        .with_awaiting_input(awaiting_input);
+        .with_awaiting_input(awaiting_input)
+        .with_telemetry_counts(
+            crate::run::telemetry::counts(&telemetry),
+            telemetry_warning.is_none(),
+        );
     let payload = ShowPayload {
         summary,
         manifest: ManifestView::from(&manifest),
         counts,
+        telemetry,
         landed: signal.landed,
         landed_method: signal.method.wire(),
         // A top-level run report has one unambiguous meaning only for a
@@ -302,7 +321,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     };
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&payload, spec, warnings)?;
+            output::emit_envelope(&payload, spec, &output_warnings)?;
         }
         OutputFormat::Text => {
             println!("run-id:        {}", payload.manifest.run_id);
@@ -387,6 +406,12 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             println!("created_at:    {}", payload.manifest.created_at);
             println!("updated_at:    {}", payload.manifest.updated_at);
             println!("nodes:         {}", payload.counts.nodes);
+            for telemetry in &payload.telemetry {
+                println!(
+                    "telemetry:     {}",
+                    crate::run::telemetry::text_line(telemetry)
+                );
+            }
             match payload.summary.supervisor.state {
                 SupervisorState::Alive => match payload.summary.supervisor.pid {
                     Some(pid) => println!("supervisor:    pid {pid} (alive)"),
@@ -410,7 +435,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
             {
                 println!("recoverable:   {line}");
             }
-            output::emit_text_warnings(warnings);
+            output::emit_text_warnings(&output_warnings);
         }
     }
     Ok(())

@@ -780,6 +780,37 @@ fn terminal_and_retry_races_serialize_with_telemetry_validation() {
 }
 
 #[test]
+fn bulk_read_localizes_advisory_errors_and_crash_tail() {
+    let (_temp, paths) = setup("running", 0);
+    update_telemetry_with_clock(
+        &paths,
+        &update(0, TelemetryState::Settled),
+        &FixedClock(time(0)),
+    )
+    .unwrap();
+    let rows = octl_core::read_all_telemetry_with_clock(&paths, &FixedClock(time(1))).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0.as_str(), NODE);
+    assert_eq!(rows[0].1.sample, TelemetrySampleStatus::Current);
+
+    fs::write(sample_path(&paths), b"{invalid").unwrap();
+    let rows = octl_core::read_all_telemetry_with_clock(&paths, &FixedClock(time(1))).unwrap();
+    assert_eq!(rows[0].1.sample, TelemetrySampleStatus::Invalid);
+
+    // A crash tail means the current attempt cannot be proven. Bulk reads keep
+    // that run-level unavailability distinct from invalid sample contents.
+    fs::write(
+        paths.manifest(),
+        serde_json::to_vec(&manifest_value(0)).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        octl_core::read_all_telemetry_with_clock(&paths, &FixedClock(time(1))),
+        Err(TelemetryError::RunStateNotCurrent)
+    ));
+}
+
+#[test]
 fn malformed_stored_unknown_fields_and_oversize_are_invalid() {
     let (_temp, paths) = setup("running", 0);
     let node_id = NODE.parse().unwrap();

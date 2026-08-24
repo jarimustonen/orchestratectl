@@ -22,6 +22,7 @@ pub mod spawn;
 pub mod stalled;
 pub mod supervisor_readiness;
 pub mod supervisor_spawn;
+pub mod telemetry;
 pub mod wait;
 
 use std::path::{Path, PathBuf};
