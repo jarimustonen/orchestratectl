@@ -2,7 +2,7 @@
 created: 2026-08-24
 updated: 2026-08-24
 type: task
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: Approved worker control-plane implementation split
@@ -13,6 +13,10 @@ lane: worker-control-plane
 lane_seq: 30
 blocked_by: ['@worker-telemetry-cli-surfaces']
 collision: [octl-core-schema, run-create, config-harness-selection, run-show-dto]
+closed: 2026-08-24
+commits:
+- hash: 813914e4dd11da47765db2852fe6a6869da034fa
+  summary: implement deterministic worker profile resolution
 ---
 
 # Implement configurable agent profile resolver
@@ -33,15 +37,21 @@ Implement user-owned executable profiles and deterministic candidate resolution 
 
 This issue is conservatively sequenced after `worker-telemetry-cli-surfaces` because both modify the core schema and per-node `run show` DTO; that edge is serialization, not a functional dependency.
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- User/repository ownership, strict parsing, precedence, argv round trips, executable availability, unknown profiles, and conflicting same-level inputs are tested.
-- Fallback reasons and selection match the exact candidate examined; failed launches do not advance fallback.
-- Local requests never cross to remote, autonomous selection never chooses Claude or pi without `worker-v1`, and retry reuses the recorded candidate.
-- Dry-run performs no run, worktree, pane, or telemetry mutation; legacy stored runs remain readable without invented history.
-- No permission/operation model, trust grant, sandbox, package attestation, adapter probe, runtime-failure fallback, secret interpolation, automatic tier escalation, or raw model/effort CLI flags are added.
+- [x] User/repository ownership, strict parsing, precedence, argv round trips, executable availability, unknown profiles, and conflicting same-level inputs are tested.
+- [x] Fallback reasons and selection match the exact candidate examined; failed launches do not advance fallback.
+- [x] Local requests never cross to remote, autonomous selection never chooses Claude or pi without `worker-v1`, and retry reuses the recorded candidate.
+- [x] Dry-run performs no run, worktree, pane, or telemetry mutation; legacy stored runs remain readable without invented history.
+- [x] No permission/operation model, trust grant, sandbox, package attestation, adapter probe, runtime-failure fallback, secret interpolation, automatic tier escalation, or raw model/effort CLI flags are added.
 
 ## References
 
 - `issues/add-configurable-agent/design.md` §§2–6.
 - `issues/worker-control-plane-review/integration-review.md` — approved profile/resolver split.
+
+## Resolution
+
+### 2026-08-24T11:42:11Z · @issuectl
+
+Implemented and verified user-owned executable profiles, capability/residency constraints, deterministic non-weakening fallback, durable selection visibility, retry replay stability, and legacy no-profile compatibility. Multi-model review and assessment found no remaining actionable residuals; the full snapshot and stripped-PATH green gates pass.
