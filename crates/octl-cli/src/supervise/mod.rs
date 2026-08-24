@@ -2600,17 +2600,38 @@ fn respawn_agent(
     let source_branch = manifest.source_branch.as_deref();
     let source_repo = manifest.source_repo.as_deref().map(std::path::Path::new);
     let branch = retry_branch_name(node.branch.as_deref(), attempt);
+    // Retry consumes only the manifest's recorded selected candidate. A changed
+    // config or PATH may make that exact command fail, but can never advance
+    // fallback or select a different candidate. The absolute attempt is baked
+    // into a fresh launcher so an old adapter cannot report for the retry.
+    let agent_launcher = manifest
+        .agent_selection
+        .as_ref()
+        .map(|selection| {
+            crate::run::spawn::write_agent_launcher(
+                &paths.root,
+                selection,
+                manifest.run_id.as_str(),
+                node.node_id.as_str(),
+                attempt,
+            )
+        })
+        .transpose()?;
+    let agent = match agent_launcher.as_deref() {
+        Some(path) => Some(path.to_str().ok_or_else(|| {
+            CliError::system(
+                "agent_launcher_path_invalid",
+                format!("agent launcher path is not UTF-8: {}", path.display()),
+            )
+        })?),
+        None => manifest
+            .harness
+            .as_deref()
+            .and_then(crate::harness::workmux_agent),
+    };
     let req = crate::run::spawn::SpawnRequest {
         kind: crate::run::kind_kebab(node.kind),
-        // Re-spawn under the SAME harness the run was created with (recorded on
-        // the manifest), so a retry never silently drops back to claude. `None`
-        // (legacy manifest / claude) keeps workmux's default agent, unchanged.
-        agent: manifest
-            .agent_selection
-            .as_ref()
-            .map(|selection| selection.selected.harness.as_str())
-            .or(manifest.harness.as_deref())
-            .and_then(crate::harness::workmux_agent),
+        agent,
         branch: &branch,
         prompt_file: &prompt_path,
         layout: None,
@@ -4423,15 +4444,21 @@ mod tests {
             r#"#!/bin/bash
 set -e
 base=main
+agent=""
 args=("$@")
 for ((i=0; i<${{#args[@]}}; i++)); do
   if [ "${{args[$i]}}" = "--base" ]; then base="${{args[$((i+1))]}}"; fi
+  if [ "${{args[$i]}}" = "--agent" ]; then agent="${{args[$((i+1))]}}"; fi
 done
 branch="${{args[$((${{#args[@]}}-2))]}}"
 safe=$(printf '%s' "$branch" | tr '/' '_')
 wt="{wt_root}/$safe"
 git -C "{repo}" worktree add -q -b "$branch" "$wt" "$base" >/dev/null 2>&1
-bash -c 'exec sleep 120' </dev/null >/dev/null 2>&1 &
+if [ -n "$agent" ]; then
+  "$agent" -- 'retry prompt' </dev/null >/dev/null 2>&1 &
+else
+  bash -c 'exec sleep 120' </dev/null >/dev/null 2>&1 &
+fi
 agent_pid=$!
 cat <<EOF
 {{"schema_version":1,"type":"spinoff","branch":"$branch","worktree_path":"$wt","tmux_window":"$branch","agent_pid_hint":$agent_pid,"tmux_socket":null,"tmux_session":null,"tmux_window_id":null}}
@@ -4446,6 +4473,80 @@ EOF
         perms.set_mode(0o755);
         std::fs::set_permissions(&p, perms).unwrap();
         p
+    }
+
+    #[test]
+    #[serial_test::serial(octl_watchdog_grace)]
+    fn profile_retry_uses_recorded_candidate_and_absolute_attempt() {
+        let _env_lock = crate::harness::support::test_env::lock();
+        let _create_lock = crate::run::spawn::tests::ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt, base) = init_empty_handed_repo(&tmp);
+        let paths = setup_autonomous_run(&tmp, &repo, &wt, &base, dead_pid());
+        std::fs::write(paths.root.join("prompt.md"), "retry the task").unwrap();
+
+        let observed = tmp.path().join("retry-observed.txt");
+        let worker = tmp.path().join("recorded-worker.sh");
+        std::fs::write(
+            &worker,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"$#\" \"$@\" > '{}'\nexec sleep 120\n",
+                observed.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = std::fs::metadata(&worker).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&worker, perms).unwrap();
+
+        let mut manifest = octl_core::read_manifest(&paths).unwrap();
+        manifest.agent_selection = Some(octl_core::AgentSelection {
+            schema_version: 1,
+            profile: "recorded".into(),
+            selection_source: "cli".into(),
+            interaction: "autonomous".into(),
+            capability: "capable".into(),
+            residency: "remote".into(),
+            requested_harness: None,
+            selected: octl_core::SelectedAgentCandidate {
+                candidate_index: 0,
+                harness: "pi".into(),
+                command: vec![worker.display().to_string()],
+                telemetry: Some("worker-v1".into()),
+            },
+            fallback: Vec::new(),
+        });
+        let node = n0001(&paths);
+        let wt_root = tmp.path().join("respawn-wts");
+        std::fs::create_dir_all(&wt_root).unwrap();
+        let stub = write_respawn_stub(tmp.path(), &repo, &wt_root);
+        let _create = EnvGuard::set("OCTL_CREATE_SH", stub.to_str().unwrap());
+        // Even unusable current config cannot affect retry: only the manifest
+        // selection above reaches respawn_agent.
+        let config_home = tmp.path().join("config-home");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::write(config_home.join("config.toml"), "not valid toml = [").unwrap();
+        let _home = EnvGuard::set("ORCHESTRATECTL_HOME", config_home.to_str().unwrap());
+
+        let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
+        for _ in 0..100 {
+            if observed.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read_to_string(observed).unwrap(),
+            format!("{}\nn-0001\n3\n2\n--\nretry prompt\n", manifest.run_id)
+        );
+        assert!(paths
+            .root
+            .join("agent-launch-n-0001-attempt-3.sh")
+            .is_file());
+        let _ = PCommand::new("kill")
+            .arg(spawned.agent_pid.to_string())
+            .status();
     }
 
     /// Done-criterion: an autonomous single-node worker that dies EMPTY-HANDED is

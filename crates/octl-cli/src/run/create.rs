@@ -800,6 +800,23 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let prompt_path = prompt_path.expect("non-skip path resolves prompt source");
+    // A profile-backed run launches through one private executable whose body
+    // pins the exact recorded argv. This is created from the already-resolved
+    // selection: no config reload, candidate re-resolution, or fallback can
+    // occur between recording and launch. Legacy/no-profile runs retain their
+    // historical workmux harness mapping.
+    let agent_launcher = agent_selection
+        .map(|selection| spawn::write_agent_launcher(&staging_dir, selection, &run_id, "n-0001", 0))
+        .transpose()?;
+    let agent_override = match agent_launcher.as_deref() {
+        Some(path) => Some(path.to_str().ok_or_else(|| {
+            CliError::system(
+                "agent_launcher_path_invalid",
+                format!("agent launcher path is not UTF-8: {}", path.display()),
+            )
+        })?),
+        None => harness.workmux_agent(),
+    };
     // Shell out to create.sh. A failure remains private and is removed: no
     // public manifest exists until a live worker node is durable. This holds for
     // top-level and child runs alike, so neither can strand a visible 0-node
@@ -808,10 +825,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     let branch_name = derive_branch_name(args.kind, &run_id_typed, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
-        // Launch the worker under the resolved harness's workmux agent. The
-        // built-in pi harness supplies `Some("pi")`; explicit claude maps to
-        // `None` and keeps workmux's configured default agent.
-        agent: harness.workmux_agent(),
+        // Profile-backed launches pass only the private launcher path; that
+        // launcher execs the selected candidate's exact recorded argv. Legacy
+        // launches retain the historical harness → workmux-agent mapping.
+        agent: agent_override,
         branch: &branch_name,
         prompt_file: &prompt_path,
         layout: args.layout.as_deref(),

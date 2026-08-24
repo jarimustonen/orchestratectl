@@ -58,6 +58,8 @@ expression: value
     "telemetry": [
       {
         "node_id": "n-0001",
+        "requirement": "required",
+        "support": "unsupported",
         "sample": "absent"
       }
     ],

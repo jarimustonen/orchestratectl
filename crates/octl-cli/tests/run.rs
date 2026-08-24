@@ -4,6 +4,8 @@
 //! `ORCHESTRATECTL_HOME` so the user's real `~/.orchestratectl/` is
 //! never touched.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -113,6 +115,190 @@ fn profile_resolution_matches_dry_run_persisted_create_and_show() {
     let run_id = created["data"]["run_id"].as_str().unwrap();
     let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", run_id]));
     assert_eq!(shown["data"]["manifest"]["selection"], *selection);
+}
+
+#[test]
+fn telemetry_requirement_and_support_come_only_from_recorded_policy() {
+    let home = TestHome::new();
+    write_profiles(&home);
+
+    // Autonomous resolution skips Claude and records adapted pi. No sample is
+    // needed for support to be configured.
+    let autonomous = run_ok(bin(&home).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "auto",
+    ]));
+    let autonomous_id = autonomous["data"]["run_id"].as_str().unwrap();
+    create_node(&home, autonomous_id, "n-0001");
+    let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", autonomous_id]));
+    assert_eq!(shown["data"]["telemetry"][0]["requirement"], "required");
+    assert_eq!(shown["data"]["telemetry"][0]["support"], "configured");
+    assert_eq!(shown["data"]["telemetry"][0]["sample"], "absent");
+
+    // Explicit interaction selects the first (Claude) candidate. Interaction,
+    // not kind/profile/sample, makes telemetry optional; the recorded selected
+    // candidate, not sample arrival, makes support unsupported.
+    let interactive = run_ok(bin(&home).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--title",
+        "human",
+        "--interactive",
+    ]));
+    let interactive_id = interactive["data"]["run_id"].as_str().unwrap();
+    create_node(&home, interactive_id, "n-0001");
+    let shown = run_ok(bin(&home).args(["--output", "json", "run", "show", interactive_id]));
+    assert_eq!(
+        shown["data"]["manifest"]["selection"]["selected"]["harness"],
+        "claude"
+    );
+    assert_eq!(shown["data"]["telemetry"][0]["requirement"], "optional");
+    assert_eq!(shown["data"]["telemetry"][0]["support"], "unsupported");
+    assert_eq!(shown["data"]["telemetry"][0]["sample"], "absent");
+}
+
+#[test]
+fn materialized_create_routes_through_the_recorded_exact_argv() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let observed = scratch.path().join("observed.txt");
+    let worker = scratch.path().join("worker.sh");
+    std::fs::write(
+        &worker,
+        "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"$(($# + 1))\" \"$0\" \"$@\" > \"$CAPTURE_OUTPUT\"\nexec /bin/sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            r#"[profiles.local]
+description="Local fixture"
+capability="fast"
+residency="local"
+agents=[{{harness="pi",command=["/bin/sh","{}","one two","quote'arg"],telemetry="worker-v1"}}]
+[profile]
+default="local"
+"#,
+            worker.display()
+        ),
+    )
+    .unwrap();
+
+    let worktree = scratch.path().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let create_sh = scratch.path().join("create.sh");
+    std::fs::write(
+        &create_sh,
+        format!(
+            r#"#!/bin/sh
+agent=""
+branch="wt/exact-fixture"
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--agent" ]; then agent="$2"; shift 2; continue; fi
+  shift
+done
+CAPTURE_OUTPUT='{}' "$agent" -- 'do it' </dev/null >/dev/null 2>&1 &
+pid=$!
+i=0
+while [ ! -f '{}' ] && [ "$i" -lt 100 ]; do /bin/sleep 0.01; i=$((i+1)); done
+printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}","tmux_window":"fixture","agent_pid_hint":%s,"tmux_socket":null,"tmux_session":null,"tmux_window_id":null}}\n' "$branch" "$pid"
+"#,
+            observed.display(),
+            observed.display(),
+            worktree.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+    command
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_CREATE_SH", &create_sh)
+        .env("PATH", "/usr/bin:/bin")
+        .args([
+            "--output", "json", "run", "create", "--kind", "spinoff", "--title", "exact", "--task",
+            "do it",
+        ]);
+    let created = run_ok(&mut command);
+    let run_id = created["data"]["run_id"].as_str().unwrap();
+    let node: Value = serde_json::from_slice(
+        &std::fs::read(
+            home.path()
+                .join("runs")
+                .join(run_id)
+                .join("nodes/n-0001.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let pid = node["agent_pid"].as_i64().unwrap();
+    for _ in 0..50 {
+        if observed.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&observed).unwrap(),
+        format!(
+            "{run_id}\nn-0001\n0\n5\n{}\none two\nquote'arg\n--\ndo it\n",
+            worker.display()
+        )
+    );
+    let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+}
+
+#[test]
+fn profile_launch_failure_stays_a_launch_failure_without_publication_or_fallback() {
+    let home = TestHome::new();
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"[profiles.only]
+description="Only candidate"
+capability="fast"
+residency="local"
+agents=[{harness="pi",command=["/bin/sh"],telemetry="worker-v1"}]
+[profile]
+default="only"
+"#,
+    )
+    .unwrap();
+    let scratch = TempDir::new().unwrap();
+    let create_sh = scratch.path().join("create.sh");
+    std::fs::write(
+        &create_sh,
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"error\":{\"code\":\"agent-pid-undiscoverable\",\"message\":\"selected worker failed to launch\"}}' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+    command
+        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("OCTL_CREATE_SH", &create_sh)
+        .env("PATH", "/usr/bin:/bin")
+        .args([
+            "--output", "json", "run", "create", "--kind", "spinoff", "--title", "fails", "--task",
+            "do it",
+        ]);
+    let (exit, error) = run_fail(&mut command);
+    assert_eq!(exit, 1);
+    assert_eq!(
+        error["error"]["code"],
+        "create_sh_error_agent-pid-undiscoverable"
+    );
+    assert!(
+        !home.path().join("runs").exists()
+            || std::fs::read_dir(home.path().join("runs"))
+                .unwrap()
+                .next()
+                .is_none(),
+        "failed profile launch published a run"
+    );
 }
 
 #[test]

@@ -190,6 +190,14 @@ fn published_contract_pins_the_public_boundary() {
         contract["state_precedence"],
         json!(["shutdown", "tool_running", "agent_active", "settled"])
     );
+    assert_eq!(
+        contract["environment"]["export_condition"],
+        "selected candidate has harness=pi and telemetry=worker-v1"
+    );
+    assert_eq!(
+        contract["environment"]["attempt_source"],
+        "absolute node attempt: 0 at initial creation, current retry attempt thereafter"
+    );
     assert_eq!(contract["environment"]["run_id"]["name"], "OCTL_RUN_ID");
     assert_eq!(contract["environment"]["node_id"]["name"], "OCTL_NODE_ID");
     assert_eq!(contract["environment"]["attempt"]["name"], "OCTL_ATTEMPT");

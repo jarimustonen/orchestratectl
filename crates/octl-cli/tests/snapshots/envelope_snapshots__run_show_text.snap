@@ -13,5 +13,5 @@ profile:       legacy-unrecorded
 created_at:    [TS]
 updated_at:    [TS]
 nodes:         1
-telemetry:     n-0001: telemetry absent; run status unchanged
+telemetry:     n-0001: telemetry absent (requirement required, support unsupported); run status unchanged
 supervisor:    (none recorded)

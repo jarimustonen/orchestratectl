@@ -247,7 +247,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
     // Telemetry gets its own complete shared-lock scan. It is deliberately
     // outside the canonical status/attention/outcome tuple above: this module
     // can enrich output but cannot become an input to those decisions.
-    let (telemetry, telemetry_warning) = crate::run::telemetry::read_views(&paths);
+    let (telemetry, telemetry_warning) = crate::run::telemetry::read_views(&paths, &manifest);
     let mut output_warnings = warnings.to_vec();
     if let Some(error) = telemetry_warning.as_deref() {
         output_warnings.push(format!(

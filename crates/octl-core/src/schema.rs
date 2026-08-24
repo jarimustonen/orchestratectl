@@ -481,6 +481,16 @@ pub struct SelectedAgentCandidate {
     pub telemetry: Option<String>,
 }
 
+impl SelectedAgentCandidate {
+    /// Whether recorded policy configures the public worker telemetry v1
+    /// adapter. This is configuration support, not runtime attestation or a
+    /// claim that any sample has arrived.
+    #[must_use]
+    pub fn supports_worker_telemetry_v1(&self) -> bool {
+        self.harness == "pi" && self.telemetry.as_deref() == Some("worker-v1")
+    }
+}
+
 /// One rejected candidate and its first applicable reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SkippedAgentCandidate {

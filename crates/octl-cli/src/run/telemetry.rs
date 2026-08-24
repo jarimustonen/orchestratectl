@@ -6,14 +6,17 @@
 
 use std::fmt::Write as _;
 
-use octl_core::{RunPaths, TelemetrySampleStatus, TelemetryView};
+use octl_core::{Lifecycle, Manifest, RunPaths, TelemetrySampleStatus, TelemetryView};
 use serde::Serialize;
 
-/// CLI Phase 1 row. `requirement` and `support` intentionally remain absent
-/// until agent-profile selection records a candidate that can derive them.
+/// CLI telemetry row. Requirement and support are static recorded policy, not
+/// runtime inference: interaction alone determines requirement and the recorded
+/// selected candidate alone determines support. Sample arrival affects neither.
 #[derive(Debug, Serialize)]
 pub struct NodeTelemetryView {
     pub node_id: String,
+    pub requirement: &'static str,
+    pub support: &'static str,
     #[serde(flatten)]
     pub sample: TelemetryView,
 }
@@ -41,12 +44,30 @@ impl TelemetryCounts {
 
 /// Read one compact telemetry row per projected node through octl-core's
 /// one-lock bulk snapshot. Advisory corruption is localized to `invalid` rows.
-pub fn read_views(paths: &RunPaths) -> (Vec<NodeTelemetryView>, Option<String>) {
+pub fn read_views(
+    paths: &RunPaths,
+    manifest: &Manifest,
+) -> (Vec<NodeTelemetryView>, Option<String>) {
+    let requirement = match manifest.lifecycle {
+        Lifecycle::Autonomous => "required",
+        Lifecycle::Interactive => "optional",
+    };
+    let support = if manifest
+        .agent_selection
+        .as_ref()
+        .is_some_and(|selection| selection.selected.supports_worker_telemetry_v1())
+    {
+        "configured"
+    } else {
+        "unsupported"
+    };
     match octl_core::read_all_telemetry(paths) {
         Ok(rows) => (
             rows.into_iter()
                 .map(|(node_id, sample)| NodeTelemetryView {
                     node_id: node_id.to_string(),
+                    requirement,
+                    support,
                     sample,
                 })
                 .collect(),
@@ -81,9 +102,11 @@ pub fn counts(views: &[NodeTelemetryView]) -> TelemetryCounts {
 
 pub fn text_line(view: &NodeTelemetryView) -> String {
     let mut line = format!(
-        "{}: telemetry {}",
+        "{}: telemetry {} (requirement {}, support {})",
         view.node_id,
-        sample_name(view.sample.sample)
+        sample_name(view.sample.sample),
+        view.requirement,
+        view.support
     );
     if let Some(state) = view.sample.state {
         write!(line, "; last told activity: {}", state_name(state))
@@ -148,6 +171,8 @@ mod tests {
     fn bare(sample: TelemetrySampleStatus) -> NodeTelemetryView {
         NodeTelemetryView {
             node_id: "n-0001".to_string(),
+            requirement: "required",
+            support: "configured",
             sample: TelemetryView {
                 sample,
                 state: None,
@@ -188,6 +213,8 @@ mod tests {
     fn telemetry_row_pins_bounded_wire_shape() {
         let row = NodeTelemetryView {
             node_id: "n-0001".to_string(),
+            requirement: "optional",
+            support: "unsupported",
             sample: TelemetryView {
                 sample: TelemetrySampleStatus::Current,
                 state: Some(octl_core::TelemetryState::ToolRunning),
@@ -201,7 +228,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(row).unwrap(),
             serde_json::json!({
-                "node_id": "n-0001", "sample": "current", "state": "tool_running",
+                "node_id": "n-0001", "requirement": "optional", "support": "unsupported",
+                "sample": "current", "state": "tool_running",
                 "age_ms": 12_200, "state_elapsed_ms": 481_000, "attempt": 2,
                 "active_tool_count": 1, "tool_name": "bash"
             })

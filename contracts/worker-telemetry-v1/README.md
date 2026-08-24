@@ -16,6 +16,14 @@ response fields and error codes.
 
 ## Public endpoint
 
+For a recorded pi candidate declaring `telemetry = "worker-v1"`, the launcher
+executes the candidate's recorded user-owned argv as an exact prefix without
+reloading profile configuration, then forwards workmux's existing `-- <prompt>`
+suffix unchanged. It exports the following identity into that process. Initial
+creation uses absolute attempt `0`; every supervisor retry uses
+the node's new absolute attempt. Candidates without that recorded pi declaration
+receive none of these values (inherited ambient values are removed).
+
 The adapter, not the endpoint, captures the exact worker identity once from:
 
 - `OCTL_RUN_ID`: full, non-empty run ID;

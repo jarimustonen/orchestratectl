@@ -770,8 +770,10 @@ fn run_show_and_list_surface_only_observational_telemetry() {
     assert!(rows[1].get("state").is_none());
     assert_eq!(shown["data"]["telemetry_counts"]["current"], 1);
     assert_eq!(shown["data"]["telemetry_counts"]["absent"], 1);
-    assert!(rows[0].get("requirement").is_none());
-    assert!(rows[0].get("support").is_none());
+    assert_eq!(rows[0]["requirement"], "required");
+    assert_eq!(rows[0]["support"], "unsupported");
+    assert_eq!(rows[1]["requirement"], "required");
+    assert_eq!(rows[1]["support"], "unsupported");
 
     let listed = run_ok(bin(&home).args(["--output", "json", "run", "list"]));
     let row = listed["data"]["runs"]

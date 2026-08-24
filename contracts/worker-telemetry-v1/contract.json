@@ -11,6 +11,11 @@
   },
   "environment": {
     "read_by": "adapter",
+    "exported_by": "orchestratectl recorded-candidate launcher",
+    "export_condition": "selected candidate has harness=pi and telemetry=worker-v1",
+    "candidate_argv": "recorded user-owned argv is the exact prefix; workmux's existing -- <prompt> suffix is forwarded unchanged",
+    "attempt_source": "absolute node attempt: 0 at initial creation, current retry attempt thereafter",
+    "unsupported_behavior": "remove inherited OCTL_RUN_ID, OCTL_NODE_ID, and OCTL_ATTEMPT before launching",
     "captured_once": true,
     "run_id": { "name": "OCTL_RUN_ID", "type": "non-empty string" },
     "node_id": { "name": "OCTL_NODE_ID", "type": "non-empty string" },

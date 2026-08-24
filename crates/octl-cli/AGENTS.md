@@ -75,11 +75,22 @@ reads the recorded candidate rather than current config. Dry-run/create/run show
 surface the compact selection; old/no-profile manifests show
 `legacy-unrecorded` without invented history.
 
-The selected harness still maps to a workmux agent for the current launcher:
-`pi` forwards `create.sh --agent pi`; `claude` keeps workmux's configured default.
-`manifest.harness` remains for compatibility while `manifest.agent_selection`
-pins the full profile candidate. A no-profile `--harness pi` still requires a
-`pi` agent configured in workmux.
+A profile-backed create writes a private per-attempt launcher, passes only that
+absolute path as `create.sh --agent`, and the launcher `exec`s the recorded
+candidate argv as the exact prefix with its argument boundaries unchanged,
+followed by workmux's existing `-- <prompt>` suffix. It exports exact
+`OCTL_RUN_ID` / `OCTL_NODE_ID` / absolute
+`OCTL_ATTEMPT` only for recorded pi+`worker-v1`, removing inherited values for
+unsupported candidates. Retry regenerates this launcher solely from
+`manifest.agent_selection` and the new absolute attempt, never current config.
+No-profile compatibility still maps pi to `create.sh --agent pi` and leaves
+Claude on workmux's configured default. `manifest.harness` remains for
+compatibility while `manifest.agent_selection` pins the full candidate.
+
+`run show` telemetry rows derive `requirement` solely from the manifest's explicit
+lifecycle (`required` autonomous, `optional` explicit-interactive) and `support`
+solely from the recorded candidate (`configured` only for pi+`worker-v1`, else
+`unsupported`). Sample presence/freshness never changes either field.
 
 ## `config` noun (read-only config inspection)
 
