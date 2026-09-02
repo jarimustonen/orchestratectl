@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-02
 type: task
 reporter: taskfleet-r0-worker
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: ADR 0002 planned implementation DAG
@@ -15,6 +15,10 @@ lane: taskfleet-rename
 lane_seq: 60
 blocked_by: ['@taskfleet-package-wrapper']
 collision: [repository-identity]
+closed: 2026-09-02
+commits:
+- hash: 03d8782
+  summary: 'feat: migrate workflows and contracts to Taskfleet'
 ---
 
 # Convert Taskfleet skills, prompts, provenance and repository contracts
@@ -35,3 +39,9 @@ Make new generated commands/source refs use `taskfleet`; rename only Taskfleet-o
 - Intended collision: `repository-identity`
 - Intended blocked by: `@taskfleet-package-wrapper`
 - This worker filed the issue unlaned/untriaged as required by run policy. An authorized human must accept it and apply the exact scheduling metadata; do not spawn it before that disposition.
+
+## Resolution
+
+### 2026-09-02T16:54:20Z · @issuectl
+
+Completed ADR 0002 R5. Canonical Taskfleet skills, generated prompts/source refs, docs, examples, telemetry availability prose, and OSS contracts now use taskfleet while bounded orchestratectl compatibility, OCTL_* vocabulary, telemetry contract id, pre-cut guards, and user-owned bytes remain preserved. Full Rust green gate, package checks, contract validation, issue doctor, residual classifier, and multi-model review/assessment passed.
