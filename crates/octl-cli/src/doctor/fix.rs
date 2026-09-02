@@ -10,7 +10,7 @@
 //! changes nothing; a real `--fix` executes each action and returns a
 //! per-action outcome the caller renders alongside the check results.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 
@@ -130,8 +130,8 @@ fn remove_stale_supervisor_pid(path: &std::path::Path, observed_pid: u32) -> (bo
 /// fn directly) keeps the install's own success/error envelope off
 /// doctor's stdout — we only care about the exit status here.
 fn install_skill(name: &str) -> (bool, String) {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
+    let mut command = match crate::self_exec::command() {
+        Ok(command) => command,
         Err(e) => {
             return (
                 false,
@@ -142,7 +142,7 @@ fn install_skill(name: &str) -> (bool, String) {
     // Detach stdin: this is a non-interactive repair path and must never
     // block on a prompt. (`skill install` is already non-interactive, but
     // closing stdin makes the no-hang guarantee structural.)
-    let output = Command::new(exe)
+    let output = command
         .args(["skill", "install", name, "--force", "--output", "json"])
         .stdin(Stdio::null())
         .output();

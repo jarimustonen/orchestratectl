@@ -178,8 +178,9 @@ pub fn write_prompt_file(run_dir: &Path, task: &str) -> Result<PathBuf, CliError
 /// `create.sh`/workmux accepts one agent command string, while the profile
 /// contract records an argv array. Passing a reconstructed command string would
 /// reintroduce shell parsing and could change argument boundaries. Instead we
-/// pass workmux this single absolute script path. The script `exec`s the
-/// recorded argv as a byte-preserving prefix, then forwards workmux's existing
+/// pass workmux this single absolute script path. The script re-enters this
+/// exact executable through hidden `run-worker`, passing the recorded argv as a
+/// byte-preserving suffix after `--`, then forwards workmux's existing
 /// `-- <prompt>` suffix unchanged. Orchestratectl neither parses nor alters the
 /// selected candidate; workmux remains the separate prompt-delivery owner.
 ///
@@ -188,6 +189,7 @@ pub fn write_prompt_file(run_dir: &Path, task: &str) -> Result<PathBuf, CliError
 /// ambient parent environment cannot fabricate adapter support.
 pub fn write_agent_launcher(
     run_dir: &Path,
+    state_root: &Path,
     selection: &octl_core::AgentSelection,
     run_id: &str,
     node_id: &str,
@@ -210,10 +212,11 @@ pub fn write_agent_launcher(
         "agent-launch-{}-attempt-{attempt}.sh",
         validated_node.as_str()
     ));
-    let mut body =
-        String::from("#!/bin/sh\nset -eu\nunset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n");
+    let opened_marker = launcher_opened_marker(&path);
+    let mut body = b"#!/bin/sh\nset -eu\n: > ".to_vec();
+    body.extend_from_slice(&shell_literal_path(&opened_marker));
+    body.extend_from_slice(b"\nunset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n");
     if selected.supports_worker_telemetry_v1() {
-        use std::fmt::Write as _;
         writeln!(body, "export OCTL_RUN_ID={}", shell_literal(run_id)).unwrap();
         writeln!(body, "export OCTL_NODE_ID={}", shell_literal(node_id)).unwrap();
         writeln!(
@@ -223,12 +226,42 @@ pub fn write_agent_launcher(
         )
         .unwrap();
     }
-    body.push_str("exec");
-    for arg in &selected.command {
-        body.push(' ');
-        body.push_str(&shell_literal(arg));
+    if selection.interaction == "autonomous" {
+        // Re-enter this exact binary through the hidden told-exit shim. The
+        // absolute executable preserves identity/version without PATH lookup.
+        let self_exe = crate::self_exec::executable().map_err(|e| {
+            CliError::system("io_error", format!("current_exe for worker launcher: {e}"))
+        })?;
+        let state_root = absolute_path(state_root).map_err(|e| {
+            CliError::system(
+                "io_error",
+                format!("resolve absolute state root {}: {e}", state_root.display()),
+            )
+        })?;
+        body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION=1\n");
+        body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_STATE_ROOT=");
+        body.extend_from_slice(&shell_literal_path(&state_root));
+        body.push(b'\n');
+        body.extend_from_slice(b"exec ");
+        body.extend_from_slice(&shell_literal_path(&self_exe));
+        body.extend_from_slice(b" run-worker ");
+        body.extend_from_slice(shell_literal(run_id).as_bytes());
+        body.push(b' ');
+        body.extend_from_slice(shell_literal(node_id).as_bytes());
+        body.extend_from_slice(b" --");
+    } else {
+        // Interactive profiles retain their established direct candidate
+        // execution: the supervisor deliberately ignores worker-exit facts for
+        // this lifecycle, and recording one would change attention semantics.
+        body.extend_from_slice(b"exec");
     }
-    body.push_str(" \"$@\"\n");
+    // In both forms the recorded candidate argv is an exact suffix and
+    // workmux's existing prompt arguments remain untouched.
+    for arg in &selected.command {
+        body.push(b' ');
+        body.extend_from_slice(shell_literal(arg).as_bytes());
+    }
+    body.extend_from_slice(b" \"$@\"\n");
 
     // Same-directory temporary + rename keeps readers from observing a partial
     // retry launcher and replaces any prior derivation without following a
@@ -246,7 +279,7 @@ pub fn write_agent_launcher(
         let mut file = options
             .open(&temp)
             .map_err(|e| CliError::system("io_error", format!("create {}: {e}", temp.display())))?;
-        file.write_all(body.as_bytes())
+        file.write_all(&body)
             .map_err(|e| CliError::system("io_error", format!("write {}: {e}", temp.display())))?;
         file.sync_all()
             .map_err(|e| CliError::system("io_error", format!("sync {}: {e}", temp.display())))?;
@@ -269,8 +302,63 @@ pub fn write_agent_launcher(
     })
 }
 
+fn launcher_opened_marker(launcher: &Path) -> PathBuf {
+    launcher.with_extension("opened")
+}
+
+/// Wait until the launcher interpreter has opened the script before its parent
+/// directory can move at atomic run publication. `create.sh` may report a live
+/// fork before that child is scheduled; without this handshake the rename can
+/// make the script path disappear first.
+pub fn await_agent_launcher_opened(launcher: &Path) -> Result<(), CliError> {
+    let marker = launcher_opened_marker(launcher);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        if std::time::Instant::now() >= deadline {
+            return Err(CliError::system(
+                "agent_launcher_startup_failed",
+                format!(
+                    "agent launcher {} was not opened within 30s",
+                    launcher.display()
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::remove_file(&marker).map_err(|e| {
+        CliError::system(
+            "io_error",
+            format!("remove launcher marker {}: {e}", marker.display()),
+        )
+    })
+}
+
 fn shell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn absolute_path(path: &Path) -> std::io::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+#[cfg(unix)]
+fn shell_literal_path(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut quoted = Vec::with_capacity(path.as_os_str().as_bytes().len() + 2);
+    quoted.push(b'\'');
+    for byte in path.as_os_str().as_bytes() {
+        if *byte == b'\'' {
+            quoted.extend_from_slice(b"'\\''");
+        } else {
+            quoted.push(*byte);
+        }
+    }
+    quoted.push(b'\'');
+    quoted
 }
 
 /// Invoke create.sh and parse its structured stdout.
@@ -571,23 +659,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn profile_launcher_execs_exact_argv_and_exports_exact_pi_identity() {
+    fn profile_launcher_reenters_exact_self_with_exact_argv_and_pi_identity() {
         let dir = TempDir::new().unwrap();
-        let capture = dir.path().join("capture.sh");
-        let output = dir.path().join("observed.txt");
-        fixture_script(
-            dir.path(),
-            "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"$#\" \"$@\" > \"$CAPTURE_OUTPUT\"\n",
-        );
-        std::fs::rename(dir.path().join("fake-create.sh"), &capture).unwrap();
         let command = vec![
-            capture.display().to_string(),
+            "/fixture/capture".into(),
             "argument with spaces".into(),
             "quote'and\\slash".into(),
             "line1\nline2".into(),
         ];
-        let selected = selection("pi", Some("worker-v1"), command);
+        let selected = selection("pi", Some("worker-v1"), command.clone());
         let launcher = write_agent_launcher(
+            dir.path(),
             dir.path(),
             &selected,
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -595,49 +677,48 @@ pub(crate) mod tests {
             7,
         )
         .unwrap();
-        let status = Command::new(&launcher)
-            // Workmux owns the trailing prompt suffix; the selected recorded
-            // argv remains the exact prefix and the suffix is forwarded intact.
-            .args(["--", "ambient-workmux-prompt"])
-            .env("CAPTURE_OUTPUT", &output)
-            .env("PATH", "/usr/bin:/bin")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        assert_eq!(
-            std::fs::read_to_string(output).unwrap(),
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV\nn-0001\n7\n5\nargument with spaces\nquote'and\\slash\nline1\nline2\n--\nambient-workmux-prompt\n"
+        let body = std::fs::read_to_string(launcher).unwrap();
+        assert!(body.contains("export OCTL_RUN_ID='01ARZ3NDEKTSV4RRFFQ69G5FAV'\n"));
+        assert!(body.contains("export OCTL_NODE_ID='n-0001'\n"));
+        assert!(body.contains("export OCTL_ATTEMPT='7'\n"));
+        use std::fmt::Write as _;
+        let mut candidate_args = String::new();
+        for arg in &command {
+            write!(candidate_args, " {}", shell_literal(arg)).unwrap();
+        }
+        let expected_exec = format!(
+            "exec {} run-worker '01ARZ3NDEKTSV4RRFFQ69G5FAV' 'n-0001' --{} \"$@\"\n",
+            shell_literal(crate::self_exec::executable().unwrap().to_str().unwrap()),
+            candidate_args
         );
+        assert!(body.ends_with(&expected_exec), "launcher body: {body}");
     }
 
     #[test]
     fn unsupported_launcher_removes_ambient_telemetry_identity() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("observed.txt");
-        let capture = dir.path().join("capture.sh");
-        std::fs::write(
-            &capture,
-            "#!/bin/sh\nprintf '%s|%s|%s' \"${OCTL_RUN_ID-unset}\" \"${OCTL_NODE_ID-unset}\" \"${OCTL_ATTEMPT-unset}\" > \"$CAPTURE_OUTPUT\"\n",
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&capture).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt as _;
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&capture, perms).unwrap();
-        let selected = selection("claude", None, vec![capture.display().to_string()]);
-        let launcher = write_agent_launcher(dir.path(), &selected, "run", "n-0001", 0).unwrap();
-        assert!(Command::new(launcher)
-            .env("CAPTURE_OUTPUT", &output)
-            .env("OCTL_RUN_ID", "ambient")
-            .env("OCTL_NODE_ID", "ambient")
-            .env("OCTL_ATTEMPT", "99")
-            .status()
-            .unwrap()
-            .success());
-        assert_eq!(
-            std::fs::read_to_string(output).unwrap(),
-            "unset|unset|unset"
-        );
+        let selected = selection("claude", None, vec!["/fixture/capture".into()]);
+        let launcher =
+            write_agent_launcher(dir.path(), dir.path(), &selected, "run", "n-0001", 0).unwrap();
+        let body = std::fs::read_to_string(launcher).unwrap();
+        assert!(body.contains("unset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n"));
+        assert!(!body.contains("export OCTL_"));
+        assert!(!body.contains("OCTL_INTERNAL_WORKER_"));
+        assert!(body.ends_with("exec '/fixture/capture' \"$@\"\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launcher_preserves_non_utf8_path_bytes() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mut bytes = b"state-'".to_vec();
+        bytes.push(0xff);
+        let path = PathBuf::from(std::ffi::OsString::from_vec(bytes.clone()));
+        let quoted = shell_literal_path(&path);
+        let mut expected = b"'state-'\\''".to_vec();
+        expected.push(0xff);
+        expected.push(b'\'');
+        assert_eq!(quoted, expected);
     }
 
     #[test]

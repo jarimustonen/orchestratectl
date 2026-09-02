@@ -3,12 +3,13 @@
 //! MVP only ships a placeholder `version` subcommand. The full subcommand
 //! tree (per `design.md` §2) lands in subsequent issues.
 
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use clap::{ColorChoice, CommandFactory, Parser, Subcommand};
+use clap::{ColorChoice, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::Serialize;
 use tracing::info;
 use tracing_appender::non_blocking::{ErrorCounter, NonBlockingBuilder, WorkerGuard};
@@ -147,7 +148,20 @@ impl From<SkillAgentArg> for crate::skill::AgentTarget {
     }
 }
 
-pub fn run() -> ExitCode {
+pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
+    // Capture arguments once and build the clap tree from the explicit binary
+    // identity. Never derive branding or compatibility behavior from argv[0].
+    let raw_args_os: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // Structured-help recognition only compares flag/subcommand spellings. A
+    // lossy view is safe there, while clap receives the original OsStrings so
+    // path-valued arguments retain arbitrary platform bytes.
+    let help_args_are_utf8 = raw_args_os.iter().all(|arg| arg.to_str().is_some());
+    let raw_args: Vec<String> = raw_args_os
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let command = command_for(identity);
+
     // Structured `--help --output json|jsonl` (AGENTS-AI-FIRST-CLI §14):
     // clap's `--help` only renders text, so intercept the request before
     // anything else and project the command surface to JSON instead. A bare
@@ -158,11 +172,20 @@ pub fn run() -> ExitCode {
     // that never touches run state, so it must not depend on (or be
     // perturbed by) the log file's writability — keeping the payload
     // deterministic regardless of `$HOME`/`$ORCHESTRATECTL_HOME`.
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    match crate::help::resolve_help_request(&Cli::command(), &raw_args) {
+    match crate::help::resolve_help_request(&command, &raw_args) {
         crate::help::HelpRequest::None => {}
         crate::help::HelpRequest::Render { spec, path, depth } => {
-            return emit_json_help(&path, depth, &spec);
+            // The help resolver also parses an output-file path. Never use its
+            // lossy recognition view to write to a replacement-character path.
+            if !help_args_are_utf8 {
+                let err = CliError::user(
+                    "invalid_arguments",
+                    "structured help arguments (including --output paths) must be valid UTF-8",
+                );
+                err.emit();
+                return ExitCode::from(ExitKind::User as u8);
+            }
+            return emit_json_help(identity, &path, depth, &spec);
         }
         crate::help::HelpRequest::UnknownSubcommand { token } => {
             // §14 tightening: an unknown subcommand under structured help is
@@ -219,9 +242,18 @@ pub fn run() -> ExitCode {
         guard: _log_guard,
     } = init_logging();
 
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    let mut matches = match command.try_get_matches_from(
+        std::iter::once(OsString::from(identity.command_name())).chain(raw_args_os),
+    ) {
+        Ok(matches) => matches,
         Err(e) => return handle_clap_error(e, &logging_warnings),
+    };
+    let cli = match Cli::from_arg_matches_mut(&mut matches) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let mut command = command_for(identity);
+            return handle_clap_error(e.format(&mut command), &logging_warnings);
+        }
     };
 
     let output = match (cli.output, cli.json) {
@@ -251,7 +283,7 @@ pub fn run() -> ExitCode {
 
     let output = &output;
     let result = match cli.command {
-        Command::Version => cmd_version(output, &logging_warnings),
+        Command::Version => cmd_version(identity, output, &logging_warnings),
         Command::Skill { action } => match action {
             SkillAction::List => crate::skill::cmd_list(output, &logging_warnings),
             SkillAction::Show { name } => crate::skill::cmd_show(&name, output, &logging_warnings),
@@ -293,20 +325,22 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// Build the parser tree for one explicitly selected binary identity.
+fn command_for(identity: crate::InvocationIdentity) -> clap::Command {
+    Cli::command().name(identity.command_name())
+}
+
 /// Render the structured help payload for the resolved `subcommand_path`
 /// (canonical subcommand names from [`crate::help::resolve_help_request`])
-/// and emit it through the standard success envelope. Builds the clap
-/// command tree (propagating global flags and help/version into every
-/// subcommand), walks to the requested command, and projects it.
-///
-/// No `warnings` parameter: help renders before `init_logging`, so there
-/// are none to surface — the payload is pure command metadata.
+/// and emit it through the standard success envelope. No `warnings` parameter:
+/// help renders before logging and is pure command metadata.
 fn emit_json_help(
+    identity: crate::InvocationIdentity,
     subcommand_path: &[String],
     depth: crate::help::HelpDepth,
     spec: &OutputSpec,
 ) -> ExitCode {
-    let mut root = Cli::command();
+    let mut root = command_for(identity);
     // Propagate global args (e.g. `--output`) and the implicit `--help`
     // into every subcommand so each node's flag list is accurate.
     root.build();
@@ -411,7 +445,11 @@ struct SupportedSchemas {
     skill: &'static [u32],
 }
 
-fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
+fn cmd_version(
+    identity: crate::InvocationIdentity,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
     let payload = VersionPayload {
         version: CARGO_VERSION,
         commit: GIT_COMMIT,
@@ -433,7 +471,7 @@ fn cmd_version(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
             output::emit_envelope(&payload, spec, warnings)?;
         }
         OutputFormat::Text => {
-            println!("orchestratectl {}", payload.version);
+            println!("{} {}", identity.command_name(), payload.version);
             println!("commit:                  {}", payload.commit);
             println!("envelope schema:         {}", payload.schema_version);
             println!(
@@ -817,6 +855,29 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::Duration;
+
+    #[test]
+    fn command_branding_comes_only_from_explicit_identity() {
+        let orchestratectl = command_for(crate::InvocationIdentity::ORCHESTRATECTL);
+        let taskfleet = command_for(crate::InvocationIdentity::TASKFLEET);
+        assert_eq!(orchestratectl.get_name(), "orchestratectl");
+        assert_eq!(taskfleet.get_name(), "taskfleet");
+
+        let structured = crate::help::build_help(
+            &taskfleet,
+            taskfleet.get_name(),
+            crate::help::HelpDepth::Bounded(1),
+        );
+        assert_eq!(structured.command.command, "taskfleet");
+        assert!(structured
+            .command
+            .subcommands
+            .iter()
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .all(|entry| entry["command"]
+                .as_str()
+                .is_some_and(|command| command.starts_with("taskfleet "))));
+    }
 
     /// `help::OUTPUT_ARG_ID` keys the structured-help projection's custom
     /// `--output` metadata (accepted values, file-path acceptance). If the

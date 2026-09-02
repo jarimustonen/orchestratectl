@@ -111,11 +111,12 @@ fn pid_file_wait() -> Duration {
 /// `OCTL_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
 /// silent-spawn-failure path can be tested deterministically. Mirrors the
 /// `OCTL_CREATE_SH` seam. Production callers never set it.
-fn supervise_bin() -> Result<std::path::PathBuf, CliError> {
+fn supervise_command() -> Result<Command, CliError> {
     if let Ok(v) = std::env::var("OCTL_SUPERVISE_BIN") {
-        return Ok(std::path::PathBuf::from(v));
+        return Ok(Command::new(v));
     }
-    std::env::current_exe().map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))
+    crate::self_exec::command()
+        .map_err(|e| CliError::system("io_error", format!("current_exe: {e}")))
 }
 
 /// Outcome of a supervisor spawn. An enum (not a `{ pid, confirmed }` struct)
@@ -200,8 +201,7 @@ pub fn detached_supervise_command(
     let stderr_clone = stderr_file
         .try_clone()
         .map_err(|e| CliError::system("io_error", format!("dup fd: {e}")))?;
-    let exe = supervise_bin()?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = supervise_command()?;
     cmd.arg("supervise")
         .arg(run_id)
         // A detached daemon must not keep the launching terminal's stdin: an

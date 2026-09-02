@@ -806,7 +806,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // occur between recording and launch. Legacy/no-profile runs retain their
     // historical workmux harness mapping.
     let agent_launcher = agent_selection
-        .map(|selection| spawn::write_agent_launcher(&staging_dir, selection, &run_id, "n-0001", 0))
+        .map(|selection| {
+            spawn::write_agent_launcher(&staging_dir, &root, selection, &run_id, "n-0001", 0)
+        })
         .transpose()?;
     let agent_override = match agent_launcher.as_deref() {
         Some(path) => Some(path.to_str().ok_or_else(|| {
@@ -860,6 +862,12 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             return Err(e);
         }
     };
+    if let Some(launcher) = agent_launcher.as_deref() {
+        if let Err(e) = spawn::await_agent_launcher_opened(launcher) {
+            cleanup_orphan_child();
+            return Err(e);
+        }
+    }
     // Re-verify the discovered PID before publishing anything. A process that
     // died between create.sh's check and ours is a failed materialization, not a
     // public failed node: publishing it would recreate the 0-node/false-success

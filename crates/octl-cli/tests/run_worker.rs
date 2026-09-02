@@ -126,6 +126,32 @@ fn shim_records_signal_death() {
 }
 
 #[test]
+fn internal_launcher_wait_times_out_without_starting_candidate() {
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("candidate-ran");
+    let out = bin(&home)
+        .env("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION", "1")
+        .env("OCTL_INTERNAL_WORKER_STATE_ROOT", home.path())
+        .env("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS", "0")
+        .args([
+            "run-worker",
+            RUN_ID,
+            "n-0001",
+            "--",
+            "/usr/bin/touch",
+            marker.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn shim");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        !marker.exists(),
+        "candidate must not start before publication"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("worker_publication_timeout"));
+}
+
+#[test]
 fn shim_rejects_unknown_run() {
     let home = TempDir::new().unwrap();
     // A valid-shaped but nonexistent run id.
@@ -190,15 +216,16 @@ fn shim_records_a_told_failure_when_the_worker_cannot_launch() {
 }
 
 #[test]
-fn shim_survives_sigterm_and_records_the_childs_true_exit() {
+fn shim_forwards_sigterm_and_records_the_childs_true_exit() {
     let home = TempDir::new().unwrap();
     let paths = seed_run(home.path());
 
-    // The shim wraps a child that sleeps, then exits cleanly. We SIGTERM the SHIM
-    // while the child is still running: the shim must ignore it, keep waiting, and
-    // record the child's real clean exit (design.md §2.1 — the told fact must
-    // survive a foreground-group / teardown signal).
+    // The shim wraps a sleeping child. We SIGTERM the SHIM while the child is
+    // running: it must forward the signal, survive long enough to wait, and
+    // record the child's real signal death (design.md §2.1 told fact).
+    let ready = home.path().join("worker-ready");
     let mut child = bin(&home)
+        .env("WORKER_READY", &ready)
         .args([
             "run-worker",
             RUN_ID,
@@ -206,14 +233,21 @@ fn shim_survives_sigterm_and_records_the_childs_true_exit() {
             "--",
             "sh",
             "-c",
-            "sleep 2; exit 0",
+            "touch \"$WORKER_READY\"; sleep 30",
         ])
         .spawn()
         .expect("spawn shim");
     let shim_pid = child.id().to_string();
 
-    // Give the shim time to install its signal-ignore and spawn the child.
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // Wait for the child itself to prove the shim installed handlers and
+    // spawned it; a fixed sleep would race slow CI startup.
+    for _ in 0..200 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(ready.exists(), "worker never reached its readiness marker");
     let killed = Command::new("kill")
         .args(["-TERM", &shim_pid])
         .status()
@@ -224,9 +258,9 @@ fn shim_survives_sigterm_and_records_the_childs_true_exit() {
     let status = child.wait().expect("await shim");
     assert_eq!(
         status.code(),
-        Some(0),
-        "the shim ignored SIGTERM, waited for the child, and propagated its clean exit"
+        Some(143),
+        "the shim forwarded SIGTERM, waited for the child, and propagated its signal exit"
     );
     let ev = worker_exited_event(&paths);
-    assert_eq!(ev["data"]["exit_code"], 0);
+    assert_eq!(ev["data"]["signal"], 15);
 }

@@ -23,11 +23,15 @@
 
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::Command;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 
 use clap::Args as ClapArgs;
 use serde_json::{json, Value};
 
-use octl_core::{append_and_apply_event, read_manifest_opt, read_node_opt, NodeId, RunPaths};
+use octl_core::{
+    append_and_apply_event, read_manifest_opt, read_node_opt, NodeId, RunLock, RunPaths,
+};
 
 use crate::error::CliError;
 use crate::run::{from_core, parse_node_id, parse_run_id, run_paths_exact};
@@ -42,8 +46,22 @@ use crate::run::{from_core, parse_node_id, parse_run_id, run_paths_exact};
 /// the signal, die, and be reaped so the shim records its TRUE status and exits
 /// with it. `SIGKILL` cannot be caught — that is the residual case the crash
 /// backstop (design.md §2.1a) covers.
-const SHIM_IGNORED_SIGNALS: [libc::c_int; 4] =
+const SHIM_FORWARDED_SIGNALS: [libc::c_int; 4] =
     [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+static WORKER_PID: AtomicI32 = AtomicI32::new(0);
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+extern "C" fn forward_worker_signal(signal: libc::c_int) {
+    let pid = WORKER_PID.load(Ordering::Relaxed);
+    if pid > 0 {
+        // SAFETY: positive pid means one process, never a process group. `kill`
+        // is async-signal-safe and the child restores default dispositions.
+        unsafe { libc::kill(pid, signal) };
+    } else {
+        PENDING_SIGNAL.store(signal, Ordering::Relaxed);
+    }
+}
 
 /// Synthetic exit code recorded when the worker could not be *launched* at all
 /// (e.g. the program is missing / not executable). Mirrors the shell's
@@ -74,23 +92,33 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
     // nothing (a `worker.exited` for an unknown node is a silent no-op).
     let run_id = parse_run_id(&args.run_id)?;
     let node_id = parse_node_id(&args.node_id)?;
-    let root = crate::home::root_dir()?;
-    let paths = run_paths_exact(&root, &run_id)?;
-    if read_manifest_opt(&paths).map_err(from_core)?.is_none() {
-        return Err(
-            CliError::user("run_not_found", format!("no run with id {}", args.run_id))
-                .with_invalid_value(&args.run_id),
-        );
+
+    // Install forwarding before publication wait: cancellation may arrive while
+    // the creator is still materializing. The handler retains one pending
+    // signal and delivers it immediately once the child exists.
+    for sig in SHIM_FORWARDED_SIGNALS {
+        // SAFETY: zeroed sigaction is initialized before installation;
+        // sigemptyset/sigaction are the platform signal APIs.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = forward_worker_signal as *const () as libc::sighandler_t;
+            libc::sigemptyset(std::ptr::addr_of_mut!(action.sa_mask));
+            action.sa_flags = 0;
+            libc::sigaction(sig, std::ptr::addr_of!(action), std::ptr::null_mut());
+        }
     }
-    if read_node_opt(&paths, &node_id)
-        .map_err(from_core)?
-        .is_none()
-    {
-        return Err(CliError::user(
-            "node_not_found",
-            format!("no node {} in run {}", args.node_id, args.run_id),
-        )
-        .with_invalid_value(&args.node_id));
+
+    let await_publication = std::env::var_os("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION")
+        .is_some_and(|value| value == "1");
+    let root = match std::env::var_os("OCTL_INTERNAL_WORKER_STATE_ROOT") {
+        Some(root) if await_publication => std::path::PathBuf::from(root),
+        _ => crate::home::root_dir()?,
+    };
+    let paths = run_paths_exact(&root, &run_id)?;
+    if await_publication {
+        await_published_node(&paths, &node_id, &args)?;
+    } else {
+        require_published_node(&paths, &node_id, &args)?;
     }
 
     // `required = true` guarantees at least the program; split off its args.
@@ -99,34 +127,29 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         .split_first()
         .ok_or_else(|| CliError::user("missing_worker_command", "no worker command after `--`"))?;
 
-    // Survive foreground-group signals so the child owns them and the shim lives
-    // long enough to record the child's true status (see `SHIM_IGNORED_SIGNALS`).
-    // SAFETY: `libc::signal` is async-signal-safe and this runs single-threaded at
-    // startup before the child is spawned.
-    for sig in SHIM_IGNORED_SIGNALS {
-        unsafe { libc::signal(sig, libc::SIG_IGN) };
-    }
-
     // Inherit stdio (the default): the wrapped agent runs its interactive TUI in
     // this pane's PTY. No timeout — the worker owns its own lifecycle; the shim
     // only observes the exit. The child restores DEFAULT signal dispositions (via
     // `pre_exec`, after fork / before exec) so it still takes a Ctrl-C / teardown
-    // signal normally even though the shim ignores it.
+    // signal normally when the shim forwards it.
     let mut cmd = Command::new(program);
     cmd.args(prog_args);
     // SAFETY: the closure only calls the async-signal-safe `libc::signal` in the
     // forked child before `exec`; it touches no shared state and allocates nothing.
     unsafe {
         cmd.pre_exec(|| {
-            for sig in SHIM_IGNORED_SIGNALS {
+            for sig in SHIM_FORWARDED_SIGNALS {
                 libc::signal(sig, libc::SIG_DFL);
             }
             Ok(())
         });
     }
 
-    let status = match cmd.status() {
-        Ok(s) => s,
+    cmd.env_remove("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION")
+        .env_remove("OCTL_INTERNAL_WORKER_STATE_ROOT")
+        .env_remove("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS");
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
         Err(e) => {
             // The worker could not even be launched. Record a told FAILURE (rather
             // than let the supervisor fall back to pid-guessing) and then surface
@@ -140,6 +163,18 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
             ));
         }
     };
+    WORKER_PID.store(child.id() as i32, Ordering::Relaxed);
+    let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
+    if pending > 0 {
+        unsafe { libc::kill(child.id() as libc::pid_t, pending) };
+    }
+    let status = child.wait().map_err(|e| {
+        CliError::system(
+            "worker_wait_failed",
+            format!("could not wait for worker `{program}`: {e}"),
+        )
+    })?;
+    WORKER_PID.store(0, Ordering::Relaxed);
 
     // Exactly one of code / signal is meaningful on Unix: a normal return carries
     // a code (signal None); a signal death carries a signal (code None). Prefer the
@@ -171,6 +206,77 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
     let code = exit_code.unwrap_or_else(|| 128 + signal.unwrap_or(1));
     crate::cli::flush_logs();
     std::process::exit(code);
+}
+
+fn require_published_node(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    args: &RunWorkerArgs,
+) -> Result<(), CliError> {
+    // The final run directory appears atomically at publication. Avoid opening
+    // its lock before that boundary, then read manifest + node under one shared
+    // lock so a later projection update cannot interleave the pair.
+    if !paths.manifest().exists() {
+        return Err(
+            CliError::user("run_not_found", format!("no run with id {}", args.run_id))
+                .with_invalid_value(&args.run_id),
+        );
+    }
+    let (manifest, node) = RunLock::with_shared_lock(&paths.lock(), || {
+        Ok((read_manifest_opt(paths)?, read_node_opt(paths, node_id)?))
+    })
+    .map_err(from_core)?;
+    if manifest.is_none() {
+        return Err(
+            CliError::user("run_not_found", format!("no run with id {}", args.run_id))
+                .with_invalid_value(&args.run_id),
+        );
+    }
+    if node.is_none() {
+        return Err(CliError::user(
+            "node_not_found",
+            format!("no node {} in run {}", args.node_id, args.run_id),
+        )
+        .with_invalid_value(&args.node_id));
+    }
+    Ok(())
+}
+
+/// Bridge the intentional create transaction ordering: create.sh starts the
+/// launcher while the run is private under `.creating`; the creator then writes
+/// `node.created` and atomically publishes it under `runs/`. Waiting in the shim
+/// keeps create.sh's PID discovery live without exposing half-created state.
+fn await_published_node(
+    paths: &RunPaths,
+    node_id: &NodeId,
+    args: &RunWorkerArgs,
+) -> Result<(), CliError> {
+    const DEFAULT_WAIT: Duration = Duration::from_secs(120);
+    #[cfg(debug_assertions)]
+    let wait = std::env::var("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(DEFAULT_WAIT, Duration::from_millis);
+    #[cfg(not(debug_assertions))]
+    let wait = DEFAULT_WAIT;
+    let deadline = Instant::now() + wait;
+    loop {
+        match require_published_node(paths, node_id, args) {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.code.as_str(), "run_not_found" | "node_not_found") => {}
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= deadline {
+            return Err(CliError::system(
+                "worker_publication_timeout",
+                format!(
+                    "run {}/{} was not published within {:?}; refusing to launch the worker",
+                    args.run_id, args.node_id, wait
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Append the durable `worker.exited` fact under the run lock (design.md §2.1).

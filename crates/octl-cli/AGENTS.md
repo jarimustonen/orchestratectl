@@ -2,6 +2,10 @@
 
 The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `event tail`, `skill install`, etc.) per `ai-first-cli-canon`. Bundled SKILLs live under `skills/<name>/SKILL.template.md` and are embedded via `build.rs` + `include_str!`.
 
+## Shared CLI dispatcher
+
+`src/lib.rs` owns the sole linkable parser/execution engine. Binary entry points are thin calls to `dispatch(InvocationIdentity)`; identity is explicit and is used only for help/version branding (future compatibility warnings attach at the same seam), never inferred from `argv[0]` or `PATH`. Hidden self-execution is centralized in `src/self_exec.rs` and always starts `current_exe()`. Detached supervise, reattach, merge-recovery reattach, and doctor fixes must use that helper rather than a product-name lookup or a second parser.
+
 ## `doctor` binary build provenance
 
 `doctor` always emits the stable `binary.commit` check first. Its optional `details` object exposes `binary_commit`, `repository_head`, and `comparison` (`match`, `mismatch`, `unavailable`, or `not_applicable`) so machine callers never scrape hashes from prose. When cwd is inside an orchestratectl checkout, a recorded build commit that differs from `HEAD` is a WARN, never a FAIL; branch and released-binary mismatches are legitimate. Outside this project's checkout, or when either reference cannot be established, the check remains informational. It never offers an autonomous fix or manages the installed binary.
@@ -75,13 +79,20 @@ reads the recorded candidate rather than current config. Dry-run/create/run show
 surface the compact selection; old/no-profile manifests show
 `legacy-unrecorded` without invented history.
 
-A profile-backed create writes a private per-attempt launcher, passes only that
-absolute path as `create.sh --agent`, and the launcher `exec`s the recorded
-candidate argv as the exact prefix with its argument boundaries unchanged,
-followed by workmux's existing `-- <prompt>` suffix. It exports exact
-`OCTL_RUN_ID` / `OCTL_NODE_ID` / absolute
-`OCTL_ATTEMPT` only for recorded pi+`worker-v1`, removing inherited values for
-unsupported candidates. Retry regenerates this launcher solely from
+A profile-backed create writes a private per-attempt launcher and passes only
+that absolute path as `create.sh --agent`. The launcher re-enters the exact
+current executable through hidden `run-worker`; after its `--`, the recorded
+candidate argv remains byte-for-byte and boundary-for-boundary unchanged,
+followed by workmux's existing `-- <prompt>` suffix. The launcher passes the
+already-selected absolute state root through private exec-scoped
+`OCTL_INTERNAL_WORKER_STATE_ROOT` / `OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION`.
+Before atomic publication moves the staging directory, the creator waits for a
+private launcher-opened marker written by the script itself; this closes the
+fork-before-script-open rename race. The shim then waits for run+node
+publication, removes both variables before starting the candidate, forwards
+termination signals, and records the true exit. It exports exact `OCTL_RUN_ID` / `OCTL_NODE_ID` / absolute `OCTL_ATTEMPT`
+only for recorded pi+`worker-v1`, removing inherited values for unsupported
+candidates. Retry regenerates this launcher solely from
 `manifest.agent_selection` and the new absolute attempt, never current config.
 No-profile compatibility still maps pi to `create.sh --agent pi` and leaves
 Claude on workmux's configured default. `manifest.harness` remains for

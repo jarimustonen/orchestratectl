@@ -41,6 +41,22 @@ fn bin() -> Command {
 /// stderr) and return its stdout. Also asserts the standard success
 /// envelope structurally, so a blanket `cargo insta accept` can't bless a
 /// dropped `data`/`schema_version`.
+#[cfg(unix)]
+#[test]
+fn structured_help_rejects_non_utf8_output_path_without_lossy_routing() {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut path = b"/tmp/orchestratectl-help-".to_vec();
+    path.push(0xff);
+    path.extend_from_slice(b".json");
+    bin()
+        .arg("--help")
+        .arg("--output")
+        .arg(std::ffi::OsString::from_vec(path))
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("invalid_arguments"));
+}
+
 fn help_stdout(args: &[&str]) -> String {
     let out = bin()
         .args(args)

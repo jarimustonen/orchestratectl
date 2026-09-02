@@ -168,7 +168,7 @@ fn materialized_create_routes_through_the_recorded_exact_argv() {
     let worker = scratch.path().join("worker.sh");
     std::fs::write(
         &worker,
-        "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"$(($# + 1))\" \"$0\" \"$@\" > \"$CAPTURE_OUTPUT\"\nexec /bin/sleep 30\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$OCTL_RUN_ID\" \"$OCTL_NODE_ID\" \"$OCTL_ATTEMPT\" \"${OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION-unset}\" \"${OCTL_INTERNAL_WORKER_STATE_ROOT-unset}\" \"$(($# + 1))\" \"$0\" \"$@\" > \"$CAPTURE_OUTPUT\"\nexec /bin/sleep 2\n",
     )
     .unwrap();
     std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -201,25 +201,42 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = "--agent" ]; then agent="$2"; shift 2; continue; fi
   shift
 done
-CAPTURE_OUTPUT='{}' "$agent" -- 'do it' </dev/null >/dev/null 2>&1 &
+CAPTURE_OUTPUT='{}' "$agent" -- 'do it' </dev/null >/dev/null 2>'{}' &
 pid=$!
-i=0
-while [ ! -f '{}' ] && [ "$i" -lt 100 ]; do /bin/sleep 0.01; i=$((i+1)); done
+/bin/sleep 0.1
 printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}","tmux_window":"fixture","agent_pid_hint":%s,"tmux_socket":null,"tmux_session":null,"tmux_window_id":null}}\n' "$branch" "$pid"
 "#,
             observed.display(),
-            observed.display(),
+            scratch.path().join("worker-launch.err").display(),
             worktree.display(),
         ),
     )
     .unwrap();
     std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+    // Hostile product-name executables prove both the worker shim and detached
+    // supervisor re-enter the exact current binary rather than consulting PATH.
+    let hostile_marker = scratch.path().join("hostile-product-binary-ran");
+    for name in ["orchestratectl", "taskfleet"] {
+        let path = scratch.path().join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n: > '{}'\nexit 99\n", hostile_marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     command
-        .env("ORCHESTRATECTL_HOME", home.path())
+        .current_dir(home.path().parent().unwrap())
+        // A relative selected root must be made absolute before it crosses the
+        // worktree/self-exec boundary.
+        .env("ORCHESTRATECTL_HOME", home.path().file_name().unwrap())
         .env("OCTL_CREATE_SH", &create_sh)
-        .env("PATH", "/usr/bin:/bin")
+        // Only the hostile product-name fixtures are searchable. Every tool
+        // this scenario legitimately needs is addressed by absolute path.
+        .env("PATH", scratch.path())
         .args([
             "--output", "json", "run", "create", "--kind", "spinoff", "--title", "exact", "--task",
             "do it",
@@ -237,20 +254,58 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
     )
     .unwrap();
     let pid = node["agent_pid"].as_i64().unwrap();
-    for _ in 0..50 {
+    for _ in 0..200 {
         if observed.exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    let observed_bytes = std::fs::read_to_string(&observed).unwrap_or_else(|error| {
+        let run_dir = home.path().join("runs").join(run_id);
+        let events =
+            std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
+        let launcher = std::fs::read_to_string(
+            run_dir.join("agent-launch-n-0001-attempt-0.sh"),
+        )
+        .unwrap_or_default();
+        let stderr = std::fs::read_to_string(scratch.path().join("worker-launch.err"))
+            .unwrap_or_default();
+        let logs = std::fs::read_to_string(home.path().join("logs/orchestratectl.log.jsonl"))
+            .unwrap_or_default();
+        panic!(
+            "worker did not start: {error}; events={events}; launcher={launcher} stderr={stderr} logs={logs}"
+        )
+    });
     assert_eq!(
-        std::fs::read_to_string(&observed).unwrap(),
+        observed_bytes,
         format!(
-            "{run_id}\nn-0001\n0\n5\n{}\none two\nquote'arg\n--\ndo it\n",
+            "{run_id}\nn-0001\n0\nunset\nunset\n5\n{}\none two\nquote'arg\n--\ndo it\n",
             worker.display()
         )
     );
-    let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+    // The recorded PID is the run-worker shim. Let its short-lived child exit
+    // naturally so the shim records the durable worker.exited fact.
+    assert!(pid > 0);
+    let events = home.path().join("runs").join(run_id).join("events.jsonl");
+    for _ in 0..100 {
+        if std::fs::read_to_string(&events)
+            .unwrap_or_default()
+            .contains("\"worker.exited\"")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        std::fs::read_to_string(events)
+            .unwrap()
+            .contains("\"worker.exited\""),
+        "run-worker did not record the candidate's exit"
+    );
+    assert!(
+        !hostile_marker.exists(),
+        "a hidden path resolved a product name through PATH"
+    );
 }
 
 #[test]

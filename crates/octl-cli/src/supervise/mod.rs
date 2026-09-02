@@ -2604,12 +2604,23 @@ fn respawn_agent(
     // config or PATH may make that exact command fail, but can never advance
     // fallback or select a different candidate. The absolute attempt is baked
     // into a fresh launcher so an old adapter cannot report for the retry.
+    let state_root = paths
+        .root
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or_else(|| {
+            CliError::system(
+                "recorded_run_path_invalid",
+                format!("cannot derive state root from {}", paths.root.display()),
+            )
+        })?;
     let agent_launcher = manifest
         .agent_selection
         .as_ref()
         .map(|selection| {
             crate::run::spawn::write_agent_launcher(
                 &paths.root,
+                state_root,
                 selection,
                 manifest.run_id.as_str(),
                 node.node_id.as_str(),
@@ -2643,6 +2654,9 @@ fn respawn_agent(
         cwd: source_repo,
     };
     let outcome = crate::run::spawn::run_create_sh_with_tmux_retry(&req)?;
+    if let Some(launcher) = agent_launcher.as_deref() {
+        crate::run::spawn::await_agent_launcher_opened(launcher)?;
+    }
     // Re-verify the freshly discovered PID is still alive (mirrors `run create`),
     // so a re-spawn that raced a just-died agent is treated as a spawn failure
     // rather than recording a dead pid onto the node.
@@ -4528,12 +4542,23 @@ EOF
         std::fs::create_dir_all(&config_home).unwrap();
         std::fs::write(config_home.join("config.toml"), "not valid toml = [").unwrap();
         let _home = EnvGuard::set("ORCHESTRATECTL_HOME", config_home.to_str().unwrap());
+        // A unit-test process's current_exe is Rust's test harness, not the CLI
+        // binary. This absolute debug-only fixture preserves the generated
+        // self-exec argument boundary, then forwards the candidate after `--`.
+        let self_exe = tmp.path().join("self-exec-fixture.sh");
+        std::fs::write(
+            &self_exe,
+            "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&self_exe).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&self_exe, perms).unwrap();
+        let _self_exe = EnvGuard::set("OCTL_TEST_SELF_EXE", self_exe.to_str().unwrap());
 
         let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
-        for _ in 0..100 {
-            if observed.exists() {
-                break;
-            }
+        let observed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !observed.exists() && std::time::Instant::now() < observed_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(

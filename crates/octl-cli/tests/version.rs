@@ -14,6 +14,43 @@ fn bin() -> Command {
 }
 
 #[test]
+fn invocation_identity_is_not_inferred_from_argv0_or_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let renamed = dir.path().join("taskfleet");
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_orchestratectl"), &renamed).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_orchestratectl"), &renamed).unwrap();
+    }
+
+    let help = Command::new(&renamed)
+        .arg("--help")
+        .env("HOME", dir.path())
+        .env("ORCHESTRATECTL_HOME", dir.path().join("state"))
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.starts_with("Orchestrate AI-agent workflows"));
+    assert!(
+        help.contains("Usage: orchestratectl [OPTIONS] <COMMAND>"),
+        "{help}"
+    );
+    assert!(!help.contains("Usage: taskfleet"), "{help}");
+
+    let version = Command::new(&renamed)
+        .args(["--output", "text", "version"])
+        .env("HOME", dir.path())
+        .env("ORCHESTRATECTL_HOME", dir.path().join("state"))
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert!(String::from_utf8(version.stdout)
+        .unwrap()
+        .starts_with("orchestratectl "));
+}
+
+#[test]
 fn version_text_succeeds_with_clean_stderr() {
     let out = bin()
         .args(["--output", "text", "version"])
