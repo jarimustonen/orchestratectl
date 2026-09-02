@@ -13,9 +13,6 @@ publish = true
 [package.metadata.dist]
 dist = true
 
-[package.metadata.taskfleet]
-pre-cut = true
-
 [[bin]]
 name = "taskfleet"
 path = "src/main.rs"

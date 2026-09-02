@@ -144,6 +144,13 @@ git -C "$repo_root" push -q "$tmp/origin.git" HEAD:refs/heads/main
 git clone -q --branch main "$tmp/origin.git" "$tmp/repo"
 git -C "$tmp/repo" config user.name protocol-test
 git -C "$tmp/repo" config user.email protocol-test@example.invalid
+# R7 activation is simulated only inside the disposable fixture. Production
+# topology remains blocked and no public tag or registry is reachable.
+jq '.activation = "ready"' "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
+mv "$tmp/topology.json" "$tmp/repo/release/taskfleet-release.json"
+git -C "$tmp/repo" add release/taskfleet-release.json
+git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
+git -C "$tmp/repo" push -q origin HEAD:refs/heads/main
 
 run_env=(
   env -i
@@ -318,11 +325,12 @@ jq -e --arg tag "$tag" '
   .data.state.current_phase == null
 ' "$tmp/show-resumed.json" >/dev/null
 jq -e '
-  .schema_version == 1 and .data.summary.delegated_failed == 4 and
-  .data.summary.unknown == 4 and .data.summary.reconciled == 4 and
+  .schema_version == 1 and .data.summary.delegated_failed == 5 and
+  .data.summary.unknown == 5 and .data.summary.reconciled == 5 and
   ([.data.targets[].target] | sort) == [
-    "rust:octl-core:crates.io", "rust:orchestratectl:crates.io",
-    "rust:orchestratectl:gh-releases", "rust:orchestratectl:homebrew"
+    "rust:orchestratectl:crates.io", "rust:taskfleet-core:crates.io",
+    "rust:taskfleet:crates.io", "rust:taskfleet:gh-releases",
+    "rust:taskfleet:homebrew"
   ] and
   (.data.targets | all(
     .outcome == "unknown" and .delegated_run.status == "failed" and

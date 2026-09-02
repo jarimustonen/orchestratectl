@@ -4,8 +4,9 @@
 # CI on that exact SHA, then resumes the journalled cut.
 set -euo pipefail
 
-readonly expected_repo="jarimustonen/orchestratectl"
 readonly shipshape_0_10_1_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
+readonly topology_rel="release/taskfleet-release.json"
+expected_repo=""
 readonly -a never_resume_runs=(
   "01M0FD8FSTMGYG8YTV92WMWC87"
   "01M0FG88NAKBJ7Y3QNFZEHRM4K"
@@ -30,14 +31,46 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || { echo "required command not found: $1" >&2; exit 1; }
 }
 
-assert_not_precut() {
-  local manifest
-  for manifest in crates/taskfleet/Cargo.toml compat/orchestratectl/Cargo.toml; do
-    if [[ -f "$manifest" ]] && grep -Eq '^[[:space:]]*pre-cut[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$manifest"; then
-      echo "Taskfleet pre-cut release block is active in $manifest; R6/R7 must remove it only after release and distribution topology are ready" >&2
-      exit 2
-    fi
-  done
+load_release_topology() {
+  local topology="$repo_root/$topology_rel"
+  jq -e '
+    .schema_version == 1 and
+    (.repository | type == "string" and length > 0) and
+    [.crates_io.legs[] | .package] == ["taskfleet-core","taskfleet","orchestratectl"] and
+    [.crates_io.legs[] | .depends_on] == [null,"taskfleet-core","taskfleet"] and
+    [.distribution[] | (.package + ":" + .registry + ":" + .workflow)] == [
+      "taskfleet:gh-releases:release.yml", "taskfleet:homebrew:release.yml"
+    ]
+  ' "$topology" >/dev/null || {
+    echo "release topology is not the admitted five-leg Taskfleet graph: $topology" >&2
+    exit 2
+  }
+  expected_repo="$(jq -er .repository "$topology")"
+}
+
+assert_cut_activated() {
+  local activation
+  activation="$(jq -er .activation "$repo_root/$topology_rel")"
+  [[ "$activation" == ready ]] || {
+    echo "release cut activation is $activation; ADR 0002 R7 must finish cargo-dist/Homebrew preparation before a tag can be cut" >&2
+    exit 2
+  }
+}
+
+validate_contract_targets() {
+  local contract_json="$1"
+  jq -e '
+    [.data.targets[] | (.package + ":" + .registry + ":" + .adapter)] == [
+      "taskfleet-core:crates.io:cargo-publish-ci",
+      "taskfleet:crates.io:cargo-publish-ci",
+      "orchestratectl:crates.io:cargo-publish-ci",
+      "taskfleet:gh-releases:cargo-dist",
+      "taskfleet:homebrew:cargo-dist"
+    ] and .data.release.bump_hook == "./scripts/shipshape-bump-hook.sh"
+  ' <<<"$contract_json" >/dev/null || {
+    echo "approved Shipshape contract does not match the admitted five-leg Taskfleet topology" >&2
+    exit 2
+  }
 }
 
 require_supported_shipshape() {
@@ -420,15 +453,17 @@ require_command git
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+require_command jq
+load_release_topology
+
 command="${1:-}"
 case "$command" in
-  plan|cut) assert_not_precut ;;
-  resume|verify) ;;
+  plan|resume|verify) ;;
+  cut) assert_cut_activated ;;
   *) usage ;;
 esac
 
 require_command shipshape
-require_command jq
 require_supported_shipshape
 
 case "$command" in
@@ -438,13 +473,17 @@ case "$command" in
     shipshape release list --json | jq -e '
       .data.in_flight_count == 0 and (.data.unreadable | length) == 0
     ' >/dev/null || { echo "an active or unreadable release run must be reconciled before planning" >&2; exit 1; }
-    shipshape contract show --json --require-approved >/dev/null
+    contract_json="$(shipshape contract show --json --require-approved)"
+    validate_contract_targets "$contract_json"
     shipshape contract validate --json >/dev/null
     shipshape audit --json | jq -e '[.data.gaps[] | select(.severity == "blocking")] | length == 0' >/dev/null || {
       echo "blocking OSS readiness gaps prevent a release" >&2
       exit 1
     }
     test -z "$(git status --porcelain)" || { echo "working tree must be clean" >&2; exit 1; }
+    # Build all three source archives before sealing the plan. This is a local,
+    # credential-free package proof; publish remains CI-only.
+    ./scripts/publish-crates.sh package >/dev/null
     exec shipshape release plan --bump "$2" --json
     ;;
 

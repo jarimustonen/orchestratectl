@@ -25,11 +25,12 @@ license: MIT
 docs_site: none
 ---
 
-> **APPROVED, PRE-CUT BLOCKED.** The canonical release topology is Taskfleet,
-> but this workspace intentionally remains at 0.5.1 while R6/R7 rebuild release
-> and distribution machinery. Do not plan, cut, tag, publish, or install from
-> this posture. The old GitHub repository and Homebrew tap remain the truthful
-> public locations until the separately gated R9/R11 migrations.
+> **APPROVED; CUT BLOCKED ON R7.** The exact R6 crates.io saga and Shipshape
+> protocol are ready, and credential-free package/plan checks are allowed. The
+> workspace intentionally remains at 0.5.1 and `release/taskfleet-release.json`
+> remains `activation: blocked-r7` until cargo-dist/Homebrew preparation is
+> complete. Do not cut, tag, publish, install, rename the repository, or mutate a
+> tap. The old GitHub repository and tap remain truthful until R9/R11.
 
 ## Rationale
 - **maturity: mvp** — inferred by `ossctl facts`: has CI + a SemVer tag (`v0.0.2-alpha`) rules
@@ -100,8 +101,12 @@ docs_site: none
 - **crates.io publishes are permanent.** Publishing `taskfleet-core@<v>`,
   `taskfleet@<v>`, and the bounded `orchestratectl@<v>` wrapper cannot be
   undone: a version can be yanked but never reused or overwritten. Never publish
-  locally. R6 owns the three-crate workflow, exact-pin checks, registry receipts,
-  and index-visibility waits.
+  locally. `scripts/publish-crates.sh` packages each exact source archive, then
+  reconciles checksum, the complete owner set, internal dependency requirement,
+  license/rust-version/repository/homepage/description metadata, and the archive's
+  `.cargo_vcs_info.json` commit. Cargo output, including “already exists”, is
+  never success evidence. Every dependent starts only after its prerequisite has
+  produced a matching index-visible receipt.
 - **CI-green tag gate.** From clean, synchronized `main`, seal and inspect the JSON plan,
   then pass its id back to the wrapper:
   ```bash
@@ -116,6 +121,22 @@ docs_site: none
   wrapper with a direct `shipshape release cut`, bare `shipshape release resume` while the tag is local,
   or `git push <tag>`; each bypasses this project's pre-tag gate. `publish-crates.yml` repeats the full gate for crates.io, while cargo-dist's
   independent `release.yml` makes the pre-tag main check necessary for binaries and Homebrew.
+- **Partial success and resume are normal saga states.** The three crates.io jobs,
+  GitHub Release, and Homebrew publication remain separately visible. Re-run only
+  the failed GitHub workflow/jobs from the same immutable tag. A completed crate
+  leg is skipped only after full receipt reconciliation; a mismatch fails closed.
+  If a permanent artifact exists but cannot match the source receipt, abandon the
+  version and fix forward with a patch—never retag, overwrite, or infer success
+  from an error string. `scripts/shipshape-release.sh verify <run-id>` remains the
+  read-only cross-leg view, and an interrupted held local tag resumes only through
+  the wrapper. If cargo-dist uploaded the GitHub Release but its Homebrew job
+  failed because the generated formula produced an empty commit, compare the live
+  formula byte-for-byte with the generated `.rb` artifact. If identical, record
+  that existing tap commit as the Homebrew receipt and resume verification. If it
+  differs, apply the exact generated formula as a normal reviewed commit to the
+  configured tap, push that commit, record its SHA/asset checksum, and resume
+  verification. Never add `--allow-empty`, delete/recreate the release, or weaken
+  the exact-tag/source gates. R7 must adapt this repair recipe to the final tap.
 - **Two distribution channels, one tag.** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,

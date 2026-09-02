@@ -16,7 +16,6 @@ dist = false
 [package.metadata.taskfleet]
 compatibility-only = true
 release-window = "0.6.x-0.7.x"
-pre-cut = true
 
 [[bin]]
 name = "orchestratectl"

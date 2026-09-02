@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "activation": "blocked-r7",
+  "repository": "jarimustonen/orchestratectl",
+  "owners": ["jarimustonen"],
+  "crates_io": {
+    "workflow": "publish-crates.yml",
+    "legs": [
+      {
+        "package": "taskfleet-core",
+        "manifest": "crates/taskfleet-core/Cargo.toml",
+        "depends_on": null
+      },
+      {
+        "package": "taskfleet",
+        "manifest": "crates/taskfleet/Cargo.toml",
+        "depends_on": "taskfleet-core"
+      },
+      {
+        "package": "orchestratectl",
+        "manifest": "compat/orchestratectl/Cargo.toml",
+        "depends_on": "taskfleet"
+      }
+    ]
+  },
+  "distribution": [
+    {
+      "package": "taskfleet",
+      "registry": "gh-releases",
+      "workflow": "release.yml"
+    },
+    {
+      "package": "taskfleet",
+      "registry": "homebrew",
+      "workflow": "release.yml"
+    }
+  ]
+}

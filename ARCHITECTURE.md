@@ -49,8 +49,7 @@ ownership rather than choosing a winner.
 
 ## Release boundary
 
-The workspace remains under the ADR 0002 pre-cut release block. Canonical
-packages are staged as `taskfleet-core`, `taskfleet`, and the bounded wrapper,
-but R6/R7 still own registry workflow and cargo-dist/Homebrew regeneration.
-Repository rename, publishing, tagging, tap activation, and global installation
-are outside this phase.
+The ADR 0002 R6 crates.io saga and pinned Shipshape protocol are ready. Release
+activation remains explicitly blocked in `release/taskfleet-release.json` until
+R7 finishes cargo-dist/Homebrew preparation. Repository rename, publishing,
+tagging, tap activation, and global installation remain outside this phase.

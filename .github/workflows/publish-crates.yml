@@ -1,30 +1,11 @@
 name: Publish to crates.io
 
-# Triggers on the version-tag push (the SAME tag cargo-dist's release.yml keys
-# off), so crates.io publishing happens in CI with no dependency on a local
-# token. Requires a CARGO_REGISTRY_TOKEN repo secret with publish scope
-# (set once: `gh secret set CARGO_REGISTRY_TOKEN --repo jarimustonen/orchestratectl`).
-#
-# NOTE: we do NOT trigger on `release: published`. cargo-dist creates the GitHub
-# Release with the default GITHUB_TOKEN, and GitHub does not emit workflow events
-# (incl. `release`) for actions taken by GITHUB_TOKEN, so a `release`-triggered
-# job never fires on a real cargo-dist cut. Keying off the tag push is the
-# verified working trigger. This workflow gates crates.io publishing on the same
-# checks as main CI; release.yml runs independently for the binary channel.
-#
-# orchestratectl is a two-crate workspace: the CLI crate lives at
-# `crates/octl-cli` and publishes as the `orchestratectl` package, depending on
-# an exact `octl-core` version from `crates/octl-core`. The members MUST publish
-# in dependency order: `octl-core` first, then `orchestratectl` after its
-# dependency is visible on the index. Modern `cargo publish` waits for the
-# just-published crate to appear on the index before it returns, so a plain
-# sequential publish is safe; the explicit retry loop below is belt-and-suspenders
-# against index propagation lag.
-
+# The version tag also starts cargo-dist's independent release.yml. Neither
+# workflow waits for the other. This workflow owns only the ordered crates.io
+# saga and never publishes on workflow_dispatch.
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
-  # Manual runs are always dry-runs. Only a version-tag push may publish.
   workflow_dispatch:
 
 permissions:
@@ -39,34 +20,30 @@ env:
 
 jobs:
   release-version:
-    name: release version
+    name: release topology and version
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Verify workspace version, core pin, and tag
+      - name: Verify exact five-leg topology, pins, repository, and tag
         shell: bash
         run: |
           set -euo pipefail
-          workspace_version="$(awk -F'"' '
-            /^\[workspace\.package\]/ { in_package=1; next }
-            /^\[/ { in_package=0 }
-            in_package && /^version[[:space:]]*=/ { print $2; exit }
-          ' Cargo.toml)"
-          core_pin="$(sed -nE 's/^octl-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/octl-cli/Cargo.toml)"
-
-          if [[ -z "$workspace_version" ]]; then
-            echo "workspace version not found" >&2
-            exit 1
-          fi
-          if [[ "$core_pin" != "$workspace_version" ]]; then
-            echo "octl-core pin '$core_pin' does not match workspace version '$workspace_version'" >&2
-            exit 1
-          fi
-          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$workspace_version" ]]; then
-            echo "tag '$GITHUB_REF_NAME' does not match workspace version 'v$workspace_version'" >&2
-            exit 1
-          fi
+          version="$(awk -F'"' '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{print $2;exit}' Cargo.toml)"
+          test "$GITHUB_REF_TYPE" != tag || test "$GITHUB_REF_NAME" = "v$version"
+          jq -e '
+            .schema_version == 1 and .repository == "jarimustonen/orchestratectl" and
+            [.crates_io.legs[] | .package] == ["taskfleet-core","taskfleet","orchestratectl"] and
+            [.crates_io.legs[] | .depends_on] == [null,"taskfleet-core","taskfleet"] and
+            [.distribution[] | (.package+":"+.registry+":"+.workflow)] ==
+              ["taskfleet:gh-releases:release.yml","taskfleet:homebrew:release.yml"]
+          ' release/taskfleet-release.json >/dev/null
+          test "$(sed -nE 's/^taskfleet-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/taskfleet/Cargo.toml)" = "$version"
+          test "$(sed -nE 's/^taskfleet = \{[^}]*version = "=([^"]+)".*/\1/p' compat/orchestratectl/Cargo.toml)" = "$version"
+          cargo metadata --locked --no-deps --format-version 1 | jq -e --arg version "$version" '
+            [.packages[] | .name] | sort == ["orchestratectl","taskfleet","taskfleet-core"] and
+            all(.packages[]; .version == $version and .repository == "https://github.com/jarimustonen/orchestratectl")
+          ' >/dev/null
 
   fmt:
     name: rustfmt
@@ -75,12 +52,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+        with: {components: rustfmt}
       - run: cargo fmt --all --check
 
   version-snapshots:
-    name: version-snapshots
+    name: version snapshots
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -94,17 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+        with: {components: clippy}
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   test:
@@ -119,20 +86,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-      # Match main CI's process-per-test isolation. Executable stubs in different
-      # unit-test modules otherwise share one cargo-test process, where fork can
-      # inherit another test's open write fd and make Linux exec return ETXTBSY.
+      - uses: Swatinem/rust-cache@v2
       - run: cargo nextest run --locked --release --workspace
-      # nextest intentionally excludes doctests; preserve cargo test's coverage.
       - run: cargo test --locked --release --workspace --doc
 
   msrv:
@@ -142,23 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-msrv-
+      - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --workspace --all-targets
 
   doc:
     name: docs
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      RUSTDOCFLAGS: -D warnings
+    env: {RUSTDOCFLAGS: -D warnings}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -175,75 +121,68 @@ jobs:
           command: check
           arguments: --locked
 
-  publish:
-    name: cargo publish (workspace, dep-order)
+  package-archives:
+    name: sealed package archives
+    needs: [release-version]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: ./scripts/publish-crates.sh package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taskfleet-package-archives
+          path: target/package/*.crate
+
+  publish-core:
+    name: crates.io / taskfleet-core
     needs: [release-version, fmt, version-snapshots, clippy, test, msrv, doc, deny]
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: Publish (dry-run)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - run: ./scripts/publish-crates.sh publish taskfleet-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          cargo publish -p octl-core --dry-run
-          # `orchestratectl` can't be dry-run-verified until octl-core is on the
-          # index, so a dry-run only covers the leaf crate.
+          SOURCE_COMMIT: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crates-io-receipt-taskfleet-core
+          path: target/release-receipts/*.json
 
-      - name: Publish (dep-order)
-        if: ${{ github.event_name == 'push' }}
+  publish-taskfleet:
+    name: crates.io / taskfleet
+    needs: [publish-core]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/publish-crates.sh publish taskfleet
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
+          SOURCE_COMMIT: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crates-io-receipt-taskfleet
+          path: target/release-receipts/*.json
 
-          # Publish a crate, tolerating "already exists on crates.io index" as
-          # success. This makes a workflow re-run recover after octl-core reached
-          # the index but orchestratectl did not. A plain `cargo publish` exits
-          # 101 in that case; under `set -e` that would abort the retry. The
-          # release-version gate prevents a mismatched tag from being hidden by
-          # this tolerance. Any OTHER failure still propagates.
-          publish() {
-            local pkg="$1"
-            local out rc
-            # Capture combined output and the real exit code. The command
-            # substitution is its own statement (not `local out=$(…)`, which
-            # would mask cargo's status), and the `if` keeps the failure out of
-            # `set -e`'s reach.
-            if out="$(CARGO_TERM_COLOR=never cargo publish -p "$pkg" 2>&1)"; then
-              rc=0
-            else
-              rc=$?
-            fi
-            printf '%s\n' "$out"
-            if [ "$rc" -eq 0 ]; then
-              return 0
-            fi
-            # Tolerate ONLY cargo's exact duplicate-version diagnostic for THIS
-            # package, e.g. "error: crate octl-core@0.2.0 already exists on
-            # crates.io index". A here-string (not a pipe) avoids a pipefail
-            # SIGPIPE false-negative from grep -q closing the pipe early. Any
-            # other failure (network, auth, verification) still propagates.
-            if grep -Eqi "crate ${pkg}@[^[:space:]]+ already exists on crates\.io index" <<<"$out"; then
-              echo "$pkg already on the crates.io index, treating as success."
-              return 0
-            fi
-            return "$rc"
-          }
-
-          echo "Publishing octl-core…"
-          publish octl-core
-          echo "Publishing orchestratectl (retry until octl-core is index-visible)…"
-          for attempt in 1 2 3 4 5 6; do
-            if publish orchestratectl; then
-              echo "orchestratectl published."
-              exit 0
-            fi
-            echo "attempt $attempt failed (octl-core may not be index-visible yet); waiting 30s…"
-            sleep 30
-          done
-          echo "orchestratectl failed to publish after retries" >&2
-          exit 1
+  publish-wrapper:
+    name: crates.io / orchestratectl compatibility wrapper
+    needs: [publish-taskfleet]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/publish-crates.sh publish orchestratectl
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          SOURCE_COMMIT: ${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crates-io-receipt-orchestratectl
+          path: target/release-receipts/*.json

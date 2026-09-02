@@ -10,9 +10,6 @@ description = "Core state, locking, and supervisor protocol library for Taskflee
 readme = "README.md"
 publish = true
 
-[package.metadata.taskfleet]
-pre-cut = true
-
 [lints]
 workspace = true
 

@@ -285,22 +285,21 @@ set -e
   exit 1
 }
 
-# R4 stages the canonical package graph before R6/R7 own the release topology.
-# The normal plan/cut entry points must therefore fail before Shipshape can
-# create a journal or tag, while resume/verify above remain available for an
-# already-irreversible older release.
+# R6 permits credential-free plans, but R7 still owns activation. A cut must
+# fail before Shipshape, GitHub, Git refs, or release state can be touched.
 reset_logs
 set +e
 env -i HOME="$tmp/home" PATH="$tmp/bin" GIT_STUB_LOG="$tmp/git.log" \
   GIT_STUB_ROOT="$repo_root" GIT_STUB_ORIGIN=unused \
   SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" \
-  "$repo_root/scripts/shipshape-release.sh" plan patch \
+  "$repo_root/scripts/shipshape-release.sh" cut "$(printf '%064d' 0)" \
   >"$tmp/stdout" 2>"$tmp/stderr"
 status=$?
 set -e
-[[ "$status" -eq 2 ]] || { echo "Taskfleet pre-cut plan was not blocked (status=$status)" >&2; exit 1; }
-grep -F 'Taskfleet pre-cut release block is active' "$tmp/stderr" >/dev/null
-test ! -s "$tmp/shipshape.log" || { echo "pre-cut plan reached Shipshape" >&2; exit 1; }
+[[ "$status" -eq 2 ]] || { echo "Taskfleet R7 cut was not blocked (status=$status)" >&2; exit 1; }
+grep -F 'release cut activation is blocked-r7' "$tmp/stderr" >/dev/null
+test ! -s "$tmp/shipshape.log" || { echo "blocked cut reached Shipshape" >&2; exit 1; }
+test ! -s "$tmp/gh.log" || { echo "blocked cut reached GitHub" >&2; exit 1; }
 
 "$repo_root/scripts/test-shipshape-release-held-tag.sh"
 echo "release wrapper tests passed"
