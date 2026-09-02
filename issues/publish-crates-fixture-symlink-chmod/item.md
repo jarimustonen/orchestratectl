@@ -2,13 +2,17 @@
 created: 2026-09-02
 updated: 2026-09-02
 type: bug
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: Observed during ADR 0002 R8 exact-SHA integrated validation
 source_ref: orchestratectl:01m1hw78dn6qee8an2ysbfdns9/validation-failure:publish-crates-fixture-symlink-chmod
 originating_run: 01m1hw78dn6qee8an2ysbfdns9
 originating_run_kind: spinoff
+lane: taskfleet-rename
+lane_seq: 85
+related: ['@rename-taskfleet']
+collision: [repository-identity]
 ---
 
 # publish-crates fixture chmods symlinked system tools on Linux CI
