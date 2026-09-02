@@ -118,3 +118,4 @@ these stints are in `AGENTS.md`.
 - [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated concurrent agents — jari via Telegram ([`intake-bug-orchestratectl-53fa835cfa74`](issues/intake-bug-orchestratectl-53fa835cfa74/item.md))
 - [ ] 🐛 Piialiisan bugiraportti: Add teardown for terminal failed runs with preserved worktrees — jari via Telegram ([`intake-feature-orchestratectl-41343c4dd3e4`](issues/intake-feature-orchestratectl-41343c4dd3e4/item.md))
 - [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated global runs — jari via Telegram ([`intake-bug-orchestratectl-6edf517c691a`](issues/intake-bug-orchestratectl-6edf517c691a/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: stint-start should safely rebase a clean diverged main — jari via Telegram ([`intake-feature-orchestratectl-5565259bd11f`](issues/intake-feature-orchestratectl-5565259bd11f/item.md))
