@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-02
 type: task
 reporter: taskfleet-r0-worker
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: ADR 0002 planned implementation DAG
@@ -15,6 +15,10 @@ lane: taskfleet-rename
 lane_seq: 50
 blocked_by: ['@taskfleet-shared-dispatcher', '@taskfleet-dual-name-resolver', '@taskfleet-state-migration']
 collision: [repository-identity]
+closed: 2026-09-02
+commits:
+- hash: d61b71474545e5012034358aafe3c41af30be0a6
+  summary: establish canonical Taskfleet packages
 ---
 
 # Create canonical Taskfleet packages and the bounded old CLI wrapper
@@ -35,3 +39,9 @@ Rename active packages/layout to `taskfleet-core` and `taskfleet`, exact-pin the
 - Intended collision: `repository-identity`
 - Intended blocked by: `@taskfleet-shared-dispatcher`, `@taskfleet-dual-name-resolver`, `@taskfleet-state-migration`
 - This worker filed the issue unlaned/untriaged as required by run policy. An authorized human must accept it and apply the exact scheduling metadata; do not spawn it before that disposition.
+
+## Resolution
+
+### 2026-09-02T15:44:12Z · @issuectl
+
+Completed ADR 0002 R4. Canonical taskfleet-core/taskfleet and the implementation-free exact-pinned Cargo compatibility wrapper are verified by the full release-mode green gate, stripped-PATH nextest, reviewed snapshots, normalized metadata, extracted package archives, parity checks, doctor, and multi-model review/assessment. The pre-cut release guard keeps R6/R7 ownership explicit; no publish, tag, install, repository rename, or tap mutation occurred.
