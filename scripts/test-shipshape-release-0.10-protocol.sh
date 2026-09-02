@@ -336,17 +336,19 @@ jq -e --arg tag "$tag" '
   .data.state.current_phase == null
 ' "$tmp/show-resumed.json" >/dev/null
 jq -e '
-  .schema_version == 1 and .data.summary.delegated_failed == 5 and
+  .schema_version == 1 and .data.summary.delegated_failed == 2 and
   .data.summary.unknown == 5 and .data.summary.reconciled == 5 and
   ([.data.targets[].target] | sort) == [
     "rust:orchestratectl:crates.io", "rust:taskfleet-core:crates.io",
     "rust:taskfleet:crates.io", "rust:taskfleet:gh-releases",
     "rust:taskfleet:homebrew"
   ] and
-  (.data.targets | all(
-    .outcome == "unknown" and .delegated_run.status == "failed" and
-    .delegated_run.run_id == 9001 and .delegated_run.url == "https://example.invalid/actions/9001"
-  ))
+  (.data.targets | all(.outcome == "unknown")) and
+  ([.data.targets[] | select(.target | endswith(":crates.io"))] |
+    all(.delegated_run.status == "unknown" and (.delegated_run | has("run_id") | not))) and
+  ([.data.targets[] | select(.target | endswith(":gh-releases") or endswith(":homebrew"))] |
+    all(.delegated_run.status == "failed" and .delegated_run.run_id == 9001 and
+        .delegated_run.url == "https://example.invalid/actions/9001"))
 ' "$tmp/verify.json" >/dev/null
 [[ "$(wc -l <"$tmp/tag-push.log" | tr -d ' ')" == 2 ]] || {
   echo "expected exactly one held and one fixture-local release-tag push attempt" >&2
