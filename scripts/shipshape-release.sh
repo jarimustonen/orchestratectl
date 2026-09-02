@@ -316,6 +316,10 @@ assert_held_journal() {
     .data.recent_events[-1].outcome == "failed"
   ' <<<"$show_json" >/dev/null || {
     echo "run $run_id is not the exact validated shipshape held-tag journal" >&2
+    jq -c '{status:.data.state.status,current_phase:.data.state.current_phase,
+      phases:[.data.state.phases[]|{phase,outcome}],tags:.data.state.tags,
+      tag_events:[.data.recent_events[]|select((.phase?=="tag") or (.kind|startswith("tag_")) or (.kind|startswith("github_release_")))]}' \
+      <<<"$show_json" >&2 || true
     exit 2
   }
 }
