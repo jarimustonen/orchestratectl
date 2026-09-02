@@ -11,6 +11,8 @@ collision: [repository-identity]
 commits:
 - hash: 7a20d7d
   summary: blocked ADR 0002 draft and implementation breakdown
+- hash: 2aa1cedf9b4aee270378efae60914921bc241409
+  summary: Accepted ADR 0002 and dependency-ordered Taskfleet migration plan
 ---
 
 # Rename orchestratectl to Taskfleet
