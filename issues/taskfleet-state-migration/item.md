@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-02
 type: task
 reporter: taskfleet-r0-worker
-status: open
+status: done
 priority: normal
 provenance: other
 provenance_detail: ADR 0002 planned implementation DAG
@@ -15,6 +15,10 @@ lane: taskfleet-rename
 lane_seq: 40
 blocked_by: ['@taskfleet-dual-name-resolver']
 collision: [repository-identity]
+closed: 2026-09-02
+commits:
+- hash: 2cd1dd5
+  summary: implement fail-closed state migration
 ---
 
 # Implement quiescent same-filesystem Taskfleet state migration
@@ -35,3 +39,9 @@ Add dry-run and explicit migration commands. Require exact normalized source/des
 - Intended collision: `repository-identity`
 - Intended blocked by: `@taskfleet-dual-name-resolver`
 - This worker filed the issue unlaned/untriaged as required by run policy. An authorized human must accept it and apply the exact scheduling metadata; do not spawn it before that disposition.
+
+## Resolution
+
+### 2026-09-02T14:56:08Z · @issuectl
+
+Implemented explicit dry-run migration and bounded rollback with external durable receipts, atomic no-replace rename, quiescence checks, recovery, compatibility verification, and release-profile integration coverage.
