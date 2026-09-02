@@ -2,7 +2,7 @@
 name: octl-run-overview
 description: Read the output of `orchestratectl run list` and `orchestratectl run show` to inspect the state of orchestrated agent workflows (worktrees, fan-outs, spinoffs). Use when asked about run status, when triaging an in-flight orchestration, or before deciding whether to spawn, resume, or abort work.
 version: 1
-cli_version: "{{CLI_VERSION}}"
+cli_version: "0.5.1"
 schema_version: 1
 ---
 
@@ -225,20 +225,20 @@ Always read the `code`; the `message` is human prose and may change.
 
 ## Install or upgrade `orchestratectl`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+This skill was installed for `orchestratectl 0.5.1`. On the
 first invocation in a session, run
 `orchestratectl version --output json`, parse the JSON, and read
-`.data.version`. Compare it to `{{CLI_VERSION}}`:
+`.data.version`. Compare it to `0.5.1`:
 
 - **Missing**: tell the user to install through a published distribution channel
   outside this repository workflow, then stop.
 
-- **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
-  `{{CLI_VERSION}}` and suggest upgrading via the same channel they
+- **Older than `0.5.1`**: tell the user the skill expects
+  `0.5.1` and suggest upgrading via the same channel they
   originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
   re-run the shell installer). Stop and wait — `run list` / `run show` payload shape
   may have changed.
-- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
+- **Newer than `0.5.1`**: tell the user the installed skill is
   stale and stop. Refreshing installed bundled instructions is published-tool
   maintenance outside repository work; never run `skill install` as part of
   this workflow.

@@ -5,10 +5,10 @@ repository and the separately owned pi.dev adapter package.
 
 ## Validated repository boundary
 
-Orchestratectl validates its side of the adapter boundary only through the public
+Taskfleet validates its side of the adapter boundary only through the public
 v1 contract in [`contracts/worker-telemetry-v1/`](../contracts/worker-telemetry-v1/).
 The test fake is an endpoint driver: it submits caller-supplied request bytes to the exact
-published `orchestratectl node telemetry update --input-file - --output json`
+published `taskfleet node telemetry update --input-file - --output json`
 argv. It contains no pi hooks, lifecycle translation, timers, coalescing,
 shutdown callback, extension-manager access, or production adapter code.
 
@@ -16,11 +16,11 @@ The integrated evidence is intentionally layered:
 
 | Obligation | Evidence |
 |---|---|
-| Autonomous configured pi+`worker-v1`, deterministic fallback, local `secure`, explicit-interactive Claude, dry-run/create/stored `run show` | `crates/octl-cli/tests/run.rs`: `profile_resolution_matches_dry_run_persisted_create_and_show`, `telemetry_requirement_and_support_come_only_from_recorded_policy`, `exhausted_profile_returns_full_compact_attempt_without_mutation` |
-| Exact selected argv and exported run/node/absolute-attempt identity under a stripped ambient `PATH` | `crates/octl-cli/tests/run.rs`: `materialized_create_routes_through_the_recorded_exact_argv`; `crates/octl-cli/src/supervise/mod.rs`: `profile_retry_uses_recorded_candidate_and_absolute_attempt` |
+| Autonomous configured pi+`worker-v1`, deterministic fallback, local `secure`, explicit-interactive Claude, dry-run/create/stored `run show` | `crates/taskfleet/tests/run.rs`: `profile_resolution_matches_dry_run_persisted_create_and_show`, `telemetry_requirement_and_support_come_only_from_recorded_policy`, `exhausted_profile_returns_full_compact_attempt_without_mutation` |
+| Exact selected argv and exported run/node/absolute-attempt identity under a stripped ambient `PATH` | `crates/taskfleet/tests/run.rs`: `materialized_create_routes_through_the_recorded_exact_argv`; `crates/taskfleet/src/supervise/mod.rs`: `profile_retry_uses_recorded_candidate_and_absolute_attempt` |
 | Launch failure stays a disclosed launch failure; retry and idempotent replay keep the recorded candidate despite config/PATH drift | `profile_launch_failure_stays_a_launch_failure_without_publication_or_fallback`, `idempotent_profile_replay_uses_recorded_selection_after_config_drift`, and the supervisor retry test above |
-| Strict current/old-attempt/malformed endpoint behavior and accepted `agent_active`, `tool_running`, `settled`, and `shutdown` samples | `crates/octl-cli/tests/telemetry_contract.rs` and `crates/octl-cli/tests/node.rs` |
-| Missing, current, stale, corrupt, malformed stored data, old attempts, backward/forward clock effects, and expiry overflow | `crates/octl-core/tests/telemetry.rs` with an injected clock |
+| Strict current/old-attempt/malformed endpoint behavior and accepted `agent_active`, `tool_running`, `settled`, and `shutdown` samples | `crates/taskfleet/tests/telemetry_contract.rs` and `crates/taskfleet/tests/node.rs` |
+| Missing, current, stale, corrupt, malformed stored data, old attempts, backward/forward clock effects, and expiry overflow | `crates/taskfleet-core/tests/telemetry.rs` with an injected clock |
 | Long tools, refresh, event storms, single-flight coalescing, endpoint failure, settled/shutdown, and bounded shutdown | Published harness-neutral virtual traces in `conformance.json`; repository tests validate trace consistency and submit every accepted reference payload to the real public endpoint |
 | Retry/terminal races and modest lock/subprocess load | `terminal_and_retry_races_serialize_with_telemetry_validation`, `concurrent_replacement_never_exposes_partial_or_mixed_samples`, and endpoint fixture subprocess execution |
 | Telemetry cannot report, change status, select retry, satisfy wait, prove merge/landing, classify outcomes, authorize cleanup, or delete work | Every endpoint fixture and accepted trace inventories all non-telemetry run files, permits exactly the named advisory sample, preserves the full simulated worktree, and checks public `run show`/`run wait`; core negative tests inspect all canonical control inputs. Existing `e2e_spinoff`, supervisor outcome, merge, and cleanup suites independently exercise the authoritative paths without importing telemetry. |
@@ -42,14 +42,14 @@ Delivery is tracked as the unlaned intake item
 package”), filed from the rollout run. That package must consume the published
 fixtures and demonstrate an ordinary install in an isolated temporary home and
 package root. It must not mutate user-global pi settings, package state, the
-installed orchestratectl binary, or installed orchestratectl skills.
+installed taskfleet binary, or installed taskfleet skills.
 
 ## Rollout order and failure disclosure
 
-1. Release orchestratectl with the endpoint, profile resolver, recorded launcher,
+1. Release taskfleet with the endpoint, profile resolver, recorded launcher,
    read surfaces, and this conformance suite.
 2. Publish the external adapter package separately. Test it against the minimum
-   supported orchestratectl contract in an isolated environment.
+   supported taskfleet contract in an isolated environment.
 3. Operators install the adapter by their package's ordinary mechanism and add
    its invocation to a user-owned pi candidate with `telemetry = "worker-v1"`.
    Repository config may select that profile but cannot define executable argv.
@@ -71,8 +71,8 @@ Rollback does not rewrite durable history:
 2. Let existing runs finish through `run merge`/`run cancel`; retry remains pinned
    to each run's recorded candidate and must not be used as a profile migration.
 3. Remove or disable the external adapter using that package's own documented
-   mechanism. Do not edit orchestratectl run projections or telemetry samples.
-4. If necessary, roll back orchestratectl through its normal distribution
+   mechanism. Do not edit taskfleet run projections or telemetry samples.
+4. If necessary, roll back taskfleet through its normal distribution
    channel. Old runs without selection metadata remain readable as
    `legacy-unrecorded`; advisory telemetry files can be ignored by older builds.
 

@@ -1,7 +1,7 @@
 # Worker telemetry adapter contract v1
 
 This directory is the stable, harness-neutral contract for an external adapter
-that reports a worker's last-told activity to orchestratectl. The adapter itself
+that reports a worker's last-told activity to taskfleet. The adapter itself
 is owned and distributed separately. This repository contains no adapter
 runtime or pi event handling.
 
@@ -35,10 +35,15 @@ If any value is absent, empty, or invalid, the adapter sends nothing for that
 session and records only a local diagnostic. It never guesses attempt `0` and
 never takes identity from lifecycle event data.
 
-The adapter submits the strict request on stdin to only this public command:
+The adapter submits the strict request on stdin to only this canonical public
+command, available beginning with Taskfleet 0.6.0. The request protocol remains
+v1: an adapter targeting a 0.5.1 installation uses the historical
+`orchestratectl` executable, and the bounded Cargo wrapper keeps that executable
+available through Taskfleet 0.7.x. Fresh Homebrew/shell/archive Taskfleet
+channels expose only `taskfleet`.
 
 ```text
-orchestratectl node telemetry update --input-file - --output json
+taskfleet node telemetry update --input-file - --output json
 ```
 
 The endpoint reads identity only from the request body. Input is capped at an
@@ -64,7 +69,7 @@ Transitioning to `agent_active`, `settled`, or `shutdown` therefore removes
 both metadata fields rather than carrying old values forward. Unknown fields
 are rejected.
 
-On success the command exits 0 and writes the normal orchestratectl JSON
+On success the command exits 0 and writes the normal taskfleet JSON
 envelope to stdout:
 
 ```json
@@ -152,7 +157,7 @@ the flush without blocking pi further; failure is diagnostic only.
 - `endpoint_cases` submit strict requests to the real public command. Setup
   objects describe semantic preconditions such as `current_attempt`; each test
   harness establishes those through its own facilities. Setup is not adapter
-  behavior or another public orchestratectl API.
+  behavior or another public taskfleet API.
 - `adapter_sequences` are executed by the owning external package against a
   fake sender and virtual monotonic clock. This repository checks their
   consistency and submits their reference payloads to the endpoint, but does
@@ -175,7 +180,7 @@ an event object.
 
 ## Ownership exclusions
 
-This v1 contract deliberately has no adapter runtime, orchestratectl internal
+This v1 contract deliberately has no adapter runtime, taskfleet internal
 imports, pi extension-manager or EventBus access, background-job manager,
 private process IDs, log/session-file reads, package provenance or integrity
 probe, capability secret, open/reopen handshake, sequence or epoch, launch

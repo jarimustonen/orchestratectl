@@ -8,7 +8,7 @@
 //! - [`schema`] — `schema.runs.<id>`: every run manifest deserializes.
 //! - [`skill`] — `skill.sync.<name>`: on-disk skill `cli_version` matches.
 //! - [`deps`] — `dep.<bin>`: each shelled-out binary is on `PATH`.
-//! - [`config`] — `config.home`: the orchestratectl home resolves.
+//! - [`config`] — `config.home`: the Taskfleet home resolves.
 //! - [`data`] — `data.orphan-supervisor.<id>`: no dead supervisor PIDs.
 
 pub mod binary;

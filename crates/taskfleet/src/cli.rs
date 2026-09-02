@@ -811,7 +811,7 @@ fn slow_log_write_delay() -> Option<std::time::Duration> {
 }
 
 /// Initialise the JSONL log subscriber. Logs go to
-/// `~/.orchestratectl/logs/orchestratectl.log.jsonl`. Best-effort: if the
+/// `<resolved Taskfleet home>/logs/taskfleet.log.jsonl`. Best-effort: if the
 /// log file cannot be opened, the process still runs and the caller sees
 /// the failure in the success-envelope `warnings` array or on stderr.
 ///
@@ -939,7 +939,7 @@ fn init_logging() -> LoggingInit {
 fn log_path() -> Option<PathBuf> {
     crate::home::root_dir()
         .ok()
-        .map(|root| root.join("logs").join("orchestratectl.log.jsonl"))
+        .map(|root| root.join("logs").join("taskfleet.log.jsonl"))
 }
 
 #[cfg(test)]

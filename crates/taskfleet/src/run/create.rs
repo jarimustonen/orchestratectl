@@ -667,7 +667,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     if let Some(v) = args.source_branch.as_deref() {
         data.insert("source_branch".into(), Value::String(v.into()));
     }
-    // Record the headless session orchestratectl is about to create via
+    // Record the headless session Taskfleet is about to create via
     // create.sh's `--parent-session` so the supervisor can tear it down once
     // its last managed window is gone. `None` for a foreground spawn — that
     // window lives in the user's own session, which is never a teardown target
@@ -1168,8 +1168,8 @@ fn spawn_supervisor_or_fail(
             format!(
                 "supervisor for run {run_id} did not confirm boot ({reason}). The run is on \
                  disk in `pending`. Inspect '{}/supervisor.stderr.log', then \
-                 `orchestratectl run reattach {run_id}` to retry (a no-op if one is already \
-                 live) or `orchestratectl run cancel {run_id}` to tear it down",
+                 `taskfleet run reattach {run_id}` to retry (a no-op if one is already \
+                 live) or `taskfleet run cancel {run_id}` to tear it down",
                 paths.root.display()
             ),
         )
@@ -1775,9 +1775,9 @@ mod tests {
         .unwrap();
         let body = std::fs::read_to_string(p).unwrap();
         // Common run context leads, then the harness shim, then the brief.
-        assert!(body.starts_with("# Orchestratectl run context"));
+        assert!(body.starts_with("# Taskfleet run context"));
         assert!(body.contains("# Operating note — pi research worker"));
-        assert!(body.contains("orchestratectl run merge 01JXRUNID000"));
+        assert!(body.contains("taskfleet run merge 01JXRUNID000"));
         assert!(body.trim_end().ends_with("research WAL implementations"));
     }
 
@@ -1801,7 +1801,7 @@ mod tests {
             "caller-owned brief"
         );
         let body = std::fs::read_to_string(p).unwrap();
-        assert!(body.starts_with("# Orchestratectl run context"));
+        assert!(body.starts_with("# Taskfleet run context"));
         assert!(body.contains("# Operating note — pi research worker"));
         assert!(body.trim_end().ends_with("caller-owned brief"));
     }

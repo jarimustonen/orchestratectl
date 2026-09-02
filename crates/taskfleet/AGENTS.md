@@ -18,7 +18,7 @@ With no explicit home, a readable directory containing any entry is populated/ma
 
 ## `doctor` binary build provenance
 
-`doctor` always emits the stable `binary.commit` check first. Its optional `details` object exposes `binary_commit`, `repository_head`, and `comparison` (`match`, `mismatch`, `unavailable`, or `not_applicable`) so machine callers never scrape hashes from prose. When cwd is inside an orchestratectl checkout, a recorded build commit that differs from `HEAD` is a WARN, never a FAIL; branch and released-binary mismatches are legitimate. Outside this project's checkout, or when either reference cannot be established, the check remains informational. It never offers an autonomous fix or manages the installed binary.
+`doctor` always emits the stable `binary.commit` check first. Its optional `details` object exposes `binary_commit`, `repository_head`, and `comparison` (`match`, `mismatch`, `unavailable`, or `not_applicable`) so machine callers never scrape hashes from prose. When cwd is inside a Taskfleet checkout, a recorded build commit that differs from `HEAD` is a WARN, never a FAIL; branch and released-binary mismatches are legitimate. Outside this project's checkout, or when either reference cannot be established, the check remains informational. It never offers an autonomous fix or manages the installed binary.
 
 ## `skill install` dual-homes into pi.dev (`~/.pi/agent/skills/`)
 
@@ -26,7 +26,7 @@ A default `skill install` (plain, `--force`, or `--agent all`, without `--dest`)
 
 ### pi mirror lifecycle — out-of-band provenance (`pidev-pi-skill-lifecycle`)
 
-The pi dir may hold no `.orchestratectl-managed` marker, so its lifecycle is keyed on a single **out-of-band** JSON record at `<ORCHESTRATECTL_HOME or ~/.orchestratectl>/state/pi-installed-skills.json`. As of **schema v3** the record is a **flat per-file model** — `{ schema_version, skills: { <name>: { cli_version, files: { <relpath>: { sha256, kind: "skill"|"companion" } } } } }` — where every mirrored file (the `SKILL.md` body AND each companion sibling) is one independent `files` entry keyed by relpath. The body is no longer an ownership root nesting companions under it; that pre-v3 nesting (`{ sha256, cli_version, companions: { <file>: sha } }`) forced several lifecycle point-fixes (a companion written while the body write was skipped had no record to attach to; prune coupled companion cleanup to body divergence), which the flat model removes (issue `pi-provenance-flat-file-model`). **Read/upgrade path:** loading a legacy v1 (bare `sha256`/`cli_version`) or v2 (`+ companions` map) record reconstructs the `files` map from the legacy fields in place (`RawPiSkillRecord` via `#[serde(from)]`), so old records keep working; the strict future-schema guard still fails an install closed on a record newer than v3. On every pi write, the record is union-merged: a SKILL.md write inserts/refreshes the `SKILL.md` file entry (`kind: skill`) and the skill's `cli_version`, a companion write files itself directly (`kind: companion`, creating the skill entry if the body write was skipped) — so a targeted single-skill install never forgets the rest of the managed set. It is the SOLE authority for two decisions, both of which **never touch a pi dir we did not write** (a user's hand-authored pi skill is never recorded):
+The pi dir may hold no `.taskfleet-managed` marker, so its lifecycle is keyed on a single **out-of-band** JSON record at `<resolved Taskfleet home>/state/pi-installed-skills.json`. As of **schema v3** the record is a **flat per-file model** — `{ schema_version, skills: { <name>: { cli_version, files: { <relpath>: { sha256, kind: "skill"|"companion" } } } } }` — where every mirrored file (the `SKILL.md` body AND each companion sibling) is one independent `files` entry keyed by relpath. The body is no longer an ownership root nesting companions under it; that pre-v3 nesting (`{ sha256, cli_version, companions: { <file>: sha } }`) forced several lifecycle point-fixes (a companion written while the body write was skipped had no record to attach to; prune coupled companion cleanup to body divergence), which the flat model removes (issue `pi-provenance-flat-file-model`). **Read/upgrade path:** loading a legacy v1 (bare `sha256`/`cli_version`) or v2 (`+ companions` map) record reconstructs the `files` map from the legacy fields in place (`RawPiSkillRecord` via `#[serde(from)]`), so old records keep working; the strict future-schema guard still fails an install closed on a record newer than v3. On every pi write, the record is union-merged: a SKILL.md write inserts/refreshes the `SKILL.md` file entry (`kind: skill`) and the skill's `cli_version`, a companion write files itself directly (`kind: companion`, creating the skill entry if the body write was skipped) — so a targeted single-skill install never forgets the rest of the managed set. It is the SOLE authority for two decisions, both of which **never touch a pi dir we did not write** (a user's hand-authored pi skill is never recorded):
 
 - **Prune** (gated on the same full-catalog `--force` as the Claude dir prune): each tracked file of a de-registered skill is handled **independently** (flat per-file — no privileged body). A file is deleted only if its on-disk bytes still hash to the recorded value (proof it is our unmodified copy); a **diverged** copy (user-edited since we wrote it), a symlink, or a squatting dir is left in place and dropped from tracking (`pi_mirror_diverged` / `pi_companion_diverged` / relinquished), and a failed delete keeps the file tracked for a retry. **Companions are pruned BEFORE the `SKILL.md`** so the per-skill dir can empty out; unlike the pre-v3 model, a diverged body no longer shields the companions — an unmodified companion is still pruned even when the body diverged, and the body is deleted even when a companion delete failed (the Kept companion simply stays tracked, never stranded). Each file that is deleted/relinquished/absent is removed from the record's `files` map; the skill entry is dropped once `files` is empty. Finally the now-possibly-empty per-skill dir is best-effort removed (`remove_dir`, non-recursive — a user sibling, or a surviving diverged/Kept file, is preserved).
 - **`doctor` drift** — `skill.sync.<name>.pi` (older/newer/unparseable/edited via the recorded hash) + `skill.orphan.<name>.pi` (de-registered but still on disk), plus the **companion** arms `skill.sync.<name>.pi.<file>` (forward drift of each bundled companion vs the embedded body — content-identity in-sync signal, same as the codex companion check) and `skill.orphan.<name>.pi.<file>` (a companion the record tracks that the binary no longer bundles). All gated on the record being non-empty so a host that never dual-homed into pi stays 0-warn. ALL pi arms are **advisory — no autonomous `FixAction`** (unlike the Claude older-drift arm): the fix applier runs `skill install <name> --force`, which dual-homes and would force-overwrite the Claude copy too, so autofixing pi drift could silently downgrade a deliberately newer/edited Claude copy. Symmetric with the codex checks. Mirrors the Claude/codex checks in `src/doctor/checks/skill.rs`.
@@ -52,9 +52,9 @@ The bundled-skill list is hardcoded in `tests/skill.rs::skill_list_json_pins_cat
 
 ## Test-spawn hygiene
 
-Integration tests that exercise `run create`'s production path spawn real `orchestratectl supervise` subprocesses. The shared `tests/common/mod.rs` `TestHome` fixture reaps them on Drop — use it (`let home = TestHome::new()`) for any new test that goes through `bin(&home)`. Tests that skip the fixture and use raw `TempDir` leak supervisor processes; the `supervise-test-teardown-leak` issue covers the recovery + reaper logic in detail.
+Integration tests that exercise `run create`'s production path spawn real `taskfleet supervise` subprocesses. The shared `tests/common/mod.rs` `TestHome` fixture reaps them on Drop — use it (`let home = TestHome::new()`) for any new test that goes through `bin(&home)`. Tests that skip the fixture and use raw `TempDir` leak supervisor processes; the `supervise-test-teardown-leak` issue covers the recovery + reaper logic in detail.
 
-After `cargo test -p taskfleet` finishes, `pgrep -lf "orchestratectl.*supervise"` from the workspace `target/debug/` path should return nothing. Any survivor is a missing-fixture bug in the new test.
+After `cargo test -p taskfleet` finishes, `pgrep -lf "taskfleet.*supervise"` from the workspace `target/debug/` path should return nothing. Any survivor is a missing-fixture bug in the new test.
 
 ## End-to-end spinoff harness
 
@@ -115,7 +115,7 @@ solely from the recorded candidate (`configured` only for pi+`worker-v1`, else
 
 ## `config` noun (read-only config inspection)
 
-`orchestratectl config path` / `config show` inspect the config surface (§8);
+`taskfleet config path` / `config show` inspect the config surface (§8);
 neither ever mutates `config.toml`. Lives in `config/{mod,path,show}.rs` (the
 `config` module hosts both the `Config` loader and the noun's `dispatch`).
 
@@ -163,11 +163,11 @@ optional metadata enrichment is attempted afterward so absence never blocks
 creation. Model agreement uses `issuectl update --add-label` with repeated
 `ai-review-model:<model-id>` values (the issue's labels list), never a count or
 corroboration score. This contract consumes the documented issuectl 0.16 intake,
-custom-field, and label surfaces. orchestratectl does not write issue storage or
+custom-field, and label surfaces. taskfleet does not write issue storage or
 invent a second issue format; issuectl remains the sole writer.
 
 Pi research workers additionally receive the narrow Claude-to-pi translation shim:
-the `/worktree-merge` close becomes the exact `orchestratectl run merge` call and
+the `/worktree-merge` close becomes the exact `taskfleet run merge` call and
 unsupported Skill/Agent references are neutralized. The quoted report heredoc and
 exact run id remain part of that shim. Other harness/kind pairs get only the common
 neutral run context. Since production always has a preamble, a caller-owned

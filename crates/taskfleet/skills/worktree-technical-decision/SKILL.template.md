@@ -1,6 +1,6 @@
 ---
 name: worktree-technical-decision
-description: Spawn an autonomous worktree via `orchestratectl run create --kind technical-decision` to drive ONE architectural / technical decision to a recorded ADR and self-merge. Use when the user says "decide whether we should use X or Y", "make the architectural call on Z", "settle the trade-off between A and B", or links an issue tagged decision/architecture. Do NOT use for opinions (`/llm-consult`), design ideation (`/llm-workshop`), plan review (`/llm-panel`), survey/research (`/worktree-research`), or archaeology ("why did we choose X" — historical, not a forward decision).
+description: Spawn an autonomous worktree via `taskfleet run create --kind technical-decision` to drive ONE architectural / technical decision to a recorded ADR and self-merge. Use when the user says "decide whether we should use X or Y", "make the architectural call on Z", "settle the trade-off between A and B", or links an issue tagged decision/architecture. Do NOT use for opinions (`/llm-consult`), design ideation (`/llm-workshop`), plan review (`/llm-panel`), survey/research (`/worktree-research`), or archaeology ("why did we choose X" — historical, not a forward decision).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -16,7 +16,7 @@ expert lenses, picks one, records the decision with rationale and
 explicit rejected alternatives, and merges itself back — same
 self-merge contract as `worktree-spinoff`.
 
-Read `orchestratectl-overview` first; read `worktree-spinoff` for the
+Read `taskfleet-overview` first; read `worktree-spinoff` for the
 shared autonomous-merge contract; read `worktree-research` for the
 contrast — research surveys an open space, technical-decision picks
 one path and records the call.
@@ -44,7 +44,7 @@ one path and records the call.
 2. ADR target directory must exist (typically `docs/adr/`). If it does
    not, ask the user where the ADR should land and create the
    directory in the worktree.
-3. `orchestratectl version --output json` to confirm
+3. `taskfleet version --output json` to confirm
    `{{CLI_VERSION}}`.
 
 ### 1. Pin the decision question
@@ -80,10 +80,10 @@ If any of the above is missing, ask **once** before spawning.
    even then, prefer a follow-up bugfix / code worktree to keep the
    ADR commit clean).
 6. **Repository-local tool safety** — if evidence gathering requires building
-   orchestratectl, use `cargo build --release` and invoke
-   `./target/release/orchestratectl …` explicitly. During repository work,
+   taskfleet, use `cargo build --release` and invoke
+   `./target/release/taskfleet …` explicitly. During repository work,
    neither workers nor the orchestrator may create, replace, remove, or modify
-   the user's installed orchestratectl or bundled skills by any mechanism,
+   the user's installed taskfleet or bundled skills by any mechanism,
    including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
    `skill install` variant.
 7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
@@ -93,7 +93,7 @@ If any of the above is missing, ask **once** before spawning.
 ### 3. Create the run
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind technical-decision \
   --title "<adr-slug>" \
   --task "<self-contained decision brief>" \
@@ -135,7 +135,7 @@ Tell the user:
 
 The merge and the terminal `node report` are now **one call**. The run
 stays alive until a terminal `node report` lands; until then the per-run
-supervisor keeps polling, `orchestratectl run show` reads `lifecycle:
+supervisor keeps polling, `taskfleet run show` reads `status:
 pending` forever, and the tmux window never closes — the user sees a
 worktree that looks stuck when the work is actually done.
 
@@ -143,7 +143,7 @@ There are two closing paths, and the brief MUST instruct the agent to take
 exactly one terminal path, never both, before its session ends:
 
 - **Decision made + ADR committed → close with `run merge`.** A single
-  `orchestratectl run merge` rebases + merges the worktree branch into
+  `taskfleet run merge` rebases + merges the worktree branch into
   its source branch **and** submits the terminal `node report` for you
   (stamped `via: "explicit-merge"`). Pass your §7.3 payload with
   `--report-file` so the rich `discussion_items` / `spinoff_proposals` /
@@ -160,7 +160,7 @@ exactly one terminal path, never both, before its session ends:
    identifier, which is a lossy bounded fragment that can repeat, not ownership:
 
    ```bash
-   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
      echo "failed to resolve exact owning run id" >&2
      exit 1
    }
@@ -209,7 +209,7 @@ exactly one terminal path, never both, before its session ends:
    reports; the `--report-file` payload is validated *before* the merge:
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    `run merge` rebases + merges the branch into the run's recorded
@@ -227,10 +227,10 @@ exactly one terminal path, never both, before its session ends:
    directly, with `success: false` and a populated `discussion_items[]`:
 
    ```bash
-   orchestratectl node report "$run_id" "$node_id" --from-file /tmp/node-report-${run_id}.json
+   taskfleet node report "$run_id" "$node_id" --from-file /tmp/node-report-${run_id}.json
    ```
 
-   This records the node terminal without merging — `orchestratectl
+   This records the node terminal without merging — `taskfleet
    node show <run-id> <node-id>` reports `status: done` with your report
    attached. The supervisor still winds the run down, but the branch is
    left unmerged for the user.
@@ -248,11 +248,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this single-worker run). An **optional/advisory** failure may continue only
 when the ADR is independently complete and safe; disclose it in the full
-`success: true` report passed to `orchestratectl run merge "$run_id"
+`success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never a minimal auto-report.
 
 Requested completeness is a contract. A requested panel with a missing model
@@ -294,10 +294,10 @@ for the payload shape). The user breaks the tie and re-spawns. A decision
 that *is* resolved (ADR committed) lands the other way — via `run merge`,
 which merges and reports in one call.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
-`.data.version` from `orchestratectl version --output json` to
+This skill was installed for `taskfleet {{CLI_VERSION}}`. Compare
+`.data.version` from `taskfleet version --output json` to
 `{{CLI_VERSION}}`:
 
 - **Missing**: tell the user to install through a published distribution channel
@@ -311,5 +311,5 @@ This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
 ## Example
 
 ```
-/worktree-technical-decision Choose between event-sourced and CRUD storage for the orchestratectl run state
+/worktree-technical-decision Choose between event-sourced and CRUD storage for the taskfleet run state
 ```

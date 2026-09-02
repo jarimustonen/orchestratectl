@@ -1,4 +1,4 @@
-//! Orchestratectl-local terminal-multiplexer operations.
+//! Taskfleet-local terminal-multiplexer operations.
 //!
 //! A vendored, minimal slice of workmux's multiplexer abstraction: only the
 //! tmux operations the supervisor needs — `kill_window`, `kill_session`,

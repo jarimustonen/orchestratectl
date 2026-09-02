@@ -1,4 +1,4 @@
-# Clippy configuration for orchestratectl.
+# Clippy configuration for Taskfleet.
 #
 # Lint *levels* (pedantic = warn, plus the allow-list) live in the root
 # Cargo.toml `[workspace.lints.clippy]` table so they apply per-crate via

@@ -100,7 +100,7 @@ impl CheckResult {
 /// something destructive:
 ///
 /// - [`FixAction::InstallSkill`] re-installs a drifted companion skill
-///   (`orchestratectl skill install <name> --force`).
+///   (`taskfleet skill install <name> --force`).
 /// - [`FixAction::RemoveStaleSupervisorPid`] deletes a clearly-dead
 ///   supervisor PID file. It carries `observed_pid` so the applier can
 ///   re-validate (TOCTOU: a supervisor may have restarted between the

@@ -2,7 +2,7 @@
 //!
 //! Refuses if `<run-dir>/supervisor.pid` is still alive (use `run
 //! cancel` or kill the existing supervisor instead). Otherwise: emits
-//! `supervisor.reattached`, fork+exec a new `orchestratectl supervise
+//! `supervisor.reattached`, fork+exec a new `taskfleet supervise
 //! <run-id>` with stdout/stderr redirected to
 //! `<run-dir>/supervisor.stderr.log`, and waits briefly for the new
 //! supervisor's PID file to appear.
@@ -62,7 +62,7 @@ pub fn run(
 
 /// Restart the run's supervisor: refuse if one is already alive, record the
 /// dead prior incarnation + the reattach request, fork+exec a fully-detached
-/// `orchestratectl supervise <run-id>`, and return the PID the new supervisor
+/// `taskfleet supervise <run-id>`, and return the PID the new supervisor
 /// recorded for itself (`0` if the PID file did not appear before the deadline
 /// — "spawned, pid unconfirmed"; the supervisor's own `supervisor.pid` remains
 /// the source of truth).

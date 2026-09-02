@@ -181,10 +181,10 @@ pub fn resume_hint(run_id: &str) -> String {
     let q = shell_single_quote(run_id);
     format!(
         "the run is `failed` but its branch content is already in source with no `run merge` on \
-         record — record the merge honestly with `orchestratectl run salvage {q}` (drives the \
+         record — record the merge honestly with `taskfleet run salvage {q}` (drives the \
          skipped merge idempotently and terminalizes the run to `done`), or \
-         `orchestratectl run cancel {q}` to accept the failure (the branch is preserved either \
-         way). Do NOT hand-merge with raw git; always finish through `orchestratectl run merge`"
+         `taskfleet run cancel {q}` to accept the failure (the branch is preserved either \
+         way). Do NOT hand-merge with raw git; always finish through `taskfleet run merge`"
     )
 }
 
@@ -325,18 +325,18 @@ mod tests {
     }
 
     /// The resume hint names both remediations — and BOTH are fully
-    /// `orchestratectl`-qualified so they are directly copy-pasteable (llm-review:
+    /// `taskfleet`-qualified so they are directly copy-pasteable (llm-review:
     /// a bare `run cancel` would fail in the user's shell). It warns against
     /// raw-git merges and single-quotes the run id.
     #[test]
     fn resume_hint_names_salvage_and_cancel() {
         let hint = resume_hint("01run");
         assert!(
-            hint.contains("orchestratectl run salvage '01run'"),
+            hint.contains("taskfleet run salvage '01run'"),
             "got: {hint}"
         );
         assert!(
-            hint.contains("orchestratectl run cancel '01run'"),
+            hint.contains("taskfleet run cancel '01run'"),
             "cancel must be fully qualified for copy-paste: {hint}"
         );
         assert!(

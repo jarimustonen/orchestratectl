@@ -1,4 +1,4 @@
-# Contributing to orchestratectl
+# Contributing to taskfleet
 
 Issues and pull requests are welcome. The repo is small and the
 contribution loop is short; please
@@ -6,7 +6,7 @@ read this file before opening either.
 
 ## Before you file an issue
 
-- Run `orchestratectl version` and `orchestratectl doctor` and include
+- Run `taskfleet version` and `taskfleet doctor` and include
   the output. `doctor` reports `63 ok / 0 fail` on a clean install — any
   non-zero `fail` count is worth surfacing.
 - Check `TODO.md` — the active pre-publication campaign is tracked there
@@ -36,14 +36,14 @@ read this file before opening either.
 
 ## Repo layout
 
-- `crates/octl-core/` — schema, file I/O, locking, supervisor protocol.
+- `crates/taskfleet-core/` — schema, file I/O, locking, supervisor protocol.
   Library crate; new public items get rustdoc (the crate carries
   `#![warn(missing_docs)]`).
-- `crates/octl-cli/` — the `orchestratectl` binary and the bundled
-  SKILL.md files (`crates/octl-cli/skills/`). Validate CLI-surface edits with a
-  repository-local build and explicit `./target/release/orchestratectl …`
+- `crates/taskfleet/` — the `taskfleet` binary and the bundled
+  SKILL.md files (`crates/taskfleet/skills/`). Validate CLI-surface edits with a
+  repository-local build and explicit `./target/release/taskfleet …`
   invocations. For `SKILL.template.md` edits, run and review the insta snapshot
-  loop documented in `crates/octl-cli/AGENTS.md`; no install is needed.
+  loop documented in `crates/taskfleet/AGENTS.md`; no install is needed.
 - `issues/<slug>/item.md` — every issue + epic (flat layout, no
   numeric prefix, status in frontmatter).
 - `/ai-first-cli-canon` — externally maintained CLI design canon; treat the

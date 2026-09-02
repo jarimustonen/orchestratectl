@@ -1,4 +1,4 @@
-//! Spawn a detached `orchestratectl supervise <run-id>` process and
+//! Spawn a detached `taskfleet supervise <run-id>` process and
 //! wait briefly for its PID file to appear.
 //!
 //! Shared by `run create` (top-level), `run reattach`, and the parent
@@ -107,7 +107,7 @@ fn pid_file_wait() -> Duration {
 }
 
 /// The binary a detached supervisor is spawned from. Production always uses the
-/// current executable (`orchestratectl supervise <run-id>`); tests override via
+/// current executable (`taskfleet supervise <run-id>`); tests override via
 /// `OCTL_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
 /// silent-spawn-failure path can be tested deterministically. Mirrors the
 /// `OCTL_CREATE_SH` seam. Production callers never set it.
@@ -294,7 +294,7 @@ fn append_spawn_diag(log_path: &Path, msg: &str) {
         .append(true)
         .open(log_path)
     {
-        let _ = writeln!(f, "[orchestratectl run create] {msg}");
+        let _ = writeln!(f, "[taskfleet run create] {msg}");
     }
 }
 

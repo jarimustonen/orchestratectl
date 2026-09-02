@@ -226,9 +226,7 @@ fn symlink_parent_traversal_uses_kernel_semantics() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(physical_parent
-        .join("logs/orchestratectl.log.jsonl")
-        .exists());
+    assert!(physical_parent.join("logs/taskfleet.log.jsonl").exists());
     assert!(!lexical_parent.join("logs").exists());
 }
 
@@ -426,7 +424,7 @@ fn repository_config_old_equal_and_conflict_semantics_precede_writes() {
     assert_eq!(warning_lines(&equal), 1);
 
     std::fs::write(repo.join(".taskfleet.toml"), b"[profile]\ndefault='a'\n").unwrap();
-    let before = state.join("logs/orchestratectl.log.jsonl");
+    let before = state.join("logs/taskfleet.log.jsonl");
     let previous_len = std::fs::metadata(&before).map_or(0, |m| m.len());
     let conflict = base().output().unwrap();
     assert!(!conflict.status.success());

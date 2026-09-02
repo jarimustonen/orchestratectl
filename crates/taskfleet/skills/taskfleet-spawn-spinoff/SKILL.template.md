@@ -1,22 +1,22 @@
 ---
-name: octl-spawn-spinoff
-description: Spawn an autonomous spinoff worktree via orchestratectl — a single fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back. Use when the user wants a parallel sub-task handled without interactive review.
+name: taskfleet-spawn-spinoff
+description: Spawn an autonomous spinoff worktree via taskfleet — a single fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back. Use when the user wants a parallel sub-task handled without interactive review.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
 ---
 
-# octl-spawn-spinoff
+# taskfleet-spawn-spinoff
 
 A **spinoff** is one autonomous agent run in its own git worktree, doing
 one well-scoped task, and merging itself back to the source branch when
 done. No interactive review. The canonical way to launch one is via
-`orchestratectl`, not by hand-crafting branches.
+`taskfleet`, not by hand-crafting branches.
 
 ## Invocation
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind spinoff \
   --title "<2–4 word slug>" \
   --task "<the task in one paragraph>" \
@@ -61,8 +61,8 @@ json` for pretty-printed JSON.)
 changes. `status` is the progress field: starts at `pending`, transitions
 to `running` once the worker picks it up, and reaches a terminal value
 (`done | failed | cancelled`) when the run settles. Branch on `status`
-to detect completion. Use `orchestratectl run show <id>` to follow
-progress (see the `octl-run-overview` skill for the response shape).
+to detect completion. Use `taskfleet run show <id>` to follow
+progress (see the `taskfleet-run-overview` skill for the response shape).
 
 ## When to use a spinoff vs. other variants
 
@@ -108,7 +108,7 @@ to `run wait` / the registered notify hook after the grace window.
 
 The worker MUST take exactly one terminal path, never both. Completed,
 mergeable work writes the existing §7.3 report payload with top-level `success:
-true`, then runs `orchestratectl run merge "$run_id" --report-file
+true`, then runs `taskfleet run merge "$run_id" --report-file
 /tmp/node-report-${run_id}.json`. Work blocked by a required failed or incomplete
 step takes the direct-report path below and does not merge. Omitting both paths
 leaves the run unterminated.
@@ -121,11 +121,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this single-worker run). An **optional/advisory** failure may continue only
 when the deliverable is independently complete and safe; disclose it in the
-full `success: true` report passed to `orchestratectl run merge "$run_id"
+full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. A requested panel with a missing model
@@ -156,11 +156,11 @@ Standard error envelope on stderr, non-zero exit. Likely codes:
 - `worktree_create_failed` — git refused (uncommitted changes,
   conflicting worktree)
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
 first invocation in a session, run
-`orchestratectl version --output json`, parse the JSON, and read
+`taskfleet version --output json`, parse the JSON, and read
 `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Missing**: tell the user to install through a published distribution channel
@@ -168,7 +168,7 @@ first invocation in a session, run
 
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+  originally used (`brew upgrade jarimustonen/taskfleet/taskfleet` or
   re-run the shell installer). Stop and wait — the `run create --kind spinoff` flag
   surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is

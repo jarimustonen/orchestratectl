@@ -1,4 +1,4 @@
-//! `orchestratectl run-worker <run-id> <node-id> -- <cmd> [args…]` — the thin
+//! `taskfleet run-worker <run-id> <node-id> -- <cmd> [args…]` — the thin
 //! launcher shim (design.md §2.1 / A1, issue `thin-exit-status-launcher`).
 //!
 //! The 0.2 thin supervisor stops *guessing* a worker's completion from a
@@ -295,7 +295,7 @@ fn record_worker_exit(paths: &RunPaths, node_id: &NodeId, args: &RunWorkerArgs, 
     if let Err(e) = append_and_apply_event(paths, "worker.exited", Some(node_id), None, data) {
         let msg = from_core(e).message;
         eprintln!(
-            "orchestratectl run-worker: failed to record worker.exited for {}/{}: {msg}",
+            "taskfleet run-worker: failed to record worker.exited for {}/{}: {msg}",
             args.run_id, args.node_id
         );
         tracing::warn!(

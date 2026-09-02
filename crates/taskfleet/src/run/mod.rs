@@ -1,4 +1,4 @@
-//! `run` subcommand — top-level lifecycle for orchestratectl runs.
+//! `run` subcommand — top-level lifecycle for taskfleet runs.
 //!
 //! Sets the noun-module pattern that `node`, `event`, `discussion`,
 //! `spinoff` will follow: one file per verb, shared types in `mod.rs`,
@@ -133,7 +133,7 @@ pub enum RunAction {
         /// Seconds create.sh waits for the freshly launched agent to
         /// become discoverable before giving up (forwarded as
         /// `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to
-        /// 90 — higher than create.sh's own 30s default because octl
+        /// 90 — higher than create.sh's own 30s default because Taskfleet
         /// spawns are frequently part of high-fan-out batches that
         /// self-load the host; bump it further on an already-loaded box.
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=600), default_value_t = 90)]
@@ -291,7 +291,7 @@ pub enum RunAction {
         poll_interval: Option<Duration>,
     },
     /// Restart the run's supervisor process. Refuses if the recorded
-    /// supervisor PID is still alive. Spawns `orchestratectl supervise
+    /// supervisor PID is still alive. Spawns `taskfleet supervise
     /// <run-id>` detached with stdout/stderr → `supervisor.stderr.log`.
     Reattach {
         run_id: String,

@@ -1,4 +1,4 @@
-//! `config.home` — the orchestratectl home directory resolves to a
+//! `config.home` — the Taskfleet home directory resolves to a
 //! writable location (AGENTS-AI-FIRST-CLI §18 "configuration integrity").
 //!
 //! Read-only: doctor never *creates* the home directory (that is the
@@ -68,7 +68,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     if !root.is_dir() {
         return vec![CheckResult::fail(
             ID,
-            format!("orchestratectl home {} is not a directory", root.display()),
+            format!("Taskfleet home {} is not a directory", root.display()),
             format!(
                 "remove {} or point TASKFLEET_HOME elsewhere",
                 root.display()
@@ -79,7 +79,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
     if !is_writable(root) {
         return vec![CheckResult::fail(
             ID,
-            format!("orchestratectl home {} is not writable", root.display()),
+            format!("Taskfleet home {} is not writable", root.display()),
             format!(
                 "chmod u+w {} or point TASKFLEET_HOME elsewhere",
                 root.display()

@@ -1,6 +1,6 @@
 ---
 name: fan-out
-description: Fan out N≥5 similar, fully independent units of work as parallel autonomous worktrees via `orchestratectl run create --kind fan-out` (top-level driver) plus one `--kind fan-out` child per unit (parent-pointed). Each child commits a disjoint output file inside the current git repo and merges itself back. Manages enumeration, concurrency (default 10), manifest-tracked state, and resume. Requires a git repo with a clean source branch. NOT for generic parallel commands, dependent workflows, shared-file edits, or tasks needing per-unit human review. For heterogeneous dependency-ordered features (a DAG rather than identical units), use `/orchestrate` instead.
+description: Fan out N≥5 similar, fully independent units of work as parallel autonomous worktrees via `taskfleet run create --kind fan-out` (top-level driver) plus one `--kind fan-out` child per unit (parent-pointed). Each child commits a disjoint output file inside the current git repo and merges itself back. Manages enumeration, concurrency (default 10), manifest-tracked state, and resume. Requires a git repo with a clean source branch. NOT for generic parallel commands, dependent workflows, shared-file edits, or tasks needing per-unit human review. For heterogeneous dependency-ordered features (a DAG rather than identical units), use `/orchestrate` instead.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -14,7 +14,7 @@ a disjoint output file (so siblings never edit the same path), commits,
 and merges itself back. The driver tracks per-unit state in the run's
 manifest and supports resume across interruptions.
 
-Read `orchestratectl-overview` first; read `worktree-spinoff` for the
+Read `taskfleet-overview` first; read `worktree-spinoff` for the
 shared autonomous-merge contract; read `worktree-orchestrated` to
 understand the child-spawn pattern (`fan-out` uses the same
 parent-pointer mechanism but the children are homogeneous instead of
@@ -47,7 +47,7 @@ DAG-ordered).
 3. Decide concurrency. Default is 10. Raise only if the units are
    genuinely cheap and the machine can take it; lower for heavy
    per-unit cost (model calls, IO bottlenecks).
-4. `orchestratectl version --output json` to confirm
+4. `taskfleet version --output json` to confirm
    `{{CLI_VERSION}}`.
 
 ### 1. Build the unit brief template
@@ -62,7 +62,7 @@ The template should include:
 4. **Done criteria** — output file exists, committed. If a unit changes code,
    copy the repository's exact green gate from `AGENTS.md`, including release
    mode, lockfile enforcement, and warnings-as-errors; do not replace it with a
-   debug-mode `cargo test`. For orchestratectl this is `cargo fmt --all --check`,
+   debug-mode `cargo test`. For taskfleet this is `cargo fmt --all --check`,
    `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo
    nextest run --locked --release --workspace`, `cargo test --locked --release
    --workspace --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --locked
@@ -72,9 +72,9 @@ The template should include:
    installing globally. Tool-sensitive tests should approximate bare CI with a
    stripped `PATH`.
 5. **Repository-local build safety** — a child may run `cargo build --release`
-   and exercise `./target/release/orchestratectl …` in its own worktree. During
+   and exercise `./target/release/taskfleet …` in its own worktree. During
    repository work, neither children nor the orchestrator may create, replace,
-   remove, or modify the user's installed orchestratectl or bundled skills by
+   remove, or modify the user's installed taskfleet or bundled skills by
    any mechanism, including any `cargo install`, `cargo uninstall`, Homebrew,
    manual-copy, or `skill install` variant.
 6. **No routine spin-offs or discuss items** — children should run silently
@@ -88,14 +88,14 @@ The template should include:
    separate from the driver's whole-unit retry budget.
 8. **Closing step** — every child MUST take exactly one terminal path, never
    both (see "Terminal report (mandatory)" below). Completed units merge and
-   report through `orchestratectl run merge`; units blocked by a required
+   report through `taskfleet run merge`; units blocked by a required
    failure do not merge and submit a direct `success: false` report. Taking
    neither path prevents `child.report` and leaves the concurrency slot held.
 
 ### 2. Create the driver run
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind fan-out \
   --title "<batch-slug>" \
   --task "Driver brief: enumerate <N> units, fan out at concurrency <C>" \
@@ -112,7 +112,7 @@ the concurrency limit. The driver itself merges nothing.
 For each unit, the driver spawns a child via the same CLI:
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind fan-out \
   --title "<batch-slug>/<unit-id>" \
   --task "<unit-specific brief>" \
@@ -161,7 +161,7 @@ The driver tails its own event log and the manifest:
   failed count. If any required unit remains failed, aggregate `success` is
   `false`; continuing other units preserves results but does not make the
   requested batch complete.
-- On driver interruption (Ctrl-C, supervisor crash), `orchestratectl
+- On driver interruption (Ctrl-C, supervisor crash), `taskfleet
   run reattach <driver-run-id>` rebuilds state from the manifest +
   event log and resumes from the first non-`done` unit.
 
@@ -195,7 +195,7 @@ Tell the user:
 ## Terminal report (mandatory)
 
 A child MUST take exactly one terminal path, never both. A completed unit uses
-`orchestratectl run merge`, which merges the branch and submits the terminal
+`taskfleet run merge`, which merges the branch and submits the terminal
 report stamped `via: "explicit-merge"`. A unit blocked by a required failed or
 incomplete step does **not** merge and submits a direct `success: false` report
 under "Tool and sub-workflow failure disclosure" below. Either report releases
@@ -209,7 +209,7 @@ use the minimal completed path as its final action:
    lossy bounded fragment that can repeat, not ownership):
 
    ```bash
-   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
      echo "failed to resolve exact owning run id" >&2
      exit 1
    }
@@ -223,7 +223,7 @@ use the minimal completed path as its final action:
    `source_branch`, and `run merge` defaults to it:
 
    ```bash
-   orchestratectl run merge "$run_id"
+   taskfleet run merge "$run_id"
    ```
 
    With no `--report-file`, `run merge` submits a minimal
@@ -236,7 +236,7 @@ use the minimal completed path as its final action:
    On a merge conflict/failure `run merge` exits non-zero with
    `error.code: "merge_failed"` and submits **no** report — the node
    stays live. Resolve the conflict (or run `/complex-rebase`) and re-run
-   `orchestratectl run merge "$run_id"`.
+   `taskfleet run merge "$run_id"`.
 
 3. **If the unit genuinely has follow-up** — discussion items, spin-off
    proposals, or wrap-up recommendations — write a §7.3 payload to a temp
@@ -257,7 +257,7 @@ use the minimal completed path as its final action:
    }
    JSON
 
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    - `success` — **required** boolean. `true` when the unit's output
@@ -281,11 +281,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the unit brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this child run). An **optional/advisory** failure may continue only when the
 unit output is independently complete and safe; disclose it in the full
-`success: true` report passed to `orchestratectl run merge "$run_id"
+`success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal form.
 
 Requested completeness is a contract. A missing required command result,
@@ -332,19 +332,19 @@ Likely codes:
 
 ## Following progress
 
-- `orchestratectl run show <driver-run-id>` — aggregate counts
+- `taskfleet run show <driver-run-id>` — aggregate counts
   (pending / running / done / failed) and the next units to fan out.
-- `orchestratectl event tail <driver-run-id> --follow` —
+- `taskfleet event tail <driver-run-id> --follow` —
   authoritative stream; `child.spawned` and `child.report` events
   arrive here per unit. For per-child progress read
   `data.manifest.status` (terminal: `done | failed | cancelled`) via
-  `orchestratectl run show <child-id>`.
-- `orchestratectl node list <driver-run-id>` — per-unit table.
-- `orchestratectl node show <child-run-id> <child-node-id>` — terminal report for one
-  unit (the child's closing `orchestratectl run merge` is what *writes*
+  `taskfleet run show <child-id>`.
+- `taskfleet node list <driver-run-id>` — per-unit table.
+- `taskfleet node show <child-run-id> <child-node-id>` — terminal report for one
+  unit (the child's closing `taskfleet run merge` is what *writes*
   it, merging and reporting in one step; see "Terminal report
   (mandatory)").
-- `orchestratectl run wait <child-id> <child-id> …` — **block until
+- `taskfleet run wait <child-id> <child-id> …` — **block until
   every** listed child settles (terminal `done | failed | cancelled`),
   with the correct backoff baked in. This is the multi-run primitive:
   pass all child run-ids to wait for the whole batch in one process
@@ -352,10 +352,10 @@ Likely codes:
   non-zero if any child failed). Use it instead of a `for id in …`
   shell loop — that pattern silently word-splits under zsh.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. Compare
-`.data.version` from `orchestratectl version --output json` to
+This skill was installed for `taskfleet {{CLI_VERSION}}`. Compare
+`.data.version` from `taskfleet version --output json` to
 `{{CLI_VERSION}}`:
 
 - **Missing**: tell the user to install through a published distribution channel

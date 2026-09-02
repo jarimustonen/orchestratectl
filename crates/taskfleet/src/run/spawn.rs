@@ -131,8 +131,8 @@ pub struct SpawnRequest<'a> {
     /// Seconds create.sh waits for the freshly launched agent to become
     /// discoverable before failing with `agent-pid-undiscoverable`,
     /// forwarded as `--agent-startup-timeout <seconds>`. Callers validate
-    /// the [1, 600] range (clap) before building the request; octl's
-    /// default (90) is higher than create.sh's own 30s because octl
+    /// the [1, 600] range (clap) before building the request; Taskfleet's
+    /// default (90) is higher than create.sh's own 30s because Taskfleet
     /// spawns are frequently part of high-fan-out batches that self-load
     /// the host.
     pub agent_startup_timeout: u32,
@@ -181,7 +181,7 @@ pub fn write_prompt_file(run_dir: &Path, task: &str) -> Result<PathBuf, CliError
 /// pass workmux this single absolute script path. The script re-enters this
 /// exact executable through hidden `run-worker`, passing the recorded argv as a
 /// byte-preserving suffix after `--`, then forwards workmux's existing
-/// `-- <prompt>` suffix unchanged. Orchestratectl neither parses nor alters the
+/// `-- <prompt>` suffix unchanged. Taskfleet neither parses nor alters the
 /// selected candidate; workmux remains the separate prompt-delivery owner.
 ///
 /// Telemetry identity is exported only for a recorded pi candidate declaring
@@ -403,7 +403,7 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
     if let Some(session) = req.parent_session {
         cmd.arg("--parent-session").arg(session);
     }
-    // Always forward octl's agent-startup window (default 90s, higher than
+    // Always forward Taskfleet's agent-startup window (default 90s, higher than
     // create.sh's 30s) so a loaded host doesn't fail the spawn with
     // `agent-pid-undiscoverable`. Validated to [1, 600] at the CLI boundary.
     cmd.arg("--agent-startup-timeout")
@@ -1195,7 +1195,7 @@ EOF
         .unwrap();
         assert_eq!(with.tmux_session.as_deref(), Some("180"));
 
-        // The octl default (90) is always forwarded — never create.sh's 30s.
+        // The Taskfleet default (90) is always forwarded — never create.sh's 30s.
         let defaulted = run_create_sh(&SpawnRequest {
             kind: "spinoff",
             agent: None,

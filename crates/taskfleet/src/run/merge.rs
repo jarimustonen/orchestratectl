@@ -1,7 +1,7 @@
 //! `run merge` — own the full merge lifecycle of one worktree run.
 //!
 //! Closes the spawn → work → merge → cleanup loop end-to-end inside
-//! orchestratectl (issue `bundle-worktree-merge`). Before this verb the
+//! Taskfleet (issue `bundle-worktree-merge`). Before this verb the
 //! merge half lived in an external `/worktree-merge` bash skill, which
 //! had no knowledge of the run: it merged, but never submitted a terminal
 //! `node.report`, so the supervisor kept polling and (for interactive
@@ -344,7 +344,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
                     format!(
                         "run {run_id} is {verb} and its worktree has been torn down — there is \
                          no worktree left to merge. If teardown looks incomplete (tmux window \
-                         still open, branch still present), run `orchestratectl run reattach \
+                         still open, branch still present), run `taskfleet run reattach \
                          {run_id}` to finish it."
                     ),
                 )
@@ -360,7 +360,7 @@ pub(crate) fn execute(args: &Args<'_>) -> Result<MergeOutcome, CliError> {
                 format!(
                     "worktree {worktree_path} does not exist — cannot merge. If the run has \
                      finished, its supervisor may not have rolled up yet; run \
-                     `orchestratectl run reattach {run_id}`. Otherwise the worktree was \
+                     `taskfleet run reattach {run_id}`. Otherwise the worktree was \
                      removed out from under a live run."
                 ),
             )
@@ -673,11 +673,11 @@ fn ensure_report_consumer(
             let mut warnings = base.to_vec();
             warnings.push(format!(
                 "could not verify supervisor liveness after merge ({e}); if teardown \
-                 does not complete, run `orchestratectl run reattach {run_id}`"
+                 does not complete, run `taskfleet run reattach {run_id}`"
             ));
             return (
                 ConsumerOutcome::Deferred {
-                    recovery_command: format!("orchestratectl run reattach {run_id}"),
+                    recovery_command: format!("taskfleet run reattach {run_id}"),
                 },
                 warnings,
             );
@@ -718,7 +718,7 @@ fn ensure_report_consumer(
             warnings.push(format!(
                 "{who} was not running; restarted it to consume the terminal report \
                  and complete teardown (new pid not yet confirmed — check \
-                 `orchestratectl run show {run_id}`)"
+                 `taskfleet run show {run_id}`)"
             ));
             ConsumerOutcome::Reattached { pid: None }
         }
@@ -733,7 +733,7 @@ fn ensure_report_consumer(
         // there is a consumer after all, so this is not a warning condition.
         Err(e) if e.code == "supervisor_already_running" => ConsumerOutcome::Alive,
         Err(e) => {
-            let recovery_command = format!("orchestratectl run reattach {run_id}");
+            let recovery_command = format!("taskfleet run reattach {run_id}");
             warnings.push(format!(
                 "{who} is not running and auto-reattach failed ({}); teardown (tmux \
                  window, worktree, branch) is deferred — run `{recovery_command}` to \
@@ -998,7 +998,7 @@ fn materialize_merge_sh() -> Result<MergeScript, CliError> {
         return Ok(MergeScript::External(path.into()));
     }
     let mut tmp = tempfile::Builder::new()
-        .prefix("orchestratectl-merge-")
+        .prefix("taskfleet-merge-")
         .suffix(".sh")
         .tempfile()
         .map_err(|e| {

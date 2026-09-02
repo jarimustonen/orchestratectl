@@ -1,4 +1,4 @@
-//! `dep.<bin>` — every external binary orchestratectl shells out to is on
+//! `dep.<bin>` — every external binary Taskfleet shells out to is on
 //! `PATH` (AGENTS-AI-FIRST-CLI §18 "dependencies").
 //!
 //! Presence is enough for MVP: version constraints are intentionally

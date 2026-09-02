@@ -82,7 +82,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
         // the PID just before removal, so the staleness here is a gate on
         // *offering* the fix, not the final safety check.
         let suggestion = format!(
-            "orchestratectl run reattach {run_id} (or rm {})",
+            "taskfleet run reattach {run_id} (or rm {})",
             pid_path.display()
         );
         let mut result = CheckResult::warn(

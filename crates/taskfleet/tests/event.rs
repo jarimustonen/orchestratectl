@@ -456,7 +456,7 @@ fn tail_signal_exit_flushes_own_diagnostic_logs() {
         "expected exit 130, got {status:?}"
     );
 
-    let log_path = home.path().join("logs").join("orchestratectl.log.jsonl");
+    let log_path = home.path().join("logs").join("taskfleet.log.jsonl");
     let contents = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("read log file {}: {e}", log_path.display()));
 

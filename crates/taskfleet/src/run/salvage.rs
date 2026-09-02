@@ -365,7 +365,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             let hint = if worktree_present {
                 format!(
                     " but its worktree still exists — teardown did not finish. Run \
-                     `orchestratectl run reattach {run_id}` to complete it (a re-merge is not \
+                     `taskfleet run reattach {run_id}` to complete it (a re-merge is not \
                      needed; the work already landed)."
                 )
             } else {
@@ -468,7 +468,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             format!(
                 "run {run_id} is still pending and its worker never started (no recorded \
                  agent pid, no worker exit) — there is no work to salvage. Cancel it with \
-                 `orchestratectl run cancel {run_id}` if it is stuck."
+                 `taskfleet run cancel {run_id}` if it is stuck."
             ),
         )
         .with_invalid_value(&run_id));

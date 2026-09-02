@@ -32,7 +32,7 @@ pub fn resolve_current(root: &Path, cwd: &Path) -> Result<RunId, CliError> {
             CliError::user(
                 "run_owner_not_found",
                 format!(
-                    "no orchestratectl run owns current worktree {} (runs directory is absent)",
+                    "no taskfleet run owns current worktree {} (runs directory is absent)",
                     current.root.display()
                 ),
             )
@@ -97,7 +97,7 @@ pub fn resolve_current(root: &Path, cwd: &Path) -> Result<RunId, CliError> {
         _ => Err(CliError::user(
             "run_owner_not_found",
             format!(
-                "no orchestratectl node records current worktree {} and branch {:?}; use the exact run id from the generated worker context",
+                "no taskfleet node records current worktree {} and branch {:?}; use the exact run id from the generated worker context",
                 current.root.display(), current.branch
             ),
         )),
@@ -313,7 +313,7 @@ fn ambiguous_owner(worktree: &Path, mut claims: Vec<String>) -> CliError {
     CliError::user(
         "run_owner_ambiguous",
         format!(
-            "multiple orchestratectl nodes claim current worktree {}; refusing to choose an owning run",
+            "multiple taskfleet nodes claim current worktree {}; refusing to choose an owning run",
             worktree.display()
         ),
     )

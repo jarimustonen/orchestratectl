@@ -98,7 +98,7 @@ fn create_run_and_node(home: &TempDir) -> String {
 fn contract_endpoint_args() -> Vec<String> {
     let contract = contract();
     let argv = contract["endpoint"]["argv"].as_array().unwrap();
-    assert_eq!(argv[0], "orchestratectl");
+    assert_eq!(argv[0], "taskfleet");
     argv[1..]
         .iter()
         .map(|value| value.as_str().unwrap().to_string())
@@ -747,7 +747,7 @@ fn fixture_files_are_portable_json_and_use_only_the_public_endpoint() {
     assert_eq!(
         contract()["endpoint"]["argv"],
         json!([
-            "orchestratectl",
+            "taskfleet",
             "node",
             "telemetry",
             "update",

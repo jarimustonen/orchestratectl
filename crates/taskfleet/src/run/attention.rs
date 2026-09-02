@@ -89,7 +89,7 @@ pub fn resume_hint(run_id: &str, _worktree_path: Option<&str>) -> String {
     let q_run = shell_single_quote(run_id);
     format!(
         "worker finished but skipped `run merge`; finish it with \
-         `orchestratectl run salvage {q_run}` (verifies the prior worker is gone — or fences \
+         `taskfleet run salvage {q_run}` (verifies the prior worker is gone — or fences \
          it with `--fence` — then merges from its worktree), or `run cancel {q_run}` to lay it \
          to rest"
     )

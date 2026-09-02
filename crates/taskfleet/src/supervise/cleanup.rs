@@ -218,7 +218,7 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) {
     }
 }
 
-/// Kill the managed `--headless` / `--tmux-session` session orchestratectl
+/// Kill the managed `--headless` / `--tmux-session` session Taskfleet
 /// created for this run, once its last managed window has been torn down — so an
 /// otherwise-empty session is not left lingering with only its synthetic
 /// bootstrap shell window (issue `headless-tmux-session-not-torn-down`).
@@ -234,7 +234,7 @@ pub fn cleanup_terminal_nodes(paths: &RunPaths) {
 ///    [`Manifest::managed_tmux_session`](taskfleet_core::Manifest), recorded at spawn
 ///    time *only* when the run used `--parent-session` (headless). A foreground
 ///    run records `None`, so the user's own session is never a candidate — we
-///    never kill a session orchestratectl did not create.
+///    never kill a session Taskfleet did not create.
 /// 2. **Not attached.** If a human attached to inspect it (`tmux attach -t
 ///    <name>`), the session is left alone — killing it would yank their
 ///    terminal. A `cleanup.session_retained` audit event records the skip.
@@ -310,7 +310,7 @@ fn managed_session_socket(paths: &RunPaths, session: &str) -> Option<String> {
 }
 
 /// A window tmux opened as the synthetic bootstrap shell for a freshly-created
-/// session — never an orchestratectl agent window (those carry the worktree /
+/// session — never an Taskfleet agent window (those carry the worktree /
 /// branch name, usually with an emoji prefix). Matching this small set of login
 /// shells is the heuristic the teardown keys off (issue
 /// `headless-tmux-session-not-torn-down`). Conservative by design: an unknown

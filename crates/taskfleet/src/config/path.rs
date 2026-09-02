@@ -15,7 +15,7 @@ use crate::output::{self, OutputFormat, OutputSpec};
 struct ConfigPathPayload {
     /// Schema version of the `config` payloads (§10).
     schema_version_config: u32,
-    /// Absolute config file path under the resolved orchestratectl home.
+    /// Absolute config file path under the resolved Taskfleet home.
     path: String,
     /// Whether a file currently exists at [`Self::path`].
     exists: bool,
@@ -34,7 +34,7 @@ pub fn run(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
         }
         OutputFormat::Text => {
             // Bare path on its own line so `config path` is pipeable
-            // (`$(orchestratectl config path --output text)`).
+            // (`$(taskfleet config path --output text)`).
             println!("{}", payload.path);
             output::emit_text_warnings(warnings);
         }

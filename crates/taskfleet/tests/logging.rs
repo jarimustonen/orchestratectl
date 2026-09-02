@@ -6,7 +6,7 @@
 //! clean exit flushes the channel and joins the worker. These tests run
 //! the real binary against a throwaway `TASKFLEET_HOME` and assert
 //! that the events emitted during a normal invocation actually reach
-//! `logs/orchestratectl.log.jsonl` — i.e. the guard is held long enough
+//! `logs/taskfleet.log.jsonl` — i.e. the guard is held long enough
 //! that nothing is dropped on the way out.
 
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ fn bin(home: &TempDir) -> Command {
 }
 
 fn log_file(home: &TempDir) -> PathBuf {
-    home.path().join("logs").join("orchestratectl.log.jsonl")
+    home.path().join("logs").join("taskfleet.log.jsonl")
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! `orchestratectl supervise <run-id>` — long-lived per-run supervisor.
+//! `taskfleet supervise <run-id>` — long-lived per-run supervisor.
 //!
 //! Owns three cooperating loops (single-threaded polling):
 //!   1. **Own-run tail** — react to `child.spawned` (fork a child

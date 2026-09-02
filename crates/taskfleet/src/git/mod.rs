@@ -1,4 +1,4 @@
-//! Orchestratectl-local typed git operations.
+//! Taskfleet-local typed git operations.
 //!
 //! A vendored, minimal slice of git worktree/branch plumbing: only the
 //! operations the supervisor's teardown + reconcile paths and the `run merge`
@@ -25,7 +25,7 @@
 //! Structured after workmux (raine/workmux), MIT-licensed, `src/git/`; the
 //! layout and the "typed backend over a resolved binary" idiom follow that
 //! module and the [`crate::multiplexer::tmux`] precedent. The git *operations*
-//! themselves are a mechanical extraction of orchestratectl's own scattered
+//! themselves are a mechanical extraction of Taskfleet's own scattered
 //! `Command::new(git)` call sites in [`crate::supervise::cleanup`] — same git
 //! commands, args, order, and lenient error handling — so the state-integrity
 //! invariants those call sites encode (the branch-preservation gates, the

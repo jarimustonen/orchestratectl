@@ -14,7 +14,7 @@ You classify a free-form worktree request, announce the choice in one line, then
 
 ## Hard constraints
 
-1. **You do not create worktrees.** No `orchestratectl run create`, no `create.sh`, no `git worktree`, no prompt files. Every code path ends in delegation or refusal.
+1. **You do not create worktrees.** No `taskfleet run create`, no `create.sh`, no `git worktree`, no prompt files. Every code path ends in delegation or refusal.
 2. **You never route to `/worktree-merge` or `/complex-rebase`.** Both operate on existing branches/worktrees and have preconditions the router can't validate. If the user wants to merge or to do a non-mechanical rebase, tell them to invoke the skill directly.
 3. **You never route to `/worktree` (yourself).** No recursion.
 4. **You forward the user's arguments verbatim** to the chosen sibling. Do not strip flags, rephrase the task, summarize, expand, or infer additional context. The user's text + flags become `$ARGUMENTS` for the sibling; flag validation is the sibling's job.
@@ -43,7 +43,7 @@ If the request is about managing an existing worktree, looking something up, or 
 |---|---|
 | Merge a worktree back | `/worktree-merge` |
 | Rebase requiring re-implementation across diverged branches | `/complex-rebase` |
-| List worktrees | `orchestratectl run list` (or `git worktree list`) |
+| List worktrees | `taskfleet run list` (or `git worktree list`) |
 | Prune dead worktrees | `git worktree prune` |
 | Remove a specific worktree | `git worktree remove <path>` |
 | Add a worktree by hand (no agent) | `git worktree add` |

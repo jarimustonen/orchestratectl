@@ -1,4 +1,4 @@
-# rustfmt configuration for orchestratectl.
+# rustfmt configuration for Taskfleet.
 #
 # Only *stable* rustfmt options live here so `cargo fmt --check` is meaningful
 # on the stable toolchain that CI uses. Import grouping (group_imports =

@@ -1,4 +1,4 @@
-# cargo-deny configuration for orchestratectl.
+# cargo-deny configuration for Taskfleet.
 #
 # Scope (per issue ci-and-lints): licenses + advisories + bans. The `sources`
 # check is intentionally left at defaults for now — we only pull from crates.io.
@@ -66,7 +66,7 @@ confidence-threshold = 0.8
 multiple-versions = "warn"
 # Wildcard ("*") version requirements are forbidden — pin to a real range.
 wildcards = "deny"
-# …except internal path deps (e.g. octl-cli -> octl-core), which carry no
+# …except internal path deps (e.g. taskfleet -> taskfleet-core), which carry no
 # version requirement by design and are never published to a registry.
 allow-wildcard-paths = true
 # Reintroduction guard: fs2 was dropped (issue replace-fs2-with-fs4) because it is

@@ -577,7 +577,7 @@ fn task_writes_prompt_file_in_run_dir() {
     let run_id = v["data"]["run_id"].as_str().unwrap();
     let prompt =
         std::fs::read_to_string(home.path().join("runs").join(run_id).join("prompt.md")).unwrap();
-    assert!(prompt.starts_with("# Orchestratectl run context"));
+    assert!(prompt.starts_with("# Taskfleet run context"));
     assert!(prompt.contains(&format!("run `{run_id}`")));
     assert!(prompt.contains("issuectl intake file"));
     assert!(prompt.contains("originating_run_kind=spinoff"));

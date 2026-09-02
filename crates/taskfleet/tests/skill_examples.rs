@@ -1,4 +1,4 @@
-//! CI gate: every `orchestratectl …` example in every bundled SKILL must
+//! CI gate: every `taskfleet …` example in every bundled SKILL must
 //! match the binary's actual CLI surface.
 //!
 //! # Why this exists
@@ -16,7 +16,7 @@
 //!
 //! # What it checks (v1 — shape only)
 //!
-//! For every `orchestratectl …` command in a fenced code block of every
+//! For every `taskfleet …` command in a fenced code block of every
 //! `crates/taskfleet/skills/<name>/SKILL.template.md`, the test reconstructs the
 //! argv and runs it against the real binary with `--help` appended. `--help`
 //! makes clap validate the whole argv during parsing — unknown flags
@@ -44,9 +44,9 @@
 //! # skill-example-ci: skip
 //! ```
 //!
-//! Place it either on its own line immediately above the `orchestratectl`
+//! Place it either on its own line immediately above the `taskfleet`
 //! command, or as a trailing comment on the command's first line. The skip
-//! applies to that single command (the next `orchestratectl …` in the block).
+//! applies to that single command (the next `taskfleet …` in the block).
 //! Prefer fixing the example over allow-listing it — the allow-list is for
 //! commands that genuinely cannot be made to parse, not for hiding drift.
 //!
@@ -77,21 +77,21 @@ use tempfile::TempDir;
 /// Magic comment that allow-lists a single illustrative example.
 const SKIP_MARKER: &str = "# skill-example-ci: skip";
 
-/// A single `orchestratectl …` invocation extracted from a SKILL, with enough
+/// A single `taskfleet …` invocation extracted from a SKILL, with enough
 /// provenance to point a maintainer straight at the offending line.
 #[derive(Debug)]
 struct Invocation {
     skill: String,
     /// 1-based line number of the command's first line in the SKILL file.
     line: usize,
-    /// argv *after* the leading `orchestratectl` token — i.e. the args we
+    /// argv *after* the leading `taskfleet` token — i.e. the args we
     /// hand to the binary, before appending `--help`.
     argv: Vec<String>,
 }
 
 /// THE gate. Every documented invocation must validate against the binary.
 #[test]
-fn every_skill_orchestratectl_example_matches_the_binary() {
+fn every_skill_taskfleet_example_matches_the_binary() {
     let skills_dir = skills_dir();
     let home = TempDir::new().expect("temp TASKFLEET_HOME");
 
@@ -105,12 +105,19 @@ fn every_skill_orchestratectl_example_matches_the_binary() {
             .to_string();
         let body = std::fs::read_to_string(&skill_md)
             .unwrap_or_else(|e| panic!("read {}: {e}", skill_md.display()));
+        assert!(
+            !body
+                .lines()
+                .any(|line| line.trim_start().starts_with("orchestratectl ")),
+            "{} contains a legacy fenced/copyable command; active examples must use taskfleet",
+            skill_md.display()
+        );
         invocations.extend(extract_invocations(&skill_name, &body));
     }
 
     assert!(
         !invocations.is_empty(),
-        "extracted zero orchestratectl invocations — the extractor or the \
+        "extracted zero taskfleet invocations — the extractor or the \
          skills directory ({}) is broken; this gate would be silently \
          vacuous",
         skills_dir.display()
@@ -120,7 +127,7 @@ fn every_skill_orchestratectl_example_matches_the_binary() {
     for inv in &invocations {
         if let Err(reason) = validate(&inv.argv, &home) {
             failures.push(format!(
-                "  {} (line {}):\n    $ orchestratectl {}\n    → {}",
+                "  {} (line {}):\n    $ taskfleet {}\n    → {}",
                 inv.skill,
                 inv.line,
                 inv.argv.join(" "),
@@ -131,7 +138,7 @@ fn every_skill_orchestratectl_example_matches_the_binary() {
 
     assert!(
         failures.is_empty(),
-        "{} of {} documented orchestratectl invocation(s) do not match the \
+        "{} of {} documented taskfleet invocation(s) do not match the \
          binary's CLI surface.\n\nEach failing example below documents a flag, \
          subcommand, positional, or enum value the binary does not accept. Fix \
          the SKILL to match the binary (run the command with `--help` to see \
@@ -197,7 +204,7 @@ fn validation_has_no_side_effects() {
 fn worker_skill_failure_disclosure_sections_are_self_contained() {
     const WORKER_SKILLS: [&str; 6] = [
         "fan-out",
-        "octl-spawn-spinoff",
+        "taskfleet-spawn-spinoff",
         "worktree-bug-analysis",
         "worktree-research",
         "worktree-spinoff",
@@ -215,7 +222,7 @@ fn worker_skill_failure_disclosure_sections_are_self_contained() {
             "**required**",
             "`success: false`",
             "Do not call `run merge`",
-            "orchestratectl node report",
+            "taskfleet node report",
             "--from-file",
             // Optional failure can continue only through a full disclosure.
             "**optional/advisory**",
@@ -260,7 +267,7 @@ fn worker_skill_failure_disclosure_sections_are_self_contained() {
     // Panel completeness is workflow-specific, not boilerplate forced into
     // generic bug-analysis or fan-out prompts.
     for skill in [
-        "octl-spawn-spinoff",
+        "taskfleet-spawn-spinoff",
         "worktree-research",
         "worktree-spinoff",
         "worktree-technical-decision",
@@ -309,7 +316,7 @@ fn markdown_section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
-/// Run `orchestratectl <argv…> --help` against the real binary, sandboxed into
+/// Run `taskfleet <argv…> --help` against the real binary, sandboxed into
 /// `home`. `Ok(())` iff the invocation's shape is accepted (exit 0); otherwise
 /// `Err` carries the binary's error `code` + `message` for the report.
 fn validate(argv: &[String], home: &TempDir) -> Result<(), String> {
@@ -319,7 +326,7 @@ fn validate(argv: &[String], home: &TempDir) -> Result<(), String> {
         .args(argv)
         .arg("--help")
         .output()
-        .expect("spawn orchestratectl");
+        .expect("spawn taskfleet");
 
     if out.status.success() {
         return Ok(());
@@ -359,10 +366,10 @@ fn skill_template_paths(skills_dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Extract every fenced `orchestratectl …` command from one SKILL body.
+/// Extract every fenced `taskfleet …` command from one SKILL body.
 ///
 /// A command is a line inside a fenced code block whose first non-whitespace
-/// token is `orchestratectl`, plus any following lines joined onto it via a
+/// token is `taskfleet`, plus any following lines joined onto it via a
 /// trailing `\`. Lines outside fences (prose, inline-backtick mentions) are
 /// ignored — only fenced blocks are meant to be literal, runnable commands.
 fn extract_invocations(skill: &str, body: &str) -> Vec<Invocation> {
@@ -383,7 +390,7 @@ fn extract_invocations(skill: &str, body: &str) -> Vec<Invocation> {
             continue;
         }
 
-        if in_fence && line.trim_start().starts_with("orchestratectl ") {
+        if in_fence && line.trim_start().starts_with("taskfleet ") {
             let first_line_no = i + 1; // 1-based
                                        // Join `\`-continuations into a single logical command line.
             let mut joined = String::new();
@@ -429,14 +436,14 @@ fn extract_invocations(skill: &str, body: &str) -> Vec<Invocation> {
     out
 }
 
-/// Turn a joined command line into the argv after the leading `orchestratectl`
+/// Turn a joined command line into the argv after the leading `taskfleet`
 /// token, applying the documented normalizations. Returns `None` if the line
-/// does not actually start with `orchestratectl` (defensive — the caller only
+/// does not actually start with `taskfleet` (defensive — the caller only
 /// passes lines that do).
 fn to_argv(command: &str) -> Option<Vec<String>> {
     let mut tokens = shell_split(command).into_iter();
     let head = tokens.next()?;
-    if head != "orchestratectl" {
+    if head != "taskfleet" {
         return None;
     }
     let argv: Vec<String> = tokens
@@ -526,7 +533,7 @@ mod extractor_tests {
 
     #[test]
     fn joins_continuations_and_strips_brackets() {
-        let body = "```\norchestratectl run create \\\n  --kind fan-out \\\n  [--source-branch <branch>]\n```\n";
+        let body = "```\ntaskfleet run create \\\n  --kind fan-out \\\n  [--source-branch <branch>]\n```\n";
         let inv = extract_invocations("x", body);
         assert_eq!(inv.len(), 1);
         assert_eq!(
@@ -544,21 +551,21 @@ mod extractor_tests {
 
     #[test]
     fn honours_skip_marker_above_and_inline() {
-        let above = "```\n# skill-example-ci: skip\norchestratectl frobnicate --wat\n```\n";
+        let above = "```\n# skill-example-ci: skip\ntaskfleet frobnicate --wat\n```\n";
         assert!(extract_invocations("x", above).is_empty());
-        let inline = "```\norchestratectl frobnicate --wat # skill-example-ci: skip\n```\n";
+        let inline = "```\ntaskfleet frobnicate --wat # skill-example-ci: skip\n```\n";
         assert!(extract_invocations("x", inline).is_empty());
     }
 
     #[test]
-    fn ignores_orchestratectl_outside_fences() {
-        let prose = "Run `orchestratectl run list` to see runs.\n";
+    fn ignores_taskfleet_outside_fences() {
+        let prose = "Run `taskfleet run list` to see runs.\n";
         assert!(extract_invocations("x", prose).is_empty());
     }
 
     #[test]
     fn substitutes_kind_and_version_placeholders() {
-        let body = "```\norchestratectl run create --kind <kind>\n```\n";
+        let body = "```\ntaskfleet run create --kind <kind>\n```\n";
         let inv = extract_invocations("x", body);
         assert_eq!(inv[0].argv, vec!["run", "create", "--kind", "fan-out"]);
     }

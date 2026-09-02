@@ -4,6 +4,7 @@
   "protocol_version": 1,
   "compatibility": {
     "schema_version_scope": "this contract document and conformance fixture format",
+    "endpoint_availability": "taskfleet argv is canonical from 0.6.0; the historical orchestratectl argv remains valid only where 0.5.1 or the bounded Cargo wrapper through 0.7.x is installed",
     "protocol_version_scope": "telemetry request semantics",
     "request_changes": "adding, removing, or changing a request field or enum requires a protocol_version bump",
     "response_changes": "consumers must tolerate additive success and error envelope fields",
@@ -11,7 +12,7 @@
   },
   "environment": {
     "read_by": "adapter",
-    "exported_by": "orchestratectl recorded-candidate launcher",
+    "exported_by": "taskfleet recorded-candidate launcher",
     "export_condition": "selected candidate has harness=pi and telemetry=worker-v1",
     "candidate_argv": "recorded user-owned argv is the exact prefix; workmux's existing -- <prompt> suffix is forwarded unchanged",
     "attempt_source": "absolute node attempt: 0 at initial creation, current retry attempt thereafter",
@@ -30,7 +31,7 @@
   },
   "endpoint": {
     "argv": [
-      "orchestratectl",
+      "taskfleet",
       "node",
       "telemetry",
       "update",

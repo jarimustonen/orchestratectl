@@ -1,6 +1,6 @@
 ---
 name: worktree-research
-description: Spawn an autonomous research worktree via `orchestratectl run create --kind research` — multi-source background investigation that reads sources, gathers divergent perspectives, and writes a sourced markdown report committed to the repo, then merges itself back. Use when the user asks to research, investigate, survey, look into, or compare options for a topic that needs reading multiple sources and synthesizing into a sourced markdown report. Do NOT use for quick factual lookups (one `WebSearch`), single-doc summaries, debugging, code changes, or forward decisions (`/worktree-technical-decision`).
+description: Spawn an autonomous research worktree via `taskfleet run create --kind research` — multi-source background investigation that reads sources, gathers divergent perspectives, and writes a sourced markdown report committed to the repo, then merges itself back. Use when the user asks to research, investigate, survey, look into, or compare options for a topic that needs reading multiple sources and synthesizing into a sourced markdown report. Do NOT use for quick factual lookups (one `WebSearch`), single-doc summaries, debugging, code changes, or forward decisions (`/worktree-technical-decision`).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -15,7 +15,7 @@ divergent perspectives, writes the report into the repo (typically
 branch — same self-merge contract as `worktree-spinoff` but with a
 prose-output recipe and `WebSearch`/`WebFetch` enabled.
 
-Read `orchestratectl-overview` first; read `worktree-spinoff` for the
+Read `taskfleet-overview` first; read `worktree-spinoff` for the
 shared autonomous-merge contract.
 
 ## When to use
@@ -36,7 +36,7 @@ shared autonomous-merge contract.
 
 1. Working directory must be a git repo. Per repo CLAUDE.md, the
    current branch must be clean.
-2. `orchestratectl version --output json` to confirm
+2. `taskfleet version --output json` to confirm
    `{{CLI_VERSION}}` matches the running binary.
 3. Capture the current branch as the source/merge target.
 
@@ -75,10 +75,10 @@ Include in the brief:
 5. **Done criteria** — file at `research/<slug>.md` exists, committed,
    merged back to source branch.
 6. **Repository-local tool safety** — if repository inspection requires
-   building orchestratectl, use `cargo build --release` and invoke
-   `./target/release/orchestratectl …` explicitly. During repository work,
+   building taskfleet, use `cargo build --release` and invoke
+   `./target/release/taskfleet …` explicitly. During repository work,
    neither workers nor the orchestrator may create, replace, remove, or modify
-   the user's installed orchestratectl or bundled skills by any mechanism,
+   the user's installed taskfleet or bundled skills by any mechanism,
    including any `cargo install`, `cargo uninstall`, Homebrew, manual-copy, or
    `skill install` variant.
 7. **Tool/sub-workflow failure policy** — copy the disclosure contract below
@@ -90,7 +90,7 @@ Long prompts → temp file + `--prompt-file <path>`.
 ### 3. Create the run
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind research \
   --title "<2–4 word slug>" \
   --task "<self-contained research brief>" \
@@ -106,7 +106,7 @@ defaults to the current branch. Output defaults to `--output jsonl`.
 AGENTS.md-native and has none of Claude's Skill/Agent tools or
 `/worktree-*` slash commands, so when the resolved harness is `pi` the
 CLI auto-prepends a short translation preamble to the worker's prompt
-(mapping the `/worktree-merge` close to the plain `orchestratectl run
+(mapping the `/worktree-merge` close to the plain `taskfleet run
 merge` bash, telling it to skip `/llm-review` and sub-agents). You do
 not need to hand-translate the brief — write it as usual. This is the
 only autonomous kind translated for pi so far; other kinds still assume
@@ -141,17 +141,17 @@ Tell the user:
 - Expected output path: `research/<slug>.md` (or the override they
   specified).
 - That the research worktree merges-and-reports itself via
-  `orchestratectl run merge` — no `/worktree-merge` handoff.
-- How to follow progress: `orchestratectl run show <run-id>` for a
-  one-shot snapshot, `orchestratectl event tail <run-id> --follow` for
-  the streaming log, or `orchestratectl run wait <run-id>` to block until
+  `taskfleet run merge` — no `/worktree-merge` handoff.
+- How to follow progress: `taskfleet run show <run-id>` for a
+  one-shot snapshot, `taskfleet event tail <run-id> --follow` for
+  the streaming log, or `taskfleet run wait <run-id>` to block until
   the run is terminal (`done | failed | cancelled`) — no hand-rolled poll
   loop, no wrong-field footgun.
 
 ## Terminal report (mandatory)
 
 A research worker MUST take exactly one terminal path, never both. Completed,
-mergeable research uses `orchestratectl run merge`, which merges and submits the
+mergeable research uses `taskfleet run merge`, which merges and submits the
 terminal report stamped `via: "explicit-merge"`. Research blocked by a required
 failed or incomplete step does **not** merge; it submits a direct `success:
 false` report under "Tool and sub-workflow failure disclosure" below. Omitting
@@ -164,7 +164,7 @@ carrying the full §7.3 payload (validated **before** the merge).
    to `n-0001`:
 
    ```bash
-   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
      echo "failed to resolve exact owning run id" >&2
      exit 1
    }
@@ -209,7 +209,7 @@ carrying the full §7.3 payload (validated **before** the merge).
 3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    This rebases + merges the worktree branch into its source branch and
@@ -236,11 +236,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this single-worker run). An **optional/advisory** failure may continue only
 when the report is independently complete and safe; disclose it in the full
-`success: true` report passed to `orchestratectl run merge "$run_id"
+`success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. A requested panel with a missing model
@@ -283,11 +283,11 @@ must expose those tools to `--kind research`. The CLI does not
 currently validate this; surface it to the user if the research output
 comes back with "could not fetch sources" notes.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
 first invocation in a session, run
-`orchestratectl version --output json`, compare `.data.version` to
+`taskfleet version --output json`, compare `.data.version` to
 `{{CLI_VERSION}}`, and:
 
 - **Missing**: tell the user to install through a published distribution channel

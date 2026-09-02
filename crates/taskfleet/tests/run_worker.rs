@@ -91,7 +91,7 @@ fn internal_root_controls_preflight_logging_and_marker_stops_at_worker_boundary(
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read_to_string(observed).unwrap(), "unset");
-    assert!(state.path().join("logs/orchestratectl.log.jsonl").exists());
+    assert!(state.path().join("logs/taskfleet.log.jsonl").exists());
     assert!(!ambient.path().join(".taskfleet/logs").exists());
     assert!(!ambient.path().join(".orchestratectl/logs").exists());
     assert_eq!(worker_exited_event(&paths)["data"]["exit_code"], 0);

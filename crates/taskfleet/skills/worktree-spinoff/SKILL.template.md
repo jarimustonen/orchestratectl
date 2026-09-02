@@ -1,6 +1,6 @@
 ---
 name: worktree-spinoff
-description: Spawn an autonomous spinoff worktree agent via `orchestratectl run create --kind spinoff` — one fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back to the source branch. Use when the user says `/worktree-spinoff <task>`, when a parallel sub-task can be handled without interactive review, or when a driver (`/fan-out`) needs to spawn one autonomous unit. NOT for hands-on interactive review (add `--interactive` to `run create` so the supervisor waits for an explicit `run merge`/`run cancel`), N identical units (`/fan-out`), or dependency-ordered features (stint waves).
+description: Spawn an autonomous spinoff worktree agent via `taskfleet run create --kind spinoff` — one fire-and-forget agent that takes a focused task, executes it in its own git worktree, and merges itself back to the source branch. Use when the user says `/worktree-spinoff <task>`, when a parallel sub-task can be handled without interactive review, or when a driver (`/fan-out`) needs to spawn one autonomous unit. NOT for hands-on interactive review (add `--interactive` to `run create` so the supervisor waits for an explicit `run merge`/`run cancel`), N identical units (`/fan-out`), or dependency-ordered features (stint waves).
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -11,11 +11,11 @@ schema_version: 1
 A **spinoff** is one autonomous agent running in its own git worktree,
 doing one well-scoped task, and merging itself back to the source branch
 when done. No interactive review. The canonical way to launch one is via
-`orchestratectl`, which owns the run state under
-`~/.orchestratectl/runs/<run-id>/` — never hand-craft branches or invoke
+`taskfleet`, which owns the run state under
+`~/.taskfleet/runs/<run-id>/` — never hand-craft branches or invoke
 `workmux`/`create.sh` directly.
 
-If you have not yet read it, read the `orchestratectl-overview` skill
+If you have not yet read it, read the `taskfleet-overview` skill
 first — it defines the run / supervisor / node vocabulary every step
 below assumes.
 
@@ -26,7 +26,7 @@ below assumes.
   "spinoff" worktree for a focused task.
 - ✅ A driver skill (`/fan-out`, `/orchestrate`) needs to spawn one
   autonomous unit and pass `--parent-run-id` + `--parent-node-id`.
-- ❌ User wants a hands-on, human-driven worktree → spawn with `orchestratectl run create --interactive` (the supervisor never auto-terminalizes; the human finalizes with `run merge`/`run cancel`). A default spinoff is always headless + autonomous.
+- ❌ User wants a hands-on, human-driven worktree → spawn with `taskfleet run create --interactive` (the supervisor never auto-terminalizes; the human finalizes with `run merge`/`run cancel`). A default spinoff is always headless + autonomous.
 - ❌ N≥5 similar independent units → `/fan-out`.
 - ❌ Heterogeneous dependency-ordered features → `/orchestrate`.
 - ❌ Substantial research / ADR / bugfix → use the matching
@@ -40,7 +40,7 @@ below assumes.
 
 1. If the working directory is not a git repo, abort with a clear
    message — the spinoff needs a source branch.
-2. `orchestratectl version --output json` once per session. Compare
+2. `taskfleet version --output json` once per session. Compare
    `.data.version` to `{{CLI_VERSION}}` (see "Install or upgrade"
    below). Refuse to proceed on a major-version mismatch.
 3. Capture the **current branch** with `git rev-parse --abbrev-ref HEAD`
@@ -78,7 +78,7 @@ self-contained. Include:
 2. **Context** — files, modules, constraints. Quote relative paths.
 3. **Done criteria** — concrete and verifiable. Copy the repository's exact
    green-gate commands from its `AGENTS.md`; never substitute a debug build or a
-   looser warning policy. In orchestratectl itself the worker runs `cargo fmt
+   looser warning policy. In taskfleet itself the worker runs `cargo fmt
    --all --check`, `cargo clippy --locked --workspace --all-targets -- -D
    warnings`, `cargo nextest run --locked --release --workspace`, `cargo test
    --locked --release --workspace --doc`, and `RUSTDOCFLAGS="-D warnings" cargo
@@ -89,9 +89,9 @@ self-contained. Include:
    other local tools as suspect; approximate a bare CI runner with a stripped
    `PATH` for tool-sensitive tests.
 4. **Repository-local build safety** — a worker may run `cargo build --release`
-   and exercise `./target/release/orchestratectl …` from its own worktree.
+   and exercise `./target/release/taskfleet …` from its own worktree.
    During repository work, neither workers nor the orchestrator may create,
-   replace, remove, or modify the user's installed orchestratectl or bundled
+   replace, remove, or modify the user's installed taskfleet or bundled
    skills by any mechanism, including any `cargo install`, `cargo uninstall`,
    Homebrew, manual-copy, or `skill install` variant.
 5. **Quality bar** — does the spinoff need to run `/llm-review` before
@@ -108,7 +108,7 @@ self-contained. Include:
    still be disclosed in the terminal report.
 7. **Terminal report** — the brief MUST end with exactly one terminal path
    (see "Terminal report (mandatory)" below): completed work merges and reports
-   through `orchestratectl run merge`; work blocked by a required failure does
+   through `taskfleet run merge`; work blocked by a required failure does
    not merge and submits a direct `success: false` report. Taking neither path
    leaves the run unterminated and the worktree dangling.
 
@@ -125,7 +125,7 @@ misinterprets the task wastes a worktree and a merge cycle.
 
 ```
 # skill-example-ci: skip
-orchestratectl run create \
+taskfleet run create \
   --kind spinoff \
   --title "<2–4 word title>" \
   --task "<self-contained brief>" \
@@ -144,7 +144,7 @@ Flag rules:
   clutter the user's window list; attach later with `tmux attach -t
   headless`. `--tmux-session <name>` overrides the default session name
   (and implies headless). Auto-cleanup still closes the window on
-  terminal. Example: `orchestratectl run create --kind spinoff
+  terminal. Example: `taskfleet run create --kind spinoff
   --headless --title fix-lint --task "..."`.
 - `--task` OR `--prompt-file` (exactly one). Empty/whitespace-only
   strings are rejected upstream — do not strip silently.
@@ -169,7 +169,7 @@ Flag rules:
   write / notification, not something that double-counts). Pass it **only
   if you have a real sink** the harness watches — e.g. appending a line to
   a file (`--notify 'printf "%s %s\n" "$OCTL_RUN_ID" "$OCTL_STATUS" >>
-  ~/.octl-completions'`) or a desktop toast (`--notify 'terminal-notifier
+  ~/.taskfleet-completions'`) or a desktop toast (`--notify 'terminal-notifier
   -message "$OCTL_SUMMARY"'` / `notify-send`). Without such a sink, do
   **not** promise the user a notification; use the `run wait` approach
   under "Following progress" instead. See "Reporting completion back to
@@ -186,7 +186,7 @@ Flag rules:
   "schema_version": 1,
   "data": {
     "run_id": "01HZ...",
-    "dir": "$HOME/.orchestratectl/runs/01HZ...",
+    "dir": "$HOME/.taskfleet/runs/01HZ...",
     "supervisor": 12345,
     "kind": "spinoff",
     "lifecycle": "autonomous",
@@ -209,11 +209,11 @@ something blocked the supervisor spawn.
 Tell the user:
 
 - Run id, kind (`spinoff`), source/merge branch.
-- Tmux window name (so they can attach with `tmux attach -t
-  octl <window>` if curious).
-- That the spinoff merges-and-reports itself via `orchestratectl run
+- Tmux window name (so they can attach to the reported tmux session and
+  select that window if curious; do not guess a session name).
+- That the spinoff merges-and-reports itself via `taskfleet run
   merge` — no `/worktree-merge` handoff from them.
-- How to follow progress: `orchestratectl run show <run-id>` (or
+- How to follow progress: `taskfleet run show <run-id>` (or
   `--output jsonl` for one-line summaries).
 - **How completion reaches them.** The spinoff runs out-of-band; nothing
   re-invokes this session by itself. Do **not** claim you will "let them
@@ -234,10 +234,10 @@ human decision is unavoidable, write one or more report-shaped discussion items
 open durable run state:
 
 ```bash
-orchestratectl event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
+taskfleet event create "$run_id" --kind node.awaiting_input --node-id n-0001 \
   --from-file /tmp/awaiting-input-${run_id}.json \
   --idempotency-key "awaiting-input:${run_id}:<short-topic>"
-request_seq="$(orchestratectl --output json run show "$run_id" | \
+request_seq="$(taskfleet --output json run show "$run_id" | \
   jq -r '.data.awaiting_input_detail.event_seq')"
 ```
 
@@ -254,13 +254,13 @@ an interactive prompt, then emit `node.input_resolved` with
 
 ```bash
 printf '{"event_seq":%s}\n' "$request_seq" > /tmp/input-resolved-${run_id}.json
-orchestratectl event create "$run_id" --kind node.input_resolved --node-id n-0001 \
+taskfleet event create "$run_id" --kind node.input_resolved --node-id n-0001 \
   --from-file /tmp/input-resolved-${run_id}.json
 ```
 
 Alternatively, (b) immediately submit a terminal blocked
 report with `success:false` and the same `discussion_items` via
-`orchestratectl node report "$run_id" n-0001 --from-file <report>`. The blocked
+`taskfleet node report "$run_id" n-0001 --from-file <report>`. The blocked
 path preserves the branch and worktree for the human. If the fork resolves by
 other evidence before the timeout, emit the same generation-fenced
 `node.input_resolved` before continuing.
@@ -268,7 +268,7 @@ other evidence before the timeout, emit the same generation-fenced
 ## Terminal report (mandatory)
 
 A spinoff MUST take exactly one terminal path, never both. Completed,
-mergeable work uses `orchestratectl run merge`, which rebases + merges the
+mergeable work uses `taskfleet run merge`, which rebases + merges the
 branch and submits the terminal `node report` stamped `via: "explicit-merge"`.
 Work blocked by a required failed or incomplete step does **not** call `run
 merge`; it submits a direct `success: false` report as specified in "Tool and
@@ -283,7 +283,7 @@ once the work is committed and ready to land, before its session ends:
    lossy bounded fragment that can repeat, not ownership):
 
    ```bash
-   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
      echo "failed to resolve exact owning run id" >&2
      exit 1
    }
@@ -327,7 +327,7 @@ once the work is committed and ready to land, before its session ends:
    merge runs, and the rich §7.3 fields are carried in the same call:
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    `run merge` defaults to node `n-0001` (a single-worker kind always
@@ -337,7 +337,7 @@ once the work is committed and ready to land, before its session ends:
    minimal auto-report:
 
    ```bash
-   orchestratectl run merge "$run_id"
+   taskfleet run merge "$run_id"
    ```
 
    This rebases + merges the worktree branch into its recorded source
@@ -354,7 +354,7 @@ once the work is committed and ready to land, before its session ends:
    **Conflict path:** if `run merge` exits non-zero with
    `error.code: "merge_failed"` it does **not** submit a report and the
    node stays live — resolve the conflict (or run `/complex-rebase` for
-   deeply-diverged branches) and re-run `orchestratectl run merge
+   deeply-diverged branches) and re-run `taskfleet run merge
    "$run_id" --report-file /tmp/node-report-${run_id}.json`.
 
 A terminal report is **not optional**. Completed work with no `run merge`, or
@@ -369,11 +369,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this single-worker run). An **optional/advisory** failure may continue only
 when the deliverable is independently complete and safe; disclose it in the
-full `success: true` report passed to `orchestratectl run merge "$run_id"
+full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. A requested panel with a missing model
@@ -439,7 +439,7 @@ Likely codes:
 - `supervisor_spawn_failed` — the supervisor process could not be
   started. The run dir exists but no one is driving the worker. Tell
   the user to inspect `<dir>/supervisor.stderr.log` and consider
-  `orchestratectl run reattach <run-id>`.
+  `taskfleet run reattach <run-id>`.
 
 If `--dry-run` is set, the CLI validates inputs and emits a
 `dry_run: true` envelope without materializing anything.
@@ -448,14 +448,14 @@ If `--dry-run` is set, the CLI validates inputs and emits a
 
 The spinoff runs asynchronously. To inspect status **once**:
 
-- `orchestratectl run show <run-id>` — current status, node states,
+- `taskfleet run show <run-id>` — current status, node states,
   recent events.
-- `orchestratectl event tail <run-id> --follow` — streaming
+- `taskfleet event tail <run-id> --follow` — streaming
   event log.
-- `orchestratectl node list <run-id>` — per-unit detail (a
+- `taskfleet node list <run-id>` — per-unit detail (a
   spinoff has exactly one worker node).
-- `orchestratectl node show <run-id> n-0001` — the structured terminal
-  report `orchestratectl run merge` submits as it merges the branch (see
+- `taskfleet node show <run-id> n-0001` — the structured terminal
+  report `taskfleet run merge` submits as it merges the branch (see
   "Terminal report (mandatory)").
 
 **Completion: block with `run wait`.** To wait until the run settles,
@@ -466,7 +466,7 @@ inside `run wait`:
 
 ```bash
 # Block until the run reaches a terminal state (exit 0 = settled).
-orchestratectl run wait "$run_id"
+taskfleet run wait "$run_id"
 ```
 
 `run wait` exits `0` once the run is terminal, `2` if `--timeout`
@@ -492,10 +492,10 @@ must read each worker with `node show`:
 
 ```bash
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-orchestratectl run show "$run_id" --output json | jq '.data.report'
+taskfleet run show "$run_id" --output json | jq '.data.report'
 # Node-level projection-compatible probe:
 # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-orchestratectl node show "$run_id" n-0001 --output json |
+taskfleet node show "$run_id" n-0001 --output json |
   jq '.data.report // .data.last_report'
 ```
 
@@ -534,7 +534,7 @@ otherwise you cannot deliver it:
    stay alive.
 2. **Background `run wait` (pull, harness re-invoke).** If your harness
    re-invokes the agent when a launched background task exits, run
-   `orchestratectl run wait "$run_id"` as that background task at spawn
+   `taskfleet run wait "$run_id"` as that background task at spawn
    time. The harness wakes you with its terminal summary. Only works if
    you background it **at spawn** — a fire-and-forget spinoff you never
    waited on has no watcher.
@@ -545,11 +545,11 @@ check it — the run dir, its terminal `manifest.status`, and the node's
 terminal report all persist after teardown, so a late `run show` still
 answers.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the
 first invocation in a session, run
-`orchestratectl version --output json`, parse the JSON, and read
+`taskfleet version --output json`, parse the JSON, and read
 `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Missing**: tell the user to install through a published distribution channel
@@ -557,7 +557,7 @@ first invocation in a session, run
 
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+  originally used (`brew upgrade jarimustonen/taskfleet/taskfleet` or
   re-run the shell installer). Stop and wait — the `run create --kind spinoff` flag
   surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
@@ -576,7 +576,7 @@ first invocation in a session, run
 /worktree-spinoff #142
 
 # Driver mode — only /fan-out and /orchestrate pass these
-orchestratectl run create --kind spinoff \
+taskfleet run create --kind spinoff \
   --title "u-003-receipts" \
   --task "..." \
   --source-branch fan-out/2026-05 \

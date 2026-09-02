@@ -54,10 +54,10 @@ an unmigrated or incompatible project rather than falling back to prose.
 
   ```bash
   # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-  orchestratectl run show "$run_id" --output json | jq '.data.report'
+  taskfleet run show "$run_id" --output json | jq '.data.report'
   # Node-level projection-compatible probe:
   # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-  orchestratectl node show "$run_id" n-0001 --output json |
+  taskfleet node show "$run_id" n-0001 --output json |
     jq '.data.report // .data.last_report'
   ```
 
@@ -75,7 +75,7 @@ an unmigrated or incompatible project rather than falling back to prose.
 0. **Preflight (read-only).** This is the terminal wrap, not a re-orient — but because it
    can be invoked standalone, confirm the ground truth you're about to record is real
    before writing it. Verify a clean-ish worktree (`git status --short`). Inspect
-   `orchestratectl run list --output json` and relevant `run show` records, not just runs
+   `taskfleet run list --output json` and relevant `run show` records, not just runs
    remembered in this conversation. Every live, awaiting-input, recoverable, or otherwise
    resumable worker must have landed or relinquished ownership through a terminal
    cancel/abandon path that confirms no preserved worktree, branch, or resumable work

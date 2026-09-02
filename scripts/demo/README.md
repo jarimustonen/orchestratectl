@@ -38,7 +38,7 @@ bash scripts/demo/wrap.sh
 Example output (illustrative — the count varies with the repo state):
 
 ```
-The orchestratectl repo has 324 files.
+The taskfleet repo has 324 files.
 ```
 
 ## Dependency

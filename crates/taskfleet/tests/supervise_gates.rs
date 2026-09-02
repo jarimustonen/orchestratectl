@@ -1198,7 +1198,7 @@ fn sigterm_flushes_buffered_supervisor_logs() {
     // the slow-write throttle it is provably still buffered at exit. Only the
     // explicit flush_logs() drain on the signal path lands it on disk; without
     // that flush, process::exit cuts the worker off mid-write and it is lost.
-    let log = home.path().join("logs").join("orchestratectl.log.jsonl");
+    let log = home.path().join("logs").join("taskfleet.log.jsonl");
     let contents = std::fs::read_to_string(&log).unwrap_or_default();
     let saw_shutdown_log = contents
         .lines()

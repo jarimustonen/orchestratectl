@@ -18,7 +18,7 @@ expression: value
         "long": "agent-startup-timeout",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Seconds create.sh waits for the freshly launched agent to become discoverable before giving up (forwarded as `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to 90 — higher than create.sh's own 30s default because octl spawns are frequently part of high-fan-out batches that self-load the host; bump it further on an already-loaded box",
+        "help": "Seconds create.sh waits for the freshly launched agent to become discoverable before giving up (forwarded as `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to 90 — higher than create.sh's own 30s default because Taskfleet spawns are frequently part of high-fan-out batches that self-load the host; bump it further on an already-loaded box",
         "value_names": [
           "AGENT_STARTUP_TIMEOUT"
         ],

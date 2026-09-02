@@ -30,7 +30,7 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
 
     for name in skill::bundled_skill_names() {
         let id = format!("skill.sync.{name}");
-        let suggest_install = format!("orchestratectl skill install {name} --force");
+        let suggest_install = format!("taskfleet skill install {name} --force");
 
         let Some(path) = skill::claude_default_path(name) else {
             // HOME unset: cannot locate any install. config.home already
@@ -80,7 +80,7 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
                     format!(
                         "skill '{name}' on disk is cli_version {v}, newer than binary {binary}"
                     ),
-                    "upgrade the orchestratectl binary to match the installed skill",
+                    "upgrade the taskfleet binary to match the installed skill",
                 ));
             }
             None => {
@@ -110,7 +110,7 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
             }
 
             // `skill.orphan.<name>.<file>` — a companion the skill's
-            // provenance marker records as orchestratectl-managed but the
+            // provenance marker records as taskfleet-managed but the
             // current binary no longer bundles: installed by a prior binary,
             // dropped by this one, lingering as a stale sibling. Distinct from
             // the `skill.sync.<name>.<file>` cases above (those audit
@@ -123,17 +123,17 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
                 out.push(CheckResult::warn(
                     format!("skill.orphan.{name}.{filename}"),
                     format!(
-                        "companion '{filename}' for skill '{name}' at {} is orchestratectl-managed but the current binary no longer bundles it (de-registered)",
+                        "companion '{filename}' for skill '{name}' at {} is taskfleet-managed but the current binary no longer bundles it (de-registered)",
                         orphan_path.display()
                     ),
-                    format!("orchestratectl skill install {name} --force"),
+                    format!("taskfleet skill install {name} --force"),
                 ));
             }
         }
     }
 
     // `skill.orphan.<name>` — a claude-layout skill directory that
-    // orchestratectl installed (carries the provenance marker) but the
+    // taskfleet installed (carries the provenance marker) but the
     // running binary no longer ships. This is a renamed/removed bundled
     // skill left stranded as a stale slash-command. `skill install`
     // auto-prunes these on its next full-catalog run, so the fix is a
@@ -143,10 +143,10 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
         out.push(CheckResult::warn(
             format!("skill.orphan.{name}"),
             format!(
-                "skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                "skill '{name}' at {} is taskfleet-managed but no longer in the catalog (de-registered)",
                 dir.display()
             ),
-            "orchestratectl skill install --force",
+            "taskfleet skill install --force",
         ));
     }
 
@@ -161,9 +161,9 @@ pub fn check(_ctx: &Ctx) -> Vec<CheckResult> {
 /// (`~/.pi/agent/skills/<name>/SKILL.md`).
 ///
 /// GATED on the out-of-band pi provenance record: the pi dir carries no in-dir
-/// `.orchestratectl-managed` marker (the `pidev-dual-home-skills` contract
+/// `.taskfleet-managed` marker (the `pidev-dual-home-skills` contract
 /// forbids one), so the record `<root>/state/pi-installed-skills.json` is the
-/// SOLE source of truth for which pi mirrors orchestratectl wrote. An empty
+/// SOLE source of truth for which pi mirrors taskfleet wrote. An empty
 /// record (a host that never dual-homed into pi, or `HOME` unset) yields no pi
 /// checks and keeps a pi-less tree 0-warn — and, crucially, a user's own
 /// hand-authored pi skill is never recorded, so it is never flagged.
@@ -223,17 +223,17 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                 out.push(CheckResult::warn(
                     format!("skill.orphan.{name}.pi"),
                     format!(
-                        "pi skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                        "pi skill '{name}' at {} is taskfleet-managed but no longer in the catalog (de-registered)",
                         path.display()
                     ),
-                    "orchestratectl skill install --force",
+                    "taskfleet skill install --force",
                 ));
             }
             continue;
         }
 
         let id = format!("skill.sync.{name}.pi");
-        let suggest = format!("orchestratectl skill install {name} --force");
+        let suggest = format!("taskfleet skill install {name} --force");
 
         if !path.exists() {
             out.push(CheckResult::warn(
@@ -288,10 +288,10 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                     out.push(CheckResult::warn(
                         format!("skill.orphan.{name}.pi.{filename}"),
                         format!(
-                            "pi companion '{filename}' for skill '{name}' at {} is orchestratectl-managed but the current binary no longer bundles it (de-registered)",
+                            "pi companion '{filename}' for skill '{name}' at {} is taskfleet-managed but the current binary no longer bundles it (de-registered)",
                             orphan_path.display()
                         ),
-                        format!("orchestratectl skill install {name} --force"),
+                        format!("taskfleet skill install {name} --force"),
                     ));
                 }
             }
@@ -317,7 +317,7 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                     (Some(_), Some(_)) => out.push(CheckResult::warn(
                         id,
                         format!(
-                            "pi skill '{name}' differs from the copy orchestratectl wrote while its cli_version matches binary {binary} (possible local edits)"
+                            "pi skill '{name}' differs from the copy taskfleet wrote while its cli_version matches binary {binary} (possible local edits)"
                         ),
                         suggest,
                     )),
@@ -352,7 +352,7 @@ fn check_pi(binary: &str, out: &mut Vec<CheckResult>) {
                     format!(
                         "pi skill '{name}' on disk is cli_version {v}, newer than binary {binary}"
                     ),
-                    "upgrade the orchestratectl binary to match the installed skill",
+                    "upgrade the taskfleet binary to match the installed skill",
                 ));
             }
             None => {
@@ -385,7 +385,7 @@ fn check_pi_companion(
 ) -> CheckResult {
     let filename = companion.filename;
     let id = format!("skill.sync.{skill_name}.pi.{filename}");
-    let suggest = format!("orchestratectl skill install {skill_name} --force");
+    let suggest = format!("taskfleet skill install {skill_name} --force");
 
     let on_disk = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -436,7 +436,7 @@ fn check_pi_companion(
             format!(
                 "pi companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
             ),
-            "upgrade the orchestratectl binary to match the installed skill",
+            "upgrade the taskfleet binary to match the installed skill",
         ),
         Some((_, Ordering::Equal)) => CheckResult::warn(
             id,
@@ -461,7 +461,7 @@ fn check_pi_companion(
 /// codex paths (`~/.codex/prompts/<name>.md` and the shared companions in
 /// `~/.codex/prompts/_shared/<file>`).
 ///
-/// The whole section is GATED on orchestratectl actually managing codex on
+/// The whole section is GATED on taskfleet actually managing codex on
 /// this host: the shared provenance marker records which prompts +
 /// companions we installed, so an absent marker (e.g. a claude-only
 /// install, where codex is a secondary export the user never targeted)
@@ -493,7 +493,7 @@ fn check_codex(binary: &str, out: &mut Vec<CheckResult>) {
         };
         if catalog.contains(name.as_str()) {
             let id = format!("skill.sync.codex.{name}");
-            let suggest = format!("orchestratectl skill install {name} --agent codex --force");
+            let suggest = format!("taskfleet skill install {name} --agent codex --force");
             if !path.exists() {
                 out.push(CheckResult::warn(
                     id,
@@ -523,7 +523,7 @@ fn check_codex(binary: &str, out: &mut Vec<CheckResult>) {
                     format!(
                         "codex skill '{name}' on disk is cli_version {v}, newer than binary {binary}"
                     ),
-                    "upgrade the orchestratectl binary to match the installed skill",
+                    "upgrade the taskfleet binary to match the installed skill",
                 )),
                 None => out.push(CheckResult::warn(
                     id,
@@ -542,10 +542,10 @@ fn check_codex(binary: &str, out: &mut Vec<CheckResult>) {
                 out.push(CheckResult::warn(
                     format!("skill.orphan.codex.{name}"),
                     format!(
-                        "codex skill '{name}' at {} is orchestratectl-managed but no longer in the catalog (de-registered)",
+                        "codex skill '{name}' at {} is taskfleet-managed but no longer in the catalog (de-registered)",
                         path.display()
                     ),
-                    "orchestratectl skill install --agent codex --force",
+                    "taskfleet skill install --agent codex --force",
                 ));
             }
         }
@@ -578,10 +578,10 @@ fn check_codex(binary: &str, out: &mut Vec<CheckResult>) {
             out.push(CheckResult::warn(
                 format!("skill.orphan.codex._shared.{filename}"),
                 format!(
-                    "codex companion '_shared/{filename}' at {} is orchestratectl-managed but no bundled skill references it any more (de-registered)",
+                    "codex companion '_shared/{filename}' at {} is taskfleet-managed but no bundled skill references it any more (de-registered)",
                     path.display()
                 ),
-                "orchestratectl skill install --agent codex --force",
+                "taskfleet skill install --agent codex --force",
             ));
         }
     }
@@ -599,7 +599,7 @@ fn check_codex_companion(
 ) -> CheckResult {
     let filename = companion.filename;
     let id = format!("skill.sync.codex._shared.{filename}");
-    let suggest = "orchestratectl skill install --agent codex --force".to_string();
+    let suggest = "taskfleet skill install --agent codex --force".to_string();
 
     let on_disk = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -650,7 +650,7 @@ fn check_codex_companion(
             format!(
                 "codex companion '_shared/{filename}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
             ),
-            "upgrade the orchestratectl binary, or reinstall with --agent codex --force to restore the bundled companion",
+            "upgrade the taskfleet binary, or reinstall with --agent codex --force to restore the bundled companion",
         ),
         Some((_, Ordering::Equal)) => CheckResult::warn(
             id,
@@ -692,7 +692,7 @@ fn check_companion(
 ) -> CheckResult {
     let filename = companion.filename;
     let id = format!("skill.sync.{skill_name}.{filename}");
-    let suggest_install = format!("orchestratectl skill install {skill_name} --force");
+    let suggest_install = format!("taskfleet skill install {skill_name} --force");
 
     // One read serves both existence and content: `read_to_string` returns
     // `NotFound` for a missing companion (never installed) and a distinct
@@ -756,7 +756,7 @@ fn check_companion(
             format!(
                 "companion '{filename}' for skill '{skill_name}' differs from the bundled copy and declares cli_version {v}, newer than binary {binary}"
             ),
-            "upgrade the orchestratectl binary, or reinstall with --force to restore the bundled companion",
+            "upgrade the taskfleet binary, or reinstall with --force to restore the bundled companion",
         ),
         Some((_, Ordering::Equal)) => CheckResult::warn(
             id,

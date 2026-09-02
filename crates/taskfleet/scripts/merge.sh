@@ -1,9 +1,9 @@
 #!/bin/bash
 # merge.sh — merge a worktree branch back to its target branch.
 #
-# BUNDLED COPY. This script is embedded into the `orchestratectl` binary
+# BUNDLED COPY. This script is embedded into the `taskfleet` binary
 # (see crates/taskfleet/src/run/merge.rs) and materialized to a temp file at
-# runtime by `orchestratectl run merge`. It is the v1 merge-mechanics
+# runtime by `taskfleet run merge`. It is the v1 merge-mechanics
 # backend: it owns the rebase, the portable mkdir lock that serializes
 # concurrent merges, the workmux merge, and the post-merge teardown of the
 # worktree + tmux window + branch. `run merge` wraps it, then submits the terminal

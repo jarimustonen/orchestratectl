@@ -64,7 +64,7 @@ pub struct HelpData {
 /// as a full `CommandNode` so the whole surface is queryable in one call.
 #[derive(Debug, Serialize)]
 pub struct CommandNode {
-    /// Full invocation path, e.g. `orchestratectl run create`.
+    /// Full invocation path, e.g. `taskfleet run create`.
     pub command: String,
     /// One-line description (`about`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,7 +458,7 @@ pub fn resolve_help_request(root: &Command, args: &[String]) -> HelpRequest {
 
     // ...and an explicit machine-output selector. The global `--json`
     // shorthand is equivalent to `--output json` for this early path too;
-    // otherwise `orchestratectl --help --json` would fall through to clap's
+    // otherwise `taskfleet --help --json` would fall through to clap's
     // text renderer before normal output selection gets a chance to run.
     // The `jsonl` default does not count (`value_source` distinguishes it),
     // so a bare `--help` keeps clap's text rendering.

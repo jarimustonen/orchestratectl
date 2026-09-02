@@ -1,6 +1,6 @@
 ---
 name: worktree-merge
-description: Merge a completed orchestratectl worktree branch back to its source/parent branch and tear the worktree down — branch rebased + merged, terminal `node report` submitted, and the tmux window + worktree + branch removed by the supervisor, all in ONE `orchestratectl run merge` call. Use when an autonomous worktree (spinoff, research, technical-decision, or a fan-out unit) reaches its merge-and-report step. Replaces the old two-step `/worktree-merge` + `orchestratectl node report` sequence. For a feature branch and main that have both diverged so far an ordinary rebase fails, recover with `/complex-rebase` then re-run.
+description: Merge a completed taskfleet worktree branch back to its source/parent branch and tear the worktree down — branch rebased + merged, terminal `node report` submitted, and the tmux window + worktree + branch removed by the supervisor, all in ONE `taskfleet run merge` call. Use when an autonomous worktree (spinoff, research, technical-decision, or a fan-out unit) reaches its merge-and-report step. Replaces the old two-step `/worktree-merge` + `taskfleet node report` sequence. For a feature branch and main that have both diverged so far an ordinary rebase fails, recover with `/complex-rebase` then re-run.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -9,7 +9,7 @@ schema_version: 1
 # worktree-merge
 
 Merge a worktree run's branch back to its source branch and tear the
-worktree down — in one step. `orchestratectl run merge` owns the whole
+worktree down — in one step. `taskfleet run merge` owns the whole
 lifecycle:
 
 1. **Rebase + merge** the worktree branch onto its source (via the bundled
@@ -23,10 +23,10 @@ lifecycle:
    for you to clean up by hand.
 
 This replaces the old two-step dance (`/worktree-merge` to merge, then a
-separate `orchestratectl node report` to release the supervisor). One call
+separate `taskfleet node report` to release the supervisor). One call
 now does both.
 
-If you have not read it, read the `orchestratectl-overview` skill first —
+If you have not read it, read the `taskfleet-overview` skill first —
 it defines the run / supervisor / node vocabulary this skill assumes.
 
 ## When to use
@@ -37,8 +37,8 @@ it defines the run / supervisor / node vocabulary this skill assumes.
   step.
 - ❌ The branch and its source have diverged so far an ordinary rebase
   cannot reconcile them → run `/complex-rebase` first, then come back.
-- ❌ You are NOT inside a worktree run managed by orchestratectl (no
-  `~/.orchestratectl/runs/<id>/` for this branch) → this is a plain git
+- ❌ You are NOT inside a worktree run managed by taskfleet (no
+  `~/.taskfleet/runs/<id>/` for this branch) → this is a plain git
   branch; use `/git-rebase` + a normal merge instead.
 
 ## Workflow
@@ -50,7 +50,7 @@ it defines the run / supervisor / node vocabulary this skill assumes.
    main into itself.
 2. Commit first. The merge refuses on an uncommitted working tree — run
    `/git-commit` if `git status --porcelain` is non-empty.
-3. `orchestratectl version --output json` once per session; compare
+3. `taskfleet version --output json` once per session; compare
    `.data.version` to `{{CLI_VERSION}}` (see "Install or upgrade").
 
 ### 1. Resolve the exact owning run id
@@ -60,7 +60,7 @@ durable node ownership record — never from the branch's display identifier,
 which is a lossy bounded fragment that can repeat, not ownership:
 
 ```bash
-run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
   echo "failed to resolve exact owning run id" >&2
   exit 1
 }
@@ -110,7 +110,7 @@ JSON
 ### 3. Merge
 
 ```bash
-orchestratectl run merge "$run_id" \
+taskfleet run merge "$run_id" \
   [--source <branch>] \
   [--report-file /tmp/node-report-${run_id}.json]
 ```
@@ -201,15 +201,15 @@ Likely codes:
 
 After a successful merge the run is terminal:
 
-- `orchestratectl run show <run-id>` — `status` reads `done` (or
+- `taskfleet run show <run-id>` — `status` reads `done` (or
   `failed`); the worktree/window are gone.
-- `orchestratectl node show <run-id> n-0001` — the terminal report you
+- `taskfleet node show <run-id> n-0001` — the terminal report you
   submitted, with `via: "explicit-merge"`.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the first
-invocation in a session, run `orchestratectl version --output json`, parse
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the first
+invocation in a session, run `taskfleet version --output json`, parse
 the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Missing**: tell the user to install through a published distribution channel
@@ -217,7 +217,7 @@ the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 
 - **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
   `{{CLI_VERSION}}` and suggest upgrading via the same channel they
-  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+  originally used (`brew upgrade jarimustonen/taskfleet/taskfleet` or
   re-run the shell installer).
   Stop and wait — the `run merge` flag surface may have changed.
 - **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
@@ -231,12 +231,12 @@ the JSON, and read `.data.version`. Compare it to `{{CLI_VERSION}}`:
 ```
 # Minimal: a spinoff worktree merges back to its recorded source with an
 # auto-generated report.
-run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || exit 1
-orchestratectl run merge "$run_id"
+run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || exit 1
+taskfleet run merge "$run_id"
 
 # Structured: a research worktree merges and delivers a §7.3 report.
-orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 
 # Fan-out unit: merges back into the shared source branch and reports.
-orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
 ```

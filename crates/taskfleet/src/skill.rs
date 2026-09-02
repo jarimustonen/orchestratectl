@@ -112,28 +112,28 @@ fn codex_companion_path(skill_path: &Path, filename: &str) -> PathBuf {
 
 const SKILLS: &[EmbeddedSkill] = &[
     EmbeddedSkill {
-        name: "orchestratectl-overview",
+        name: "taskfleet-overview",
         body: include_str!(concat!(
             env!("OUT_DIR"),
-            "/skills/orchestratectl-overview/SKILL.md"
+            "/skills/taskfleet-overview/SKILL.md"
         )),
-        path_in_repo: "crates/taskfleet/skills/orchestratectl-overview/SKILL.template.md",
+        path_in_repo: "crates/taskfleet/skills/taskfleet-overview/SKILL.template.md",
     },
     EmbeddedSkill {
-        name: "octl-run-overview",
+        name: "taskfleet-run-overview",
         body: include_str!(concat!(
             env!("OUT_DIR"),
-            "/skills/octl-run-overview/SKILL.md"
+            "/skills/taskfleet-run-overview/SKILL.md"
         )),
-        path_in_repo: "crates/taskfleet/skills/octl-run-overview/SKILL.template.md",
+        path_in_repo: "crates/taskfleet/skills/taskfleet-run-overview/SKILL.template.md",
     },
     EmbeddedSkill {
-        name: "octl-spawn-spinoff",
+        name: "taskfleet-spawn-spinoff",
         body: include_str!(concat!(
             env!("OUT_DIR"),
-            "/skills/octl-spawn-spinoff/SKILL.md"
+            "/skills/taskfleet-spawn-spinoff/SKILL.md"
         )),
-        path_in_repo: "crates/taskfleet/skills/octl-spawn-spinoff/SKILL.template.md",
+        path_in_repo: "crates/taskfleet/skills/taskfleet-spawn-spinoff/SKILL.template.md",
     },
     EmbeddedSkill {
         name: "worktree-spinoff",
@@ -211,11 +211,34 @@ pub const SKILL_SCHEMA_VERSION: u32 = 1;
 
 /// Provenance marker filename. `cmd_install` drops this hidden file into
 /// every claude-layout skill directory it writes (`~/.claude/skills/
-/// <name>/.orchestratectl-managed`). Its *presence* is the ONLY signal
+/// <name>/.Taskfleet-managed`). Its *presence* is the ONLY signal
 /// `prune` and the `skill.orphan.*` doctor check use to decide a directory
 /// is safe to delete: a user's own hand-authored skill of the same name
 /// never carries it, so it is never touched. See `is_managed_skill_dir`.
-const MANAGED_MARKER_FILENAME: &str = ".orchestratectl-managed";
+const MANAGED_MARKER_FILENAME: &str = ".taskfleet-managed";
+const LEGACY_MANAGED_MARKER_FILENAME: &str = ".orchestratectl-managed";
+
+/// Taskfleet-owned skill identities renamed by ADR 0002. The legacy SHA-256
+/// values are the exact 0.5.1 rendered `SKILL.md` bytes. They are the migration
+/// authority: name/marker presence alone never authorizes moving or deleting a
+/// legacy file, because a user may have edited or taken it over.
+const LEGACY_SKILL_MIGRATIONS: &[(&str, &str, &str)] = &[
+    (
+        "orchestratectl-overview",
+        "taskfleet-overview",
+        "92ee1771985a1d2f8a88fc18eeb9fa04032c004fd82bf22836384b6c5a232170",
+    ),
+    (
+        "octl-run-overview",
+        "taskfleet-run-overview",
+        "93ac52c3002307b948280fe2780a11d64cea0f45288cb5a3735a3fb7e80c9df2",
+    ),
+    (
+        "octl-spawn-spinoff",
+        "taskfleet-spawn-spinoff",
+        "caca16387c6e8409f49ae92d8fa90bb33dc5f1b6b0c089fe104d09f7415b27a0",
+    ),
+];
 
 /// Public catalog entry used by `version --json` to expose the bundled
 /// skill set (AGENTS-AI-FIRST-CLI §17). The on-disk skill is the source
@@ -638,11 +661,26 @@ pub fn cmd_install(
         }
     }
 
+    // Validate the complete ordinary install plan before identity migration
+    // performs its first rename. Migration can make previously-absent canonical
+    // targets present, so run the same preflight again afterward to authorize
+    // those exact forced overwrites.
+    let _ = preflight(&plan, force)?;
+    let mut migration_warnings = Vec::new();
+    if force && dest.is_none() {
+        migrate_legacy_owned_skills(
+            name,
+            agent,
+            pi_provenance.as_mut().map(|(_, p)| p),
+            &mut migration_warnings,
+        )?;
+    }
     let preflight_result = preflight(&plan, force)?;
 
     // Combine caller-provided warnings (logging init, etc.) with
     // drift-detected ones so the success envelope surfaces both.
     let mut all_warnings: Vec<String> = warnings.to_vec();
+    all_warnings.extend(migration_warnings);
     all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
@@ -729,7 +767,10 @@ pub fn cmd_install(
         // Start the new record with everything this binary bundles, then
         // reconcile the companions the prior marker recorded.
         let mut recorded: Vec<String> = bundled.iter().copied().map(String::from).collect();
-        for prev in read_managed_companions(&marker_path) {
+        let legacy_marker_path = dir.join(LEGACY_MANAGED_MARKER_FILENAME);
+        let mut prior_companions = read_managed_companions(&marker_path);
+        prior_companions.extend(read_managed_companions(&legacy_marker_path));
+        for prev in prior_companions {
             if bundled.iter().any(|b| *b == prev) {
                 continue; // still bundled — already in `recorded`
             }
@@ -769,6 +810,19 @@ pub fn cmd_install(
         recorded.sort();
         recorded.dedup();
         write_marker(&marker_path, skill_name, &recorded)?;
+        if fs::symlink_metadata(&legacy_marker_path).is_ok_and(|m| m.file_type().is_file())
+            && fs::read_to_string(&legacy_marker_path).is_ok_and(|body| {
+                body.lines()
+                    .any(|line| line.trim() == "managed-by: orchestratectl")
+            })
+        {
+            fs::remove_file(&legacy_marker_path).map_err(|e| {
+                CliError::system(
+                    "marker_write_failed",
+                    format!("could not retire {}: {e}", legacy_marker_path.display()),
+                )
+            })?;
+        }
     }
 
     // Prune de-registered managed skills. Scoped to the full-catalog
@@ -793,20 +847,22 @@ pub fn cmd_install(
         if let Some(root) = claude_skills_root() {
             let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
             for (orphan_name, orphan_path) in managed_orphan_dirs(&root, &registered) {
-                match fs::remove_dir_all(&orphan_path) {
-                    Ok(()) => {
+                match prune_managed_claude_dir(&orphan_path) {
+                    Ok(true) => {
                         all_warnings.push(format!(
                             "skill_pruned: removed de-registered managed skill '{orphan_name}' at {}",
                             orphan_path.display()
                         ));
                         pruned.push(orphan_name);
                     }
-                    Err(e) => {
-                        all_warnings.push(format!(
-                            "skill_prune_failed: could not remove de-registered skill '{orphan_name}' at {}: {e}",
-                            orphan_path.display()
-                        ));
-                    }
+                    Ok(false) => all_warnings.push(format!(
+                        "skill_prune_preserved: de-registered skill '{orphan_name}' contains edited or user-owned bytes at {}; left unchanged",
+                        orphan_path.display()
+                    )),
+                    Err(e) => all_warnings.push(format!(
+                        "skill_prune_failed: could not remove de-registered skill '{orphan_name}' at {}: {e}",
+                        orphan_path.display()
+                    )),
                 }
             }
         }
@@ -814,8 +870,8 @@ pub fn cmd_install(
 
     // Codex flat-layout provenance + prune. Codex's prompts dir is flat (no
     // per-skill directory), so a single shared marker at
-    // `_shared/.orchestratectl-managed` records which prompts + companions
-    // orchestratectl installed there — the only signal that makes codex-side
+    // `_shared/.Taskfleet-managed` records which prompts + companions
+    // Taskfleet installed there — the only signal that makes codex-side
     // pruning + orphan detection safe. Maintained whenever the codex layout
     // is installed to its DEFAULT path (never for a caller-managed `--dest`).
     // The marker MERGES with any prior record (union) so a targeted
@@ -842,6 +898,19 @@ pub fn cmd_install(
             // that must recognise a de-registered entry) keeps the full set.
             recorded_prompts.extend(read_marker_records(&marker_path, "prompt"));
             recorded_companions.extend(read_marker_records(&marker_path, "companion"));
+            let legacy_marker = shared_root.join(LEGACY_MANAGED_MARKER_FILENAME);
+            recorded_prompts.extend(read_marker_records(&legacy_marker, "prompt"));
+            recorded_companions.extend(read_marker_records(&legacy_marker, "companion"));
+            // A successfully moved legacy prompt is now tracked under its
+            // canonical identity. A stale/edited or partial old/new prompt is
+            // deliberately retained under the old record.
+            for &(legacy, canonical, _) in LEGACY_SKILL_MIGRATIONS {
+                let old_exists = prompts_root.join(format!("{legacy}.md")).exists();
+                let new_exists = prompts_root.join(format!("{canonical}.md")).exists();
+                if !old_exists && new_exists && recorded_prompts.remove(legacy) {
+                    recorded_prompts.insert(canonical.to_string());
+                }
+            }
 
             let codex_prune_eligible = name.is_none() && force;
             if codex_prune_eligible {
@@ -860,6 +929,18 @@ pub fn cmd_install(
                     .collect();
                 for orphan in orphan_prompts {
                     let prompt_path = prompts_root.join(format!("{orphan}.md"));
+                    if let Some((_, _, expected_hash)) = LEGACY_SKILL_MIGRATIONS
+                        .iter()
+                        .find(|(legacy, _, _)| *legacy == orphan)
+                    {
+                        if file_sha256(&prompt_path).as_deref() != Some(*expected_hash) {
+                            all_warnings.push(format!(
+                                "skill_prune_preserved: legacy codex prompt '{orphan}' differs from its recorded catalog hash; left unchanged"
+                            ));
+                            recorded_prompts.remove(&orphan);
+                            continue;
+                        }
+                    }
                     match prune_codex_file(
                         &prompt_path,
                         &format!("skill_pruned: removed de-registered managed codex prompt '{orphan}'"),
@@ -920,6 +1001,23 @@ pub fn cmd_install(
                 )
             })?;
             write_codex_marker(&marker_path, &prompts, &companions)?;
+            // The canonical marker now contains the validated union (including
+            // any deliberately preserved legacy records). Retire the old
+            // authority so removed names cannot be resurrected on every read.
+            let legacy_marker = shared_root.join(LEGACY_MANAGED_MARKER_FILENAME);
+            if fs::symlink_metadata(&legacy_marker).is_ok_and(|m| m.file_type().is_file())
+                && fs::read_to_string(&legacy_marker).is_ok_and(|body| {
+                    body.lines()
+                        .any(|line| line.trim() == "managed-by: orchestratectl")
+                })
+            {
+                fs::remove_file(&legacy_marker).map_err(|e| {
+                    CliError::system(
+                        "marker_write_failed",
+                        format!("could not retire {}: {e}", legacy_marker.display()),
+                    )
+                })?;
+            }
         }
     }
 
@@ -1026,6 +1124,15 @@ pub fn cmd_install(
                 .cloned()
                 .collect();
             for orphan in orphan_names {
+                if LEGACY_SKILL_MIGRATIONS
+                    .iter()
+                    .any(|(legacy, _, _)| *legacy == orphan)
+                {
+                    all_warnings.push(format!(
+                        "skill_identity_preserved: legacy pi skill '{orphan}' did not match the 0.5.1 migration authority; left unchanged"
+                    ));
+                    continue;
+                }
                 // Never let a record-sourced key that is not a single normal path
                 // component reach the filesystem (review finding E). It stays in
                 // the record (inert — doctor skips it too) but is never acted on.
@@ -1399,20 +1506,24 @@ pub fn codex_shared_root() -> Option<PathBuf> {
 }
 
 /// Path to the single codex provenance marker
-/// (`~/.codex/prompts/_shared/.orchestratectl-managed`). `None` when `HOME`
+/// (`~/.codex/prompts/_shared/.Taskfleet-managed`). `None` when `HOME`
 /// is unset. Codex's prompts dir is flat, so — unlike claude's per-skill
 /// directory marker — ONE shared marker records every prompt + companion
-/// orchestratectl installed there. Its presence is what makes codex-side
+/// Taskfleet installed there. Its presence is what makes codex-side
 /// pruning + orphan detection safe: a user's own prompt of the same name is
 /// never recorded, so it is never touched.
 fn codex_marker_path() -> Option<PathBuf> {
     codex_shared_root().map(|p| p.join(MANAGED_MARKER_FILENAME))
 }
 
+fn legacy_codex_marker_path() -> Option<PathBuf> {
+    codex_shared_root().map(|p| p.join(LEGACY_MANAGED_MARKER_FILENAME))
+}
+
 /// Codex prompt names the shared provenance marker records as
-/// orchestratectl-managed (sorted, deduped). Empty when `HOME` is unset or
+/// Taskfleet-managed (sorted, deduped). Empty when `HOME` is unset or
 /// the marker is absent/unreadable — which is precisely the signal that
-/// orchestratectl does not manage codex on this host (e.g. a claude-only
+/// Taskfleet does not manage codex on this host (e.g. a claude-only
 /// install), so `doctor` emits no codex checks and a claude-primary tree
 /// stays 0-warn.
 pub fn codex_managed_prompts() -> Vec<String> {
@@ -1420,13 +1531,16 @@ pub fn codex_managed_prompts() -> Vec<String> {
         return Vec::new();
     };
     let mut v = read_marker_records(&marker, "prompt");
+    if let Some(legacy) = legacy_codex_marker_path() {
+        v.extend(read_marker_records(&legacy, "prompt"));
+    }
     v.sort();
     v.dedup();
     v
 }
 
 /// Companion filenames the shared codex provenance marker records as
-/// managed — the `_shared/<file>` companions orchestratectl installed
+/// managed — the `_shared/<file>` companions Taskfleet installed
 /// (sorted, deduped). Empty under the same conditions as
 /// [`codex_managed_prompts`].
 pub fn codex_managed_companions() -> Vec<String> {
@@ -1434,6 +1548,9 @@ pub fn codex_managed_companions() -> Vec<String> {
         return Vec::new();
     };
     let mut v = read_marker_records(&marker, "companion");
+    if let Some(legacy) = legacy_codex_marker_path() {
+        v.extend(read_marker_records(&legacy, "companion"));
+    }
     v.sort();
     v.dedup();
     v
@@ -1443,14 +1560,14 @@ pub fn codex_managed_companions() -> Vec<String> {
 // pi.dev mirror lifecycle (out-of-band provenance).
 //
 // The pi mirror (`~/.pi/agent/skills/<name>/SKILL.md`, written by `cmd_install`)
-// deliberately carries NO in-dir `.orchestratectl-managed` marker — the
+// deliberately carries NO in-dir `.Taskfleet-managed` marker — the
 // `pidev-dual-home-skills` contract forbids one so the pi corpus stays a pure
 // skill-body mirror. Without an in-dir provenance signal we cannot tell an
-// orchestratectl-written pi dir from a user's own hand-authored pi skill, so a
+// Taskfleet-written pi dir from a user's own hand-authored pi skill, so a
 // naive "pi orphan" prune/warn would false-positive on every user skill.
 //
 // The provenance therefore lives OUT-OF-BAND, in a single JSON record under the
-// orchestratectl state root (`<root>/state/pi-installed-skills.json`), keyed by
+// taskfleet state root (`<root>/state/pi-installed-skills.json`), keyed by
 // skill name → a flat per-file map (`files: { <relpath>: { sha256, kind } }`)
 // of every mirrored file we last wrote (the `SKILL.md` body AND each companion
 // sibling), plus the skill's `cli_version`. It is the SOLE authority for two
@@ -1510,7 +1627,7 @@ enum PiFileKind {
     Companion,
 }
 
-/// One mirrored pi file orchestratectl wrote (the `SKILL.md` body OR a companion
+/// One mirrored pi file Taskfleet wrote (the `SKILL.md` body OR a companion
 /// sibling), tracked independently in its owning skill's `files` map.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PiFileRecord {
@@ -1523,7 +1640,7 @@ struct PiFileRecord {
     kind: PiFileKind,
 }
 
-/// Flat per-file provenance for one pi mirror: which files orchestratectl wrote
+/// Flat per-file provenance for one pi mirror: which files Taskfleet wrote
 /// under `~/.pi/agent/skills/<name>/` and their content hash + kind. Replaces
 /// the pre-v3 body-owns-companions nesting so every file's
 /// ownership/relinquish/retry decision is independent.
@@ -1580,7 +1697,7 @@ impl From<RawPiSkillRecord> for PiSkillRecord {
         // entry with `sha256: ""` — a pre-flat `pi_companion_unrecorded` edge
         // (or a hand-edit) could leave one, and an empty-hash body entry would
         // make `doctor`'s same-version content check spuriously report the real
-        // on-disk body as "differs from the copy orchestratectl wrote".
+        // on-disk body as "differs from the copy Taskfleet wrote".
         if let Some(sha256) = raw.sha256.filter(|s| !s.is_empty()) {
             files.insert(
                 PI_SKILL_FILENAME.to_string(),
@@ -1634,7 +1751,7 @@ impl PiSkillRecord {
     }
 }
 
-/// The out-of-band pi provenance record: which pi mirrors orchestratectl wrote
+/// The out-of-band pi provenance record: which pi mirrors Taskfleet wrote
 /// and their content hash + version. A `BTreeMap` keeps the on-disk JSON
 /// deterministic (sorted keys) so a redeploy that changes nothing produces
 /// byte-identical output.
@@ -1654,6 +1771,180 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+fn legacy_marker_owns_claude(dir: &Path, legacy_name: &str) -> bool {
+    let marker = dir.join(LEGACY_MANAGED_MARKER_FILENAME);
+    fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir())
+        && fs::symlink_metadata(dir.join(PI_SKILL_FILENAME)).is_ok_and(|m| m.file_type().is_file())
+        && fs::symlink_metadata(&marker).is_ok_and(|m| m.file_type().is_file())
+        && fs::read_to_string(marker).is_ok_and(|body| {
+            body.lines()
+                .any(|l| l.trim() == "managed-by: orchestratectl")
+                && body.lines().any(|l| {
+                    l.trim()
+                        .strip_prefix("skill_name:")
+                        .is_some_and(|v| v.trim() == legacy_name)
+                })
+        })
+}
+
+fn legacy_dir_contains_only(dir: &Path, allowed: &[&str]) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| allowed.contains(&name))
+    })
+}
+
+fn rename_if_absent(from: &Path, to: &Path) -> Result<bool, CliError> {
+    if fs::symlink_metadata(to).is_ok() || fs::symlink_metadata(from).is_err() {
+        return Ok(false);
+    }
+    fs::rename(from, to).map_err(|e| {
+        CliError::system(
+            "skill_migration_failed",
+            format!(
+                "could not migrate {} to {}: {e}",
+                from.display(),
+                to.display()
+            ),
+        )
+    })?;
+    Ok(true)
+}
+
+/// Migrate only Taskfleet-owned renamed skills whose old bytes still match the
+/// hash recorded by the owning 0.5.1 catalog/provenance. This function never
+/// removes a divergent file and never resolves a partial old/new layout by
+/// preference; both copies remain for an operator to inspect.
+fn migrate_legacy_owned_skills(
+    requested: Option<&str>,
+    agent: AgentTarget,
+    mut pi_provenance: Option<&mut PiProvenance>,
+    warnings: &mut Vec<String>,
+) -> Result<(), CliError> {
+    let selected = |canonical: &str| requested.is_none() || requested == Some(canonical);
+    let home = match std::env::var("HOME") {
+        Ok(home) => PathBuf::from(home),
+        Err(_) => return Ok(()),
+    };
+
+    for &(legacy, canonical, expected_hash) in LEGACY_SKILL_MIGRATIONS {
+        if !selected(canonical) {
+            continue;
+        }
+
+        if matches!(agent, AgentTarget::Claude | AgentTarget::All) {
+            let old_dir = home.join(".claude/skills").join(legacy);
+            let new_dir = home.join(".claude/skills").join(canonical);
+            let old_body = old_dir.join(PI_SKILL_FILENAME);
+            let claude_owned = legacy_marker_owns_claude(&old_dir, legacy)
+                && file_sha256(&old_body).as_deref() == Some(expected_hash);
+            if claude_owned && fs::symlink_metadata(&new_dir).is_ok() {
+                if requested.is_some() {
+                    return Err(CliError::user(
+                        "skill_identity_conflict",
+                        format!("both legacy '{legacy}' and canonical '{canonical}' exist; refusing a targeted overwrite"),
+                    ));
+                }
+                warnings.push(format!(
+                    "skill_identity_preserved: both legacy '{legacy}' and canonical '{canonical}' exist; left legacy bytes unchanged"
+                ));
+            } else if claude_owned
+                && legacy_dir_contains_only(
+                    &old_dir,
+                    &[PI_SKILL_FILENAME, LEGACY_MANAGED_MARKER_FILENAME],
+                )
+                && rename_if_absent(&old_dir, &new_dir)?
+            {
+                warnings.push(format!(
+                    "skill_identity_migrated: {legacy} -> {canonical} (claude; recorded hash matched)"
+                ));
+            }
+
+            if let Some(prov) = pi_provenance.as_deref_mut() {
+                let old_dir = home.join(".pi/agent/skills").join(legacy);
+                let new_dir = home.join(".pi/agent/skills").join(canonical);
+                let tracked = prov
+                    .skills
+                    .get(legacy)
+                    .and_then(PiSkillRecord::body_hash)
+                    .is_some_and(|hash| hash == expected_hash);
+                let pi_owned = tracked
+                    && fs::symlink_metadata(&old_dir).is_ok_and(|m| m.file_type().is_dir())
+                    && fs::symlink_metadata(old_dir.join(PI_SKILL_FILENAME))
+                        .is_ok_and(|m| m.file_type().is_file())
+                    && file_sha256(&old_dir.join(PI_SKILL_FILENAME)).as_deref()
+                        == Some(expected_hash);
+                if pi_owned
+                    && (prov.skills.contains_key(canonical)
+                        || fs::symlink_metadata(&new_dir).is_ok())
+                {
+                    if requested.is_some() {
+                        return Err(CliError::user(
+                            "skill_identity_conflict",
+                            format!("both legacy pi '{legacy}' and canonical '{canonical}' exist; refusing a targeted overwrite"),
+                        ));
+                    }
+                    warnings.push(format!(
+                        "skill_identity_preserved: both legacy pi '{legacy}' and canonical '{canonical}' exist; left legacy bytes unchanged"
+                    ));
+                } else if pi_owned
+                    && legacy_dir_contains_only(&old_dir, &[PI_SKILL_FILENAME])
+                    && rename_if_absent(&old_dir, &new_dir)?
+                {
+                    if let Some(record) = prov.skills.remove(legacy) {
+                        prov.skills.insert(canonical.to_string(), record);
+                    }
+                    warnings.push(format!(
+                        "skill_identity_migrated: {legacy} -> {canonical} (pi; recorded hash matched)"
+                    ));
+                }
+            }
+        }
+
+        if matches!(agent, AgentTarget::Codex | AgentTarget::All) {
+            let old_prompt = home.join(".codex/prompts").join(format!("{legacy}.md"));
+            let new_prompt = home.join(".codex/prompts").join(format!("{canonical}.md"));
+            let legacy_marker = home
+                .join(".codex/prompts")
+                .join(CODEX_SHARED_SUBDIR)
+                .join(LEGACY_MANAGED_MARKER_FILENAME);
+            let marker_owns = fs::read_to_string(&legacy_marker).is_ok_and(|body| {
+                body.lines()
+                    .any(|l| l.trim() == "managed-by: orchestratectl")
+                    && body.lines().any(|l| {
+                        l.trim()
+                            .strip_prefix("prompt:")
+                            .is_some_and(|v| v.trim() == legacy)
+                    })
+            });
+            let codex_owned = marker_owns
+                && fs::symlink_metadata(&old_prompt).is_ok_and(|m| m.file_type().is_file())
+                && file_sha256(&old_prompt).as_deref() == Some(expected_hash);
+            if codex_owned && fs::symlink_metadata(&new_prompt).is_ok() {
+                if requested.is_some() {
+                    return Err(CliError::user(
+                        "skill_identity_conflict",
+                        format!("both legacy codex '{legacy}' and canonical '{canonical}' exist; refusing a targeted overwrite"),
+                    ));
+                }
+                warnings.push(format!(
+                    "skill_identity_preserved: both legacy codex '{legacy}' and canonical '{canonical}' exist; left legacy bytes unchanged"
+                ));
+            } else if codex_owned && rename_if_absent(&old_prompt, &new_prompt)? {
+                warnings.push(format!(
+                    "skill_identity_migrated: {legacy} -> {canonical} (codex; recorded hash matched)"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Root of the pi.dev skill-mirror layout (`~/.pi/agent/skills`). `None` when
@@ -1699,8 +1990,8 @@ pub fn is_simple_skill_name(name: &str) -> bool {
 /// Path to the single out-of-band pi provenance record
 /// (`<orchestratectl-root>/state/pi-installed-skills.json`). `None` when the
 /// resolved Taskfleet root cannot be established.
-/// Deliberately rooted at the orchestratectl STATE dir, not `~/.pi` — the pi
-/// corpus must stay a pure body mirror with no orchestratectl bookkeeping in it.
+/// Deliberately rooted at the Taskfleet state dir, not `~/.pi` — the pi
+/// corpus must stay a pure body mirror with no Taskfleet bookkeeping in it.
 fn pi_provenance_path() -> Option<PathBuf> {
     home::root_dir()
         .ok()
@@ -1764,7 +2055,7 @@ fn load_pi_provenance_for_write(path: &Path) -> Result<PiProvenance, CliError> {
         return Err(CliError::system(
             "pi_provenance_schema_too_new",
             format!(
-                "pi provenance record {} uses schema {} but this binary understands only {}; refusing to overwrite it. Upgrade orchestratectl.",
+                "pi provenance record {} uses schema {} but this binary understands only {}; refusing to overwrite it. Upgrade taskfleet.",
                 path.display(),
                 prov.schema_version,
                 PI_PROVENANCE_SCHEMA_VERSION
@@ -1791,10 +2082,10 @@ fn write_pi_provenance(path: &Path, prov: &PiProvenance) -> Result<(), CliError>
     write_atomic(path, &body, true)
 }
 
-/// The skill names the pi provenance record lists as orchestratectl-managed,
+/// The skill names the pi provenance record lists as Taskfleet-managed,
 /// each with its recorded content hash (sorted by name). Empty
 /// when `HOME`/root is unset or the record is absent — precisely the signal
-/// that orchestratectl does not manage a pi mirror on this host, so `doctor`
+/// that Taskfleet does not manage a pi mirror on this host, so `doctor`
 /// emits no pi checks. Consumed by the `skill.sync.<name>.pi` /
 /// `skill.orphan.<name>.pi` doctor checks.
 pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
@@ -1810,7 +2101,7 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
             // `SKILL.md` hash against the recorded body hash. `None` when only a
             // companion was ever recorded (the body write was skipped) — doctor
             // must then NOT fabricate a body hash and claim the real on-disk body
-            // "differs from the copy orchestratectl wrote". Companions are
+            // "differs from the copy Taskfleet wrote". Companions are
             // surfaced regardless.
             PiManagedSkill {
                 name,
@@ -1824,7 +2115,7 @@ pub fn pi_managed_skills() -> Vec<PiManagedSkill> {
 }
 
 /// One managed pi mirror surfaced to `doctor`: the skill name plus the content
-/// hash orchestratectl recorded when it last wrote the mirror. The hash lets the
+/// hash Taskfleet recorded when it last wrote the mirror. The hash lets the
 /// drift check detect a same-version local edit (on-disk bytes no longer match
 /// what we wrote) without holding the bundled body. (The record also carries the
 /// written `cli_version`, but the doctor reads the on-disk `cli_version` for a
@@ -1851,14 +2142,14 @@ pub fn file_sha256(path: &Path) -> Option<String> {
     fs::read(path).ok().map(|b| sha256_hex(&b))
 }
 
-/// True when `dir` is a claude-layout skill directory that orchestratectl
+/// True when `dir` is a claude-layout skill directory that Taskfleet
 /// installed. The guard is deliberately strict — its `true` is the SOLE
 /// authorization for a recursive `remove_dir_all`, so it must never yield
 /// a false positive on a user's own directory. Three conditions must ALL
 /// hold:
 ///
 /// 1. The marker is a **regular file** (`symlink_metadata`, which does not
-///    follow links) — a planted `.orchestratectl-managed` *symlink* cannot
+///    follow links) — a planted `.Taskfleet-managed` *symlink* cannot
 ///    make a directory look managed.
 /// 2. The marker carries the `managed-by: orchestratectl` stamp.
 /// 3. The marker's recorded `skill_name` equals this directory's name.
@@ -1881,15 +2172,46 @@ fn is_managed_skill_dir(dir: &Path) -> bool {
     };
     let mut has_stamp = false;
     let mut name_matches = false;
+    let mut recorded_hash = None;
     for line in content.lines() {
         let line = line.trim();
-        if line == "managed-by: orchestratectl" {
+        if line == "managed-by: taskfleet" {
             has_stamp = true;
         } else if let Some(rest) = line.strip_prefix("skill_name:") {
             name_matches = rest.trim() == dir_name;
+        } else if let Some(rest) = line.strip_prefix("sha256:") {
+            recorded_hash = Some(rest.trim());
         }
     }
-    has_stamp && name_matches
+    has_stamp
+        && name_matches
+        && recorded_hash
+            .is_some_and(|hash| file_sha256(&dir.join(PI_SKILL_FILENAME)).as_deref() == Some(hash))
+}
+
+/// Prune only bytes whose canonical marker hash proves Taskfleet wrote them.
+/// Unknown siblings and edited bodies are never recursively deleted.
+fn prune_managed_claude_dir(dir: &Path) -> std::io::Result<bool> {
+    if !is_managed_skill_dir(dir)
+        || !legacy_dir_contains_only(
+            dir,
+            &[
+                PI_SKILL_FILENAME,
+                MANAGED_MARKER_FILENAME,
+                LEGACY_MANAGED_MARKER_FILENAME,
+            ],
+        )
+    {
+        return Ok(false);
+    }
+    fs::remove_file(dir.join(PI_SKILL_FILENAME))?;
+    fs::remove_file(dir.join(MANAGED_MARKER_FILENAME))?;
+    let legacy = dir.join(LEGACY_MANAGED_MARKER_FILENAME);
+    if fs::symlink_metadata(&legacy).is_ok_and(|m| m.file_type().is_file()) {
+        fs::remove_file(legacy)?;
+    }
+    fs::remove_dir(dir)?;
+    Ok(true)
 }
 
 /// Write (or overwrite) the provenance marker for skill `skill_name` at
@@ -1906,8 +2228,11 @@ fn is_managed_skill_dir(dir: &Path) -> bool {
 /// user's permissions).
 fn write_marker(path: &Path, skill_name: &str, companions: &[String]) -> Result<(), CliError> {
     clear_marker_symlink(path)?;
+    let skill_hash = lookup(skill_name)
+        .map(|skill| sha256_hex(skill.body.as_bytes()))
+        .unwrap_or_default();
     let mut body = format!(
-        "managed-by: orchestratectl\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\n"
+        "managed-by: taskfleet\ncli_version: {CLI_VERSION}\nskill_name: {skill_name}\nsha256: {skill_hash}\n"
     );
     for companion in companions {
         body.push_str("companion: ");
@@ -1927,7 +2252,7 @@ fn write_marker(path: &Path, skill_name: &str, companions: &[String]) -> Result<
 }
 
 /// Write (or overwrite) the SINGLE codex provenance marker at `path`
-/// (`~/.codex/prompts/_shared/.orchestratectl-managed`). Unlike the claude
+/// (`~/.codex/prompts/_shared/.Taskfleet-managed`). Unlike the claude
 /// per-skill marker, this one records the flat layout's whole managed set:
 /// a `prompt:` line per installed codex skill and a `companion:` line per
 /// installed `_shared/<file>`. That is the only signal that makes codex
@@ -1939,7 +2264,7 @@ fn write_codex_marker(
     companions: &[String],
 ) -> Result<(), CliError> {
     clear_marker_symlink(path)?;
-    let mut body = format!("managed-by: orchestratectl\ncli_version: {CLI_VERSION}\n");
+    let mut body = format!("managed-by: taskfleet\ncli_version: {CLI_VERSION}\n");
     for prompt in prompts {
         body.push_str("prompt: ");
         body.push_str(prompt);
@@ -1985,7 +2310,7 @@ fn clear_marker_symlink(path: &Path) -> Result<(), CliError> {
 }
 
 /// Scan `skills_root` for managed skill directories whose name is NOT in
-/// `registered`. These are directories orchestratectl installed (they
+/// `registered`. These are directories Taskfleet installed (they
 /// carry a valid provenance marker naming that same directory) but the
 /// running binary no longer ships — renamed or removed bundled skills,
 /// safe to prune. Directories without a valid marker (a user's own skills)
@@ -2250,7 +2575,7 @@ fn prune_pi_body(
         },
         Ok(_) => {
             warnings.push(format!(
-                "pi_mirror_diverged: de-registered pi mirror '{name}' at {} was modified since orchestratectl wrote it; leaving it in place and no longer tracking it",
+                "pi_mirror_diverged: de-registered pi mirror '{name}' at {} was modified since Taskfleet wrote it; leaving it in place and no longer tracking it",
                 path.display()
             ));
             PiCompanionOutcome::Diverged
@@ -2355,7 +2680,7 @@ fn prune_pi_companion(
         },
         Ok(_) => {
             warnings.push(format!(
-                "pi_companion_diverged: companion of de-registered pi skill '{skill}' at {} was modified since orchestratectl wrote it; leaving it in place",
+                "pi_companion_diverged: companion of de-registered pi skill '{skill}' at {} was modified since Taskfleet wrote it; leaving it in place",
                 path.display()
             ));
             PiCompanionOutcome::Diverged
@@ -2530,15 +2855,27 @@ fn read_managed_companions(marker_path: &Path) -> Vec<String> {
 /// codex marker's `prompt:` / `companion:` readers, so all three parse the
 /// same line shape identically. Unreadable / absent marker → empty.
 fn read_marker_records(marker_path: &Path, key: &str) -> Vec<String> {
+    if !fs::symlink_metadata(marker_path).is_ok_and(|m| m.file_type().is_file()) {
+        return Vec::new();
+    }
     let Ok(content) = fs::read_to_string(marker_path) else {
         return Vec::new();
     };
+    let owned = content.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "managed-by: taskfleet" | "managed-by: orchestratectl"
+        )
+    });
+    if !owned {
+        return Vec::new();
+    }
     let prefix = format!("{key}:");
     content
         .lines()
         .filter_map(|line| line.trim().strip_prefix(prefix.as_str()))
         .map(|rest| rest.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .filter(|value| is_simple_skill_name(value))
         .collect()
 }
 
@@ -2856,7 +3193,7 @@ mod tests {
         // a declared link form.
         let no_links = SKILLS
             .iter()
-            .find(|s| s.name == "octl-spawn-spinoff")
+            .find(|s| s.name == "taskfleet-spawn-spinoff")
             .unwrap();
         let rendered = render_body_for_agent("codex", no_links.body);
         assert!(matches!(rendered, Cow::Borrowed(_)));

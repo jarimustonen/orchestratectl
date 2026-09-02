@@ -81,13 +81,13 @@ const ALLOWED_KINDS: &[&str] = &[
     "discuss.critical",
 ];
 
-/// `run.created` is the bootstrap event owned by `orchestratectl run
+/// `run.created` is the bootstrap event owned by `taskfleet run
 /// create`. Routing it through the generic write path would let a caller
 /// append a duplicate bootstrap record to an already-initialised run —
 /// the reducer is idempotent against it, but the second record is pure
 /// noise in the canonical log.
 ///
-/// `node.report` is a §7.3-shaped domain verb owned by `orchestratectl
+/// `node.report` is a §7.3-shaped domain verb owned by `taskfleet
 /// node report`. The generic write path doesn't run the §7.3 payload
 /// validator, so allowing it here would let agents bypass schema
 /// enforcement and put malformed terminal reports into the canonical
@@ -281,7 +281,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         return Err(CliError::user(
             "kind_not_routable",
             format!(
-                "`{kind}` is a bootstrap event and is owned by `orchestratectl run create`; \
+                "`{kind}` is a bootstrap event and is owned by `taskfleet run create`; \
                  it is not accepted via `event create`"
             ),
         )

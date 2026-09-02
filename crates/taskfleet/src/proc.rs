@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn missing_binary_is_spawn_err() {
         let out = run_with_timeout(
-            Command::new("/nonexistent/orchestratectl-no-such-binary"),
+            Command::new("/nonexistent/taskfleet-no-such-binary"),
             Duration::from_secs(5),
             1 << 20,
         );

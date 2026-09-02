@@ -1,6 +1,6 @@
 ---
 name: worktree-bug-analysis
-description: Spawn an autonomous READ-ONLY worktree via `orchestratectl run create --kind spinoff` that analyses ONE already-filed bug and writes its findings back into the issue — reproduce or explain the symptom, locate the responsible code (Read/Grep only), classify it (real bug / expected behaviour / cannot tell), estimate severity, and sketch what a fix would touch. Never changes application code; the only write is the issue update, which it self-merges. Use when an existing bug issue needs understanding before a fix/defer/not-a-bug decision. For fixing a bug use `/worktree-bugfix`; for open-ended multi-source research use `/worktree-research`.
+description: Spawn an autonomous READ-ONLY worktree via `taskfleet run create --kind spinoff` that analyses ONE already-filed bug and writes its findings back into the issue — reproduce or explain the symptom, locate the responsible code (Read/Grep only), classify it (real bug / expected behaviour / cannot tell), estimate severity, and sketch what a fix would touch. Never changes application code; the only write is the issue update, which it self-merges. Use when an existing bug issue needs understanding before a fix/defer/not-a-bug decision. For fixing a bug use `/worktree-bugfix`; for open-ended multi-source research use `/worktree-research`.
 version: 1
 cli_version: "{{CLI_VERSION}}"
 schema_version: 1
@@ -16,10 +16,10 @@ creates a new issue. This skill sits between: it takes an **existing bug slug**,
 investigates read-only, and updates that issue.
 
 It is a `spinoff`-shaped run — one autonomous agent that self-merges and does not
-pause for the user — so it spawns via `orchestratectl run create --kind spinoff`
+pause for the user — so it spawns via `taskfleet run create --kind spinoff`
 with a read-only brief. It runs **headless** (its only output is an issue update;
 nobody watches it), so a triage batch does not clutter the window list. Read
-`orchestratectl-overview` first; read `worktree-spinoff` for the shared
+`taskfleet-overview` first; read `worktree-spinoff` for the shared
 autonomous-merge contract that this skill reuses verbatim.
 
 ## When to use
@@ -48,7 +48,7 @@ autonomous-merge contract that this skill reuses verbatim.
 
 1. Working directory must be a git repo. Per repo CLAUDE.md, the current branch
    must be clean.
-2. `orchestratectl version --output json` to confirm `{{CLI_VERSION}}` matches
+2. `taskfleet version --output json` to confirm `{{CLI_VERSION}}` matches
    the running binary.
 3. Capture the current branch as the source/merge target.
 
@@ -62,7 +62,7 @@ is missing, abort with a clear error. This skill does not create issues.
 
 The brief must be self-contained (a spinoff cannot ask follow-ups). It MUST carry
 the read-only hard constraints above **and** end with exactly one terminal path:
-completed analysis uses `orchestratectl run merge`; analysis blocked by a
+completed analysis uses `taskfleet run merge`; analysis blocked by a
 required failure uses direct `node report` without merging. Include:
 
 1. **Objective** — understand and scope the bug in `issues/<slug>/item.md`; do
@@ -80,10 +80,10 @@ required failure uses direct `node report` without merging. Include:
      fix sketch. Keep it tight; for a long trace add `issues/<slug>/analysis.md`
      and link it.
    - Commit with plain `git` and a `Refs-Issue: <slug>` trailer.
-   - If reproducing requires a local orchestratectl build, use `cargo build
-     --release` and invoke `./target/release/orchestratectl …` explicitly.
+   - If reproducing requires a local taskfleet build, use `cargo build
+     --release` and invoke `./target/release/taskfleet …` explicitly.
      During repository work, neither workers nor the orchestrator may create,
-     replace, remove, or modify the user's installed orchestratectl or bundled
+     replace, remove, or modify the user's installed taskfleet or bundled
      skills by any mechanism, including any `cargo install`, `cargo uninstall`,
      Homebrew, manual-copy, or `skill install` variant.
 3. **Done criteria** — the issue carries the analysis; the branch is committed
@@ -98,7 +98,7 @@ Long brief → temp file + `--prompt-file <path>` (`mktemp -t bug-analysis-XXXXX
 ### 3. Create the run
 
 ```
-orchestratectl run create \
+taskfleet run create \
   --kind spinoff \
   --headless \
   --title "bug-analysis-<slug>" \
@@ -123,10 +123,10 @@ Same shape as `worktree-spinoff` (`run_id`, `supervisor`, `kind: spinoff`,
 ### 5. Report to the caller
 
 - Run id, branch, and the issue path `issues/<slug>/item.md`.
-- That the worker self-merges the issue update via `orchestratectl run merge` — no
+- That the worker self-merges the issue update via `taskfleet run merge` — no
   `/worktree-merge` handoff.
-- Follow progress with `orchestratectl run show <run-id>` or
-  `orchestratectl run wait <run-id>`; the headless window is reachable with
+- Follow progress with `taskfleet run show <run-id>` or
+  `taskfleet run wait <run-id>`; the headless window is reachable with
   `tmux attach -t headless` if the user wants to watch.
 
 When spawned by another skill rather than invoked directly by the user, return the
@@ -135,7 +135,7 @@ structured payload (run id, node id, branch) to the caller instead of a human su
 ## Terminal report (mandatory)
 
 A bug-analysis worker MUST take exactly one terminal path, never both.
-Completed, mergeable analysis uses `orchestratectl run merge`, which merges and
+Completed, mergeable analysis uses `taskfleet run merge`, which merges and
 submits the report in one call. Analysis blocked by a required failed or
 incomplete step does **not** merge; it submits a direct `success: false` report
 under "Tool and sub-workflow failure disclosure" below. Omitting both paths
@@ -147,7 +147,7 @@ update is committed:
    lossy bounded fragment that can repeat, not ownership):
 
    ```bash
-   run_id="$(orchestratectl run show --current --output json | jq -er '.data.run_id')" || {
+   run_id="$(taskfleet run show --current --output json | jq -er '.data.run_id')" || {
      echo "failed to resolve exact owning run id" >&2
      exit 1
    }
@@ -170,7 +170,7 @@ update is committed:
 3. **Merge and report in one call:**
 
    ```bash
-   orchestratectl run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
+   taskfleet run merge "$run_id" --report-file /tmp/node-report-${run_id}.json
    ```
 
    On a clean merge the supervisor consumes the report and tears down the
@@ -188,11 +188,11 @@ external service, review, panel, or delegated workflow.
 A step **required** by the brief or done criteria that remains failed or
 incomplete always blocks this attempt. Do not call `run merge`. Write the
 existing §7.3 report payload to `/tmp/node-report-${run_id}.json` with top-level
-`success: false`, then submit it with `orchestratectl node report "$run_id"
+`success: false`, then submit it with `taskfleet node report "$run_id"
 n-0001 --from-file /tmp/node-report-${run_id}.json` (`n-0001` is the sole node
 in this single-worker run). An **optional/advisory** failure may continue only
 when the issue analysis is independently complete and safe; disclose it in the
-full `success: true` report passed to `orchestratectl run merge "$run_id"
+full `success: true` report passed to `taskfleet run merge "$run_id"
 --report-file /tmp/node-report-${run_id}.json`, never the minimal auto-report.
 
 Requested completeness is a contract. A missing requested reproduction,
@@ -222,10 +222,10 @@ supervisor state.
   disposition labels.
 - Does NOT run open-ended multi-source research — that's `/worktree-research`.
 
-## Install or upgrade `orchestratectl`
+## Install or upgrade `taskfleet`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the first
-invocation in a session, run `orchestratectl version --output json`, compare
+This skill was installed for `taskfleet {{CLI_VERSION}}`. On the first
+invocation in a session, run `taskfleet version --output json`, compare
 `.data.version` to `{{CLI_VERSION}}`: **Missing** → tell the user to install
 through a published distribution channel outside this repository workflow and
 stop; **Older** → tell the user to upgrade and stop; **Newer** → tell

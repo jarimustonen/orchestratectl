@@ -56,11 +56,11 @@ fn skill_list_json_pins_catalog_shape() {
         names,
         vec![
             "fan-out",
-            "octl-run-overview",
-            "octl-spawn-spinoff",
-            "orchestratectl-overview",
             "stint-handoff",
             "stint-start",
+            "taskfleet-overview",
+            "taskfleet-run-overview",
+            "taskfleet-spawn-spinoff",
             "worktree",
             "worktree-bug-analysis",
             "worktree-merge",
@@ -83,13 +83,19 @@ fn skill_list_json_pins_catalog_shape() {
 fn skill_show_text_prints_skill_md_contents() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["--output", "text", "skill", "show", "octl-run-overview"])
+        .args([
+            "--output",
+            "text",
+            "skill",
+            "show",
+            "taskfleet-run-overview",
+        ])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert!(
-        stdout.starts_with("---\nname: octl-run-overview"),
+        stdout.starts_with("---\nname: taskfleet-run-overview"),
         "show did not emit frontmatter: {stdout:?}"
     );
 }
@@ -98,15 +104,21 @@ fn skill_show_text_prints_skill_md_contents() {
 fn skill_show_json_wraps_content_under_data() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "show", "octl-run-overview", "--output", "json"])
+        .args([
+            "skill",
+            "show",
+            "taskfleet-run-overview",
+            "--output",
+            "json",
+        ])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(v["schema_version"], 1);
-    assert_eq!(v["data"]["name"], "octl-run-overview");
+    assert_eq!(v["data"]["name"], "taskfleet-run-overview");
     let content = v["data"]["content"].as_str().expect("content str");
-    assert!(content.starts_with("---\nname: octl-run-overview"));
+    assert!(content.starts_with("---\nname: taskfleet-run-overview"));
 }
 
 #[test]
@@ -115,7 +127,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
     let dest = home.path().join("SKILL.md");
 
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-run-overview", "--dest"])
         .arg(&dest)
         .output()
         .expect("spawn");
@@ -123,7 +135,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
     assert!(dest.exists(), "destination not created");
 
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-run-overview", "--dest"])
         .arg(&dest)
         .output()
         .expect("spawn");
@@ -137,7 +149,7 @@ fn skill_install_refuses_overwrite_then_force_succeeds() {
     assert_eq!(err["error"]["invalid_value"], dest.display().to_string());
 
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-run-overview", "--dest"])
         .arg(&dest)
         .arg("--force")
         .output()
@@ -165,7 +177,7 @@ fn skill_install_force_replaces_dangling_symlink() {
     assert!(!dest.exists(), "fixture must be dangling");
 
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-run-overview", "--dest"])
         .arg(&dest)
         .arg("--force")
         .output()
@@ -181,7 +193,7 @@ fn skill_install_force_replaces_dangling_symlink() {
     assert!(
         std::fs::read_to_string(&dest)
             .expect("installed body")
-            .contains("name: octl-run-overview"),
+            .contains("name: taskfleet-run-overview"),
         "installed body missing"
     );
 }
@@ -190,7 +202,13 @@ fn skill_install_force_replaces_dangling_symlink() {
 fn skill_install_with_default_paths_writes_under_home() {
     let home = mk_home();
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--output", "json"])
+        .args([
+            "skill",
+            "install",
+            "taskfleet-run-overview",
+            "--output",
+            "json",
+        ])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "default install failed: {out:?}");
@@ -204,7 +222,7 @@ fn skill_install_with_default_paths_writes_under_home() {
         .expect("claude entry");
     let expected: PathBuf = home
         .path()
-        .join(".claude/skills/octl-run-overview/SKILL.md");
+        .join(".claude/skills/taskfleet-run-overview/SKILL.md");
     assert_eq!(claude["path"], expected.display().to_string());
     assert!(expected.exists(), "claude install not on disk");
 }
@@ -224,7 +242,7 @@ fn skill_install_force_prunes_orphan_companion_file() {
     assert!(first.status.success(), "first install failed: {first:?}");
 
     let skill_dir = home.path().join(".claude/skills/stint-start");
-    let marker = skill_dir.join(".orchestratectl-managed");
+    let marker = skill_dir.join(".taskfleet-managed");
     let orphan = skill_dir.join("OLD-COMPANION.md");
 
     // Simulate the prior binary: drop the orphan file and record it in the
@@ -278,7 +296,7 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
 
     let claude_dir = home.path().join(".claude/skills/stint-start");
     std::fs::write(claude_dir.join(retired_name), retired_bytes).unwrap();
-    let claude_marker = claude_dir.join(".orchestratectl-managed");
+    let claude_marker = claude_dir.join(".taskfleet-managed");
     let mut marker = std::fs::read_to_string(&claude_marker).unwrap();
     writeln!(marker, "companion: {retired_name}").expect("writing to a String cannot fail");
     std::fs::write(&claude_marker, marker).unwrap();
@@ -295,7 +313,7 @@ fn forced_full_install_prunes_retired_dag_companion_from_all_mirrors() {
 
     let codex_shared = home.path().join(".codex/prompts/_shared");
     std::fs::write(codex_shared.join(retired_name), retired_bytes).unwrap();
-    let codex_marker = codex_shared.join(".orchestratectl-managed");
+    let codex_marker = codex_shared.join(".taskfleet-managed");
     let mut marker = std::fs::read_to_string(&codex_marker).unwrap();
     writeln!(marker, "companion: {retired_name}").expect("writing to a String cannot fail");
     std::fs::write(&codex_marker, marker).unwrap();
@@ -403,12 +421,9 @@ fn codex_install_writes_provenance_marker() {
     // The marker records the prompt.
     let marker = home
         .path()
-        .join(".codex/prompts/_shared/.orchestratectl-managed");
+        .join(".codex/prompts/_shared/.taskfleet-managed");
     let body = std::fs::read_to_string(&marker).expect("codex marker not written");
-    assert!(
-        body.contains("managed-by: orchestratectl"),
-        "marker: {body}"
-    );
+    assert!(body.contains("managed-by: taskfleet"), "marker: {body}");
     assert!(body.contains("prompt: stint-start"), "marker: {body}");
     assert!(!body.contains("AGENTS-EXECUTION-DAG.md"), "marker: {body}");
 }
@@ -433,7 +448,7 @@ fn codex_force_prunes_orphan_prompt_and_companion() {
 
     let prompts = home.path().join(".codex/prompts");
     let shared = prompts.join("_shared");
-    let marker = shared.join(".orchestratectl-managed");
+    let marker = shared.join(".taskfleet-managed");
     // Simulate the prior binary: a de-registered prompt + a de-registered
     // shared companion, both recorded in the marker.
     let orphan_prompt = prompts.join("gone-skill.md");
@@ -496,7 +511,7 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
         .args([
             "skill",
             "install",
-            "octl-spawn-spinoff",
+            "taskfleet-spawn-spinoff",
             "--agent",
             "all",
             "--output",
@@ -515,11 +530,11 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
     assert!(agents.contains(&"codex"));
     assert!(home
         .path()
-        .join(".claude/skills/octl-spawn-spinoff/SKILL.md")
+        .join(".claude/skills/taskfleet-spawn-spinoff/SKILL.md")
         .exists());
     assert!(home
         .path()
-        .join(".codex/prompts/octl-spawn-spinoff.md")
+        .join(".codex/prompts/taskfleet-spawn-spinoff.md")
         .exists());
 }
 
@@ -537,8 +552,8 @@ fn skill_install_no_name_installs_every_skill() {
         .iter()
         .map(|f| f["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"octl-run-overview"));
-    assert!(names.contains(&"octl-spawn-spinoff"));
+    assert!(names.contains(&"taskfleet-run-overview"));
+    assert!(names.contains(&"taskfleet-spawn-spinoff"));
 }
 
 #[test]
@@ -549,7 +564,7 @@ fn skill_install_agent_all_with_dest_is_rejected() {
         .args([
             "skill",
             "install",
-            "octl-run-overview",
+            "taskfleet-run-overview",
             "--agent",
             "all",
             "--dest",
@@ -571,10 +586,16 @@ fn skill_install_partial_failure_is_preflighted() {
     let home = mk_home();
     let codex = home.path().join(".codex/prompts");
     std::fs::create_dir_all(&codex).unwrap();
-    std::fs::write(codex.join("octl-run-overview.md"), "pre-existing").unwrap();
+    std::fs::write(codex.join("taskfleet-run-overview.md"), "pre-existing").unwrap();
 
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--agent", "all"])
+        .args([
+            "skill",
+            "install",
+            "taskfleet-run-overview",
+            "--agent",
+            "all",
+        ])
         .output()
         .expect("spawn");
     assert_eq!(out.status.code(), Some(2));
@@ -584,7 +605,7 @@ fn skill_install_partial_failure_is_preflighted() {
     // codex collision and bailed before any write.
     assert!(!home
         .path()
-        .join(".claude/skills/octl-run-overview/SKILL.md")
+        .join(".claude/skills/taskfleet-run-overview/SKILL.md")
         .exists());
 }
 
@@ -598,7 +619,7 @@ fn skill_install_accepts_bare_relative_dest() {
         .args([
             "skill",
             "install",
-            "octl-run-overview",
+            "taskfleet-run-overview",
             "--dest",
             "SKILL.md",
         ])
@@ -628,13 +649,13 @@ fn skill_print_default_streams_skill_md_byte_identically() {
     // equal what `skill install` would persist.
     let home = mk_home();
     let print_out = bin(&home)
-        .args(["skill", "print", "orchestratectl-overview"])
+        .args(["skill", "print", "taskfleet-overview"])
         .output()
         .expect("spawn");
     assert!(print_out.status.success(), "exit: {:?}", print_out.status);
     let dest = home.path().join("printed.md");
     let install_out = bin(&home)
-        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-overview", "--dest"])
         .arg(&dest)
         .output()
         .expect("spawn");
@@ -650,20 +671,14 @@ fn skill_print_default_streams_skill_md_byte_identically() {
 fn skill_print_json_payload_pins_schema() {
     let home = mk_home();
     let out = bin(&home)
-        .args([
-            "skill",
-            "print",
-            "orchestratectl-overview",
-            "--output",
-            "json",
-        ])
+        .args(["skill", "print", "taskfleet-overview", "--output", "json"])
         .output()
         .expect("spawn");
     assert!(out.status.success(), "exit: {:?}", out.status);
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(v["schema_version"], 1);
     let data = &v["data"];
-    assert_eq!(data["name"], "orchestratectl-overview");
+    assert_eq!(data["name"], "taskfleet-overview");
     assert_eq!(data["schema_version"], 1);
     assert_eq!(data["schema_version_skill"], 1);
     assert_eq!(
@@ -673,7 +688,7 @@ fn skill_print_json_payload_pins_schema() {
     assert!(data["content"]
         .as_str()
         .unwrap()
-        .starts_with("---\nname: orchestratectl-overview"));
+        .starts_with("---\nname: taskfleet-overview"));
     assert!(data["path_in_repo"]
         .as_str()
         .unwrap()
@@ -703,12 +718,12 @@ fn skill_install_over_older_version_warns_and_succeeds_without_force() {
     // older than the current binary.
     std::fs::write(
         &dest,
-        "---\nname: orchestratectl-overview\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
+        "---\nname: taskfleet-overview\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n",
     )
     .unwrap();
 
     let out = bin(&home)
-        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-overview", "--dest"])
         .arg(&dest)
         .args(["--output", "json"])
         .output()
@@ -739,12 +754,12 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
     let dest = home.path().join("SKILL.md");
     std::fs::write(
         &dest,
-        "---\nname: orchestratectl-overview\ndescription: future\ncli_version: \"99.0.0\"\nschema_version: 1\n---\n",
+        "---\nname: taskfleet-overview\ndescription: future\ncli_version: \"99.0.0\"\nschema_version: 1\n---\n",
     )
     .unwrap();
 
     let out = bin(&home)
-        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-overview", "--dest"])
         .arg(&dest)
         .output()
         .expect("spawn");
@@ -754,7 +769,7 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
 
     // --force overrides the refusal.
     let out = bin(&home)
-        .args(["skill", "install", "orchestratectl-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-overview", "--dest"])
         .arg(&dest)
         .arg("--force")
         .output()
@@ -762,14 +777,17 @@ fn skill_install_over_newer_version_refuses_with_skill_version_too_new() {
     assert!(out.status.success(), "--force install must succeed");
 }
 
-const MARKER: &str = ".orchestratectl-managed";
+const MARKER: &str = ".taskfleet-managed";
 
 /// Write a valid provenance marker naming `skill_name` into `dir` — the
 /// shape `is_managed_skill_dir` accepts.
 fn write_marker(dir: &std::path::Path, skill_name: &str) {
+    let skill_hash = sha256_hex(&std::fs::read(dir.join("SKILL.md")).unwrap());
     std::fs::write(
         dir.join(MARKER),
-        format!("managed-by: orchestratectl\ncli_version: 9.9.9\nskill_name: {skill_name}\n"),
+        format!(
+            "managed-by: taskfleet\ncli_version: 9.9.9\nskill_name: {skill_name}\nsha256: {skill_hash}\n"
+        ),
     )
     .unwrap();
 }
@@ -781,26 +799,23 @@ fn skill_install_default_stamps_provenance_marker() {
     // the skill so a copied-and-renamed dir is never mistaken for it.
     let home = mk_home();
     assert!(bin(&home)
-        .args(["skill", "install", "octl-run-overview"])
+        .args(["skill", "install", "taskfleet-run-overview"])
         .output()
         .expect("spawn")
         .status
         .success());
     let marker = home
         .path()
-        .join(".claude/skills/octl-run-overview")
+        .join(".claude/skills/taskfleet-run-overview")
         .join(MARKER);
     assert!(
         marker.is_file(),
         "provenance marker not written next to SKILL.md"
     );
     let body = std::fs::read_to_string(&marker).unwrap();
+    assert!(body.contains("managed-by: taskfleet"), "marker: {body}");
     assert!(
-        body.contains("managed-by: orchestratectl"),
-        "marker: {body}"
-    );
-    assert!(
-        body.contains("skill_name: octl-run-overview"),
+        body.contains("skill_name: taskfleet-run-overview"),
         "marker: {body}"
     );
 }
@@ -1252,7 +1267,7 @@ fn skill_install_agent_all_also_dual_homes_into_pi() {
         .args([
             "skill",
             "install",
-            "octl-spawn-spinoff",
+            "taskfleet-spawn-spinoff",
             "--agent",
             "all",
             "--output",
@@ -1263,7 +1278,7 @@ fn skill_install_agent_all_also_dual_homes_into_pi() {
     assert!(out.status.success(), "agent=all install failed: {out:?}");
     assert!(home
         .path()
-        .join(".pi/agent/skills/octl-spawn-spinoff/SKILL.md")
+        .join(".pi/agent/skills/taskfleet-spawn-spinoff/SKILL.md")
         .exists());
 }
 
@@ -1275,7 +1290,7 @@ fn skill_install_agent_codex_does_not_dual_home_into_pi() {
         .args([
             "skill",
             "install",
-            "octl-run-overview",
+            "taskfleet-run-overview",
             "--agent",
             "codex",
             "--output",
@@ -1296,7 +1311,7 @@ fn skill_install_dest_does_not_dual_home_into_pi() {
     let home = mk_home();
     let dest = home.path().join("custom/SKILL.md");
     let out = bin(&home)
-        .args(["skill", "install", "octl-run-overview", "--dest"])
+        .args(["skill", "install", "taskfleet-run-overview", "--dest"])
         .arg(&dest)
         .args(["--output", "json"])
         .output()
@@ -1385,7 +1400,7 @@ fn skill_install_all_keeps_registered_skills() {
         .expect("spawn")
         .status
         .success());
-    let registered = home.path().join(".claude/skills/octl-run-overview");
+    let registered = home.path().join(".claude/skills/taskfleet-run-overview");
     assert!(registered.join("SKILL.md").exists());
     assert!(registered.join(MARKER).is_file());
 
@@ -1417,7 +1432,7 @@ fn skill_install_named_does_not_prune() {
         .args([
             "skill",
             "install",
-            "octl-run-overview",
+            "taskfleet-run-overview",
             "--force",
             "--output",
             "json",
@@ -1742,4 +1757,242 @@ fn skill_install_without_force_does_not_prune_pi_mirror() {
     // Still tracked (union-merge preserves the prior record entry).
     let prov = read_provenance(&home);
     assert!(prov["skills"].get("gone-skill").is_some());
+}
+
+#[test]
+fn renamed_owned_skills_migrate_by_hash_across_all_agent_layouts() {
+    let home = mk_home();
+    let legacy = include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md");
+    let hash = sha256_hex(legacy);
+
+    let claude = home.path().join(".claude/skills/orchestratectl-overview");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(claude.join("SKILL.md"), legacy).unwrap();
+    std::fs::write(
+        claude.join(".orchestratectl-managed"),
+        "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
+    )
+    .unwrap();
+
+    let codex = home.path().join(".codex/prompts");
+    std::fs::create_dir_all(codex.join("_shared")).unwrap();
+    std::fs::write(codex.join("orchestratectl-overview.md"), legacy).unwrap();
+    std::fs::write(
+        codex.join("_shared/.orchestratectl-managed"),
+        "managed-by: orchestratectl\ncli_version: 0.5.1\nprompt: orchestratectl-overview\n",
+    )
+    .unwrap();
+
+    let pi = home.path().join(".pi/agent/skills/orchestratectl-overview");
+    std::fs::create_dir_all(&pi).unwrap();
+    std::fs::write(pi.join("SKILL.md"), legacy).unwrap();
+    let record = env_orch_state_record(&home);
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(
+        &record,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 3,
+            "skills": {"orchestratectl-overview": {
+                "cli_version": "0.5.1",
+                "files": {"SKILL.md": {"sha256": hash, "kind": "skill"}}
+            }}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "taskfleet-overview",
+            "--agent",
+            "all",
+            "--force",
+            "--output",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "migration failed: {out:?}");
+    for old in [
+        home.path().join(".claude/skills/orchestratectl-overview"),
+        home.path()
+            .join(".codex/prompts/orchestratectl-overview.md"),
+        home.path().join(".pi/agent/skills/orchestratectl-overview"),
+    ] {
+        assert!(
+            !old.exists(),
+            "unchanged legacy copy survived: {}",
+            old.display()
+        );
+    }
+    assert!(home
+        .path()
+        .join(".claude/skills/taskfleet-overview/SKILL.md")
+        .exists());
+    assert!(home
+        .path()
+        .join(".codex/prompts/taskfleet-overview.md")
+        .exists());
+    assert!(home
+        .path()
+        .join(".pi/agent/skills/taskfleet-overview/SKILL.md")
+        .exists());
+    let provenance: Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    assert!(provenance["skills"].get("taskfleet-overview").is_some());
+    assert!(provenance["skills"]
+        .get("orchestratectl-overview")
+        .is_none());
+    assert!(
+        !home
+            .path()
+            .join(".codex/prompts/_shared/.orchestratectl-managed")
+            .exists(),
+        "legacy Codex authority must be retired after its validated union is persisted"
+    );
+    let canonical_codex_marker = std::fs::read_to_string(
+        home.path()
+            .join(".codex/prompts/_shared/.taskfleet-managed"),
+    )
+    .unwrap();
+    assert!(!canonical_codex_marker.contains("prompt: orchestratectl-overview"));
+}
+
+#[test]
+fn renamed_skill_migration_preserves_edited_unmanaged_stale_and_corrupt_legacy_bytes() {
+    let home = mk_home();
+    let cases = [
+        (
+            "orchestratectl-overview",
+            b"edited legacy body\n".as_slice(),
+            "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
+        ),
+        (
+            "octl-run-overview",
+            b"unmanaged legacy body\n".as_slice(),
+            "",
+        ),
+        (
+            "octl-spawn-spinoff",
+            b"stale legacy body\n".as_slice(),
+            "not a valid ownership marker\n",
+        ),
+    ];
+    let mut before = Vec::new();
+    for (name, bytes, marker) in cases {
+        let dir = home.path().join(".claude/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), bytes).unwrap();
+        if !marker.is_empty() {
+            std::fs::write(dir.join(".orchestratectl-managed"), marker).unwrap();
+        }
+        before.push((dir.join("SKILL.md"), bytes.to_vec()));
+    }
+
+    let out = bin(&home)
+        .args(["skill", "install", "--force", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "safe migration failed: {out:?}");
+    for (path, bytes) in before {
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "legacy user bytes changed at {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn renamed_skill_migration_fails_closed_on_partial_old_new_ownership() {
+    let home = mk_home();
+    let legacy = include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md");
+    let old = home.path().join(".claude/skills/orchestratectl-overview");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("SKILL.md"), legacy).unwrap();
+    std::fs::write(
+        old.join(".orchestratectl-managed"),
+        "managed-by: orchestratectl\ncli_version: 0.5.1\nskill_name: orchestratectl-overview\n",
+    )
+    .unwrap();
+    let new = home.path().join(".claude/skills/taskfleet-overview");
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(new.join("SKILL.md"), b"user canonical bytes\n").unwrap();
+    let old_before = std::fs::read(old.join("SKILL.md")).unwrap();
+    let new_before = std::fs::read(new.join("SKILL.md")).unwrap();
+
+    let out = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--force"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(err["error"]["code"], "skill_identity_conflict");
+    assert_eq!(std::fs::read(old.join("SKILL.md")).unwrap(), old_before);
+    assert_eq!(std::fs::read(new.join("SKILL.md")).unwrap(), new_before);
+}
+
+#[test]
+fn every_renamed_legacy_skill_hash_is_fixture_pinned() {
+    let fixtures: [(&[u8], &str); 3] = [
+        (
+            include_bytes!("fixtures/legacy-skills/orchestratectl-overview/SKILL.md"),
+            "92ee1771985a1d2f8a88fc18eeb9fa04032c004fd82bf22836384b6c5a232170",
+        ),
+        (
+            include_bytes!("fixtures/legacy-skills/octl-run-overview/SKILL.md"),
+            "93ac52c3002307b948280fe2780a11d64cea0f45288cb5a3735a3fb7e80c9df2",
+        ),
+        (
+            include_bytes!("fixtures/legacy-skills/octl-spawn-spinoff/SKILL.md"),
+            "caca16387c6e8409f49ae92d8fa90bb33dc5f1b6b0c089fe104d09f7415b27a0",
+        ),
+    ];
+    for (bytes, expected) in fixtures {
+        assert_eq!(sha256_hex(bytes), expected);
+    }
+}
+
+#[test]
+fn corrupt_marker_traversal_records_never_escape_agent_roots() {
+    let home = mk_home();
+    assert!(bin(&home)
+        .args(["skill", "install", "--agent", "all", "--force"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let claude_victim = home.path().join("victim-claude.txt");
+    let codex_victim = home.path().join(".codex/victim-codex.txt");
+    std::fs::write(&claude_victim, b"claude user bytes\n").unwrap();
+    std::fs::write(&codex_victim, b"codex user bytes\n").unwrap();
+
+    let claude_marker = home
+        .path()
+        .join(".claude/skills/stint-start/.taskfleet-managed");
+    let mut body = std::fs::read_to_string(&claude_marker).unwrap();
+    body.push_str("companion: ../../../victim-claude.txt\n");
+    std::fs::write(&claude_marker, body).unwrap();
+
+    let codex_marker = home
+        .path()
+        .join(".codex/prompts/_shared/.taskfleet-managed");
+    let mut body = std::fs::read_to_string(&codex_marker).unwrap();
+    body.push_str("companion: ../../victim-codex.txt\n");
+    std::fs::write(&codex_marker, body).unwrap();
+
+    assert!(bin(&home)
+        .args(["skill", "install", "--agent", "all", "--force"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert_eq!(
+        std::fs::read(&claude_victim).unwrap(),
+        b"claude user bytes\n"
+    );
+    assert_eq!(std::fs::read(&codex_victim).unwrap(), b"codex user bytes\n");
 }

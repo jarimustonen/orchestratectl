@@ -142,7 +142,7 @@ expression: value
       },
       {
         "command": "taskfleet run reattach",
-        "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `orchestratectl supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
+        "about": "Restart the run's supervisor process. Refuses if the recorded supervisor PID is still alive. Spawns `taskfleet supervise <run-id>` detached with stdout/stderr → `supervisor.stderr.log`",
         "aliases": [],
         "hidden": false,
         "deprecated": false,

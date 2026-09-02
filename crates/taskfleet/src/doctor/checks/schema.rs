@@ -78,7 +78,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
                 id,
                 format!("manifest invalid: {e}"),
                 format!(
-                    "orchestratectl run cancel {run_id} (or repair runs/{run_id}/manifest.json manually)"
+                    "taskfleet run cancel {run_id} (or repair runs/{run_id}/manifest.json manually)"
                 ),
             )),
         }

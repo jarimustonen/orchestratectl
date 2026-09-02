@@ -27,8 +27,8 @@ needed fact is missing, **prefer resolving it yourself**: read it from `AGENTS.m
 `TODO.md` / git, or log a best-judgment decision and proceed (bold first, ask later),
 and note it should be documented. Ask the user only when the fact is genuinely
 unresolvable *and* blocking (see *Autonomy*). It assumes this toolchain —
-**`issuectl`** for issues and the **`/worktree-*`** family (`orchestratectl` underneath)
-for workers — and is a layer on top of them. Read `orchestratectl-overview` and
+**`issuectl`** for issues and the **`/worktree-*`** family (`taskfleet` underneath)
+for workers — and is a layer on top of them. Read `taskfleet-overview` and
 `worktree-spinoff` before your first spawn.
 
 Scheduling requires **`issuectl dag --json`** with `--reservations`. It is the sole
@@ -83,9 +83,9 @@ fall back to a prose schedule.
   reviews — stays foreground.
 - **Sync with `run wait`; trust the CLI's `landed` flag for the landing.** A spinoff runs
   **asynchronously** — its spawn call returns immediately. Record every returned run id and
-  block on `orchestratectl run wait <run-id> …` to know the workers have *settled* before
+  block on `taskfleet run wait <run-id> …` to know the workers have *settled* before
   you sequence the next unit or enter Phase 3. But do **not** trust run *status* as proof
-  the work landed: `orchestratectl run show` can report a false `failed` / `pending` even
+  the work landed: `taskfleet run show` can report a false `failed` / `pending` even
   when the worker committed **and** merged. **To confirm a landing, read the CLI's
   `landed` boolean** (surfaced by both `run wait` and `run show`). It is git-verified against
   the *current* target tip — patch-id equivalence plus an ancestry safety net — so it stays
@@ -118,10 +118,10 @@ fall back to a prose schedule.
 
   ```bash
   # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-  orchestratectl run show "$run_id" --output json | jq '.data.report'
+  taskfleet run show "$run_id" --output json | jq '.data.report'
   # Node-level projection-compatible probe:
   # skill-example-ci: skip (the parser validates CLI argv, not shell pipelines)
-  orchestratectl node show "$run_id" n-0001 --output json |
+  taskfleet node show "$run_id" n-0001 --output json |
     jq '.data.report // .data.last_report'
   ```
 
@@ -195,7 +195,7 @@ choices only. It never overrides these hard stops — halt or pause, don't guess
    incompatible rather than guessing. If an `untriaged`, `deferred`, or equivalent
    non-executable disposition appears in `.data.lanes[]`, report its slug as a scheduling
    inconsistency and stop before announcing heads, selecting, or spawning; lane presence
-   and `spawnable: true` do not prove human acceptance. Inspect `orchestratectl run list
+   and `spawnable: true` do not prove human acceptance. Inspect `taskfleet run list
    --output json` and
    the relevant `run show` records for
    every live or resumable run. Map each run's issue slug through the first DAG response,
@@ -286,7 +286,7 @@ git** before counting it toward the deploy pile:
 - **Autonomous spinoffs are headless** (see Standing discipline) — pass `--headless`
   on every `/worktree-spinoff`. Interactive `/worktree-code` stays foreground.
 - **Requesting a review is a brief instruction, not a `--review` flag.** The
-  orchestratectl `worktree-spinoff` decides review via the spinoff's *quality bar*
+  taskfleet `worktree-spinoff` decides review via the spinoff's *quality bar*
   (default: no review). When a unit touches **production code**, tell the spinoff in
   its task to **run `/llm-review` (+ `/assess-findings`) before merging** — that
   instruction rides in the brief; there is no `--review` passthrough flag.
@@ -299,7 +299,7 @@ git** before counting it toward the deploy pile:
   `/orchestrate`, tell the user, and stop before Phase 3 — do not try to deploy this
   round.
 - **Launch disjoint units in parallel, then wait.** Record each spawn's run id; after a
-  parallel batch, block on `orchestratectl run wait <id> …` and confirm each landing via the
+  parallel batch, block on `taskfleet run wait <id> …` and confirm each landing via the
   CLI's `landed` flag before counting it (NOT `merge-base --is-ancestor` — see the landing
   warning above). **Sequence hot-file units strictly:** launch → `run wait` → confirm
   `landed` → *then* launch the next (so it branches off the first's landed result).

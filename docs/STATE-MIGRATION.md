@@ -1,14 +1,14 @@
 # Taskfleet state migration
 
-Taskfleet 0.6–0.7 can adopt a sole populated `~/.orchestratectl` home in place. Physical movement is optional and explicit:
+Taskfleet 0.6–0.7 can adopt a sole populated legacy `~/.orchestratectl` home in place. Physical movement to `~/.taskfleet` is optional and explicit:
 
 ```sh
-orchestratectl state migrate \
+taskfleet state migrate \
   --source /absolute/normalized/.orchestratectl \
   --destination /absolute/normalized/.taskfleet \
   --dry-run --json
 
-orchestratectl state migrate \
+taskfleet state migrate \
   --source /absolute/normalized/.orchestratectl \
   --destination /absolute/normalized/.taskfleet --json
 ```
@@ -17,7 +17,7 @@ The command is noninteractive. It rejects relative, non-normalized, symlinked or
 
 ## Required operator exclusion
 
-Before dry-run and apply, stop every old `orchestratectl` process and prevent new old-version commands from starting. Current binaries share an external lock at `$HOME/.taskfleet-migrations/state.lock`, but this cannot fence:
+Before dry-run and apply, stop every old `orchestratectl` 0.5.1 process and prevent new old-version commands from starting. Current binaries share an external lock at `$HOME/.taskfleet-migrations/state.lock`, but this cannot fence:
 
 - an already-running 0.5.1 process;
 - a future lock or write by an unmodified 0.5.1 binary;
@@ -45,7 +45,7 @@ Before any ordinary command attempts the first canonical event append, projectio
 Only a `verified` receipt may be rolled back:
 
 ```sh
-orchestratectl state rollback \
+taskfleet state rollback \
   --source /absolute/normalized/.orchestratectl \
   --destination /absolute/normalized/.taskfleet \
   --dry-run --json

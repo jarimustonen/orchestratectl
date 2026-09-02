@@ -403,7 +403,7 @@ fn invalid_run_directory_name_is_surfaced_as_warn() {
 #[test]
 fn skill_drift_warns_with_install_suggestion() {
     let env = setup();
-    install_skill(&env, "octl-run-overview", "0.0.0");
+    install_skill(&env, "taskfleet-run-overview", "0.0.0");
 
     let out = bin(&env)
         .args(["--output", "json", "doctor"])
@@ -411,13 +411,13 @@ fn skill_drift_warns_with_install_suggestion() {
         .expect("spawn");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "skill.sync.octl-run-overview");
+    let c = find_check(checks, "skill.sync.taskfleet-run-overview");
     assert_eq!(c["status"], "warn");
     assert!(c["message"].as_str().unwrap().contains("0.0.0"));
     assert!(c["fix_suggestion"]
         .as_str()
         .unwrap()
-        .contains("skill install octl-run-overview --force"));
+        .contains("skill install taskfleet-run-overview --force"));
     // A drift WARN never flips the exit code.
     assert!(out.status.success(), "warnings must not fail the run");
 }
@@ -430,10 +430,14 @@ fn skill_orphan_warns_only_for_managed_deregistered_dir() {
     // must not be flagged.
     let managed = env.home.path().join(".claude/skills/gone-skill");
     std::fs::create_dir_all(&managed).unwrap();
-    std::fs::write(managed.join("SKILL.md"), "---\nname: gone-skill\n---\n").unwrap();
+    let managed_body = "---\nname: gone-skill\n---\n";
+    std::fs::write(managed.join("SKILL.md"), managed_body).unwrap();
     std::fs::write(
-        managed.join(".orchestratectl-managed"),
-        "managed-by: orchestratectl\ncli_version: 9.9.9\nskill_name: gone-skill\n",
+        managed.join(".taskfleet-managed"),
+        format!(
+            "managed-by: taskfleet\ncli_version: 9.9.9\nskill_name: gone-skill\nsha256: {}\n",
+            sha256_hex(managed_body.as_bytes())
+        ),
     )
     .unwrap();
 
@@ -492,7 +496,7 @@ fn pi_sync_drift_warns_with_install_suggestion() {
     // A recorded pi mirror older than the binary → WARN keyed `skill.sync.
     // <name>.pi`, with the same forced-reinstall suggestion as the claude check.
     let env = setup();
-    seed_pi_mirror(&env, "octl-run-overview", "0.0.0");
+    seed_pi_mirror(&env, "taskfleet-run-overview", "0.0.0");
 
     let out = bin(&env)
         .args(["--output", "json", "doctor"])
@@ -500,13 +504,13 @@ fn pi_sync_drift_warns_with_install_suggestion() {
         .expect("spawn");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "skill.sync.octl-run-overview.pi");
+    let c = find_check(checks, "skill.sync.taskfleet-run-overview.pi");
     assert_eq!(c["status"], "warn");
     assert!(c["message"].as_str().unwrap().contains("0.0.0"));
     assert!(c["fix_suggestion"]
         .as_str()
         .unwrap()
-        .contains("skill install octl-run-overview --force"));
+        .contains("skill install taskfleet-run-overview --force"));
     assert!(out.status.success(), "warnings must not fail the run");
 }
 
@@ -566,7 +570,7 @@ fn pi_in_sync_after_install_is_ok() {
     // the OK arm's hash-match path against real bytes.
     let env = setup();
     assert!(bin(&env)
-        .args(["skill", "install", "octl-run-overview"])
+        .args(["skill", "install", "taskfleet-run-overview"])
         .output()
         .expect("spawn")
         .status
@@ -578,7 +582,7 @@ fn pi_in_sync_after_install_is_ok() {
         .expect("spawn");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let checks = v["data"]["checks"].as_array().unwrap();
-    let c = find_check(checks, "skill.sync.octl-run-overview.pi");
+    let c = find_check(checks, "skill.sync.taskfleet-run-overview.pi");
     assert_eq!(c["status"], "ok", "pi mirror should be in sync: {c}");
 }
 
@@ -645,11 +649,11 @@ fn pi_orphan_companion_flagged_then_cleared_by_force() {
 #[test]
 fn fix_reinstalls_drifted_skill() {
     let env = setup();
-    install_skill(&env, "octl-run-overview", "0.0.0");
+    install_skill(&env, "taskfleet-run-overview", "0.0.0");
     let on_disk = env
         .home
         .path()
-        .join(".claude/skills/octl-run-overview/SKILL.md");
+        .join(".claude/skills/taskfleet-run-overview/SKILL.md");
 
     let out = bin(&env)
         .args(["--output", "json", "doctor", "--fix"])
@@ -661,7 +665,7 @@ fn fix_reinstalls_drifted_skill() {
         .expect("fixes_applied");
     let f = fixes
         .iter()
-        .find(|f| f["check_id"] == "skill.sync.octl-run-overview")
+        .find(|f| f["check_id"] == "skill.sync.taskfleet-run-overview")
         .expect("install fix applied");
     assert_eq!(f["applied"], true);
 
@@ -676,11 +680,11 @@ fn fix_reinstalls_drifted_skill() {
 #[test]
 fn fix_dry_run_emits_plan_and_changes_nothing() {
     let env = setup();
-    install_skill(&env, "octl-run-overview", "0.0.0");
+    install_skill(&env, "taskfleet-run-overview", "0.0.0");
     let on_disk = env
         .home
         .path()
-        .join(".claude/skills/octl-run-overview/SKILL.md");
+        .join(".claude/skills/taskfleet-run-overview/SKILL.md");
 
     let out = bin(&env)
         .args(["--output", "json", "doctor", "--fix", "--dry-run"])
@@ -692,7 +696,7 @@ fn fix_dry_run_emits_plan_and_changes_nothing() {
     let would = v["would"].as_array().expect("would array");
     assert!(would
         .iter()
-        .any(|w| w["target"] == "octl-run-overview" && w["action"] == "install"));
+        .any(|w| w["target"] == "taskfleet-run-overview" && w["action"] == "install"));
 
     // Nothing was applied — the drifted file is untouched.
     let after = std::fs::read_to_string(&on_disk).unwrap();
@@ -803,7 +807,7 @@ fn install_bundled(env: &Env, name: &str) {
 // ---- codex flat-layout coverage ----
 
 const CODEX_PROMPT_REL: &str = ".codex/prompts/stint-start.md";
-const CODEX_MARKER_REL: &str = ".codex/prompts/_shared/.orchestratectl-managed";
+const CODEX_MARKER_REL: &str = ".codex/prompts/_shared/.taskfleet-managed";
 const CODEX_SKILL_ID: &str = "skill.sync.codex.stint-start";
 
 /// Install a bundled skill to the codex flat layout through the real

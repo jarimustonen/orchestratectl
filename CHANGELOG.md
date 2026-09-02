@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `orchestratectl` are documented here. The format
+All notable changes to Taskfleet are documented here. Historical releases retain the `orchestratectl` name. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -14,6 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Bundled workflows and repository contracts now use the canonical Taskfleet identity (`taskfleet-skills-docs-contracts`).** New prompts, source references, examples and telemetry endpoint commands use `taskfleet`; Taskfleet-owned skill names migrate by recorded hashes while edited/unmanaged copies are preserved, and stable `OCTL_*` plus the telemetry contract id remain unchanged.
 - **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
 <!-- oss-changelog:unreleased-end -->
 

@@ -324,7 +324,7 @@ fn branch_advanced_past_base(git: &str, repo: &str, base: Option<&str>, branch: 
 /// `merge-base`) take their revisions positionally with no `--` separator, so a
 /// ref that begins with `-` (e.g. a branch literally named `-v` or `--abbrev`)
 /// would be parsed as a FLAG. Recorded branch/source strings are
-/// orchestratectl-controlled (`wt/...`), but rejecting a leading dash keeps a
+/// Taskfleet-controlled (`wt/...`), but rejecting a leading dash keeps a
 /// malformed or adversarial projection from steering git's argv.
 fn safe_arg(s: Option<&str>) -> Option<&str> {
     s.map(str::trim)

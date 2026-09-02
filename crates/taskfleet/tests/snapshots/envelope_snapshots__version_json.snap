@@ -1,5 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 234
 expression: value
 ---
 {
@@ -9,17 +10,17 @@ expression: value
     "commit": "[COMMIT]",
     "skills": [
       {
-        "name": "orchestratectl-overview",
+        "name": "taskfleet-overview",
         "cli_version": "0.5.1",
         "schema_version": 1
       },
       {
-        "name": "octl-run-overview",
+        "name": "taskfleet-run-overview",
         "cli_version": "0.5.1",
         "schema_version": 1
       },
       {
-        "name": "octl-spawn-spinoff",
+        "name": "taskfleet-spawn-spinoff",
         "cli_version": "0.5.1",
         "schema_version": 1
       },

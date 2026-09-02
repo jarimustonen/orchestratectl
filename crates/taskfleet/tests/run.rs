@@ -272,7 +272,7 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
         .unwrap_or_default();
         let stderr = std::fs::read_to_string(scratch.path().join("worker-launch.err"))
             .unwrap_or_default();
-        let logs = std::fs::read_to_string(home.path().join("logs/orchestratectl.log.jsonl"))
+        let logs = std::fs::read_to_string(home.path().join("logs/taskfleet.log.jsonl"))
             .unwrap_or_default();
         panic!(
             "worker did not start: {error}; events={events}; launcher={launcher} stderr={stderr} logs={logs}"

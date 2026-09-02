@@ -69,7 +69,7 @@ fn key_hash(repo: Option<&str>, branch: Option<&str>, key: &str) -> String {
 
 /// Path to a key's reservation file under `<root>/idempotency/<hash>`.
 ///
-/// The `_in` functions take the orchestratectl root explicitly so tests can
+/// The `_in` functions take the Taskfleet root explicitly so tests can
 /// point at a scratch dir without mutating the process-global
 /// `ORCHESTRATECTL_HOME` (which would race with other unit tests). The public
 /// wrappers (`lookup` / `reserve` / `release`) resolve the root via `home` and

@@ -2,7 +2,7 @@
 name: orchestratectl-overview
 description: First read for any agent that has just discovered the `orchestratectl` binary mid-conversation. Teaches the overall shape of the tool — runs, supervisors, nodes, discussions, spinoffs — and the canonical create→supervise→collect-reports cycle. Use when asked "what is orchestratectl", when the binary appears in a session for the first time, or before issuing the first non-trivial command.
 version: 1
-cli_version: "{{CLI_VERSION}}"
+cli_version: "0.5.1"
 schema_version: 1
 ---
 
@@ -120,19 +120,19 @@ than guessing.
 
 ## Install or upgrade `orchestratectl`
 
-This skill was installed for `orchestratectl {{CLI_VERSION}}`. On the
+This skill was installed for `orchestratectl 0.5.1`. On the
 first invocation in a session, run
 `orchestratectl version --output json`, parse the JSON, and read
-`.data.version`. Compare it to `{{CLI_VERSION}}`:
+`.data.version`. Compare it to `0.5.1`:
 
 - **Missing**: tell the user to install through a published distribution channel
   outside this repository workflow, then stop.
 
-- **Older than `{{CLI_VERSION}}`**: tell the user the skill expects
-  `{{CLI_VERSION}}` and suggest upgrading via the same channel they
+- **Older than `0.5.1`**: tell the user the skill expects
+  `0.5.1` and suggest upgrading via the same channel they
   originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
   re-run the shell installer). Stop and wait — schema / CLI surface may have changed.
-- **Newer than `{{CLI_VERSION}}`**: tell the user the installed skill is
+- **Newer than `0.5.1`**: tell the user the installed skill is
   stale and stop. Refreshing installed bundled instructions is published-tool
   maintenance outside repository work; never run `skill install` as part of
   this workflow.

@@ -443,7 +443,7 @@ pub fn run(run_id: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(), C
                 },
                 SupervisorState::Dead => match payload.summary.supervisor.pid {
                     Some(pid) => println!(
-                        "supervisor:    pid {pid} (dead — run `orchestratectl run reattach {}` to recover)",
+                        "supervisor:    pid {pid} (dead — run `taskfleet run reattach {}` to recover)",
                         payload.manifest.run_id
                     ),
                     None => println!("supervisor:    (dead)"),

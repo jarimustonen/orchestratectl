@@ -222,7 +222,7 @@ pub struct HarnessConfig {
     pub per_kind: BTreeMap<String, String>,
 }
 
-/// The config file path under the resolved orchestratectl home. Inspectable so a
+/// The config file path under the resolved Taskfleet home. Inspectable so a
 /// caller never has to guess where settings come from (AGENTS-AI-FIRST-CLI §8).
 pub fn config_path() -> Result<PathBuf, CliError> {
     Ok(crate::home::root_dir()?.join("config.toml"))
