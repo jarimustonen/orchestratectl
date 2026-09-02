@@ -116,3 +116,4 @@ these stints are in `AGENTS.md`.
 - [ ] 🐛 Piialiisan bugiraportti: run show cannot identify a run repository once its worktree is gone — jari via Telegram ([`intake-feature-orchestratectl-f706c536df01`](issues/intake-feature-orchestratectl-f706c536df01/item.md))
 - [ ] 🐛 Piialiisan bugiraportti: Expose source_repo in run show JSON — jari via Telegram ([`intake-feature-orchestratectl-635e9e31cdf2`](issues/intake-feature-orchestratectl-635e9e31cdf2/item.md))
 - [ ] 🐛 Piialiisan bugiraportti: stint-handoff blocks on unrelated concurrent agents — jari via Telegram ([`intake-bug-orchestratectl-53fa835cfa74`](issues/intake-bug-orchestratectl-53fa835cfa74/item.md))
+- [ ] 🐛 Piialiisan bugiraportti: Add teardown for terminal failed runs with preserved worktrees — jari via Telegram ([`intake-feature-orchestratectl-41343c4dd3e4`](issues/intake-feature-orchestratectl-41343c4dd3e4/item.md))
