@@ -5,9 +5,6 @@ type: feature
 reporter: jari
 status: in-progress
 priority: normal
-lane: rename
-lane_seq: 10
-collision: [repository-identity]
 commits:
 - hash: 7a20d7d
   summary: blocked ADR 0002 draft and implementation breakdown
