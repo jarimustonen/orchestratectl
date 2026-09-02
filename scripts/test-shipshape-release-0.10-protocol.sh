@@ -69,7 +69,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GIT_STUB_LOG"
 case "$*" in
   "remote get-url origin"|"remote get-url --push --all origin")
-    printf '%s\n' 'git@github.com:jarimustonen/orchestratectl.git'
+    printf '%s\n' 'git@github.com:jarimustonen/taskfleet.git'
     ;;
   "push origin refs/tags/v"*)
     printf '%s\n' "$*" >>"$TAG_PUSH_LOG"
@@ -99,7 +99,7 @@ case "$*" in
     oid="$($REAL_GIT rev-parse --verify "$local_ref")"
     zeros="$(printf '%040d' 0)"
     printf '%s %s %s %s\n' "$local_ref" "$oid" "$remote_ref" "$zeros" |
-      "$GIT_CONFIG_VALUE_0/pre-push" origin git@github.com:jarimustonen/orchestratectl.git
+      "$GIT_CONFIG_VALUE_0/pre-push" origin git@github.com:jarimustonen/taskfleet.git
     ;;
   "push origin HEAD:refs/heads/main"|push\ */probe.git\ refs/tags/v0.0.0-shipshape-pretag-probe)
     exec "$REAL_GIT" "$@"
@@ -117,8 +117,8 @@ cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_STUB_LOG"
-if [[ "$*" == 'repo view jarimustonen/orchestratectl --json nameWithOwner -q .nameWithOwner' ]]; then
-  printf '%s\n' jarimustonen/orchestratectl
+if [[ "$*" == 'repo view jarimustonen/taskfleet --json nameWithOwner -q .nameWithOwner' ]]; then
+  printf '%s\n' jarimustonen/taskfleet
   exit 0
 fi
 if [[ "$*" == run\ list* ]]; then
@@ -154,11 +154,30 @@ git -C "$repo_root" push -q "$tmp/origin.git" HEAD:refs/heads/main
 git clone -q --branch main "$tmp/origin.git" "$tmp/repo"
 git -C "$tmp/repo" config user.name protocol-test
 git -C "$tmp/repo" config user.email protocol-test@example.invalid
-# R7 activation is simulated only inside the disposable fixture. Production
-# topology remains blocked and no public tag or registry is reachable.
-jq '.activation = "ready"' "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
+# Future canonical activation is simulated only inside the disposable fixture.
+# Production topology remains blocked and no public tag or registry is reachable.
+jq '.activation = "ready" | .repository = "jarimustonen/taskfleet"' \
+  "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
 mv "$tmp/topology.json" "$tmp/repo/release/taskfleet-release.json"
-git -C "$tmp/repo" add release/taskfleet-release.json
+jq '.activation = "ready" | .source_repository.current = "jarimustonen/taskfleet" |
+  .cargo_dist.trigger = "tag-push"' "$tmp/repo/release/taskfleet-distribution.json" >"$tmp/distribution.json"
+mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
+sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
+rm "$tmp/repo/dist-workspace.toml.bak"
+sed -i.bak 's#https://github.com/jarimustonen/orchestratectl#https://github.com/jarimustonen/taskfleet#g' "$tmp/repo/Cargo.toml"
+rm "$tmp/repo/Cargo.toml.bak"
+python3 - "$tmp/repo/.github/workflows/release.yml" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+start = text.index("on:\n")
+end = text.index("\njobs:\n", start)
+text = text[:start] + "on:\n  pull_request:\n  push:\n    tags:\n      - '**[0-9]+.[0-9]+.[0-9]+*'\n" + text[end:]
+path.write_text(text)
+PY
+git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
+  dist-workspace.toml Cargo.toml .github/workflows/release.yml
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
 git -C "$tmp/repo" push -q origin HEAD:refs/heads/main
 
@@ -245,7 +264,7 @@ run_id="$(jq -er --arg plan "$plan_id" '
 )
 tag="$(jq -er '.data.state.tags | keys | if length == 1 then .[0] else error("one tag required") end' "$tmp/show.json")"
 bump_commit="$(jq -er '.data.state.bump.commit' "$tmp/show.json")"
-expected_gh="run list -R jarimustonen/orchestratectl --workflow ci.yml --branch main --commit $bump_commit --event push --limit 1 --json databaseId -q .[0].databaseId"
+expected_gh="run list -R jarimustonen/taskfleet --workflow ci.yml --branch main --commit $bump_commit --event push --limit 1 --json databaseId -q .[0].databaseId"
 grep -Fx "$expected_gh" "$tmp/gh.log" >/dev/null || {
   echo "real protocol test did not query push CI for the exact bump SHA" >&2
   cat "$tmp/gh.log" >&2

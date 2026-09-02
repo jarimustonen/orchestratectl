@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "activation": "prepared-blocked-r8-r9-r10",
+  "cargo_dist": {
+    "version": "0.28.2",
+    "config": "dist-workspace.toml",
+    "workflow": ".github/workflows/release.yml",
+    "trigger": "workflow-dispatch-default-dry-run",
+    "apps": ["taskfleet"],
+    "tap": "jarimustonen/homebrew-taskfleet",
+    "tap_secret": "HOMEBREW_TAP_TOKEN",
+    "tap_secret_state": "inert-blocked-r9",
+    "activation_gate": ".github/workflows/taskfleet-release-gate.yml",
+    "macos_runner": "macOS",
+    "stub_artifact": "orchestratectl-installer.sh",
+    "stub_sha256": "6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b"
+  },
+  "source_repository": {
+    "current": "jarimustonen/orchestratectl",
+    "after_r9": "jarimustonen/taskfleet"
+  },
+  "old_tap": {
+    "repository": "jarimustonen/homebrew-orchestratectl",
+    "prepared_patch": "issues/taskfleet-distribution-topology/old-tap-migration/0001-migrate-orchestratectl-formula-to-taskfleet-tap.patch",
+    "activation": "blocked-r11"
+  },
+  "public_receipts": {
+    "repository_id": 1355125556,
+    "proof_commit": "db12bb163e47617f0b941a35d3896b6ba0548892",
+    "proof_tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+  }
+}

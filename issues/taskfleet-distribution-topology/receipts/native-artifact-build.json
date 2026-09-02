@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "cargo_dist": "0.28.2",
+  "command": "dist build --artifacts=all --target=aarch64-apple-darwin --output-format=json",
+  "native_target": "aarch64-apple-darwin",
+  "artifacts": {
+    "stub_sha256": "6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b",
+    "formula_sha256": "c41575b06db06ca5ebe4ea4d0826d1fe8f27f71b49ddf7d78900e97545105b1f",
+    "shell_installer_sha256": "242b209d9a7ea3d9dcf5ed1acf68bbbefbc83e5f7a391ab667b11114d77236f6",
+    "archive_sha256": "a66e9c8238909b57c39a2e7f0ea5ad96cc7b90373cbef31e8dea381b89f89cee",
+    "archive_members": [
+      "taskfleet-aarch64-apple-darwin/",
+      "taskfleet-aarch64-apple-darwin/README.md",
+      "taskfleet-aarch64-apple-darwin/taskfleet",
+      "taskfleet-aarch64-apple-darwin/CHANGELOG.md",
+      "taskfleet-aarch64-apple-darwin/LICENSE"
+    ]
+  },
+  "formula_installs": [
+    "taskfleet"
+  ],
+  "formula_aliases": [],
+  "shell_installs": [
+    "taskfleet"
+  ],
+  "outcome": "passed"
+}

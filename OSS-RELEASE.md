@@ -16,7 +16,7 @@ distribution:
   adapter: cargo-dist
   gh_releases: true
   installers: [shell, homebrew]
-  homebrew_tap: jarimustonen/homebrew-orchestratectl
+  homebrew_tap: jarimustonen/homebrew-taskfleet
   platforms: [aarch64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
 provenance_level: keyless
 dependency_bot: dependabot
@@ -25,12 +25,13 @@ license: MIT
 docs_site: none
 ---
 
-> **APPROVED; CUT BLOCKED ON R7.** The exact R6 crates.io saga and Shipshape
-> protocol are ready, and credential-free package/plan checks are allowed. The
+> **APPROVED; CUT BLOCKED ON R8-R10.** R7 prepared and machine-verified the
+> canonical cargo-dist/Homebrew topology without activating distribution. The
 > workspace intentionally remains at 0.5.1 and `release/taskfleet-release.json`
-> remains `activation: blocked-r7` until cargo-dist/Homebrew preparation is
-> complete. Do not cut, tag, publish, install, rename the repository, or mutate a
-> tap. The old GitHub repository and tap remain truthful until R9/R11.
+> remains `activation: blocked-r8-r9-r10` until integrated validation, the GitHub
+> rename, and the canonical release gates complete. Do not cut, tag, publish,
+> install, rename the source repository, or activate either tap. The old GitHub
+> repository and old-tap formula remain truthful until R9/R11.
 
 ## Rationale
 - **maturity: mvp** — inferred by `ossctl facts`: has CI + a SemVer tag (`v0.0.2-alpha`) rules
@@ -48,8 +49,13 @@ docs_site: none
   0.5.1` in the blocked staging posture); all three packages version and tag together, and cargo-dist treats them as one application
   (`taskfleet`; the Cargo-only `orchestratectl` wrapper is excluded from binary distribution). Not `monorepo` (which implies
   per-package versions/tags).
-- **release.model: gated** — cargo-dist's `release.yml` is triggered by a pushed git tag; outside the
-  pre-cut block the maintained release wrapper may cut it autonomously after its exact-SHA green gate. Never `auto` (and `auto` is a floor violation on spike, though this is mvp).
+- **release.model: gated** — in the live release topology, cargo-dist's
+  `release.yml` is triggered by a pushed git tag and the maintained wrapper may
+  cut it autonomously after its exact-SHA green gate. During the R7 pre-cut
+  posture, `dispatch-releases = true` deliberately removes the tag trigger and
+  defaults manual dispatch to non-publishing `dry-run`; R9 restores tag dispatch
+  only after canonical identity/runner validation. Never `auto` (and `auto` is a
+  floor violation on spike, though this is mvp).
 - **versioning: semver** — SemVer-style tags already in use (`v0.0.2-alpha`), workspace staged at
   `0.5.1`. Pre-1.0 but the maintainer versions with SemVer, not date-based, so not `calver`.
 - **changelog: curated / issuectl-trailers** — a hand-maintained `CHANGELOG.md` already exists
@@ -140,14 +146,21 @@ docs_site: none
   differs, apply the exact generated formula as a normal reviewed commit to the
   configured tap, push that commit, record its SHA/asset checksum, and resume
   verification. Never add `--allow-empty`, delete/recreate the release, or weaken
-  the exact-tag/source gates. R7 must adapt this repair recipe to the final tap.
-- **R7 still owns cargo-dist's independent activation gate.** The generated
-  `release.yml` remains unchanged and tag-triggered so cargo-dist's drift check
-  stays valid; therefore the R6 wrapper's blocked `cut`, the prohibition on a
-  manual tag push, and repository tag controls remain load-bearing until R7
-  regenerates the final Taskfleet distribution topology. Do not mistake the
-  crates.io workflow's independent gate for cargo-dist activation.
-- **Two distribution channels, one tag (after R7 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
+  the exact-tag/source gates. The final repair destination is
+  `jarimustonen/homebrew-taskfleet`.
+- **R7 prepared cargo-dist but did not activate it.** The generated `release.yml`
+  has PR planning plus workflow dispatch whose default is non-publishing
+  `dry-run`; it has no tag-push trigger. R9 deliberately sets
+  `dispatch-releases = false` and regenerates only after canonical
+  identity/runner validation. Independently,
+  `release/taskfleet-release.json` remains `activation: blocked-r8-r9-r10`, so
+  the wrapper refuses `cut`. A cargo-dist plan job also runs the reusable
+  Taskfleet activation gate before any artifact build, hosting, or tap-secret
+  use; a rejected non-dry dispatch cancels its whole workflow run to defeat the
+  generated host job's skipped-build tolerance. Non-publishing
+  PR/default-dry-run planning is the only bypass. Do not
+  mistake the crates.io workflow's independent gate for cargo-dist activation.
+- **Two distribution channels, one tag (after R8-R10 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,
   then publishes `taskfleet-core`, `taskfleet`, and `orchestratectl` in dependency order. (2) **Prebuilt binaries + Homebrew

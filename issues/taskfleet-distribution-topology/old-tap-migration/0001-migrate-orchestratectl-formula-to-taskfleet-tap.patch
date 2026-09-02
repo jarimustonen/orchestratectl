@@ -1,0 +1,90 @@
+From 20a70f463e699af5ddba6f6455c20a183c496ca5 Mon Sep 17 00:00:00 2001
+From: Taskfleet release migration <jari.mustonen@iki.fi>
+Date: Wed, 2 Sep 2026 12:00:00 +0000
+Subject: [PATCH] migrate orchestratectl formula to Taskfleet tap
+
+---
+ Formula/orchestratectl.rb | 63 ---------------------------------------
+ tap_migrations.json       |  3 ++
+ 2 files changed, 3 insertions(+), 63 deletions(-)
+ delete mode 100644 Formula/orchestratectl.rb
+ create mode 100644 tap_migrations.json
+
+diff --git a/Formula/orchestratectl.rb b/Formula/orchestratectl.rb
+deleted file mode 100644
+index c7d02e0..0000000
+--- a/Formula/orchestratectl.rb
++++ /dev/null
+@@ -1,63 +0,0 @@
+-class Orchestratectl < Formula
+-  desc "Rust CLI for orchestrating AI-agent workflows on a developer's machine."
+-  homepage "https://github.com/jarimustonen/orchestratectl"
+-  version "0.5.1"
+-  if OS.mac? && Hardware::CPU.arm?
+-    url "https://github.com/jarimustonen/orchestratectl/releases/download/v0.5.1/orchestratectl-aarch64-apple-darwin.tar.xz"
+-    sha256 "55a5d6049845167e13da3eb83b66a628473664670adda0b429efc76c9eef8465"
+-  end
+-  if OS.linux?
+-    if Hardware::CPU.arm?
+-      url "https://github.com/jarimustonen/orchestratectl/releases/download/v0.5.1/orchestratectl-aarch64-unknown-linux-gnu.tar.xz"
+-      sha256 "9a031e57996c7ea830bfb3ff1ff196428340e704932ff1d2208ca57e1dcfdb68"
+-    end
+-    if Hardware::CPU.intel?
+-      url "https://github.com/jarimustonen/orchestratectl/releases/download/v0.5.1/orchestratectl-x86_64-unknown-linux-gnu.tar.xz"
+-      sha256 "091ec5e826a983ee15c269ea7a07117556a1faacaaea7e786abfd8442c9cc9f7"
+-    end
+-  end
+-  license "MIT"
+-
+-  BINARY_ALIASES = {
+-    "aarch64-apple-darwin":      {},
+-    "aarch64-unknown-linux-gnu": {},
+-    "x86_64-unknown-linux-gnu":  {},
+-  }.freeze
+-
+-  def target_triple
+-    cpu = Hardware::CPU.arm? ? "aarch64" : "x86_64"
+-    os = OS.mac? ? "apple-darwin" : "unknown-linux-gnu"
+-
+-    "#{cpu}-#{os}"
+-  end
+-
+-  def install_binary_aliases!
+-    BINARY_ALIASES[target_triple.to_sym].each do |source, dests|
+-      dests.each do |dest|
+-        bin.install_symlink bin/source.to_s => dest
+-      end
+-    end
+-  end
+-
+-  def install
+-    if OS.mac? && Hardware::CPU.arm?
+-      bin.install "orchestratectl"
+-    end
+-    if OS.linux? && Hardware::CPU.arm?
+-      bin.install "orchestratectl"
+-    end
+-    if OS.linux? && Hardware::CPU.intel?
+-      bin.install "orchestratectl"
+-    end
+-
+-    install_binary_aliases!
+-
+-    # Homebrew will automatically install these, so we don't need to do that
+-    doc_files = Dir["README.*", "readme.*", "LICENSE", "LICENSE.*", "CHANGELOG.*"]
+-    leftover_contents = Dir["*"] - doc_files
+-
+-    # Install any leftover files in pkgshare; these are probably config or
+-    # sample files.
+-    pkgshare.install(*leftover_contents) unless leftover_contents.empty?
+-  end
+-end
+diff --git a/tap_migrations.json b/tap_migrations.json
+new file mode 100644
+index 0000000..8d47427
+--- /dev/null
++++ b/tap_migrations.json
+@@ -0,0 +1,3 @@
++{
++  "orchestratectl": "jarimustonen/taskfleet/taskfleet"
++}

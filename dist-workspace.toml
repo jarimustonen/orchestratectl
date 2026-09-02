@@ -7,19 +7,28 @@ members = ["cargo:."]
 cargo-dist-version = "0.28.2"
 # CI backends to support
 ci = "github"
+# R7 prepares but does not activate distribution: version-tag pushes must not
+# start cargo-dist before R8/R9. R9 flips this to false and regenerates after
+# the canonical repository identity and exact-SHA runner gate are green.
+dispatch-releases = true
 # Build setup derives path remapping from each runner's HOME so prebuilt
 # binaries never expose the runner account or filesystem layout.
 github-build-setup = "../build-setup.yml"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
-# Homebrew tap repository for the auto-generated formula.
-# Per-tool tap convention (matches homebrew-shipshape / homebrew-issuectl):
-# repo `homebrew-orchestratectl` → `brew install jarimustonen/orchestratectl/orchestratectl`.
-tap = "jarimustonen/homebrew-orchestratectl"
+# Sole generated Homebrew destination. The old homebrew-orchestratectl tap is
+# static migration metadata and must never receive generated formula writes.
+tap = "jarimustonen/homebrew-taskfleet"
+# Every generated build/host/publish phase must wait for the repository's
+# canonical activation gate. As a plan job this runs before artifacts are built.
+plan-jobs = ["./taskfleet-release-gate"]
+# A blocked non-dry dispatch cancels its own run before any downstream job can
+# exploit cargo-dist's permissive skipped-build host condition.
+github-custom-job-permissions = { "taskfleet-release-gate" = { actions = "write" } }
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).
-# orchestratectl is tmux + git-worktree centric — POSIX-only by design.
+# Taskfleet is tmux + git-worktree centric — POSIX-only by design.
 # Windows is intentionally NOT a target; the supervisor uses fork(2),
 # setsid(2), sigaction(2), and unix signal handlers throughout.
 #
@@ -32,6 +41,12 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-
 # Where to host releases
 hosting = "github"
 
+# Keep the old releases/latest installer URL useful during 0.6.x-0.7.x without
+# installing anything or adding an old binary to canonical channels.
+[[dist.extra-artifacts]]
+build = ["./scripts/build-legacy-installer-stub.sh"]
+artifacts = ["target/taskfleet-extra/orchestratectl-installer.sh"]
+
 # Route the macOS build to a self-hosted runner. GitHub-hosted macOS minutes
 # are effectively unavailable on the Free plan (multi-hour queues); the two
 # Linux targets stay on GitHub-hosted ubuntu runners.
@@ -41,4 +56,4 @@ hosting = "github"
 # home; an independent global-config override makes checkout write the token
 # elsewhere and fail to replace its authentication placeholder.
 [dist.github-custom-runners]
-aarch64-apple-darwin = "self-hosted"
+aarch64-apple-darwin = "macOS"

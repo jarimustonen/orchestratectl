@@ -6,7 +6,7 @@ topology="$repo_root/release/taskfleet-release.json"
 [[ -f "$topology" ]] || { echo "release topology not found: $topology" >&2; exit 2; }
 jq -e '
   (keys | sort) == ["activation","crates_io","distribution","owners","repository","schema_version"] and
-  .schema_version == 1 and (.activation == "blocked-r7" or .activation == "ready") and
+  .schema_version == 1 and (.activation == "blocked-r8-r9-r10" or .activation == "ready") and
   (.repository | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
   .owners == ([.owners[]] | unique | sort) and (.owners | length > 0) and
   (.crates_io | keys | sort) == ["legs","workflow"] and .crates_io.workflow == "publish-crates.yml" and

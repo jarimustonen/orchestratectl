@@ -1,0 +1,18 @@
+{
+  "id": 1355125556,
+  "node_id": "R_kgDOUMWTNA",
+  "name": "homebrew-taskfleet",
+  "full_name": "jarimustonen/homebrew-taskfleet",
+  "private": false,
+  "owner": {
+    "login": "jarimustonen",
+    "id": 1272053,
+    "node_id": "MDQ6VXNlcjEyNzIwNTM=",
+    "type": "User"
+  },
+  "html_url": "https://github.com/jarimustonen/homebrew-taskfleet",
+  "default_branch": "main",
+  "created_at": "2026-09-02T18:55:53Z",
+  "updated_at": "2026-09-02T18:55:54Z",
+  "pushed_at": "2026-09-02T18:56:19Z"
+}

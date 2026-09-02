@@ -49,7 +49,8 @@ ownership rather than choosing a winner.
 
 ## Release boundary
 
-The ADR 0002 R6 crates.io saga and pinned Shipshape protocol are ready. Release
-activation remains explicitly blocked in `release/taskfleet-release.json` until
-R7 finishes cargo-dist/Homebrew preparation. Repository rename, publishing,
-tagging, tap activation, and global installation remain outside this phase.
+The ADR 0002 R6 crates.io saga, pinned Shipshape protocol, and R7 canonical
+cargo-dist/Homebrew topology are prepared. Release activation remains explicitly
+blocked in `release/taskfleet-release.json` through R8 integrated validation, R9
+repository rename, and the R10 cut. Publishing, tagging, tap activation, and
+global installation remain outside this phase.

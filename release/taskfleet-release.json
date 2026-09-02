@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "activation": "blocked-r7",
+  "activation": "blocked-r8-r9-r10",
   "repository": "jarimustonen/orchestratectl",
   "owners": ["jarimustonen"],
   "crates_io": {

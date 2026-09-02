@@ -154,7 +154,7 @@ run_case secondary-after-publish 5 'resume reconciliation without another publis
 run_case absent 1 'remains absent after bounded publish retries'
 
 # Activation and execution context are enforced at the mutating boundary.
-jq '.activation = "blocked-r7"' "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
+jq '.activation = "blocked-r8-r9-r10"' "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
 mv "$tmp/topology.json" "$tmp/repo/release/taskfleet-release.json"
 : >"$tmp/cargo.log"
 set +e

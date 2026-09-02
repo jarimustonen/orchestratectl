@@ -35,10 +35,7 @@ jobs:
           test "$GITHUB_REF_TYPE" != tag || test "$GITHUB_REF_NAME" = "v$version"
           repo="$(./scripts/validate-release-topology.sh)"
           if test "$GITHUB_REF_TYPE" = tag; then
-            jq -e '.activation == "ready"' release/taskfleet-release.json >/dev/null || {
-              echo "release activation is blocked; refusing tag-triggered crates.io publication" >&2
-              exit 1
-            }
+            ./scripts/verify-release-activation.sh
           fi
           cargo metadata --locked --no-deps --format-version 1 | jq -e --arg version "$version" --arg repo "https://github.com/$repo" '
             ([.packages[].name] | sort) == ["orchestratectl","taskfleet","taskfleet-core"] and

@@ -36,12 +36,12 @@ load_release_topology() {
 }
 
 assert_cut_activated() {
-  local activation
-  activation="$(jq -er .activation "$repo_root/$topology_rel")"
-  [[ "$activation" == ready ]] || {
-    echo "release cut activation is $activation; ADR 0002 R7 must finish cargo-dist/Homebrew preparation before a tag can be cut" >&2
+  if ! "$repo_root/scripts/verify-release-activation.sh" >/dev/null; then
+    local activation
+    activation="$(jq -er .activation "$repo_root/$topology_rel")"
+    echo "release cut activation is $activation; ADR 0002 R8-R10 gates must complete before a tag can be cut" >&2
     exit 2
-  }
+  fi
 }
 
 validate_contract_targets() {

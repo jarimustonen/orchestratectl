@@ -302,8 +302,9 @@ set -e
   exit 1
 }
 
-# R6 permits credential-free plans, but R7 still owns activation. A cut must
-# fail before Shipshape, GitHub, Git refs, or release state can be touched.
+# Credential-free plans remain permitted, but R8-R10 still own the integrated,
+# repository-rename and cut gates. A cut must fail before Shipshape, GitHub, Git
+# refs, or release state can be touched.
 reset_logs
 set +e
 env -i HOME="$tmp/home" PATH="$tmp/bin" GIT_STUB_LOG="$tmp/git.log" \
@@ -313,8 +314,8 @@ env -i HOME="$tmp/home" PATH="$tmp/bin" GIT_STUB_LOG="$tmp/git.log" \
   >"$tmp/stdout" 2>"$tmp/stderr"
 status=$?
 set -e
-[[ "$status" -eq 2 ]] || { echo "Taskfleet R7 cut was not blocked (status=$status)" >&2; exit 1; }
-grep -F 'release cut activation is blocked-r7' "$tmp/stderr" >/dev/null
+[[ "$status" -eq 2 ]] || { echo "Taskfleet R8-R10 cut was not blocked (status=$status)" >&2; exit 1; }
+grep -F 'release cut activation is blocked-r8-r9-r10' "$tmp/stderr" >/dev/null
 test ! -s "$tmp/shipshape.log" || { echo "blocked cut reached Shipshape" >&2; exit 1; }
 test ! -s "$tmp/gh.log" || { echo "blocked cut reached GitHub" >&2; exit 1; }
 
