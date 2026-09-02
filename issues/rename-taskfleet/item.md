@@ -8,6 +8,9 @@ priority: normal
 lane: rename
 lane_seq: 10
 collision: [repository-identity]
+commits:
+- hash: 7a20d7d
+  summary: blocked ADR 0002 draft and implementation breakdown
 ---
 
 # Rename orchestratectl to Taskfleet
@@ -59,3 +62,9 @@ Only after Taskfleet is published and verified, search other repositories for th
 - crates.io, GitHub, releases, Homebrew and docs agree on identity.
 - The old name remains only in intentional compatibility/migration/history contexts.
 - Dependent repositories are discovered and converged by their own worktrees after the canonical release is live.
+
+## Decisions
+
+### 2026-09-02T06:06:15Z · @taskfleet-decision-worker
+
+ADR 0002 remains Proposed, not Accepted: the required five-lens panel was incomplete because the Rust/crates.io release-engineering model returned no response. The useful draft and dependency-ordered plan are preserved on the technical-decision branch for a fresh complete-panel run; no rename or distribution action was taken.
