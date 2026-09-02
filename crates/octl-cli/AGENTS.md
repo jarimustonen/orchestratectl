@@ -6,6 +6,12 @@ The orchestratectl CLI binary. Verb-noun structure (`run create`, `node list`, `
 
 `src/lib.rs` owns the sole linkable parser/execution engine. Binary entry points are thin calls to `dispatch(InvocationIdentity)`; identity is explicit and is used only for help/version branding (future compatibility warnings attach at the same seam), never inferred from `argv[0]` or `PATH`. Hidden self-execution is centralized in `src/self_exec.rs` and always starts `current_exe()`. Detached supervise, reattach, merge-recovery reattach, and doctor fixes must use that helper rather than a product-name lookup or a second parser.
 
+## Taskfleet dual-name resolver (ADR 0002 R2)
+
+`src/home.rs` is the sole reader/resolver for `TASKFLEET_HOME`, `TASKFLEET_PROFILE`, `TASKFLEET_HARNESS`, `TASKFLEET_LOG`, their bounded `ORCHESTRATECTL_*` aliases, and `.taskfleet.toml` / `.orchestratectl.toml`. Dispatch parses first, then resolves these inputs before logging or command writes; structured and text help return before resolution and remain filesystem-pure. Resolved process inputs and repository-config bytes are frozen in a `OnceLock`, so this process cannot switch truth midway through a command. This cannot fence an unmodified 0.5.1 process; concurrent first establishment remains outside the documented operator-exclusion limit. Compatibility warnings are aggregated into one stderr line and hidden `self_exec` children inherit `OCTL_INTERNAL_SELF_EXEC=1` to suppress repeats. Do not read these branded variables directly elsewhere.
+
+With no explicit home, a readable directory containing any entry is populated/managed (unknown entries fail safe as managed). Canonical-only selects `~/.taskfleet`; legacy-only adopts `~/.orchestratectl` in place; neither selects fresh canonical; dual-populated distinct roots fail before logging. Existing paths compare by canonical physical identity (symlink and filesystem case behavior included); missing paths compare as absolute lexically normalized paths. A sole explicit home intentionally overrides default-root discovery, while differing dual explicit homes fail. R2 never moves data or creates aliases.
+
 ## `doctor` binary build provenance
 
 `doctor` always emits the stable `binary.commit` check first. Its optional `details` object exposes `binary_commit`, `repository_head`, and `comparison` (`match`, `mismatch`, `unavailable`, or `not_applicable`) so machine callers never scrape hashes from prose. When cwd is inside an orchestratectl checkout, a recorded build commit that differs from `HEAD` is a WARN, never a FAIL; branch and released-binary mismatches are legitimate. Outside this project's checkout, or when either reference cannot be established, the check remains informational. It never offers an autonomous fix or manages the installed binary.
@@ -55,11 +61,11 @@ It stubs the two shell-out boundaries through the production override hooks — 
 ## `run create --profile` / legacy `--harness` (worker selection)
 
 Executable profiles are defined only in the user-owned
-`$ORCHESTRATECTL_HOME/config.toml` as `[profiles.<name>]`. Each strict profile has
+the resolved Taskfleet home's `config.toml` as `[profiles.<name>]`. Each strict profile has
 `description`, `capability = "fast" | "capable" | "ultra-capable"`,
 `residency = "local" | "remote"`, and 1–8 ordered `agents` with bounded argv.
 Candidates use `harness = "pi" | "claude"`; only pi may declare
-`telemetry = "worker-v1"`. `<repo-root>/.orchestratectl.toml` is parsed through a
+`telemetry = "worker-v1"`. Canonical `<repo-root>/.taskfleet.toml` (or the bounded legacy fallback) is parsed through a
 selection-only schema and may contain `[profile]` defaults/per-kind names, but
 any executable definitions, argv, adapter paths, or residency fields fail.
 

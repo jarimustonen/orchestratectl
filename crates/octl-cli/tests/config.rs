@@ -9,9 +9,9 @@ use tempfile::TempDir;
 
 fn bin(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    command.env("ORCHESTRATECTL_HOME", home);
-    command.env_remove("ORCHESTRATECTL_HARNESS");
-    command.env_remove("ORCHESTRATECTL_LOG");
+    command.env("TASKFLEET_HOME", home);
+    command.env_remove("TASKFLEET_HARNESS");
+    command.env_remove("TASKFLEET_LOG");
     command
 }
 
@@ -193,7 +193,7 @@ fn config_show_env_override_keeps_file_layers_visible() {
     )
     .unwrap();
     let mut command = bin(home.path());
-    command.env("ORCHESTRATECTL_HARNESS", "pi");
+    command.env("TASKFLEET_HARNESS", "pi");
     let data = show_json(command.args(["config", "show", "--output", "json"]));
 
     for row in data["keys"].as_array().unwrap() {
@@ -242,7 +242,7 @@ fn config_show_env_does_not_launder_invalid_file_value() {
     )
     .unwrap();
     let mut command = bin(home.path());
-    command.env("ORCHESTRATECTL_HARNESS", "pi");
+    command.env("TASKFLEET_HARNESS", "pi");
     let envelope = envelope_json(command.args(["config", "show", "--output", "json"]));
     let row = key(&envelope["data"], "harness.research");
     assert_eq!(row["effective_value"], "pi");
@@ -258,15 +258,12 @@ fn config_show_env_does_not_launder_invalid_file_value() {
 fn config_show_invalid_env_is_reported_once() {
     let home = TempDir::new().unwrap();
     let mut command = bin(home.path());
-    command.env("ORCHESTRATECTL_HARNESS", "gpt");
+    command.env("TASKFLEET_HARNESS", "gpt");
     let envelope = envelope_json(command.args(["config", "show", "--output", "json"]));
     assert_eq!(envelope["data"]["invalid_layer_count"], 1);
     let warnings = envelope["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0]
-        .as_str()
-        .unwrap()
-        .contains("ORCHESTRATECTL_HARNESS"));
+    assert!(warnings[0].as_str().unwrap().contains("TASKFLEET_HARNESS"));
 }
 
 #[test]

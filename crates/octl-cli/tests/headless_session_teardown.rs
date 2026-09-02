@@ -244,7 +244,7 @@ fn headless_session_is_torn_down_after_last_managed_run() {
 
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
-            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("TASKFLEET_HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &tmux)
             .env("GIT_BIN", &no_git)
@@ -290,7 +290,7 @@ fn headless_session_is_torn_down_after_last_managed_run() {
     // submitted and the supervisor rolls the run up to `done`.
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
-            .env("ORCHESTRATECTL_HOME", home.path())
+            .env("TASKFLEET_HOME", home.path())
             .env("OCTL_MERGE_SH", &merge_sh)
             .env("TMUX_BIN", &tmux)
             .env("GIT_BIN", &no_git)

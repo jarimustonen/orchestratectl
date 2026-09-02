@@ -13,9 +13,7 @@ const OLD_PREFIX: &str = "01m08c08v5";
 
 fn bin(home: &TempDir, cwd: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    command
-        .env("ORCHESTRATECTL_HOME", home.path())
-        .current_dir(cwd);
+    command.env("TASKFLEET_HOME", home.path()).current_dir(cwd);
     command
 }
 

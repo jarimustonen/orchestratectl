@@ -228,35 +228,26 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         }
     }
 
-    // `_log_guard` owns the non-blocking writer's worker thread. It MUST
-    // stay alive for the whole of `run()`: its `Drop` drains buffered events
-    // to disk and joins the thread, so binding it here keeps logs flowing
-    // until every subcommand (including the long-lived `supervise` loop,
-    // which exits its poll loop cooperatively on SIGINT/SIGTERM) has
-    // returned. Subcommands that bypass unwinding via `std::process::exit`
-    // (e.g. `event tail`'s signal exit) skip this `Drop`, so they call
-    // `flush_logs()` explicitly first — `init_logging` registered the same
-    // guard in the process-global `LOG_FLUSH` cell for exactly that.
-    let LoggingInit {
-        warnings: logging_warnings,
-        guard: _log_guard,
-    } = init_logging();
-
+    // Parse before resolving public inputs or opening logs. Besides keeping
+    // all help paths filesystem-pure, this ensures malformed invocations do
+    // not create state and lets repository-config preflight inspect the
+    // selected `run create --source-repo` before the first write.
     let mut matches = match command.try_get_matches_from(
         std::iter::once(OsString::from(identity.command_name())).chain(raw_args_os),
     ) {
         Ok(matches) => matches,
-        Err(e) => return handle_clap_error(e, &logging_warnings),
+        Err(e) => return handle_clap_error(e, &[]),
     };
     let cli = match Cli::from_arg_matches_mut(&mut matches) {
         Ok(cli) => cli,
         Err(e) => {
             let mut command = command_for(identity);
-            return handle_clap_error(e.format(&mut command), &logging_warnings);
+            return handle_clap_error(e.format(&mut command), &[]);
         }
     };
 
-    let output = match (cli.output, cli.json) {
+    // Resolve post-Clap global-flag semantics before any filesystem work.
+    let output = match (cli.output.clone(), cli.json) {
         (Some(_), true) => {
             let err = CliError::user(
                 "conflicting_output_flags",
@@ -272,6 +263,38 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         },
         (None, false) => OutputSpec::default(),
     };
+
+    let internal_worker_root = matches!(&cli.command, Command::RunWorker(_))
+        .then(|| std::env::var_os("OCTL_INTERNAL_WORKER_STATE_ROOT").map(PathBuf::from))
+        .flatten();
+    let repository_source = match &cli.command {
+        Command::Run {
+            action: crate::run::RunAction::Create { source_repo, .. },
+        } => crate::home::RepositorySource::RunCreate(source_repo.as_deref()),
+        _ => crate::home::RepositorySource::NotApplicable,
+    };
+    let compatibility_warnings =
+        match crate::home::initialize(internal_worker_root, repository_source) {
+            Ok(warnings) => warnings,
+            Err(err) => {
+                err.emit();
+                return ExitCode::from(err.kind as u8);
+            }
+        };
+    if !crate::home::warnings_suppressed() && !compatibility_warnings.is_empty() {
+        // Escape control characters before aggregation so even hostile Unix
+        // path bytes cannot manufacture another physical warning line.
+        let warning = compatibility_warnings.join("; ");
+        let escaped: String = warning.chars().flat_map(char::escape_default).collect();
+        eprintln!("warning: {escaped}");
+    }
+
+    // `_log_guard` owns the non-blocking writer's worker thread. Resolution
+    // above is deliberately complete before this first filesystem write.
+    let LoggingInit {
+        warnings: logging_warnings,
+        guard: _log_guard,
+    } = init_logging();
 
     info!(
         target: "orchestratectl::cli",
@@ -761,7 +784,10 @@ fn init_logging() -> LoggingInit {
     let log_path = if let Some(p) = log_path() {
         p
     } else {
-        warnings.push("log path unavailable: HOME and ORCHESTRATECTL_HOME both unset".to_string());
+        warnings.push(
+            "log path unavailable: TASKFLEET_HOME, ORCHESTRATECTL_HOME, and HOME are unset"
+                .to_string(),
+        );
         return finish_logging(warnings, None, None);
     };
 
@@ -788,8 +814,26 @@ fn init_logging() -> LoggingInit {
         }
     };
 
-    let filter =
-        EnvFilter::try_from_env("ORCHESTRATECTL_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = match crate::home::log_filter() {
+        Ok(Some(value)) => match EnvFilter::try_new(&value) {
+            Ok(filter) => filter,
+            Err(error) => {
+                warnings.push(format!(
+                    "invalid {} filter; using info: {error}",
+                    crate::home::LOG_ENV
+                ));
+                EnvFilter::new("info")
+            }
+        },
+        Ok(None) => EnvFilter::new("info"),
+        Err(error) => {
+            warnings.push(format!(
+                "log filter resolution failed; using info: {}",
+                error.message
+            ));
+            EnvFilter::new("info")
+        }
+    };
 
     // Hand the file to a background writer thread. The supervisor polls at
     // 500ms across ~100 nodes; doing the `write(2)` synchronously on the
@@ -841,13 +885,9 @@ fn init_logging() -> LoggingInit {
 }
 
 fn log_path() -> Option<PathBuf> {
-    let root = if let Ok(custom) = std::env::var("ORCHESTRATECTL_HOME") {
-        PathBuf::from(custom)
-    } else {
-        let home = std::env::var("HOME").ok()?;
-        PathBuf::from(home).join(".orchestratectl")
-    };
-    Some(root.join("logs").join("orchestratectl.log.jsonl"))
+    crate::home::root_dir()
+        .ok()
+        .map(|root| root.join("logs").join("orchestratectl.log.jsonl"))
 }
 
 #[cfg(test)]

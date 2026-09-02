@@ -1,7 +1,7 @@
 //! Integration tests for the `run` subcommand family.
 //!
 //! Every test points the binary at a fresh `TempDir` via
-//! `ORCHESTRATECTL_HOME` so the user's real `~/.orchestratectl/` is
+//! `TASKFLEET_HOME` so the user's real `~/.orchestratectl/` is
 //! never touched.
 
 #[cfg(unix)]
@@ -16,7 +16,7 @@ use common::TestHome;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     c
 }
@@ -232,7 +232,7 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
         .current_dir(home.path().parent().unwrap())
         // A relative selected root must be made absolute before it crosses the
         // worktree/self-exec boundary.
-        .env("ORCHESTRATECTL_HOME", home.path().file_name().unwrap())
+        .env("TASKFLEET_HOME", home.path().file_name().unwrap())
         .env("OCTL_CREATE_SH", &create_sh)
         // Only the hostile product-name fixtures are searchable. Every tool
         // this scenario legitimately needs is addressed by absolute path.
@@ -333,7 +333,7 @@ default="only"
     std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     command
-        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("TASKFLEET_HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         .env("PATH", "/usr/bin:/bin")
         .args([
@@ -882,7 +882,7 @@ fn concurrent_same_idempotency_key_creates_one_run() {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-                cmd.env("ORCHESTRATECTL_HOME", &path)
+                cmd.env("TASKFLEET_HOME", &path)
                     .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
                     .args([
                         "--output",

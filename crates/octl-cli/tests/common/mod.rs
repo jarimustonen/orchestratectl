@@ -1,6 +1,6 @@
 //! Shared integration-test fixtures.
 //!
-//! [`TestHome`] is a `TempDir`-backed `ORCHESTRATECTL_HOME` that reaps every
+//! [`TestHome`] is a `TempDir`-backed `TASKFLEET_HOME` that reaps every
 //! supervisor process spawned beneath it when it drops, so the test suite
 //! never leaks `orchestratectl supervise` processes
 //! (issue: supervise-test-teardown-leak).
@@ -19,7 +19,7 @@ use tempfile::TempDir;
 /// supervisor that does not exit promptly.
 const REAP_GRACE: Duration = Duration::from_secs(2);
 
-/// A `TempDir` used as `ORCHESTRATECTL_HOME` that reaps the supervisor
+/// A `TempDir` used as `TASKFLEET_HOME` that reaps the supervisor
 /// processes spawned beneath it on drop.
 ///
 /// `run create` (and `run reattach`) spawn a top-level supervisor that
@@ -44,7 +44,7 @@ impl TestHome {
     /// `TempDir::new().unwrap()` call sites.
     pub fn new() -> Self {
         Self {
-            dir: TempDir::new().expect("create temp ORCHESTRATECTL_HOME"),
+            dir: TempDir::new().expect("create temp TASKFLEET_HOME"),
         }
     }
 }

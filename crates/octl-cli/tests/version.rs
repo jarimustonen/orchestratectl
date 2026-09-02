@@ -7,10 +7,22 @@
 //! within `schema_version == 1` surface as test failures.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
+    // Version initializes logging, so keep it away from the developer's real
+    // default homes and from any populated legacy home on the host.
+    command
+        .env(
+            "TASKFLEET_HOME",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/test-homes/version")
+                .join(std::process::id().to_string()),
+        )
+        .env_remove("ORCHESTRATECTL_HOME");
+    command
 }
 
 #[test]
@@ -24,7 +36,7 @@ fn invocation_identity_is_not_inferred_from_argv0_or_path() {
     let help = Command::new(&renamed)
         .arg("--help")
         .env("HOME", dir.path())
-        .env("ORCHESTRATECTL_HOME", dir.path().join("state"))
+        .env("TASKFLEET_HOME", dir.path().join("state"))
         .env("PATH", "")
         .output()
         .unwrap();
@@ -40,7 +52,7 @@ fn invocation_identity_is_not_inferred_from_argv0_or_path() {
     let version = Command::new(&renamed)
         .args(["--output", "text", "version"])
         .env("HOME", dir.path())
-        .env("ORCHESTRATECTL_HOME", dir.path().join("state"))
+        .env("TASKFLEET_HOME", dir.path().join("state"))
         .env("PATH", "")
         .output()
         .unwrap();

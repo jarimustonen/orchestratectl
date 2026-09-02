@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use super::check::CheckResult;
 
 /// Read-only context handed to every check. `root` is the resolved
-/// orchestratectl home (`$ORCHESTRATECTL_HOME` or `~/.orchestratectl`);
-/// it is `None` only when neither `$ORCHESTRATECTL_HOME` nor `$HOME` is
+/// resolved Taskfleet home (canonical explicit/default or adopted legacy);
+/// it is `None` only when no supported home input is
 /// set, in which case the root-dependent checks degrade gracefully and
 /// `config.home` reports the failure.
 pub struct Ctx {

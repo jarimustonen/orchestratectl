@@ -5,7 +5,7 @@
 //! The four layers, highest priority first:
 //!
 //! 1. **flag** — `--harness <name>` on `run create`.
-//! 2. **env** — `ORCHESTRATECTL_HARNESS` (mirrors the flag name per §8). An empty
+//! 2. **env** — `TASKFLEET_HARNESS` (with the bounded `ORCHESTRATECTL_HARNESS` alias). An empty
 //!    value counts as unset and falls through.
 //! 3. **config file** — `[harness]` in `config.toml`: a `per_kind[<kind>]`
 //!    override wins over the section `default`. This is where a repo/user can
@@ -31,7 +31,7 @@ use crate::run::kind_kebab;
 pub enum HarnessSource {
     /// The `--harness` flag.
     Flag,
-    /// The `ORCHESTRATECTL_HARNESS` environment variable.
+    /// The resolved `TASKFLEET_HARNESS` environment layer.
     Env,
     /// The `config.toml` `[harness]` section (per-kind override or default).
     File,
@@ -74,7 +74,7 @@ impl HarnessChoice {
 }
 
 /// The environment variable that mirrors `--harness` (§8 flag↔env naming).
-pub const HARNESS_ENV: &str = "ORCHESTRATECTL_HARNESS";
+pub const HARNESS_ENV: &str = crate::home::HARNESS_ENV;
 
 /// The pure precedence resolver: given the explicit flag, the env value, and the
 /// loaded config, pick the harness and record its source. Every resolved name is

@@ -1,7 +1,7 @@
 //! Integration tests for the `event` subcommand family — `tail` (read)
 //! and `create` (sanctioned write path).
 //!
-//! Each test uses a fresh `TempDir` via `ORCHESTRATECTL_HOME`.
+//! Each test uses a fresh `TempDir` via `TASKFLEET_HOME`.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     c
 }

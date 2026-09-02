@@ -265,6 +265,7 @@ fn spawn_awaiting_hook(
 ) -> bool {
     let mut command = std::process::Command::new("sh");
     command
+        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
         .arg("-c")
         .arg(cmd)
         .env("OCTL_RUN_ID", run_id)
@@ -311,6 +312,7 @@ fn spawn_awaiting_hook(
 fn spawn_hook(cmd: &str, run_id: &str, status: &str, summary: &str, kind: &str, title: &str) {
     let mut command = std::process::Command::new("sh");
     command
+        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
         .arg("-c")
         .arg(cmd)
         .env("OCTL_RUN_ID", run_id)

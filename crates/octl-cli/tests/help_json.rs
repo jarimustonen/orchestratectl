@@ -31,7 +31,7 @@ fn bin() -> Command {
     let mut c = Command::cargo_bin("orchestratectl").expect("binary builds");
     // Hermetic: help rendering never touches state, but clear inherited
     // color/log knobs so a developer's shell can't perturb stdout.
-    c.env_remove("ORCHESTRATECTL_LOG");
+    c.env_remove("TASKFLEET_LOG");
     c.env_remove("NO_COLOR");
     c.env_remove("CLICOLOR");
     c

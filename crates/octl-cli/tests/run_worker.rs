@@ -18,7 +18,7 @@ const RUN_ID: &str = "01jxwd0000000000000000000w";
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c
 }
 
@@ -57,6 +57,43 @@ fn worker_exited_event(paths: &RunPaths) -> Value {
         .find(|l| l.contains("\"worker.exited\""))
         .expect("a worker.exited event must be recorded");
     serde_json::from_str(line).unwrap()
+}
+
+#[test]
+fn internal_root_controls_preflight_logging_and_marker_stops_at_worker_boundary() {
+    let state = TempDir::new().unwrap();
+    let paths = seed_run(state.path());
+    let ambient = TempDir::new().unwrap();
+    for name in [".taskfleet", ".orchestratectl"] {
+        let root = ambient.path().join(name);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("managed"), b"ambient").unwrap();
+    }
+    let observed = ambient.path().join("worker-env.txt");
+    let command = format!(
+        "printf '%s' \"${{OCTL_INTERNAL_SELF_EXEC-unset}}\" > {}",
+        observed.display()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
+        .env_remove("TASKFLEET_HOME")
+        .env_remove("ORCHESTRATECTL_HOME")
+        .env("HOME", ambient.path())
+        .env("OCTL_INTERNAL_WORKER_STATE_ROOT", state.path())
+        .env("OCTL_INTERNAL_SELF_EXEC", "1")
+        .args(["run-worker", RUN_ID, "n-0001", "--", "sh", "-c", &command])
+        .output()
+        .expect("spawn internal shim");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(observed).unwrap(), "unset");
+    assert!(state.path().join("logs/orchestratectl.log.jsonl").exists());
+    assert!(!ambient.path().join(".taskfleet/logs").exists());
+    assert!(!ambient.path().join(".orchestratectl/logs").exists());
+    assert_eq!(worker_exited_event(&paths)["data"]["exit_code"], 0);
 }
 
 #[test]

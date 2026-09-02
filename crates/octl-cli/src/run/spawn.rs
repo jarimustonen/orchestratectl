@@ -238,6 +238,7 @@ pub fn write_agent_launcher(
                 format!("resolve absolute state root {}: {e}", state_root.display()),
             )
         })?;
+        body.extend_from_slice(b"export OCTL_INTERNAL_SELF_EXEC=1\n");
         body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION=1\n");
         body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_STATE_ROOT=");
         body.extend_from_slice(&shell_literal_path(&state_root));
@@ -380,6 +381,7 @@ pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
         ));
     }
     let mut cmd = Command::new(&script);
+    cmd.env_remove(crate::home::INTERNAL_SELF_EXEC_ENV);
     if let Some(cwd) = req.cwd {
         cmd.current_dir(cwd);
     }
@@ -681,6 +683,7 @@ pub(crate) mod tests {
         assert!(body.contains("export OCTL_RUN_ID='01ARZ3NDEKTSV4RRFFQ69G5FAV'\n"));
         assert!(body.contains("export OCTL_NODE_ID='n-0001'\n"));
         assert!(body.contains("export OCTL_ATTEMPT='7'\n"));
+        assert!(body.contains("export OCTL_INTERNAL_SELF_EXEC=1\n"));
         use std::fmt::Write as _;
         let mut candidate_args = String::new();
         for arg in &command {

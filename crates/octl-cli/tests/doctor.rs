@@ -7,7 +7,7 @@
 //! it), the `skill.sync` drift WARN, the `schema.runs` corruption FAIL,
 //! and the `--fix` / `--fix --dry-run` behaviour.
 //!
-//! Every test sandboxes `HOME`, `ORCHESTRATECTL_HOME`, and `PATH` into
+//! Every test sandboxes `HOME`, `TASKFLEET_HOME`, and `PATH` into
 //! tempdirs so it never touches the developer's real install and the
 //! dependency checks are deterministic regardless of what is on the CI
 //! machine's PATH.
@@ -60,7 +60,7 @@ fn setup() -> Env {
 fn bin(env: &Env) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     cmd.env("HOME", env.home.path());
-    cmd.env("ORCHESTRATECTL_HOME", &env.orch);
+    cmd.env("TASKFLEET_HOME", &env.orch);
     cmd.env("PATH", env.path.path());
     cmd.env_remove("GIT_BIN");
     cmd

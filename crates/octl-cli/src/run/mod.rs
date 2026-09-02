@@ -88,7 +88,8 @@ pub enum RunAction {
         #[arg(long)]
         layout: Option<String>,
         /// Agent runtime to launch the worker under: `pi` (built-in default) |
-        /// `claude` (non-default opt-in). Overrides `ORCHESTRATECTL_HARNESS`,
+        /// `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS`
+        /// (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias),
         /// the `config.toml` `[harness]` default, and the built-in default (in
         /// that precedence order). `pi` is forwarded to create.sh as `--agent
         /// pi` (→ `workmux add -a`), so it must be configured in workmux;
@@ -97,7 +98,8 @@ pub enum RunAction {
         #[arg(long)]
         harness: Option<String>,
         /// Select a user-owned executable profile from
-        /// `$ORCHESTRATECTL_HOME/config.toml`. Overrides environment and
+        /// `$TASKFLEET_HOME/config.toml` (or the resolved adopted legacy home).
+        /// Overrides environment and
         /// repository/user defaults. Conflicts with the legacy `--harness`
         /// alias at the same precedence level.
         #[arg(long)]

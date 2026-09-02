@@ -4,7 +4,7 @@
 //! (`tracing_appender::non_blocking`). The `WorkerGuard` returned from it
 //! is bound in `run()` so it outlives every subcommand; dropping it on a
 //! clean exit flushes the channel and joins the worker. These tests run
-//! the real binary against a throwaway `ORCHESTRATECTL_HOME` and assert
+//! the real binary against a throwaway `TASKFLEET_HOME` and assert
 //! that the events emitted during a normal invocation actually reach
 //! `logs/orchestratectl.log.jsonl` — i.e. the guard is held long enough
 //! that nothing is dropped on the way out.
@@ -16,7 +16,7 @@ use tempfile::TempDir;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c
 }
 

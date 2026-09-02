@@ -2,7 +2,7 @@
 //! `supervisor-process` issue.
 //!
 //! Every test points the binary at a fresh `TempDir` via
-//! `ORCHESTRATECTL_HOME` so the user's real `~/.orchestratectl/` is
+//! `TASKFLEET_HOME` so the user's real `~/.orchestratectl/` is
 //! never touched. tmux/external-process probes are stubbed via
 //! `TMUX_BIN` redirection or by skipping the probe entirely.
 
@@ -19,7 +19,7 @@ use common::TestHome;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     // Make tmux probes deterministically "no window" by pointing
     // TMUX_BIN at a binary that prints nothing.
@@ -1389,7 +1389,7 @@ fn spawned_supervisor_survives_sighup_to_spawner_group() {
         format!("{bin_path} --output json run reattach {run_id} >/dev/null 2>&1; sleep 30");
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(script);
-    cmd.env("ORCHESTRATECTL_HOME", home.path());
+    cmd.env("TASKFLEET_HOME", home.path());
     cmd.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     cmd.env("TMUX_BIN", "/usr/bin/true");
     // Keep the watchdog from synthesizing an agent-death for the forged node

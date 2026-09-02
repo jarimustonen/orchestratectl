@@ -19,7 +19,7 @@ use common::TestHome;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     c
 }

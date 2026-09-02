@@ -4,7 +4,7 @@
 //! selection-only. Resolution is deterministic and fallback is create-time
 //! static eligibility only; launch/runtime failures never advance candidates.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use octl_core::{AgentSelection, Kind, Lifecycle, SelectedAgentCandidate, SkippedAgentCandidate};
 
@@ -12,7 +12,7 @@ use crate::config::{AgentCandidate, Config, RepoConfig};
 use crate::error::CliError;
 use crate::run::kind_kebab;
 
-pub const PROFILE_ENV: &str = "ORCHESTRATECTL_PROFILE";
+pub const PROFILE_ENV: &str = crate::home::PROFILE_ENV;
 
 /// Result of resolving profile-aware or backward-compatible harness selection.
 #[derive(Debug)]
@@ -68,8 +68,8 @@ pub fn resolve(
             .with_invalid_value(raw));
         }
     }
-    let profile_env = read_selector_env(PROFILE_ENV)?;
-    let harness_env = read_selector_env(crate::harness::select::HARNESS_ENV)?;
+    let profile_env = crate::home::profile()?;
+    let harness_env = crate::home::harness()?;
     let profile_flag = nonempty(profile_flag);
     let harness_flag = nonempty(harness_flag);
     let profile_env_ref = nonempty(profile_env.as_deref());
@@ -101,8 +101,7 @@ pub fn resolve(
     let repo = if higher_level_selected {
         RepoConfig::default()
     } else {
-        let repo_path = repository_config_path(source_repo)?;
-        RepoConfig::load_from(&repo_path)?
+        RepoConfig::load()?
     };
 
     resolve_with(
@@ -127,17 +126,6 @@ fn legacy_harness(
         harness: crate::harness::select::resolve_with(kind, flag, env, &Config::default())?,
         selection: None,
     })
-}
-
-fn read_selector_env(name: &str) -> Result<Option<String>, CliError> {
-    match std::env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(CliError::user(
-            "invalid_environment",
-            format!("environment variable {name} is not valid UTF-8"),
-        )),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,7 +246,7 @@ fn resolve_with(
     } else {
         return Err(CliError::user(
             "profile_required",
-            "profiles are configured but no profile was selected; pass --profile, set ORCHESTRATECTL_PROFILE, or configure profile.default",
+            "profiles are configured but no profile was selected; pass --profile, set TASKFLEET_PROFILE, or configure profile.default",
         ));
     };
 
@@ -428,33 +416,6 @@ fn conflicting<T>(level: &str, profile: &str, harness: &str) -> Result<T, CliErr
         "conflicting_profile_selection",
         format!("{level} sets both '{profile}' and legacy '{harness}'; set exactly one at this precedence level"),
     ))
-}
-
-fn repository_config_path(source_repo: Option<&str>) -> Result<PathBuf, CliError> {
-    let start = source_repo
-        .map_or_else(std::env::current_dir, |raw| Ok(PathBuf::from(raw)))
-        .map_err(|e| CliError::system("io_error", format!("read current directory: {e}")))?;
-    if !start.is_dir() {
-        return Err(CliError::user(
-            "invalid_source_repo",
-            format!(
-                "source repository {} is not an existing directory",
-                start.display()
-            ),
-        )
-        .with_invalid_value(start.display().to_string()));
-    }
-    let canonical = start.canonicalize().map_err(|e| {
-        CliError::system(
-            "source_repo_unreadable",
-            format!("resolve source repository {}: {e}", start.display()),
-        )
-    })?;
-    let root = canonical
-        .ancestors()
-        .find(|path| path.join(".git").exists())
-        .unwrap_or(canonical.as_path());
-    Ok(root.join(".orchestratectl.toml"))
 }
 
 fn executable_available(executable: &str) -> bool {

@@ -93,7 +93,7 @@ struct Invocation {
 #[test]
 fn every_skill_orchestratectl_example_matches_the_binary() {
     let skills_dir = skills_dir();
-    let home = TempDir::new().expect("temp ORCHESTRATECTL_HOME");
+    let home = TempDir::new().expect("temp TASKFLEET_HOME");
 
     let mut invocations = Vec::new();
     for skill_md in skill_template_paths(&skills_dir) {
@@ -149,7 +149,7 @@ fn every_skill_orchestratectl_example_matches_the_binary() {
 /// `--bogus-flag` and confirming the gate trips).
 #[test]
 fn gate_rejects_a_bogus_flag() {
-    let home = TempDir::new().expect("temp ORCHESTRATECTL_HOME");
+    let home = TempDir::new().expect("temp TASKFLEET_HOME");
     let argv = [
         "run".to_string(),
         "create".to_string(),
@@ -171,7 +171,7 @@ fn gate_rejects_a_bogus_flag() {
 /// relies on.
 #[test]
 fn validation_has_no_side_effects() {
-    let home = TempDir::new().expect("temp ORCHESTRATECTL_HOME");
+    let home = TempDir::new().expect("temp TASKFLEET_HOME");
     let argv = [
         "run".to_string(),
         "create".to_string(),
@@ -276,7 +276,7 @@ fn worker_skill_failure_disclosure_sections_are_self_contained() {
 
 #[test]
 fn failure_disclosure_command_shapes_match_the_binary() {
-    let home = TempDir::new().expect("temp ORCHESTRATECTL_HOME");
+    let home = TempDir::new().expect("temp TASKFLEET_HOME");
     validate(
         &[
             "node".into(),
@@ -314,7 +314,7 @@ fn markdown_section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
 /// `Err` carries the binary's error `code` + `message` for the report.
 fn validate(argv: &[String], home: &TempDir) -> Result<(), String> {
     let out = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
-        .env("ORCHESTRATECTL_HOME", home.path())
+        .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path())
         .args(argv)
         .arg("--help")

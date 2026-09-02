@@ -20,7 +20,14 @@ pub(crate) fn executable() -> std::io::Result<std::path::PathBuf> {
 
 /// Start a command targeting this process's exact executable image.
 pub(crate) fn command() -> std::io::Result<Command> {
-    executable().map(Command::new)
+    executable().map(|executable| {
+        let mut command = Command::new(executable);
+        // Hidden descendants inherit the already-surfaced compatibility
+        // decision. They still resolve and validate inputs, but must not repeat
+        // top-level deprecation warnings into supervisor/worker stderr streams.
+        command.env(crate::home::INTERNAL_SELF_EXEC_ENV, "1");
+        command
+    })
 }
 
 #[cfg(test)]

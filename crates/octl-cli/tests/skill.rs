@@ -6,7 +6,7 @@
 //! catalog (names + non-empty descriptions) is pinned here so accidental
 //! frontmatter breakage in `crates/octl-cli/skills/` is caught at CI time.
 //!
-//! Every test sets `ORCHESTRATECTL_HOME` (and `HOME` where the install
+//! Every test sets `TASKFLEET_HOME` (and `HOME` where the install
 //! path resolves it) to a tempdir so we never mutate the developer's real
 //! `~/.orchestratectl/` or `~/.claude/` directories under CI or local
 //! `cargo test`.
@@ -28,7 +28,7 @@ fn bin(home: &TempDir) -> Command {
     // Sandbox log writes and any HOME-derived install paths into the
     // tempdir so test runs never touch the real `~/.orchestratectl/` or
     // `~/.claude/`.
-    cmd.env("ORCHESTRATECTL_HOME", home.path());
+    cmd.env("TASKFLEET_HOME", home.path());
     cmd.env("HOME", home.path());
     cmd
 }
@@ -1085,7 +1085,7 @@ fn skill_install_force_relinquishes_diverged_dropped_pi_companion() {
 }
 
 /// Path to the out-of-band pi provenance record under the test's orchestratectl
-/// state root. `bin` sets `ORCHESTRATECTL_HOME` to the tempdir root, so the
+/// state root. `bin` sets `TASKFLEET_HOME` to the tempdir root, so the
 /// record resolves to `<home>/state/pi-installed-skills.json`.
 fn env_orch_state_record(home: &tempfile::TempDir) -> std::path::PathBuf {
     home.path().join("state/pi-installed-skills.json")
@@ -1510,7 +1510,7 @@ fn skill_install_all_does_not_follow_symlinked_orphan() {
 
 // --- pi.dev mirror lifecycle (out-of-band provenance) --------------------
 //
-// `ORCHESTRATECTL_HOME` and `HOME` both point at the tempdir root here (see
+// `TASKFLEET_HOME` and `HOME` both point at the tempdir root here (see
 // `bin`), so the provenance record lands at `<home>/state/pi-installed-
 // skills.json` and pi mirrors at `<home>/.pi/agent/skills/<name>/`.
 

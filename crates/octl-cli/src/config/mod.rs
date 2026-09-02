@@ -13,7 +13,8 @@
 //!   validation. Read-only: it never mutates the file. Verbs live in [`show`]
 //!   and [`path`].
 //!
-//! Location: `<ORCHESTRATECTL_HOME or ~/.orchestratectl>/config.toml`. The file
+//! Location: `<resolved Taskfleet home>/config.toml` (canonical
+//! `TASKFLEET_HOME`/`~/.taskfleet`, with bounded legacy adoption). The file
 //! is entirely optional; a missing or empty file yields [`Config::default`], so
 //! every setting falls through to its built-in default. This is the first
 //! config-file layer in the tool — before it, configuration was purely
@@ -191,7 +192,8 @@ pub struct AgentCandidate {
     pub telemetry: Option<String>,
 }
 
-/// Selection-only repository configuration from `<repo>/.orchestratectl.toml`.
+/// Selection-only repository configuration from canonical
+/// `<repo>/.taskfleet.toml` or its bounded legacy fallback.
 /// `deny_unknown_fields` is load-bearing: `[profiles]`, commands, argv, adapter
 /// paths, and residency reclassification all fail rather than becoming trusted
 /// executable input from a checkout.
@@ -274,8 +276,19 @@ impl Config {
 }
 
 impl RepoConfig {
+    /// Load the repository selection frozen by dispatcher preflight. The bytes
+    /// are never reopened after logging starts.
+    pub fn load() -> Result<Self, CliError> {
+        let (path, bytes) = crate::home::repository_config()?;
+        match bytes {
+            Some(bytes) => Self::load_bytes(&path, &bytes),
+            None => Ok(Self::default()),
+        }
+    }
+
     /// Load selection-only repository configuration. A missing file is empty;
     /// malformed or executable-bearing repository configuration fails closed.
+    #[cfg(test)]
     pub fn load_from(path: &std::path::Path) -> Result<Self, CliError> {
         const MAX_REPOSITORY_CONFIG_BYTES: u64 = 64 * 1024;
         let metadata = match std::fs::symlink_metadata(path) {
@@ -300,16 +313,33 @@ impl RepoConfig {
                 ),
             ));
         }
-        let text = std::fs::read_to_string(path).map_err(|e| {
+        let bytes = std::fs::read(path).map_err(|e| {
             CliError::system(
                 "repository_config_unreadable",
                 format!("could not read repository config {}: {e}", path.display()),
             )
         })?;
+        Self::load_bytes(path, &bytes)
+    }
+
+    fn load_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<Self, CliError> {
+        const MAX_REPOSITORY_CONFIG_BYTES: usize = 64 * 1024;
+        if bytes.len() > MAX_REPOSITORY_CONFIG_BYTES {
+            return Err(CliError::user(
+                "invalid_repository_config",
+                format!("repository config {} must be no larger than {MAX_REPOSITORY_CONFIG_BYTES} bytes", path.display()),
+            ));
+        }
+        let text = std::str::from_utf8(bytes).map_err(|e| {
+            CliError::user(
+                "invalid_repository_config",
+                format!("repository config {} is not UTF-8: {e}", path.display()),
+            )
+        })?;
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        let config: Self = toml::from_str(&text).map_err(|e| {
+        let config: Self = toml::from_str(text).map_err(|e| {
             CliError::user(
                 "invalid_repository_config",
                 format!(

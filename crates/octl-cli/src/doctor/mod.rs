@@ -73,8 +73,8 @@ fn run_inner(
         ));
     }
 
-    // Resolve home best-effort: `None` only when neither ORCHESTRATECTL_HOME
-    // nor HOME is set, which config.home reports as a FAIL.
+    // Consume the already-resolved Taskfleet home. `None` is retained as a
+    // defensive diagnostic seam for direct test/library calls.
     let root = crate::home::root_dir().ok();
     let ctx = Ctx { root };
 

@@ -34,7 +34,7 @@
 //!
 //! - `run_id` (a ULID) — per-test dynamic filter, also rewrites the copy
 //!   embedded in `dir` paths and error messages
-//! - the temp `$ORCHESTRATECTL_HOME` path — per-test dynamic filter
+//! - the temp `$TASKFLEET_HOME` path — per-test dynamic filter
 //! - any other ULID-shaped token, `commit` (git HEAD hash), timestamps
 //!   (`created_at`/`ts`/… in all three serialised forms) and live PIDs —
 //!   global, boundary-/case-anchored filters
@@ -61,18 +61,18 @@ const ENVELOPE_SCHEMA: u64 = 1;
 // Harness
 // ----------------------------------------------------------------------
 
-/// A binary handle pointed at an isolated `$ORCHESTRATECTL_HOME`. The
+/// A binary handle pointed at an isolated `$TASKFLEET_HOME`. The
 /// `OCTL_TEST_SKIP_MATERIALIZE` escape hatch keeps `run create` from
 /// shelling out to `create.sh` / spawning a supervisor (same pattern the
 /// sibling suites use), so output is deterministic skeleton-only state.
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::cargo_bin("orchestratectl").expect("binary builds");
-    c.env("ORCHESTRATECTL_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     // Hermetic env: the CLI logs to a file and forces `color=never`, but
     // clear any inherited log/color knobs so a developer's shell can't
     // perturb the captured stdout/stderr.
-    c.env_remove("ORCHESTRATECTL_LOG");
+    c.env_remove("TASKFLEET_LOG");
     c.env_remove("NO_COLOR");
     c.env_remove("CLICOLOR");
     // A snapshot test must fail, never wedge CI — guard the streaming

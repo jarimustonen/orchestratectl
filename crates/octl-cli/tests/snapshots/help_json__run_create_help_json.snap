@@ -1,6 +1,6 @@
 ---
 source: crates/octl-cli/tests/help_json.rs
-assertion_line: 66
+assertion_line: 82
 expression: value
 ---
 {
@@ -77,7 +77,7 @@ expression: value
         "long": "harness",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Agent runtime to launch the worker under: `pi` (built-in default) | `claude` (non-default opt-in). Overrides `ORCHESTRATECTL_HARNESS`, the `config.toml` `[harness]` default, and the built-in default (in that precedence order). `pi` is forwarded to create.sh as `--agent pi` (→ `workmux add -a`), so it must be configured in workmux; `claude` keeps workmux's own configured default agent. Recorded on the run and shown by `run show` / `run list --json`",
+        "help": "Agent runtime to launch the worker under: `pi` (built-in default) | `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS` (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias), the `config.toml` `[harness]` default, and the built-in default (in that precedence order). `pi` is forwarded to create.sh as `--agent pi` (→ `workmux add -a`), so it must be configured in workmux; `claude` keeps workmux's own configured default agent. Recorded on the run and shown by `run show` / `run list --json`",
         "value_names": [
           "HARNESS"
         ],
@@ -464,7 +464,7 @@ expression: value
         "long": "profile",
         "long_aliases": [],
         "short_aliases": [],
-        "help": "Select a user-owned executable profile from `$ORCHESTRATECTL_HOME/config.toml`. Overrides environment and repository/user defaults. Conflicts with the legacy `--harness` alias at the same precedence level",
+        "help": "Select a user-owned executable profile from `$TASKFLEET_HOME/config.toml` (or the resolved adopted legacy home). Overrides environment and repository/user defaults. Conflicts with the legacy `--harness` alias at the same precedence level",
         "value_names": [
           "PROFILE"
         ],

@@ -1698,7 +1698,7 @@ pub fn is_simple_skill_name(name: &str) -> bool {
 
 /// Path to the single out-of-band pi provenance record
 /// (`<orchestratectl-root>/state/pi-installed-skills.json`). `None` when the
-/// root cannot be resolved (neither `$ORCHESTRATECTL_HOME` nor `$HOME` set).
+/// resolved Taskfleet root cannot be established.
 /// Deliberately rooted at the orchestratectl STATE dir, not `~/.pi` — the pi
 /// corpus must stay a pure body mirror with no orchestratectl bookkeeping in it.
 fn pi_provenance_path() -> Option<PathBuf> {
@@ -3684,7 +3684,7 @@ mod tests {
             skill_record("", None, &[("C.md", sha256_hex(b"c"))]),
         );
         write_pi_provenance(&path, &prov).unwrap();
-        // Point pi_managed_skills at this record via ORCHESTRATECTL_HOME.
+        // Point pi_managed_skills at this record via the resolved home.
         let read = read_pi_provenance(&path);
         let rec = &read.skills["s"];
         assert_eq!(rec.body_hash(), None);

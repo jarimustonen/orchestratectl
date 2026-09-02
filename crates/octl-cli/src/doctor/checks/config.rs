@@ -16,18 +16,26 @@ use super::Ctx;
 const ID: &str = "config.home";
 
 pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
-    let custom = std::env::var_os("ORCHESTRATECTL_HOME");
+    let source = crate::home::home_source().ok();
 
-    // Neither ORCHESTRATECTL_HOME nor HOME resolved → ctx.root is None.
+    // No resolved Taskfleet home → ctx.root is None.
     let Some(root) = ctx.root.as_deref() else {
         return vec![CheckResult::fail(
             ID,
-            "cannot resolve orchestratectl home: neither ORCHESTRATECTL_HOME nor HOME is set",
-            "set HOME, or export ORCHESTRATECTL_HOME=<dir>",
+            "cannot resolve Taskfleet home: no home input is available",
+            "set HOME, or export TASKFLEET_HOME=<dir>",
         )];
     };
 
-    let is_custom = custom.as_ref().is_some_and(|v| !v.is_empty());
+    let is_custom = matches!(
+        source,
+        Some(
+            crate::home::HomeSource::CanonicalExplicit
+                | crate::home::HomeSource::LegacyExplicit
+                | crate::home::HomeSource::EqualExplicit
+                | crate::home::HomeSource::InternalWorker
+        )
+    );
 
     if !root.exists() {
         // Missing home is the empty state — it is created lazily on first
@@ -38,10 +46,13 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
             CheckResult::warn(
                 ID,
                 format!(
-                    "ORCHESTRATECTL_HOME points at non-existent path {}",
+                    "explicit Taskfleet home points at non-existent path {}",
                     root.display()
                 ),
-                format!("create {} or unset ORCHESTRATECTL_HOME", root.display()),
+                format!(
+                    "create {} or unset the explicit home variable",
+                    root.display()
+                ),
             )
         } else {
             CheckResult::ok(
@@ -59,7 +70,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
             ID,
             format!("orchestratectl home {} is not a directory", root.display()),
             format!(
-                "remove {} or point ORCHESTRATECTL_HOME elsewhere",
+                "remove {} or point TASKFLEET_HOME elsewhere",
                 root.display()
             ),
         )];
@@ -70,7 +81,7 @@ pub fn check(ctx: &Ctx) -> Vec<CheckResult> {
             ID,
             format!("orchestratectl home {} is not writable", root.display()),
             format!(
-                "chmod u+w {} or point ORCHESTRATECTL_HOME elsewhere",
+                "chmod u+w {} or point TASKFLEET_HOME elsewhere",
                 root.display()
             ),
         )];

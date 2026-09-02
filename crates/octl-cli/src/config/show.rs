@@ -3,7 +3,7 @@
 //! Unlike execution, inspection does not deserialize through [`crate::config::Config`]: it
 //! parses the file as raw TOML and validates every harness layer independently.
 //! This lets a caller see an invalid file value, including one shadowed by
-//! `ORCHESTRATECTL_HARNESS`, without weakening the strict resolver used by
+//! `TASKFLEET_HARNESS` (and its bounded legacy alias), without weakening the strict resolver used by
 //! `run create`. Only unreadable or syntactically invalid TOML is fatal.
 //!
 //! Each key has an ordered `layers` stack (highest precedence first), an
@@ -141,7 +141,7 @@ impl ConfigKey {
 pub fn run(show_secrets: bool, spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> {
     let path = config_path()?;
     let raw = load_raw_harness(&path)?;
-    let env = std::env::var(HARNESS_ENV).ok();
+    let env = crate::home::harness()?;
     // Match execution semantics: an empty/whitespace env value is unset.
     let env = env.as_deref().map(str::trim).filter(|v| !v.is_empty());
 

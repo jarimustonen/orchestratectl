@@ -147,7 +147,8 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
 
     cmd.env_remove("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION")
         .env_remove("OCTL_INTERNAL_WORKER_STATE_ROOT")
-        .env_remove("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS");
+        .env_remove("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS")
+        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
