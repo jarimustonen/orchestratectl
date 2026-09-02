@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-02
 type: task
 reporter: taskfleet-r0-worker
-status: untriaged
+status: open
 priority: normal
 provenance: other
 provenance_detail: ADR 0002 planned implementation DAG
@@ -11,6 +11,10 @@ source_ref: orchestratectl:01m1gdgp1hqt1aa2fdpq8q5hqs/planned-dag:R6
 originating_run: 01m1gdgp1hqt1aa2fdpq8q5hqs
 originating_run_kind: spinoff
 related: ['@rename-taskfleet']
+lane: taskfleet-rename
+lane_seq: 70
+blocked_by: ['@taskfleet-package-wrapper', '@taskfleet-skills-docs-contracts']
+collision: [repository-identity]
 ---
 
 # Rebuild Taskfleet registry and Shipshape release machinery

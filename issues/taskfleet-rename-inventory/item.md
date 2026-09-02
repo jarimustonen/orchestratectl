@@ -3,12 +3,14 @@ created: 2026-09-02
 updated: 2026-09-02
 type: task
 reporter: jari
-status: open
+status: done
 priority: normal
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 10
 collision: [repository-identity]
+closed: 2026-09-02
+closed_by: orchestrator
 ---
 
 # Freeze Taskfleet rename identity inventory
@@ -42,3 +44,9 @@ Execute R0 of `issues/rename-taskfleet/plan.md`: freeze the complete identity in
 R0 technical artifacts are complete and reviewed: the identity ledger is deterministic, 0.5.1 fixtures verify from the published commit, and eight self-contained R1–R8 issue bodies were filed through the required intake path. Review findings were assessed and confirmed omissions were corrected.
 
 The run policy forbids this worker from accepting or assigning lanes to issues it creates. The original task explicitly requires R1–R8 to be accepted/open with exact `blocked_by`, `lane_seq`, and `collision` values. They therefore remain unlaned `untriaged` items pending an authorized human disposition. Intended metadata is frozen in `issues/taskfleet-rename-inventory/r1-r8-dag.md` and each issue body. R0 remains open and must not be closed until a human applies that exact schedule and validates the DAG.
+
+## Resolution
+
+### 2026-09-02T07:27:04Z · @orchestrator
+
+R0 inventory and fixtures landed; Jari explicitly authorized the Taskfleet rename, and R1-R8 were accepted and scheduled exactly from the reviewed DAG specification.
