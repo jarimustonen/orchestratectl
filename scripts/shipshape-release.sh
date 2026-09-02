@@ -32,20 +32,7 @@ require_command() {
 }
 
 load_release_topology() {
-  local topology="$repo_root/$topology_rel"
-  jq -e '
-    .schema_version == 1 and
-    (.repository | type == "string" and length > 0) and
-    [.crates_io.legs[] | .package] == ["taskfleet-core","taskfleet","orchestratectl"] and
-    [.crates_io.legs[] | .depends_on] == [null,"taskfleet-core","taskfleet"] and
-    [.distribution[] | (.package + ":" + .registry + ":" + .workflow)] == [
-      "taskfleet:gh-releases:release.yml", "taskfleet:homebrew:release.yml"
-    ]
-  ' "$topology" >/dev/null || {
-    echo "release topology is not the admitted five-leg Taskfleet graph: $topology" >&2
-    exit 2
-  }
-  expected_repo="$(jq -er .repository "$topology")"
+  expected_repo="$(./scripts/validate-release-topology.sh)"
 }
 
 assert_cut_activated() {
@@ -481,8 +468,9 @@ case "$command" in
       exit 1
     }
     test -z "$(git status --porcelain)" || { echo "working tree must be clean" >&2; exit 1; }
-    # Build all three source archives before sealing the plan. This is a local,
-    # credential-free package proof; publish remains CI-only.
+    # Prove the current exact graph is packageable before asking Shipshape to
+    # seal the proposed bump. The engine owns the future-version bump plan; these
+    # credential-free archives are a separate source-layout/pin proof.
     ./scripts/publish-crates.sh package >/dev/null
     exec shipshape release plan --bump "$2" --json
     ;;

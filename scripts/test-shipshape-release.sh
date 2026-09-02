@@ -22,9 +22,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$tmp/bin" "$tmp/home" "$tmp/work/release"
+mkdir -p "$tmp/bin" "$tmp/home" "$tmp/work/release" "$tmp/work/scripts"
 cp "$repo_root/release/taskfleet-release.json" "$tmp/work/release/"
-for tool in bash grep jq sed; do
+cp "$repo_root/scripts/validate-release-topology.sh" "$tmp/work/scripts/"
+for tool in bash grep jq sed dirname; do
   tool_path="$(command -v "$tool")" || {
     echo "test prerequisite missing: $tool" >&2
     exit 1

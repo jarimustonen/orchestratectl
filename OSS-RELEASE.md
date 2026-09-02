@@ -102,11 +102,15 @@ docs_site: none
   `taskfleet@<v>`, and the bounded `orchestratectl@<v>` wrapper cannot be
   undone: a version can be yanked but never reused or overwritten. Never publish
   locally. `scripts/publish-crates.sh` packages each exact source archive, then
-  reconciles checksum, the complete owner set, internal dependency requirement,
+  reconciles checksum, non-yanked state, the complete owner set, the complete
+  dependency set (kind/options/target/features included), version-scoped
   license/rust-version/repository/homepage/description metadata, and the archive's
   `.cargo_vcs_info.json` commit. Cargo output, including “already exists”, is
   never success evidence. Every dependent starts only after its prerequisite has
-  produced a matching index-visible receipt.
+  produced a matching receipt; if Cargo's own index still lags, the dependent
+  publish transaction retries while its version remains an authoritative 404.
+  Publication is rejected outside the exact activated GitHub tag/SHA/repository
+  context, and the token is exported only to the `cargo publish` subprocess.
 - **CI-green tag gate.** From clean, synchronized `main`, seal and inspect the JSON plan,
   then pass its id back to the wrapper:
   ```bash
@@ -137,7 +141,11 @@ docs_site: none
   configured tap, push that commit, record its SHA/asset checksum, and resume
   verification. Never add `--allow-empty`, delete/recreate the release, or weaken
   the exact-tag/source gates. R7 must adapt this repair recipe to the final tap.
-- **Two distribution channels, one tag.** Pushing `vX.Y.Z` triggers both channels. (1)
+- **R6's cargo-dist block is physical, not prose-only.** While topology is
+  `blocked-r7`, generated `release.yml` has no tag trigger; only PR planning can
+  run. R7 must regenerate it from cargo-dist 0.28.2 and restore the tag trigger
+  only in the same reviewed change that makes topology `ready`.
+- **Two distribution channels, one tag (after R7 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,
   then publishes `taskfleet-core`, `taskfleet`, and `orchestratectl` in dependency order. (2) **Prebuilt binaries + Homebrew
