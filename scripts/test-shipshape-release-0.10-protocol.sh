@@ -166,16 +166,12 @@ sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/
 rm "$tmp/repo/dist-workspace.toml.bak"
 sed -i.bak 's#https://github.com/jarimustonen/orchestratectl#https://github.com/jarimustonen/taskfleet#g' "$tmp/repo/Cargo.toml"
 rm "$tmp/repo/Cargo.toml.bak"
-python3 - "$tmp/repo/.github/workflows/release.yml" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-start = text.index("on:\n")
-end = text.index("\njobs:\n", start)
-text = text[:start] + "on:\n  pull_request:\n  push:\n    tags:\n      - '**[0-9]+.[0-9]+.[0-9]+*'\n" + text[end:]
-path.write_text(text)
-PY
+# Regenerate rather than editing only the trigger: cargo-dist's generated plan
+# expressions also differ between dispatch-only and tag-push topology.
+(
+  cd "$tmp/repo"
+  dist generate
+)
 git -C "$tmp/repo" add release/taskfleet-release.json release/taskfleet-distribution.json \
   dist-workspace.toml Cargo.toml .github/workflows/release.yml
 git -C "$tmp/repo" commit -qm 'fixture: activate isolated release topology'
