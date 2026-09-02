@@ -141,10 +141,12 @@ docs_site: none
   configured tap, push that commit, record its SHA/asset checksum, and resume
   verification. Never add `--allow-empty`, delete/recreate the release, or weaken
   the exact-tag/source gates. R7 must adapt this repair recipe to the final tap.
-- **R6's cargo-dist block is physical, not prose-only.** While topology is
-  `blocked-r7`, generated `release.yml` has no tag trigger; only PR planning can
-  run. R7 must regenerate it from cargo-dist 0.28.2 and restore the tag trigger
-  only in the same reviewed change that makes topology `ready`.
+- **R7 still owns cargo-dist's independent activation gate.** The generated
+  `release.yml` remains unchanged and tag-triggered so cargo-dist's drift check
+  stays valid; therefore the R6 wrapper's blocked `cut`, the prohibition on a
+  manual tag push, and repository tag controls remain load-bearing until R7
+  regenerates the final Taskfleet distribution topology. Do not mistake the
+  crates.io workflow's independent gate for cargo-dist activation.
 - **Two distribution channels, one tag (after R7 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,
