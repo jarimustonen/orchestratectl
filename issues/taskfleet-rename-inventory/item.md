@@ -34,3 +34,11 @@ Execute R0 of `issues/rename-taskfleet/plan.md`: freeze the complete identity in
 - Every retained old-name category has an explicit migration owner.
 - No source/package/repository/tap rename, publication, global install, or user-state mutation occurs.
 - `git diff --check`, fixture checks, and `issuectl doctor --json` pass.
+
+## Agent Runs
+
+### 2026-09-02T07:22:50Z · @taskfleet-r0-worker
+
+R0 technical artifacts are complete and reviewed: the identity ledger is deterministic, 0.5.1 fixtures verify from the published commit, and eight self-contained R1–R8 issue bodies were filed through the required intake path. Review findings were assessed and confirmed omissions were corrected.
+
+The run policy forbids this worker from accepting or assigning lanes to issues it creates. The original task explicitly requires R1–R8 to be accepted/open with exact `blocked_by`, `lane_seq`, and `collision` values. They therefore remain unlaned `untriaged` items pending an authorized human disposition. Intended metadata is frozen in `issues/taskfleet-rename-inventory/r1-r8-dag.md` and each issue body. R0 remains open and must not be closed until a human applies that exact schedule and validates the DAG.

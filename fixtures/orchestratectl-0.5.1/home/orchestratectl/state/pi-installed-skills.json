@@ -1,0 +1,14 @@
+{
+  "schema_version": 3,
+  "skills": {
+    "orchestratectl-overview": {
+      "cli_version": "0.5.1",
+      "files": {
+        "SKILL.md": {
+          "kind": "skill",
+          "sha256": "f87dc3ace39d8731a2cafd46c57e530ff2279ea1e5631aec8aa20707b5d998aa"
+        }
+      }
+    }
+  }
+}

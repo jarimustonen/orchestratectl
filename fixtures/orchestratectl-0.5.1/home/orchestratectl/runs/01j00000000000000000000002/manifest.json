@@ -1,0 +1,20 @@
+{
+  "applied_seq": 3,
+  "created_at": "2026-09-02T00:00:00Z",
+  "harness": "pi",
+  "kind": "spinoff",
+  "lifecycle": "interactive",
+  "managed_tmux_session": null,
+  "node_count": 1,
+  "notify_cmd": null,
+  "parent_node_id": null,
+  "parent_run_id": null,
+  "run_id": "01j00000000000000000000002",
+  "schema_version": 1,
+  "source_branch": null,
+  "source_repo": null,
+  "status": "pending",
+  "title": "nonterminal fixture",
+  "updated_at": "2026-09-02T00:00:00Z",
+  "worktree_root": null
+}
