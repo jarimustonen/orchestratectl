@@ -1,0 +1,39 @@
+[package]
+name = "taskfleet-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core state, locking, and supervisor protocol library for Taskfleet."
+readme = "README.md"
+publish = true
+
+[package.metadata.taskfleet]
+pre-cut = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ulid = { workspace = true }
+fs4 = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = { workspace = true }
+
+# Plain `fn main()` bench (no nightly `#[bench]` / criterion dependency); run
+# with `cargo bench -p taskfleet-core --bench idempotency_scan`.
+[[bench]]
+name = "idempotency_scan"
+harness = false

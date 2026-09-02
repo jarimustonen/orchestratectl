@@ -1,5 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-expression: value
----
-{"schema_version":1,"error":{"code":"unknown_subcommand_or_flag","message":"error: unexpected argument '--frobnicate' found  Usage: orchestratectl [OPTIONS] <COMMAND>"}}

@@ -1,0 +1,6 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 234
+expression: value
+---
+{"schema_version":1,"error":{"code":"unknown_subcommand_or_flag","message":"error: unexpected argument '--frobnicate' found  Usage: taskfleet [OPTIONS] <COMMAND>"}}

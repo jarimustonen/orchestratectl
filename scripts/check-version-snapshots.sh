@@ -4,7 +4,7 @@
 # snapshots do not match the workspace crate version.
 #
 # Why this exists: the `version` command's output is snapshotted by
-# `crates/octl-cli/tests/envelope_snapshots.rs`, so the literal crate version is
+# `crates/taskfleet/tests/envelope_snapshots.rs`, so the literal crate version is
 # baked into `envelope_snapshots__version_{text,json,jsonl}.snap`. Bumping
 # `[workspace.package] version` in `Cargo.toml` without re-accepting those
 # snapshots leaves them stale — `cargo test` then fails. During the v0.1.8
@@ -13,7 +13,7 @@
 # mismatch fail fast — locally and in CI — instead of silently riding a release.
 #
 # Fix when it fails: refresh the snapshots and re-run the suite —
-#   cargo insta test --accept -p orchestratectl   # (or the sed/find accept loop)
+#   cargo insta test --accept -p taskfleet   # (or the sed/find accept loop)
 #   cargo test --workspace
 #
 # Portable POSIX-ish bash: no PCRE lookahead, works on macOS BSD grep and GNU grep.
@@ -22,7 +22,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cargo_toml="$repo_root/Cargo.toml"
-snap_dir="$repo_root/crates/octl-cli/tests/snapshots"
+snap_dir="$repo_root/crates/taskfleet/tests/snapshots"
 
 if [ ! -f "$cargo_toml" ]; then
   echo "check-version-snapshots: cannot find $cargo_toml" >&2
@@ -101,9 +101,9 @@ EOF
 
 semver='[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?'
 
-# text: header line `orchestratectl <version>`.
+# text: header line `taskfleet <version>`.
 check_snapshot "envelope_snapshots__version_text.snap" \
-  "orchestratectl ${semver}"
+  "taskfleet ${semver}"
 
 # json / jsonl: every `"version": "x.y.z"` and `"cli_version": "x.y.z"` field.
 for f in envelope_snapshots__version_json.snap envelope_snapshots__version_jsonl.snap; do
@@ -115,7 +115,7 @@ done
 if [ "$status" -ne 0 ]; then
   echo >&2
   echo "check-version-snapshots: version_* snapshots are out of sync with Cargo.toml ($ws_version)." >&2
-  echo "  Refresh them:  cargo insta test --accept -p orchestratectl && cargo test --workspace" >&2
+  echo "  Refresh them:  cargo insta test --accept -p taskfleet && cargo test --workspace" >&2
   exit 1
 fi
 

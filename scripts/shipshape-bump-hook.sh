@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-snapshot_dir="crates/octl-cli/tests/snapshots"
+snapshot_dir="crates/taskfleet/tests/snapshots"
 snapshots=(
   "$snapshot_dir/envelope_snapshots__version_json.snap"
   "$snapshot_dir/envelope_snapshots__version_jsonl.snap"
@@ -36,7 +36,7 @@ done
 git diff --binary HEAD -- . "${exclude_args[@]}" >"$state_dir/before.diff"
 git ls-files --others --exclude-standard -z >"$state_dir/before.untracked"
 
-INSTA_UPDATE=always cargo test --locked -p orchestratectl --test envelope_snapshots
+INSTA_UPDATE=always cargo test --locked -p taskfleet --test envelope_snapshots
 
 snap_new="$(find . \( -path ./target -o -path ./.git \) -prune -o -name '*.snap.new' -print -quit)"
 if [ -n "$snap_new" ]; then

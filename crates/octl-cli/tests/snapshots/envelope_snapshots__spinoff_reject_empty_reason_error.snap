@@ -1,5 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-expression: value
----
-{"schema_version":1,"error":{"code":"invalid_value","message":"--reason must not be empty or whitespace-only","invalid_value":"   "}}

@@ -9,7 +9,7 @@ trap cleanup EXIT
 mkdir -p "$tmp/home" "$tmp/system-bin"
 ln -s "$(command -v git)" "$tmp/system-bin/git"
 
-snap_dir="crates/octl-cli/tests/snapshots"
+snap_dir="crates/taskfleet/tests/snapshots"
 snapshots=(
   envelope_snapshots__version_json.snap
   envelope_snapshots__version_jsonl.snap
@@ -37,7 +37,7 @@ EOF
 ---
 source: fixture
 ---
-orchestratectl $text_version
+taskfleet $text_version
 EOF
 }
 
@@ -62,7 +62,7 @@ EOF
   cat >"$fixture/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == "test --locked -p orchestratectl --test envelope_snapshots" ]] || {
+[[ "$*" == "test --locked -p taskfleet --test envelope_snapshots" ]] || {
   echo "cargo stub: unexpected arguments: $*" >&2
   exit 90
 }
@@ -70,7 +70,7 @@ set -euo pipefail
   echo "cargo stub: INSTA_UPDATE must be always" >&2
   exit 92
 }
-snap_dir="crates/octl-cli/tests/snapshots"
+snap_dir="crates/taskfleet/tests/snapshots"
 update() {
   grep -q '0\.4\.1' "$1" || return 0
   sed 's/0\.4\.1/0.5.0/g' "$1" >"$1.tmp"

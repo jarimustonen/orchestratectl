@@ -1,9 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-expression: value
----
-run-id:        [RUN_ID]
-node-id:       n-0001
-status:        pending
-children:      0
-updated_at:    [TS]

@@ -1,0 +1,5 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"error":{"code":"supervisor_already_running","message":"supervisor pid [PID] for run [RUN_ID] is alive (no reattach needed)"}}

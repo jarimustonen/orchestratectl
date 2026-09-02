@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/octl-core", "crates/octl-cli"]
+members = ["crates/taskfleet-core", "crates/taskfleet", "compat/orchestratectl"]
 
 [workspace.package]
 version = "0.5.1"
@@ -47,7 +47,7 @@ inherits = "release"
 lto = "thin"
 
 # Workspace-wide lint policy. Each crate opts in with `lints.workspace = true`.
-# octl-core layers `missing_docs` on top via a crate-root `#![warn(missing_docs)]`
+# taskfleet-core layers `missing_docs` on top via a crate-root `#![warn(missing_docs)]`
 # in its lib.rs — Cargo rejects mixing `lints.workspace = true` with a per-crate
 # `[lints.rust]` override in the same table, so the attribute is the clean path.
 [workspace.lints.clippy]

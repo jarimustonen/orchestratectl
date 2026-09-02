@@ -30,6 +30,16 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || { echo "required command not found: $1" >&2; exit 1; }
 }
 
+assert_not_precut() {
+  local manifest
+  for manifest in crates/taskfleet/Cargo.toml compat/orchestratectl/Cargo.toml; do
+    if [[ -f "$manifest" ]] && grep -Eq '^[[:space:]]*pre-cut[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$manifest"; then
+      echo "Taskfleet pre-cut release block is active in $manifest; R6/R7 must remove it only after release and distribution topology are ready" >&2
+      exit 2
+    fi
+  done
+}
+
 require_supported_shipshape() {
   local version_json commit
   version_json="$(shipshape version --json)"
@@ -137,15 +147,16 @@ read_run_coordinates() {
 }
 
 validate_bump_tree() {
-  local version="${tag#v}" workspace_version core_pin
+  local version="${tag#v}" workspace_version core_pin wrapper_pin
   workspace_version="$(awk -F'"' '
     /^\[workspace\.package\]/ { in_package=1; next }
     /^\[/ { in_package=0 }
     in_package && /^version[[:space:]]*=/ { print $2; exit }
   ' Cargo.toml)"
-  core_pin="$(sed -nE 's/^octl-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/octl-cli/Cargo.toml)"
-  [[ "$workspace_version" == "$version" && "$core_pin" == "$version" ]] || {
-    echo "bump tree mismatch: tag=$version workspace=$workspace_version octl-core-pin=$core_pin" >&2
+  core_pin="$(sed -nE 's/^taskfleet-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/taskfleet/Cargo.toml)"
+  wrapper_pin="$(sed -nE 's/^taskfleet = \{[^}]*version = "=([^"]+)".*/\1/p' compat/orchestratectl/Cargo.toml)"
+  [[ "$workspace_version" == "$version" && "$core_pin" == "$version" && "$wrapper_pin" == "$version" ]] || {
+    echo "bump tree mismatch: tag=$version workspace=$workspace_version taskfleet-core-pin=$core_pin wrapper-taskfleet-pin=$wrapper_pin" >&2
     exit 2
   }
   grep -F "## [$version] - " CHANGELOG.md | grep -Eq '^## \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' || {
@@ -153,15 +164,15 @@ validate_bump_tree() {
     exit 2
   }
   awk -v version="$version" '
-    /^name = "octl-core"$/ || /^name = "orchestratectl"$/ { wanted=1; next }
+    /^name = "taskfleet-core"$/ || /^name = "taskfleet"$/ || /^name = "orchestratectl"$/ { wanted=1; next }
     wanted && /^version = / {
       seen++
       if ($0 != "version = \"" version "\"") bad=1
       wanted=0
     }
-    END { exit !(seen == 2 && !bad) }
+    END { exit !(seen == 3 && !bad) }
   ' Cargo.lock || {
-    echo "Cargo.lock does not carry both workspace packages at $version" >&2
+    echo "Cargo.lock does not carry all three workspace packages at $version" >&2
     exit 2
   }
   ./scripts/check-version-snapshots.sh
@@ -408,11 +419,18 @@ resume_after_gate() {
 require_command git
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+command="${1:-}"
+case "$command" in
+  plan|cut) assert_not_precut ;;
+  resume|verify) ;;
+  *) usage ;;
+esac
+
 require_command shipshape
 require_command jq
 require_supported_shipshape
 
-command="${1:-}"
 case "$command" in
   plan)
     [[ $# -eq 2 ]] || usage

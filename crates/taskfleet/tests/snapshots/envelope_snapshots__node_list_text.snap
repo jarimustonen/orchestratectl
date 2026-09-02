@@ -1,0 +1,5 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+n-0001	spinoff	pending	0	[TS]

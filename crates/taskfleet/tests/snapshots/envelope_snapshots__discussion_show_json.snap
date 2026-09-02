@@ -1,0 +1,23 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version": 1,
+    "discussion_id": "d-pqrstuvwxy",
+    "run_id": "[RUN_ID]",
+    "node_id": "n-0001",
+    "opened_at": "[TS]",
+    "severity": "discuss",
+    "topic": "seed topic",
+    "context": null,
+    "options": [],
+    "status": "open",
+    "resolution": null,
+    "note": null,
+    "resolved_at": null
+  },
+  "warnings": []
+}

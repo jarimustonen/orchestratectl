@@ -1,0 +1,14 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 234
+expression: value
+---
+taskfleet 0.5.1
+commit:                  [COMMIT]
+envelope schema:         1
+supported envelopes:     1
+config schemas:          2
+help schemas:            3
+skill schemas:           1
+state schema version:    1
+supported state schemas: 1

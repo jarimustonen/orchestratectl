@@ -1,0 +1,17 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "run_id": "[RUN_ID]",
+    "kind": "node.status",
+    "node_id": "n-0001",
+    "dry_run": true,
+    "projections": [
+      "nodes/n-0001.json"
+    ]
+  },
+  "warnings": []
+}

@@ -1,0 +1,17 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 233
+expression: value
+---
+run-id:        [RUN_ID]
+title:         seed-run
+status:        pending
+landed:        false (unverified)
+kind:          spinoff
+lifecycle:     autonomous
+profile:       legacy-unrecorded
+created_at:    [TS]
+updated_at:    [TS]
+nodes:         1
+telemetry:     n-0001: telemetry absent (requirement required, support unsupported); run status unchanged
+supervisor:    (none recorded)

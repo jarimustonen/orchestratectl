@@ -1,0 +1,11 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+run-id:      [RUN_ID]
+kind:        node.created
+node-id:     n-1002
+seq:         5
+projections:
+  - nodes/n-1002.json
+  - manifest.json

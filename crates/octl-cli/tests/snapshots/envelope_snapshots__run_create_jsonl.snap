@@ -1,6 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-assertion_line: 233
-expression: value
----
-{"schema_version":1,"data":{"run_id":"[RUN_ID]","dir":"[HOME]/runs/[RUN_ID]","supervisor":"delegated-to-parent-supervisor","kind":"spinoff","lifecycle":"autonomous","selection":"legacy-unrecorded"},"warnings":[]}

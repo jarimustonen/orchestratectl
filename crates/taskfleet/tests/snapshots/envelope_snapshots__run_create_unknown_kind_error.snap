@@ -1,0 +1,5 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"error":{"code":"invalid_value","message":"error: invalid value 'bogus' for '--kind <KIND>'   [possible values: spinoff, research, technical-decision, fan-out]"}}

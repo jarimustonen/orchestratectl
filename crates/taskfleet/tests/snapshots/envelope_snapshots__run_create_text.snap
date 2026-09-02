@@ -1,0 +1,10 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 233
+expression: value
+---
+run-id: [RUN_ID]
+dir:    [HOME]/runs/[RUN_ID]
+kind:   spinoff
+profile: legacy-unrecorded
+status: pending  (supervisor: delegated-to-parent-supervisor)

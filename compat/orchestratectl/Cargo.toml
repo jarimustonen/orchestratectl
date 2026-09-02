@@ -1,0 +1,33 @@
+[package]
+name = "orchestratectl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Deprecated Cargo compatibility command for Taskfleet."
+readme = "README.md"
+publish = true
+
+[package.metadata.dist]
+dist = false
+
+[package.metadata.taskfleet]
+compatibility-only = true
+release-window = "0.6.x-0.7.x"
+pre-cut = true
+
+[[bin]]
+name = "orchestratectl"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+taskfleet = { path = "../../crates/taskfleet", version = "=0.5.1" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

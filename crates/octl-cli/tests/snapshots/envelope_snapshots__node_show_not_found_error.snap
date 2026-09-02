@@ -1,5 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-expression: value
----
-{"schema_version":1,"error":{"code":"node_not_found","message":"no node n-9999 in run [RUN_ID]","invalid_value":"n-9999"}}

@@ -1,0 +1,697 @@
+---
+source: crates/taskfleet/tests/help_json.rs
+assertion_line: 82
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version_help": 3,
+    "command": "taskfleet run create",
+    "about": "Create a new run. Top-level when `--parent-*` flags are absent, child-spawn when both are set (mutually required)",
+    "aliases": [],
+    "hidden": false,
+    "deprecated": false,
+    "flags": [
+      {
+        "name": "agent_startup_timeout",
+        "long": "agent-startup-timeout",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Seconds create.sh waits for the freshly launched agent to become discoverable before giving up (forwarded as `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to 90 — higher than create.sh's own 30s default because octl spawns are frequently part of high-fan-out batches that self-load the host; bump it further on an already-loaded box",
+        "value_names": [
+          "AGENT_STARTUP_TIMEOUT"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "90"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "dry_run",
+        "long": "dry-run",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "harness",
+        "long": "harness",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Agent runtime to launch the worker under: `pi` (built-in default) | `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS` (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias), the `config.toml` `[harness]` default, and the built-in default (in that precedence order). `pi` is forwarded to create.sh as `--agent pi` (→ `workmux add -a`), so it must be configured in workmux; `claude` keeps workmux's own configured default agent. Recorded on the run and shown by `run show` / `run list --json`",
+        "value_names": [
+          "HARNESS"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "headless",
+        "long": "headless",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Spawn the worker's tmux window in a detached \"headless\" session instead of the foreground one, so a campaign of many spawns does not clutter the user's window list. Attach later with `tmux attach -t headless`. Opt-in; default is foreground",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "help",
+        "long": "help",
+        "short": "h",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Print help",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "idempotency_key",
+        "long": "idempotency-key",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "IDEMPOTENCY_KEY"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "interactive",
+        "long": "interactive",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Mark this run **interactive** (human-driven). The supervisor then never auto-terminalizes or auto-tears-down from a dead pid or a worker exit — it waits for an explicit `run merge` (→ teardown) or `run cancel`; the human owns the whole lifecycle (design.md §6). Opt-in; omit it (the default) for an autonomous fire-and-forget worker. This is the explicit how-run state that replaced the removed `code` kind — orthogonal to `--kind`, so any topology can be interactive",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "json",
+        "long": "json",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": true,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "kind",
+        "long": "kind",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "KIND"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": true,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [
+          "spinoff",
+          "research",
+          "technical-decision",
+          "fan-out"
+        ],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "layout",
+        "long": "layout",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Workmux layout name; forwarded to create.sh as `-l <name>`",
+        "value_names": [
+          "LAYOUT"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "no_hooks",
+        "long": "no-hooks",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Skip workmux post-create hooks; forwarded to create.sh",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "notify",
+        "long": "notify",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Shell command the supervisor runs when this run reaches a terminal state (`done | failed | cancelled`), BEFORE teardown. Runs via `sh -c <cmd>` with `OCTL_RUN_ID`, `OCTL_STATUS`, `OCTL_SUMMARY`, `OCTL_RUN_KIND`, and `OCTL_RUN_TITLE` in the environment — so a spawning session can learn of completion without polling (e.g. append a line to a file the harness watches, or post a desktop notification). At-least-once: deduped on a durable `run.notified` marker (so the healthy path fires once), but a supervisor crash in the window between firing and recording the marker re-fires on restart — a duplicate is preferred over a missed notification, so the command should tolerate running more than once",
+        "value_names": [
+          "NOTIFY"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "output",
+        "long": "output",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+        "value_names": [
+          "FMT|PATH"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": true,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [
+          "jsonl"
+        ],
+        "accepted_values": [
+          "json",
+          "jsonl",
+          "text"
+        ],
+        "accepts_file_paths": true,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "parent_node_id",
+        "long": "parent-node-id",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "PARENT_NODE_ID"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [
+          "parent_run_id"
+        ],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "parent_run_id",
+        "long": "parent-run-id",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "PARENT_RUN_ID"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [
+          "parent_node_id"
+        ],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "profile",
+        "long": "profile",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Select a user-owned executable profile from `$TASKFLEET_HOME/config.toml` (or the resolved adopted legacy home). Overrides environment and repository/user defaults. Conflicts with the legacy `--harness` alias at the same precedence level",
+        "value_names": [
+          "PROFILE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "prompt_file",
+        "long": "prompt-file",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to create.sh",
+        "value_names": [
+          "PROMPT_FILE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "skip_materialize",
+        "long": "skip-materialize",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "**Test-only.** Skip the create.sh shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
+        "value_names": [],
+        "takes_value": false,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": true,
+        "deprecated": false,
+        "defaults": [
+          "false"
+        ],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 0,
+          "max": 0,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "source_branch",
+        "long": "source-branch",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "SOURCE_BRANCH"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "source_repo",
+        "long": "source-repo",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "SOURCE_REPO"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "task",
+        "long": "task",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "TASK"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [
+          "prompt_file"
+        ],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "title",
+        "long": "title",
+        "long_aliases": [],
+        "short_aliases": [],
+        "value_names": [
+          "TITLE"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": true,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      },
+      {
+        "name": "tmux_session",
+        "long": "tmux-session",
+        "long_aliases": [],
+        "short_aliases": [],
+        "help": "Explicit tmux session name for the worker's window. Implies headless placement and overrides `--headless`'s default session name. Forwarded to create.sh / workmux as `--parent-session <name>`",
+        "value_names": [
+          "TMUX_SESSION"
+        ],
+        "takes_value": true,
+        "multiple": false,
+        "required": false,
+        "is_global": false,
+        "hidden": false,
+        "deprecated": false,
+        "defaults": [],
+        "accepted_values": [],
+        "accepts_file_paths": false,
+        "conflicts_with": [],
+        "requires": [],
+        "required_unless_present": [],
+        "arity": {
+          "min": 1,
+          "max": 1,
+          "repeated": false,
+          "multi_value": false,
+          "require_equals": false
+        }
+      }
+    ],
+    "positionals": [],
+    "subcommands": []
+  },
+  "warnings": []
+}

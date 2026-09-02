@@ -1,0 +1,20 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "run_id": "[RUN_ID]",
+    "discussion_id": "d-pqrstuvwxy",
+    "node_id": "n-0001",
+    "choice": "keep",
+    "outcome": "dry-run",
+    "would_be": "appended",
+    "projections": [
+      "discussions/d-pqrstuvwxy.json",
+      "manifest.json"
+    ]
+  },
+  "warnings": []
+}

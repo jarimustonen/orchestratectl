@@ -1,0 +1,5 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"error":{"code":"unsupported_format","message":"streaming verbs do not support --output json (pretty single-document); use jsonl or text"}}

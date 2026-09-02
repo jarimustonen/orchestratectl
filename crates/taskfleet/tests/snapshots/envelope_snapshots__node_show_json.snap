@@ -1,0 +1,30 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+assertion_line: 233
+expression: value
+---
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version": 1,
+    "node_id": "n-0001",
+    "run_id": "[RUN_ID]",
+    "parent_node_id": null,
+    "kind": "spinoff",
+    "status": "pending",
+    "task": null,
+    "worktree_path": "/tmp/seed-wt",
+    "branch": "wt/seed",
+    "tmux_window": "seed-win",
+    "tmux_identity": null,
+    "agent_pid": 4242,
+    "agent_pid_start_time": null,
+    "supervisor_pid": null,
+    "children": [],
+    "started_at": "[TS]",
+    "updated_at": "[TS]",
+    "last_report": null,
+    "report": null
+  },
+  "warnings": []
+}

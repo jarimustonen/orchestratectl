@@ -1,5 +1,0 @@
----
-source: crates/octl-cli/tests/envelope_snapshots.rs
-expression: value
----
-{"schema_version":1,"error":{"code":"skill_not_found","message":"no skill named 'no-such-skill'; available: orchestratectl-overview, octl-run-overview, octl-spawn-spinoff, worktree-spinoff, worktree-merge, worktree-research, worktree-technical-decision, worktree-bug-analysis, worktree, worktree-status, stint-start, stint-handoff, fan-out","invalid_value":"no-such-skill","expected":{"one_of":["orchestratectl-overview","octl-run-overview","octl-spawn-spinoff","worktree-spinoff","worktree-merge","worktree-research","worktree-technical-decision","worktree-bug-analysis","worktree","worktree-status","stint-start","stint-handoff","fan-out"]}}}

@@ -1,0 +1,6 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+[1] [TS] run.created title=seed-run
+[2] [TS] node.created node=n-0001

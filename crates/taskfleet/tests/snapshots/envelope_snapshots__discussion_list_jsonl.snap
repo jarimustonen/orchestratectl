@@ -1,0 +1,5 @@
+---
+source: crates/taskfleet/tests/envelope_snapshots.rs
+expression: value
+---
+{"schema_version":1,"data":{"discussions":[{"discussion_id":"d-pqrstuvwxy","node_id":"n-0001","status":"open","severity":"discuss","topic":"seed topic","opened_at":"[TS]"}]},"warnings":[]}
