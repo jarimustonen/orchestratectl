@@ -9,7 +9,17 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly expected_commit="3e46568d6969701c5fea82fb134b62aa17121cbe"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-010-protocol.XXXXXX")"
-cleanup() { rm -rf "$tmp"; }
+cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 && "${KEEP_FAILED_FIXTURE:-0}" == 1 ]]; then
+    failed="${TMPDIR:-/tmp}/shipshape-010-protocol-failed"
+    rm -rf "$failed"
+    mv "$tmp" "$failed"
+    echo "failed protocol fixture preserved at $failed" >&2
+  else
+    rm -rf "$tmp"
+  fi
+}
 trap cleanup EXIT
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/cargo"
 
