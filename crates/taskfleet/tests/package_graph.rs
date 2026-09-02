@@ -3,6 +3,34 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[test]
+fn release_topology_has_exact_ordered_and_independent_legs() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let topology: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("release/taskfleet-release.json")).expect("release topology"),
+    )
+    .expect("release topology JSON");
+    assert_eq!(topology["schema_version"], 1);
+    assert_eq!(topology["activation"], "blocked-r7");
+    assert_eq!(topology["repository"], "jarimustonen/orchestratectl");
+    assert_eq!(topology["owners"], serde_json::json!(["jarimustonen"]));
+    assert_eq!(
+        topology["crates_io"]["legs"],
+        serde_json::json!([
+            {"package":"taskfleet-core","manifest":"crates/taskfleet-core/Cargo.toml","depends_on":null},
+            {"package":"taskfleet","manifest":"crates/taskfleet/Cargo.toml","depends_on":"taskfleet-core"},
+            {"package":"orchestratectl","manifest":"compat/orchestratectl/Cargo.toml","depends_on":"taskfleet"}
+        ])
+    );
+    assert_eq!(
+        topology["distribution"],
+        serde_json::json!([
+            {"package":"taskfleet","registry":"gh-releases","workflow":"release.yml"},
+            {"package":"taskfleet","registry":"homebrew","workflow":"release.yml"}
+        ])
+    );
+}
+
+#[test]
 fn normalized_workspace_graph_has_one_engine_and_one_compatibility_binary() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = Command::new(env!("CARGO"))

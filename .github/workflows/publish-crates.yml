@@ -32,12 +32,19 @@ jobs:
           version="$(awk -F'"' '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{print $2;exit}' Cargo.toml)"
           test "$GITHUB_REF_TYPE" != tag || test "$GITHUB_REF_NAME" = "v$version"
           jq -e '
-            .schema_version == 1 and .repository == "jarimustonen/orchestratectl" and
+            .schema_version == 1 and (.activation == "blocked-r7" or .activation == "ready") and
+            .repository == "jarimustonen/orchestratectl" and
             [.crates_io.legs[] | .package] == ["taskfleet-core","taskfleet","orchestratectl"] and
             [.crates_io.legs[] | .depends_on] == [null,"taskfleet-core","taskfleet"] and
             [.distribution[] | (.package+":"+.registry+":"+.workflow)] ==
               ["taskfleet:gh-releases:release.yml","taskfleet:homebrew:release.yml"]
           ' release/taskfleet-release.json >/dev/null
+          if test "$GITHUB_REF_TYPE" = tag; then
+            jq -e '.activation == "ready"' release/taskfleet-release.json >/dev/null || {
+              echo "release activation is blocked; refusing tag-triggered crates.io publication" >&2
+              exit 1
+            }
+          fi
           test "$(sed -nE 's/^taskfleet-core = \{[^}]*version = "=([^"]+)".*/\1/p' crates/taskfleet/Cargo.toml)" = "$version"
           test "$(sed -nE 's/^taskfleet = \{[^}]*version = "=([^"]+)".*/\1/p' compat/orchestratectl/Cargo.toml)" = "$version"
           cargo metadata --locked --no-deps --format-version 1 | jq -e --arg version "$version" '

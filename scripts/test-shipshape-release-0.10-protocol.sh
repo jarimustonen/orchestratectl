@@ -29,7 +29,7 @@ test -z "$(git -C "$repo_root" status --porcelain)" || {
   exit 1
 }
 
-for tool in bash jq sed awk grep mktemp rm mkdir chmod mv dirname pwd sleep; do
+for tool in bash jq sed awk grep mktemp rm mkdir chmod mv dirname pwd sleep tar; do
   tool_path="$(command -v "$tool")" || { echo "test prerequisite missing: $tool" >&2; exit 1; }
   ln -s "$tool_path" "$tmp/bin/$tool"
 done

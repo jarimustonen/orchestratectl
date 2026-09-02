@@ -70,7 +70,7 @@ if [[ "${1:-}" == repo && "${2:-}" == view ]]; then
 fi
 
 if [[ $# -eq 7 && "$1" == repo && "$2" == view &&
-      "$3" == jarimustonen/orchestratectl && "$4" == --json &&
+      "$3" == "${GH_STUB_VIEW_EXPECTED:-jarimustonen/orchestratectl}" && "$4" == --json &&
       "$5" == nameWithOwner && "$6" == -q && "$7" == .nameWithOwner ]]; then
   printf '%s\n' "$GH_STUB_REPO"
   exit 0
@@ -110,6 +110,7 @@ readonly test_run_id="01M0JA657EJJJYC7J7230JF42N"
 run_wrapper() {
   local gh_repo="${1:-jarimustonen/orchestratectl}"
   local origin="${2:-git@github.com:jarimustonen/orchestratectl.git}"
+  local view_expected="${3:-jarimustonen/orchestratectl}"
   env -i \
     HOME="$tmp/home" \
     PATH="$tmp/bin" \
@@ -122,6 +123,7 @@ run_wrapper() {
     SHIPSHAPE_STUB_COMMIT="${SHIPSHAPE_STUB_COMMIT:-3e46568d6969701c5fea82fb134b62aa17121cbe}" \
     SHIPSHAPE_STUB_OMIT_COMMIT="${SHIPSHAPE_STUB_OMIT_COMMIT:-0}" \
     GH_STUB_REPO="$gh_repo" \
+    GH_STUB_VIEW_EXPECTED="$view_expected" \
     "$repo_root/scripts/shipshape-release.sh" resume "$test_run_id" \
     >"$tmp/stdout" 2>"$tmp/stderr"
 }
@@ -177,6 +179,19 @@ grep -Fx "release show $test_run_id --json" "$tmp/shipshape.log" >/dev/null || {
   cat "$tmp/shipshape.log" >&2
   exit 1
 }
+
+# Repository identity is read from the admitted topology rather than duplicated
+# in the wrapper. Prove an isolated future-R9 coordinate flows to git and gh.
+jq '.repository = "jarimustonen/taskfleet"' "$tmp/work/release/taskfleet-release.json" >"$tmp/topology.json"
+mv "$tmp/topology.json" "$tmp/work/release/taskfleet-release.json"
+reset_logs
+set +e
+run_wrapper jarimustonen/taskfleet git@github.com:jarimustonen/taskfleet.git jarimustonen/taskfleet
+status=$?
+set -e
+[[ "$status" -eq 42 ]] || { echo "data-driven repository coordinate was rejected" >&2; cat "$tmp/stderr" >&2; exit 1; }
+grep -Fx 'repo view jarimustonen/taskfleet --json nameWithOwner -q .nameWithOwner' "$tmp/gh.log" >/dev/null
+cp "$repo_root/release/taskfleet-release.json" "$tmp/work/release/"
 
 reset_logs
 set +e
