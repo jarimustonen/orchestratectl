@@ -224,7 +224,7 @@ publish_leg() {
   # without interpreting Cargo diagnostics as success.
   sealed_checksum="$(sha256_file "$(archive_path "$package")")"
   for attempt in 1 2 3 4 5 6; do
-    if CARGO_REGISTRY_TOKEN="$publish_token" "$cargo_bin" publish --locked --package "$package" >"$cargo_log" 2>&1; then
+    if CARGO_REGISTRY_TOKEN="$publish_token" "$cargo_bin" publish --locked --no-verify --package "$package" >"$cargo_log" 2>&1; then
       rc=0
     else
       rc=$?
@@ -240,6 +240,10 @@ publish_leg() {
       [[ "$reconcile_rc" -eq 3 ]] && break
       [[ "$reconcile_attempt" -lt 6 ]] && "$sleep_bin" 15
     done
+    [[ "$reconcile_rc" -eq 3 ]] || {
+      echo "$package@$version registry state became unavailable after publish; resume reconciliation without another publish attempt" >&2
+      return 5
+    }
     [[ "$attempt" -lt 6 ]] && "$sleep_bin" 30
   done
   echo "$package@$version remains absent after bounded publish retries (last cargo status $rc); resume this exact leg" >&2

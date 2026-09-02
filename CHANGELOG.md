@@ -14,6 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Release publication now follows an exact five-leg Taskfleet saga (`taskfleet-release-machinery`).** The pinned Shipshape plan carries three ordered crates.io targets plus independent GitHub Release and Homebrew targets; CI publishes `taskfleet-core` → `taskfleet` → the bounded `orchestratectl` wrapper only from an activated exact tag, reconciles checksum/owners/full dependencies/version metadata/source commit without trusting Cargo error text, and preserves resumable held-tag and partial-release receipts.
 - **Bundled workflows and repository contracts now use the canonical Taskfleet identity (`taskfleet-skills-docs-contracts`).** New prompts, source references, examples and telemetry endpoint commands use `taskfleet`; Taskfleet-owned skill names migrate by recorded hashes while edited/unmanaged copies are preserved, and stable `OCTL_*` plus the telemetry contract id remain unchanged.
 - **Release automation now uses Shipshape.** Active commands, scripts, tests, CI, and operator guidance use the `shipshape` CLI and `/shipshape-*` skill family while retaining the stable `OSS-RELEASE.md` contract and `.git/ossctl` release-state namespace.
 <!-- oss-changelog:unreleased-end -->

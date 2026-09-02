@@ -86,13 +86,14 @@ case "$url" in
     [[ "$REGISTRY_MODE" != transport-failure ]] || exit 7
     if [[ "$REGISTRY_MODE" == http500 ]]; then : >"$output"; printf 500; exit 0; fi
     count=0; [[ -f "$CURL_COUNT" ]] && count="$(cat "$CURL_COUNT")"; count=$((count+1)); printf '%s' "$count" >"$CURL_COUNT"
-    if [[ "$REGISTRY_MODE" == absent || ("$REGISTRY_MODE" == duplicate-match && "$count" -eq 1) ]]; then : >"$output"; printf 404; exit 0; fi
+    if [[ "$REGISTRY_MODE" == absent || (("$REGISTRY_MODE" == duplicate-match || "$REGISTRY_MODE" == secondary-after-publish) && "$count" -eq 1) ]]; then : >"$output"; printf 404; exit 0; fi
     checksum="$(sha256sum "$archive" | awk '{print $1}')"
     description=cli; [[ "$REGISTRY_MODE" != metadata-mismatch ]] || description=wrong
     yanked=false; [[ "$REGISTRY_MODE" != yanked ]] || yanked=true
     jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:"1.85",repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",description:$description}}' >"$output"
     printf 200 ;;
   */crates/taskfleet/owners)
+    if [[ "$REGISTRY_MODE" == secondary500 || "$REGISTRY_MODE" == secondary-after-publish ]]; then : >"$output"; printf 500; exit 0; fi
     owner=jarimustonen; [[ "$REGISTRY_MODE" != owner-mismatch ]] || owner=intruder
     jq -n --arg owner "$owner" '{users:[{login:$owner}]}' >"$output"; printf 200 ;;
   */crates/taskfleet/1.2.3/dependencies)
@@ -146,6 +147,10 @@ run_case http500 5 'registry state remained unavailable; no publish attempted'
 ! grep -q '^publish ' "$tmp/cargo.log"
 run_case transport-failure 5 'registry state remained unavailable; no publish attempted'
 ! grep -q '^publish ' "$tmp/cargo.log"
+run_case secondary500 5 'registry state remained unavailable; no publish attempted'
+! grep -q '^publish ' "$tmp/cargo.log"
+run_case secondary-after-publish 5 'resume reconciliation without another publish attempt'
+[[ "$(grep -c '^publish ' "$tmp/cargo.log")" == 1 ]]
 run_case absent 1 'remains absent after bounded publish retries'
 
 # Activation and execution context are enforced at the mutating boundary.
