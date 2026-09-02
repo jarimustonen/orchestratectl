@@ -223,6 +223,7 @@ fn spinoff_round_trip_reaches_done_and_tears_down() {
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
             .env("GIT_BIN", &no_git)
@@ -269,6 +270,7 @@ fn spinoff_round_trip_reaches_done_and_tears_down() {
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_MERGE_SH", &merge_sh)
             .args(["--output", "json", "run", "merge", &run_id]),
     );
@@ -461,6 +463,7 @@ fn blocked_report_preserves_branch_and_worktree_e2e() {
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
             // Drop any ambient GIT_BIN stub so the supervisor's teardown runs
@@ -511,6 +514,7 @@ fn blocked_report_preserves_branch_and_worktree_e2e() {
     run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .args([
                 "--output",
                 "json",
@@ -584,6 +588,7 @@ fn merge_path_deletes_branch_e2e() {
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
             // Drop any ambient GIT_BIN stub so the supervisor's teardown runs
@@ -626,6 +631,7 @@ fn merge_path_deletes_branch_e2e() {
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_MERGE_SH", &merge_sh)
             .args(["--output", "json", "run", "merge", &run_id]),
     );
@@ -689,6 +695,7 @@ fn swallowed_agent_died_then_merge_reattaches_and_tears_down() {
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
             .env_remove("GIT_BIN")
@@ -739,6 +746,7 @@ fn swallowed_agent_died_then_merge_reattaches_and_tears_down() {
     run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("TMUX_BIN", &no_tmux)
             .env_remove("GIT_BIN")
             .args([
@@ -787,6 +795,7 @@ fn swallowed_agent_died_then_merge_reattaches_and_tears_down() {
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_MERGE_SH", &merge_sh)
             .env("TMUX_BIN", &no_tmux)
             .env_remove("GIT_BIN")
@@ -851,6 +860,7 @@ fn merge_reattaches_and_warns_when_supervisor_dead() {
     let created = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_CREATE_SH", &create_sh)
             .env("TMUX_BIN", &no_tmux)
             .env("GIT_BIN", &no_git)
@@ -903,6 +913,7 @@ fn merge_reattaches_and_warns_when_supervisor_dead() {
     let merged = run_ok(
         Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
             .env("TASKFLEET_HOME", home.path())
+            .env("HOME", home.path())
             .env("OCTL_MERGE_SH", &merge_sh)
             .env("TMUX_BIN", &no_tmux)
             .env("GIT_BIN", &no_git)

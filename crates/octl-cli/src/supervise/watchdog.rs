@@ -84,7 +84,13 @@ pub enum TmuxProbe {
 /// so the probe is killed after this and its socket is treated as
 /// [`SocketWindows::Unreachable`] — PID liveness still governs, so a timeout
 /// never reaps a live agent (`watchdog-tmux-probe-timeout`).
+#[cfg(not(test))]
 const TMUX_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+// A saturated parallel unit-test process can leave an otherwise instant fake
+// subprocess unscheduled for several seconds. Keep the shipped bound exact,
+// but do not turn scheduler starvation into a false `Unknown` test verdict.
+#[cfg(test)]
+const TMUX_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Emit the "tmux probe timed out" warning at most once per this many timeout
 /// events across the whole process. A persistently wedged server then logs

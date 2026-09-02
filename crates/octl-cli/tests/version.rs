@@ -14,13 +14,13 @@ fn bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     // Version initializes logging, so keep it away from the developer's real
     // default homes and from any populated legacy home on the host.
+    let account_home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/test-homes/version")
+        .join(std::process::id().to_string());
+    std::fs::create_dir_all(&account_home).unwrap();
     command
-        .env(
-            "TASKFLEET_HOME",
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/test-homes/version")
-                .join(std::process::id().to_string()),
-        )
+        .env("TASKFLEET_HOME", account_home.join("state"))
+        .env("HOME", &account_home)
         .env_remove("ORCHESTRATECTL_HOME");
     command
 }

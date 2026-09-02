@@ -69,7 +69,12 @@ use crate::run::from_core;
 /// as soon as it registers the pipe (the `cat`/`head` runs detached under the
 /// tmux server), so a healthy call is sub-millisecond; this bound only fires for
 /// a wedged server / socket and keeps the supervisor tick from stalling.
+#[cfg(not(test))]
 const PIPE_PANE_TIMEOUT: Duration = Duration::from_secs(5);
+// Unit tests run fake subprocesses in a highly parallel binary; preserve the
+// production deadline while allowing for host scheduler starvation in CI.
+#[cfg(test)]
+const PIPE_PANE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// stdout/stderr capture cap for the bounded runner. `pipe-pane` emits almost
 /// nothing; a small cap is plenty for the occasional error line.

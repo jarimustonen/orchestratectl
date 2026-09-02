@@ -96,6 +96,11 @@ enum Command {
         #[command(subcommand)]
         action: crate::config::ConfigAction,
     },
+    /// Explicitly migrate or roll back the durable state root.
+    State {
+        #[command(subcommand)]
+        action: crate::state::StateAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -264,6 +269,36 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         (None, false) => OutputSpec::default(),
     };
 
+    // State migration owns an exclusive external fence and deliberately skips
+    // ordinary home resolution and canonical-root logging: its receipt and all
+    // diagnostics must remain outside source/destination until the rename is
+    // durably resolved.
+    if matches!(&cli.command, Command::State { .. }) {
+        let Command::State { action } = cli.command else {
+            unreachable!("variant checked above")
+        };
+        let result = crate::state::dispatch(action, &output, &[]);
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                error.emit();
+                ExitCode::from(error.kind as u8)
+            }
+        };
+    }
+
+    // Every current state-writing command holds this shared fence for its whole
+    // lifetime. Migration's exclusive nonblocking acquire therefore proves no
+    // current-version command is writing. It cannot fence old 0.5.1 processes;
+    // the migration payload documents that operator-enforced exclusion.
+    let _migration_fence = match crate::state::command_fence() {
+        Ok(fence) => fence,
+        Err(error) => {
+            error.emit();
+            return ExitCode::from(error.kind as u8);
+        }
+    };
+
     let internal_worker_root = matches!(&cli.command, Command::RunWorker(_))
         .then(|| std::env::var_os("OCTL_INTERNAL_WORKER_STATE_ROOT").map(PathBuf::from))
         .flatten();
@@ -287,6 +322,22 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         let warning = compatibility_warnings.join("; ");
         let escaped: String = warning.chars().flat_map(char::escape_default).collect();
         eprintln!("warning: {escaped}");
+    }
+
+    // The durable marker is written outside the roots immediately before the
+    // first attempted canonical write. A crash can therefore only close the
+    // rollback window conservatively; it can never write canonical bytes while
+    // leaving a receipt that still authorizes rename-back.
+    let resolved_root = match crate::home::root_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            error.emit();
+            return ExitCode::from(error.kind as u8);
+        }
+    };
+    if let Err(error) = crate::state::mark_canonical_write_started(&resolved_root) {
+        error.emit();
+        return ExitCode::from(error.kind as u8);
     }
 
     // `_log_guard` owns the non-blocking writer's worker thread. Resolution
@@ -337,6 +388,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         // answer), which does not map onto the shared `Result` path below.
         Command::Doctor(args) => return crate::doctor::run(&args, output, &logging_warnings),
         Command::Config { action } => crate::config::dispatch(action, output, &logging_warnings),
+        Command::State { .. } => unreachable!("state commands return before home resolution"),
     };
 
     match result {

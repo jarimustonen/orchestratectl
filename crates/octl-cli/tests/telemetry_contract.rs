@@ -26,7 +26,9 @@ fn fixtures() -> Value {
 
 fn bin(home: &TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    command.env("TASKFLEET_HOME", home.path());
+    command
+        .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
     // Run creation needs no materialized worktree for an endpoint-only test.
     command.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     command
@@ -120,6 +122,7 @@ impl PublicTelemetryEndpointDriver<'_> {
             .env_remove("OCTL_NODE_ID")
             .env_remove("OCTL_ATTEMPT")
             .env("TASKFLEET_HOME", self.home.path())
+            .env("HOME", self.home.path())
             .args(contract_endpoint_args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

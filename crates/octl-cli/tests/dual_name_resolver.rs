@@ -9,7 +9,12 @@ use tempfile::TempDir;
 const BINARY: &str = env!("CARGO_BIN_EXE_orchestratectl");
 
 fn clean_command() -> Command {
+    let home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/test-homes/dual-name-resolver")
+        .join(std::process::id().to_string());
+    std::fs::create_dir_all(&home).unwrap();
     let mut command = Command::new(BINARY);
+    command.env("HOME", home);
     for name in [
         "TASKFLEET_HOME",
         "ORCHESTRATECTL_HOME",

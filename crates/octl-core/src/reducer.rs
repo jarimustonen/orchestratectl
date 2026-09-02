@@ -422,16 +422,12 @@ pub(crate) fn apply_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     commit_ops(paths, ops)
 }
 
-/// Validate an event WITHOUT writing anything — [`reduce_event_to_ops`] with
-/// the planned writes discarded. Returns `Err` in exactly the cases
-/// [`apply_event`] would (they share the one plan), so a dry-run check can
-/// never drift from the apply.
-///
-/// `#[cfg(test)]`: the append path validates by inspecting
-/// `reduce_event_to_ops` directly (it needs the planned ops anyway), so this
-/// discard-the-ops wrapper exists only for the reducer's agreement tests.
-#[cfg(test)]
-pub(crate) fn validate_event(paths: &RunPaths, ev: &Event) -> Result<()> {
+/// Validate one persisted event through the normal reducer plan without
+/// committing projection writes. It performs the same checks as projection
+/// application and then discards the planned writes. Migration preflight uses
+/// this under the run's exclusive lock so it never invents a second
+/// event-payload validator.
+pub fn validate_event(paths: &RunPaths, ev: &Event) -> Result<()> {
     reduce_event_to_ops(paths, ev).map(|_| ())
 }
 

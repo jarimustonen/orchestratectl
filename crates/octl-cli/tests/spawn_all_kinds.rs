@@ -42,7 +42,8 @@ fn fake_success_stdout(kind: &str, pid: u32) -> String {
 
 fn bin(home: &TempDir, script: &std::path::Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("TASKFLEET_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
     c.env("OCTL_CREATE_SH", script);
     // Intentionally do NOT set OCTL_TEST_SKIP_MATERIALIZE — these tests
     // exercise the real materialization path against the fake script.
@@ -591,7 +592,8 @@ fn task_writes_prompt_file_in_run_dir() {
 /// the parent node is absent), which is all these tests inspect.
 fn spawn_parent_fanout(home: &TempDir) -> String {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("TASKFLEET_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     let v = run_ok(c.args([
         "--output",

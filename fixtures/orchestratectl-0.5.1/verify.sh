@@ -25,7 +25,9 @@ unset OCTL_CREATE_SH OCTL_MERGE_SH OCTL_SUPERVISE_BIN OCTL_TEST_SKIP_MATERIALIZE
 unset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT OCTL_STATUS OCTL_SUMMARY || true
 
 hash_protected() {
-  (cd "$tmp" && find home repo -type f ! -path 'home/orchestratectl/logs/*' -print0 \
+  (cd "$tmp" && find home repo -type f \
+    ! -path 'home/orchestratectl/logs/*' \
+    ! -path 'home/user/.taskfleet-migrations/*' -print0 \
     | LC_ALL=C sort -z | xargs -0 shasum -a 256)
 }
 before=$(hash_protected)

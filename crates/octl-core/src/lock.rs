@@ -123,19 +123,28 @@ impl RunLock<Exclusive> {
     /// lock before publishing projections. Like [`RunLock::acquire`], this
     /// rejects symlinks and blocks until the exclusive lock is available.
     pub fn acquire_existing(lock_path: &Path) -> Result<Self> {
-        reject_symlink(lock_path, || Error::SymlinkStateFile {
-            name: "lock",
-            path: lock_path.to_path_buf(),
-        })?;
-        let mut opts = OpenOptions::new();
-        opts.read(true).write(true).truncate(false);
-        crate::paths::nofollow(&mut opts);
-        let file = opts.open(lock_path).map_err(|e| Error::io(lock_path, e))?;
+        let file = open_existing_lock(lock_path)?;
         <File as FileExt>::lock(&file).map_err(|e| Error::io(lock_path, e))?;
         Ok(Self {
             file: Some(file),
             _mode: PhantomData,
         })
+    }
+
+    /// Try to acquire the exclusive lock on an existing lock file without
+    /// creating state or waiting. Returns `Ok(None)` when another process holds
+    /// the lock. Migration preflight uses this bounded probe so a busy run is a
+    /// prompt refusal rather than an unbounded wait.
+    pub fn try_acquire_existing(lock_path: &Path) -> Result<Option<Self>> {
+        let file = open_existing_lock(lock_path)?;
+        match <File as FileExt>::try_lock(&file) {
+            Ok(()) => Ok(Some(Self {
+                file: Some(file),
+                _mode: PhantomData,
+            })),
+            Err(fs4::TryLockError::WouldBlock) => Ok(None),
+            Err(fs4::TryLockError::Error(error)) => Err(Error::io(lock_path, error)),
+        }
     }
 
     /// Mint a [`LockedRun`] witness proving this exclusive guard holds the
@@ -162,6 +171,17 @@ impl RunLock<Exclusive> {
         drop(guard);
         r
     }
+}
+
+fn open_existing_lock(lock_path: &Path) -> Result<File> {
+    reject_symlink(lock_path, || Error::SymlinkStateFile {
+        name: "lock",
+        path: lock_path.to_path_buf(),
+    })?;
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true).truncate(false);
+    crate::paths::nofollow(&mut opts);
+    opts.open(lock_path).map_err(|e| Error::io(lock_path, e))
 }
 
 impl RunLock<Shared> {
@@ -397,6 +417,16 @@ mod tests {
         let r = RunLock::with_shared_lock(&lock, || RunLock::with_shared_lock(&lock, || Ok(42)))
             .unwrap();
         assert_eq!(r, 42);
+    }
+
+    #[test]
+    fn nonblocking_existing_probe_reports_contention_without_waiting() {
+        let tmp = TempDir::new().unwrap();
+        let lock = tmp.path().join(".lock");
+        let held = RunLock::acquire(&lock).unwrap();
+        assert!(RunLock::try_acquire_existing(&lock).unwrap().is_none());
+        drop(held);
+        assert!(RunLock::try_acquire_existing(&lock).unwrap().is_some());
     }
 
     #[cfg(unix)]

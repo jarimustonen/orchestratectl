@@ -16,7 +16,8 @@ use common::TestHome;
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
-    c.env("TASKFLEET_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     c
 }
@@ -233,6 +234,7 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
         // A relative selected root must be made absolute before it crosses the
         // worktree/self-exec boundary.
         .env("TASKFLEET_HOME", home.path().file_name().unwrap())
+        .env("HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         // Only the hostile product-name fixtures are searchable. Every tool
         // this scenario legitimately needs is addressed by absolute path.
@@ -334,6 +336,7 @@ default="only"
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     command
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         .env("PATH", "/usr/bin:/bin")
         .args([
@@ -883,6 +886,7 @@ fn concurrent_same_idempotency_key_creates_one_run() {
             std::thread::spawn(move || {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
                 cmd.env("TASKFLEET_HOME", &path)
+                    .env("HOME", &path)
                     .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
                     .args([
                         "--output",

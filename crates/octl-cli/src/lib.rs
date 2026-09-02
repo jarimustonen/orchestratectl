@@ -25,6 +25,7 @@ mod run;
 mod run_worker;
 mod self_exec;
 mod skill;
+mod state;
 mod supervise;
 
 use std::process::ExitCode;

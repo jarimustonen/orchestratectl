@@ -124,6 +124,7 @@ fn interrupted_create_never_publishes_a_zero_node_run() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         .args([
             "--output",
@@ -176,6 +177,7 @@ fn interrupted_create_never_publishes_a_zero_node_run() {
     // skeleton seam makes this deterministic without tmux/workmux or sleeps.
     let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .args([
             "--output",
@@ -224,6 +226,7 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
     );
     let mut creator = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         .args([
             "--output",
@@ -245,6 +248,7 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
 
     let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
         .args([
@@ -272,6 +276,7 @@ fn concurrent_retry_refuses_while_creator_lease_is_live() {
     // flock. A retry must continue refusing rather than deleting live staging.
     let orphan_retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .env("OCTL_IDEMPOTENCY_PUBLISH_WAIT_MS", "0")
         .args([
@@ -348,6 +353,7 @@ fn retry_repairs_published_child_missing_parent_edge() {
     ];
     let interrupted = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .env("OCTL_TEST_FAIL_AFTER_PUBLISH", "1")
         .args(args)
@@ -364,6 +370,7 @@ fn retry_repairs_published_child_missing_parent_edge() {
 
     let retry = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .args(args)
         .output()
@@ -386,6 +393,7 @@ fn retry_repairs_published_child_missing_parent_edge() {
     // A second replay is idempotent across the parent event log too.
     let again = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_TEST_SKIP_MATERIALIZE", "1")
         .args(args)
         .output()
@@ -417,6 +425,7 @@ fn run_create_fails_loud_when_supervisor_never_confirms() {
 
     let out = Command::new(env!("CARGO_BIN_EXE_orchestratectl"))
         .env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path())
         .env("OCTL_CREATE_SH", &create_sh)
         // Force the supervisor spawn to "succeed" at fork/exec but never confirm
         // boot: /usr/bin/false execs then exits 1 at once, so its readiness-pipe

@@ -10,6 +10,7 @@ use tempfile::TempDir;
 fn bin(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_orchestratectl"));
     command.env("TASKFLEET_HOME", home);
+    command.env("HOME", home);
     command.env_remove("TASKFLEET_HARNESS");
     command.env_remove("TASKFLEET_LOG");
     command

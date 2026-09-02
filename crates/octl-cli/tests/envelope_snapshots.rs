@@ -67,7 +67,8 @@ const ENVELOPE_SCHEMA: u64 = 1;
 /// sibling suites use), so output is deterministic skeleton-only state.
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::cargo_bin("orchestratectl").expect("binary builds");
-    c.env("TASKFLEET_HOME", home.path());
+    c.env("TASKFLEET_HOME", home.path())
+        .env("HOME", home.path());
     c.env("OCTL_TEST_SKIP_MATERIALIZE", "1");
     // Hermetic env: the CLI logs to a file and forces `color=never`, but
     // clear any inherited log/color knobs so a developer's shell can't
