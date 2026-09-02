@@ -77,10 +77,9 @@ assert_local_metadata() {
 
 archive_path() { printf '%s/target/package/%s-%s.crate\n' "$repo_root" "$1" "$version"; }
 
-prepare_archive() {
+validate_archive() {
   local package="$1" archive root archive_commit dependency
   assert_local_metadata "$package"
-  "$cargo_bin" package --locked --no-verify --package "$package"
   archive="$(archive_path "$package")"
   [[ -s "$archive" ]] || { echo "cargo did not create $archive" >&2; exit 2; }
   root="$package-$version"
@@ -97,6 +96,17 @@ prepare_archive() {
     }
   fi
   printf 'packaged %s@%s from %s\n' "$package" "$version" "$source_commit"
+}
+
+prepare_archive() {
+  local package="$1"
+  "$cargo_bin" package --locked --no-verify --package "$package"
+  validate_archive "$package"
+}
+
+prepare_workspace_archives() {
+  "$cargo_bin" package --workspace --locked --no-verify
+  while IFS= read -r package; do validate_archive "$package"; done < <(jq -r '.crates_io.legs[].package' "$topology")
 }
 
 http_get() {
@@ -193,11 +203,9 @@ command="${1:-}"
 package="${2:-}"
 case "$command" in
   package)
+    prepare_workspace_archives
     if [[ -n "$package" ]]; then
       jq -e --arg package "$package" 'any(.crates_io.legs[]; .package == $package)' "$topology" >/dev/null || usage
-      prepare_archive "$package"
-    else
-      while IFS= read -r package; do prepare_archive "$package"; done < <(jq -r '.crates_io.legs[].package' "$topology")
     fi
     ;;
   publish)
