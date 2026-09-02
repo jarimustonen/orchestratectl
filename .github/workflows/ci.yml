@@ -47,6 +47,9 @@ jobs:
       # Uses strict git/gh/shipshape stubs and stops before release state or refs can
       # be mutated. Its minimal PATH catches undeclared preflight dependencies.
       - run: ./scripts/test-shipshape-release.sh
+      # Exercises absent, duplicate, partial-resume, and every fail-closed
+      # crates.io reconciliation mismatch with cargo/curl fully stubbed and no token.
+      - run: ./scripts/test-publish-crates.sh
 
   clippy:
     name: clippy
