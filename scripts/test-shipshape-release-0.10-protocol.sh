@@ -319,7 +319,7 @@ remote_tag_commit="$(git -C "$tmp/repo" ls-remote origin "refs/tags/$tag^{}" | a
     shipshape release verify "$run_id" --json >"$tmp/verify.json"
 )
 jq -e --arg tag "$tag" '
-  .schema_version == 1 and .data.state.schema_version == 5 and
+  .schema_version == 1 and .data.state.schema_version == 6 and
   .data.state.tags[$tag].pushed_remote == true and
   ([.data.state.phases[] | select(.phase == "tag") | .outcome] | last) == "ok" and
   .data.state.current_phase == null

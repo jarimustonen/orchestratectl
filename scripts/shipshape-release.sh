@@ -282,7 +282,7 @@ held_checkpoint_path() {
 assert_held_journal() {
   local show_json="$1"
   jq -e --arg tag "$tag" '
-    .data.state.schema_version == 5 and
+    .data.state.schema_version == 6 and
     .data.state.status == "in_progress" and
     (.data.state | has("current_phase")) and .data.state.current_phase == null and
     ([.data.state.phases[] | {phase, outcome}]) == [

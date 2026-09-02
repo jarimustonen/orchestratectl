@@ -91,7 +91,7 @@ if [[ "$*" == "release show $RUN_ID --json" ]]; then
   [[ "${HELD_VARIANT:-valid}" != unexpected-event ]] || pushed_event='{"seq":25,"kind":"tag_pushed_remote","tag":"'"$TAG"'"}'
   [[ "${HELD_VARIANT:-valid}" != wrong-phase ]] || outcome=ok
   jq -n --arg run "$RUN_ID" --arg tag "$TAG" --arg bump "$BUMP_COMMIT" --arg outcome "$outcome" --argjson pushed "${pushed_event:-null}" '
-    {data:{last_seq:25,state:{schema_version:5,run_id:$run,status:"in_progress",current_phase:null,applied_seq:25,
+    {data:{last_seq:25,state:{schema_version:6,run_id:$run,status:"in_progress",current_phase:null,applied_seq:25,
       bump:{commit:$bump},phases:[
         {phase:"bump",outcome:"ok"},{phase:"dry_run",outcome:"ok"},{phase:"build",outcome:"ok"},
         {phase:"publish",outcome:"ok"},{phase:"tag",outcome:$outcome}],
