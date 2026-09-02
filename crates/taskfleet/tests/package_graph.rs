@@ -65,15 +65,18 @@ fn normalized_workspace_graph_has_one_engine_and_one_compatibility_binary() {
     let canonical = by_name["taskfleet"];
     assert_eq!(binary_names(canonical), ["taskfleet"]);
     assert_eq!(canonical["metadata"]["dist"]["dist"], true);
-    assert!(canonical["metadata"]
-        .get("taskfleet")
-        .is_none(), "canonical package must not carry a stale pre-cut marker");
+    assert!(
+        canonical["metadata"].get("taskfleet").is_none(),
+        "canonical package must not carry a stale pre-cut marker"
+    );
     assert_exact_dependency(canonical, "taskfleet-core");
 
     let compatibility = by_name["orchestratectl"];
     assert_eq!(binary_names(compatibility), ["orchestratectl"]);
     assert_eq!(compatibility["metadata"]["dist"]["dist"], false);
-    assert!(compatibility["metadata"]["taskfleet"].get("pre-cut").is_none());
+    assert!(compatibility["metadata"]["taskfleet"]
+        .get("pre-cut")
+        .is_none());
     assert_eq!(
         compatibility["metadata"]["taskfleet"]["release-window"],
         "0.6.x-0.7.x"
