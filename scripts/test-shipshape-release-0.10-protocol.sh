@@ -292,7 +292,8 @@ set -e
   cat "$tmp/resume.stderr" >&2
   exit 1
 }
-jq -e '.error.code == "delegated_run_failed"' "$tmp/resume.stderr" >/dev/null
+jq -Rse 'split("\n") | map(fromjson?) | any(.error.code == "delegated_run_failed")' \
+  "$tmp/resume.stderr" >/dev/null
 jq -s -e --arg tag "$tag" '
   any(.[]; .kind == "tag_pushed_remote" and .tag == $tag) and
   any(.[]; .kind == "phase_completed" and .phase == "tag" and .outcome == "ok") and
