@@ -1,213 +1,214 @@
-# Taskfleet rename implementation breakdown
+# Taskfleet rename implementation plan
 
-This plan implements [ADR 0002](../../docs/decisions/0002-taskfleet-rename-migration.md). The feature remains open until the canonical release, cross-repository convergence, and compatibility-removal gate are complete.
+This plan implements [Accepted ADR 0002](../../docs/decisions/0002-taskfleet-rename-migration.md). The feature remains in progress until the canonical release, ecosystem convergence, and 0.8.0 compatibility-removal gate are complete.
 
-## Scheduling principles
+## Scheduling rules
 
-- Sequence slices that touch state resolution, state schemas, release machinery, or the CLI/skill snapshot surface. Do not parallelize hot files named in `AGENTS.md`.
-- Every slice uses a worktree. The orchestrator does not edit implementation code or mutate the installed binary/skills.
-- Repository tests use isolated homes, Cargo homes, prefixes, and Homebrew test roots. Invoke only repository-local binaries.
-- No crate publish, tag push, GitHub rename, tap mutation, or global install occurs before its explicit ADR gate.
-- Preserve neutral state/JSON wire names. A branding replacement is never allowed to rewrite event history or generated/history/vendor content blindly.
+- Every implementation slice runs in its own worktree. Sequence state resolution, state migration, release machinery, and CLI/skill snapshot edits.
+- Preserve neutral state/JSON and stable `OCTL_*` protocol vocabulary. Never globally replace generated, vendored, history, or persisted event data.
+- Repository validation uses repository-local binaries and disposable homes/Cargo prefixes/Homebrew prefixes. Never mutate the installed orchestratectl binary or bundled skills during repository work.
+- No crate publish, tag push, GitHub rename, tap mutation, global installation, or source rename occurs before its ADR gate.
 
-## Dependency-ordered current-repository slices
+## Current-repository dependency chain
 
-### R0 — Freeze identity inventory and migration fixtures
+### R0 — Freeze identity inventory and 0.5.1 fixtures
 
 **Depends on:** ADR 0002.
 
-- Produce a checked inventory of executable/package names, environment variables (including worker control variables), default and repository paths, log targets, config keys, skills, contracts, release scripts, exact URLs, snapshots, and documentation.
-- Capture sanitized 0.5.1 home fixtures for: completed run, non-terminal run, pending merge transaction, pi skill provenance, config/profile selection, and legacy/unknown schema values.
-- Add package/archive/cargo-dist plan fixtures and an old Homebrew receipt/tap fixture.
-- Classify every old-name occurrence as active identity, bounded compatibility, neutral/historical wire data, test fixture, or post-release external convergence.
+- Inventory packages/binaries, branded public variables, stable `OCTL_*` protocol/test variables, state/config paths, self-exec paths, skills/prompts/provenance, release scripts, URLs, action references, cargo-dist assets, and tap/formula ownership.
+- Capture sanitized 0.5.1 homes for completed, non-terminal, pending-merge, config/profile, installed-skill provenance, and unknown-but-readable schema values.
+- Classify each old-name occurrence as active identity, bounded compatibility, permanent safety/history, test fixture, or external convergence.
+- Recheck canonical crates/repositories/tap names without treating availability as reservation.
 
-**Gate:** no unidentified identity-bearing write path; fixtures validate under 0.5.1.
+**Gate:** no unidentified identity-bearing writer; fixtures validate on 0.5.1.
 
-### R1 — Introduce a name-neutral shared CLI entry point
+### R1 — Extract one linkable CLI dispatcher
 
 **Depends on:** R0.
 
-- Refactor the current binary main into one callable dispatcher used by both executable targets.
-- Parameterize display identity and structured deprecation warning without changing command behavior or envelope schema.
-- Add same-build equivalence tests for text/JSON/JSONL and hidden self-exec paths (`supervise`, `run-worker`, reattach, generated recovery commands).
+- Refactor binary `main` into a minimal callable dispatcher suitable for the future Taskfleet package and old CLI wrapper.
+- Keep parser, command execution, output envelopes, state resolver, and error formatting shared.
+- Add invocation-identity handling only for help/version/deprecation; never shell out to another binary or infer behavior from an unsafe `PATH` lookup.
+- Test hidden self-exec paths (`supervise`, worker launch, merge/recovery, reattach) through the shared entry point.
 
-**Gate:** no duplicate dispatcher/engine; current `orchestratectl` remains behaviorally unchanged.
+**Gate:** current `orchestratectl` behavior unchanged; one dispatcher and one engine.
 
-### R2 — Implement dual-name configuration resolution
+### R2 — Centralize dual-name inputs and bounded legacy-home adoption
 
-**Depends on:** R1.
+**Depends on:** R1. **State-sensitive; sequence alone.**
 
-- Inventory and add `TASKFLEET_*` canonical names for home, profile, harness, log, build provenance, and worker-control/telemetry variables.
-- Centralize alias precedence: new-only wins, old-only warns, equivalent dual values warn, conflicting dual values fail.
-- Add `.taskfleet.toml` support with old-only fallback and dual-file conflict/equality handling.
-- Ensure logging, doctor, skill provenance, subprocess environments, generated prompts, and config inspection use the same resolver.
+- Implement the ADR home matrix: explicit new/old equivalence, conflict refusal, canonical-only, legacy-only adoption, fresh canonical default, and dual-populated refusal.
+- Add `TASKFLEET_HOME/PROFILE/HARNESS/LOG`; retain old branded aliases through 0.7 with warn/equal/fail semantics.
+- Add `.taskfleet.toml` canonical selection with old-only fallback and differing-dual refusal.
+- Inventory `OCTL_*`; retain notify/worker protocol names and separate internal/test seams from public branded input.
+- Route logging, doctor, skill provenance, subprocesses, config inspection, and every command through the same resolver.
 
-**Gate:** exhaustive precedence matrix; no command resolves a home independently.
+**Gate:** exhaustive precedence matrix; no independent home/config resolution; 0.5.1 legacy home is adopted without writes or movement.
 
-### R3 — Build the quiescent home migration
+### R3 — Implement optional quiescent same-filesystem migration
 
-**Depends on:** R2. **Hot files/state correctness: sequence alone.**
+**Depends on:** R2. **Hot state path; sequence alone.**
 
-- Add dry-run and explicit migration actions suitable for the old 0.5.2 bridge and canonical binary.
-- Add the external migration lock, active process/run/pending-merge checks, split-root refusal, symlink/path validation, source validation, whole-root atomic rename, marker, backup, and rollback-before-first-write semantics.
-- Permanently detect a populated legacy root so Taskfleet never silently presents an empty state.
-- Reuse `LockedRun` and projection/event validation; do not write projections directly or rewrite events.
-- Add crash/fault injection around every move/promotion boundary.
+- Add dry-run and explicit migration commands.
+- Require normalized exact paths, absent destination, external migration lock, no non-terminal run/live process/pending merge/held run lock/state writer, and normal reducer validation.
+- Perform only whole-root same-filesystem atomic rename. Refuse cross-device movement.
+- Record and verify migration without rewriting events, projections, ids, paths, sequence numbers, branches, or OIDs.
+- Leave no symlink at the old path. Permanently detect and fail on recreated/dual roots.
+- Define and test first-canonical-write rollback boundary.
 
-**Gate:** 0.5.1 fixtures preserve event bytes, sequences, IDs, branches, OIDs, and merge behavior; all uncertain/live/split cases fail closed.
+**Gate:** event hashes, `applied_seq`, ids, OIDs, and merge behavior survive; active, dual-root, destination, symlink/path, fault, and cross-device cases fail safely.
 
-### R4 — Prepare and cut old-identity bridge 0.5.2
+### R4 — Rename canonical packages and command; add only the old CLI wrapper
 
-**Depends on:** R3.
+**Depends on:** R1–R3.
 
-- Add migration/deprecation documentation and direct 0.5.1-to-Taskfleet recovery instructions.
-- Update release fixtures/snapshots for 0.5.2 without changing canonical distribution identity yet.
-- Run the full repository green gate and isolated migration drills.
-- Use `scripts/shipshape-release.sh` only; verify old crates, old GitHub assets, and old Homebrew formula.
+- Rename active packages/source layout to `taskfleet` and `taskfleet-core`; exact-pin canonical dependencies.
+- Make `taskfleet` the sole canonical Cargo binary.
+- Add a thin `orchestratectl` compatibility package which links the Taskfleet dispatcher and owns the old Cargo binary name. Keep it outside any layout that causes duplicate target artifacts.
+- Do not add an `octl-core` wrapper unless R0 finds a real external source dependent and the ADR is amended.
+- Add same-version wrapper release metadata for every 0.6.x/0.7.x canonical release.
 
-**Irreversible gate:** ADR bridge-tag gate. This is the last ordinary old-identity release before canonicalization.
+**Gate:** `cargo metadata` and package archives show exactly one engine, canonical packages, and an implementation-free old CLI wrapper; no duplicate bin ownership.
 
-### R5 — Rename canonical Rust packages, source layout, and executable
+### R5 — Convert skills, prompts, provenance, docs, and contracts
 
-**Depends on:** verified R4.
+**Depends on:** R4. **Snapshot-sensitive; sequence with R4/R6.**
 
-- Rename active packages/source directories to `taskfleet` and `taskfleet-core`; update repository/homepage/description metadata and exact canonical dependency pin.
-- Make `taskfleet` the primary executable. Add the old executable as a thin same-dispatch compatibility target through 0.7.x.
-- Add thin old package wrappers/re-exports with explicit deprecation metadata and no independent implementation.
-- Update internal diagnostics, tracing targets where operationally useful, help/version metadata, test binary lookups, and build-provenance variables.
-- Keep state schema/event/report/envelope field spellings unless independently incompatible.
-
-**Gate:** `cargo metadata` and package dry-runs show the intended four-package transition graph; wrappers contain no engine logic.
-
-### R6 — Rename bundled skills, prompts, contracts, and provenance
-
-**Depends on:** R5. **CLI snapshot surface: sequence with R5/R7.**
-
-- Rename Taskfleet-owned skill identities such as overview/run helpers where appropriate; keep generic `/worktree-*`, `/fan-out`, and `/stint-*` names stable.
 - Change generated commands and new source references to `taskfleet`.
-- Migrate skill provenance records and pruning logic without deleting user-edited copies. Old installed skills must remain executable through the command alias during the window.
-- Revise the worker telemetry contract with bounded old/new environment aliases; keep DTO field compatibility.
-- Run the full insta acceptance/review loop and the explicit catalog pin test.
+- Rename Taskfleet-owned skill identities where appropriate; keep generic `/worktree-*`, `/fan-out`, and `/stint-*` workflow names stable.
+- Migrate provenance/managed-marker handling without deleting user-edited copies.
+- Preserve stable `OCTL_*` notify/worker contracts.
+- Update AGENTS/README/architecture/changelog/examples/templates and migration instructions; classify every retained old name.
+- Update `OSS-RELEASE.md` for canonical packages, bounded old CLI wrapper, canonical tap, stub installer, and independent saga legs.
 
-**Gate:** isolated Claude/pi/Codex install, upgrade, divergence, and prune tests; no global skill writes.
+**Gate:** full insta review loop; isolated skill install/update/prune tests; classified search contains no unexplained active old identity.
 
-### R7 — Convert repository documentation and machine contracts
+### R6 — Rebuild crates.io and Shipshape release machinery
 
-**Depends on:** R5–R6.
+**Depends on:** R4–R5. **Release-sensitive; sequence alone.**
 
-- Update `AGENTS.md`, nested guidance, README, changelog, architecture/ADR index, code comments, examples, contract docs, demo scripts, and issue-facing templates.
-- Preserve old names only in ADR/history, compatibility tests, deprecation instructions, and the explicit bridge path.
-- Update `OSS-RELEASE.md` targets to canonical packages/tap while declaring bounded wrapper legs for 0.6.x–0.7.x.
-- Update Shipshape bump hooks and version snapshot checks for the new package set.
+- Replace the hard-coded two-crate workflow with `taskfleet-core → taskfleet → orchestratectl` publication and per-dependent index visibility retry.
+- Verify existing package/version by registry checksum, owners, dependency requirements, metadata, and source commit before reconciling it.
+- Make repository/package identity in `scripts/shipshape-release.sh` data-driven and rerun its pinned 0.10.1 migration-build protocol tests.
+- Update version hooks/snapshots and exact canonical/wrapper pins.
+- Document partial-success resume/fix-forward and generated Homebrew empty-commit repair.
 
-**Gate:** classified repository search has no unexplained old-name occurrence.
+**Gate:** sealed dry-run plan and package archives list exact intended legs; held-tag exact-SHA protocol tests pass.
 
-### R8 — Rebuild release and cargo-dist machinery
+### R7 — Prepare cargo-dist and Homebrew topology
 
-**Depends on:** R5–R7. **Release-sensitive: sequence alone.**
+**Depends on:** R5–R6. **Distribution-sensitive; sequence alone.**
 
-- Update dependency-ordered crates.io workflow for `taskfleet-core`, `taskfleet`, and bounded wrappers with idempotent retry semantics.
-- Migrate hard-coded repository/package checks in `scripts/shipshape-release.sh`; rerun and record the held-tag protocol tests before accepting changed assumptions.
-- Change cargo-dist app/tap/bin-alias settings, regenerate `.github/workflows/release.yml`, and inspect planned asset/formula names.
-- Ensure old command coverage for Cargo installs and archives is explicit; do not assume installer-only `bin-aliases` covers archives.
-- Add clean disposable Cargo/shell/Homebrew install and old-upgrade scripts.
+- Create (but do not yet activate) the canonical `homebrew-taskfleet` repository and verify a re-scoped `HOMEBREW_TAP_TOKEN` with a reversible test commit.
+- Prepare the old tap's atomic migration commit: delete `Formula/orchestratectl.rb`, add full-identity `tap_migrations.json`, and prevent future generated formula writes. Do not push until canonical formula verification.
+- Set cargo-dist 0.28.2 to the new tap, Taskfleet app/assets, and an old latest-installer migration stub; regenerate `release.yml`.
+- Do not install an `orchestratectl` alias in Homebrew, shell installer, or archives.
+- Prepare all exact GitHub URL/action/secret/runner/release-wrapper substitutions.
 
-**Gate:** release dry-runs, cargo-dist PR plan, exact package list, asset list, formula content, and wrapper behavior are reviewed and green.
+**Gate:** PR `dist plan` shows exact Taskfleet archives/checksums/installer/formula plus one non-installing stub, zero unintended old artifacts, one generated tap; disposable Homebrew plans are reviewed.
 
-### R9 — Integrated pre-cut validation
+### R8 — Integrated pre-cut validation
 
-**Depends on:** R8.
+**Depends on:** R7.
 
-Run on the integrated exact commit:
+Run on the exact integrated commit:
 
-- the full green gate from `AGENTS.md`, including docs and clean-PATH tool-sensitive tests;
-- complete CLI/skill snapshot review;
-- 0.5.1 and 0.5.2 state migrations, split/live/pending-merge/fault tests, in-flight old-prompt completion, and rollback-before-write drill;
-- disposable Cargo install/uninstall/upgrade and generated archive/installer checks;
-- disposable old and fresh Homebrew flows;
-- `git diff --check`, `issuectl doctor --json`, Shipshape contract/audit, and canonical name availability rechecks.
+- full Rust green gate, rustdoc, clean-PATH tests, CLI/skill snapshot review, `git diff --check`, and `issuectl doctor --json`;
+- both-name Cargo-wrapper command suite: byte-identical stdout/JSON/JSONL and exit codes, stderr-only once-per-process deprecation;
+- 0.5.1 legacy-home adoption, active-run completion before movement, optional migration, dual-root refusal, pending-merge, and rollback-boundary fixtures;
+- disposable Cargo, archive, shell, fresh Homebrew, and old-receipt/tap flows;
+- Shipshape contract/audit/plan and crates/GitHub/tap name rechecks.
 
-**Gate:** attach immutable outputs to the issue/release record. Any failed required leg blocks repository/tap rename and publish.
+**Gate:** immutable evidence attached to the issue. Any failed leg blocks repository rename and tag.
 
-### R10 — Controlled GitHub and tap rename window
+### R9 — Rename GitHub repository
 
-**Depends on:** R9 and explicit ADR irreversible gates.
+**Depends on:** R8 and ADR GitHub gate.
 
-- Recheck `jarimustonen/taskfleet` and `jarimustonen/homebrew-taskfleet` immediately.
-- Rename the main repository; never recreate `jarimustonen/orchestratectl`.
-- Update local/CI remotes, exact URLs, secrets, badges, action references, and repository settings; verify canonical push/clone and expected ordinary redirects.
-- Rename the tap, add `formula_renames.json` (`orchestratectl` → `taskfleet`), update cargo-dist target, and validate an old local tap/receipt path.
+- Rename `jarimustonen/orchestratectl` to `jarimustonen/taskfleet`; never recreate the old name.
+- Immediately update local/CI remotes, exact URLs, action references, badges, settings, release-wrapper identity, and secrets.
+- Verify the self-hosted macOS runner accepts a job in the renamed repository and canonical clone/fetch/push works.
+- Re-run exact-SHA main CI after the identity substitutions.
 
-**Gate:** canonical repositories and exact CI references work without relying on redirects. If a candidate name is unavailable, stop and return to the product owner; do not improvise another identity.
+**Gate:** canonical identity works without maintained references relying on redirects. Fix forward; do not routinely rename back.
 
-### R11 — Canonical Taskfleet 0.6.0 release
+### R10 — Cut and verify Taskfleet 0.6.0
 
-**Depends on:** R10.
+**Depends on:** R9 and all ADR irreversible gates.
 
-- Seal and inspect the Shipshape plan from clean synchronized main.
-- Advance main to the bump commit and wait for CI on that exact SHA.
+- Seal the Shipshape plan from synchronized clean main.
+- Advance main to the exact bump commit; wait for exact-SHA green push CI.
 - Resume the held tag only through `scripts/shipshape-release.sh`.
-- Verify canonical crates, wrappers, GitHub assets/checksums/installers, tap formula, and embedded commit.
-- Exercise fresh and old-upgrade installations in disposable environments and record registry reconciliation.
+- Reconcile independently completing crates.io and cargo-dist legs; never imply cross-workflow ordering.
+- Verify registry receipts, GitHub assets/checksums/stub, clean Taskfleet installs, embedded commit, and canonical formula in the new tap.
 
-**Irreversible gate:** ADR canonical crate/tag gates. Never run local `cargo publish`, bare Shipshape resume with a local tag, or manual tag push.
+**Irreversible gate:** no direct `cargo publish`, bare resume with local tag, manual tag, retag, or version reuse.
 
-## Post-release cross-repository convergence
+### R11 — Activate and verify Homebrew migration
+
+**Depends on:** verified R10 canonical formula.
+
+- Push the reviewed old-tap commit deleting the old formula and adding cross-tap migration metadata.
+- Add new-tap formula rename metadata only if the isolated recursive-resolution drill proves it necessary.
+- Test fresh canonical install, old receipt `brew update/upgrade`, `brew migrate`, old tap-qualified install resolution, direct canonical install, and uninstall in disposable prefixes.
+- If metadata is wrong, revert only the tap commit; do not alter published crates/releases.
+
+**Gate:** old and fresh paths resolve to one canonical formula with no duplicate tap/formula ownership.
+
+## Post-live cross-repository convergence
 
 ### E1 — Discover owners and active references
 
-**Depends on:** verified R11.
+**Depends on:** verified R10–R11.
 
-- Search maintained repositories for executable/package names, env/config paths, Git URLs/actions, install commands, Homebrew formula/tap, skills, telemetry adapters, fleet units, and service configuration.
-- Exclude generated, vendored, build, and historical material from blind replacement; classify intentional historical references.
-- Use Homebase fleet/status/doctor and repository documentation to identify the owner of each machine-level deployment. Specifically discover, do not guess, which Homebase/intake repository and fleet unit owns Haapa.
-- File or update work only in the owning repository; this worker does not assign foreign work from here.
+- Search maintained repositories for command/package names, env/config homes, URLs/actions, install commands, tap/formula identities, skills, telemetry adapters, and fleet units.
+- Exclude generated/vendor/history from blind replacement and classify intentional compatibility references.
+- Use Homebase fleet/status/doctor and repository guidance to discover, not guess, which repository/unit owns Haapa and intake-related deployment.
 
-**Gate:** owner map with repository, path/unit, current dependency channel, and migration order.
+**Gate:** owner map records repository, path/unit, dependency channel, state location, and ordering.
 
 ### E2 — Converge one owning repository per worktree
 
-**Depends on:** E1; parallelize only truly disjoint repositories.
+**Depends on:** E1; parallelize only disjoint repositories.
 
 For each owner:
 
-- update canonical command, package, URLs, env/config names, and installed skills;
-- migrate its state only through the Taskfleet migration tool and only after its runs are quiescent;
-- run that repository's own tests and machine-convergence policy;
-- preserve explicit compatibility/history references and document any deferred machine.
-
-An unreachable machine is unverified, not converged.
+- update canonical command, package, URLs, env/config, and installed skills;
+- finish/quiesce old runs before replacing alias-free binary channels or moving state;
+- run that repository's tests and machine-convergence policy;
+- preserve explicit history/compatibility references and mark unreachable machines unverified.
 
 ### E3 — Verify ecosystem convergence
 
 **Depends on:** all E2 worktrees.
 
-- Repeat maintained-source and fleet searches.
-- Verify no active old command, old package install, old config/env, old tap, or exact old GitHub URL remains outside declared compatibility fixtures.
-- Confirm no non-terminal run or pending merge remains in a legacy root.
-- Attach results to `rename-taskfleet`.
+- Repeat maintained-source/fleet searches.
+- Verify no active old command/install/config/tap/exact URL remains in supported reachable integrations.
+- Record unreachable/unknown installations honestly; they do not prove failure or block forever.
 
-## Compatibility removal release
+## Compatibility removal
 
-### C1 — Keep the window healthy through 0.7.x
+### C1 — Maintain the bounded window
 
-**Depends on:** R11.
+**Depends on:** R10.
 
-- Maintain wrappers and aliases only as forwarding surfaces.
-- Fix canonical Taskfleet first; wrappers receive only the minimum forwarding/version update.
-- Exercise old invocation and migration fixtures on each 0.6.x/0.7.x release.
+- Through 0.7.x, publish same-version exact-pinned `orchestratectl` wrappers for canonical releases.
+- Keep old branded input/config aliases and legacy-home adoption green; keep `OCTL_*` protocol stable.
+- Announce 0.8 removal in 0.7.0 and support 0.7.0 for at least 30 days.
 
-### C2 — Remove active compatibility in 0.8.0
+### C2 — Gate and cut 0.8.0
 
-**Depends on:** E3, date ≥ 2026-12-01, and every ADR removal criterion.
+**Depends on:** date ≥ 2026-12-01, ≥90 days after verified 0.6.0, 0.7.0 age ≥30 days, E3 for supported reachable integrations, and every ADR sunset fixture.
 
-- Remove old executable/config/environment aliases and old package wrappers from the active workspace/release contract.
-- Keep historical state/schema readers, migration markers, legacy-root safety detection, formula rename metadata, ADRs, changelog, and fixtures needed to prove compatibility.
-- Re-run full release and migration gates, then cut 0.8.0 through Shipshape.
+- Stop new old-CLI wrapper releases.
+- Remove old command/config/environment fallback from fresh Taskfleet releases; retain actionable removed-input errors.
+- Require explicit migration of populated legacy homes before writes.
+- Keep historical state/schema readers, split-root detection, migration receipts, GitHub redirects, old tap metadata, old registry artifacts, and required fixtures.
+- Run the full integrated release gate and cut only through Shipshape.
 
 ### C3 — Close the feature
 
 **Depends on:** verified C2.
 
 - Record canonical, convergence, and removal commits/releases on `rename-taskfleet`.
-- Confirm acceptance criteria and close the feature only now.
+- Confirm every acceptance criterion and only then close the feature.

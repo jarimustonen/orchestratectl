@@ -3,7 +3,7 @@ created: 2026-09-02
 updated: 2026-09-02
 type: feature
 reporter: jari
-status: open
+status: in-progress
 priority: normal
 lane: rename
 lane_seq: 10
@@ -68,3 +68,7 @@ Only after Taskfleet is published and verified, search other repositories for th
 ### 2026-09-02T06:06:15Z · @taskfleet-decision-worker
 
 ADR 0002 remains Proposed, not Accepted: the required five-lens panel was incomplete because the Rust/crates.io release-engineering model returned no response. The useful draft and dependency-ordered plan are preserved on the technical-decision branch for a fresh complete-panel run; no rename or distribution action was taken.
+
+### 2026-09-02T06:36:17Z · @taskfleet-decision-worker
+
+ADR 0002 Accepted after a complete five-lens panel and cross-review. The decision chooses narrowed bounded compatibility: Taskfleet 0.6 directly handles 0.5.1 state; existing legacy homes are adopted in place until explicit quiescent migration; only the old CLI crate receives a bounded Cargo wrapper; new binary distribution is Taskfleet-only; Homebrew uses a new canonical tap plus a permanent old migration stub; and active compatibility sunsets at evidence/date/version-gated 0.8.0. DeepSeek returned HTTP 503 on the first maintainability lens; the one permitted fresh replacement position completed with gpt-5.6-sol. No rename, publication, repository/tap mutation, or installation occurred in this decision run.

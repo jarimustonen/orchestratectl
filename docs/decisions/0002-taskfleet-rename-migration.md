@@ -1,253 +1,285 @@
-# ADR 0002 — Rename orchestratectl to Taskfleet through a bounded compatibility migration
+# ADR 0002 — Rename orchestratectl to Taskfleet through bounded compatibility
 
-- **Status:** Proposed — blocked pending a complete required expert panel
+- **Status:** Accepted
 - **Date:** 2026-09-02
-- **Deciders:** Jari Mustonen (product name and canonical command); migration decision not yet accepted
+- **Deciders:** Jari Mustonen (product identity); five-lens technical panel and this worker (migration contract)
 - **Issue:** `rename-taskfleet`
-- **Target releases:** `orchestratectl` bridge 0.5.2; canonical Taskfleet 0.6.0; compatibility removal in 0.8.0, no earlier than 2026-12-01
+- **Target releases:** Taskfleet 0.6.0; compatibility removal in 0.8.0, no earlier than 2026-12-01
 
 ## Context
 
-The product name **Taskfleet** and canonical command **`taskfleet`** are already decided. The remaining decision is how to move an already-published system without losing durable work or maintaining two products indefinitely.
+The product name **Taskfleet** and canonical command **`taskfleet`** are fixed. The current identity is already durable and published:
 
-The current identity crosses several independently durable or cached systems:
+- crates.io packages `orchestratectl` and `octl-core` exist through 0.5.1;
+- the executable, generated prompts, installed skills, scripts, and diagnostics say `orchestratectl`;
+- state defaults to `~/.orchestratectl`, public configuration uses `ORCHESTRATECTL_*`, and repository selection uses `.orchestratectl.toml`;
+- append-only state can contain live supervisors, pending OID-based merge transactions, and generated commands which execute later;
+- GitHub, cargo-dist releases, and the `jarimustonen/homebrew-orchestratectl` tap are independently cached identities.
 
-- crates.io packages `orchestratectl` and `octl-core`, both published through 0.5.1;
-- the `orchestratectl` executable, scripts, generated worker prompts, and bundled skills;
-- state, config, logs, and skill provenance under `~/.orchestratectl`, selected by `ORCHESTRATECTL_HOME`, plus `.orchestratectl.toml` repository config and other `ORCHESTRATECTL_*` variables;
-- state schema v1, JSON envelopes/contracts, and historical source references;
-- `jarimustonen/orchestratectl`, version tags, GitHub Releases, and cargo-dist assets;
-- the `jarimustonen/homebrew-orchestratectl` tap and `orchestratectl` formula.
+On 2026-09-02 crates.io reported 327 downloads for `orchestratectl` and 410 for `octl-core`. The only reported reverse dependency of `octl-core` was `orchestratectl` itself. The candidate `taskfleet` and `taskfleet-core` package endpoints returned 404. These observations show real use and no visible candidate package; they do not reserve either name.
 
-This is not an empty namespace. On 2026-09-02, crates.io reported non-zero downloads for both published packages, GitHub reported recent clones, and Homebrew exposed 0.5.1 from the old release URL. Existing runs may have live supervisors, checked-out worktrees, pending merge transactions, and prompts that still invoke `orchestratectl`. The append-only event log, `applied_seq`, locking, projection ordering, typed terminal outcomes, and OID-based merge recovery remain binding.
+crates.io identities and versions are permanent. GitHub repository redirects do not cover every consumer, including action references. Homebrew distinguishes same-tap formula renames from cross-tap migrations. cargo-dist does not make one alias mechanism uniform across Cargo installs, Homebrew, shell installers, and raw archives.
 
-External constraints are asymmetric:
+State integrity remains binding: event bytes, `applied_seq`, locks, projections, run/node ids, OIDs, pending merges, and typed terminal outcomes cannot be rewritten or split merely to improve branding.
 
-- crates.io names and versions are first-come-first-served and permanent. Published code cannot be deleted or overwritten; yanking only prevents new resolution while existing lockfiles continue to work.
-- GitHub repository renames redirect ordinary web and Git clone/fetch/push traffic, but action references do not redirect, local remotes should be updated, and reusing the old name breaks redirects.
-- cargo-dist 0.28 derives artifacts from package/binary identity. Its `bin-aliases` can create installer aliases (currently symlinks for shell and Homebrew), but aliases are not archive members.
-- Homebrew supports formula renames through a tap's `formula_renames.json`, has `brew migrate`, and also supports tap-local aliases. Existing taps and installed formula receipts still require an upgrade test; a repository redirect alone is not a migration proof.
+## Panel evidence and reconciliation
 
-At the time of this decision, authoritative APIs returned 404 for the candidate crates.io package and GitHub repository/tap names. That is evidence of no visible current object, **not a reservation or guarantee of availability**. Availability must be rechecked at the irreversible action.
+Five full independent positions were completed for state architecture, Rust/crates.io release engineering, CLI automation compatibility, GitHub/Homebrew/cargo-dist distribution, and maintainability/rollback. DeepSeek's first maintainability call failed once with HTTP 503; the permitted fresh replacement position used `gpt-5.6-sol` and completed. The other roles used `gemini-3.1-pro-preview`, `gpt-5.6-sol`, `claude-fable-5`, and `claude-opus-5`. All five then cross-reviewed a provisional synthesis. The synthesis and thread map are recorded in the gitignored `history/2026-09-02-panel-taskfleet-rename-retry.md`.
 
-## Panel completion status
+The panel agreed on bounded compatibility, one maintained implementation, unchanged wire data, direct 0.5.1 support, fail-closed root/config conflicts, a new canonical tap plus a permanent old migration stub, and fix-forward release boundaries. It disagreed on bridge publication, physical home movement, old crate cadence, and command aliases in binary channels. This ADR resolves those disagreements by preferring the smallest path that preserves data and supported automation:
 
-The required five-lens panel did not complete: the model assigned the Rust/crates.io and SemVer/release-engineering lens returned `No response from the model via API`, with no thread id or analysis. The panel workflow defines no retry allowance, and the run policy forbids inferring consensus from surviving roles. This draft therefore cannot be Accepted or merged. It is preserved as work for a fresh decision run that can execute a complete panel.
+- no separate 0.5.2 bridge: Taskfleet 0.6.0 directly adopts or migrates 0.5.1 state;
+- existing populated legacy homes are adopted in place through 0.7.x; physical movement is explicit and optional during that window, so no symlink or stale-writer routing is needed;
+- only the old CLI crate receives a compatibility wrapper; no `octl-core` wrapper is published without new external-dependent evidence;
+- the old executable remains supported through the Cargo wrapper, not through new Homebrew/shell/archive artifacts whose ownership and link behavior conflicts with existing installations;
+- the old tap becomes static migration metadata; only the new tap receives generated formulae.
 
-## Proposed decision (not accepted)
+## Decision
 
-Use a **staged compatibility migration**. Taskfleet becomes the only maintained implementation and public identity at 0.6.0, while bounded aliases and migration readers carry users from the old identity. The transition is prepared by one final old-identity bridge release, then completed through one controlled distribution cut.
+Use a **bounded staged compatibility migration**. Taskfleet 0.6.0 establishes the canonical identity while directly supporting existing 0.5.1 state and selected old inputs. Compatibility is deliberately channel-specific and ends for newly produced artifacts at 0.8.0 after the gates below.
 
-The compatibility code must route both names to the same command dispatcher, state resolver, schema implementation, and release source. It must not fork the engine, duplicate the event store, or allow old and new roots to receive concurrent writes.
+### 1. Canonical identity and stable protocol
 
-### 1. Canonical identity and intentionally stable wire data
+At 0.6.0:
 
-At canonical release 0.6.0:
+- product, repository, primary package, executable, release assets, formula, documentation, and new diagnostics use **Taskfleet** / **`taskfleet`**;
+- canonical Rust packages are `taskfleet` and `taskfleet-core`;
+- fresh state defaults to `~/.taskfleet`, selected by `TASKFLEET_HOME`;
+- repository selection uses `.taskfleet.toml` and branded public variables use `TASKFLEET_*`;
+- generated skills and prompts invoke `taskfleet`; new provenance uses `taskfleet:<run-id>/...`.
 
-- product, repository, primary package, executable, release assets, formula, tap, documentation, and new diagnostics use **Taskfleet** / **`taskfleet`**;
-- the canonical Rust packages are `taskfleet` and `taskfleet-core`;
-- source directories and Rust package/module references move to Taskfleet names where they are active implementation identity;
-- new default user state is `~/.taskfleet`, selected by `TASKFLEET_HOME`;
-- new repository config is `.taskfleet.toml`; new public configuration variables use `TASKFLEET_*`;
-- generated skills and worker prompts invoke `taskfleet` and new provenance uses `taskfleet:<run-id>/...`.
+Do not rename neutral persisted or automation protocol vocabulary. State schema v1, event kinds, JSON envelope fields, `run_id`, `node_id`, report fields, and historical values remain unchanged. Existing `OCTL_*` worker, notification, readiness, and test/control contracts are inventoried and retained under their existing spelling unless a separate decision proves they are product branding rather than protocol. A product rename alone never bumps the state schema.
 
-Do **not** rename neutral persisted vocabulary merely for branding. Fields such as `run_id`, `node_id`, `schema_version`, event kinds, report fields, and envelope shape retain their wire spelling. Historical values containing `orchestratectl` remain readable data. State schema v1 stays v1 if byte compatibility is preserved; a schema bump is allowed only for an actual incompatible schema change, not for a product-name change.
+### 2. One implementation and bounded old CLI package
 
-### 2. A bridge release before the public cut
+The canonical `taskfleet` package exposes the minimal linkable CLI dispatcher used by its `taskfleet` binary. The deprecated `orchestratectl` package contains only an `orchestratectl` entry point and deprecation glue linked to that dispatcher. It never shells out to `taskfleet` from `PATH`, duplicates the engine, or owns a second state resolver.
 
-Release 0.5.2 from the old repository and old channels before renaming them. It remains branded as a deprecated transition release and adds only the migration capabilities needed to cross safely:
+For every supported Taskfleet 0.6.x and 0.7.x release, publish a same-version `orchestratectl` wrapper from the same immutable source commit with an exact canonical dependency. This gives Cargo users a normal same-package upgrade path and keeps generated old commands functional without two Cargo packages competing to own one binary. Starting at 0.8.0, no new old-name wrapper is published.
 
-- recognition and diagnostics for the future Taskfleet root/config/environment names;
-- a dry-run and explicit state-home migration command;
-- quiescence and split-root detection;
-- deprecation guidance that names the future install commands;
-- compatibility fixtures proving that 0.5.2 and the candidate Taskfleet build read the same state schema and merge transactions.
+Do not publish an `octl-core` re-export wrapper now. crates.io showed no external reverse dependency. Existing `octl-core` versions remain available for historical lockfiles. Reconsider only if implementation inventory finds a real external source consumer whose migration requires a bounded re-export.
 
-The bridge is not the rebrand and does not silently relocate state. Existing 0.5.x users may continue running from `~/.orchestratectl` until they deliberately quiesce and migrate.
+### 3. Deterministic state-home adoption and optional movement
 
-### 3. State and config migration is explicit, quiescent, and fail-closed
+During 0.6.x–0.7.x, every command uses one centralized resolver:
 
-A migration command moves the complete resolved home as one unit: runs, events, projections, config, logs, supervisor metadata, and installed-skill provenance. It follows these rules:
+1. If `TASKFLEET_HOME` and `ORCHESTRATECTL_HOME` normalize to different paths, fail. If equivalent, use the one path and warn.
+2. A new-only explicit home is used. An old-only explicit home is used with a warning.
+3. With no explicit home:
+   - populated canonical root only: use `~/.taskfleet`;
+   - populated legacy root only: adopt `~/.orchestratectl` in place and warn;
+   - neither populated: create/use `~/.taskfleet`;
+   - both contain managed data: refuse state reads that require one truth and refuse all writes. Never merge or choose by timestamp.
 
-1. Resolve and display the exact source and destination. Explicit `TASKFLEET_HOME` wins only when the legacy variable is absent. If both old and new variables are set to different normalized paths, fail. Equivalent paths are accepted with a deprecation warning.
-2. Refuse when both roots contain managed data. Never merge two event stores automatically and never choose the newer-looking directory.
-3. Acquire a migration lock outside both roots and require a quiescent source: no non-terminal run, live supervisor/worker, pending merge transaction, held run lock, or state-writing command. Older binaries do not honor the new lock, so the operator must stop them; process and lock checks fail closed.
-4. Validate every run under the normal shared/exclusive lock APIs before movement. Do not rewrite event logs, manifests, run ids, branch names, worktree paths, OIDs, or sequence numbers.
-5. On the normal same-filesystem path, rename the whole directory atomically. If an explicitly supported cross-filesystem move is implemented, copy to a temporary destination, fsync files/directories, validate hashes and run projections, then atomically promote it. Otherwise refuse and instruct the operator to choose a same-filesystem destination.
-6. Write a versioned migration marker with source, destination, timestamp, and pre/post verification result. Retain a read-only backup until the canonical release and post-migration verification pass; never treat that backup as a second readable root.
-7. After migration, all command aliases resolve the canonical root. If a legacy root is later detected beside it, refuse writes and explain recovery.
+Adoption in place is bounded compatibility, not the end state. It avoids moving state during the public identity cut and lets old 0.5.1 binaries and in-flight prompts finish against the same legacy root. Taskfleet must not introduce state writes during this window that make the supported 0.5.1 fixture unreadable without an explicit schema decision.
 
-The Taskfleet resolver permanently detects a populated legacy default root when the canonical root is absent and reports the migration path instead of silently creating an empty `~/.taskfleet`. This permanent guard prevents old work from appearing lost; it is not continued support for writing the old layout.
+The optional `state migrate` operation moves a resolved legacy home only when the operator chooses:
 
-Repository configuration follows the same no-guess rule: during compatibility, read `.taskfleet.toml`, or fall back to `.orchestratectl.toml` with a warning. If both exist, require semantic equality or an explicit operator choice; never layer them silently. External repositories are converted only in their own post-release worktrees.
+- display exact normalized source/destination and require destination absent;
+- acquire an external migration lock and require quiescence: no non-terminal run, live supervisor/worker, pending merge transaction, held run lock, or state-writing command;
+- validate every run through normal lock/reducer APIs;
+- support only a same-filesystem atomic whole-directory rename initially; refuse cross-filesystem moves rather than implementing an unproven copy protocol;
+- write the migration receipt outside the moved root, then validate the destination without rewriting events, projections, ids, branches, paths, OIDs, or sequence numbers;
+- leave no symlink or writable alias at the old path. A stale old process may recreate it, but permanent dual-root detection makes Taskfleet fail closed instead of routing an old writer into the canonical store.
 
-### 4. Compatibility is broad enough for in-flight work but has a fixed sunset
+A quiescent rename-back is permitted only before the **first canonical write**, meaning any event append, projection repair, config write, skill-provenance write, supervisor metadata write, or migration-state mutation in the destination. After that boundary, state rollback is forbidden; repair or fix forward in the canonical root.
 
-The canonical `taskfleet` package and installers also provide an `orchestratectl` executable alias through 0.7.x. Both names enter the same binary/library dispatcher and therefore share state, locking, behavior, output schemas, and version. Cargo builds include the compatibility target; cargo-dist installer aliases cover installer layouts, and archive contents are tested explicitly rather than assumed from `bin-aliases`.
+At 0.8.0, a still-populated legacy home must be explicitly migrated before state-writing commands proceed. Legacy-root and split-root detection remain permanent.
 
-The old crates receive bounded compatibility releases:
+### 4. Public config and automation compatibility
 
-- `orchestratectl` is a thin deprecated wrapper over the canonical CLI entry point;
-- `octl-core` is a deprecated re-export of `taskfleet-core` where source compatibility is practical;
-- both may be released alongside 0.6.x and 0.7.x solely for migration and receive no independent features;
-- no old-name crate release is made at 0.8.0 or later.
+Through 0.7.x:
 
-This leaves permanent registry artifacts, as crates.io requires, but not permanent dual implementations.
+- `TASKFLEET_HOME`, `TASKFLEET_PROFILE`, `TASKFLEET_HARNESS`, and `TASKFLEET_LOG` are canonical;
+- old `ORCHESTRATECTL_*` counterparts remain input aliases: old-only warns, equal dual values warn, differing dual values fail;
+- `.taskfleet.toml` is canonical; old-only `.orchestratectl.toml` falls back with a warning; differing dual files fail rather than layer;
+- stable `OCTL_*` worker and notify protocol variables retain their spelling and behavior;
+- machine stdout, JSON, JSONL, exit codes, and event streams are unchanged by invocation identity. Deprecation warnings are stderr-only, at most once per process, and never interleaved into JSONL.
 
-Old `ORCHESTRATECTL_HOME`, `ORCHESTRATECTL_PROFILE`, `ORCHESTRATECTL_HARNESS`, and `ORCHESTRATECTL_LOG` are aliases through 0.7.x. A differing old/new pair is an error; an old-only value warns. Worker-control variables and the worker telemetry contract receive equivalent dual-read/new-write treatment through 0.7.x, with exact names fixed in the implementation inventory. The old command and environment aliases are removed in 0.8.0, **not before 2026-12-01** and only after the removal gates below pass.
+Starting at 0.8.0, old branded variables and repository config no longer supply values. Their presence remains an actionable error whenever ignoring them could select another home/config. Historical readers and safety detection do not expire.
 
-Old state/schema readers, migration markers, historical strings, and legacy-root detection do not expire. Data compatibility is not the same thing as a public command alias.
+### 5. Command compatibility is channel-specific
 
-### 5. GitHub and distribution cross in one controlled maintenance window
+The canonical binary channels ship `taskfleet`. They do not install a new `orchestratectl` alias:
 
-After bridge adoption and after the canonical implementation is green on the exact commit:
+- **Cargo:** `cargo install orchestratectl` receives the bounded same-dispatch wrapper through 0.7.x; `cargo install taskfleet` installs only `taskfleet`.
+- **Homebrew:** the Taskfleet formula installs `taskfleet` only. Native tap/formula migration handles package identity, but no old executable symlink is added that could collide with a linked old keg.
+- **Shell installer and raw archives:** new Taskfleet artifacts install/contain `taskfleet` only. Existing old binaries are not silently removed. Operators quiesce old work, refresh skills/automation, and then remove the old binary explicitly.
 
-1. Rename `jarimustonen/orchestratectl` to `jarimustonen/taskfleet`; never reuse the old repository name.
-2. Immediately update and verify local/CI remotes, repository metadata, secrets, badges, action references, release wrapper identity checks, and all exact URLs. GitHub redirects are a fallback, not the configured steady state.
-3. Rename `jarimustonen/homebrew-orchestratectl` to `jarimustonen/homebrew-taskfleet` (subject to the final availability recheck), preserve its history, add `formula_renames.json` mapping `orchestratectl` to `taskfleet`, and configure cargo-dist to publish only the Taskfleet formula. Do not maintain two generated formula repositories.
-4. Regenerate, never hand-edit, cargo-dist's workflow after package/binary/tap changes.
-5. Push the canonical 0.6.0 tag only through the repository's exact-SHA, green-main, resumable Shipshape wrapper after that wrapper and `OSS-RELEASE.md` have been migrated and revalidated.
-6. Publish in dependency order: `taskfleet-core`, `taskfleet`, then bounded legacy wrappers as declared by the sealed release plan. GitHub Release and Homebrew remain CI-delegated legs of the same tag.
+Thus an in-flight old prompt is completed before replacing an old Homebrew/shell/archive installation or before physical state movement. Cargo-wrapper users may exercise the old command throughout the window. This explicit channel break is safer than a nominal alias whose ownership, archive coverage, or PATH precedence differs by installer.
 
-If a same-tag four-crate transaction cannot be made safely resumable, publish the canonical core/CLI first and wrappers second from the same immutable source commit with distinct journaled steps. A wrapper failure must not cause a second canonical version or retagging.
+The old `releases/latest/download/orchestratectl-installer.sh` URL would otherwise fail when 0.6.0 becomes latest. Ship a small compatibility stub at that asset name through 0.7.x which prints the canonical installer URL and exits non-zero; it never installs or mutates state.
 
-### 6. Compatibility removal gate
+### 6. GitHub, cargo-dist, and Homebrew topology
 
-Remove command/config/environment/package compatibility in 0.8.0 only when all are true:
+- Rename `jarimustonen/orchestratectl` to `jarimustonen/taskfleet` before the canonical tag. Never recreate/reuse the old repository name. Update remotes, exact URLs, action references, badges, secrets, and identity checks instead of configuring redirects as steady state.
+- Create `jarimustonen/homebrew-taskfleet` as the sole generated formula destination.
+- Retain `jarimustonen/homebrew-orchestratectl` permanently as a static migration stub. After the canonical formula is live and verified, atomically delete `Formula/orchestratectl.rb` and add `tap_migrations.json` mapping the old formula to the canonical full formula identity. Add `formula_renames.json` in the new tap only if the isolated Homebrew drill proves recursive rename metadata is required.
+- Before the canonical tag, verify `HOMEBREW_TAP_TOKEN` can write the new tap, the self-hosted macOS runner accepts jobs under the renamed repository, and cargo-dist 0.28.2's PR plan lists exactly the intended Taskfleet artifacts, stub installer, and one canonical formula with zero unintended old artifacts.
+- Keep cargo-dist pinned at 0.28.2 for the rename. Regenerate its workflow; do not hand-edit generated release identity.
 
-- the date is on or after 2026-12-01;
-- canonical crates, release assets, shell installer, and Homebrew formula have been verified from clean environments;
-- an old Homebrew installation has successfully followed the documented formula/tap migration in an isolated Homebrew environment;
-- a 0.5.1 fixture and a bridge fixture have migrated with byte/invariant verification and completed `run show`, `event tail`, `run wait`, `run merge`, and cleanup under `taskfleet`;
-- no non-terminal run or pending merge transaction remains in a legacy root on maintained machines;
-- installed bundled skills have been refreshed and all maintained repositories have zero active old-name invocations outside explicit compatibility/history fixtures;
-- the post-release cross-repository convergence phase is complete, including discovered Homebase/intake/Haapa owners;
-- release rollback/fix-forward runbooks and a retained migration backup have been exercised.
+### 7. Release is a resumable saga
 
-If a gate fails, defer 0.8.0 rather than silently extending an undocumented alias. The compatibility contract remains explicit until the gate passes.
+A pushed canonical tag starts independently completing crates.io and cargo-dist/GitHub/Homebrew legs. The release is not atomic and prose must not imply cross-workflow chronology.
 
-## Ordered migration phases
+Within crates.io, publish and reconcile:
 
-| Phase | Purpose | Exit gate |
-|---|---|---|
-| **0. Inventory and fixtures** | Freeze the old/new identity inventory; capture 0.5.1 state, config, active-run, skill, Cargo, archive, and Homebrew fixtures. Recheck candidate names without claiming reservation. | Reproducible fixtures and zero unidentified identity-bearing write paths. |
-| **1. Bridge 0.5.2** | Add migration diagnostics/tooling under the old identity; preserve current behavior. | Full green gate, isolated migration drills, exact-SHA CI, bridge published and verified on all old channels. |
-| **2. Canonical internals** | Rename packages/modules/CLI entry point; keep one dispatcher; add bounded old wrappers and dual-read/new-write config handling. Preserve wire schema. | Both executable names pass the same contract suite against one isolated root; no duplicate engine/store implementation. |
-| **3. State migration proof** | Exercise quiescence, atomic move, split-root refusal, backup, rollback-before-write, old fixture reads, and merge recovery. | Fault-injection tests pass and hashes/sequences/OIDs remain unchanged. |
-| **4. Distribution preparation** | Update contract, publish workflow, Shipshape hook/wrapper, cargo-dist config/workflow, docs, crate order, asset names, and tap migration metadata. | Dry runs and clean install/upgrade tests pass; exact irreversible plan is sealed. |
-| **5. GitHub/tap rename window** | Rename the repositories and update exact URLs/remotes/secrets/references. | New canonical URLs work; expected redirects work; no workflow/action/tap step depends on an unverified redirect. |
-| **6. Canonical 0.6.0 release** | Cut one gated release and publish/verify canonical crates, binaries, assets, installers, and formula plus bounded wrappers. | Shipshape verification reconciles every declared registry; smoke tests pass from clean homes. |
-| **7. Ecosystem convergence** | Search dependent repositories and modify each through its owning worktree. Discover Homebase/intake/Haapa ownership before edits. | Maintained-source scan is clean except intentional migration/history references; machine convergence policy passes. |
-| **8. Compatibility removal** | At 0.8.0 and after the date/gates above, remove active aliases and legacy wrapper packages from the workspace. Keep historical readers/guards. | Old invocation fails with a clear migration message or is absent as documented; canonical paths remain green. |
+1. `taskfleet-core`;
+2. `taskfleet` after the exact core is index-visible;
+3. `orchestratectl` after the exact Taskfleet package is index-visible.
 
-## Compatibility and deprecation matrix
+Every step queries the registry and verifies version, checksum, owners, dependency requirements, metadata, and source commit before treating an existing artifact as success. GitHub Release and Homebrew are separate receipt-bearing legs which may finish earlier or later. Shipshape verification declares completion only after every configured registry reconciles.
 
-| Surface | 0.5.2 bridge | Taskfleet 0.6.x–0.7.x | Taskfleet ≥0.8.0 |
+Do not publish locally, retag, reuse a version, or infer success from Cargo's “already exists” text. If any permanent leg succeeds and another fails, resume the missing idempotent leg from the same commit where possible or fix forward with a new patch. The generated Homebrew job's empty-commit failure mode needs a documented manual formula-commit repair path.
+
+### 8. Compatibility sunset
+
+Taskfleet 0.8.0 may stop newly shipping, publishing, testing, and supporting old command/config/environment/package compatibility only when all are true:
+
+- date is on or after 2026-12-01 and at least 90 days after verified 0.6.0 availability;
+- 0.7.0 has been publicly available for at least 30 days and carried the announced removal notice;
+- clean Cargo, archive, shell, and Homebrew Taskfleet installs pass;
+- an old Homebrew receipt/tap installation completes the documented migration in an isolated prefix;
+- 0.5.1 legacy-root adoption, explicit same-filesystem migration, split-root refusal, and rollback-before-write fixtures pass;
+- bundled skills and generated prompts use `taskfleet` and maintained reachable integrations have converged; unreachable machines are recorded as unverified, not treated as proof or an indefinite veto;
+- no known supported integration still depends on active aliases.
+
+Previously published crates and installed 0.6/0.7 binaries remain available and may continue to run. Permanent history/safety surfaces remain: state/schema readers, split-root and removed-input detection, GitHub redirects, old tap migration metadata, published releases, and registry artifacts.
+
+## Compatibility matrix
+
+| Surface | orchestratectl 0.5.1 | Taskfleet 0.6.x–0.7.x | Fresh Taskfleet ≥0.8.0 |
 |---|---|---|---|
-| Product/docs | orchestratectl, announcing migration | Taskfleet canonical; old name marked deprecated | Taskfleet only outside history/migration docs |
-| Command | `orchestratectl` | `taskfleet` canonical; `orchestratectl` same-dispatch alias with warning | alias removed |
-| crates.io CLI | `orchestratectl` | `taskfleet` canonical; bounded thin `orchestratectl` wrapper | no new old-name releases |
-| crates.io core | `octl-core` | `taskfleet-core` canonical; bounded re-export wrapper | no new old-name releases |
-| Default home | `~/.orchestratectl` | explicit migration to `~/.taskfleet`; one writable root | `~/.taskfleet`; permanent legacy-root safety detection |
-| Home env | `ORCHESTRATECTL_HOME` plus migration awareness | `TASKFLEET_HOME` canonical; old alias warns; conflicts fail | old alias removed; migration marker/guard retained |
-| Other public env | old names | `TASKFLEET_*` canonical; old aliases warn; conflicts fail | old aliases removed |
-| Repo config | `.orchestratectl.toml` | `.taskfleet.toml` canonical; old fallback warns; dual conflict fails | old fallback removed after cross-repo gate |
-| State/events/JSON | schema v1 | neutral wire names unchanged; historical branded values readable | unchanged readers remain |
-| Skills/prompts | old installed copies | new Taskfleet catalog; provenance-aware prune/update; old commands work during refresh | Taskfleet catalog only; modified user files preserved |
-| GitHub | old repository | renamed repository; old URL redirects but is not configured | new URL only; old name never reused |
-| cargo-dist/assets | old app/assets | Taskfleet app/assets; installer alias tested; generated workflow | Taskfleet only |
-| Homebrew | old tap/formula | renamed tap + `taskfleet`; formula rename/migration and command alias | Taskfleet formula only; rename metadata retained |
+| Product/docs | orchestratectl | Taskfleet canonical; old name only in migration/deprecation | Taskfleet outside history/safety docs |
+| Canonical command | `orchestratectl` | `taskfleet` | `taskfleet` |
+| Old command via Cargo | current package | same-dispatch `orchestratectl` wrapper, same-version release | no new wrapper; historical versions remain |
+| Old command via new Homebrew/shell/archive | n/a | not shipped; old installation must finish work before replacement | not shipped |
+| CLI crate | `orchestratectl` | `taskfleet` canonical + bounded CLI wrapper | `taskfleet` only for new releases |
+| Core crate | `octl-core` | `taskfleet-core`; no old wrapper without new dependent evidence | `taskfleet-core` |
+| Fresh default home | `~/.orchestratectl` | `~/.taskfleet` | `~/.taskfleet` |
+| Existing legacy home | writable | adopted in place or explicitly migrated | explicit migration required; permanent detection |
+| Home env/config | `ORCHESTRATECTL_*`, `.orchestratectl.toml` | `TASKFLEET_*` / `.taskfleet.toml` canonical; old aliases/fallback warn; conflicts fail | old inputs do not supply values and trigger actionable errors where safety-relevant |
+| `OCTL_*` protocols | existing wire contract | unchanged | unchanged unless separately versioned |
+| State/events/JSON | schema v1 | unchanged wire and historical bytes | historical readers remain |
+| Skills/prompts | old installed commands | new Taskfleet catalog; old unmanaged copies must be refreshed before alias-free channel replacement | Taskfleet catalog |
+| GitHub | old repository | renamed canonical repository; old redirect retained, action refs updated | canonical repository; old name never reused |
+| Releases/assets | old names | Taskfleet assets; old latest-installer URL is a non-installing migration stub | Taskfleet assets; stub retirement separately evidenced |
+| Homebrew | old generated tap/formula | new generated tap/formula; old tap static cross-tap migration stub | same; migration metadata permanent |
+
+## Ordered phases and irreversible gates
+
+| Phase | Work | Exit / irreversible gate |
+|---|---|---|
+| **0. Inventory** | Freeze all identity-bearing paths, variables, commands, package consumers, URLs, skills, and fixtures. | No unidentified writer or distribution identity; candidate names rechecked but not considered reserved. |
+| **1. Shared dispatcher and resolver** | Introduce linkable dispatcher; centralized dual-name config and bounded legacy-home adoption. | 0.5.1 fixtures and both-name stdout/exit-code contracts green; no source rename yet. |
+| **2. Migration proof** | Implement optional quiescent same-filesystem move, permanent split-root detection, and rollback boundary. | Event bytes/sequences/OIDs unchanged; live/split/cross-device cases refuse safely. |
+| **3. Canonical packages and wrapper** | Rename active packages/binary; add only the thin old CLI wrapper; update skills/docs/contracts. | Package archives show one engine; exact pins and old/new command behavior verified. |
+| **4. Distribution preparation** | New tap/token, old-tap migration commit staged, GitHub/url updates prepared, cargo-dist regenerated and planned. | Runner/token/plan/Homebrew disposable drills green; exact action list sealed. |
+| **5. GitHub rename** | Rename repository and immediately update remotes/settings/references. | Canonical clone/push and CI work; old ordinary URLs redirect; action refs use canonical identity. Treat as fix-forward. |
+| **6. Canonical 0.6.0 tag** | Use only the exact-SHA green-main Shipshape wrapper. | **Irreversible:** canonical names rechecked, crates and independent distribution legs reconciled; never retag/reuse. |
+| **7. Homebrew migration activation** | After formula verification, replace old formula with static cross-tap migration metadata. | Old receipt/install/migrate/upgrade/uninstall drill passes; revert metadata only if needed. |
+| **8. Ecosystem convergence** | One owning worktree per maintained dependent repository; discover Homebase/intake/Haapa ownership. | Reachable maintained sources use canonical identity; unknown/unreachable cases recorded. |
+| **9. Compatibility removal** | After date/version/evidence gates, remove active aliases and wrapper publication in 0.8.0. | Permanent readers/guards/metadata retained; fresh installs are Taskfleet-only. |
 
 ## Irreversible-action gates
 
-No irreversible step is inferred from a previous success.
-
-1. **Bridge tag:** clean synchronized main, complete repository green gate, migration fixtures green, sealed release plan, exact-SHA main CI green, then the existing held-tag/resume protocol.
-2. **State move:** exact paths displayed, conflict/symlink/path validation, external migration lock held, all runs quiescent, no pending merge, source validated and backed up. Any uncertainty refuses the move.
-3. **First canonical crate publish:** crates.io API and `cargo search/info` rechecked immediately; ownership/token and package contents verified by dry-run; package/version/core pin/tag match; exact-SHA CI green. A 404 is not treated as a reservation.
-4. **Repository/tap rename:** candidate names rechecked; redirects and action-reference exception understood; all exact URL substitutions prepared; local remotes and CI secrets verified immediately afterward. Never recreate the old repository names.
-5. **Canonical tag:** GitHub and tap already canonical; generated cargo-dist plan lists only intended Taskfleet artifacts/formula; Shipshape plan lists every crate leg in dependency order; no direct local publish or manual tag push.
-6. **Alias removal:** every compatibility-removal gate above passes. Otherwise postpone the breaking release.
+1. **First canonical crate:** recheck names immediately; inspect archives, exact pins, owner/token, and immutable commit; exact-SHA CI green.
+2. **GitHub rename:** all exact substitutions and action references prepared; runner/secrets understood; never reuse old name.
+3. **Canonical tag:** cargo-dist plan and Shipshape plan list only intended legs; use held-tag/resume wrapper, never manual publish/tag.
+4. **Homebrew migration activation:** canonical formula already live; old formula deletion plus migration metadata is one reviewed commit; disposable old-upgrade drill passes.
+5. **State move:** exact paths, quiescence, locks, destination absence, same filesystem, source validation. Any uncertainty refuses.
+6. **Compatibility removal:** every sunset criterion passes; otherwise defer 0.8.0.
 
 ## Rollback boundaries
 
-- **Before the bridge tag:** ordinary code rollback; no public migration contract exists.
-- **After the bridge tag, before state movement:** bridge artifacts are permanent. Fix forward with another old-name patch if needed; do not delete/retag.
-- **During state migration, before the first canonical write:** restore the verified backup only while quiescent and only through the migration tool. The migration marker records this eligibility.
-- **After any canonical-root event append/config/provenance write:** do not move the backup back over newer state. The rollback boundary has crossed; recover or fix forward in the canonical root using event-store repair rules.
-- **After a GitHub/tap rename:** prefer fix-forward. Renaming back is not a routine rollback because it changes redirects and cached URLs.
-- **After the first canonical crate or tag is published:** identity is irreversible. Yank only a broken version, never reuse a version/tag, and publish a corrected Taskfleet patch through the same gate.
-- **After old aliases are removed:** restore them only by a new explicit compatibility decision and release; do not silently reintroduce split behavior.
+- Before GitHub rename/publication: normal code rollback.
+- After GitHub rename: fix forward at canonical identity; renaming back is not routine rollback.
+- After `taskfleet-core` or any canonical version publishes: that name/version is permanent; resume or publish a new patch, yanking only a materially broken version.
+- Before a physical home move: continue using the sole legacy root.
+- After atomic move but before first canonical write: quiescent rename-back is allowed.
+- After first canonical write: never overlay/rename back stale state; repair or fix forward in canonical root.
+- Homebrew migration metadata can be reverted quickly, but published crates/releases are not rolled back with it.
+- After compatibility removal: reintroduction requires a new explicit decision and release.
 
-## Exact verification criteria
+## Verification
 
-The migration is complete only when all of the following are recorded against immutable commits/releases:
+Before the canonical tag, record against immutable commits:
 
-1. `cargo metadata` identifies canonical packages `taskfleet` and `taskfleet-core`; exact internal version pins match the workspace version. Legacy packages, while present, contain only wrappers/re-exports and deprecation metadata.
-2. `taskfleet version --output json` names the build/version/schema correctly. During compatibility, invoking the same build as `orchestratectl` produces equivalent machine payloads except an allowed structured deprecation warning.
-3. Contract tests run every public noun/verb needed by bundled skills under both command names against one temporary `TASKFLEET_HOME`; concurrent aliases cannot produce split roots or sequence duplication.
-4. Migration tests start from byte-captured 0.5.1 and 0.5.2 homes. After migration, hashes of event logs and semantic manifests match, `applied_seq` equals the durable log state, run/node IDs and OIDs are unchanged, and split-root/live-run/pending-merge/fault-injection cases refuse safely.
-5. An in-flight old prompt can finish through the old alias after the home migration, and its `run merge` transaction is recovered/recorded exactly once before teardown.
-6. Config precedence tests cover new-only, old-only, equivalent dual values, conflicting dual values, neither value, dual repository files, and custom paths. No case silently selects between differing roots.
-7. Skill installation tests prove the Taskfleet catalog, byte/provenance tracking, safe pruning, preservation of user-edited copies, and no global mutation during repository tests.
-8. The standard Rust green gate, documentation gate, version snapshots, clean-PATH tool-sensitive tests, package dry-runs, and cargo-dist PR plan all pass on the exact canonical commit.
-9. crates.io shows the intended canonical versions owned by the expected account; `cargo install taskfleet` in a disposable Cargo home runs `taskfleet` and, during compatibility, the old alias. Existing lockfile fixtures using old core continue to build for the declared window.
-10. GitHub canonical clone/fetch/push and Release URLs work. Old ordinary repository URLs redirect, no maintained action reference relies on that redirect, and the old repository name has not been reused.
-11. Release assets, checksums, installer script, manifest, and formula are Taskfleet-named and install a binary whose embedded commit equals the tagged commit.
-12. In clean and old-upgrade disposable Homebrew environments, `brew install jarimustonen/taskfleet/taskfleet`, formula rename/migration, `brew upgrade`, `brew uninstall`, and command aliases behave as documented without two owned formulas fighting over the same binary.
-13. Shipshape verification reports every declared canonical and compatibility registry leg reconciled; no direct local `cargo publish` occurred.
-14. A post-release maintained-source search records every remaining `orchestratectl`, `octl`, `.orchestratectl`, and `ORCHESTRATECTL_*` occurrence as either intentional compatibility/history or a separately owned convergence item. Homebase/intake/Haapa ownership is evidenced, not assumed.
-15. Before 0.8.0, the compatibility-removal gate is rerun and attached to the release record.
+1. `cargo metadata` and package archives identify `taskfleet-core`, `taskfleet`, and the implementation-free `orchestratectl` wrapper with exact dependencies.
+2. Every public command under canonical and wrapper names has identical stdout, JSON/JSONL, and exit codes; deprecation is stderr-only and stream-safe.
+3. 0.5.1 completed, non-terminal, and pending-merge fixtures adopt in place without byte changes; active work finishes before optional movement.
+4. Migration preserves event hashes, `applied_seq`, ids, branches, OIDs, and merge recovery; live, dual-root, destination-present, and cross-device cases refuse.
+5. Config precedence covers new-only, old-only, equivalent dual, conflicting dual, neither, custom homes, and dual repository files.
+6. Stable `OCTL_*` notify/worker contracts are unchanged; generated skills/prompts use `taskfleet`; user-edited installed skills are preserved.
+7. Full Rust green gate, docs gate, clean-PATH tests, snapshots, package dry-runs, and cargo-dist PR plan pass.
+8. crates.io receipts verify names, versions, owners, checksums, metadata, and dependencies; no local publish occurs.
+9. Canonical GitHub clone/fetch/push/release URLs and expected old redirects work; maintained action refs do not rely on redirects.
+10. Clean Taskfleet installs work in disposable Cargo, shell, archive, and Homebrew homes; embedded commit equals tag.
+11. Old Homebrew receipt/tap migration, upgrade, direct canonical install, uninstall, and old-tap command resolution work without duplicate formula ownership.
+12. `releases/latest/download/orchestratectl-installer.sh` produces only the documented migration message and performs no installation.
+13. Shipshape reconciles every configured registry leg, including manual Homebrew repair if its generated push was not retry-safe.
+14. Maintained-source search classifies every residual old identity as compatibility, safety, history, or separately owned convergence work.
 
 ## Consequences
 
 ### Positive
 
-- Existing work remains visible and migrates without rewriting the event history or bypassing merge safety.
-- In-flight prompts and automation have a bounded route across the rename.
-- Taskfleet becomes canonical in one release, while old crates become frozen compatibility artifacts rather than a second product.
-- Registry, GitHub, cargo-dist, and Homebrew changes are ordered around their actual irreversible boundaries.
-- The end state has one engine, one writable root, one generated distribution path, and one maintained identity.
+- New users receive a coherent Taskfleet identity immediately.
+- Existing durable state is not moved during the release cut and is never rewritten.
+- Cargo automation has a bounded old command path without duplicate implementations or binary ownership conflicts.
+- Homebrew uses its native cross-tap migration mechanism while preserving the old identity against squatting.
+- The final maintained system has one engine, one canonical state path for migrated/fresh users, one generated tap, and one public product.
 
 ### Negative / accepted
 
-- Two transition releases and temporary wrapper packages add release and test complexity.
-- The home move requires a deliberate quiescent maintenance step; live runs delay migration.
-- Old crates and historical strings remain publicly visible forever because registry/history integrity is more important than cosmetic erasure.
-- A short controlled interval exists after the GitHub rename and before canonical package verification. Release preparation must minimize it and provide fix-forward instructions.
-- Users who skip the bridge need a documented direct migration path from 0.5.1; Taskfleet must detect their old root rather than appearing empty.
+- Existing users can temporarily operate from a legacy-named home through 0.7.x.
+- Homebrew, shell, and archive users do not receive a new old-command alias; they must finish old work and refresh automation before replacement.
+- Three crates publish during the compatibility window, and release legs can partially complete.
+- Registry artifacts, old URLs, migration metadata, historical strings, and safety readers remain visible permanently.
 
 ## Rejected alternatives
 
-### Hard cut: rename everything at once with no compatibility surface
+### Hard cut
 
-Rejected. It would make existing state appear missing under a new default home, strand in-flight workers whose prompts invoke the old command, and turn cached package/tap URLs into simultaneous failures. GitHub redirects do not cover crates.io, executables, environment variables, action references, or Homebrew receipts. A hard cut is smaller in source but unsafe at the durable and automation boundaries.
+Rejected because changing the command, home, inputs, packages, and distribution simultaneously would make existing state appear missing and break persisted prompts/scripts without a migration interval.
 
-### Packaging-only rebrand: change public packages/command but retain old storage and vocabulary indefinitely
+### Packaging-only rebrand
 
-Rejected. It avoids immediate migration work by making `~/.orchestratectl`, old variables, old internal packages, and old operational scripts permanent. That creates the indefinitely split identity the rename is meant to end and makes every future explanation distinguish brand from implementation. Neutral wire fields and historical values remain for compatibility, but active defaults and maintained internals move.
+Rejected as an end state because retaining old packages, active defaults, and operational vocabulary forever creates permanent dual identity. Bounded legacy-home adoption is used only as a transition safety mechanism.
 
-### Permanent dual publication and dual writable homes
+### Mandatory bridge release
 
-Rejected. Publishing both complete CLIs indefinitely doubles release/security obligations, while reading and writing both roots introduces ambiguous ownership and event-log divergence. Compatibility packages are thin, bounded, and share one implementation; roots are never merged automatically or written concurrently.
+Rejected because Taskfleet must support direct 0.5.1 migration anyway. A second old-identity release adds permanent artifacts and another release transaction without a proven prerequisite.
 
-### Automatic first-run state move
+### Immediate physical home move or automatic first-run move
 
-Rejected. A first-run heuristic cannot prove that old supervisors or pre-bridge binaries have stopped writing, and a partially populated destination is ambiguous. Migration is explicit, quiescent, validated, and reversible only before the first canonical write.
+Rejected because movement during the public cut adds state risk and cannot prove old writers are gone. Existing roots are adopted in place; movement is explicit and quiescent.
+
+### Legacy-path symlink
+
+Rejected because it routes stale 0.5.1 writers into the canonical store and requires unproven bidirectional write/locking compatibility. Leaving paths separate plus permanent split-root refusal fails closed.
+
+### Permanent old crates or old core wrapper
+
+Rejected. The old CLI wrapper is bounded; no external `octl-core` dependent was observed. crates.io history remains without creating a second maintained product.
+
+### Binary aliases in all channels
+
+Rejected because Cargo, Homebrew, shell installers, and archives have incompatible ownership and coverage. A documented channel-specific contract is safer than nominal uniformity.
+
+### Renaming the old Homebrew tap
+
+Rejected because GitHub redirects do not model Homebrew's local tap identity and can create duplicate taps. A new canonical tap plus permanent static old migration stub uses Homebrew's native mechanism.
 
 ## References
 
 - `issues/rename-taskfleet/item.md`
 - `issues/rename-taskfleet/plan.md`
 - `docs/decisions/0001-thin-supervisor-vs-harden.md`
-- `AGENTS.md`, state-integrity invariants
+- `AGENTS.md` state-integrity invariants
 - `Cargo.toml`, `crates/octl-{cli,core}/Cargo.toml`
 - `crates/octl-cli/src/home.rs`, `crates/octl-core/src/schema.rs`
 - `OSS-RELEASE.md`, `dist-workspace.toml`
 - `.github/workflows/publish-crates.yml`, `.github/workflows/release.yml`
-- `scripts/shipshape-release.sh`
-- GitHub Docs, “Renaming a repository” (read 2026-09-02)
-- Cargo Book, “Publishing on crates.io” and manifest target documentation (read 2026-09-02)
-- Homebrew documentation and `brew migrate` help/source (read 2026-09-02)
-- cargo-dist 0.28 configuration reference, `bin-aliases` and tap settings (read 2026-09-02)
-- Required expert panel: thread map and synthesis in `history/2026-09-02-panel-taskfleet-rename.md` (gitignored working artifact)
+- Homebrew 6.0.21 `formulary.rb`, `migrator.rb`, and tap-migration tests (read 2026-09-02)
+- crates.io API package and reverse-dependency responses (read 2026-09-02)
+- complete panel: `history/2026-09-02-panel-taskfleet-rename-retry.md`
