@@ -164,13 +164,12 @@ fn shim_records_signal_death() {
 }
 
 #[test]
-fn internal_launcher_wait_times_out_without_starting_candidate() {
+fn internal_launcher_starts_candidate_before_publication_and_reports_early_exit() {
     let home = TempDir::new().unwrap();
     let marker = home.path().join("candidate-ran");
     let out = bin(&home)
         .env("OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION", "1")
         .env("OCTL_INTERNAL_WORKER_STATE_ROOT", home.path())
-        .env("OCTL_TEST_WORKER_PUBLICATION_WAIT_MS", "0")
         .args([
             "run-worker",
             RUN_ID,
@@ -183,10 +182,14 @@ fn internal_launcher_wait_times_out_without_starting_candidate() {
         .expect("spawn shim");
     assert_eq!(out.status.code(), Some(2));
     assert!(
-        !marker.exists(),
-        "candidate must not start before publication"
+        marker.exists(),
+        "candidate starts behind the private launcher"
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("worker_publication_timeout"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("worker_exited_before_publication"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]

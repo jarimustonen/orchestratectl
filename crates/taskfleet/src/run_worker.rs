@@ -115,9 +115,7 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         _ => crate::home::root_dir()?,
     };
     let paths = run_paths_exact(&root, &run_id)?;
-    if await_publication {
-        await_published_node(&paths, &node_id, &args)?;
-    } else {
+    if !await_publication {
         require_published_node(&paths, &node_id, &args)?;
     }
 
@@ -165,6 +163,16 @@ pub fn dispatch(args: RunWorkerArgs) -> Result<(), CliError> {
         }
     };
     WORKER_PID.store(child.id() as i32, Ordering::Relaxed);
+    // During create, poll publication and the child together. Reaping an early
+    // exit is load-bearing: a zombie can still answer kill(0) and expose its
+    // start identity, which would otherwise let a dead candidate be published.
+    if await_publication {
+        if let Err(error) = await_published_node(&paths, &node_id, &args, &mut child) {
+            terminate_child(&mut child);
+            WORKER_PID.store(0, Ordering::Relaxed);
+            return Err(error);
+        }
+    }
     let pending = PENDING_SIGNAL.swap(0, Ordering::Relaxed);
     if pending > 0 {
         unsafe { libc::kill(child.id() as libc::pid_t, pending) };
@@ -243,14 +251,15 @@ fn require_published_node(
     Ok(())
 }
 
-/// Bridge the intentional create transaction ordering: create.sh starts the
+/// Bridge the intentional create transaction ordering: native materializer starts the
 /// launcher while the run is private under `.creating`; the creator then writes
 /// `node.created` and atomically publishes it under `runs/`. Waiting in the shim
-/// keeps create.sh's PID discovery live without exposing half-created state.
+/// keeps the native materializer's PID discovery live without exposing half-created state.
 fn await_published_node(
     paths: &RunPaths,
     node_id: &NodeId,
     args: &RunWorkerArgs,
+    child: &mut std::process::Child,
 ) -> Result<(), CliError> {
     const DEFAULT_WAIT: Duration = Duration::from_secs(120);
     #[cfg(debug_assertions)]
@@ -262,6 +271,17 @@ fn await_published_node(
     let wait = DEFAULT_WAIT;
     let deadline = Instant::now() + wait;
     loop {
+        if let Some(status) = child.try_wait().map_err(|e| {
+            CliError::system(
+                "worker_wait_failed",
+                format!("poll worker before publication: {e}"),
+            )
+        })? {
+            return Err(CliError::system(
+                "worker_exited_before_publication",
+                format!("worker exited with {status} before run publication"),
+            ));
+        }
         match require_published_node(paths, node_id, args) {
             Ok(()) => return Ok(()),
             Err(error) if matches!(error.code.as_str(), "run_not_found" | "node_not_found") => {}
@@ -276,8 +296,21 @@ fn await_published_node(
                 ),
             ));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn terminate_child(child: &mut std::process::Child) {
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+    let _ = child.wait();
 }
 
 /// Append the durable `worker.exited` fact under the run lock (design.md §2.1).

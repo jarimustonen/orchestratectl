@@ -87,6 +87,10 @@ enum Command {
     /// Internal — invoked by the worker-launch path, not by AI callers.
     #[command(name = "run-worker", hide = true)]
     RunWorker(crate::run_worker::RunWorkerArgs),
+    /// Private one-shot PID/start-identity publisher invoked only by a generated
+    /// worker launcher immediately before it execs the recorded candidate.
+    #[command(name = "worker-handshake", hide = true)]
+    WorkerHandshake(crate::worker_handshake::WorkerHandshakeArgs),
     /// Read-only self-diagnostic: validate schema, skill-sync, deps,
     /// config, and data integrity. `--fix` applies the safe subset.
     Doctor(crate::doctor::DoctorArgs),
@@ -269,6 +273,21 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         (None, false) => OutputSpec::default(),
     };
 
+    // The private launcher handshake runs before the worker run is published
+    // and must not resolve/create the public state root or initialize logging.
+    if matches!(&cli.command, Command::WorkerHandshake(_)) {
+        let Command::WorkerHandshake(args) = cli.command else {
+            unreachable!("variant checked above")
+        };
+        return match crate::worker_handshake::dispatch(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                error.emit();
+                ExitCode::from(error.kind as u8)
+            }
+        };
+    }
+
     // State migration owns an exclusive external fence and deliberately skips
     // ordinary home resolution and canonical-root logging: its receipt and all
     // diagnostics must remain outside source/destination until the rename is
@@ -383,6 +402,7 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
         Command::Node { action } => crate::node::dispatch(action, output, &logging_warnings),
         Command::Supervise(args) => crate::supervise::dispatch(args, output, &logging_warnings),
         Command::RunWorker(args) => crate::run_worker::dispatch(args),
+        Command::WorkerHandshake(_) => unreachable!("handshake returns before home resolution"),
         // `doctor` owns its exit code directly: §18 requires exit 1 on any
         // `fail` *without* an error envelope (the report on stdout is the
         // answer), which does not map onto the shared `Result` path below.

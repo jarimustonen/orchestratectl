@@ -126,7 +126,7 @@ Twice in one session this rule was learned the hard way: `pgrep -lf "taskfleet s
 
 ## macOS PTY constraint
 
-macOS limits concurrent pseudo-terminals; ~5–6 simultaneous worktree spawns can hit `fork failed: Device not configured` from tmux. Symptom: `create.sh` fails with `workmux-add-failed` mid-batch.
+macOS limits concurrent pseudo-terminals; ~5–6 simultaneous worktree spawns can hit `fork failed: Device not configured` from tmux. Symptom: native materialization reports `workmux_add_failed` mid-batch.
 
 Use `--headless` (or `--tmux-session <name>`) on `taskfleet run create` to spawn into a detached tmux session that doesn't consume a foreground PTY. Mandatory for `/fan-out` of N≥5; recommended for any parallel `/worktree-spinoff` batch larger than 3. Attach later with `tmux attach -t headless` to inspect.
 

@@ -532,6 +532,7 @@ impl AgentSelection {
                 | "user-per-kind"
                 | "repository-default"
                 | "user-default"
+                | "builtin-harness"
         ) {
             return Err("invalid selection_source".into());
         }

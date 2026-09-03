@@ -109,8 +109,8 @@ fn pid_file_wait() -> Duration {
 /// The binary a detached supervisor is spawned from. Production always uses the
 /// current executable (`taskfleet supervise <run-id>`); tests override via
 /// `OCTL_SUPERVISE_BIN` to point at a stub that never writes a pid file, so the
-/// silent-spawn-failure path can be tested deterministically. Mirrors the
-/// `OCTL_CREATE_SH` seam. Production callers never set it.
+/// silent-spawn-failure path can be tested deterministically. Production
+/// callers never set it.
 fn supervise_command() -> Result<Command, CliError> {
     if let Ok(v) = std::env::var("OCTL_SUPERVISE_BIN") {
         return Ok(Command::new(v));

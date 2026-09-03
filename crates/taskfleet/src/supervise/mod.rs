@@ -126,9 +126,9 @@ const AGENT_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(120);
 /// real backoff wait.
 const AGENT_RETRY_BACKOFF_ENV: &str = "OCTL_AGENT_RETRY_BACKOFF_SECS";
 
-/// Max consecutive `create.sh` failures while re-spawning ONE parked node before
+/// Max consecutive native materialization failures while re-spawning ONE parked node before
 /// the run is terminalized `failed`. Distinct from a dying agent (a broken spawn
-/// infrastructure, e.g. a missing `create.sh` or exhausted PTYs): bounded in
+/// infrastructure, e.g. a missing dependency or exhausted PTYs): bounded in
 /// memory so the reconcile can never loop forever on a host that cannot spawn.
 /// Overridable via [`AGENT_RESPAWN_MAX_FAILURES_ENV`].
 const AGENT_RESPAWN_MAX_FAILURES: u32 = 3;
@@ -193,7 +193,7 @@ const SELF_TERMINATE_TICKS: u32 = 3;
 /// worker's `node.created` (n-0001) is emitted by `run create` *before* it
 /// forks the supervisor; a child worker's is emitted before the parent's
 /// `child.spawned`; the orchestrate driver synthesizes its `n-0001` node and a
-/// fan-out driver materializes one via create.sh. So the ONLY way a supervisor
+/// fan-out driver materializes one via native materializer. So the ONLY way a supervisor
 /// observes zero nodes AND zero tracked/forked children is a `run reattach` (or
 /// re-spawn) against a run whose worker was never created — the silent
 /// spawn-failure run, or the reattached zombie that would otherwise poll
@@ -201,7 +201,7 @@ const SELF_TERMINATE_TICKS: u32 = 3;
 /// `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5).
 ///
 /// The tick streak alone is NOT sufficient, because a run legitimately sits at
-/// `node_count == 0` for the whole `create.sh` window (up to the caller's
+/// `node_count == 0` for the whole native materialization window (up to the caller's
 /// `--agent-startup-timeout`, default 90s, MAX 600s) between `run.created` and
 /// `node.created`. A reattach issued during that window would see the same
 /// shape. So terminalization is ALSO gated on [`NO_WORKER_GRACE`] — the run
@@ -210,7 +210,7 @@ const SELF_TERMINATE_TICKS: u32 = 3;
 const NO_WORKER_TICKS: u32 = 3;
 
 /// Minimum age (from `manifest.created_at`) a zero-node run must reach before
-/// the no-worker guard may fail it. Comfortably beyond the maximum create.sh
+/// the no-worker guard may fail it. Comfortably beyond the maximum native materializer
 /// window (`--agent-startup-timeout` caps at 600s) so an in-flight creation is
 /// never clipped; the field-reported stuck runs were frozen for >1h, far past
 /// this. Overridable via `OCTL_NO_WORKER_GRACE_SECS` (tests set `0`).
@@ -1061,7 +1061,7 @@ pub fn dispatch(
         // Loop 3: watchdog. We don't yet have a generalized agent
         // registry (that's `all-kinds-spawn`'s territory). The current
         // surface exercises liveness for any node that carries an
-        // `agent_pid` recorded by `create.sh` integration.
+        // `agent_pid` recorded by native materialization integration.
         if let Err(e) = watchdog_tick(&paths, &mut retry_states) {
             warn!(
                 target: "orchestratectl::supervise",
@@ -1108,7 +1108,7 @@ pub fn dispatch(
         // `supervisor-spawn-fails-silently-at-run-create`, suggested-fix #5).
         //
         // Two gates keep this from clipping a legitimately in-flight creation
-        // (whose `create.sh` may still be materializing the worker for up to
+        // (whose native materialization may still be materializing the worker for up to
         // the caller's `--agent-startup-timeout`): the streak, AND the run must
         // be older than `no_worker_grace()` (well beyond any create window).
         if !spawn_failed_terminal {
@@ -2250,7 +2250,7 @@ fn within_spawn_grace(
 /// Ephemeral by design — the DURABLE, restart-safe bound is `Node.retry_attempts`
 /// (incremented by each `node.retry` event). This park only holds the backoff
 /// deadline, the death reason (for the audit event), and the in-memory
-/// `create.sh`-failure counter for the current re-spawn. On a supervisor restart
+/// materialization-failure counter for the current re-spawn. On a supervisor restart
 /// the map is empty; the watchdog simply re-detects the still-dead pid and
 /// re-parks from the persisted attempt count, so no reseed is needed and the
 /// bound is never exceeded.
@@ -2265,8 +2265,8 @@ struct RetryPark {
     /// `agent-tmux-window-gone`, `agent-pid-recycled`), carried onto the durable
     /// `node.retry` event so the retry history records WHY each attempt happened.
     reason: String,
-    /// Consecutive `create.sh` failures for THIS re-spawn. Bounds a broken spawn
-    /// infrastructure (missing create.sh, exhausted PTYs) so the reconcile cannot
+    /// Consecutive native materialization failures for THIS re-spawn. Bounds a broken spawn
+    /// infrastructure (missing native materializer, exhausted PTYs) so the reconcile cannot
     /// loop forever — a distinct failure mode from a dying agent.
     spawn_failures: u32,
 }
@@ -2285,7 +2285,7 @@ fn retry_eligible_kind(n: &Node) -> bool {
 /// non-terminal, POSITIVELY empty-handed, retry-eligible worker — the retry ⟂
 /// salvage guard, so a report that raced in, a `run cancel`, or a late-committing
 /// agent drops the park instead of re-spawning over settled/committed work. Then,
-/// OUTSIDE the lock (the I/O is slow): tear down the stale worktree and `create.sh`
+/// OUTSIDE the lock (the I/O is slow): tear down the stale worktree and natively materialize
 /// a clean one at the run's source branch. On success, emit a durable `node.retry`
 /// event rewiring the node to the new agent (and incrementing the persisted
 /// attempt bound). On a spawn-infrastructure failure, back off and reschedule; once
@@ -2345,7 +2345,7 @@ fn reconcile_agent_retries(
         }
         let node = node.expect("proceed implies Some");
         // Capture everything the re-spawn needs while the lock is held; release it
-        // before the slow teardown + create.sh I/O.
+        // before the slow teardown + native materializer I/O.
         let manifest = read_manifest_opt(paths).ok().flatten();
         drop(guard);
 
@@ -2363,17 +2363,17 @@ fn reconcile_agent_retries(
 
         // (2) Spawn the fresh worker FIRST — BEFORE tearing down the stale one.
         // Spawn-before-teardown is the crux of crash/failure safety:
-        //   - the stale empty-handed worktree survives a `create.sh` failure, so the
+        //   - the stale empty-handed worktree survives a native materialization failure, so the
         //     next tick can re-verify empty-handedness and the `spawn_failures`
         //     budget is real (a teardown-first ordering deletes the branch the
         //     re-verify depends on, silently collapsing the budget);
         //   - the fresh worker uses a distinct `-rN` branch name, so it never
         //     collides with the stale one still on disk.
         let outcome = respawn_agent(paths, &node, &manifest, attempt);
-        let spawn = match outcome {
+        let mut spawn = match outcome {
             Ok(s) => s,
             Err(e) => {
-                // create.sh failed: broken spawn infrastructure, NOT a dying agent.
+                // native materializer failed: broken spawn infrastructure, NOT a dying agent.
                 // The stale worktree is untouched, so this is a clean retry. Bounded
                 // in memory so a host that cannot spawn cannot loop forever.
                 let failures = retry_states
@@ -2460,6 +2460,7 @@ fn reconcile_agent_retries(
             "tmux_session": spawn.tmux_session,
             "tmux_window_id": spawn.tmux_window_id,
             "agent_pid": spawn.agent_pid,
+            "agent_pid_start_time": spawn.agent_pid_start_time,
         });
         let lock = guard.witness();
         if let Err(e) =
@@ -2477,6 +2478,9 @@ fn reconcile_agent_retries(
             continue;
         }
         drop(guard);
+        if let Some(materialization) = spawn.materialization.as_mut() {
+            materialization.commit();
+        }
 
         // (4) The node is durably rewired to the fresh worker. NOW tear down the
         // stale worktree + branch + tmux window (still empty-handed, re-checked by
@@ -2531,7 +2535,7 @@ fn teardown_respawn_outcome(spawn: &RespawnOutcome, repo: Option<&str>, tmux: &s
     // repo). The branch was just minted by THIS retry (an `-rN` name) and carries
     // no work worth keeping, so a force delete is safe and intentional — it frees
     // the name for a clean re-fire. Without a known repo we cannot safely target
-    // the worktree list, so skip (the next re-fire's create.sh will surface the
+    // the worktree list, so skip (the next re-fire's native materializer will surface the
     // collision as a spawn failure rather than us guessing a repo).
     let Some(repo) = repo.filter(|s| !s.is_empty()) else {
         return;
@@ -2566,17 +2570,19 @@ struct RespawnOutcome {
     tmux_session: Option<String>,
     tmux_window_id: Option<String>,
     agent_pid: i64,
+    agent_pid_start_time: Option<DateTime<Utc>>,
+    materialization: Option<crate::run::spawn::SpawnOutcome>,
 }
 
 /// Default startup window the retry re-spawn gives a fresh agent to become
-/// discoverable, matching `run create`'s default (higher than create.sh's own 30s
+/// discoverable, matching `run create`'s default (higher than the native materializer's own 30s
 /// so a loaded host does not fail the re-spawn spuriously).
 const AGENT_RESPAWN_STARTUP_TIMEOUT: u32 = 90;
 
-/// Shell out to `create.sh` to materialize a fresh worker at the run's source
+/// Invoke native materialization for a fresh worker at the run's source
 /// branch, from the run's source repo, driven by the run's original `prompt.md`.
 /// Returns the new agent's spawn coordinates, or a `CliError` on any spawn failure
-/// (create.sh error, PID died instantly). Pure I/O — the caller holds no lock.
+/// (native materializer error, PID died instantly). Pure I/O — the caller holds no lock.
 fn respawn_agent(
     paths: &RunPaths,
     node: &Node,
@@ -2593,7 +2599,7 @@ fn respawn_agent(
             ),
         ));
     }
-    // Absolutize the prompt path: `respawn_agent` sets create.sh's cwd to the
+    // Absolutize the prompt path: `respawn_agent` sets the native materializer's cwd to the
     // source repo, so a relative prompt path would otherwise resolve against the
     // repo instead of the run dir. `canonicalize` is safe — the file exists.
     let prompt_path = prompt_path.canonicalize().unwrap_or(prompt_path);
@@ -2614,32 +2620,36 @@ fn respawn_agent(
                 format!("cannot derive state root from {}", paths.root.display()),
             )
         })?;
-    let agent_launcher = manifest
-        .agent_selection
-        .as_ref()
-        .map(|selection| {
-            crate::run::spawn::write_agent_launcher(
-                &paths.root,
-                state_root,
-                selection,
-                manifest.run_id.as_str(),
-                node.node_id.as_str(),
-                attempt,
-            )
-        })
-        .transpose()?;
-    let agent = match agent_launcher.as_deref() {
-        Some(path) => Some(path.to_str().ok_or_else(|| {
-            CliError::system(
-                "agent_launcher_path_invalid",
-                format!("agent launcher path is not UTF-8: {}", path.display()),
-            )
-        })?),
-        None => manifest
-            .harness
-            .as_deref()
-            .and_then(crate::harness::workmux_agent),
+    let builtin_selection;
+    let selection = if let Some(selection) = manifest.agent_selection.as_ref() {
+        selection
+    } else {
+        builtin_selection = crate::run::spawn::builtin_agent_selection(
+            manifest
+                .harness
+                .as_deref()
+                .unwrap_or(crate::harness::DEFAULT_HARNESS),
+            true,
+        );
+        &builtin_selection
     };
+    let agent_launcher = crate::run::spawn::write_agent_launcher(
+        &paths.root,
+        state_root,
+        selection,
+        manifest.run_id.as_str(),
+        node.node_id.as_str(),
+        attempt,
+    )?;
+    let agent = Some(agent_launcher.path().to_str().ok_or_else(|| {
+        CliError::system(
+            "agent_launcher_path_invalid",
+            format!(
+                "agent launcher path is not UTF-8: {}",
+                agent_launcher.path().display()
+            ),
+        )
+    })?);
     let req = crate::run::spawn::SpawnRequest {
         kind: crate::run::kind_kebab(node.kind),
         agent,
@@ -2652,23 +2662,30 @@ fn respawn_agent(
         agent_startup_timeout: AGENT_RESPAWN_STARTUP_TIMEOUT,
         source_branch,
         cwd: source_repo,
+        launcher: Some(&agent_launcher),
     };
-    let outcome = crate::run::spawn::run_create_sh_with_tmux_retry(&req)?;
-    if let Some(launcher) = agent_launcher.as_deref() {
-        crate::run::spawn::await_agent_launcher_opened(launcher)?;
-    }
+    let outcome = crate::run::spawn::materialize_native(&req)?;
     // Re-verify the freshly discovered PID is still alive (mirrors `run create`),
     // so a re-spawn that raced a just-died agent is treated as a spawn failure
     // rather than recording a dead pid onto the node.
-    crate::run::spawn::verify_agent_pid(outcome.agent_pid_hint)?;
+    crate::run::spawn::verify_agent_pid(
+        outcome.agent_pid_hint,
+        outcome.agent_start_time,
+        &outcome.agent_start_identity,
+    )?;
     Ok(RespawnOutcome {
-        branch: outcome.branch,
-        worktree_path: outcome.worktree_path,
-        tmux_window: outcome.tmux_window,
-        tmux_socket: outcome.tmux_socket,
-        tmux_session: outcome.tmux_session,
-        tmux_window_id: outcome.tmux_window_id,
+        branch: outcome.branch.clone(),
+        worktree_path: outcome.worktree_path.clone(),
+        tmux_window: outcome.tmux_window.clone(),
+        tmux_socket: outcome.tmux_socket.clone(),
+        tmux_session: outcome.tmux_session.clone(),
+        tmux_window_id: outcome.tmux_window_id.clone(),
         agent_pid: outcome.agent_pid_hint,
+        agent_pid_start_time: DateTime::<Utc>::from_timestamp(
+            i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
+            0,
+        ),
+        materialization: Some(outcome),
     })
 }
 
@@ -2676,7 +2693,7 @@ fn respawn_agent(
 /// strip any prior `-rN` retry suffix, then append `-r<attempt>`. A distinct name
 /// each attempt means the new worktree never collides with a stale one that
 /// teardown could not remove. `None`/empty prior branch falls back to a generic
-/// stem so create.sh still gets a valid branch.
+/// stem so native materializer still gets a valid branch.
 fn retry_branch_name(prior: Option<&str>, attempt: u32) -> String {
     let stem = prior
         .map(str::trim)
@@ -4110,6 +4127,21 @@ mod tests {
                 "title": "t",
                 "source_repo": repo.to_str().unwrap(),
                 "source_branch": "main",
+                "agent_selection": {
+                    "schema_version": 1,
+                    "profile": "test",
+                    "selection_source": "cli",
+                    "interaction": if lifecycle == "autonomous" { "autonomous" } else { "explicit-interactive" },
+                    "capability": "capable",
+                    "residency": "local",
+                    "selected": {
+                        "candidate_index": 0,
+                        "harness": "pi",
+                        "command": ["/bin/sleep", "120"],
+                        "telemetry": "worker-v1"
+                    },
+                    "fallback": []
+                },
             }),
         )
         .unwrap();
@@ -4552,7 +4584,7 @@ EOF
         let self_exe = tmp.path().join("self-exec-fixture.sh");
         std::fs::write(
             &self_exe,
-            "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = worker-handshake ]; then exit 0; fi\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n",
         )
         .unwrap();
         let mut perms = std::fs::metadata(&self_exe).unwrap().permissions();

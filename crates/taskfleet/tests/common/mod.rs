@@ -15,6 +15,109 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
+/// Native-spawn fake executables for integration tests. Unlike the removed
+/// `OCTL_CREATE_SH` seam, these exercise Taskfleet's production materializer:
+/// typed git/workmux/tmux argv, generated launcher, PID handshake, and cleanup.
+pub struct NativeSpawnTools {
+    dir: TempDir,
+}
+
+impl NativeSpawnTools {
+    pub fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().expect("native spawn tools tempdir");
+        let write = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        write(
+            "git",
+            r#"#!/bin/sh
+if [ "$1" = "-C" ]; then shift 2; fi
+case "$1" in
+  check-ref-format) exit 0 ;;
+  show-ref) exit 1 ;;
+  rev-parse) echo 0123456789012345678901234567890123456789; exit 0 ;;
+  reflog) exit 1 ;;
+  worktree)
+    if [ "$2" = remove ]; then for last do :; done; /bin/rm -rf "$last"; fi
+    exit 0 ;;
+  branch) exit 0 ;;
+esac
+exit 1
+"#,
+        );
+        write(
+            "tmux",
+            r#"#!/bin/sh
+case "$1" in
+  new-session|has-session|rename-window|kill-window|kill-session) exit 0 ;;
+  display-message)
+    case " $* " in
+      *" -t "*) printf '/tmp/taskfleet-test.sock\t%s\t@77\n' "${NATIVE_TEST_SESSION:-headless}" ;;
+      *) printf '%s\n' "${NATIVE_TEST_SESSION:-fixture}" ;;
+    esac
+    exit 0 ;;
+  list-windows) exit 1 ;;
+esac
+exit 1
+"#,
+        );
+        write(
+            "workmux",
+            r#"#!/bin/sh
+case "$1" in
+  add)
+    shift; branch=$1; shift; agent=; prompt=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -a) agent=$2; shift 2 ;;
+        -P) prompt=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    /bin/mkdir -p "$NATIVE_TEST_WORKTREE"
+    text=$(/bin/cat "$prompt")
+    TMUX_PANE=%77 "$agent" -- "$text" </dev/null >"$NATIVE_TEST_AGENT_STDOUT" 2>"$NATIVE_TEST_AGENT_STDERR" &
+    echo $! > "$NATIVE_TEST_AGENT_PID"
+    exit 0 ;;
+  path) printf '%s\n' "$NATIVE_TEST_WORKTREE"; exit 0 ;;
+  remove)
+    if [ -f "$NATIVE_TEST_AGENT_PID" ]; then kill "$(/bin/cat "$NATIVE_TEST_AGENT_PID")" 2>/dev/null || true; fi
+    /bin/rm -rf "$NATIVE_TEST_WORKTREE"
+    exit 0 ;;
+esac
+exit 1
+"#,
+        );
+        Self { dir }
+    }
+
+    pub fn configure(&self, command: &mut std::process::Command, worktree: &Path, session: &str) {
+        command
+            .env("GIT_BIN", self.dir.path().join("git"))
+            .env("TMUX_BIN", self.dir.path().join("tmux"))
+            .env("WORKMUX_BIN", self.dir.path().join("workmux"))
+            .env("NATIVE_TEST_WORKTREE", worktree)
+            .env("NATIVE_TEST_SESSION", session)
+            .env("NATIVE_TEST_AGENT_PID", self.dir.path().join("agent.pid"))
+            .env(
+                "NATIVE_TEST_AGENT_STDOUT",
+                self.dir.path().join("agent.stdout"),
+            )
+            .env(
+                "NATIVE_TEST_AGENT_STDERR",
+                self.dir.path().join("agent.stderr"),
+            );
+    }
+
+    pub fn agent_stderr(&self) -> std::path::PathBuf {
+        self.dir.path().join("agent.stderr")
+    }
+}
+
 /// Grace period between the polite SIGTERM and the SIGKILL escalation for a
 /// supervisor that does not exit promptly.
 const REAP_GRACE: Duration = Duration::from_secs(2);

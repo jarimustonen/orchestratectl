@@ -5,7 +5,7 @@
 //! `new_session` (detached / "headless"), and window lookup. The
 //! kitty/wezterm/zellij backends and the full `Multiplexer` trait are
 //! deliberately omitted; the supervisor talks tmux only, and the git side of
-//! spawn still lives in `create.sh`.
+//! native spawn identity capture lives in `run::spawn`.
 //!
 //! ## Why this is vendored (not a crate dependency)
 //!

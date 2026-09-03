@@ -3,8 +3,8 @@
 //! Top-level: materializes the worktree + tmux window + agent in an invisible
 //! staging run dir, emits `node.created` with the discovered agent PID, then
 //! atomically publishes the run and spawns its supervisor. A caller interrupted
-//! while `create.sh` is under load can therefore never leave a visible 0-node
-//! run behind.
+//! while native materialization is under load can therefore never leave a
+//! visible zero-node run behind.
 //!
 //! Child-spawn (`--parent-run-id` + `--parent-node-id`) follows the same staging
 //! protocol, then emits `child.spawned` only after the child is published. This
@@ -15,7 +15,8 @@
 //! its tail-follow loop and is the sole spawner of child supervisors
 //! (single-arbiter invariant, design.md §7.2).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use chrono::{Duration, Utc};
 use serde::Serialize;
@@ -86,7 +87,7 @@ pub struct Args<'a> {
     /// Explicit tmux session name; implies headless and overrides the
     /// `--headless` default name.
     pub tmux_session: Option<String>,
-    /// Seconds create.sh waits for the agent to become discoverable,
+    /// Seconds native materializer waits for the agent to become discoverable,
     /// forwarded as `--agent-startup-timeout`. Validated to [1, 600] by
     /// clap; defaults to 90 (see the flag docs in `run/mod.rs`).
     pub agent_startup_timeout: u32,
@@ -280,7 +281,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         args.source_repo.as_deref(),
     )?;
     let harness = &resolution.harness;
-    let agent_selection = resolution.selection.as_ref();
+    // Native launch always has an exact candidate, including the built-in
+    // no-profile compatibility path. Record it so retries never re-resolve from
+    // current configuration or infer an executable from process names.
+    let recorded_selection = resolution.selection.clone().unwrap_or_else(|| {
+        spawn::builtin_agent_selection(&harness.name, explicit_interaction == Lifecycle::Autonomous)
+    });
+    let agent_selection = Some(&recorded_selection);
 
     // Validate the optional completion hook up front (fail fast, before we
     // touch disk): an all-whitespace `--notify` is a caller mistake. `None`
@@ -312,7 +319,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // only the run skeleton; there's no agent to prompt so neither
     // flag is required.
     // Test-only env override: integration tests use a bare run dir
-    // without a real create.sh available. The env var implies
+    // without a real native materializer available. The env var implies
     // `--skip-materialize` and is set by the `bin()` helper in
     // `tests/`. Production callers never set it.
     let skip_materialize =
@@ -384,7 +391,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     // The top-of-function `lookup` is only a fast path; THIS reservation is the
     // authoritative check-and-set that closes the duplicate-create race. The
     // key file becomes visible to other callers only here — the old code stored
-    // it after full materialization (seconds later, once create.sh had spawned
+    // it after full materialization (seconds later, once native materializer had spawned
     // the whole worktree), so two near-simultaneous same-key calls both missed
     // the lookup and both spawned. `reserve` is an atomic filesystem operation:
     // exactly one concurrent caller wins and materializes; the losers observe
@@ -554,21 +561,22 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         None
     };
 
-    // Keep the inheritable materializer lease alive through create.sh and the
+    // Keep the inheritable materializer lease alive through native materializer and the
     // publication rename. The binding is intentionally read here so lints and
     // future refactors cannot shorten its lifetime before publication.
     let _materializer_lease = materializer_lease.as_ref();
     ensure_root(&root).map_err(from_core)?;
     // A run becomes externally visible only when its fully materialized state
     // is renamed from this sibling root into `<root>/runs`. In particular, a
-    // harness/client timeout while `create.sh` is waiting for a loaded headless
-    // tmux session leaves no manifest that `run list`/`run wait` could mistake
+    // A harness/client timeout while native materialization is waiting for a
+    // loaded headless tmux session leaves no manifest that `run list`/`run wait` could mistake
     // for an accepted run.
     let staging_root = root.join(".creating");
     ensure_root(&staging_root).map_err(from_core)?;
     for stale_run_id in &reclaimed_staging_runs {
         let stale_id = parse_run_id(stale_run_id)?;
         let stale_dir = taskfleet_core::run_dir(&staging_root, &stale_id);
+        rollback_reclaimed_materialization(&stale_dir, &stale_id);
         match std::fs::remove_dir_all(&stale_dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -604,9 +612,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     if is_child {
         // Validate the parent exists up front (fail fast before we create the
-        // child run dir or shell out to create.sh). The `child.spawned` event
-        // itself is emitted only AFTER create.sh succeeds — see below — so a
-        // create.sh failure never pollutes the parent's DAG bookkeeping.
+        // child run dir or shell out to native materializer). The `child.spawned` event
+        // itself is emitted only AFTER native materializer succeeds — see below — so a
+        // native materializer failure never pollutes the parent's DAG bookkeeping.
         let parent_run_id = parent_run_id.as_deref().unwrap();
         // `is_child` ⇒ the parent pointer was validated to a typed `RunId` above;
         // reuse it for the exact path — a parent pointer must never fuzzy-resolve.
@@ -630,6 +638,13 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
             format!("mkdir {}: {}", staging_dir.display(), e),
         )
     })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staging_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| CliError::system("io_error", format!("chmod {}: {e}", staging_dir.display())),
+        )?;
+    }
     let paths = taskfleet_core::RunPaths::from_validated(&staging_dir, run_id_typed.clone())
         .map_err(from_core)?;
 
@@ -649,9 +664,9 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         None => None,
     };
 
-    // Write run.created BEFORE shelling out so a create.sh crash leaves
+    // Write run.created BEFORE shelling out so a native materializer crash leaves
     // a recoverable run on disk that `run show`/`run cancel` can see. For a
-    // child spawn this run dir is instead removed wholesale on create.sh
+    // child spawn this run dir is instead removed wholesale on native materializer
     // failure (see the spawn-failure arms below) — nothing references it yet
     // because `child.spawned` is emitted only after success.
     let mut data = serde_json::Map::new();
@@ -661,14 +676,23 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         Value::String(lifecycle_kebab(lifecycle).into()),
     );
     data.insert("title".into(), Value::String(title.clone()));
-    if let Some(v) = args.source_repo.as_deref() {
+    let materialization_repo = args.source_repo.clone().or_else(|| {
+        (!skip_materialize)
+            .then(std::env::current_dir)
+            .transpose()
+            .ok()
+            .flatten()
+            .and_then(|path| path.canonicalize().ok().or(Some(path)))
+            .and_then(|path| path.to_str().map(str::to_owned))
+    });
+    if let Some(v) = materialization_repo.as_deref() {
         data.insert("source_repo".into(), Value::String(v.into()));
     }
     if let Some(v) = args.source_branch.as_deref() {
         data.insert("source_branch".into(), Value::String(v.into()));
     }
     // Record the headless session Taskfleet is about to create via
-    // create.sh's `--parent-session` so the supervisor can tear it down once
+    // the native materializer's `--parent-session` so the supervisor can tear it down once
     // its last managed window is gone. `None` for a foreground spawn — that
     // window lives in the user's own session, which is never a teardown target
     // (issue `headless-tmux-session-not-torn-down`).
@@ -718,14 +742,14 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
 
     // The 0.2 cut removed the `orchestrate` DAG-driver kind — the only kind that
     // synthesized its own `n-0001` driver node here. Every surviving kind's node
-    // is materialized by `create.sh` (a `fan-out` driver's included), so the
+    // is materialized by native materialization (a `fan-out` driver's included), so the
     // envelope carries no synthesized node id (`None`) on this path.
 
     // Emit `child.spawned` on the parent's log. This is what makes the parent
     // supervisor discover and adopt the child (§7.2). It is emitted only once
     // the child is known-live: for a materialized child that means AFTER
-    // create.sh returns success (see the call site below the spawn); for a
-    // `--skip-materialize` skeleton child there is no create.sh that can fail,
+    // native materializer returns success (see the call site below the spawn); for a
+    // `--skip-materialize` skeleton child there is no native materializer that can fail,
     // so the child is live the moment its run dir exists. Either way a failed
     // spawn emits no `child.spawned` and leaves no phantom child on the parent.
     let emit_child_spawned = || -> Result<(), CliError> {
@@ -800,37 +824,39 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
 
     let prompt_path = prompt_path.expect("non-skip path resolves prompt source");
-    // A profile-backed run launches through one private executable whose body
-    // pins the exact recorded argv. This is created from the already-resolved
-    // selection: no config reload, candidate re-resolution, or fallback can
-    // occur between recording and launch. Legacy/no-profile runs retain their
-    // historical workmux harness mapping.
-    let agent_launcher = agent_selection
-        .map(|selection| {
-            spawn::write_agent_launcher(&staging_dir, &root, selection, &run_id, "n-0001", 0)
-        })
-        .transpose()?;
-    let agent_override = match agent_launcher.as_deref() {
-        Some(path) => Some(path.to_str().ok_or_else(|| {
-            CliError::system(
-                "agent_launcher_path_invalid",
-                format!("agent launcher path is not UTF-8: {}", path.display()),
-            )
-        })?),
-        None => harness.workmux_agent(),
-    };
-    // Shell out to create.sh. A failure remains private and is removed: no
+    // Launch from the exact selection already recorded in `run.created`: no
+    // config reload, candidate re-resolution, or fallback can occur between
+    // recording and launch.
+    let launcher_selection = &recorded_selection;
+    let agent_launcher = spawn::write_agent_launcher(
+        &staging_dir,
+        &root,
+        launcher_selection,
+        &run_id,
+        "n-0001",
+        0,
+    )?;
+    let agent_override = agent_launcher.path().to_str().ok_or_else(|| {
+        CliError::system(
+            "agent_launcher_path_invalid",
+            format!(
+                "agent launcher path is not UTF-8: {}",
+                agent_launcher.path().display()
+            ),
+        )
+    })?;
+    // Shell out to native materializer. A failure remains private and is removed: no
     // public manifest exists until a live worker node is durable. This holds for
     // top-level and child runs alike, so neither can strand a visible 0-node
     // `pending` run. The cleanup is helper-wrapped so both failure arms (the
-    // create.sh non-zero exit and the PID-liveness re-check) share it.
+    // native materializer non-zero exit and the PID-liveness re-check) share it.
     let branch_name = derive_branch_name(args.kind, &run_id_typed, &title);
     let spawn_req = spawn::SpawnRequest {
         kind: kind_kebab(args.kind),
         // Profile-backed launches pass only the private launcher path; that
         // launcher execs the selected candidate's exact recorded argv. Legacy
         // launches retain the historical harness → workmux-agent mapping.
-        agent: agent_override,
+        agent: Some(agent_override),
         branch: &branch_name,
         prompt_file: &prompt_path,
         layout: args.layout.as_deref(),
@@ -842,9 +868,10 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // orchestrate integration branch) rather than workmux's default base.
         // `None` for runs without --source-branch keeps the prior behaviour.
         source_branch: args.source_branch.as_deref(),
-        // `run create` inherits the caller's cwd (the user's repo); only the
-        // supervisor's retry re-spawn needs an explicit repo.
-        cwd: None,
+        // Pin the exact repository recorded in run.created so hard-kill
+        // reconciliation and retries act on the same checkout.
+        cwd: materialization_repo.as_deref().map(Path::new),
+        launcher: Some(&agent_launcher),
     };
     // On any spawn failure for a child, drop the orphan run dir before
     // returning the error. Best-effort: a leftover dir is far less harmful
@@ -855,31 +882,16 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         // failure releases it on unwind and a keyed retry starts cleanly. A hard
         // client kill can leave staging state, but never a public run manifest.
     };
-    let outcome = match spawn::run_create_sh_with_tmux_retry(&spawn_req) {
+    let mut outcome = match spawn::materialize_native(&spawn_req) {
         Ok(o) => o,
         Err(e) => {
             cleanup_orphan_child();
             return Err(e);
         }
     };
-    if let Some(launcher) = agent_launcher.as_deref() {
-        if let Err(e) = spawn::await_agent_launcher_opened(launcher) {
-            cleanup_orphan_child();
-            return Err(e);
-        }
-    }
-    // Re-verify the discovered PID before publishing anything. A process that
-    // died between create.sh's check and ours is a failed materialization, not a
-    // public failed node: publishing it would recreate the 0-node/false-success
-    // shape this staging protocol excludes.
-    if let Err(e) = spawn::verify_agent_pid(outcome.agent_pid_hint) {
-        cleanup_orphan_child();
-        return Err(e);
-    }
-
     // Capture the branch's fork point — the tip the worktree was just created
     // from — as an immutable reference for the supervisor's later merge
-    // reconciliation. Right after `create.sh`'s `git worktree add`, the new
+    // reconciliation. Right after native materialization creates the worktree, the new
     // branch's HEAD *is* the fork base; recording it lets the supervisor
     // distinguish "did work that merged into source" from "never diverged"
     // (issues `false-failed-after-merge` /
@@ -894,6 +906,18 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         .clone()
         .or_else(|| capture_materialized_source_branch(&outcome.worktree_path, &outcome.branch));
 
+    // Re-verify the exact handshaken identity at the last boundary before the
+    // durable node append. A replacement process must never become a new
+    // baseline merely because the original PID was reused.
+    if let Err(e) = spawn::verify_agent_pid(
+        outcome.agent_pid_hint,
+        outcome.agent_start_time,
+        &outcome.agent_start_identity,
+    ) {
+        cleanup_orphan_child();
+        return Err(e);
+    }
+
     // Emit node.created with the discovered metadata. The reducer creates
     // nodes/n-0001.json and fills a previously-unknown manifest source branch
     // in the same locked append/apply transaction.
@@ -904,29 +928,39 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
         "base_sha": base_sha,
         "worktree_path": outcome.worktree_path,
         "tmux_window": outcome.tmux_window,
-        // Qualified tmux identity (null on a create.sh that predates the
+        // Qualified tmux identity (null on a native materializer that predates the
         // fields); the reducer folds these into Node.tmux_identity.
         "tmux_socket": outcome.tmux_socket,
         "tmux_session": outcome.tmux_session,
         "tmux_window_id": outcome.tmux_window_id,
         "tmux_pane_id": outcome.tmux_pane_id,
         "agent_pid": outcome.agent_pid_hint,
+        "agent_pid_start_time": chrono::DateTime::<Utc>::from_timestamp(
+            i64::try_from(outcome.agent_start_time).unwrap_or(i64::MAX),
+            0,
+        ),
         "task": args.task,
         "parent_node_id": parent_node_id,
     });
-    taskfleet_core::append_and_apply_event(
+    if let Err(error) = taskfleet_core::append_and_apply_event(
         &paths,
         "node.created",
         Some(&parse_node_id("n-0001").expect("n-0001 is a valid node id")),
         None,
         node_data,
-    )
-    .map_err(from_core)?;
+    ) {
+        cleanup_orphan_child();
+        return Err(from_core(error));
+    }
 
     // `node.created` is now durable in the staging directory. Publish it as a
     // single rename before telling a parent about it or launching a supervisor:
     // every successful `run create` therefore names an already-existing node.
-    publish_staging_run(&staging_dir, &child_dir)?;
+    if let Err(error) = publish_staging_run(&staging_dir, &child_dir) {
+        cleanup_orphan_child();
+        return Err(error);
+    }
+    outcome.commit();
     // Publication is the idempotency commit point. It precedes every fallible
     // operation: otherwise an error after the rename could release the key and
     // let a retry create a duplicate public child.
@@ -935,7 +969,7 @@ pub fn run(args: Args<'_>) -> Result<(), CliError> {
     }
     let paths = run_paths_exact(&root, &run_id_typed)?;
 
-    // Emit-after-publication: only now that create.sh returned a live, verified
+    // Emit-after-publication: only now that native materializer returned a live, verified
     // child does the parent learn about it. This preserves transactional parent
     // bookkeeping: a failed spawn emits no parent event and no public child.
     emit_child_spawned()?;
@@ -1120,6 +1154,81 @@ fn append_child_spawned_if_missing(
     .map_err(from_core)
 }
 
+/// Reconcile external resources left by a creator that was hard-killed after
+/// `workmux add`. The inherited reservation lease prevents this from running
+/// until the materializer subprocess has exited; the stale manifest supplies
+/// the immutable repo/title/kind needed to reconstruct its unique branch.
+fn rollback_reclaimed_materialization(stale_dir: &Path, stale_id: &RunId) {
+    let Ok(paths) = taskfleet_core::RunPaths::from_validated(stale_dir, stale_id.clone()) else {
+        return;
+    };
+    let Some(manifest) = taskfleet_core::read_manifest_opt(&paths).ok().flatten() else {
+        return;
+    };
+    let Some(repo) = manifest.source_repo.as_deref() else {
+        return;
+    };
+    let branch = derive_branch_name(manifest.kind, stale_id, &manifest.title);
+    let workmux = std::env::var("WORKMUX_BIN").unwrap_or_else(|_| "workmux".into());
+    let git = std::env::var("GIT_BIN").unwrap_or_else(|_| "git".into());
+    let path = Command::new(&workmux)
+        .args(["path", &branch])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let output = Command::new(&git)
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(repo)
+                .stdin(Stdio::null())
+                .output()
+                .ok()?;
+            let text = String::from_utf8(output.stdout).ok()?;
+            let expected = format!("branch refs/heads/{branch}");
+            text.split("\n\n").find_map(|record| {
+                let mut worktree = None;
+                let mut matches = false;
+                for line in record.lines() {
+                    if let Some(value) = line.strip_prefix("worktree ") {
+                        worktree = Some(value.to_owned());
+                    }
+                    if line == expected {
+                        matches = true;
+                    }
+                }
+                matches.then_some(worktree).flatten()
+            })
+        });
+    let _ = Command::new(&workmux)
+        .args(["remove", "--force", &branch])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if let Some(path) = path {
+        let _ = Command::new(&git)
+            .args(["worktree", "remove", "--force", &path])
+            .current_dir(repo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = Command::new(&git)
+        .args(["branch", "-D", "--", &branch])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Atomically publish a fully materialized staging run into the public run
 /// tree. Both paths are siblings under the same filesystem in the normal state
 /// root layout, so a successful rename cannot expose a partially-written
@@ -1181,7 +1290,7 @@ fn spawn_supervisor_or_fail(
 /// explicit `--tmux-session`. The user attaches with `tmux attach -t headless`.
 const DEFAULT_HEADLESS_SESSION: &str = "headless";
 
-/// Resolve the optional `--parent-session` value forwarded to create.sh from
+/// Resolve the optional `--parent-session` value forwarded to native materializer from
 /// the `--headless` / `--tmux-session` pair:
 ///
 /// - `--tmux-session <name>` always wins (it also implies headless placement),
@@ -1344,9 +1453,9 @@ fn resolve_prompt_file(
 /// Longest ASCII workmux handle that survives its tmux-window naming path.
 ///
 /// `workmux` flattens the slash in `wt/<id>-<slug>` before creating its window.
-/// Above this bound its created name is truncated, while create.sh correctly
+/// Above this bound its created name is truncated, while native materializer correctly
 /// looks up the untruncated branch-derived name. Keep the *input* to both sides
-/// within the bound instead of loosening create.sh's authoritative lookup.
+/// within the bound instead of loosening the native materializer's authoritative lookup.
 const MAX_WORKMUX_WINDOW_NAME_BYTES: usize = 50;
 const BRANCH_DISPLAY_ID_CHARS: usize = 10;
 const BRANCH_PREFIX_BYTES: usize = "wt/".len() + BRANCH_DISPLAY_ID_CHARS + "-".len();
@@ -1354,7 +1463,7 @@ const MIN_BRANCH_SLUG_BYTES: usize = 16;
 const _: () = assert!(BRANCH_DISPLAY_ID_CHARS <= RunId::LEN);
 const _: () = assert!(BRANCH_PREFIX_BYTES + MIN_BRANCH_SLUG_BYTES <= MAX_WORKMUX_WINDOW_NAME_BYTES);
 
-/// Build the bounded branch name handed to create.sh.
+/// Build the bounded branch name handed to native materializer.
 ///
 /// The display identifier uses the last ten ULID characters: 50 bits from the
 /// randomness field. Taking the old first ten characters encoded only the

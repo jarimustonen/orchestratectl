@@ -83,20 +83,20 @@ pub enum RunAction {
         #[arg(long, conflicts_with = "prompt_file")]
         task: Option<String>,
         /// Path to a prompt file (instead of inlining via --task). Used
-        /// as-is and handed to create.sh.
+        /// as-is and handed to native materializer.
         #[arg(long)]
         prompt_file: Option<String>,
-        /// Workmux layout name; forwarded to create.sh as `-l <name>`.
+        /// Workmux layout name; forwarded to native materializer as `-l <name>`.
         #[arg(long)]
         layout: Option<String>,
         /// Agent runtime to launch the worker under: `pi` (built-in default) |
         /// `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS`
         /// (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias),
         /// the `config.toml` `[harness]` default, and the built-in default (in
-        /// that precedence order). `pi` is forwarded to create.sh as `--agent
-        /// pi` (→ `workmux add -a`), so it must be configured in workmux;
-        /// `claude` keeps workmux's own configured default agent. Recorded on
-        /// the run and shown by `run show` / `run list --json`.
+        /// that precedence order). Without an executable profile, Taskfleet
+        /// records and launches the corresponding `pi` or `claude` executable
+        /// from PATH through its private generated workmux launcher. Recorded
+        /// on the run and shown by `run show` / `run list --json`.
         #[arg(long)]
         harness: Option<String>,
         /// Select a user-owned executable profile from
@@ -115,7 +115,7 @@ pub enum RunAction {
         /// orthogonal to `--kind`, so any topology can be interactive.
         #[arg(long)]
         interactive: bool,
-        /// Skip workmux post-create hooks; forwarded to create.sh.
+        /// Skip workmux post-create hooks; forwarded to native materializer.
         #[arg(long)]
         no_hooks: bool,
         /// Spawn the worker's tmux window in a detached "headless"
@@ -126,15 +126,14 @@ pub enum RunAction {
         headless: bool,
         /// Explicit tmux session name for the worker's window. Implies
         /// headless placement and overrides `--headless`'s default
-        /// session name. Forwarded to create.sh / workmux as
+        /// session name. Forwarded to native materializer / workmux as
         /// `--parent-session <name>`.
         #[arg(long)]
         tmux_session: Option<String>,
-        /// Seconds create.sh waits for the freshly launched agent to
-        /// become discoverable before giving up (forwarded as
-        /// `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to
-        /// 90 — higher than create.sh's own 30s default because Taskfleet
-        /// spawns are frequently part of high-fan-out batches that
+        /// Seconds Taskfleet waits for the freshly launched candidate's private
+        /// PID handshake before rolling materialization back. Range 1–600.
+        /// Defaults to 90 because Taskfleet spawns are frequently part of
+        /// high-fan-out batches that
         /// self-load the host; bump it further on an already-loaded box.
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=600), default_value_t = 90)]
         agent_startup_timeout: u32,
@@ -159,7 +158,7 @@ pub enum RunAction {
         idempotency_key: Option<String>,
         #[arg(long)]
         dry_run: bool,
-        /// **Test-only.** Skip the create.sh shell-out and supervisor
+        /// **Test-only.** Skip the native materializer shell-out and supervisor
         /// spawn; produce only the on-disk run skeleton (manifest +
         /// run.created event). Hidden from `--help`. Never set this in
         /// production — the run will be missing its worktree, tmux

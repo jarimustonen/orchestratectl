@@ -1,6 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 233
+assertion_line: 234
 expression: value
 ---
 {
@@ -12,7 +12,24 @@ expression: value
     "kind": "spinoff",
     "lifecycle": "autonomous",
     "idempotent_replay": true,
-    "selection": "legacy-unrecorded"
+    "selection": {
+      "schema_version": 1,
+      "profile": "builtin",
+      "selection_source": "builtin-harness",
+      "interaction": "autonomous",
+      "capability": "capable",
+      "residency": "local",
+      "requested_harness": "pi",
+      "selected": {
+        "candidate_index": 0,
+        "harness": "pi",
+        "command": [
+          "pi"
+        ],
+        "telemetry": "worker-v1"
+      },
+      "fallback": []
+    }
   },
   "warnings": []
 }

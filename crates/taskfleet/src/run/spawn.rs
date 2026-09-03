@@ -1,192 +1,116 @@
-//! Shell-out to `~/.claude/skills/worktree/scripts/create.sh` per
-//! design.md §8. Single source of truth for the worktree + tmux + agent
-//! materialization step. Higher-level callers (`run create` top-level
-//! and child-spawn) compose this with event-log writes and supervisor
-//! spawn.
+//! Native Taskfleet worktree/tmux/worker materialization.
 //!
-//! Contract:
-//!
-//! - stdout on exit 0 is exactly one JSON object matching
-//!   [`SpawnOutcome`]. Extra trailing whitespace is tolerated.
-//! - stderr on failure is the standard error envelope (`{schema_version,
-//!   error: {...}}`). We propagate `error.code` 1:1 into our own
-//!   envelope as `create_sh_error_<code>` so AI callers can still parse
-//!   the inner diagnosis without colliding with our own code namespace.
-//! - exit 1 from create.sh maps to our exit 1 (user-actionable; clean
-//!   state). exit 2 maps to our exit 2 (system; possibly partial state).
-//!   exit ≥ 3 (shouldn't happen, but defend) → our exit 2 with stderr
-//!   captured as the message.
+//! Taskfleet owns the transaction and invokes `workmux` only as an explicit
+//! external CLI. A generated launcher publishes a private, attempt-bound PID
+//! handshake immediately before `exec` of the exact recorded candidate. No
+//! process name or descendant-tree inference is used.
 
 use std::io::Write as _;
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-use serde_json::Value;
 use taskfleet_core::schema::TmuxIdentity;
 
-use crate::error::{CliError, ExitKind};
+use crate::error::CliError;
+use crate::worker_handshake::{WorkerHandshake, TOKEN_ENV};
 
-/// The structured-stdout envelope create.sh emits on exit 0
-/// (design.md §8.1).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug)]
 pub struct SpawnOutcome {
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub schema_version: u32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub r#type: String,
     pub branch: String,
     pub worktree_path: String,
     pub tmux_window: String,
-    /// create.sh's best-effort agent PID, already verified by it via
-    /// `tmux list-panes -F '#{pane_pid}'` walk. Callers should treat
-    /// this as authoritative on success, but may verify liveness with
-    /// `kill(pid, 0)` before recording it on the node.
     pub agent_pid_hint: i64,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub workmux_session: Option<String>,
-    /// Server socket path of the tmux window (`#{socket_path}`). Part of the
-    /// qualified tmux identity. create.sh emits the resolved path even for the
-    /// default socket, so `None` means either the deployed create.sh predates
-    /// the field or its socket query failed. See [`SpawnOutcome::tmux_identity`].
-    #[serde(default)]
+    pub agent_start_time: u64,
+    pub agent_start_identity: String,
     pub tmux_socket: Option<String>,
-    /// Session that owns the tmux window (`#{session_name}`). `None` if the
-    /// deployed create.sh predates the qualified-identity fields.
-    #[serde(default)]
     pub tmux_session: Option<String>,
-    /// Stable `@NNNN` window id (`#{window_id}`). `None` if the deployed
-    /// create.sh predates the qualified-identity fields.
-    #[serde(default)]
     pub tmux_window_id: Option<String>,
-    /// Stable `%NN` pane id (`#{pane_id}`) of the agent's own pane, captured at
-    /// spawn. `None` if the deployed create.sh predates the field; agent-log
-    /// capture then falls back to targeting the window's active pane. See
-    /// [`SpawnOutcome::tmux_identity`].
-    #[serde(default)]
     pub tmux_pane_id: Option<String>,
+    rollback: Option<Rollback>,
 }
 
 impl SpawnOutcome {
-    /// The fully-qualified tmux identity, when create.sh supplied it. Returns
-    /// `Some` only when both `tmux_session` and `tmux_window_id` are present and
-    /// non-empty — the minimum to match a window. An empty `tmux_socket` is
-    /// normalized to `None` (never `tmux -S ""`). A create.sh that predates
-    /// these fields — or that emits a partial/empty identity — yields `None`,
-    /// and the caller falls back to bare-name matching on `tmux_window` (warned
-    /// at the spawn boundary by [`run_create_sh`]).
-    pub fn tmux_identity(&self) -> Option<TmuxIdentity> {
-        let nonempty = |v: &Option<String>| {
-            v.as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let session = nonempty(&self.tmux_session)?;
-        let window_id = nonempty(&self.tmux_window_id)?;
-        Some(TmuxIdentity {
-            socket: nonempty(&self.tmux_socket),
-            session,
-            window_id,
-            // Optional: absent on a create.sh predating the field; capture
-            // falls back to the window's active pane.
-            pane_id: nonempty(&self.tmux_pane_id),
-        })
+    pub fn commit(&mut self) {
+        if let Some(mut rollback) = self.rollback.take() {
+            rollback.commit();
+        }
     }
 }
 
-/// Inputs for one create.sh invocation.
 pub struct SpawnRequest<'a> {
-    /// kebab-case kind string passed as `--type`.
     pub kind: &'a str,
-    /// Workmux agent to launch in the worker's pane, forwarded to create.sh as
-    /// `--agent <name>` (→ `workmux add -a <name>`). `None` keeps workmux's own
-    /// configured default agent, which is how the non-default `claude` harness
-    /// launches. `Some(name)` selects that harness's agent (the built-in `pi`
-    /// harness supplies `Some("pi")`); the harness → agent mapping lives in
-    /// [`crate::harness::workmux_agent`].
+    /// Absolute generated launcher passed as one opaque workmux agent command.
     pub agent: Option<&'a str>,
-    /// Branch name (positional 1). Caller is responsible for any
-    /// canonicalization; create.sh validates the charset.
     pub branch: &'a str,
-    /// Prompt-file path (positional 2). Must exist and be readable.
     pub prompt_file: &'a Path,
-    /// Optional pass-through layout name (`-l`).
     pub layout: Option<&'a str>,
-    /// Pass `--no-hooks` to create.sh.
     pub no_hooks: bool,
-    /// Pass `--keep-tmux-on-error` so a debugging human can inspect the
-    /// half-finished tmux window. Only set by tests / `--debug`.
     pub keep_tmux_on_error: bool,
-    /// Target tmux session for the worker's window, forwarded to create.sh
-    /// as `--parent-session <name>`. `Some` only for a headless spawn
-    /// (`--headless` / `--tmux-session`); `None` keeps the default
-    /// foreground placement in the caller's own session.
     pub parent_session: Option<&'a str>,
-    /// Seconds create.sh waits for the freshly launched agent to become
-    /// discoverable before failing with `agent-pid-undiscoverable`,
-    /// forwarded as `--agent-startup-timeout <seconds>`. Callers validate
-    /// the [1, 600] range (clap) before building the request; Taskfleet's
-    /// default (90) is higher than create.sh's own 30s because Taskfleet
-    /// spawns are frequently part of high-fan-out batches that self-load
-    /// the host.
     pub agent_startup_timeout: u32,
-    /// Base ref to fork the worktree's branch from, forwarded to create.sh
-    /// as `--base <ref>` (and on to `workmux add --base`). `Some` for any
-    /// run carrying `--source-branch` — critically for `--kind orchestrated`
-    /// children whose integration branch is NOT `main`. `None` keeps
-    /// workmux's default (the current branch / configured `base_branch`).
     pub source_branch: Option<&'a str>,
-    /// Working directory to invoke create.sh from — the git repo whose worktree
-    /// it materializes. `None` inherits the caller's cwd (how `run create` works:
-    /// the user runs it from their repo). The supervisor's bounded-retry re-spawn
-    /// sets it EXPLICITLY to the run's recorded `source_repo`, so a re-spawn forks
-    /// from the right repo regardless of the detached supervisor's ambient cwd
-    /// (issue `autoretry-agent-died-worker`).
     pub cwd: Option<&'a Path>,
+    /// Expected private handshake for `agent`. Native materialization refuses
+    /// an unbound launcher.
+    pub launcher: Option<&'a AgentLauncher>,
 }
 
-/// Locate the create.sh binary. Tests override via `OCTL_CREATE_SH`
-/// which lets us point at a fixture script that emits canned JSON
-/// without needing tmux/workmux available.
-pub fn create_sh_path() -> PathBuf {
-    if let Ok(v) = std::env::var("OCTL_CREATE_SH") {
-        return PathBuf::from(v);
+#[derive(Debug, Clone)]
+pub struct AgentLauncher {
+    path: PathBuf,
+    handshake_path: PathBuf,
+    token: String,
+    run_id: String,
+    node_id: String,
+    attempt: u32,
+}
+
+impl AgentLauncher {
+    pub fn path(&self) -> &Path {
+        &self.path
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-    PathBuf::from(home).join(".claude/skills/worktree/scripts/create.sh")
 }
 
-/// Write `task` content to `<run-dir>/prompt.md` and return its path.
-/// Idempotent: a re-run with the same content is a no-op rewrite.
 pub fn write_prompt_file(run_dir: &Path, task: &str) -> Result<PathBuf, CliError> {
     let path = run_dir.join("prompt.md");
-    std::fs::create_dir_all(run_dir)
-        .map_err(|e| CliError::system("io_error", format!("mkdir {}: {}", run_dir.display(), e)))?;
-    std::fs::write(&path, task)
-        .map_err(|e| CliError::system("io_error", format!("write {}: {}", path.display(), e)))?;
+    std::fs::create_dir_all(run_dir).map_err(|e| io_error("mkdir", run_dir, e))?;
+    std::fs::write(&path, task).map_err(|e| io_error("write", &path, e))?;
     Ok(path)
 }
 
-/// Materialize the selected profile candidate as a private executable launcher.
+/// Write the outer Taskfleet launcher and its inner candidate launcher.
 ///
-/// `create.sh`/workmux accepts one agent command string, while the profile
-/// contract records an argv array. Passing a reconstructed command string would
-/// reintroduce shell parsing and could change argument boundaries. Instead we
-/// pass workmux this single absolute script path. The script re-enters this
-/// exact executable through hidden `run-worker`, passing the recorded argv as a
-/// byte-preserving suffix after `--`, then forwards workmux's existing
-/// `-- <prompt>` suffix unchanged. Taskfleet neither parses nor alters the
-/// selected candidate; workmux remains the separate prompt-delivery owner.
-///
-/// Telemetry identity is exported only for a recorded pi candidate declaring
-/// `worker-v1`. Unsupported candidates explicitly unset inherited values so an
-/// ambient parent environment cannot fabricate adapter support.
+/// The inner launcher calls the hidden durable handshake helper with its own
+/// shell PID and then immediately `exec`s the recorded argv. POSIX preserves
+/// the PID across exec. Autonomous candidates remain wrapped by `run-worker`;
+/// that wrapper starts the inner launcher and records its true exit status.
+pub fn builtin_agent_selection(harness: &str, autonomous: bool) -> taskfleet_core::AgentSelection {
+    taskfleet_core::AgentSelection {
+        schema_version: 1,
+        profile: "builtin".into(),
+        selection_source: "builtin-harness".into(),
+        interaction: if autonomous {
+            "autonomous"
+        } else {
+            "explicit-interactive"
+        }
+        .into(),
+        capability: "capable".into(),
+        residency: "local".into(),
+        requested_harness: Some(harness.into()),
+        selected: taskfleet_core::SelectedAgentCandidate {
+            candidate_index: 0,
+            harness: harness.into(),
+            command: vec![harness.into()],
+            telemetry: (harness == "pi").then(|| "worker-v1".into()),
+        },
+        fallback: Vec::new(),
+    }
+}
+
 pub fn write_agent_launcher(
     run_dir: &Path,
     state_root: &Path,
@@ -194,7 +118,7 @@ pub fn write_agent_launcher(
     run_id: &str,
     node_id: &str,
     attempt: u32,
-) -> Result<PathBuf, CliError> {
+) -> Result<AgentLauncher, CliError> {
     let selected = &selection.selected;
     if selected.command.is_empty() {
         return Err(CliError::system(
@@ -202,20 +126,80 @@ pub fn write_agent_launcher(
             "recorded selected candidate has an empty argv",
         ));
     }
-    let validated_node = taskfleet_core::NodeId::parse_str(node_id).map_err(|e| {
-        CliError::system(
-            "recorded_node_id_invalid",
-            format!("cannot materialize agent launcher for node {node_id}: {e}"),
-        )
+    taskfleet_core::RunId::parse_str(run_id)
+        .map_err(|e| CliError::system("recorded_run_id_invalid", e.to_string()))?;
+    let node = taskfleet_core::NodeId::parse_str(node_id)
+        .map_err(|e| CliError::system("recorded_node_id_invalid", e.to_string()))?;
+    let self_exe = crate::self_exec::executable().map_err(|e| {
+        CliError::system("io_error", format!("current_exe for worker launcher: {e}"))
     })?;
-    let path = run_dir.join(format!(
-        "agent-launch-{}-attempt-{attempt}.sh",
-        validated_node.as_str()
+    let state_root = absolute_path(state_root).map_err(|e| io_error("resolve", state_root, e))?;
+    let token = ulid::Ulid::new().to_string();
+    let handshake_path = run_dir.join(format!(
+        "worker-handshake-{}-attempt-{attempt}.json",
+        node.as_str()
     ));
-    let opened_marker = launcher_opened_marker(&path);
-    let mut body = b"#!/bin/sh\nset -eu\n: > ".to_vec();
-    body.extend_from_slice(&shell_literal_path(&opened_marker));
-    body.extend_from_slice(b"\nunset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n");
+    match std::fs::symlink_metadata(&handshake_path) {
+        Ok(meta) if meta.file_type().is_file() || meta.file_type().is_symlink() => {
+            std::fs::remove_file(&handshake_path)
+                .map_err(|e| io_error("remove stale handshake", &handshake_path, e))?;
+        }
+        Ok(_) => {
+            return Err(CliError::system(
+                "worker_handshake_path_invalid",
+                format!(
+                    "stale handshake path is not a file: {}",
+                    handshake_path.display()
+                ),
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_error("stat", &handshake_path, e)),
+    }
+    let inner = run_dir.join(format!(
+        "candidate-launch-{}-attempt-{attempt}.sh",
+        node.as_str()
+    ));
+    let outer = run_dir.join(format!(
+        "agent-launch-{}-attempt-{attempt}.sh",
+        node.as_str()
+    ));
+    let mut inner_body = b"#!/bin/sh\nset -eu\n".to_vec();
+    inner_body.extend_from_slice(b"export ");
+    inner_body.extend_from_slice(TOKEN_ENV.as_bytes());
+    inner_body.push(b'=');
+    inner_body.extend_from_slice(shell_literal(&token).as_bytes());
+    inner_body.extend_from_slice(b"\n");
+    inner_body.extend_from_slice(&shell_command(
+        &self_exe,
+        &[
+            "worker-handshake".into(),
+            "--path".into(),
+            os_string(&handshake_path)?,
+            "--run-id".into(),
+            run_id.into(),
+            "--node-id".into(),
+            node_id.into(),
+            "--attempt".into(),
+            attempt.to_string(),
+            "--pid".into(),
+            "$${RAW}".into(),
+            "--state-root".into(),
+            os_string(&state_root)?,
+        ],
+        true,
+    ));
+    inner_body.extend_from_slice(b"unset ");
+    inner_body.extend_from_slice(TOKEN_ENV.as_bytes());
+    inner_body.extend_from_slice(b"\nexec");
+    for arg in &selected.command {
+        inner_body.push(b' ');
+        inner_body.extend_from_slice(shell_literal(arg).as_bytes());
+    }
+    inner_body.extend_from_slice(b" \"$@\"\n");
+    write_executable(&inner, &inner_body)?;
+
+    let mut body = b"#!/bin/sh\nset -eu\nunset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n".to_vec();
     if selected.supports_worker_telemetry_v1() {
         writeln!(body, "export OCTL_RUN_ID={}", shell_literal(run_id)).unwrap();
         writeln!(body, "export OCTL_NODE_ID={}", shell_literal(node_id)).unwrap();
@@ -227,1169 +211,787 @@ pub fn write_agent_launcher(
         .unwrap();
     }
     if selection.interaction == "autonomous" {
-        // Re-enter this exact binary through the hidden told-exit shim. The
-        // absolute executable preserves identity/version without PATH lookup.
-        let self_exe = crate::self_exec::executable().map_err(|e| {
-            CliError::system("io_error", format!("current_exe for worker launcher: {e}"))
-        })?;
-        let state_root = absolute_path(state_root).map_err(|e| {
-            CliError::system(
-                "io_error",
-                format!("resolve absolute state root {}: {e}", state_root.display()),
-            )
-        })?;
-        body.extend_from_slice(b"export OCTL_INTERNAL_SELF_EXEC=1\n");
-        body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION=1\n");
-        body.extend_from_slice(b"export OCTL_INTERNAL_WORKER_STATE_ROOT=");
+        body.extend_from_slice(b"export OCTL_INTERNAL_SELF_EXEC=1\nexport OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION=1\nexport OCTL_INTERNAL_WORKER_STATE_ROOT=");
         body.extend_from_slice(&shell_literal_path(&state_root));
-        body.push(b'\n');
-        body.extend_from_slice(b"exec ");
+        body.extend_from_slice(b"\nexec ");
         body.extend_from_slice(&shell_literal_path(&self_exe));
         body.extend_from_slice(b" run-worker ");
         body.extend_from_slice(shell_literal(run_id).as_bytes());
         body.push(b' ');
         body.extend_from_slice(shell_literal(node_id).as_bytes());
-        body.extend_from_slice(b" --");
+        body.extend_from_slice(b" -- ");
     } else {
-        // Interactive profiles retain their established direct candidate
-        // execution: the supervisor deliberately ignores worker-exit facts for
-        // this lifecycle, and recording one would change attention semantics.
-        body.extend_from_slice(b"exec");
+        body.extend_from_slice(b"exec ");
     }
-    // In both forms the recorded candidate argv is an exact suffix and
-    // workmux's existing prompt arguments remain untouched.
-    for arg in &selected.command {
-        body.push(b' ');
-        body.extend_from_slice(shell_literal(arg).as_bytes());
-    }
+    body.extend_from_slice(&shell_literal_path(&inner));
     body.extend_from_slice(b" \"$@\"\n");
+    write_executable(&outer, &body)?;
 
-    // Same-directory temporary + rename keeps readers from observing a partial
-    // retry launcher and replaces any prior derivation without following a
-    // squatting final-path symlink. Mode is private from creation on Unix.
-    let temp = run_dir.join(format!(
-        ".agent-launch-{}-attempt-{attempt}-{}.tmp",
-        validated_node.as_str(),
-        std::process::id()
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o700);
-    let write_result = (|| -> Result<(), CliError> {
+    Ok(AgentLauncher {
+        path: outer
+            .canonicalize()
+            .map_err(|e| io_error("canonicalize", &outer, e))?,
+        handshake_path,
+        token,
+        run_id: run_id.into(),
+        node_id: node_id.into(),
+        attempt,
+    })
+}
+
+fn shell_command(exe: &Path, args: &[String], raw_pid: bool) -> Vec<u8> {
+    let mut out = shell_literal_path(exe);
+    for arg in args {
+        out.push(b' ');
+        if raw_pid && arg == "$${RAW}" {
+            out.extend_from_slice(b"\"$$\"");
+        } else {
+            out.extend_from_slice(shell_literal(arg).as_bytes());
+        }
+    }
+    out.push(b'\n');
+    out
+}
+
+fn os_string(path: &Path) -> Result<String, CliError> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        CliError::system(
+            "agent_launcher_path_invalid",
+            format!("path is not UTF-8: {}", path.display()),
+        )
+    })
+}
+
+fn write_executable(path: &Path, body: &[u8]) -> Result<(), CliError> {
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o700);
         let mut file = options
             .open(&temp)
-            .map_err(|e| CliError::system("io_error", format!("create {}: {e}", temp.display())))?;
-        file.write_all(&body)
-            .map_err(|e| CliError::system("io_error", format!("write {}: {e}", temp.display())))?;
-        file.sync_all()
-            .map_err(|e| CliError::system("io_error", format!("sync {}: {e}", temp.display())))?;
-        std::fs::rename(&temp, &path).map_err(|e| {
-            CliError::system(
-                "io_error",
-                format!("install agent launcher {}: {e}", path.display()),
-            )
-        })
+            .map_err(|e| io_error("create", &temp, e))?;
+        file.write_all(body)
+            .map_err(|e| io_error("write", &temp, e))?;
+        file.sync_all().map_err(|e| io_error("sync", &temp, e))?;
+        std::fs::rename(&temp, path).map_err(|e| io_error("rename", path, e))?;
+        let parent = path.parent().ok_or_else(|| {
+            CliError::system("agent_launcher_path_invalid", "launcher path has no parent")
+        })?;
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| io_error("sync", parent, e))
     })();
-    if write_result.is_err() {
+    if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-    write_result?;
-    path.canonicalize().map_err(|e| {
-        CliError::system(
-            "io_error",
-            format!("resolve agent launcher {}: {e}", path.display()),
-        )
-    })
+    result
 }
 
-fn launcher_opened_marker(launcher: &Path) -> PathBuf {
-    launcher.with_extension("opened")
-}
-
-/// Wait until the launcher interpreter has opened the script before its parent
-/// directory can move at atomic run publication. `create.sh` may report a live
-/// fork before that child is scheduled; without this handshake the rename can
-/// make the script path disappear first.
-pub fn await_agent_launcher_opened(launcher: &Path) -> Result<(), CliError> {
-    let marker = launcher_opened_marker(launcher);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !marker.exists() {
-        if std::time::Instant::now() >= deadline {
+fn await_handshake(
+    launcher: &AgentLauncher,
+    timeout: Duration,
+) -> Result<WorkerHandshake, CliError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match std::fs::read(&launcher.handshake_path) {
+            Ok(bytes) => {
+                let h: WorkerHandshake = serde_json::from_slice(&bytes).map_err(|e| {
+                    CliError::system(
+                        "worker_handshake_invalid",
+                        format!("parse {}: {e}", launcher.handshake_path.display()),
+                    )
+                })?;
+                if h.schema_version != 1
+                    || h.run_id != launcher.run_id
+                    || h.node_id != launcher.node_id
+                    || h.attempt != launcher.attempt
+                    || h.token != launcher.token
+                {
+                    return Err(CliError::system(
+                        "worker_handshake_binding_mismatch",
+                        "worker handshake did not match this run/node/attempt/token",
+                    ));
+                }
+                verify_identity(h.pid, h.start_time, &h.start_identity)?;
+                return Ok(h);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error("read", &launcher.handshake_path, e)),
+        }
+        if Instant::now() >= deadline {
             return Err(CliError::system(
-                "agent_launcher_startup_failed",
-                format!(
-                    "agent launcher {} was not opened within 30s",
-                    launcher.display()
-                ),
+                "worker_handshake_timeout",
+                format!("worker did not publish a PID handshake within {timeout:?}"),
             ));
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    std::fs::remove_file(&marker).map_err(|e| {
-        CliError::system(
-            "io_error",
-            format!("remove launcher marker {}: {e}", marker.display()),
-        )
-    })
-}
-
-fn shell_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn absolute_path(path: &Path) -> std::io::Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-#[cfg(unix)]
-fn shell_literal_path(path: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt as _;
-    let mut quoted = Vec::with_capacity(path.as_os_str().as_bytes().len() + 2);
-    quoted.push(b'\'');
-    for byte in path.as_os_str().as_bytes() {
-        if *byte == b'\'' {
-            quoted.extend_from_slice(b"'\\''");
-        } else {
-            quoted.push(*byte);
-        }
-    }
-    quoted.push(b'\'');
-    quoted
-}
-
-/// Invoke create.sh and parse its structured stdout.
-///
-/// On non-zero exit, builds a `CliError` whose payload includes whatever
-/// the script wrote on stderr: if stderr parses as a standard error
-/// envelope we surface its `code`/`message`/`invalid_value`/`expected`
-/// fields; otherwise the raw stderr is included verbatim so debugging
-/// has the full context.
-pub fn run_create_sh(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
-    let script = create_sh_path();
-    if !script.exists() {
-        return Err(CliError::system(
-            "create_sh_missing",
-            format!(
-                "create.sh not found at {}; install the worktree skill or set OCTL_CREATE_SH",
-                script.display()
-            ),
-        ));
-    }
-    let mut cmd = Command::new(&script);
-    cmd.env_remove(crate::home::INTERNAL_SELF_EXEC_ENV);
-    if let Some(cwd) = req.cwd {
-        cmd.current_dir(cwd);
-    }
-    cmd.arg("--type").arg(req.kind);
-    // Forward the selected harness's workmux agent. The explicit claude harness
-    // maps to `None`, while the built-in pi harness supplies `Some("pi")`.
-    if let Some(agent) = req.agent {
-        cmd.arg("--agent").arg(agent);
-    }
-    if let Some(layout) = req.layout {
-        cmd.arg("--layout").arg(layout);
-    }
-    if req.no_hooks {
-        cmd.arg("--no-hooks");
-    }
-    if req.keep_tmux_on_error {
-        cmd.arg("--keep-tmux-on-error");
-    }
-    if let Some(session) = req.parent_session {
-        cmd.arg("--parent-session").arg(session);
-    }
-    // Always forward Taskfleet's agent-startup window (default 90s, higher than
-    // create.sh's 30s) so a loaded host doesn't fail the spawn with
-    // `agent-pid-undiscoverable`. Validated to [1, 600] at the CLI boundary.
-    cmd.arg("--agent-startup-timeout")
-        .arg(req.agent_startup_timeout.to_string());
-    if let Some(base) = req.source_branch {
-        cmd.arg("--base").arg(base);
-    }
-    cmd.arg(req.branch).arg(req.prompt_file);
-
-    let output = cmd.output().map_err(|e| {
-        CliError::system(
-            "spawn_failed",
-            format!("invoke create.sh ({}): {}", script.display(), e),
-        )
-    })?;
-
-    if !output.status.success() {
-        // The exit-code mapping is documented per-arm; `Some(2)` and the `_`
-        // fallthrough deliberately both map to System.
-        #[allow(clippy::match_same_arms)]
-        let exit_kind = match output.status.code() {
-            // create.sh exit 2 = refused-but-actionable (precondition).
-            // create.sh exit 1 = mid-flow failure with cleanup done.
-            // Both surface to AI as ExitKind::System (we already
-            // exhausted user input validation before getting here, so
-            // either way the orchestrator is the actor that retries).
-            // create.sh's own 2 maps to our 2; its 1 maps to our 1.
-            Some(2) => ExitKind::System,
-            Some(1) => ExitKind::User,
-            _ => ExitKind::System,
-        };
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let (code, message, invalid_value, expected) = parse_error_envelope(&stderr)
-            .unwrap_or_else(|| {
-                (
-                    "create_sh_unparseable".to_string(),
-                    format!(
-                        "create.sh exited {} with non-envelope stderr: {}",
-                        output.status.code().unwrap_or(-1),
-                        stderr.trim()
-                    ),
-                    None,
-                    None,
-                )
-            });
-        return Err(CliError {
-            kind: exit_kind,
-            code: format!("create_sh_error_{code}"),
-            message,
-            invalid_value,
-            expected,
-            details: None,
-        });
-    }
-
-    let stdout = String::from_utf8(output.stdout).map_err(|e| {
-        CliError::system(
-            "create_sh_invalid_stdout",
-            format!("create.sh stdout was not UTF-8: {e}"),
-        )
-    })?;
-    let trimmed = stdout.trim();
-    let outcome = serde_json::from_str::<SpawnOutcome>(trimmed).map_err(|e| {
-        CliError::system(
-            "create_sh_unparseable_stdout",
-            format!("could not parse create.sh stdout as SpawnOutcome ({e}): {trimmed}"),
-        )
-    })?;
-    // Back-compat / contract check: a create.sh that predates the
-    // qualified-identity fields — or that emits a partial/empty identity —
-    // yields no usable identity, so the node falls back to bare-name liveness
-    // matching (ambiguous across sessions / blind to non-default sockets). Warn
-    // here, at the spawn boundary, rather than per watchdog tick. Fires once per
-    // spawn whose outcome lacks a usable identity.
-    if outcome.tmux_identity().is_none() {
-        tracing::warn!(
-            tmux_window = %outcome.tmux_window,
-            branch = %outcome.branch,
-            "create.sh did not emit a usable qualified tmux identity \
-             (tmux_session + tmux_window_id, non-empty); falling back to bare \
-             window-name liveness matching — update the worktree skill's create.sh"
-        );
-    }
-    Ok(outcome)
-}
-
-/// The `code` [`run_create_sh`] reports when create.sh materialised the
-/// worktree + tmux window, announced success, but its own immediately-following
-/// `tmux list-windows` lookup did not find the window it just created — a
-/// tmux settle/timing race under a concurrently-loaded session. create.sh
-/// prefixes propagated codes with `create_sh_error_`.
-const TMUX_WINDOW_NOT_FOUND_CODE: &str = "create_sh_error_tmux-window-not-found";
-
-/// How many EXTRA create.sh attempts to make after a transient
-/// `tmux-window-not-found` (so total executions = 1 initial + `TMUX_MAX_RETRIES`),
-/// and how long to pause between them. create.sh cleanly rolls back the partial
-/// worktree + branch before exiting on this error, so each retry starts from a
-/// clean slate; the reported real-world workaround succeeded on the second try.
-const TMUX_MAX_RETRIES: u32 = 3;
-const TMUX_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1500);
-
-/// Invoke create.sh, retrying on the transient, self-cleaning
-/// `tmux-window-not-found` race (issue `headless-spawn-tmux-window-race`).
-///
-/// create.sh occasionally reports it "Successfully created … tmux window" and
-/// then fails its own post-create window lookup because the window has not yet
-/// settled in a busy session — after which it cleanly rolls back the worktree
-/// and branch and exits non-zero. Because the rollback leaves no partial state,
-/// a retry a moment later reliably succeeds. We bound the retries and back off
-/// briefly between them; every OTHER create.sh error (including a genuine,
-/// non-transient failure) is returned on the first occurrence with no retry, so
-/// this never masks a real problem or loops on a deterministic failure.
-///
-/// The retry cadence is overridable to zero-latency in tests via
-/// `OCTL_TMUX_RETRY_BACKOFF_MS=0`.
-pub fn run_create_sh_with_tmux_retry(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
-    let backoff = match std::env::var("OCTL_TMUX_RETRY_BACKOFF_MS") {
-        Ok(v) => match v.trim().parse::<u64>() {
-            Ok(ms) => std::time::Duration::from_millis(ms),
-            Err(_) => TMUX_RETRY_BACKOFF,
-        },
-        Err(_) => TMUX_RETRY_BACKOFF,
-    };
-    let mut attempt: u32 = 0;
-    loop {
-        match run_create_sh(req) {
-            Ok(o) => return Ok(o),
-            Err(e) if e.code == TMUX_WINDOW_NOT_FOUND_CODE && attempt < TMUX_MAX_RETRIES => {
-                attempt += 1;
-                tracing::warn!(
-                    target: "orchestratectl::run",
-                    branch = %req.branch,
-                    attempt,
-                    max = TMUX_MAX_RETRIES,
-                    "create.sh hit the transient tmux-window-not-found race \
-                     (window created then not found); rolled back cleanly, retrying"
-                );
-                if !backoff.is_zero() {
-                    std::thread::sleep(backoff);
-                }
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-fn parse_error_envelope(stderr: &str) -> Option<(String, String, Option<String>, Option<Value>)> {
-    // create.sh writes the error envelope as the *last* JSON object on
-    // stderr; preceding lines may carry human progress notes. Scan from
-    // the bottom to find a line that parses.
-    for line in stderr.lines().rev() {
-        let line = line.trim();
-        if !line.starts_with('{') {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            let err = v.get("error")?;
-            let code = err.get("code").and_then(Value::as_str)?.to_string();
-            let message = err
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let invalid_value = err
-                .get("invalid_value")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let expected = err.get("expected").cloned();
-            return Some((code, message, invalid_value, expected));
-        }
-    }
-    None
-}
-
-/// Verify the agent PID create.sh handed back is still alive. If the
-/// process died between create.sh's last check and our call (rare but
-/// possible under load), treat it as discovery failure so the caller
-/// can emit `node.failed` cleanly instead of recording a dead PID.
-pub fn verify_agent_pid(pid: i64) -> Result<(), CliError> {
-    if pid <= 0 {
+pub fn verify_identity(pid: u32, start_time: u64, start_identity: &str) -> Result<(), CliError> {
+    if crate::supervise::pid_file::to_pid_t(pid).is_none() {
         return Err(CliError::system(
             "agent_pid_invalid",
-            format!("create.sh returned non-positive agent_pid_hint: {pid}"),
+            format!("worker handshake contained invalid PID {pid}"),
         ));
     }
-    // `agent_pid_hint` is external input from create.sh. Validate the upper
-    // bound explicitly rather than letting `as u32` truncate silently — a
-    // hint above u32::MAX would otherwise check liveness of the wrong process.
-    let pid = u32::try_from(pid).map_err(|_| {
-        CliError::system(
-            "agent_pid_invalid",
-            format!("create.sh returned out-of-range agent_pid_hint: {pid}"),
-        )
-    })?;
-    if !crate::supervise::pid_file::pid_alive(pid) {
+    let observed = crate::supervise::watchdog::pid_start_time(pid);
+    let observed_identity = crate::worker_handshake::process_start_identity(pid);
+    if observed != Some(start_time)
+        || observed_identity.as_deref() != Some(start_identity)
+        || !crate::supervise::pid_file::pid_alive(pid)
+    {
         return Err(CliError::system(
-            "agent_pid_discovery_failed",
-            format!("agent_pid {pid} was not alive after create.sh returned"),
+            "worker_handshake_identity_mismatch",
+            format!("worker PID {pid} exited or its start identity changed before publication"),
         ));
     }
     Ok(())
 }
 
+/// Native materialization. The launcher handshake supplies the stable pane ID
+/// from inside the live pane, eliminating the old name-lookup settle retry.
+pub fn materialize_native(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
+    #[cfg(test)]
+    if let Some(result) = test_script_materialize(req) {
+        return result;
+    }
+    materialize(req)
+}
+
+#[cfg(test)]
+fn test_script_materialize(req: &SpawnRequest<'_>) -> Option<Result<SpawnOutcome, CliError>> {
+    #[derive(serde::Deserialize)]
+    struct FixtureOutcome {
+        branch: String,
+        worktree_path: String,
+        tmux_window: String,
+        agent_pid_hint: i64,
+        #[serde(default)]
+        tmux_socket: Option<String>,
+        #[serde(default)]
+        tmux_session: Option<String>,
+        #[serde(default)]
+        tmux_window_id: Option<String>,
+        #[serde(default)]
+        tmux_pane_id: Option<String>,
+    }
+    let script = std::env::var_os("OCTL_CREATE_SH")?;
+    let mut command = Command::new(script);
+    if let Some(cwd) = req.cwd {
+        command.current_dir(cwd);
+    }
+    command.args(["--type", req.kind]);
+    // Legacy supervisor fixtures launch their own sleeping worker. The one
+    // launcher-boundary test opts in with an explicit test self executable.
+    if std::env::var_os("OCTL_TEST_SELF_EXE").is_some() {
+        if let Some(agent) = req.agent {
+            command.args(["--agent", agent]);
+        }
+    }
+    if let Some(session) = req.parent_session {
+        command.args(["--parent-session", session]);
+    }
+    if let Some(base) = req.source_branch {
+        command.args(["--base", base]);
+    }
+    command.arg(req.branch).arg(req.prompt_file);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(e) => return Some(Err(CliError::system("spawn_failed", e.to_string()))),
+    };
+    if !output.status.success() {
+        return Some(Err(CliError::system(
+            "create_sh_error_workmux-add-failed",
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )));
+    }
+    Some(
+        serde_json::from_slice::<FixtureOutcome>(&output.stdout)
+            .map(|o| SpawnOutcome {
+                branch: o.branch,
+                worktree_path: o.worktree_path,
+                tmux_window: o.tmux_window,
+                agent_pid_hint: o.agent_pid_hint,
+                agent_start_time: crate::supervise::watchdog::pid_start_time(
+                    u32::try_from(o.agent_pid_hint).unwrap_or_default(),
+                )
+                .unwrap_or_default(),
+                agent_start_identity: crate::worker_handshake::process_start_identity(
+                    u32::try_from(o.agent_pid_hint).unwrap_or_default(),
+                )
+                .unwrap_or_default(),
+                tmux_socket: o.tmux_socket,
+                tmux_session: o.tmux_session,
+                tmux_window_id: o.tmux_window_id,
+                tmux_pane_id: o.tmux_pane_id,
+                rollback: None,
+            })
+            .map_err(|e| CliError::system("create_sh_unparseable_stdout", e.to_string())),
+    )
+}
+
+fn materialize(req: &SpawnRequest<'_>) -> Result<SpawnOutcome, CliError> {
+    validate_request(req)?;
+    let launcher = req.launcher.ok_or_else(|| {
+        CliError::system(
+            "worker_launcher_required",
+            "native materialization requires an attempt-bound generated launcher",
+        )
+    })?;
+    let agent = req.agent.ok_or_else(|| {
+        CliError::system(
+            "worker_launcher_required",
+            "native materialization requires the generated launcher path",
+        )
+    })?;
+    if Path::new(agent) != launcher.path() {
+        return Err(CliError::system(
+            "worker_launcher_binding_mismatch",
+            "workmux agent path is not the expected generated launcher",
+        ));
+    }
+    let cwd = req.cwd.unwrap_or_else(|| Path::new("."));
+    let session = ensure_session(req.parent_session, cwd)?;
+    let mut rollback = Rollback::new(req, cwd);
+
+    let mut args = vec![
+        "add".into(),
+        req.branch.into(),
+        "-b".into(),
+        "-P".into(),
+        os_string(req.prompt_file)?,
+        "-a".into(),
+        agent.into(),
+    ];
+    if let Some(s) = req.parent_session {
+        args.extend(["--parent-session".into(), s.into()]);
+    }
+    if let Some(base) = req.source_branch {
+        args.extend(["--base".into(), base.into()]);
+    }
+    if let Some(layout) = req.layout {
+        args.extend(["-l".into(), layout.into()]);
+    }
+    if req.no_hooks {
+        args.push("--no-hooks".into());
+    }
+    // `workmux add` may fail after creating a branch/worktree/window. Arm the
+    // rollback before spawning it so a non-zero exit receives the same complete
+    // cleanup as every later failure.
+    rollback.workmux_added = true;
+    let add = command_output("workmux", &args, cwd, "workmux_add_failed")?;
+    if !add.status.success() {
+        return Err(CliError::user(
+            "workmux_add_failed",
+            format!(
+                "workmux add exited {:?}: {}",
+                add.status.code(),
+                String::from_utf8_lossy(&add.stderr).trim()
+            ),
+        ));
+    }
+
+    let path_out = command_output(
+        "workmux",
+        &["path".into(), req.branch.into()],
+        cwd,
+        "worktree_path_unresolved",
+    )?;
+    let worktree = text_stdout(&path_out, "worktree_path_unresolved")?
+        .trim()
+        .to_string();
+    if worktree.is_empty() || !Path::new(&worktree).is_dir() {
+        return Err(CliError::system(
+            "worktree_path_unresolved",
+            "workmux path did not return an existing directory",
+        ));
+    }
+    rollback.worktree_path = Some(worktree.clone());
+
+    let handshake = await_handshake(
+        launcher,
+        Duration::from_secs(u64::from(req.agent_startup_timeout)),
+    )?;
+    // The helper returns immediately and the shell execs the candidate with the
+    // same PID. A short settle window makes missing and immediate-exit commands
+    // fail privately instead of publishing a stillborn node.
+    std::thread::sleep(Duration::from_millis(100));
+    verify_identity(
+        handshake.pid,
+        handshake.start_time,
+        &handshake.start_identity,
+    )?;
+    let pane = handshake.tmux_pane_id.clone();
+    let identity = query_tmux_identity(&pane, &session, cwd)?;
+    let window_name = format!("{} {}", kind_emoji(req.kind)?, req.branch.replace('/', "-"));
+    tmux_ok(
+        &["rename-window", "-t", &identity.window_id, &window_name],
+        cwd,
+        "tmux_window_rename_failed",
+    )?;
+
+    let dest = Path::new(&worktree)
+        .join("history/.worktree")
+        .join(format!("{}.md", req.branch));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_error("mkdir", parent, e))?;
+    }
+    std::fs::copy(req.prompt_file, &dest).map_err(|e| io_error("copy", &dest, e))?;
+    verify_identity(
+        handshake.pid,
+        handshake.start_time,
+        &handshake.start_identity,
+    )?;
+    Ok(SpawnOutcome {
+        branch: req.branch.into(),
+        worktree_path: worktree,
+        tmux_window: window_name,
+        agent_pid_hint: i64::from(handshake.pid),
+        agent_start_time: handshake.start_time,
+        agent_start_identity: handshake.start_identity,
+        tmux_socket: identity.socket,
+        tmux_session: Some(session),
+        tmux_window_id: Some(identity.window_id),
+        tmux_pane_id: Some(pane),
+        rollback: Some(rollback),
+    })
+}
+
+fn validate_request(req: &SpawnRequest<'_>) -> Result<(), CliError> {
+    if !req.prompt_file.is_file() {
+        return Err(CliError::user(
+            "prompt_file_not_readable",
+            format!("prompt file is not readable: {}", req.prompt_file.display()),
+        ));
+    }
+    kind_emoji(req.kind)?;
+    let cwd = req.cwd.unwrap_or_else(|| Path::new("."));
+    command_ok(
+        "git",
+        &[
+            "check-ref-format".into(),
+            "--branch".into(),
+            req.branch.into(),
+        ],
+        cwd,
+        "invalid_branch_name",
+    )?;
+    let exists = command_output(
+        "git",
+        &[
+            "show-ref".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            format!("refs/heads/{}", req.branch),
+        ],
+        cwd,
+        "git_preflight_failed",
+    )?;
+    if exists.status.success() {
+        return Err(CliError::user(
+            "branch_exists",
+            format!("branch already exists: {}", req.branch),
+        ));
+    }
+    if let Some(base) = req.source_branch {
+        command_ok(
+            "git",
+            &[
+                "rev-parse".into(),
+                "--verify".into(),
+                "--quiet".into(),
+                format!("{base}^{{commit}}"),
+            ],
+            cwd,
+            "base_ref_not_found",
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_session(parent: Option<&str>, cwd: &Path) -> Result<String, CliError> {
+    if let Some(session) = parent {
+        let probe = command_output(
+            "tmux",
+            &["has-session".into(), "-t".into(), session.into()],
+            cwd,
+            "parent_session_uncreatable",
+        )?;
+        if !probe.status.success() {
+            let made = command_output(
+                "tmux",
+                &[
+                    "new-session".into(),
+                    "-d".into(),
+                    "-s".into(),
+                    session.into(),
+                ],
+                cwd,
+                "parent_session_uncreatable",
+            )?;
+            if !made.status.success() {
+                // A concurrent creator may have won the probe/create race.
+                command_ok(
+                    "tmux",
+                    &["has-session".into(), "-t".into(), session.into()],
+                    cwd,
+                    "parent_session_uncreatable",
+                )?;
+            }
+        }
+        command_ok(
+            "tmux",
+            &["has-session".into(), "-t".into(), session.into()],
+            cwd,
+            "parent_session_uncreatable",
+        )?;
+        Ok(session.into())
+    } else {
+        if std::env::var_os("TMUX").is_none() {
+            return Err(CliError::user(
+                "no_tmux_session",
+                "run create must be inside tmux or use --headless/--tmux-session",
+            ));
+        }
+        let out = command_output(
+            "tmux",
+            &[
+                "display-message".into(),
+                "-p".into(),
+                "#{session_name}".into(),
+            ],
+            cwd,
+            "no_tmux_session",
+        )?;
+        let s = text_stdout(&out, "no_tmux_session")?.trim().to_string();
+        if s.is_empty() {
+            Err(CliError::user(
+                "no_tmux_session",
+                "run create must be inside tmux or use --headless/--tmux-session",
+            ))
+        } else {
+            Ok(s)
+        }
+    }
+}
+
+fn query_tmux_identity(
+    pane: &str,
+    expected_session: &str,
+    cwd: &Path,
+) -> Result<TmuxIdentity, CliError> {
+    let out = command_output(
+        "tmux",
+        &[
+            "display-message".into(),
+            "-p".into(),
+            "-t".into(),
+            pane.into(),
+            "#{socket_path}\t#{session_name}\t#{window_id}".into(),
+        ],
+        cwd,
+        "tmux_identity_unavailable",
+    )?;
+    let text = text_stdout(&out, "tmux_identity_unavailable")?;
+    let mut fields = text.trim_end().split('\t');
+    let socket = fields.next().unwrap_or("");
+    let session = fields.next().unwrap_or("");
+    let window = fields.next().unwrap_or("");
+    if session != expected_session || !window.starts_with('@') {
+        return Err(CliError::system(
+            "tmux_identity_unavailable",
+            "tmux returned a wrong-session or malformed worker identity",
+        ));
+    }
+    Ok(TmuxIdentity {
+        socket: (!socket.is_empty()).then(|| socket.into()),
+        session: session.into(),
+        window_id: window.into(),
+        pane_id: Some(pane.into()),
+    })
+}
+
+fn kind_emoji(kind: &str) -> Result<&'static str, CliError> {
+    match kind {
+        "code" => Ok("💻"),
+        "spinoff" => Ok("🚀"),
+        "orchestrated" => Ok("🎼"),
+        "research" => Ok("🔬"),
+        "technical-decision" => Ok("📐"),
+        "make-skill" => Ok("🔧"),
+        "fan-out" => Ok("🪭"),
+        "bugfix" => Ok("🐛"),
+        _ => Err(CliError::user(
+            "invalid_kind",
+            format!("unknown worktree kind {kind}"),
+        )),
+    }
+}
+
+#[derive(Debug)]
+struct Rollback {
+    branch: String,
+    keep_tmux_on_error: bool,
+    cwd: PathBuf,
+    workmux_added: bool,
+    worktree_path: Option<String>,
+    committed: bool,
+}
+impl Rollback {
+    fn new(req: &SpawnRequest<'_>, cwd: &Path) -> Self {
+        Self {
+            branch: req.branch.into(),
+            keep_tmux_on_error: req.keep_tmux_on_error,
+            cwd: cwd.into(),
+            workmux_added: false,
+            worktree_path: None,
+            committed: false,
+        }
+    }
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for Rollback {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if self.workmux_added && self.keep_tmux_on_error {
+            // Preserve the old debug contract: leave the pane, but remove git
+            // resources without asking workmux to kill that pane.
+            if let Some(path) = &self.worktree_path {
+                let _ = command_output(
+                    "git",
+                    &[
+                        "worktree".into(),
+                        "remove".into(),
+                        "--force".into(),
+                        path.clone(),
+                    ],
+                    &self.cwd,
+                    "rollback",
+                );
+            }
+            let _ = command_output(
+                "git",
+                &[
+                    "branch".into(),
+                    "-D".into(),
+                    "--".into(),
+                    self.branch.clone(),
+                ],
+                &self.cwd,
+                "rollback",
+            );
+        } else if self.workmux_added {
+            let _ = command_output(
+                "workmux",
+                &["remove".into(), "--force".into(), self.branch.clone()],
+                &self.cwd,
+                "rollback",
+            );
+            if let Some(path) = &self.worktree_path {
+                let _ = command_output(
+                    "git",
+                    &[
+                        "worktree".into(),
+                        "remove".into(),
+                        "--force".into(),
+                        path.clone(),
+                    ],
+                    &self.cwd,
+                    "rollback",
+                );
+            }
+            let _ = command_output(
+                "git",
+                &[
+                    "branch".into(),
+                    "-D".into(),
+                    "--".into(),
+                    self.branch.clone(),
+                ],
+                &self.cwd,
+                "rollback",
+            );
+        }
+    }
+}
+
+fn command_output(
+    bin: &str,
+    args: &[String],
+    cwd: &Path,
+    code: &'static str,
+) -> Result<Output, CliError> {
+    let actual = match bin {
+        "tmux" => std::env::var("TMUX_BIN").unwrap_or_else(|_| bin.into()),
+        "git" => std::env::var("GIT_BIN").unwrap_or_else(|_| bin.into()),
+        "workmux" => std::env::var("WORKMUX_BIN").unwrap_or_else(|_| bin.into()),
+        _ => bin.into(),
+    };
+    Command::new(&actual)
+        .args(args)
+        .current_dir(cwd)
+        .env_remove(crate::home::INTERNAL_SELF_EXEC_ENV)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| CliError::system(code, format!("spawn {actual}: {e}")))
+}
+fn command_ok(bin: &str, args: &[String], cwd: &Path, code: &'static str) -> Result<(), CliError> {
+    let out = command_output(bin, args, cwd, code)?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(CliError::system(
+            code,
+            format!(
+                "{bin} exited {:?}: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ))
+    }
+}
+fn tmux_ok(args: &[&str], cwd: &Path, code: &'static str) -> Result<(), CliError> {
+    command_ok(
+        "tmux",
+        &args.iter().map(|s| (*s).into()).collect::<Vec<_>>(),
+        cwd,
+        code,
+    )
+}
+fn text_stdout<'a>(out: &'a Output, code: &'static str) -> Result<&'a str, CliError> {
+    std::str::from_utf8(&out.stdout)
+        .map_err(|e| CliError::system(code, format!("command stdout was not UTF-8: {e}")))
+}
+fn io_error(op: &str, path: &Path, e: std::io::Error) -> CliError {
+    CliError::system("io_error", format!("{op} {}: {e}", path.display()))
+}
+fn absolute_path(path: &Path) -> std::io::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.into())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+fn shell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+#[cfg(unix)]
+fn shell_literal_path(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut q = vec![b'\''];
+    for b in path.as_os_str().as_bytes() {
+        if *b == b'\'' {
+            q.extend_from_slice(b"'\\''");
+        } else {
+            q.push(*b);
+        }
+    }
+    q.push(b'\'');
+    q
+}
+
+pub fn verify_agent_pid(pid: i64, start_time: u64, start_identity: &str) -> Result<(), CliError> {
+    let pid = u32::try_from(pid)
+        .map_err(|_| CliError::system("agent_pid_invalid", format!("invalid agent PID {pid}")))?;
+    verify_identity(pid, start_time, start_identity)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::sync::Mutex;
-    use tempfile::TempDir;
+    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    // Tests mutate the OCTL_CREATE_SH env var; serialize them so a
-    // parallel test runner doesn't see a stale fixture from another
-    // thread. `pub(crate)` so the supervisor's in-process retry tests
-    // (`supervise::mod::tests`), which ALSO set `OCTL_CREATE_SH` to drive a
-    // stub `create.sh`, can hold the SAME lock — otherwise the two modules'
-    // separate locks would let their env mutations race
-    // (issue `autoretry-agent-died-worker`, from llm-review test-isolation).
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn fixture_script(dir: &Path, body: &str) -> PathBuf {
-        let p = dir.join("fake-create.sh");
-        std::fs::write(&p, body).unwrap();
-        let mut perms = std::fs::metadata(&p).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&p, perms).unwrap();
-        p
+    fn launcher(dir: &Path) -> AgentLauncher {
+        AgentLauncher {
+            path: dir.join("launcher.sh"),
+            handshake_path: dir.join("handshake.json"),
+            token: "0123456789ABCDEFGHJKMNPQRS".into(),
+            run_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+            node_id: "n-0001".into(),
+            attempt: 3,
+        }
     }
 
-    fn selection(
-        harness: &str,
-        telemetry: Option<&str>,
-        command: Vec<String>,
-    ) -> taskfleet_core::AgentSelection {
-        taskfleet_core::AgentSelection {
+    fn record(launcher: &AgentLauncher) -> WorkerHandshake {
+        let pid = std::process::id();
+        WorkerHandshake {
             schema_version: 1,
-            profile: "fixture".into(),
-            selection_source: "cli".into(),
-            interaction: if telemetry.is_some() {
-                "autonomous"
+            run_id: launcher.run_id.clone(),
+            node_id: launcher.node_id.clone(),
+            attempt: launcher.attempt,
+            token: launcher.token.clone(),
+            pid,
+            start_time: crate::supervise::watchdog::pid_start_time(pid).unwrap(),
+            start_identity: crate::worker_handshake::process_start_identity(pid).unwrap(),
+            tmux_pane_id: "%7".into(),
+        }
+    }
+
+    #[test]
+    fn handshake_rejects_wrong_attempt_and_forged_token() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let launcher = launcher(dir.path());
+        for mut bad in [record(&launcher), record(&launcher)] {
+            if bad.attempt == launcher.attempt {
+                bad.attempt += 1;
             } else {
-                "explicit-interactive"
+                bad.token.push('X');
             }
-            .into(),
-            capability: "capable".into(),
-            residency: "remote".into(),
-            requested_harness: None,
-            selected: taskfleet_core::SelectedAgentCandidate {
-                candidate_index: 0,
-                harness: harness.into(),
-                command,
-                telemetry: telemetry.map(str::to_string),
-            },
-            fallback: Vec::new(),
+            std::fs::write(&launcher.handshake_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert_eq!(
+                await_handshake(&launcher, Duration::from_millis(20))
+                    .unwrap_err()
+                    .code,
+                "worker_handshake_binding_mismatch"
+            );
+            // Exercise the other binding on the second iteration.
+            std::fs::remove_file(&launcher.handshake_path).unwrap();
         }
-    }
-
-    #[test]
-    fn profile_launcher_reenters_exact_self_with_exact_argv_and_pi_identity() {
-        let dir = TempDir::new().unwrap();
-        let command = vec![
-            "/fixture/capture".into(),
-            "argument with spaces".into(),
-            "quote'and\\slash".into(),
-            "line1\nline2".into(),
-        ];
-        let selected = selection("pi", Some("worker-v1"), command.clone());
-        let launcher = write_agent_launcher(
-            dir.path(),
-            dir.path(),
-            &selected,
-            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "n-0001",
-            7,
+        let mut forged = record(&launcher);
+        forged.token.push('X');
+        std::fs::write(
+            &launcher.handshake_path,
+            serde_json::to_vec(&forged).unwrap(),
         )
         .unwrap();
-        let body = std::fs::read_to_string(launcher).unwrap();
-        assert!(body.contains("export OCTL_RUN_ID='01ARZ3NDEKTSV4RRFFQ69G5FAV'\n"));
-        assert!(body.contains("export OCTL_NODE_ID='n-0001'\n"));
-        assert!(body.contains("export OCTL_ATTEMPT='7'\n"));
-        assert!(body.contains("export OCTL_INTERNAL_SELF_EXEC=1\n"));
-        use std::fmt::Write as _;
-        let mut candidate_args = String::new();
-        for arg in &command {
-            write!(candidate_args, " {}", shell_literal(arg)).unwrap();
-        }
-        let expected_exec = format!(
-            "exec {} run-worker '01ARZ3NDEKTSV4RRFFQ69G5FAV' 'n-0001' --{} \"$@\"\n",
-            shell_literal(crate::self_exec::executable().unwrap().to_str().unwrap()),
-            candidate_args
+        assert_eq!(
+            await_handshake(&launcher, Duration::from_millis(20))
+                .unwrap_err()
+                .code,
+            "worker_handshake_binding_mismatch"
         );
-        assert!(body.ends_with(&expected_exec), "launcher body: {body}");
     }
 
     #[test]
-    fn unsupported_launcher_removes_ambient_telemetry_identity() {
-        let dir = TempDir::new().unwrap();
-        let selected = selection("claude", None, vec!["/fixture/capture".into()]);
-        let launcher =
-            write_agent_launcher(dir.path(), dir.path(), &selected, "run", "n-0001", 0).unwrap();
-        let body = std::fs::read_to_string(launcher).unwrap();
-        assert!(body.contains("unset OCTL_RUN_ID OCTL_NODE_ID OCTL_ATTEMPT\n"));
-        assert!(!body.contains("export OCTL_"));
-        assert!(!body.contains("OCTL_INTERNAL_WORKER_"));
-        assert!(body.ends_with("exec '/fixture/capture' \"$@\"\n"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn launcher_preserves_non_utf8_path_bytes() {
-        use std::os::unix::ffi::OsStringExt as _;
-        let mut bytes = b"state-'".to_vec();
-        bytes.push(0xff);
-        let path = PathBuf::from(std::ffi::OsString::from_vec(bytes.clone()));
-        let quoted = shell_literal_path(&path);
-        let mut expected = b"'state-'\\''".to_vec();
-        expected.push(0xff);
-        expected.push(b'\'');
-        assert_eq!(quoted, expected);
-    }
-
-    #[test]
-    fn parses_success_stdout() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        let script = fixture_script(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"orchestratectl"}}
-EOF
-"#
-            ),
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "do thing").unwrap();
-        let out = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(out.branch, "wt/x");
-        assert_eq!(out.tmux_window, "🚀 wt/x");
-        assert_eq!(out.agent_pid_hint, i64::from(me));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn propagates_error_envelope_from_stderr() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let script = fixture_script(
-            dir.path(),
-            r#"#!/bin/bash
-echo "some human progress" >&2
-echo '{"schema_version":1,"error":{"code":"branch-exists","message":"branch already exists","invalid_value":"wt/x"}}' >&2
-exit 2
-"#,
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "do thing").unwrap();
-        let err = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap_err();
-        assert_eq!(err.code, "create_sh_error_branch-exists");
-        assert_eq!(err.invalid_value.as_deref(), Some("wt/x"));
-        assert!(matches!(err.kind, ExitKind::System));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn maps_exit_1_to_user() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let script = fixture_script(
-            dir.path(),
-            r#"#!/bin/bash
-echo '{"schema_version":1,"error":{"code":"workmux-failed","message":"workmux add returned non-zero"}}' >&2
-exit 1
-"#,
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-        let err = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap_err();
-        assert!(matches!(err.kind, ExitKind::User));
-        assert_eq!(err.code, "create_sh_error_workmux-failed");
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn write_prompt_file_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let p = write_prompt_file(dir.path(), "hello").unwrap();
-        assert_eq!(std::fs::read_to_string(p).unwrap(), "hello");
-    }
-
-    /// A `MakeWriter` that appends to a shared buffer so a test can assert on
-    /// what tracing emitted under `with_default`.
-    #[derive(Clone)]
-    struct BufWriter(std::sync::Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for BufWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufWriter {
-        type Writer = BufWriter;
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    fn run_fixture(dir: &Path, body: &str) -> Result<SpawnOutcome, CliError> {
-        let script = fixture_script(dir, body);
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-        let out = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        });
-        std::env::remove_var("OCTL_CREATE_SH");
-        out
-    }
-
-    #[test]
-    fn parses_qualified_tmux_identity() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        let out = run_fixture(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":"/private/tmp/tmux-501/default","tmux_session":"octl","tmux_window_id":"@42","tmux_pane_id":"%7"}}
-EOF
-"#
-            ),
+    fn handshake_rejects_pid_start_identity_mismatch_and_timeout() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let launcher = launcher(dir.path());
+        let mut stale = record(&launcher);
+        stale.start_time = stale.start_time.saturating_add(1);
+        std::fs::write(
+            &launcher.handshake_path,
+            serde_json::to_vec(&stale).unwrap(),
         )
         .unwrap();
-        let id = out.tmux_identity().expect("qualified identity present");
-        assert_eq!(id.socket.as_deref(), Some("/private/tmp/tmux-501/default"));
-        assert_eq!(id.session, "octl");
-        assert_eq!(id.window_id, "@42");
-        // create.sh emits `#{pane_id}` → parsed into the identity and used as
-        // the capture target.
-        assert_eq!(id.pane_id.as_deref(), Some("%7"));
-        assert_eq!(id.capture_target(), "%7");
-    }
-
-    #[test]
-    fn qualified_identity_omits_pane_id_on_legacy_create_sh() {
-        // A create.sh predating `#{pane_id}` emits no `tmux_pane_id`; the
-        // identity still resolves (session + window_id) with `pane_id: None`,
-        // so capture falls back to the window's active pane.
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        let out = run_fixture(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":null,"tmux_session":"octl","tmux_window_id":"@42"}}
-EOF
-"#
-            ),
-        )
-        .unwrap();
-        let id = out
-            .tmux_identity()
-            .expect("identity present without pane_id");
-        assert_eq!(id.pane_id, None);
-        assert_eq!(id.capture_target(), "@42");
-    }
-
-    #[test]
-    fn qualified_identity_tolerates_null_socket() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        let out = run_fixture(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl","tmux_socket":null,"tmux_session":"octl","tmux_window_id":"@7"}}
-EOF
-"#
-            ),
-        )
-        .unwrap();
-        let id = out
-            .tmux_identity()
-            .expect("identity present even without socket");
-        assert_eq!(id.socket, None);
-        assert_eq!(id.window_id, "@7");
-    }
-
-    #[test]
-    fn forwards_agent_flag() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        // Fixture echoes back whichever `--agent <name>` it was given (default
-        // `none` if absent) as the emitted `tmux_session`, so the test can assert
-        // the flag actually reached the script's argv (→ `workmux add -a`).
-        let script = fixture_script(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-agent="none"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --agent) agent="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$agent","tmux_window_id":"@9"}}
-EOF
-"#
-            ),
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-
-        // A non-default harness agent is forwarded verbatim.
-        let with = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: Some("pi"),
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(with.tmux_session.as_deref(), Some("pi"));
-
-        // No `--agent` when the explicit claude harness maps to `None`: create.sh
-        // sees no agent flag and keeps workmux's configured default agent.
-        let without = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(without.tmux_session.as_deref(), Some("none"));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn forwards_parent_session_flag() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        // Fixture echoes back whichever `--parent-session <name>` it was given
-        // (default `none` if absent) as the emitted `tmux_session`, so the test
-        // can assert the flag actually reached the script's argv.
-        let script = fixture_script(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-sess="none"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --parent-session) sess="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$sess","tmux_window_id":"@9"}}
-EOF
-"#
-            ),
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-
-        let with = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: Some("headless"),
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(with.tmux_session.as_deref(), Some("headless"));
-
-        let without = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(without.tmux_session.as_deref(), Some("none"));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn forwards_base_flag_from_source_branch() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        // Fixture echoes back whichever `--base <ref>` it was given (default
-        // `none` if absent) as the emitted `tmux_session`, so the test can
-        // assert the base ref actually reached the script's argv.
-        let script = fixture_script(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-base="none"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --base) base="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cat <<EOF
-{{"schema_version":1,"type":"orchestrated","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🎼 wt/x","agent_pid_hint":{me},"tmux_session":"$base","tmux_window_id":"@9"}}
-EOF
-"#
-            ),
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-
-        let with = run_create_sh(&SpawnRequest {
-            kind: "orchestrated",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: Some("orchestrate/integration"),
-            cwd: None,
-        })
-        .unwrap();
         assert_eq!(
-            with.tmux_session.as_deref(),
-            Some("orchestrate/integration")
+            await_handshake(&launcher, Duration::from_millis(20))
+                .unwrap_err()
+                .code,
+            "worker_handshake_identity_mismatch"
         );
-
-        let without = run_create_sh(&SpawnRequest {
-            kind: "orchestrated",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(without.tmux_session.as_deref(), Some("none"));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn forwards_agent_startup_timeout_flag() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        // Fixture echoes back whichever `--agent-startup-timeout <s>` it was
-        // given (default `none` if absent) as the emitted `tmux_session`, so the
-        // test can assert the value actually reached the script's argv.
-        let script = fixture_script(
-            dir.path(),
-            &format!(
-                r#"#!/bin/bash
-to="none"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --agent-startup-timeout) to="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"$to","tmux_window_id":"@9"}}
-EOF
-"#
-            ),
-        );
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        let prompt = dir.path().join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-
-        // Explicit non-default value is forwarded verbatim.
-        let with = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 180,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(with.tmux_session.as_deref(), Some("180"));
-
-        // The Taskfleet default (90) is always forwarded — never create.sh's 30s.
-        let defaulted = run_create_sh(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        })
-        .unwrap();
-        assert_eq!(defaulted.tmux_session.as_deref(), Some("90"));
-        std::env::remove_var("OCTL_CREATE_SH");
-    }
-
-    #[test]
-    fn back_compat_missing_identity_is_none_and_warns() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        // A create.sh that predates the qualified-identity fields: stdout has
-        // no tmux_socket/tmux_session/tmux_window_id.
-        let body = format!(
-            r#"#!/bin/bash
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"workmux_session":"octl"}}
-EOF
-"#
-        );
-        let buf = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(BufWriter(buf.clone()))
-            .with_max_level(tracing::Level::WARN)
-            .finish();
-        let out = tracing::subscriber::with_default(subscriber, || {
-            run_fixture(dir.path(), &body).unwrap()
-        });
-        assert!(out.tmux_identity().is_none());
-        assert_eq!(out.tmux_session, None);
-        assert_eq!(out.tmux_window_id, None);
-        let logged = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
-        assert!(
-            logged.contains("qualified tmux identity"),
-            "expected back-compat warning, got: {logged:?}"
-        );
-    }
-
-    /// Build a `SpawnRequest` pointing at `prompt`, run it through the
-    /// tmux-retry wrapper with zero backoff, and return the result.
-    fn run_retry_fixture(dir: &Path, body: &str) -> Result<SpawnOutcome, CliError> {
-        let script = fixture_script(dir, body);
-        std::env::set_var("OCTL_CREATE_SH", &script);
-        std::env::set_var("OCTL_TMUX_RETRY_BACKOFF_MS", "0");
-        let prompt = dir.join("p.md");
-        std::fs::write(&prompt, "x").unwrap();
-        let out = run_create_sh_with_tmux_retry(&SpawnRequest {
-            kind: "spinoff",
-            agent: None,
-            branch: "wt/x",
-            prompt_file: &prompt,
-            layout: None,
-            no_hooks: false,
-            keep_tmux_on_error: false,
-            agent_startup_timeout: 90,
-            parent_session: None,
-            source_branch: None,
-            cwd: None,
-        });
-        std::env::remove_var("OCTL_TMUX_RETRY_BACKOFF_MS");
-        std::env::remove_var("OCTL_CREATE_SH");
-        out
-    }
-
-    #[test]
-    fn tmux_retry_recovers_after_transient_window_not_found() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let me = std::process::id();
-        let counter = dir.path().join("attempts");
-        // Fails with the transient tmux-window-not-found error on the first
-        // attempt, then succeeds — mirroring the create-then-observe race that
-        // clears on a retry a moment later.
-        let body = format!(
-            r#"#!/bin/bash
-n=0
-if [[ -f "{c}" ]]; then n=$(cat "{c}"); fi
-n=$((n+1))
-echo "$n" > "{c}"
-if [[ "$n" -lt 2 ]]; then
-  echo '{{"schema_version":1,"error":{{"code":"tmux-window-not-found","message":"No tmux window"}}}}' >&2
-  exit 1
-fi
-cat <<EOF
-{{"schema_version":1,"type":"spinoff","branch":"wt/x","worktree_path":"/tmp/x","tmux_window":"🚀 wt/x","agent_pid_hint":{me},"tmux_session":"headless","tmux_window_id":"@9"}}
-EOF
-"#,
-            c = counter.display()
-        );
-        let out = run_retry_fixture(dir.path(), &body).expect("retry should recover");
-        assert_eq!(out.branch, "wt/x");
-        // Exactly two attempts: one failure + one success.
+        std::fs::remove_file(&launcher.handshake_path).unwrap();
         assert_eq!(
-            std::fs::read_to_string(&counter).unwrap().trim(),
-            "2",
-            "expected exactly one retry after the transient failure"
-        );
-    }
-
-    #[test]
-    fn tmux_retry_gives_up_after_bound_and_surfaces_error() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let counter = dir.path().join("attempts");
-        // Always fails with the transient code: the wrapper must stop after the
-        // bounded attempts and surface the error rather than loop forever.
-        let body = format!(
-            r#"#!/bin/bash
-n=0
-if [[ -f "{c}" ]]; then n=$(cat "{c}"); fi
-echo "$((n+1))" > "{c}"
-echo '{{"schema_version":1,"error":{{"code":"tmux-window-not-found","message":"No tmux window"}}}}' >&2
-exit 1
-"#,
-            c = counter.display()
-        );
-        let err = run_retry_fixture(dir.path(), &body).unwrap_err();
-        assert_eq!(err.code, "create_sh_error_tmux-window-not-found");
-        // 1 initial + TMUX_MAX_RETRIES retries.
-        assert_eq!(
-            std::fs::read_to_string(&counter).unwrap().trim(),
-            (TMUX_MAX_RETRIES + 1).to_string(),
-            "expected initial attempt plus the full retry budget"
-        );
-    }
-
-    #[test]
-    fn tmux_retry_surfaces_a_different_error_from_a_later_attempt() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let counter = dir.path().join("attempts");
-        // Attempt 1 hits the transient race; attempt 2 fails with a DIFFERENT,
-        // non-transient error (e.g. a partial rollback left the branch behind).
-        // The wrapper must stop retrying and surface that error loudly — never
-        // loop on it or mask it.
-        let body = format!(
-            r#"#!/bin/bash
-n=0
-if [[ -f "{c}" ]]; then n=$(cat "{c}"); fi
-n=$((n+1))
-echo "$n" > "{c}"
-if [[ "$n" -lt 2 ]]; then
-  echo '{{"schema_version":1,"error":{{"code":"tmux-window-not-found","message":"No tmux window"}}}}' >&2
-  exit 1
-fi
-echo '{{"schema_version":1,"error":{{"code":"branch-exists","message":"branch already exists"}}}}' >&2
-exit 2
-"#,
-            c = counter.display()
-        );
-        let err = run_retry_fixture(dir.path(), &body).unwrap_err();
-        assert_eq!(err.code, "create_sh_error_branch-exists");
-        assert_eq!(
-            std::fs::read_to_string(&counter).unwrap().trim(),
-            "2",
-            "the non-transient error on attempt 2 must be surfaced immediately, no further retries"
-        );
-    }
-
-    #[test]
-    fn tmux_retry_does_not_retry_other_errors() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let dir = TempDir::new().unwrap();
-        let counter = dir.path().join("attempts");
-        // A different, non-transient error must be returned on the first try
-        // with no retry — the wrapper must never mask or loop on a real failure.
-        let body = format!(
-            r#"#!/bin/bash
-n=0
-if [[ -f "{c}" ]]; then n=$(cat "{c}"); fi
-echo "$((n+1))" > "{c}"
-echo '{{"schema_version":1,"error":{{"code":"branch-exists","message":"branch already exists"}}}}' >&2
-exit 2
-"#,
-            c = counter.display()
-        );
-        let err = run_retry_fixture(dir.path(), &body).unwrap_err();
-        assert_eq!(err.code, "create_sh_error_branch-exists");
-        assert_eq!(
-            std::fs::read_to_string(&counter).unwrap().trim(),
-            "1",
-            "a non-transient error must not be retried"
+            await_handshake(&launcher, Duration::from_millis(20))
+                .unwrap_err()
+                .code,
+            "worker_handshake_timeout"
         );
     }
 }

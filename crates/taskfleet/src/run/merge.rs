@@ -66,7 +66,7 @@ use crate::supervise::cleanup;
 /// The bundled merge backend, embedded at compile time so the binary is
 /// self-contained (the external `merge.sh` is sunset). Materialized to a
 /// temp file and executed per invocation. Tests override the resolved
-/// script via `OCTL_MERGE_SH`, mirroring `spawn.rs`'s `OCTL_CREATE_SH`.
+/// script via `OCTL_MERGE_SH`.
 const MERGE_SH: &str = include_str!("../../scripts/merge.sh");
 
 /// Default reporting node for a single-worker run. Every worktree kind

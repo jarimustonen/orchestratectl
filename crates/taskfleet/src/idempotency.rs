@@ -90,14 +90,16 @@ pub struct CreatorLease {
     pub pid_start_secs: Option<u64>,
     pub started_at: DateTime<Utc>,
     /// Absolute path of the inherited materializer flock. New creators hold
-    /// this lock in both the CLI and create.sh process tree until publication.
+    /// this lock in both the CLI and native materializer process tree until publication.
     #[serde(default)]
     pub materializer_lease_path: Option<String>,
 }
 
-/// Lifetime lease inherited by create.sh. Clearing `FD_CLOEXEC` is load-bearing:
-/// if the Rust creator is `SIGKILLed`, a still-running materializer keeps the flock
-/// held, so a retry cannot reclaim or delete its staging state.
+/// Lifetime lease inherited by the native materializer subprocess tree.
+/// Clearing `FD_CLOEXEC` is load-bearing: if the Rust creator is `SIGKILLed`, a
+/// still-running materializer keeps the flock held, so a retry cannot reclaim
+/// its staging state. Lease files intentionally remain after unlock: preserved
+/// cleanup reservations need an unlocked inode to classify as `Dead` on retry.
 pub struct MaterializerLease {
     file: File,
     path: PathBuf,
@@ -143,7 +145,6 @@ impl MaterializerLease {
 impl Drop for MaterializerLease {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 

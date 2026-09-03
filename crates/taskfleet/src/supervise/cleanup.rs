@@ -293,7 +293,7 @@ fn managed_session(paths: &RunPaths) -> Option<String> {
 /// The tmux server socket the managed session lives on, read from the first
 /// node whose [`TmuxIdentity`](taskfleet_core::schema::TmuxIdentity) names that
 /// session. `None` falls back to tmux's default socket — which is where
-/// create.sh's `tmux new-session -d` bootstraps a headless session anyway.
+/// the native materializer's `tmux new-session -d` bootstraps a headless session anyway.
 fn managed_session_socket(paths: &RunPaths, session: &str) -> Option<String> {
     for n in list_nodes(paths) {
         if let Some(id) = n.tmux_identity {
@@ -1054,7 +1054,7 @@ fn manifest_source_branch(paths: &RunPaths) -> Option<String> {
 /// (issue `worktree-merge-orphans-tmux-window`).
 ///
 /// The primary target is the fully-qualified [`TmuxIdentity`](taskfleet_core::schema::TmuxIdentity) (stable `@NNNN`
-/// window id on the recorded socket); a node registered before create.sh emitted
+/// window id on the recorded socket); a node registered before native materializer emitted
 /// the qualified fields falls back to the legacy bare window *name*. A node with
 /// neither has no window to close.
 ///

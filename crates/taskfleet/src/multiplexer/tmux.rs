@@ -237,11 +237,9 @@ impl Tmux {
     /// -P -F '#{pane_id}'`. When a window name is given, automatic-rename is
     /// disabled so the name sticks (matches upstream `create_session`).
     ///
-    /// Not yet wired into a live supervisor path: session creation still happens
-    /// inside `create.sh` (the git side of spawn stays there for now — issues
-    /// `vendor-workmux-multiplexer`, `workmux-extract-libs`). This is the typed
-    /// primitive staged for that later migration; it is fully exercised by the
-    /// unit tests below.
+    /// Retained as the typed session primitive used by supervisor-side code and
+    /// tests. Native run creation owns its stricter create-or-confirm sequence in
+    /// `run::spawn`, alongside the workmux transaction rollback.
     #[allow(dead_code)]
     pub fn new_session(&self, params: &NewSession<'_>) -> Result<String, TmuxError> {
         let mut cmd = self.base(params.socket);

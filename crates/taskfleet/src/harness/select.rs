@@ -63,16 +63,6 @@ pub struct HarnessChoice {
     pub source: HarnessSource,
 }
 
-impl HarnessChoice {
-    /// The workmux agent to launch for this harness (`None` = workmux's own
-    /// configured default, used by the explicit `claude` harness). See
-    /// [`super::workmux_agent`].
-    #[must_use]
-    pub fn workmux_agent(&self) -> Option<&str> {
-        super::workmux_agent(&self.name)
-    }
-}
-
 /// The environment variable that mirrors `--harness` (§8 flag↔env naming).
 pub const HARNESS_ENV: &str = crate::home::HARNESS_ENV;
 
@@ -279,19 +269,5 @@ mod tests {
             "message: {}",
             e.message
         );
-    }
-
-    #[test]
-    fn workmux_agent_maps_claude_to_none() {
-        let claude = HarnessChoice {
-            name: "claude".into(),
-            source: HarnessSource::Default,
-        };
-        assert_eq!(claude.workmux_agent(), None);
-        let pi = HarnessChoice {
-            name: "pi".into(),
-            source: HarnessSource::Flag,
-        };
-        assert_eq!(pi.workmux_agent(), Some("pi"));
     }
 }

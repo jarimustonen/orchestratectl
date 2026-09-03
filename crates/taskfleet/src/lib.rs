@@ -26,6 +26,7 @@ mod self_exec;
 mod skill;
 mod state;
 mod supervise;
+mod worker_handshake;
 
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};

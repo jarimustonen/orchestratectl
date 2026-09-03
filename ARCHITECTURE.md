@@ -27,6 +27,17 @@ OID-recorded recoverable transaction and is the only success truth. The
 supervisor is the canonical worktree/tmux teardown actor and preserves all work
 outside an explicit merge.
 
+Worker creation is native Taskfleet code in `run/spawn.rs`: it validates git
+inputs, invokes `workmux add` with typed argv, obtains the exact tmux
+socket/session/window/pane identity, copies the prompt, and owns rollback of all
+partial side effects. Every worker runs through generated private launchers. An
+inner launcher durably publishes a nonce-bound run/node/attempt PID and process
+start identity immediately before `exec` of the recorded candidate; creation
+validates that handshake and liveness before `node.created` and atomic run
+publication. No Homebase script or executable-name/process-tree inference is a
+production dependency. `git`, `tmux`, and `workmux` remain explicit external CLI
+dependencies.
+
 Fresh state uses `~/.taskfleet`. Through the bounded compatibility window, the
 central resolver can adopt a sole populated `~/.orchestratectl` home in place,
 accept old branded inputs with warnings, and refuse split truth. Optional state

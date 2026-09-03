@@ -49,7 +49,7 @@
 //! *active* pane). Targeting the pane id directly keeps capture pinned to the
 //! agent even in an interactive session where the user splits the window and
 //! shifts the active pane; without it `agent.log` could capture the user's own
-//! shell (issue `capture-agent-pane-by-pane-id`). A run spawned before create.sh
+//! shell (issue `capture-agent-pane-by-pane-id`). A run spawned before native materializer
 //! emitted `#{pane_id}` has no `pane_id`, so it falls back to the `window_id`
 //! target — correct for the single-pane autonomous headless path.
 
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn command_falls_back_to_window_id_when_pane_id_absent() {
-        // A run spawned before create.sh emitted `#{pane_id}` has no pane_id;
+        // A run spawned before native materializer emitted `#{pane_id}` has no pane_id;
         // capture falls back to the window's active pane (`@NNNN`).
         let identity = id(None, "@9");
         let cmd = pipe_pane_command("tmux", &identity, &PathBuf::from("/runs/z/agent.log"));

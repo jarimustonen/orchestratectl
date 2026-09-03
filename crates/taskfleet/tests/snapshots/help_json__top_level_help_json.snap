@@ -2502,7 +2502,7 @@ expression: value
                 "long": "agent-startup-timeout",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Seconds create.sh waits for the freshly launched agent to become discoverable before giving up (forwarded as `--agent-startup-timeout <seconds>`). Range 1–600. Defaults to 90 — higher than create.sh's own 30s default because Taskfleet spawns are frequently part of high-fan-out batches that self-load the host; bump it further on an already-loaded box",
+                "help": "Seconds Taskfleet waits for the freshly launched candidate's private PID handshake before rolling materialization back. Range 1–600. Defaults to 90 because Taskfleet spawns are frequently part of high-fan-out batches that self-load the host; bump it further on an already-loaded box",
                 "value_names": [
                   "AGENT_STARTUP_TIMEOUT"
                 ],
@@ -2561,7 +2561,7 @@ expression: value
                 "long": "harness",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Agent runtime to launch the worker under: `pi` (built-in default) | `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS` (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias), the `config.toml` `[harness]` default, and the built-in default (in that precedence order). `pi` is forwarded to create.sh as `--agent pi` (→ `workmux add -a`), so it must be configured in workmux; `claude` keeps workmux's own configured default agent. Recorded on the run and shown by `run show` / `run list --json`",
+                "help": "Agent runtime to launch the worker under: `pi` (built-in default) | `claude` (non-default opt-in). Overrides `TASKFLEET_HARNESS` (with `ORCHESTRATECTL_HARNESS` accepted as a deprecated alias), the `config.toml` `[harness]` default, and the built-in default (in that precedence order). Without an executable profile, Taskfleet records and launches the corresponding `pi` or `claude` executable from PATH through its private generated workmux launcher. Recorded on the run and shown by `run show` / `run list --json`",
                 "value_names": [
                   "HARNESS"
                 ],
@@ -2766,7 +2766,7 @@ expression: value
                 "long": "layout",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Workmux layout name; forwarded to create.sh as `-l <name>`",
+                "help": "Workmux layout name; forwarded to native materializer as `-l <name>`",
                 "value_names": [
                   "LAYOUT"
                 ],
@@ -2795,7 +2795,7 @@ expression: value
                 "long": "no-hooks",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Skip workmux post-create hooks; forwarded to create.sh",
+                "help": "Skip workmux post-create hooks; forwarded to native materializer",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
@@ -2977,7 +2977,7 @@ expression: value
                 "long": "prompt-file",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to create.sh",
+                "help": "Path to a prompt file (instead of inlining via --task). Used as-is and handed to native materializer",
                 "value_names": [
                   "PROMPT_FILE"
                 ],
@@ -3006,7 +3006,7 @@ expression: value
                 "long": "skip-materialize",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "**Test-only.** Skip the create.sh shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
+                "help": "**Test-only.** Skip the native materializer shell-out and supervisor spawn; produce only the on-disk run skeleton (manifest + run.created event). Hidden from `--help`. Never set this in production — the run will be missing its worktree, tmux window, and supervisor",
                 "value_names": [],
                 "takes_value": false,
                 "multiple": false,
@@ -3149,7 +3149,7 @@ expression: value
                 "long": "tmux-session",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Explicit tmux session name for the worker's window. Implies headless placement and overrides `--headless`'s default session name. Forwarded to create.sh / workmux as `--parent-session <name>`",
+                "help": "Explicit tmux session name for the worker's window. Implies headless placement and overrides `--headless`'s default session name. Forwarded to native materializer / workmux as `--parent-session <name>`",
                 "value_names": [
                   "TMUX_SESSION"
                 ],
@@ -5997,6 +5997,277 @@ expression: value
               "jsonl",
               "text"
             ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          }
+        ],
+        "positionals": [],
+        "subcommands": []
+      },
+      {
+        "command": "taskfleet worker-handshake",
+        "about": "Private one-shot PID/start-identity publisher invoked only by a generated worker launcher immediately before it execs the recorded candidate",
+        "aliases": [],
+        "hidden": true,
+        "deprecated": false,
+        "flags": [
+          {
+            "name": "attempt",
+            "long": "attempt",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "ATTEMPT"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "help",
+            "long": "help",
+            "short": "h",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Print help",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "json",
+            "long": "json",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Emit one pretty JSON document to stdout. Shorthand for `--output json` to stdout",
+            "value_names": [],
+            "takes_value": false,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "false"
+            ],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 0,
+              "max": 0,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "node_id",
+            "long": "node-id",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "NODE_ID"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "output",
+            "long": "output",
+            "long_aliases": [],
+            "short_aliases": [],
+            "help": "Output format. `jsonl` (default) emits one compact JSON envelope per line on stdout — AI-first. `json` emits a single pretty document. `text` emits a human-readable summary. A path-shaped value (`./out.json`, `./out.jsonl`) routes the machine envelope to that file (the format is inferred from the extension)",
+            "value_names": [
+              "FMT|PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": false,
+            "is_global": true,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [
+              "jsonl"
+            ],
+            "accepted_values": [
+              "json",
+              "jsonl",
+              "text"
+            ],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "path",
+            "long": "path",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "PATH"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": true,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "pid",
+            "long": "pid",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "PID"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "run_id",
+            "long": "run-id",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "RUN_ID"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
+            "accepts_file_paths": false,
+            "conflicts_with": [],
+            "requires": [],
+            "required_unless_present": [],
+            "arity": {
+              "min": 1,
+              "max": 1,
+              "repeated": false,
+              "multi_value": false,
+              "require_equals": false
+            }
+          },
+          {
+            "name": "state_root",
+            "long": "state-root",
+            "long_aliases": [],
+            "short_aliases": [],
+            "value_names": [
+              "STATE_ROOT"
+            ],
+            "takes_value": true,
+            "multiple": false,
+            "required": true,
+            "is_global": false,
+            "hidden": false,
+            "deprecated": false,
+            "defaults": [],
+            "accepted_values": [],
             "accepts_file_paths": true,
             "conflicts_with": [],
             "requires": [],

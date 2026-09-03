@@ -31,7 +31,7 @@ struct ListPayload {
 ///
 /// `run list` sweeps EVERY run, including ones another process is mid-`run
 /// create` on. For a top-level worker the supervisor is spawned only AFTER
-/// `node.created`, so during the whole `create.sh` window (up to
+/// `node.created`, so during the whole native materialization window (up to
 /// `--agent-startup-timeout`, capped at 600s) a perfectly healthy in-flight run
 /// transiently presents the exact stillborn shape — pending, 0 nodes, no
 /// supervisor pid, `updated_at == created_at`. Gating the flag on an age that
@@ -42,7 +42,7 @@ struct ListPayload {
 ///
 /// `run show` / `run wait` deliberately need NO such gate: they are invoked on a
 /// *specific* run whose `run create` already returned, where 0 nodes means
-/// create.sh failed (definitively stillborn) — and `run wait` MUST settle
+/// native materializer failed (definitively stillborn) — and `run wait` MUST settle
 /// promptly, so [`is_stillborn`](crate::run::stalled::is_stillborn) itself stays
 /// grace-free (issue `run-wait-stillborn-run-not-detected`, which a grace would
 /// re-break). The gate lives here, at the one read surface that sweeps in-flight

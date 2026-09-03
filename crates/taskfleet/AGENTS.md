@@ -52,15 +52,13 @@ The bundled-skill list is hardcoded in `tests/skill.rs::skill_list_json_pins_cat
 
 ## Test-spawn hygiene
 
-Integration tests that exercise `run create`'s production path spawn real `taskfleet supervise` subprocesses. The shared `tests/common/mod.rs` `TestHome` fixture reaps them on Drop — use it (`let home = TestHome::new()`) for any new test that goes through `bin(&home)`. Tests that skip the fixture and use raw `TempDir` leak supervisor processes; the `supervise-test-teardown-leak` issue covers the recovery + reaper logic in detail.
+Integration tests that exercise `run create`'s production path spawn real `taskfleet supervise` subprocesses. The shared `tests/common/mod.rs` `TestHome` fixture reaps them on Drop — use it (`let home = TestHome::new()`) for any new test that goes through `bin(&home)`. `NativeSpawnTools` stubs only the explicit `git`/`tmux`/`workmux` CLI dependencies, so tests still execute the production materializer, generated launchers, PID handshake, publication transaction, and supervisor. There is no integration-test create-script backend.
 
 After `cargo test -p taskfleet` finishes, `pgrep -lf "taskfleet.*supervise"` from the workspace `target/debug/` path should return nothing. Any survivor is a missing-fixture bug in the new test.
 
 ## End-to-end spinoff harness
 
-`tests/e2e_spinoff.rs` drives ONE full autonomous-spinoff round-trip on every run — `run create --kind spinoff --headless` (real detached supervisor) → live stub agent → `run merge` → supervisor rolls the run up to `done`, tears down, and exits — and asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) + terminal manifest. It is the CI gate for the merge / cleanup / supervisor-lifecycle paths.
-
-It stubs the two shell-out boundaries through the production override hooks — `OCTL_CREATE_SH` (`run::spawn`) and `OCTL_MERGE_SH` (`run::merge`) — and points `TMUX_BIN`/`GIT_BIN` at nonexistent paths so the supervisor's tmux liveness probe reads `Unknown` (PID liveness governs → the live stub agent stays `Alive` until the merge terminalizes the node) and every teardown step is a lenient no-op. The stub agent (a `sleep`) is reaped by an `AgentGuard` on drop, panic-safe, alongside `TestHome`'s supervisor reaper. No new test-only hook was needed; adding lifecycle scenarios (failure path, concurrency, reattach) means extending this file.
+`tests/e2e_spinoff.rs` drives one full autonomous-spinoff round-trip on every run — native `run create --kind spinoff --headless` (real generated launcher, durable PID handshake, detached supervisor) → live stub candidate → `run merge` → supervisor rolls the run up to `done`, tears down, and exits. It asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) and terminal manifest.
 
 ## `run create --profile` / legacy `--harness` (worker selection)
 
@@ -89,24 +87,19 @@ reads the recorded candidate rather than current config. Dry-run/create/run show
 surface the compact selection; old/no-profile manifests show
 `legacy-unrecorded` without invented history.
 
-A profile-backed create writes a private per-attempt launcher and passes only
-that absolute path as `create.sh --agent`. The launcher re-enters the exact
-current executable through hidden `run-worker`; after its `--`, the recorded
-candidate argv remains byte-for-byte and boundary-for-boundary unchanged,
-followed by workmux's existing `-- <prompt>` suffix. The launcher passes the
-already-selected absolute state root through private exec-scoped
-`OCTL_INTERNAL_WORKER_STATE_ROOT` / `OCTL_INTERNAL_WORKER_AWAIT_PUBLICATION`.
-Before atomic publication moves the staging directory, the creator waits for a
-private launcher-opened marker written by the script itself; this closes the
-fork-before-script-open rename race. The shim then waits for run+node
-publication, removes both variables before starting the candidate, forwards
-termination signals, and records the true exit. It exports exact `OCTL_RUN_ID` / `OCTL_NODE_ID` / absolute `OCTL_ATTEMPT`
-only for recorded pi+`worker-v1`, removing inherited values for unsupported
-candidates. Retry regenerates this launcher solely from
-`manifest.agent_selection` and the new absolute attempt, never current config.
-No-profile compatibility still maps pi to `create.sh --agent pi` and leaves
-Claude on workmux's configured default. `manifest.harness` remains for
-compatibility while `manifest.agent_selection` pins the full candidate.
+Every create writes private outer and inner per-attempt launchers and passes only
+the outer absolute path to `workmux add -a`. The outer launcher re-enters the
+exact current executable through hidden `run-worker` for autonomous candidates.
+The inner launcher invokes the hidden handshake helper with its own PID, then
+immediately `exec`s the recorded candidate argv; argument boundaries and
+workmux's existing `-- <prompt>` suffix remain unchanged. The helper atomically
+and durably writes a nonce-bound run/node/attempt/PID/start-identity/pane record
+under the mode-0700 staging run and blocks until run+node publication. Creation
+validates binding, PID bounds, start identity, liveness, and exact qualified tmux
+identity before appending `node.created` and publishing. Retry regenerates this
+launcher solely from `manifest.agent_selection` and the new absolute attempt,
+never current config. Legacy manifests without a selection retry through the
+recorded built-in harness command rather than executable-name inference.
 
 `run show` telemetry rows derive `requirement` solely from the manifest's explicit
 lifecycle (`required` autonomous, `optional` explicit-interactive) and `support`

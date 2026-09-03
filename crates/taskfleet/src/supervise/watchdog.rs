@@ -198,7 +198,7 @@ impl WatchdogTmuxSnapshot {
     }
 
     /// Legacy bare-name verdict on the default socket — the ambiguous match
-    /// kept for nodes registered before create.sh emitted the qualified
+    /// kept for nodes registered before native materializer emitted the qualified
     /// identity.
     fn lookup_by_name(&self, window_name: &str) -> TmuxProbe {
         match self.sockets.get(&None) {
@@ -338,7 +338,7 @@ pub struct AgentProbe {
     pub tmux_window: Option<String>,
     /// Fully-qualified tmux identity captured at spawn. When `Some`, the tmux
     /// probe matches the stable `window_id` on the recorded socket (precise);
-    /// when `None` (a node registered before create.sh emitted the qualified
+    /// when `None` (a node registered before native materializer emitted the qualified
     /// fields), it falls back to a bare-name match on [`AgentProbe::tmux_window`].
     pub tmux_identity: Option<TmuxIdentity>,
     /// When `true`, skip the tmux probe. Used when tmux is not the
@@ -398,7 +398,7 @@ fn warn_legacy_bare_name_once(window_name: &str) {
         tracing::warn!(
             tmux_window = window_name,
             "node has no qualified tmux identity; falling back to bare \
-             window-name liveness matching (registered before create.sh \
+             window-name liveness matching (registered before native materializer \
              emitted the qualified fields) — this is ambiguous across sessions"
         );
     }
@@ -426,7 +426,7 @@ pub fn check_liveness(probe: &AgentProbe, tmux: &WatchdogTmuxSnapshot) -> Livene
         let probe_result = match probe.tmux_identity.as_ref() {
             // Precise path: match the stable window_id on the recorded socket.
             Some(identity) => Some(tmux.lookup_qualified(identity)),
-            // Legacy path: node registered before create.sh emitted the
+            // Legacy path: node registered before native materializer emitted the
             // qualified fields. Fall back to the ambiguous bare-name match.
             None => probe.tmux_window.as_deref().map(|name| {
                 warn_legacy_bare_name_once(name);

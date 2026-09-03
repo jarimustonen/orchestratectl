@@ -1,10 +1,12 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 233
+assertion_line: 234
 expression: value
 ---
 run-id: [RUN_ID]
 dir:    [HOME]/runs/[RUN_ID]
 kind:   spinoff
-profile: legacy-unrecorded
+profile: builtin (source builtin-harness, autonomous)
+requested-harness: pi
+agent:   candidate 0 / pi
 status: pending  (supervisor: delegated-to-parent-supervisor)

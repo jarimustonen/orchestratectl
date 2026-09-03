@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 
 mod common;
-use common::TestHome;
+use common::{NativeSpawnTools, TestHome};
 
 fn bin(home: &TempDir) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
@@ -190,30 +190,7 @@ default="local"
     .unwrap();
 
     let worktree = scratch.path().join("worktree");
-    std::fs::create_dir_all(&worktree).unwrap();
-    let create_sh = scratch.path().join("create.sh");
-    std::fs::write(
-        &create_sh,
-        format!(
-            r#"#!/bin/sh
-agent=""
-branch="wt/exact-fixture"
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--agent" ]; then agent="$2"; shift 2; continue; fi
-  shift
-done
-CAPTURE_OUTPUT='{}' "$agent" -- 'do it' </dev/null >/dev/null 2>'{}' &
-pid=$!
-/bin/sleep 0.1
-printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}","tmux_window":"fixture","agent_pid_hint":%s,"tmux_socket":null,"tmux_session":null,"tmux_window_id":null}}\n' "$branch" "$pid"
-"#,
-            observed.display(),
-            scratch.path().join("worker-launch.err").display(),
-            worktree.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let native = NativeSpawnTools::new();
 
     // Hostile product-name executables prove both the worker shim and detached
     // supervisor re-enter the exact current binary rather than consulting PATH.
@@ -235,14 +212,14 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
         // worktree/self-exec boundary.
         .env("TASKFLEET_HOME", home.path().file_name().unwrap())
         .env("HOME", home.path())
-        .env("OCTL_CREATE_SH", &create_sh)
         // Only the hostile product-name fixtures are searchable. Every tool
         // this scenario legitimately needs is addressed by absolute path.
-        .env("PATH", scratch.path())
-        .args([
-            "--output", "json", "run", "create", "--kind", "spinoff", "--title", "exact", "--task",
-            "do it",
-        ]);
+        .env("PATH", scratch.path());
+    native.configure(&mut command, &worktree, "fixture");
+    command.env("CAPTURE_OUTPUT", &observed).args([
+        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "exact", "--task",
+        "do it",
+    ]);
     let created = run_ok(&mut command);
     let run_id = created["data"]["run_id"].as_str().unwrap();
     let node: Value = serde_json::from_slice(
@@ -270,21 +247,19 @@ printf '{{"schema_version":1,"type":"spinoff","branch":"%s","worktree_path":"{}"
             run_dir.join("agent-launch-n-0001-attempt-0.sh"),
         )
         .unwrap_or_default();
-        let stderr = std::fs::read_to_string(scratch.path().join("worker-launch.err"))
-            .unwrap_or_default();
+        let stderr = std::fs::read_to_string(native.agent_stderr()).unwrap_or_default();
         let logs = std::fs::read_to_string(home.path().join("logs/taskfleet.log.jsonl"))
             .unwrap_or_default();
         panic!(
             "worker did not start: {error}; events={events}; launcher={launcher} stderr={stderr} logs={logs}"
         )
     });
-    assert_eq!(
-        observed_bytes,
-        format!(
-            "{run_id}\nn-0001\n0\nunset\nunset\n5\n{}\none two\nquote'arg\n--\ndo it\n",
-            worker.display()
-        )
+    let expected_prefix = format!(
+        "{run_id}\nn-0001\n0\nunset\nunset\n5\n{}\none two\nquote'arg\n--\n",
+        worker.display()
     );
+    assert!(observed_bytes.starts_with(&expected_prefix));
+    assert!(observed_bytes.ends_with("\n\ndo it\n"));
     // The recorded PID is the run-worker shim. Let its short-lived child exit
     // naturally so the shim records the durable worker.exited fact.
     assert!(pid > 0);
@@ -326,29 +301,29 @@ default="only"
     )
     .unwrap();
     let scratch = TempDir::new().unwrap();
-    let create_sh = scratch.path().join("create.sh");
-    std::fs::write(
-        &create_sh,
-        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"error\":{\"code\":\"agent-pid-undiscoverable\",\"message\":\"selected worker failed to launch\"}}' >&2\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&create_sh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let native = NativeSpawnTools::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path())
-        .env("OCTL_CREATE_SH", &create_sh)
-        .env("PATH", "/usr/bin:/bin")
-        .args([
-            "--output", "json", "run", "create", "--kind", "spinoff", "--title", "fails", "--task",
-            "do it",
-        ]);
+        .env("PATH", "/usr/bin:/bin");
+    native.configure(&mut command, &scratch.path().join("worktree"), "fixture");
+    command.env("WORKMUX_BIN", "/usr/bin/false").args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--headless",
+        "--title",
+        "fails",
+        "--task",
+        "do it",
+    ]);
     let (exit, error) = run_fail(&mut command);
     assert_eq!(exit, 1);
-    assert_eq!(
-        error["error"]["code"],
-        "create_sh_error_agent-pid-undiscoverable"
-    );
+    assert_eq!(error["error"]["code"], "workmux_add_failed");
     assert!(
         !home.path().join("runs").exists()
             || std::fs::read_dir(home.path().join("runs"))

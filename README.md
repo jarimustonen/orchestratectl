@@ -8,6 +8,11 @@ It spawns one or many coding agents into isolated git worktrees, supervises
 them through a file-based event log, and merges their work back, all behind
 one canonical command surface.
 
+Worker creation requires `git`, `tmux`, and `workmux` on `PATH`. Taskfleet owns
+the worktree/tmux/launcher transaction itself; it does not depend on Homebase or
+`~/.claude/skills/worktree/scripts/create.sh`. Bundled issue workflows also use
+`issuectl`.
+
 ## What you get
 
 - **One autonomous agent in a worktree.** `run create --kind spinoff` spawns

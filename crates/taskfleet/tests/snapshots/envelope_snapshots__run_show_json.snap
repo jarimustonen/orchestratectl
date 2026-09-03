@@ -1,6 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 233
+assertion_line: 234
 expression: value
 ---
 {
@@ -47,7 +47,24 @@ expression: value
       "source_branch": null,
       "worktree_root": null,
       "harness": "pi",
-      "selection": "legacy-unrecorded",
+      "selection": {
+        "schema_version": 1,
+        "profile": "builtin",
+        "selection_source": "builtin-harness",
+        "interaction": "autonomous",
+        "capability": "capable",
+        "residency": "local",
+        "requested_harness": "pi",
+        "selected": {
+          "candidate_index": 0,
+          "harness": "pi",
+          "command": [
+            "pi"
+          ],
+          "telemetry": "worker-v1"
+        },
+        "fallback": []
+      },
       "node_count": 1,
       "parent_run_id": null,
       "parent_node_id": null
@@ -59,7 +76,7 @@ expression: value
       {
         "node_id": "n-0001",
         "requirement": "required",
-        "support": "unsupported",
+        "support": "configured",
         "sample": "absent"
       }
     ],

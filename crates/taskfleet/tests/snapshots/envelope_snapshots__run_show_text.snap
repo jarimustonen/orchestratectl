@@ -1,6 +1,6 @@
 ---
 source: crates/taskfleet/tests/envelope_snapshots.rs
-assertion_line: 233
+assertion_line: 234
 expression: value
 ---
 run-id:        [RUN_ID]
@@ -9,9 +9,11 @@ status:        pending
 landed:        false (unverified)
 kind:          spinoff
 lifecycle:     autonomous
-profile:       legacy-unrecorded
+profile:       builtin (source builtin-harness, autonomous)
+requested-harness: pi
+agent:         candidate 0 / pi
 created_at:    [TS]
 updated_at:    [TS]
 nodes:         1
-telemetry:     n-0001: telemetry absent (requirement required, support unsupported); run status unchanged
+telemetry:     n-0001: telemetry absent (requirement required, support configured); run status unchanged
 supervisor:    (none recorded)

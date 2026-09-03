@@ -6,8 +6,7 @@
 //! `tip_committer_time`, `worktree_is_clean`, `main_worktree`,
 //! `worktree_remove`, and `branch_delete` (with the `-d`/`-D` unmerged-safety
 //! distinction). The full branch/remote/status surface is deliberately omitted;
-//! the supervisor talks to git through exactly this narrow set, and the git side
-//! of spawn (worktree *creation* via `workmux add`) still lives in `create.sh`.
+//! native spawn invokes the explicit `workmux add` CLI through `run::spawn`.
 //!
 //! ## Why this is vendored (not a crate dependency)
 //!
