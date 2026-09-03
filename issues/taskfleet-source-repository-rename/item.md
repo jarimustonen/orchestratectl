@@ -3,7 +3,7 @@ created: 2026-09-04
 updated: 2026-09-04
 type: task
 reporter: jari
-status: open
+status: done
 priority: high
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
@@ -13,6 +13,8 @@ blocked_by: ['@taskfleet-integrated-validation']
 commits:
 - hash: 076f983c498de1ca2fc8fe0b919130ffbd52dc27
   summary: converge canonical Taskfleet repository identity
+closed: 2026-09-04
+closed_by: orchestrator
 ---
 
 # Rename Taskfleet source repository
@@ -60,3 +62,9 @@ ADR 0002 R9 candidate/pre-main legs passed. GitHub source repository ID `1265770
 No tag, crate, GitHub Release, formula, tap ref, secret value, installed binary/skill, or state was changed. Release remains blocked (`release/taskfleet-release.json: blocked-r8-r9-r10`; distribution `prepared-blocked-r10`); R10 owns live tap credentials and release activation. Review residuals requiring R10 re-evaluation are cargo-dist 0.28.2's generated host cancellation dependency and generated `secrets: inherit` before any live credentials/activation.
 
 Conductor finalization checklist (do not close before all pass): (1) merge only through `taskfleet run merge`; (2) verify canonical `origin/main` equals the exact merged SHA; (3) wait for a fresh `ci.yml` push run whose `headSha` is that exact merged SHA and whose every job succeeds, including `test (self-hosted-macos-arm64)` on runner ID 21; (4) recheck repository ID/name, canonical remotes, tag/release/tap/secret-name invariants, and residual classifier; (5) record final merged commit and exact-main CI on this issue, then close it. This worker deliberately leaves the issue open.
+
+## Resolution
+
+### 2026-09-03T23:07:20Z · @orchestrator
+
+R9 conductor finalization passed. Canonical origin/main is exact merged SHA `5df8359d092bcb10c26441e988617895151a12a7`. Renamed-repository main push CI `33815467669` completed success: docs, ubuntu/macOS tests, version snapshots, clippy, MSRV, rustfmt and cargo-deny all succeeded. The R9-only self-hosted probe is intentionally same-repository-PR-gated and therefore skipped on push; it already executed successfully on the exact identity candidate in PR CI `33814447787` using runner ID 21 (`self-hosted`, `macOS`, `ARM64`). Repository ID remains `R_kgDOS3Iezw`, canonical name/remote are `jarimustonen/taskfleet`, and canonical API/SSH operations pass. Tags/releases, both tap heads (`db12bb1` canonical empty-prepared; `85ce830` legacy), and source secret-name set remain unchanged. R9 evidence index (44 artifacts), sanitization scan and residual classifier pass. R9 is complete; this authorizes no release action. R10 must run the post-R9 exact-SHA release gate before any tag, publication or tap activation.
