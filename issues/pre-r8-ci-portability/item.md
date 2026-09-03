@@ -3,7 +3,7 @@ created: 2026-09-03
 updated: 2026-09-03
 type: bug
 reporter: jari
-status: open
+status: fixed
 priority: high
 related: ['@taskfleet-integrated-validation']
 lane: taskfleet-rename
@@ -12,6 +12,9 @@ collision: [repository-identity]
 commits:
 - hash: 5a098130bd5ae829e874439252aff050e4dedb2e
   summary: 'test: declare bare CI spawn and archive dependencies'
+- hash: '2038372'
+  summary: 'test: make native materialization hermetic'
+closed: 2026-09-03
 ---
 
 # Restore bare-CI portability before Taskfleet R8
@@ -51,3 +54,7 @@ _Add rationale for reopening here._
 ### 2026-09-03T11:57:12Z · @orchestrator
 
 Acceptance failed on exact-SHA main CI 33751749394 (bc8d06c): Ubuntu still reports no_tmux_session for exact-argv materialization; macOS reports no_tmux_session in spawn_all_kinds::each_kind_native_spawn_publishes_a_live_handshaken_node; nextest also flags shim_forwards_sigterm_and_records_the_childs_true_exit as leaky. Reopened for a complete bare-Linux/macOS materializing-test audit; R8 remains blocked.
+
+### 2026-09-03T14:01:56Z · @agent
+
+Completed the reopened portability audit. CI log review corrects the reopen summary: in run 33751749394 the exact-argv test passed on both Ubuntu and macOS; spawn_all_kinds failed with no_tmux_session on both OSes, and the SIGTERM test leaked on both. The platform-dependent behavior was ambient TMUX in equipped developer sessions versus bare CI, not an Ubuntu/macOS production divergence. NativeSpawnTools now strips TMUX centrally, every materialized create declares isolated public-CLI placement, and a negative test pins bare-context rejection. The LEAK was an orphaned sleep grandchild retaining nextest descriptors after the shell received forwarded SIGTERM; the test now execs the workload and owns panic cleanup in a private process group. No-fail-fast also exposed and fixed two test-only macOS concurrency races: a 10s readiness allowance and a partial capture-file read. Final macOS and bare-Linux full 1,111-test no-fail-fast runs passed with no LEAK markers; fmt, clippy, doctests, rustdoc, and version snapshots are green. No fixture worktree, tmux, run-root, supervisor, or child-process residue remains.
