@@ -1,6 +1,6 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 type: task
 reporter: taskfleet-r0-worker
 status: open
@@ -13,7 +13,7 @@ originating_run_kind: spinoff
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 90
-blocked_by: ['@taskfleet-distribution-topology', '@publish-crates-fixture-symlink-chmod']
+blocked_by: ['@taskfleet-distribution-topology', '@publish-crates-fixture-symlink-chmod', '@taskfleet-native-materialization']
 collision: [repository-identity]
 ---
 
