@@ -165,6 +165,105 @@ pub fn emit_envelope<T: Serialize>(
     emit_envelope_with_dropped(body, spec, warnings, crate::cli::dropped_log_events())
 }
 
+/// Emit a catalog-style payload both at top level (for generic discovery
+/// probes) and under the stable `data` envelope used by existing Taskfleet
+/// consumers. The duplication is additive and intentionally limited to
+/// read-only capability catalogs such as `skill list`.
+pub fn emit_discoverable_envelope<T: Serialize>(
+    body: &T,
+    spec: &OutputSpec,
+    warnings: &[String],
+) -> Result<(), CliError> {
+    let body_value = serde_json::to_value(body)
+        .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
+    let body_object = body_value.as_object().ok_or_else(|| {
+        CliError::system(
+            "internal_serialize",
+            "discoverable envelope body must serialize as an object",
+        )
+    })?;
+    let augmented: Vec<String>;
+    let (warnings, dropped_log_events): (&[String], Option<u64>) =
+        match crate::cli::dropped_log_events() {
+            dropped if dropped > 0 => {
+                augmented = warnings
+                    .iter()
+                    .cloned()
+                    .chain(dropped_log_warning(dropped))
+                    .collect();
+                (&augmented, Some(dropped))
+            }
+            _ => (warnings, None),
+        };
+
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("schema_version".into(), SCHEMA_VERSION.into());
+    for (key, value) in body_object {
+        envelope.insert(key.clone(), value.clone());
+    }
+    envelope.insert("data".into(), body_value);
+    if let Some(dropped) = dropped_log_events {
+        envelope.insert("dropped_log_events".into(), dropped.into());
+    }
+    envelope.insert(
+        "warnings".into(),
+        serde_json::to_value(warnings)
+            .map_err(|e| CliError::system("internal_serialize", e.to_string()))?,
+    );
+    emit_value(&serde_json::Value::Object(envelope), spec)
+}
+
+fn emit_value(value: &serde_json::Value, spec: &OutputSpec) -> Result<(), CliError> {
+    let bytes = match spec.format {
+        OutputFormat::Jsonl => {
+            let mut s = serde_json::to_string(value)
+                .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
+            s.push('\n');
+            s.into_bytes()
+        }
+        OutputFormat::Json => {
+            let mut s = serde_json::to_string_pretty(value)
+                .map_err(|e| CliError::system("internal_serialize", e.to_string()))?;
+            s.push('\n');
+            s.into_bytes()
+        }
+        OutputFormat::Text => {
+            return Err(CliError::system(
+                "internal_format_mismatch",
+                "emit_value called in text mode",
+            ));
+        }
+    };
+    write_bytes(&bytes, spec)
+}
+
+fn write_bytes(bytes: &[u8], spec: &OutputSpec) -> Result<(), CliError> {
+    match &spec.file {
+        None => {
+            let mut out = std::io::stdout().lock();
+            out.write_all(bytes)
+                .map_err(|e| CliError::system("io_error", format!("write stdout: {e}")))?;
+            out.flush()
+                .map_err(|e| CliError::system("io_error", format!("flush stdout: {e}")))
+        }
+        Some(path) => {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)
+                .map_err(|e| {
+                    CliError::system("io_error", format!("open {}: {e}", path.display()))
+                })?;
+            file.write_all(bytes).map_err(|e| {
+                CliError::system("io_error", format!("write {}: {e}", path.display()))
+            })?;
+            file.flush()
+                .map_err(|e| CliError::system("io_error", format!("flush {}: {e}", path.display())))
+        }
+    }
+}
+
 /// [`emit_envelope`] with the dropped-event count injected explicitly, so the
 /// drop→warning→serialization path is testable without a live appender.
 fn emit_envelope_with_dropped<T: Serialize>(
@@ -212,32 +311,7 @@ fn emit_envelope_with_dropped<T: Serialize>(
             ));
         }
     };
-    match &spec.file {
-        None => {
-            let mut out = std::io::stdout().lock();
-            out.write_all(&bytes)
-                .map_err(|e| CliError::system("io_error", format!("write stdout: {e}")))?;
-            out.flush()
-                .map_err(|e| CliError::system("io_error", format!("flush stdout: {e}")))?;
-        }
-        Some(path) => {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)
-                .map_err(|e| {
-                    CliError::system("io_error", format!("open {}: {}", path.display(), e))
-                })?;
-            f.write_all(&bytes).map_err(|e| {
-                CliError::system("io_error", format!("write {}: {}", path.display(), e))
-            })?;
-            f.flush().map_err(|e| {
-                CliError::system("io_error", format!("flush {}: {}", path.display(), e))
-            })?;
-        }
-    }
-    Ok(())
+    write_bytes(&bytes, spec)
 }
 
 /// Emit trailing text-mode warnings (each on its own `warning: ` line on

@@ -127,13 +127,24 @@ enum SkillAction {
     Install {
         /// Skill name (see `skill list`). Omit to install every skill.
         name: Option<String>,
-        /// Which agent runtime to install for.
-        #[arg(long, value_enum, default_value_t = SkillAgentArg::Claude)]
+        /// Which agent runtime to install for. Defaults to all runtimes.
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = SkillAgentArg::All,
+            default_value_if("dest", clap::builder::ArgPredicate::IsPresent, "claude")
+        )]
         agent: SkillAgentArg,
-        /// Override the destination path. Incompatible with `--agent all`
-        /// and with the install-all (no-name) form.
-        #[arg(long)]
+        /// Override the install base while preserving each agent's native layout.
+        #[arg(long, conflicts_with = "dest")]
+        target: Option<PathBuf>,
+        /// Compatibility override for one exact output file. Requires one skill;
+        /// when `--agent` is omitted, the legacy Claude form is retained.
+        #[arg(long, conflicts_with = "target")]
         dest: Option<PathBuf>,
+        /// Validate and print the complete install plan without writing files.
+        #[arg(long)]
+        dry_run: bool,
         /// Overwrite existing files at the destination(s).
         #[arg(long)]
         force: bool,
@@ -143,6 +154,7 @@ enum SkillAction {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum SkillAgentArg {
     Claude,
+    Pi,
     Codex,
     All,
 }
@@ -151,6 +163,7 @@ impl From<SkillAgentArg> for crate::skill::AgentTarget {
     fn from(v: SkillAgentArg) -> Self {
         match v {
             SkillAgentArg::Claude => Self::Claude,
+            SkillAgentArg::Pi => Self::Pi,
             SkillAgentArg::Codex => Self::Codex,
             SkillAgentArg::All => Self::All,
         }
@@ -386,13 +399,19 @@ pub(crate) fn run(identity: crate::InvocationIdentity) -> ExitCode {
             SkillAction::Install {
                 name,
                 agent,
+                target,
                 dest,
+                dry_run,
                 force,
             } => crate::skill::cmd_install(
                 name.as_deref(),
                 agent.into(),
-                dest,
-                force,
+                crate::skill::InstallOptions {
+                    target,
+                    dest,
+                    dry_run,
+                    force,
+                },
                 output,
                 &logging_warnings,
             ),

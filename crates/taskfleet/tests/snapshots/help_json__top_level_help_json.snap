@@ -4681,7 +4681,7 @@ expression: value
                 "long": "agent",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Which agent runtime to install for",
+                "help": "Which agent runtime to install for. Defaults to all runtimes",
                 "value_names": [
                   "AGENT"
                 ],
@@ -4692,10 +4692,11 @@ expression: value
                 "hidden": false,
                 "deprecated": false,
                 "defaults": [
-                  "claude"
+                  "all"
                 ],
                 "accepted_values": [
                   "claude",
+                  "pi",
                   "codex",
                   "all"
                 ],
@@ -4716,7 +4717,7 @@ expression: value
                 "long": "dest",
                 "long_aliases": [],
                 "short_aliases": [],
-                "help": "Override the destination path. Incompatible with `--agent all` and with the install-all (no-name) form",
+                "help": "Compatibility override for one exact output file. Requires one skill; when `--agent` is omitted, the legacy Claude form is retained",
                 "value_names": [
                   "DEST"
                 ],
@@ -4729,12 +4730,43 @@ expression: value
                 "defaults": [],
                 "accepted_values": [],
                 "accepts_file_paths": true,
-                "conflicts_with": [],
+                "conflicts_with": [
+                  "target"
+                ],
                 "requires": [],
                 "required_unless_present": [],
                 "arity": {
                   "min": 1,
                   "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "dry_run",
+                "long": "dry-run",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Validate and print the complete install plan without writing files",
+                "value_names": [],
+                "takes_value": false,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [
+                  "false"
+                ],
+                "accepted_values": [],
+                "accepts_file_paths": false,
+                "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 0,
+                  "max": 0,
                   "repeated": false,
                   "multi_value": false,
                   "require_equals": false
@@ -4851,6 +4883,37 @@ expression: value
                 ],
                 "accepts_file_paths": true,
                 "conflicts_with": [],
+                "requires": [],
+                "required_unless_present": [],
+                "arity": {
+                  "min": 1,
+                  "max": 1,
+                  "repeated": false,
+                  "multi_value": false,
+                  "require_equals": false
+                }
+              },
+              {
+                "name": "target",
+                "long": "target",
+                "long_aliases": [],
+                "short_aliases": [],
+                "help": "Override the install base while preserving each agent's native layout",
+                "value_names": [
+                  "TARGET"
+                ],
+                "takes_value": true,
+                "multiple": false,
+                "required": false,
+                "is_global": false,
+                "hidden": false,
+                "deprecated": false,
+                "defaults": [],
+                "accepted_values": [],
+                "accepts_file_paths": true,
+                "conflicts_with": [
+                  "dest"
+                ],
                 "requires": [],
                 "required_unless_present": [],
                 "arity": {

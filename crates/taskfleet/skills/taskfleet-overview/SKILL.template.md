@@ -43,8 +43,12 @@ If `schema_version` is a value you do not recognise, refuse to proceed
   first when you discover the binary; it tells you whether the skill
   you loaded matches the binary on disk.
 - `taskfleet skill list` / `skill print <name>` / `skill install <name>`
-  — discover, stream, and persist the operating manual for each
-  workflow.
+  — discover, stream, and persist the operating manual for each workflow.
+  `skill list --json` declares the supported runtimes and layouts. Install
+  defaults to all three (`claude`, `pi`, and `codex`); select one with
+  `--agent`, preserve native layouts under another base with `--target`, and
+  preview the complete no-write plan with `--dry-run`. Existing files are
+  never replaced unless you pass explicit `--force`.
 - `taskfleet run create --kind <kind> --title "..." --task "..."`
   — start a new run (kinds: `spinoff`, `research`, `technical-decision`,
   `fan-out`). The brief is `--task "<inline>"` or, for a long brief,

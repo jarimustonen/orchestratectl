@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,83 +32,84 @@ struct EmbeddedSkill {
 }
 
 /// A companion reference file that ships alongside a skill's `SKILL.md`.
-/// Claude and pi install it as a sibling in the skill directory. Codex installs
-/// it under the shared `_shared/` subdirectory and rewrites declared links to
-/// that location.
+/// Claude and pi install it as a sibling in the skill directory. Codex embeds
+/// it into the single prompt so that artifact remains self-contained.
 struct EmbeddedResource {
     filename: &'static str,
     body: &'static str,
     /// The markdown link targets (the payload inside `](…)`) that reference
-    /// this companion in the claude-layout skill bodies. On a codex install
-    /// each is rewritten to `_shared/<filename>`. Anchoring the rewrite on
-    /// the full `](target)` form keeps the shorter sibling target from
-    /// matching inside a longer `../owner/target` one.
+    /// this companion in the Claude/pi skill bodies. On a Codex install each
+    /// is rewritten to the resource's in-document anchor. Anchoring the
+    /// rewrite on the full `](target)` form keeps the shorter sibling target
+    /// from matching inside a longer `../owner/target` one.
     claude_link_targets: &'static [&'static str],
 }
 
-/// Subdir under the flat codex prompts dir (`~/.codex/prompts/_shared/`)
-/// that holds companion reference files. A subdir (not a top-level `.md`)
-/// so codex never mistakes a companion for a slash-command prompt, and a
-/// single shared location so every skill links to the one copy.
+/// Legacy Codex provenance/companion subdir. New Codex installs are
+/// self-contained prompts, but the marker remains here so upgrades can safely
+/// detect and prune companion files written by older Taskfleet releases.
 const CODEX_SHARED_SUBDIR: &str = "_shared";
 
 /// Companion resources for a skill, keyed by skill name. Most skills have
 /// none. `build.rs` renders every non-`SKILL.template.md` `*.md` file in a
 /// skill's directory into `$OUT_DIR/skills/<name>/`, and the matching
 /// `include_str!` below embeds it. `cmd_install` writes each resource as a
-/// sibling of the skill's `SKILL.md` (claude) or into the `_shared/` subdir
-/// (codex) — see `EmbeddedResource` for the layout rationale.
+/// sibling of Claude/pi `SKILL.md`; Codex embeds the same bytes in its prompt.
 fn resources_for(_name: &str) -> &'static [EmbeddedResource] {
     &[]
 }
 
-/// The codex-layout link target for a companion: a single shared path every
-/// skill body resolves to, relative to the flat prompts dir.
-fn codex_link_target(filename: &str) -> String {
-    format!("{CODEX_SHARED_SUBDIR}/{filename}")
-}
-
-/// Rewrite a skill body for the target agent. Claude bodies are byte-for-byte
-/// the embedded source. Codex bodies get every companion's claude-layout link
-/// forms rewritten to the shared `_shared/<filename>` target, so the flat
-/// prompts layout resolves the same reference the per-skill claude layout
-/// does. The rewrite is anchored on the full `](target)` form and is a no-op
-/// for any body that references no companion.
-///
-/// Scope is deliberately the whole catalog, not just the skill being
-/// installed, so cross-skill companion links can resolve to one shared copy.
-/// `claude_link_targets` are distinctive prose strings, and the rewrite is
-/// pinned by `every_claude_link_target_appears_in_some_skill_body`.
-fn render_body_for_agent(agent: &str, body: &'static str) -> Cow<'static, str> {
+/// Render a skill body for one target agent. Claude and pi receive the
+/// byte-identical Agent Skill body and sibling resource tree. Codex receives
+/// one self-contained prompt: every referenced resource is appended verbatim
+/// under a stable heading, and links are rewritten to that in-document anchor.
+fn render_body_for_agent(agent: &str, skill_name: &str, body: &'static str) -> Cow<'static, str> {
     if agent != "codex" {
         return Cow::Borrowed(body);
     }
-    let mut rendered = Cow::Borrowed(body);
-    for skill in SKILLS {
-        for resource in resources_for(skill.name) {
-            let codex_target = codex_link_target(resource.filename);
-            for claude_target in resource.claude_link_targets {
-                let from = format!("]({claude_target})");
-                if rendered.contains(&from) {
-                    let to = format!("]({codex_target})");
-                    rendered = Cow::Owned(rendered.replace(&from, &to));
-                }
-            }
-        }
-    }
-    rendered
+    render_codex_prompt(body, resources_for(skill_name))
 }
 
-/// Resolve a codex companion's destination: `<prompts-dir>/_shared/<filename>`,
-/// where the prompts dir is the parent of the skill's flat prompt file
-/// `skill_path`. A bare relative `skill_path` (empty parent) places the
-/// `_shared/` subdir in the current directory.
-fn codex_companion_path(skill_path: &Path, filename: &str) -> PathBuf {
-    let shared_dir = match skill_path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.join(CODEX_SHARED_SUBDIR),
-        _ => PathBuf::from(CODEX_SHARED_SUBDIR),
-    };
-    shared_dir.join(filename)
+fn render_codex_prompt(
+    body: &'static str,
+    resources: &'static [EmbeddedResource],
+) -> Cow<'static, str> {
+    if resources.is_empty() {
+        return Cow::Borrowed(body);
+    }
+
+    let mut rendered = body.to_string();
+    for resource in resources {
+        let anchor = format!("#taskfleet-resource-{}", resource_anchor(resource.filename));
+        for claude_target in resource.claude_link_targets {
+            rendered = rendered.replace(&format!("]({claude_target})"), &format!("]({anchor})"));
+        }
+        write!(
+            rendered,
+            "\n\n## Taskfleet resource: {}\n<a id=\"taskfleet-resource-{}\"></a>\n\n{}",
+            resource.filename,
+            resource_anchor(resource.filename),
+            resource.body
+        )
+        .expect("writing to a String cannot fail");
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+    Cow::Owned(rendered)
+}
+
+fn resource_anchor(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 const SKILLS: &[EmbeddedSkill] = &[
@@ -269,8 +271,16 @@ pub fn catalog() -> Vec<SkillCatalogEntry> {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum AgentTarget {
     Claude,
+    Pi,
     Codex,
     All,
+}
+
+pub struct InstallOptions {
+    pub target: Option<PathBuf>,
+    pub dest: Option<PathBuf>,
+    pub dry_run: bool,
+    pub force: bool,
 }
 
 /// Names of every skill bundled in this binary. Consumed by `doctor`'s
@@ -338,39 +348,50 @@ pub fn companion_sources(name: &str) -> Vec<CompanionSource> {
         .collect()
 }
 
-/// Every companion resource any bundled skill ships, deduplicated by
-/// filename. Consumed by the codex `doctor` checks: the codex `_shared/`
-/// dir is a single shared location every skill's companion lands in, so a
-/// companion still referenced by at least one bundled skill is "still
-/// bundled" (audited by the forward `skill.sync.codex._shared.<file>`
-/// check) rather than an orphan. Sorted by filename for deterministic
-/// output.
+/// External companion resources in the current Codex layout. Always empty:
+/// Codex embeds resources in each self-contained prompt. Retained as the
+/// doctor compatibility seam so legacy `_shared` marker rows become orphans.
 pub fn all_companion_sources() -> Vec<CompanionSource> {
-    let mut seen: HashSet<&'static str> = HashSet::new();
-    let mut out: Vec<CompanionSource> = Vec::new();
-    for skill in SKILLS {
-        for r in resources_for(skill.name) {
-            if seen.insert(r.filename) {
-                out.push(CompanionSource {
-                    filename: r.filename,
-                    bundled_body: r.body,
-                });
-            }
-        }
-    }
-    out.sort_by(|a, b| a.filename.cmp(b.filename));
-    out
+    // Codex's §15 artifact is now self-contained. This compatibility-facing
+    // catalog intentionally stays empty so every old `_shared` marker record
+    // is classified as an orphan and a forced install can retire it.
+    Vec::new()
 }
 
 #[derive(Serialize)]
 struct SkillSummary {
     name: &'static str,
     description: String,
+    cli_version: String,
+    skill_schema_version: u32,
 }
 
 #[derive(Serialize)]
 struct ListPayload {
+    supported_agents: [&'static str; 3],
+    install: InstallCapabilities,
     skills: Vec<SkillSummary>,
+}
+
+#[derive(Serialize)]
+struct InstallCapabilities {
+    selection_flag: &'static str,
+    default: &'static str,
+    accepted_values: [&'static str; 4],
+    target_flag: &'static str,
+    dry_run_flag: &'static str,
+    force_flag: &'static str,
+    interactive: bool,
+    no_clobber_default: bool,
+    overwrite_requires_force: bool,
+    layouts: [InstallLayout; 3],
+}
+
+#[derive(Serialize)]
+struct InstallLayout {
+    agent: &'static str,
+    path: &'static str,
+    form: &'static str,
 }
 
 #[derive(Serialize)]
@@ -401,11 +422,51 @@ pub fn cmd_list(spec: &OutputSpec, warnings: &[String]) -> Result<(), CliError> 
         .map(|s| SkillSummary {
             name: s.name,
             description: parse_description(s.body).unwrap_or_default(),
+            cli_version: parse_frontmatter_field(s.body, "cli_version")
+                .unwrap_or_else(|| CLI_VERSION.to_string()),
+            skill_schema_version: parse_frontmatter_field(s.body, "schema_version")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(SKILL_SCHEMA_VERSION),
         })
         .collect();
     match spec.format {
         OutputFormat::Json | OutputFormat::Jsonl => {
-            output::emit_envelope(&ListPayload { skills }, spec, warnings)?;
+            output::emit_discoverable_envelope(
+                &ListPayload {
+                    supported_agents: ["claude", "pi", "codex"],
+                    install: InstallCapabilities {
+                        selection_flag: "--agent",
+                        default: "all",
+                        accepted_values: ["claude", "pi", "codex", "all"],
+                        target_flag: "--target",
+                        dry_run_flag: "--dry-run",
+                        force_flag: "--force",
+                        interactive: false,
+                        no_clobber_default: true,
+                        overwrite_requires_force: true,
+                        layouts: [
+                            InstallLayout {
+                                agent: "claude",
+                                path: ".claude/skills/<name>/...",
+                                form: "agent-skill-tree",
+                            },
+                            InstallLayout {
+                                agent: "pi",
+                                path: ".pi/agent/skills/<name>/...",
+                                form: "agent-skill-tree",
+                            },
+                            InstallLayout {
+                                agent: "codex",
+                                path: ".codex/prompts/<name>.md",
+                                form: "self-contained-prompt",
+                            },
+                        ],
+                    },
+                    skills,
+                },
+                spec,
+                warnings,
+            )?;
         }
         OutputFormat::Text => {
             for s in &skills {
@@ -503,11 +564,16 @@ pub fn cmd_print(name: &str, spec: &OutputSpec, warnings: &[String]) -> Result<(
 pub fn cmd_install(
     name: Option<&str>,
     agent: AgentTarget,
-    dest: Option<PathBuf>,
-    force: bool,
+    options: InstallOptions,
     spec: &OutputSpec,
     warnings: &[String],
 ) -> Result<(), CliError> {
+    let InstallOptions {
+        target,
+        dest,
+        dry_run,
+        force,
+    } = options;
     // §15: `install [<name>]` installs all skills when no name is given.
     let skills: Vec<&'static EmbeddedSkill> = match name {
         Some(n) => vec![lookup(n)?],
@@ -529,133 +595,59 @@ pub fn cmd_install(
         ));
     }
 
-    // Whether this install dual-homes into pi — the same condition that pushes
-    // the pi `PlanItem`s below. When it does, load AND validate the out-of-band
-    // provenance record NOW, before any file is written, so a corrupt or
-    // future-schema record fails the install fast rather than after mutating the
-    // tree (review finding A). The loaded record is threaded to the pi lifecycle
-    // block after the writes land.
-    let pi_dual_home = dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All);
+    // A default-path pi install maintains its out-of-band provenance record.
+    // `--target` is an isolated caller-owned base and never mutates Taskfleet's
+    // normal state root.
+    let pi_default =
+        target.is_none() && dest.is_none() && matches!(agent, AgentTarget::Pi | AgentTarget::All);
     let mut pi_provenance: Option<(PathBuf, PiProvenance)> = None;
-    if pi_dual_home {
+    if pi_default {
         if let Some(record_path) = pi_provenance_path() {
             let prov = load_pi_provenance_for_write(&record_path)?;
             pi_provenance = Some((record_path, prov));
         }
     }
 
-    // Build the full plan first, then preflight, then write. This avoids
-    // the partial-install retry trap where one of N writes succeeds and a
-    // re-run hits refused_overwrite on a different path than the original
-    // failure. Each skill contributes its `SKILL.md` plus any companion
-    // resources, installed as siblings of the skill's destination.
+    // Build the complete plan before checking or writing any destination.
+    // Claude and pi keep native resource trees; Codex embeds resources in its
+    // one prompt and therefore contributes exactly one file per skill.
     let mut plan: Vec<PlanItem> = Vec::new();
-    // Claude-layout skill directories this install touches under the
-    // default path — each gets the provenance marker stamped after the
-    // writes land. Only the default path (`dest.is_none()`) is a real
-    // `~/.claude/skills/<name>/` directory we own; a `--dest` custom path
-    // is the caller's to manage, so we never litter a marker there.
     let mut mark_dirs: Vec<(&'static str, PathBuf)> = Vec::new();
     for skill in &skills {
-        let targets: Vec<(&'static str, PathBuf)> = match (&agent, dest.as_ref()) {
-            (AgentTarget::Claude, Some(p)) => vec![("claude", p.clone())],
-            (AgentTarget::Codex, Some(p)) => vec![("codex", p.clone())],
-            (AgentTarget::Claude, None) => vec![("claude", default_path("claude", skill.name)?)],
-            (AgentTarget::Codex, None) => vec![("codex", default_path("codex", skill.name)?)],
-            (AgentTarget::All, _) => vec![
-                ("claude", default_path("claude", skill.name)?),
-                ("codex", default_path("codex", skill.name)?),
-            ],
+        let selected: Vec<&'static str> = match agent {
+            AgentTarget::Claude => vec!["claude"],
+            AgentTarget::Pi => vec!["pi"],
+            AgentTarget::Codex => vec!["codex"],
+            AgentTarget::All => vec!["claude", "pi", "codex"],
         };
-        for (agent_name, path) in targets {
-            // Companion resources install per layout (see `EmbeddedResource`):
-            // claude gets them as plain siblings of the skill's `SKILL.md`;
-            // codex, whose flat prompts dir surfaces every top-level `.md` as
-            // a slash-command, gets them in a shared `_shared/` subdir with
-            // the skill body's companion links rewritten to point there.
-            match agent_name {
-                "claude" => {
-                    if dest.is_none() {
-                        if let Some(parent) = path.parent() {
-                            mark_dirs.push((skill.name, parent.to_path_buf()));
-                        }
-                    }
-                    for resource in resources_for(skill.name) {
-                        plan.push(PlanItem {
-                            agent: agent_name,
-                            path: sibling_path(&path, resource.filename),
-                            content: Cow::Borrowed(resource.body),
-                            kind: PlanKind::Companion {
-                                owner: skill.name,
-                                filename: resource.filename,
-                            },
-                        });
-                    }
+        for agent_name in selected {
+            let path = if let Some(exact) = dest.as_ref() {
+                exact.clone()
+            } else {
+                install_path(agent_name, skill.name, target.as_deref())?
+            };
+            if agent_name == "claude" && target.is_none() && dest.is_none() {
+                if let Some(parent) = path.parent() {
+                    mark_dirs.push((skill.name, parent.to_path_buf()));
                 }
-                "codex" => {
-                    for resource in resources_for(skill.name) {
-                        plan.push(PlanItem {
-                            agent: agent_name,
-                            path: codex_companion_path(&path, resource.filename),
-                            content: Cow::Borrowed(resource.body),
-                            kind: PlanKind::Companion {
-                                owner: skill.name,
-                                filename: resource.filename,
-                            },
-                        });
-                    }
-                }
-                _ => {}
             }
-            let content = render_body_for_agent(agent_name, skill.body);
+            if agent_name != "codex" {
+                for resource in resources_for(skill.name) {
+                    plan.push(PlanItem {
+                        agent: agent_name,
+                        path: sibling_path(&path, resource.filename),
+                        content: Cow::Borrowed(resource.body),
+                        kind: PlanKind::Companion {
+                            owner: skill.name,
+                            filename: resource.filename,
+                        },
+                    });
+                }
+            }
             plan.push(PlanItem {
                 agent: agent_name,
                 path,
-                content,
-                kind: PlanKind::Skill { name: skill.name },
-            });
-        }
-
-        // Dual-home into pi.dev's skill dir. Whenever the claude layout is
-        // installed to its default path, mirror the SAME claude-format
-        // `SKILL.md` into `~/.pi/agent/skills/<name>/SKILL.md` so the skill
-        // is discoverable under the pi.dev harness (pi loads it and invokes
-        // `/skill:name`; bare `/name` cross-references resolve via pi's
-        // injected available-skills list, so no link rewrite is needed —
-        // only the target). This is an ADDITIONAL target that never alters
-        // the claude write.
-        //
-        // pi uses a PER-SKILL directory, exactly like claude (unlike codex's
-        // flat prompts dir), so any companion resource installs as a plain
-        // sibling of the pi `SKILL.md`, byte-identical to the claude copy and
-        // with no link rewrite. This keeps a skill from aborting under pi when
-        // it requires a bundled sibling. The current catalog has no companion
-        // resources, but the generic lifecycle remains supported. Mirroring is
-        // skipped for a custom `--dest` and for `--agent codex` alone.
-        //
-        // The pi mirror is intentionally UNMANAGED in-tree: no `.orchestratectl-
-        // managed` marker (the pi corpus stays a pure body mirror). Its
-        // lifecycle — orphan prune + `doctor` drift for both the `SKILL.md`
-        // and its companions — is keyed on the out-of-band provenance record
-        // (`state/pi-installed-skills.json`); see the pi block after the write
-        // loop and `PiSkillRecord`.
-        if dest.is_none() && matches!(agent, AgentTarget::Claude | AgentTarget::All) {
-            let pi_skill_path = default_path("pi", skill.name)?;
-            for resource in resources_for(skill.name) {
-                plan.push(PlanItem {
-                    agent: "pi",
-                    path: sibling_path(&pi_skill_path, resource.filename),
-                    content: Cow::Borrowed(resource.body),
-                    kind: PlanKind::Companion {
-                        owner: skill.name,
-                        filename: resource.filename,
-                    },
-                });
-            }
-            plan.push(PlanItem {
-                agent: "pi",
-                path: pi_skill_path,
-                content: Cow::Borrowed(skill.body),
+                content: render_body_for_agent(agent_name, skill.name, skill.body),
                 kind: PlanKind::Skill { name: skill.name },
             });
         }
@@ -665,9 +657,63 @@ pub fn cmd_install(
     // performs its first rename. Migration can make previously-absent canonical
     // targets present, so run the same preflight again afterward to authorize
     // those exact forced overwrites.
-    let _ = preflight(&plan, force)?;
+    let initial_preflight = preflight(&plan, force)?;
+    if dry_run {
+        #[derive(Serialize)]
+        struct DryRunPayload {
+            dry_run: bool,
+            would: Vec<DryRunMutation>,
+        }
+        #[derive(Serialize)]
+        struct DryRunMutation {
+            action: &'static str,
+            resource: &'static str,
+            agent: &'static str,
+            name: &'static str,
+            path: String,
+        }
+        let would = plan
+            .iter()
+            .map(|item| DryRunMutation {
+                action: if initial_preflight.overwrite_allowed.contains(&item.path) {
+                    "overwrite"
+                } else {
+                    "create"
+                },
+                resource: match item.kind {
+                    PlanKind::Skill { .. } => "skill",
+                    PlanKind::Companion { .. } => "skill-resource",
+                },
+                agent: item.agent,
+                name: item.kind.display_name(),
+                path: item.path.display().to_string(),
+            })
+            .collect();
+        let mut all_warnings = warnings.to_vec();
+        all_warnings.extend(initial_preflight.warnings);
+        let payload = DryRunPayload {
+            dry_run: true,
+            would,
+        };
+        match spec.format {
+            OutputFormat::Json | OutputFormat::Jsonl => {
+                output::emit_envelope(&payload, spec, &all_warnings)?;
+            }
+            OutputFormat::Text => {
+                for item in &payload.would {
+                    println!(
+                        "would {} {} ({}) -> {}",
+                        item.action, item.name, item.agent, item.path
+                    );
+                }
+                output::emit_text_warnings(&all_warnings);
+            }
+        }
+        return Ok(());
+    }
+
     let mut migration_warnings = Vec::new();
-    if force && dest.is_none() {
+    if force && target.is_none() && dest.is_none() {
         migrate_legacy_owned_skills(
             name,
             agent,
@@ -684,21 +730,10 @@ pub fn cmd_install(
     all_warnings.extend(preflight_result.warnings);
 
     let mut installed = Vec::with_capacity(plan.len());
-    // pi files actually written this run. Only files the write loop persisted
-    // are recorded in the provenance record below — a `skipped` (present,
-    // non-force, divergent) pi file was NOT written, so we carry its prior
-    // record forward untouched. A `SKILL.md` write and a companion write are
-    // recorded distinctly so the companion lands under its owning skill.
+    // Pi files actually written this run are recorded independently in the
+    // provenance record below.
     let mut pi_written: Vec<PiWrite> = Vec::new();
     for item in plan {
-        // A pi mirror that preflight chose to leave in place (present, no
-        // --force) is skipped outright — NOT written and NOT reported as
-        // installed. Falling through to `write_atomic` here would call
-        // `persist_noclobber`, hit `EEXIST`, and fail the whole install,
-        // which is exactly the divergent-state repair-block F1 fixes.
-        if preflight_result.skipped.contains(&item.path) {
-            continue;
-        }
         // The set of paths approved for overwrite is decided exclusively
         // by preflight — never recomputed from `path.exists()` in this
         // loop. That keeps the persist_noclobber TOCTOU guarantee intact:
@@ -840,6 +875,7 @@ pub fn cmd_install(
     // than erroring out with the success payload unreported.
     let mut pruned: Vec<String> = Vec::new();
     let prune_eligible = name.is_none()
+        && target.is_none()
         && dest.is_none()
         && force
         && matches!(agent, AgentTarget::Claude | AgentTarget::All);
@@ -879,21 +915,21 @@ pub fn cmd_install(
     // pruning (removing a de-registered prompt/companion) is gated to the
     // full-catalog `--force` redeploy, symmetric with the claude dir prune
     // above; a plain `skill install` never deletes anything as a side effect.
-    let codex_default = dest.is_none() && matches!(agent, AgentTarget::Codex | AgentTarget::All);
+    let codex_default = target.is_none()
+        && dest.is_none()
+        && matches!(agent, AgentTarget::Codex | AgentTarget::All);
     if codex_default {
         if let (Some(prompts_root), Some(shared_root)) = (codex_prompts_root(), codex_shared_root())
         {
             let marker_path = shared_root.join(MANAGED_MARKER_FILENAME);
 
-            // Everything this install just wrote to the codex layout: one
-            // prompt per skill, plus every companion those skills bundle.
+            // Everything this install just wrote to the Codex layout: one
+            // self-contained prompt per skill. Companion records come only
+            // from older markers and remain long enough for a forced full
+            // install to prune those retired external files safely.
             let mut recorded_prompts: HashSet<String> =
                 skills.iter().map(|s| s.name.to_string()).collect();
-            let mut recorded_companions: HashSet<String> = skills
-                .iter()
-                .flat_map(|s| resources_for(s.name))
-                .map(|r| r.filename.to_string())
-                .collect();
+            let mut recorded_companions: HashSet<String> = HashSet::new();
             // Union with the prior marker so a targeted install (or a prune
             // that must recognise a de-registered entry) keeps the full set.
             recorded_prompts.extend(read_marker_records(&marker_path, "prompt"));
@@ -915,11 +951,9 @@ pub fn cmd_install(
             let codex_prune_eligible = name.is_none() && force;
             if codex_prune_eligible {
                 let registered: HashSet<&str> = SKILLS.iter().map(|s| s.name).collect();
-                let bundled_companions: HashSet<&str> = SKILLS
-                    .iter()
-                    .flat_map(|s| resources_for(s.name))
-                    .map(|r| r.filename)
-                    .collect();
+                // Codex now embeds every resource, so no external companion
+                // remains bundled in this layout.
+                let bundled_companions: HashSet<&str> = HashSet::new();
 
                 // Orphan codex prompts: recorded but no longer in the catalog.
                 let orphan_prompts: Vec<String> = recorded_prompts
@@ -1217,16 +1251,9 @@ fn compare_versions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
 /// `overwrite_allowed` is the *authoritative* set of paths the write
 /// loop is permitted to clobber. Computed once, then never recomputed —
 /// see `cmd_install` for the TOCTOU rationale.
-///
-/// `skipped` is the set of already-present pi-mirror paths a non-`--force`
-/// run must leave untouched (see `preflight`'s pi arm). The write loop
-/// skips them entirely — it must NOT fall through to `write_atomic`, whose
-/// `persist_noclobber` would hit `EEXIST` and fail the whole install. A
-/// skipped path is never reported as `installed`.
 struct PreflightResult {
     warnings: Vec<String>,
     overwrite_allowed: HashSet<PathBuf>,
-    skipped: HashSet<PathBuf>,
 }
 
 /// What one [`PlanItem`] writes: a skill's `SKILL.md` body or one of its
@@ -1266,8 +1293,8 @@ struct PlanItem {
     content: Cow<'static, str>,
     /// Whether this item is a skill body or a companion, and its identifying
     /// name(s). The pi provenance update matches this to file the write under
-    /// the right skill (claude/codex companions are tracked by their own
-    /// in-tree markers instead, but every item still carries its kind).
+    /// the right skill. Codex plans never carry companion items because their
+    /// bytes are embedded in the prompt.
     kind: PlanKind,
 }
 
@@ -1306,11 +1333,11 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
     let mut seen: HashSet<&Path> = HashSet::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut overwrite_allowed: HashSet<PathBuf> = HashSet::new();
-    let mut skipped: HashSet<PathBuf> = HashSet::new();
+
     for PlanItem {
-        agent,
+        agent: _,
         path,
-        content,
+        content: _,
         kind,
     } in plan
     {
@@ -1336,41 +1363,6 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
             )
             .with_invalid_value(path.display().to_string()));
         }
-        // The pi mirror is a DERIVED copy of the claude SKILL.md, never a
-        // first-class target the user asked for. It must not let its own
-        // state gate the primary claude install (issue
-        // `pidev-dual-home-skills`, review finding F1): a present-and-current
-        // pi copy must NOT block re-creating a deleted claude skill, and an
-        // unmanaged pi file (no provenance marker) must NOT be clobbered on a
-        // plain run merely because it looks older. So:
-        //   - absent            → fall through to the normal write path.
-        //   - present, --force  → refresh it (overwrite_allowed).
-        //   - present, no force → leave it in place (skipped); warn only when
-        //                         the on-disk bytes actually differ, so a
-        //                         byte-identical mirror is a silent no-op.
-        // Trade-off: a non-force claude drift-upgrade leaves a stale pi copy
-        // until the next `--force` redeploy — acceptable because the
-        // operating policy always deploys with `--force`. Lifecycle
-        // (prune + doctor drift) is tracked separately as
-        // `pidev-pi-skill-lifecycle`.
-        if *agent == "pi" && destination.is_some() {
-            if force {
-                overwrite_allowed.insert(path.clone());
-            } else {
-                // Warn unless the on-disk bytes are provably identical to
-                // the bundled copy — an unreadable file counts as "differs"
-                // so the skip is surfaced rather than silently assumed a
-                // no-op.
-                if !fs::read(path).is_ok_and(|b| b == content.as_bytes()) {
-                    warnings.push(format!(
-                        "pi_mirror_skipped: {name} already exists at {} and differs from the bundled copy; left unchanged (pass --force to refresh)",
-                        path.display()
-                    ));
-                }
-                skipped.insert(path.clone());
-            }
-            continue;
-        }
         if destination.is_none() {
             // No file → the write loop will refuse to clobber via
             // persist_noclobber. Do not insert into `overwrite_allowed`.
@@ -1387,55 +1379,39 @@ fn preflight(plan: &[PlanItem], force: bool) -> Result<PreflightResult, CliError
             .as_deref()
             .and_then(|v| compare_versions(v, CLI_VERSION).map(|ord| (v, ord)));
         match drift {
-            Some((v, Ordering::Less)) => {
-                // Older on disk: install proceeds with a warning so the
-                // agent learns the operating manual just moved.
-                overwrite_allowed.insert(path.clone());
-                warnings.push(format!(
-                    "skill_version_drift: {name} on disk is {v}; binary ships {CLI_VERSION}; overwriting"
-                ));
+            Some((v, Ordering::Greater)) if !force => {
+                return Err(CliError::system(
+                    "skill_version_too_new",
+                    format!(
+                        "{}: on-disk skill is cli_version {} but binary is {}; pass --force to overwrite anyway",
+                        path.display(), v, CLI_VERSION
+                    ),
+                )
+                .with_invalid_value(path.display().to_string()));
             }
-            Some((v, Ordering::Greater)) => {
-                if !force {
-                    return Err(CliError::system(
-                        "skill_version_too_new",
-                        format!(
-                            "{}: on-disk skill is cli_version {} but binary is {}; pass --force to overwrite anyway",
-                            path.display(),
-                            v,
-                            CLI_VERSION
-                        ),
-                    )
-                    .with_invalid_value(path.display().to_string()));
-                }
-                overwrite_allowed.insert(path.clone());
-                warnings.push(format!(
-                    "skill_version_drift: {name} on disk is {v} (newer than binary {CLI_VERSION}); --force overwriting"
-                ));
+            _ if !force => {
+                // §15's no-clobber boundary is uniform across every runtime:
+                // even a recognisably older managed copy requires the caller's
+                // explicit `--force` authorization.
+                return Err(CliError::system(
+                    "refused_overwrite",
+                    format!("{} already exists; pass --force to overwrite", path.display()),
+                )
+                .with_invalid_value(path.display().to_string()));
             }
-            Some((_, Ordering::Equal)) | None => {
-                // Either equal versions (already in sync) or no
-                // parseable `cli_version` on disk (legacy / unversioned
-                // / unreadable). Both require explicit --force; we
-                // refuse to invent an overwrite policy.
-                if !force {
-                    return Err(CliError::system(
-                        "refused_overwrite",
-                        format!(
-                            "{} already exists; pass --force to overwrite",
-                            path.display()
-                        ),
-                    )
-                    .with_invalid_value(path.display().to_string()));
-                }
-                overwrite_allowed.insert(path.clone());
-            }
+            Some((v, Ordering::Less)) => warnings.push(format!(
+                "skill_version_drift: {name} on disk is {v}; binary ships {CLI_VERSION}; --force overwriting"
+            )),
+            Some((v, Ordering::Greater)) => warnings.push(format!(
+                "skill_version_drift: {name} on disk is {v} (newer than binary {CLI_VERSION}); --force overwriting"
+            )),
+            Some((_, Ordering::Equal)) | None => {}
         }
+        overwrite_allowed.insert(path.clone());
     }
     Ok(PreflightResult {
         warnings,
         overwrite_allowed,
-        skipped,
     })
 }
 
@@ -1456,22 +1432,25 @@ fn lookup(name: &str) -> Result<&'static EmbeddedSkill, CliError> {
 }
 
 fn default_path(agent: &str, name: &str) -> Result<PathBuf, CliError> {
-    let home = std::env::var("HOME").map_err(|_| {
-        CliError::system(
-            "home_unset",
-            "HOME is not set; cannot resolve default install path (pass --dest)",
-        )
-    })?;
-    let base = PathBuf::from(home);
+    install_path(agent, name, None)
+}
+
+/// Resolve one canonical §15 layout. `--target` replaces only the install
+/// base; the runtime-specific relative layout remains unchanged.
+fn install_path(agent: &str, name: &str, target: Option<&Path>) -> Result<PathBuf, CliError> {
+    let base = match target {
+        Some(path) => path.to_path_buf(),
+        None => PathBuf::from(std::env::var("HOME").map_err(|_| {
+            CliError::system(
+                "home_unset",
+                "HOME is not set; cannot resolve the install base (pass --target)",
+            )
+        })?),
+    };
     Ok(match agent {
         "claude" => base.join(".claude/skills").join(name).join("SKILL.md"),
-        "codex" => base.join(".codex/prompts").join(format!("{name}.md")),
-        // pi.dev discovers skills from a per-skill directory just like
-        // claude, only rooted at `~/.pi/agent/skills/`, and invokes them
-        // as `/skill:name`. The dual-home mirror writes the same
-        // claude-format `SKILL.md` here (see `cmd_install`).
         "pi" => base.join(".pi/agent/skills").join(name).join("SKILL.md"),
-        // unreachable in practice — callers only pass the literals above.
+        "codex" => base.join(".codex/prompts").join(format!("{name}.md")),
         other => {
             return Err(CliError::user(
                 "invalid_agent",
@@ -1839,32 +1818,37 @@ fn migrate_legacy_owned_skills(
             continue;
         }
 
-        if matches!(agent, AgentTarget::Claude | AgentTarget::All) {
-            let old_dir = home.join(".claude/skills").join(legacy);
-            let new_dir = home.join(".claude/skills").join(canonical);
-            let old_body = old_dir.join(PI_SKILL_FILENAME);
-            let claude_owned = legacy_marker_owns_claude(&old_dir, legacy)
-                && file_sha256(&old_body).as_deref() == Some(expected_hash);
-            if claude_owned && fs::symlink_metadata(&new_dir).is_ok() {
-                if requested.is_some() {
-                    return Err(CliError::user(
+        if matches!(
+            agent,
+            AgentTarget::Claude | AgentTarget::Pi | AgentTarget::All
+        ) {
+            if matches!(agent, AgentTarget::Claude | AgentTarget::All) {
+                let old_dir = home.join(".claude/skills").join(legacy);
+                let new_dir = home.join(".claude/skills").join(canonical);
+                let old_body = old_dir.join(PI_SKILL_FILENAME);
+                let claude_owned = legacy_marker_owns_claude(&old_dir, legacy)
+                    && file_sha256(&old_body).as_deref() == Some(expected_hash);
+                if claude_owned && fs::symlink_metadata(&new_dir).is_ok() {
+                    if requested.is_some() {
+                        return Err(CliError::user(
                         "skill_identity_conflict",
                         format!("both legacy '{legacy}' and canonical '{canonical}' exist; refusing a targeted overwrite"),
                     ));
-                }
-                warnings.push(format!(
+                    }
+                    warnings.push(format!(
                     "skill_identity_preserved: both legacy '{legacy}' and canonical '{canonical}' exist; left legacy bytes unchanged"
                 ));
-            } else if claude_owned
-                && legacy_dir_contains_only(
-                    &old_dir,
-                    &[PI_SKILL_FILENAME, LEGACY_MANAGED_MARKER_FILENAME],
-                )
-                && rename_if_absent(&old_dir, &new_dir)?
-            {
-                warnings.push(format!(
+                } else if claude_owned
+                    && legacy_dir_contains_only(
+                        &old_dir,
+                        &[PI_SKILL_FILENAME, LEGACY_MANAGED_MARKER_FILENAME],
+                    )
+                    && rename_if_absent(&old_dir, &new_dir)?
+                {
+                    warnings.push(format!(
                     "skill_identity_migrated: {legacy} -> {canonical} (claude; recorded hash matched)"
                 ));
+                }
             }
 
             if let Some(prov) = pi_provenance.as_deref_mut() {
@@ -3172,7 +3156,7 @@ mod tests {
         // every claude body is the embedded source, returned borrowed (no
         // reallocation, no byte change).
         for s in SKILLS {
-            let rendered = render_body_for_agent("claude", s.body);
+            let rendered = render_body_for_agent("claude", s.name, s.body);
             assert!(
                 matches!(rendered, Cow::Borrowed(_)),
                 "claude body for {} was reallocated",
@@ -3195,9 +3179,23 @@ mod tests {
             .iter()
             .find(|s| s.name == "taskfleet-spawn-spinoff")
             .unwrap();
-        let rendered = render_body_for_agent("codex", no_links.body);
+        let rendered = render_body_for_agent("codex", no_links.name, no_links.body);
         assert!(matches!(rendered, Cow::Borrowed(_)));
         assert_eq!(&*rendered, no_links.body);
+    }
+
+    #[test]
+    fn codex_prompt_embeds_resource_content_and_rewrites_links() {
+        static RESOURCES: &[EmbeddedResource] = &[EmbeddedResource {
+            filename: "REFERENCE.md",
+            body: "resource payload\n",
+            claude_link_targets: &["REFERENCE.md"],
+        }];
+        let rendered = render_codex_prompt("Read [the reference](REFERENCE.md).\n", RESOURCES);
+        assert!(rendered.contains("[the reference](#taskfleet-resource-reference-md)"));
+        assert!(rendered.contains("## Taskfleet resource: REFERENCE.md"));
+        assert!(rendered.contains("resource payload"));
+        assert!(!rendered.contains("](REFERENCE.md)"));
     }
 
     #[test]
@@ -3278,27 +3276,6 @@ mod tests {
         assert!(handoff.contains("human lane-or-close sweep owns scheduling"));
         assert!(handoff.contains("Named model agreement stays a list"));
         assert!(handoff.contains("severity/confidence metadata"));
-    }
-
-    #[test]
-    fn codex_companion_path_derives_shared_subdir() {
-        // Default layout: sibling `_shared/` next to the flat prompt file.
-        assert_eq!(
-            codex_companion_path(Path::new("/home/u/.codex/prompts/stint-start.md"), "X.md"),
-            PathBuf::from("/home/u/.codex/prompts/_shared/X.md")
-        );
-        // Nested relative dest.
-        assert_eq!(
-            codex_companion_path(Path::new("out/prompts/s.md"), "X.md"),
-            PathBuf::from("out/prompts/_shared/X.md")
-        );
-        // Bare-relative dest (empty parent): `_shared/` in the current dir,
-        // which is where the flat prompt file itself lands — the rewritten
-        // `_shared/X.md` link resolves relative to it.
-        assert_eq!(
-            codex_companion_path(Path::new("s.md"), "X.md"),
-            PathBuf::from("_shared/X.md")
-        );
     }
 
     #[test]

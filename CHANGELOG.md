@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bundled skill installation now conforms to project-canon §15 (`overly-knowing-family`).** Claude, pi, and Codex are explicit first-class targets; the default and `--agent all` install all three; `skill list --json` declares complete capability/layout metadata; `--target` and `--dry-run` provide isolated, inspectable installs; and Codex prompts embed any required resource content while Claude/pi retain native Agent Skill trees.
 - **Worker selection can resolve user-owned executable profiles (`worker-profile-config-resolver`).** `run create --profile` now selects bounded capability/residency profiles from user config, enforces autonomous pi+`worker-v1` eligibility with deterministic non-weakening fallback, and records the requested and selected choice across dry-run, create, and `run show`; repository config remains selection-only and legacy no-profile runs stay readable.
 - **Recorded worker profiles now drive launch and telemetry policy (`worker-telemetry-harness-enforcement`).** Create and retry execute the selected candidate's exact recorded argv, export exact adapter identity only for configured pi telemetry, and expose recorded `requirement`/`support` in `run show` without inferring either from samples.
 

@@ -37,9 +37,11 @@ the worktree/tmux/launcher transaction itself; it does not depend on Homebase or
 The orchestration workflows ship as bundled agent skills: install once with
 `taskfleet skill install` and commands like `/worktree-spinoff`,
 `/worktree-research`, and `/fan-out` appear in your agent sessions. A default
-install homes each skill for both Claude Code (`~/.claude/skills/`) and
-[pi.dev](https://pi.dev) (`~/.pi/agent/skills/`, invoked as `/skill:<name>`);
-`--agent codex` adds a Codex mirror.
+install targets all supported runtimes: Claude Code (`~/.claude/skills/`),
+[pi.dev](https://pi.dev) (`~/.pi/agent/skills/`, invoked as `/skill:<name>`),
+and Codex (`~/.codex/prompts/<name>.md`). Select one with `--agent
+claude|pi|codex`, or use explicit `--agent all`. `--target <dir>` preserves
+those layouts beneath a different base, and `--dry-run` previews every write.
 
 ## Install
 
@@ -65,8 +67,11 @@ binary.
 ## Quick start
 
 ```bash
-# Deploy the bundled skills for your agent harness(es):
+# Deploy the bundled skills to Claude, pi, and Codex (the default is all):
 taskfleet skill install
+
+# Preview an isolated install without writing anything:
+taskfleet skill install --target /tmp/taskfleet-skills --dry-run --json
 
 # Verify the installation (expect 0 fail):
 taskfleet doctor

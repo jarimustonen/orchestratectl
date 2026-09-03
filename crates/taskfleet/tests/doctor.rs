@@ -798,7 +798,9 @@ fn fix_removes_stale_dead_supervisor_pid() {
 /// copies of what the binary ships.
 fn install_bundled(env: &Env, name: &str) {
     let out = bin(env)
-        .args(["--output", "json", "skill", "install", name])
+        .args([
+            "--output", "json", "skill", "install", name, "--agent", "claude",
+        ])
         .output()
         .expect("spawn install");
     assert!(out.status.success(), "install {name} failed: {out:?}");

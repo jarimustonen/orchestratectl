@@ -47,6 +47,37 @@ fn skill_list_json_pins_catalog_shape() {
     assert!(out.status.success(), "exit: {:?}", out.status);
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     assert_eq!(v["schema_version"], 1);
+    assert_eq!(
+        v["supported_agents"],
+        serde_json::json!(["claude", "pi", "codex"])
+    );
+    assert_eq!(v["skills"], v["data"]["skills"]);
+    assert_eq!(v["install"], v["data"]["install"]);
+    assert_eq!(
+        v["data"]["supported_agents"],
+        serde_json::json!(["claude", "pi", "codex"])
+    );
+    let install = &v["data"]["install"];
+    assert_eq!(install["selection_flag"], "--agent");
+    assert_eq!(install["default"], "all");
+    assert_eq!(
+        install["accepted_values"],
+        serde_json::json!(["claude", "pi", "codex", "all"])
+    );
+    assert_eq!(install["target_flag"], "--target");
+    assert_eq!(install["dry_run_flag"], "--dry-run");
+    assert_eq!(install["force_flag"], "--force");
+    assert_eq!(install["interactive"], false);
+    assert_eq!(install["no_clobber_default"], true);
+    assert_eq!(install["overwrite_requires_force"], true);
+    assert_eq!(
+        install["layouts"],
+        serde_json::json!([
+            {"agent":"claude","path":".claude/skills/<name>/...","form":"agent-skill-tree"},
+            {"agent":"pi","path":".pi/agent/skills/<name>/...","form":"agent-skill-tree"},
+            {"agent":"codex","path":".codex/prompts/<name>.md","form":"self-contained-prompt"}
+        ])
+    );
     let skills = v["data"]["skills"].as_array().expect("skills array");
     let mut names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
     names.sort_unstable();
@@ -76,6 +107,8 @@ fn skill_list_json_pins_catalog_shape() {
             "empty description for {}",
             s["name"]
         );
+        assert_eq!(s["cli_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(s["skill_schema_version"], 1);
     }
 }
 
@@ -539,6 +572,119 @@ fn skill_install_agent_all_installs_to_both_default_paths() {
 }
 
 #[test]
+fn skill_install_explicit_pi_only_uses_native_tree() {
+    let home = mk_home();
+    let out = bin(&home)
+        .args([
+            "skill",
+            "install",
+            "taskfleet-overview",
+            "--agent",
+            "pi",
+            "--output",
+            "json",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "pi install failed: {out:?}");
+    assert!(home
+        .path()
+        .join(".pi/agent/skills/taskfleet-overview/SKILL.md")
+        .is_file());
+    assert!(!home
+        .path()
+        .join(".claude/skills/taskfleet-overview")
+        .exists());
+    assert!(!home
+        .path()
+        .join(".codex/prompts/taskfleet-overview.md")
+        .exists());
+}
+
+#[test]
+fn skill_install_target_preserves_all_native_layouts() {
+    let home = mk_home();
+    let target = home.path().join("isolated");
+    let out = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--target"])
+        .arg(&target)
+        .args(["--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "target install failed: {out:?}");
+    for path in [
+        ".claude/skills/taskfleet-overview/SKILL.md",
+        ".pi/agent/skills/taskfleet-overview/SKILL.md",
+        ".codex/prompts/taskfleet-overview.md",
+    ] {
+        assert!(target.join(path).is_file(), "missing {path}");
+    }
+    assert!(
+        !home.path().join("state/pi-installed-skills.json").exists(),
+        "isolated --target must not mutate normal provenance state"
+    );
+}
+
+#[test]
+fn skill_install_dry_run_reports_plan_and_writes_nothing() {
+    let home = mk_home();
+    let target = home.path().join("dry-target");
+    let out = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--target"])
+        .arg(&target)
+        .args(["--dry-run", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "dry-run failed: {out:?}");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["data"]["dry_run"], true);
+    let would = v["data"]["would"].as_array().expect("would array");
+    assert_eq!(would.len(), 3, "one self-contained artifact per runtime");
+    assert_eq!(
+        would
+            .iter()
+            .map(|row| row["agent"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["claude", "pi", "codex"]
+    );
+    assert!(!target.exists(), "dry-run created the target tree");
+}
+
+#[test]
+fn skill_install_target_collision_is_atomic_and_force_overwrites() {
+    let home = mk_home();
+    let target = home.path().join("isolated");
+    let codex = target.join(".codex/prompts/taskfleet-overview.md");
+    std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+    std::fs::write(&codex, "mine\n").unwrap();
+
+    let refused = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--target"])
+        .arg(&target)
+        .output()
+        .expect("spawn");
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read_to_string(&codex).unwrap(), "mine\n");
+    assert!(!target
+        .join(".claude/skills/taskfleet-overview/SKILL.md")
+        .exists());
+    assert!(!target
+        .join(".pi/agent/skills/taskfleet-overview/SKILL.md")
+        .exists());
+
+    let forced = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--target"])
+        .arg(&target)
+        .arg("--force")
+        .output()
+        .expect("spawn");
+    assert!(forced.status.success(), "force failed: {forced:?}");
+    assert!(std::fs::read_to_string(codex)
+        .unwrap()
+        .contains("name: taskfleet-overview"));
+}
+
+#[test]
 fn skill_install_no_name_installs_every_skill() {
     let home = mk_home();
     let out = bin(&home)
@@ -708,10 +854,9 @@ fn skill_print_unknown_emits_skill_not_found() {
 }
 
 #[test]
-fn skill_install_over_older_version_warns_and_succeeds_without_force() {
-    // §17 drift: install over an older on-disk skill must proceed
-    // without --force and surface a `skill_version_drift` warning so the
-    // agent learns the operating manual just moved.
+fn skill_install_over_older_version_requires_force_and_then_warns() {
+    // §15 no-clobber applies uniformly even when version drift is known.
+    // Once explicit --force authorizes replacement, preserve the §17 warning.
     let home = mk_home();
     let dest = home.path().join("SKILL.md");
     // Hand-write an "older" skill — cli_version 0.0.0 will always be
@@ -728,10 +873,19 @@ fn skill_install_over_older_version_warns_and_succeeds_without_force() {
         .args(["--output", "json"])
         .output()
         .expect("spawn");
-    assert!(
-        out.status.success(),
-        "install over older must succeed: {out:?}"
+    assert!(!out.status.success(), "older copy must not be clobbered");
+    assert_eq!(
+        std::fs::read_to_string(&dest).unwrap(),
+        "---\nname: taskfleet-overview\ndescription: old\ncli_version: \"0.0.0\"\nschema_version: 1\n---\n"
     );
+
+    let out = bin(&home)
+        .args(["skill", "install", "taskfleet-overview", "--dest"])
+        .arg(&dest)
+        .args(["--force", "--output", "json"])
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "forced upgrade failed: {out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("json");
     let warnings = v["warnings"].as_array().expect("warnings array");
     assert!(
@@ -1107,11 +1261,9 @@ fn env_orch_state_record(home: &tempfile::TempDir) -> std::path::PathBuf {
 }
 
 #[test]
-fn skill_install_repairs_missing_claude_when_pi_mirror_is_current() {
-    // F1: the derived pi mirror must never gate the primary claude install.
-    // Divergent state — pi present + current, claude deleted — must still let
-    // a plain (no --force) install re-create the claude skill. Before the F1
-    // fix this aborted the whole plan with refused_overwrite on the pi path.
+fn skill_install_force_repairs_missing_claude_when_pi_is_current() {
+    // All runtimes are first-class no-clobber targets. A partial repair therefore
+    // requires --force when another selected runtime already exists.
     let home = mk_home();
     // First install populates both homes.
     assert!(bin(&home)
@@ -1123,43 +1275,26 @@ fn skill_install_repairs_missing_claude_when_pi_mirror_is_current() {
     let claude = home.path().join(".claude/skills/stint-start/SKILL.md");
     let pi = home.path().join(".pi/agent/skills/stint-start/SKILL.md");
     assert!(claude.exists() && pi.exists());
-    let pi_bytes_before = std::fs::read(&pi).unwrap();
 
-    // Delete only the claude copy, leaving the current pi mirror behind.
+    // Delete only the claude copy, leaving the current pi target behind.
     std::fs::remove_dir_all(home.path().join(".claude/skills/stint-start")).unwrap();
 
-    // A plain re-install (no --force) must succeed and repair claude.
-    let out = bin(&home)
-        .args(["skill", "install", "stint-start", "--output", "json"])
+    let refused = bin(&home)
+        .args(["skill", "install", "stint-start"])
         .output()
         .expect("spawn");
+    assert!(!refused.status.success());
     assert!(
-        out.status.success(),
-        "plain re-install must repair claude despite a current pi mirror: {out:?}"
+        !claude.exists(),
+        "failed preflight partially repaired Claude"
     );
+
+    let forced = bin(&home)
+        .args(["skill", "install", "stint-start", "--force"])
+        .output()
+        .expect("spawn");
+    assert!(forced.status.success(), "forced repair failed: {forced:?}");
     assert!(claude.exists(), "claude skill was not repaired");
-    // The untouched pi mirror is left byte-for-byte in place.
-    assert_eq!(
-        std::fs::read(&pi).unwrap(),
-        pi_bytes_before,
-        "pi mirror must be left untouched on a non-force run"
-    );
-    // The skipped pi copy is not reported as installed; claude is.
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let agents: Vec<&str> = v["data"]["installed"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| f["agent"].as_str().unwrap())
-        .collect();
-    assert!(
-        agents.contains(&"claude"),
-        "claude not in installed: {agents:?}"
-    );
-    assert!(
-        !agents.contains(&"pi"),
-        "an untouched pi mirror must not be reported as installed: {agents:?}"
-    );
 }
 
 #[test]
@@ -1226,10 +1361,9 @@ fn skill_install_force_refreshes_stale_pi_mirror() {
 }
 
 #[test]
-fn skill_install_does_not_clobber_divergent_pi_mirror_without_force() {
-    // A pre-existing pi file that differs (e.g. user-authored, older) must be
-    // LEFT IN PLACE on a plain run — never silently clobbered just because it
-    // looks older. pi has no provenance marker, so we cannot prove ownership.
+fn skill_install_divergent_pi_collision_fails_atomically_without_force() {
+    // A pre-existing pi file must refuse the whole default-all plan without
+    // force; no other selected runtime may be partially installed.
     let home = mk_home();
     let pi_dir = home.path().join(".pi/agent/skills/stint-start");
     std::fs::create_dir_all(&pi_dir).unwrap();
@@ -1242,21 +1376,14 @@ fn skill_install_does_not_clobber_divergent_pi_mirror_without_force() {
         .args(["skill", "install", "stint-start", "--output", "json"])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "install must succeed: {out:?}");
+    assert!(!out.status.success(), "collision must fail: {out:?}");
     assert_eq!(
         std::fs::read_to_string(&pi).unwrap(),
         user_content,
         "divergent pi file must not be clobbered without --force"
     );
-    // The differ is surfaced as a warning, not silently ignored.
-    let v: Value = serde_json::from_slice(&out.stdout).expect("json");
-    let warnings = v["warnings"].as_array().expect("warnings");
-    assert!(
-        warnings
-            .iter()
-            .any(|w| w.as_str().unwrap().contains("pi_mirror_skipped")),
-        "expected a pi_mirror_skipped warning; got {warnings:?}"
-    );
+    assert!(!home.path().join(".claude/skills/stint-start").exists());
+    assert!(!home.path().join(".codex/prompts/stint-start.md").exists());
 }
 
 #[test]
