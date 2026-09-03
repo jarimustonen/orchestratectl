@@ -500,11 +500,11 @@ behind-the-seam) that landed before the release.
   correctness blocker (the blocked-report source-relative net already
   covers committed-work preservation on the cancel path).
 
-[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.2...v0.3.0
-[0.2.2]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/jarimustonen/orchestratectl/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jarimustonen/taskfleet/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jarimustonen/taskfleet/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/jarimustonen/taskfleet/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/jarimustonen/taskfleet/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/jarimustonen/taskfleet/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/jarimustonen/taskfleet/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/jarimustonen/taskfleet/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/jarimustonen/taskfleet/releases/tag/v0.1.0

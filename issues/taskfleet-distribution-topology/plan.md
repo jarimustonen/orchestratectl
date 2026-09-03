@@ -1,6 +1,6 @@
 # R7 distribution preparation and later substitutions
 
-## Current sealed topology
+## Frozen R7 pre-R9 topology
 
 - cargo-dist is pinned to 0.28.2 and distributes exactly one app, `taskfleet`.
 - The only generated formula destination is
@@ -45,19 +45,21 @@ identity transaction after renaming the GitHub repository:
 | Cargo workspace `repository` / `homepage` | `https://github.com/jarimustonen/orchestratectl` | `https://github.com/jarimustonen/taskfleet` |
 | cargo-dist plan hosting owner/repo | `jarimustonen` / `orchestratectl` | `jarimustonen` / `taskfleet` |
 | generated installer/archive URLs | old source repository (truthful now) | canonical source repository |
-| cargo-dist trigger | workflow dispatch; default `dry-run`; no tag trigger | set `dispatch-releases = false`, set distribution trigger/activation to `tag-push`/`ready` only after gates, regenerate, verify tag trigger |
-| R7 posture assertions | Rust/shell checks require dispatch-only, inert secret, blocked state | atomically update both checks to require canonical tag-push, live least-privilege proof and ready state |
-| old installer stub URL | canonical future URL; artifact cannot publish in R7 posture | unchanged; verify it resolves after rename |
+| cargo-dist trigger | workflow dispatch; default `dry-run`; no tag trigger | set `dispatch-releases = false`, set distribution trigger to `tag-push`, keep release/distribution activation blocked for R10, regenerate, and verify the trigger |
+| R7 posture assertions | Rust/shell checks require dispatch-only, inert secret, blocked state | update both checks to require canonical tag-push, inert secret, and `prepared-blocked-r10` state |
+| old installer stub URL | canonical future URL; artifact cannot publish in R7 posture | unchanged; URL resolution remains deferred until R10 publishes the first canonical release |
 | release-wrapper expected repo | data-driven from release topology | changes with the topology row above |
 | Actions workflow action references | third-party action names unchanged | third-party action names unchanged |
 | Homebrew checkout destination | `jarimustonen/homebrew-taskfleet` | unchanged |
-| Homebrew credential | inert `HOMEBREW_TAP_TOKEN` after bounded owner proof | install least-privilege token; prove through renamed-repo workflow before activation |
+| Homebrew credential | inert `HOMEBREW_TAP_TOKEN` after bounded owner proof | keep inert in R9; R10 installs and proves the least-privilege token before release activation |
 | macOS runner selector | `macOS` label on current self-hosted ARM64 runner | unchanged unless a unique Taskfleet label is provisioned; run renamed-repo acceptance job |
 | `origin` fetch/push URLs | old source repository | canonical source repository |
 
 After those substitutions, rerun cargo-dist 0.28.2 `generate`, `plan` and the R7
-machine assertions. Do not rely on GitHub redirects for maintained action,
-installer, badge, Cargo metadata or release-wrapper coordinates.
+machine assertions. R9 proves the repository-scoped runner but leaves the tap
+credential inert and release activation blocked for R10. Do not rely on GitHub
+redirects for maintained action, installer, badge, Cargo metadata or
+release-wrapper coordinates.
 
 ## Public mutation boundary and receipts
 
@@ -77,11 +79,11 @@ repository bytes. API receipts prove the secret update time, commit/ref/tree, re
 ownership and empty final contents; the local assignment-and-push procedure is
 the authentication linkage (GitHub does not disclose a secret value in API
 receipts). After proof, the live Actions secret was replaced with an inert random
-value, so the broad owner credential is not left available to Actions. R9 must
-install a least-privilege token and prove it through the renamed repository's
-actual checkout/push workflow. No release, asset, tag, crate, source-repository
-rename, formula, old-tap commit, Homebrew installation, user tap, installed
-Taskfleet binary, or installed skill was created or changed.
+value, so the broad owner credential is not left available to Actions. R9 keeps
+that inert value; R10 must install and prove a least-privilege token before
+release activation. No release, asset, tag, crate, source-repository rename,
+formula, old-tap commit, Homebrew installation, user tap, installed Taskfleet
+binary, or installed skill was created or changed during R7.
 
 The old-tap patch under `old-tap-migration/` is local preparation only. R11 owns
 its public push after canonical formula verification.

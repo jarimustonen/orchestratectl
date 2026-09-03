@@ -7,10 +7,9 @@ members = ["cargo:."]
 cargo-dist-version = "0.28.2"
 # CI backends to support
 ci = "github"
-# R7 prepares but does not activate distribution: version-tag pushes must not
-# start cargo-dist before R8/R9. R9 flips this to false and regenerates after
-# the canonical repository identity and exact-SHA runner gate are green.
-dispatch-releases = true
+# R9 restores the generated tag trigger at the canonical repository. The
+# checked-in activation gate still blocks every publishing path until R10.
+dispatch-releases = false
 # Build setup derives path remapping from each runner's HOME so prebuilt
 # binaries never expose the runner account or filesystem layout.
 github-build-setup = "../build-setup.yml"
@@ -24,7 +23,7 @@ tap = "jarimustonen/homebrew-taskfleet"
 plan-jobs = ["./taskfleet-release-gate"]
 # A blocked non-dry dispatch cancels its own run before any downstream job can
 # exploit cargo-dist's permissive skipped-build host condition.
-github-custom-job-permissions = { "taskfleet-release-gate" = { actions = "write" } }
+github-custom-job-permissions = { "taskfleet-release-gate" = { actions = "write", contents = "read" } }
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).

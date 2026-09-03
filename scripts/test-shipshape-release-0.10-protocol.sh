@@ -164,8 +164,7 @@ jq '.activation = "ready" | .source_repository.current = "jarimustonen/taskfleet
 mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
 sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
 rm "$tmp/repo/dist-workspace.toml.bak"
-sed -i.bak 's#https://github.com/jarimustonen/orchestratectl#https://github.com/jarimustonen/taskfleet#g' "$tmp/repo/Cargo.toml"
-rm "$tmp/repo/Cargo.toml.bak"
+grep -F 'https://github.com/jarimustonen/taskfleet' "$tmp/repo/Cargo.toml" >/dev/null
 # Regenerate rather than editing only the trigger: cargo-dist's generated plan
 # expressions also differ between dispatch-only and tag-push topology.
 (

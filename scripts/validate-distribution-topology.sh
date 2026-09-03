@@ -12,7 +12,7 @@ jq -e '
   .releases[0].app_name == "taskfleet" and
   .releases[0].display_name == "taskfleet" and
   .releases[0].hosting.github.owner == "jarimustonen" and
-  .releases[0].hosting.github.repo == "orchestratectl" and
+  .releases[0].hosting.github.repo == "taskfleet" and
   (.artifacts | keys | sort) == ([
     "orchestratectl-installer.sh",
     "sha256.sum",
@@ -39,17 +39,17 @@ jq -e '
 ' "$plan" >/dev/null || { echo "cargo-dist plan is not the admitted Taskfleet-only artifact graph" >&2; exit 2; }
 
 jq -e '
-  .schema_version == 1 and .activation == "prepared-blocked-r8-r9-r10" and
+  .schema_version == 1 and .activation == "prepared-blocked-r10" and
   .cargo_dist == {
     version:"0.28.2",config:"dist-workspace.toml",workflow:".github/workflows/release.yml",
-    trigger:"workflow-dispatch-default-dry-run",apps:["taskfleet"],
+    trigger:"tag-push",apps:["taskfleet"],
     tap:"jarimustonen/homebrew-taskfleet",tap_secret:"HOMEBREW_TAP_TOKEN",
-    tap_secret_state:"inert-blocked-r9",
+    tap_secret_state:"inert-blocked-r10",
     activation_gate:".github/workflows/taskfleet-release-gate.yml",macos_runner:"macOS",
     stub_artifact:"orchestratectl-installer.sh",
     stub_sha256:"6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b"
   } and
-  .source_repository == {current:"jarimustonen/orchestratectl",after_r9:"jarimustonen/taskfleet"} and
+  .source_repository == {current:"jarimustonen/taskfleet",after_r9:"jarimustonen/taskfleet"} and
   .old_tap.repository == "jarimustonen/homebrew-orchestratectl" and
   .old_tap.activation == "blocked-r11" and
   .public_receipts.repository_id == 1355125556 and
@@ -66,15 +66,16 @@ jq -e '
 if grep -F 'repository: "jarimustonen/homebrew-orchestratectl"' .github/workflows/release.yml >/dev/null; then
   echo "generated workflow still targets the old tap" >&2; exit 2
 fi
-if grep -A8 '^on:' .github/workflows/release.yml | grep -q 'push:'; then
-  echo "R7 cargo-dist workflow must not run on tag pushes" >&2; exit 2
+grep -A12 '^on:' .github/workflows/release.yml | grep -Eq '^[[:space:]]+push:' || {
+  echo "R9 cargo-dist workflow lacks the canonical tag trigger" >&2; exit 2;
+}
+grep -A12 '^on:' .github/workflows/release.yml |
+  grep -F -- "- '**[0-9]+.[0-9]+.[0-9]+*'" >/dev/null || {
+  echo "generated workflow lacks the exact cargo-dist version-tag pattern" >&2; exit 2;
+}
+if grep -A12 '^on:' .github/workflows/release.yml | grep -q 'workflow_dispatch:'; then
+  echo "R9 cargo-dist workflow must use tag dispatch" >&2; exit 2
 fi
-grep -A10 '^on:' .github/workflows/release.yml | grep -F 'workflow_dispatch:' >/dev/null || {
-  echo "generated workflow lacks the prepared workflow-dispatch gate" >&2; exit 2;
-}
-grep -A10 '^on:' .github/workflows/release.yml | grep -F 'default: dry-run' >/dev/null || {
-  echo "generated workflow dispatch does not fail safe to dry-run" >&2; exit 2;
-}
 [[ "$(grep -Fc 'custom-taskfleet-release-gate' .github/workflows/release.yml)" -ge 2 ]] || {
   echo "generated workflow does not gate build/host paths through Taskfleet activation" >&2; exit 2;
 }
@@ -88,9 +89,12 @@ grep -F '"repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"' \
   .github/workflows/taskfleet-release-gate.yml >/dev/null || {
   echo "blocked dispatch does not cancel cargo-dist's complete workflow run" >&2; exit 2;
 }
-grep -A6 '^  custom-taskfleet-release-gate:' .github/workflows/release.yml |
-  grep -F '"actions": "write"' >/dev/null || {
+gate_permissions="$(grep -A8 '^  custom-taskfleet-release-gate:' .github/workflows/release.yml)"
+grep -F '"actions": "write"' <<<"$gate_permissions" >/dev/null || {
   echo "generated gate job cannot cancel a blocked workflow run" >&2; exit 2;
+}
+grep -F '"contents": "read"' <<<"$gate_permissions" >/dev/null || {
+  echo "generated gate job cannot check out the activation verifier" >&2; exit 2;
 }
 [[ "$(grep -Fc 'token: ${{ secrets.HOMEBREW_TAP_TOKEN }}' .github/workflows/release.yml)" == 1 ]] || {
   echo "generated workflow must use the one admitted tap secret" >&2; exit 2;

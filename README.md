@@ -1,6 +1,6 @@
 # Taskfleet 🎬
 
-[![CI](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml/badge.svg)](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml)
+[![CI](https://github.com/jarimustonen/taskfleet/actions/workflows/ci.yml/badge.svg)](https://github.com/jarimustonen/taskfleet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Rust CLI for orchestrating AI-agent workflows on a developer's machine.**
@@ -57,12 +57,12 @@ After the canonical release, Cargo installs the primary Taskfleet command:
 cargo install taskfleet
 ```
 
-The existing public release and tap locations remain
-[`jarimustonen/orchestratectl`](https://github.com/jarimustonen/orchestratectl)
-and `jarimustonen/orchestratectl/orchestratectl` until the separately gated
-repository and Homebrew migrations. Those legacy channels install
-`orchestratectl` 0.5.1 today; they are not aliases for the staged `taskfleet`
-binary.
+The canonical source repository is
+[`jarimustonen/taskfleet`](https://github.com/jarimustonen/taskfleet). The
+existing public Homebrew location remains
+`jarimustonen/orchestratectl/orchestratectl` until its separately gated
+migration. That legacy channel installs `orchestratectl` 0.5.1 today; it is
+not an alias for the staged `taskfleet` binary.
 
 ## Quick start
 

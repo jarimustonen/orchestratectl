@@ -11,7 +11,7 @@ fn release_topology_has_exact_ordered_and_independent_legs() {
     .expect("release topology JSON");
     assert_eq!(topology["schema_version"], 1);
     assert_eq!(topology["activation"], "blocked-r8-r9-r10");
-    assert_eq!(topology["repository"], "jarimustonen/orchestratectl");
+    assert_eq!(topology["repository"], "jarimustonen/taskfleet");
     assert_eq!(topology["owners"], serde_json::json!(["jarimustonen"]));
     assert_eq!(
         topology["crates_io"]["legs"],
@@ -39,15 +39,12 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     )
     .expect("distribution topology JSON");
     assert_eq!(distribution["schema_version"], 1);
-    assert_eq!(distribution["activation"], "prepared-blocked-r8-r9-r10");
+    assert_eq!(distribution["activation"], "prepared-blocked-r10");
     assert_eq!(
         distribution["cargo_dist"]["version"],
         serde_json::json!("0.28.2")
     );
-    assert_eq!(
-        distribution["cargo_dist"]["trigger"],
-        "workflow-dispatch-default-dry-run"
-    );
+    assert_eq!(distribution["cargo_dist"]["trigger"], "tag-push");
     assert_eq!(
         distribution["cargo_dist"]["apps"],
         serde_json::json!(["taskfleet"])
@@ -58,7 +55,7 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     );
     assert_eq!(
         distribution["cargo_dist"]["tap_secret_state"],
-        "inert-blocked-r9"
+        "inert-blocked-r10"
     );
     assert_eq!(
         distribution["cargo_dist"]["activation_gate"],
@@ -73,9 +70,8 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
 
     let workflow = std::fs::read_to_string(root.join(".github/workflows/release.yml"))
         .expect("generated release workflow");
-    assert!(workflow.contains("workflow_dispatch:"));
-    assert!(workflow.contains("default: dry-run"));
-    assert!(!workflow.contains("push:\n    tags:"));
+    assert!(workflow.contains("push:\n    tags:"));
+    assert!(!workflow.contains("workflow_dispatch:"));
     assert!(workflow.contains("custom-taskfleet-release-gate:"));
     assert!(workflow.contains("- custom-taskfleet-release-gate"));
     assert_eq!(
@@ -101,6 +97,7 @@ fn prepared_distribution_is_taskfleet_only_and_still_blocked() {
     assert!(gate.contains("Fail closed for tag pushes and every future event type"));
     assert!(gate.contains("actions/runs/$GITHUB_RUN_ID/cancel"));
     assert!(workflow.contains("\"actions\": \"write\""));
+    assert!(workflow.contains("\"contents\": \"read\""));
 }
 
 #[test]

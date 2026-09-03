@@ -49,9 +49,9 @@ printf '%s\n' "$*" >>"$CARGO_LOG"
 if [[ "$1" == --version ]]; then echo 'cargo 1.85.0 (fixture)'; exit 0; fi
 if [[ "$1" == metadata ]]; then
   jq -n --arg root "$FIXTURE_ROOT" '{packages:[
-    {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
-    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]},
-    {name:"orchestratectl",version:"1.2.3",manifest_path:($root+"/compat/orchestratectl/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"compat",dependencies:[{name:"taskfleet",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
+    {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
+    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]},
+    {name:"orchestratectl",version:"1.2.3",manifest_path:($root+"/compat/orchestratectl/Cargo.toml"),repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",license:"MIT",rust_version:"1.85",description:"compat",dependencies:[{name:"taskfleet",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
   ]}'
   exit 0
 fi
@@ -103,7 +103,7 @@ case "$url" in
     checksum="$(sha256sum "$archive" | awk '{print $1}')"
     description=cli; [[ "$REGISTRY_MODE" != metadata-mismatch ]] || description=wrong
     yanked=false; [[ "$REGISTRY_MODE" != yanked ]] || yanked=true
-    jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:"1.85",repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",description:$description}}' >"$output"
+    jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:"1.85",repository:"https://github.com/jarimustonen/taskfleet",homepage:"https://github.com/jarimustonen/taskfleet",description:$description}}' >"$output"
     printf 200 ;;
   */crates/taskfleet/owners)
     if [[ "$REGISTRY_MODE" == secondary500 || "$REGISTRY_MODE" == secondary-after-publish ]]; then : >"$output"; printf 500; exit 0; fi
@@ -151,7 +151,7 @@ run_case() {
   env -i HOME="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" CURL_COUNT="$tmp/curl-count" \
     REGISTRY_MODE="$mode" RELEASE_RECEIPT_DIR="$tmp/receipts-$mode" SOURCE_COMMIT=1111111111111111111111111111111111111111 \
     GITHUB_ACTIONS=true GITHUB_EVENT_NAME=push GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 \
-    GITHUB_REPOSITORY=jarimustonen/orchestratectl GITHUB_SHA=1111111111111111111111111111111111111111 \
+    GITHUB_REPOSITORY=jarimustonen/taskfleet GITHUB_SHA=1111111111111111111111111111111111111111 \
     CARGO_REGISTRY_TOKEN=test-token "$tmp/repo/scripts/publish-crates.sh" publish taskfleet >"$tmp/$mode.out" 2>"$tmp/$mode.err"
   status=$?
   set -e
@@ -191,7 +191,7 @@ mv "$tmp/topology.json" "$tmp/repo/release/taskfleet-release.json"
 : >"$tmp/cargo.log"
 set +e
 env -i HOME="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" SOURCE_COMMIT=1111111111111111111111111111111111111111 \
-  GITHUB_ACTIONS=true GITHUB_EVENT_NAME=push GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_REPOSITORY=jarimustonen/orchestratectl \
+  GITHUB_ACTIONS=true GITHUB_EVENT_NAME=push GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_REPOSITORY=jarimustonen/taskfleet \
   GITHUB_SHA=1111111111111111111111111111111111111111 CARGO_REGISTRY_TOKEN=test-token \
   "$tmp/repo/scripts/publish-crates.sh" publish taskfleet >"$tmp/blocked.out" 2>"$tmp/blocked.err"
 status=$?

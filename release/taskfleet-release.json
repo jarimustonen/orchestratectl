@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "activation": "blocked-r8-r9-r10",
-  "repository": "jarimustonen/orchestratectl",
+  "repository": "jarimustonen/taskfleet",
   "owners": ["jarimustonen"],
   "crates_io": {
     "workflow": "publish-crates.yml",

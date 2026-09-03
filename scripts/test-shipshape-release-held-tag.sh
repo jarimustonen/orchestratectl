@@ -45,7 +45,7 @@ if [[ "$*" == "rev-parse --verify refs/tags/$TAG" ]]; then
 fi
 case "$*" in
   "rev-parse --show-toplevel") printf '%s\n' "$GIT_STUB_ROOT" ;;
-  "remote get-url origin"|"remote get-url --push --all origin") printf '%s\n' 'git@github.com:jarimustonen/orchestratectl.git' ;;
+  "remote get-url origin"|"remote get-url --push --all origin") printf '%s\n' 'git@github.com:jarimustonen/taskfleet.git' ;;
   "cat-file -e "*) [[ "${HELD_VARIANT:-valid}" != missing-local-tag ]] ;;
   "rev-parse --git-common-dir") printf '%s\n' "$GIT_COMMON" ;;
   "ls-remote --tags origin "*)
@@ -64,8 +64,8 @@ cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_STUB_LOG"
-if [[ "$*" == 'repo view jarimustonen/orchestratectl --json nameWithOwner -q .nameWithOwner' ]]; then
-  printf '%s\n' jarimustonen/orchestratectl
+if [[ "$*" == 'repo view jarimustonen/taskfleet --json nameWithOwner -q .nameWithOwner' ]]; then
+  printf '%s\n' jarimustonen/taskfleet
   exit 0
 fi
 if [[ "$*" == run\ list* ]]; then
@@ -107,7 +107,7 @@ STUB
 chmod +x "$tmp/bin/shipshape"
 
 write_checkpoint() {
-  local remote="${1:-git@github.com:jarimustonen/orchestratectl.git}"
+  local remote="${1:-git@github.com:jarimustonen/taskfleet.git}"
   jq -n --arg run "$run_id" --arg tag "$tag" --arg bump "$bump_commit" --arg oid "$tag_oid" --arg remote "$remote" '
     {schema_version:1,run_id:$run,tag:$tag,bump_commit:$bump,
      marker:["origin",$remote,"refs/tags/"+$tag,$oid,"refs/tags/"+$tag,"0000000000000000000000000000000000000000"]}' \

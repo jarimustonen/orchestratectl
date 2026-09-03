@@ -114,6 +114,31 @@ jobs:
       - run: cargo nextest run --locked --release --workspace
       - run: cargo test --locked --release --workspace --doc
 
+  # R9 proves the repository-scoped cargo-dist runner on same-repository PRs.
+  # Fork pull requests never allocate this persistent machine or execute code on it.
+  r9-self-hosted-macos:
+    name: test (self-hosted-macos-arm64)
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - run: cargo nextest run --locked --release --workspace
+      - run: cargo test --locked --release --workspace --doc
+
   msrv:
     name: msrv (1.85)
     runs-on: ubuntu-latest

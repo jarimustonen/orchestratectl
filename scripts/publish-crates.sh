@@ -13,7 +13,7 @@ readonly tar_bin="${TAR_BIN:-tar}"
 readonly sha256_bin="${SHA256_BIN:-sha256sum}"
 readonly sleep_bin="${SLEEP_BIN:-sleep}"
 readonly registry="${CRATES_IO_API:-https://crates.io/api/v1}"
-readonly user_agent="taskfleet-release-reconciler/1 (+https://github.com/jarimustonen/orchestratectl)"
+readonly user_agent="taskfleet-release-reconciler/1 (+https://github.com/jarimustonen/taskfleet)"
 readonly receipt_dir="${RELEASE_RECEIPT_DIR:-$repo_root/target/release-receipts}"
 publish_token="${CARGO_REGISTRY_TOKEN:-}"
 unset CARGO_REGISTRY_TOKEN

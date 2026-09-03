@@ -71,7 +71,7 @@ if [[ "${1:-}" == repo && "${2:-}" == view ]]; then
 fi
 
 if [[ $# -eq 7 && "$1" == repo && "$2" == view &&
-      "$3" == "${GH_STUB_VIEW_EXPECTED:-jarimustonen/orchestratectl}" && "$4" == --json &&
+      "$3" == "${GH_STUB_VIEW_EXPECTED:-jarimustonen/taskfleet}" && "$4" == --json &&
       "$5" == nameWithOwner && "$6" == -q && "$7" == .nameWithOwner ]]; then
   printf '%s\n' "$GH_STUB_REPO"
   exit 0
@@ -109,9 +109,9 @@ chmod +x "$tmp/bin/shipshape"
 readonly test_run_id="01M0JA657EJJJYC7J7230JF42N"
 
 run_wrapper() {
-  local gh_repo="${1:-jarimustonen/orchestratectl}"
-  local origin="${2:-git@github.com:jarimustonen/orchestratectl.git}"
-  local view_expected="${3:-jarimustonen/orchestratectl}"
+  local gh_repo="${1:-jarimustonen/taskfleet}"
+  local origin="${2:-git@github.com:jarimustonen/taskfleet.git}"
+  local view_expected="${3:-jarimustonen/taskfleet}"
   env -i \
     HOME="$tmp/home" \
     PATH="$tmp/bin" \
@@ -136,7 +136,7 @@ reset_logs() {
 }
 
 assert_supported_gh_call() {
-  local expected="repo view jarimustonen/orchestratectl --json nameWithOwner -q .nameWithOwner"
+  local expected="repo view jarimustonen/taskfleet --json nameWithOwner -q .nameWithOwner"
   local actual
   actual="$(cat "$tmp/gh.log")"
   [[ "$actual" == "$expected" ]] || {
@@ -206,7 +206,7 @@ set -e
 }
 assert_supported_gh_call
 assert_git_calls
-grep -Fx 'release repository mismatch: origin=jarimustonen/orchestratectl push=jarimustonen/orchestratectl gh=unrelated-owner/unrelated-repo expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+grep -Fx 'release repository mismatch: origin=jarimustonen/taskfleet push=jarimustonen/taskfleet gh=unrelated-owner/unrelated-repo expected=jarimustonen/taskfleet' "$tmp/stderr" >/dev/null || {
   echo "GitHub repository mismatch did not emit the expected diagnostic" >&2
   cat "$tmp/stderr" >&2
   exit 1
@@ -215,7 +215,7 @@ assert_no_release_show
 
 reset_logs
 set +e
-run_wrapper jarimustonen/orchestratectl https://github.com/unrelated-owner/unrelated-repo.git
+run_wrapper jarimustonen/taskfleet https://github.com/unrelated-owner/unrelated-repo.git
 status=$?
 set -e
 [[ "$status" -eq 1 ]] || {
@@ -225,7 +225,7 @@ set -e
 }
 assert_supported_gh_call
 assert_git_calls
-grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo push=unrelated-owner/unrelated-repo gh=jarimustonen/orchestratectl expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo push=unrelated-owner/unrelated-repo gh=jarimustonen/taskfleet expected=jarimustonen/taskfleet' "$tmp/stderr" >/dev/null || {
   echo "origin repository mismatch did not emit the expected diagnostic" >&2
   cat "$tmp/stderr" >&2
   exit 1
@@ -279,10 +279,10 @@ for abandoned in 01M0FD8FSTMGYG8YTV92WMWC87 01M0FG88NAKBJ7Y3QNFZEHRM4K; do
   reset_logs
   set +e
   env -i HOME="$tmp/home" PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GIT_STUB_LOG="$tmp/git.log" \
-    GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/orchestratectl.git \
+    GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/taskfleet.git \
     SHIPSHAPE_STUB_LOG="$tmp/shipshape.log" SHIPSHAPE_STUB_VERSION=0.10.1 \
     SHIPSHAPE_STUB_COMMIT=3e46568d6969701c5fea82fb134b62aa17121cbe \
-    GH_STUB_REPO=jarimustonen/orchestratectl "$repo_root/scripts/shipshape-release.sh" resume "$abandoned" \
+    GH_STUB_REPO=jarimustonen/taskfleet "$repo_root/scripts/shipshape-release.sh" resume "$abandoned" \
     >"$tmp/stdout" 2>"$tmp/stderr"
   status=$?
   set -e
@@ -293,7 +293,7 @@ done
 
 set +e
 env -i PATH="$tmp/bin" GH_STUB_LOG="$tmp/gh.log" GH_STUB_REPO=unused \
-  "$tmp/bin/gh" repo view -R jarimustonen/orchestratectl \
+  "$tmp/bin/gh" repo view -R jarimustonen/taskfleet \
   --json nameWithOwner -q .nameWithOwner >/dev/null 2>&1
 status=$?
 set -e

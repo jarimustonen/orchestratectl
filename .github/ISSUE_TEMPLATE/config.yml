@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question / discussion
-    url: https://github.com/jarimustonen/orchestratectl/discussions
+    url: https://github.com/jarimustonen/taskfleet/discussions
     about: For open-ended questions, prefer GitHub Discussions over a bug report.
