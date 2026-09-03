@@ -3,13 +3,12 @@ created: 2026-09-03
 updated: 2026-09-03
 type: bug
 reporter: jari
-status: fixed
+status: open
 priority: high
 related: ['@taskfleet-integrated-validation']
 lane: taskfleet-rename
 lane_seq: 88
 collision: [repository-identity]
-closed: 2026-09-03
 commits:
 - hash: 5a098130bd5ae829e874439252aff050e4dedb2e
   summary: 'test: declare bare CI spawn and archive dependencies'
@@ -42,3 +41,13 @@ Make both tests declare and isolate every required execution context/tool so the
 ### 2026-09-03T11:47:21Z · @issuectl
 
 Made the native exact-argv test explicitly TMUX-free with its private named session, and declared gzip in the stripped publish fixture. Focused macOS/Linux checks, release protocols, and the full Rust green gate pass.
+
+## Reopen Notes — 2026-09-03
+
+_Add rationale for reopening here._
+
+## Comments
+
+### 2026-09-03T11:57:12Z · @orchestrator
+
+Acceptance failed on exact-SHA main CI 33751749394 (bc8d06c): Ubuntu still reports no_tmux_session for exact-argv materialization; macOS reports no_tmux_session in spawn_all_kinds::each_kind_native_spawn_publishes_a_live_handshaken_node; nextest also flags shim_forwards_sigterm_and_records_the_childs_true_exit as leaky. Reopened for a complete bare-Linux/macOS materializing-test audit; R8 remains blocked.
