@@ -216,10 +216,25 @@ default="local"
         // this scenario legitimately needs is addressed by absolute path.
         .env("PATH", scratch.path());
     native.configure(&mut command, &worktree, "fixture");
-    command.env("CAPTURE_OUTPUT", &observed).args([
-        "--output", "json", "run", "create", "--kind", "spinoff", "--title", "exact", "--task",
-        "do it",
-    ]);
+    command
+        // This test commonly runs inside a developer tmux session, but native
+        // materialization must rely only on its declared private fake session.
+        .env_remove("TMUX")
+        .env("CAPTURE_OUTPUT", &observed)
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--tmux-session",
+            "fixture",
+            "--title",
+            "exact",
+            "--task",
+            "do it",
+        ]);
     let created = run_ok(&mut command);
     let run_id = created["data"]["run_id"].as_str().unwrap();
     let node: Value = serde_json::from_slice(
@@ -232,6 +247,7 @@ default="local"
         .unwrap(),
     )
     .unwrap();
+    assert_eq!(node["tmux_identity"]["session"], "fixture");
     let pid = node["agent_pid"].as_i64().unwrap();
     for _ in 0..200 {
         if observed.exists() {

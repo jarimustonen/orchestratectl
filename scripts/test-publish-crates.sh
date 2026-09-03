@@ -17,7 +17,10 @@ members = []
 [workspace.package]
 version = "1.2.3"
 EOF
-for tool in bash jq awk grep mktemp rm mkdir mv tar sha256sum cat cp dirname; do
+# GNU tar implements -z by resolving gzip through PATH, unlike bsdtar on
+# macOS. Declare that external compressor explicitly so this stripped fixture
+# exercises the same dependency boundary on both platforms.
+for tool in bash jq awk grep mktemp rm mkdir mv tar gzip sha256sum cat cp dirname; do
   path="$(command -v "$tool")" || { echo "missing test prerequisite: $tool" >&2; exit 1; }
   ln -s "$path" "$tmp/bin/$tool"
 done
@@ -129,7 +132,7 @@ symlink_target_mode_after="$(LC_ALL=C ls -ld "$tmp/symlink-mode-probe")"
 
 # Exercise every fixture entry with only the fixture bin on PATH. The full
 # protocol cases below then prove that the real command arguments still work.
-for tool in bash jq awk grep mktemp rm mkdir mv tar sha256sum cat cp dirname git cargo curl sleep symlink-mode-probe; do
+for tool in bash jq awk grep mktemp rm mkdir mv tar gzip sha256sum cat cp dirname git cargo curl sleep symlink-mode-probe; do
   set +e
   env -i HOME="$tmp" TMPDIR="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" \
     "$tmp/bin/$tool" </dev/null >/dev/null 2>&1
