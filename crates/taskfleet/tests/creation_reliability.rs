@@ -188,7 +188,11 @@ fn interrupted_native_materialization_never_publishes_zero_node_run() {
         creator: Some(command.spawn().unwrap()),
         owned_pids: vec![workmux_pid, sleeper_pid],
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // A full no-fail-fast release run starts many process-heavy integration
+    // tests concurrently. On macOS the creator can be descheduled for more than
+    // 10 seconds before the blocking workmux fixture gets CPU; keep this bounded
+    // without confusing scheduler delay with a publication failure.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !started.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }

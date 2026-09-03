@@ -207,6 +207,10 @@ default="local"
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
+        // Simulate an equipped developer shell. NativeSpawnTools must remove
+        // this ambient placement so the explicit fixture session below is the
+        // only placement contract the create can use.
+        .env("TMUX", "/hostile/ambient-tmux,1,2")
         .current_dir(home.path().parent().unwrap())
         // A relative selected root must be made absolute before it crosses the
         // worktree/self-exec boundary.
@@ -216,25 +220,23 @@ default="local"
         // this scenario legitimately needs is addressed by absolute path.
         .env("PATH", scratch.path());
     native.configure(&mut command, &worktree, "fixture");
-    command
-        // This test commonly runs inside a developer tmux session, but native
-        // materialization must rely only on its declared private fake session.
-        .env_remove("TMUX")
-        .env("CAPTURE_OUTPUT", &observed)
-        .args([
-            "--output",
-            "json",
-            "run",
-            "create",
-            "--kind",
-            "spinoff",
-            "--tmux-session",
-            "fixture",
-            "--title",
-            "exact",
-            "--task",
-            "do it",
-        ]);
+    assert!(command
+        .get_envs()
+        .any(|(key, value)| key == "TMUX" && value.is_none()));
+    command.env("CAPTURE_OUTPUT", &observed).args([
+        "--output",
+        "json",
+        "run",
+        "create",
+        "--kind",
+        "spinoff",
+        "--tmux-session",
+        "fixture",
+        "--title",
+        "exact",
+        "--task",
+        "do it",
+    ]);
     let created = run_ok(&mut command);
     let run_id = created["data"]["run_id"].as_str().unwrap();
     let node: Value = serde_json::from_slice(
@@ -323,7 +325,7 @@ default="only"
         .env("HOME", home.path())
         .env("PATH", "/usr/bin:/bin");
     let worktree = native.worktree("worktree");
-    native.configure(&mut command, &worktree, "fixture");
+    native.configure(&mut command, &worktree, "headless");
     command.env("WORKMUX_BIN", "/usr/bin/false").args([
         "--output",
         "json",

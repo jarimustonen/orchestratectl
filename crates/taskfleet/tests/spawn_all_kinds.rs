@@ -59,6 +59,42 @@ fn run_ok(command: &mut Command) -> Value {
 }
 
 #[test]
+fn native_spawn_without_declared_placement_rejects_bare_context() {
+    let home = TestHome::new();
+    let scratch = TempDir::new().unwrap();
+    let tools = NativeSpawnTools::new();
+    profile(&home, &scratch);
+    let worktree = tools.worktree("worktree");
+
+    // Deliberately omit both placement flags. NativeSpawnTools removes ambient
+    // TMUX, so production must reject this before invoking tmux or workmux.
+    let output = command(&home, &tools, &worktree, "fixture")
+        .args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--title",
+            "missing placement",
+            "--task",
+            "work",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no_tmux_session"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!worktree.exists());
+    assert!(std::fs::read_dir(home.path().join("runs"))
+        .map_or(true, |mut entries| entries.next().is_none()));
+}
+
+#[test]
 fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
     for kind in KINDS {
         let home = TestHome::new();
@@ -73,6 +109,8 @@ fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
             "create",
             "--kind",
             kind,
+            "--tmux-session",
+            "fixture",
             "--title",
             "native smoke",
             "--task",
@@ -159,6 +197,8 @@ fn named_source_branch_is_preserved_by_native_spawn() {
         "spinoff",
         "--source-branch",
         "integration",
+        "--tmux-session",
+        "fixture",
         "--title",
         "base",
         "--task",
@@ -203,7 +243,16 @@ fn node_backed_and_claude_compatible_recorded_candidates_materialize() {
         .unwrap();
         let worktree = tools.worktree("worktree");
         let mut cmd = command(&home, &tools, &worktree, "fixture");
-        cmd.args(["--output", "json", "run", "create", "--kind", "spinoff"]);
+        cmd.args([
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--tmux-session",
+            "fixture",
+        ]);
         if interactive {
             cmd.arg("--interactive");
         }
@@ -225,7 +274,17 @@ fn native_workmux_failure_rolls_back_without_publication() {
     let output = command(&home, &tools, &worktree, "fixture")
         .env("WORKMUX_BIN", "/usr/bin/false")
         .args([
-            "--output", "json", "run", "create", "--kind", "spinoff", "--title", "fail", "--task",
+            "--output",
+            "json",
+            "run",
+            "create",
+            "--kind",
+            "spinoff",
+            "--tmux-session",
+            "fixture",
+            "--title",
+            "fail",
+            "--task",
             "work",
         ])
         .output()

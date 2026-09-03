@@ -4593,14 +4593,14 @@ EOF
         let _self_exe = EnvGuard::set("OCTL_TEST_SELF_EXE", self_exe.to_str().unwrap());
 
         let spawned = respawn_agent(&paths, &node, &manifest, 3).unwrap();
+        let expected = format!("{}\nn-0001\n3\n2\n--\nretry prompt\n", manifest.run_id);
         let observed_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !observed.exists() && std::time::Instant::now() < observed_deadline {
+        while std::fs::read_to_string(&observed).unwrap_or_default() != expected
+            && std::time::Instant::now() < observed_deadline
+        {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(
-            std::fs::read_to_string(observed).unwrap(),
-            format!("{}\nn-0001\n3\n2\n--\nretry prompt\n", manifest.run_id)
-        );
+        assert_eq!(std::fs::read_to_string(observed).unwrap(), expected);
         assert!(paths
             .root
             .join("agent-launch-n-0001-attempt-3.sh")

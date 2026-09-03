@@ -7,8 +7,10 @@
 //! real binary end-to-end against a seeded run dir (no live supervisor), so they
 //! assert both the propagated exit code and the recorded event.
 
+use std::ops::{Deref, DerefMut};
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 use serde_json::{json, Value};
 use taskfleet_core::{append_and_apply_event, ensure_root, NodeId, RunPaths};
@@ -58,6 +60,44 @@ fn worker_exited_event(paths: &RunPaths) -> Value {
         .find(|l| l.contains("\"worker.exited\""))
         .expect("a worker.exited event must be recorded");
     serde_json::from_str(line).unwrap()
+}
+
+/// Panic-safe ownership for a deliberately long-lived shim test process.
+struct ChildGuard(Child);
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        // Cleanup targets the fixture-owned process group so it remains sound
+        // even when the forwarding behavior under test regresses.
+        let group = -(self.0.id() as libc::pid_t);
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if self.0.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unsafe { libc::kill(group, libc::SIGKILL) };
+        let _ = self.0.wait();
+    }
 }
 
 #[test]
@@ -265,20 +305,31 @@ fn shim_forwards_sigterm_and_records_the_childs_true_exit() {
     // running: it must forward the signal, survive long enough to wait, and
     // record the child's real signal death (design.md §2.1 told fact).
     let ready = home.path().join("worker-ready");
-    let mut child = bin(&home)
-        .env("WORKER_READY", &ready)
-        .args([
-            "run-worker",
-            RUN_ID,
-            "n-0001",
-            "--",
-            "sh",
-            "-c",
-            "touch \"$WORKER_READY\"; sleep 30",
-        ])
-        .spawn()
-        .expect("spawn shim");
-    let shim_pid = child.id().to_string();
+    let mut command = bin(&home);
+    command.env("WORKER_READY", &ready).args([
+        "run-worker",
+        RUN_ID,
+        "n-0001",
+        "--",
+        "sh",
+        "-c",
+        // `exec` keeps the workload in the shim's direct child PID. A
+        // non-exec shell would die on forwarded SIGTERM while leaving its
+        // `sleep` grandchild alive with nextest's output descriptors open.
+        "touch \"$WORKER_READY\"; exec sleep 30",
+    ]);
+    // Isolate panic cleanup from nextest's process group. The assertion below
+    // still signals only the shim PID, so it continues to prove forwarding.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = ChildGuard(command.spawn().expect("spawn shim"));
+    let shim_pid = child.id() as libc::pid_t;
 
     // Wait for the child itself to prove the shim installed handlers and
     // spawned it; a fixed sleep would race slow CI startup.
@@ -289,14 +340,20 @@ fn shim_forwards_sigterm_and_records_the_childs_true_exit() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(ready.exists(), "worker never reached its readiness marker");
-    let killed = Command::new("kill")
-        .args(["-TERM", &shim_pid])
-        .status()
-        .expect("send SIGTERM")
-        .success();
-    assert!(killed, "SIGTERM to the shim should be delivered");
+    let killed = unsafe { libc::kill(shim_pid, libc::SIGTERM) };
+    assert_eq!(killed, 0, "SIGTERM to the shim should be delivered");
 
-    let status = child.wait().expect("await shim");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll shim") {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "shim did not exit after forwarded SIGTERM"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(
         status.code(),
         Some(143),

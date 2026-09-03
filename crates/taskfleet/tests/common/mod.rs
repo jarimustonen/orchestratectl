@@ -159,6 +159,11 @@ exit 1
             command.current_dir(self.repo.path());
         }
         command
+            // Materialized tests must never inherit placement from the developer
+            // shell or CI runner. Each create call must declare its isolated
+            // `--headless` / `--tmux-session` placement through the public CLI.
+            // Stripping TMUX here makes an omitted flag fail deterministically.
+            .env_remove("TMUX")
             .env("GIT_BIN", self.dir.path().join("git"))
             .env("TMUX_BIN", self.dir.path().join("tmux"))
             .env("WORKMUX_BIN", self.dir.path().join("workmux"))
