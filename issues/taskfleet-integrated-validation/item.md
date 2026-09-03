@@ -13,7 +13,7 @@ originating_run_kind: spinoff
 related: ['@rename-taskfleet']
 lane: taskfleet-rename
 lane_seq: 90
-blocked_by: ['@taskfleet-distribution-topology', '@publish-crates-fixture-symlink-chmod', '@taskfleet-native-materialization', '@native-spawn-test-leaks']
+blocked_by: ['@taskfleet-distribution-topology', '@publish-crates-fixture-symlink-chmod', '@taskfleet-native-materialization', '@native-spawn-test-leaks', '@pre-r8-ci-portability']
 collision: [repository-identity]
 ---
 
