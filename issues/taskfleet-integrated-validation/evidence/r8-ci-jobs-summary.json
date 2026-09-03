@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "total_count": 8,
+  "jobs": [
+    {
+      "id": 100679185032,
+      "name": "version-snapshots",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:44Z",
+      "completed_at": "2026-09-03T14:03:52Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185032"
+    },
+    {
+      "id": 100679185233,
+      "name": "msrv (1.85)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:37Z",
+      "completed_at": "2026-09-03T14:04:12Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185233"
+    },
+    {
+      "id": 100679185297,
+      "name": "cargo-deny",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:44Z",
+      "completed_at": "2026-09-03T14:04:04Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185297"
+    },
+    {
+      "id": 100679185306,
+      "name": "test (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:37Z",
+      "completed_at": "2026-09-03T14:09:13Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185306"
+    },
+    {
+      "id": 100679185386,
+      "name": "rustfmt",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:38Z",
+      "completed_at": "2026-09-03T14:03:54Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185386"
+    },
+    {
+      "id": 100679185412,
+      "name": "test (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:38Z",
+      "completed_at": "2026-09-03T14:11:25Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185412"
+    },
+    {
+      "id": 100679185780,
+      "name": "clippy",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:44Z",
+      "completed_at": "2026-09-03T14:04:20Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185780"
+    },
+    {
+      "id": 100679185989,
+      "name": "docs",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-03T14:03:37Z",
+      "completed_at": "2026-09-03T14:04:08Z",
+      "html_url": "https://github.com/jarimustonen/orchestratectl/actions/runs/33764612111/job/100679185989"
+    }
+  ]
+}

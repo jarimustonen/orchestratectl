@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scope": "superseded exploratory and diagnostic attempts; none is acceptance evidence",
+  "attempts": [
+    {
+      "symptom": "jarimustonen/taskfleet/taskfleet not installed",
+      "cause": "brew migrate was invoked before Homebrew's installed old-tap clone had fetched the newly committed tap_migrations.json metadata",
+      "disposition": "superseded; acceptance flow uses explicit brew update after publishing metadata to the local-only old-tap remote"
+    },
+    {
+      "symptom": "Formulae found in multiple taps",
+      "cause": "an unqualified diagnostic command was ambiguous while both disposable taps were present",
+      "disposition": "superseded; topology transitions use fully qualified identities at ambiguity boundaries"
+    },
+    {
+      "symptom": "upgraded taskfleet remained identified with jarimustonen/orchestratectl and direct canonical install refused duplicate ownership",
+      "cause": "the diagnostic manually supplied new-tap formula rename metadata without first updating the installed old tap, so it renamed the keg but never exercised the intended tap-migration update boundary",
+      "disposition": "superseded setup error; not product evidence"
+    },
+    {
+      "symptom": "The migration did not complete successfully; the already-moved Cellar path was missing",
+      "cause": "the diagnostic added optional new-tap formula_renames.json on top of the prepared old-tap tap_migrations.json; brew update scheduled both rename records and attempted the same keg migration twice",
+      "disposition": "superseded; the prepared old-tap cross-tap mapping already includes the new formula token, so the acceptance flow uses that single source of migration truth"
+    },
+    {
+      "symptom": "receipt assertion looked only at Cellar/taskfleet/0.5.1",
+      "cause": "the first assertion hard-coded the pre-migration rack version path; the next diagnostic corrected that but searched for .INSTALL_RECEIPT.json instead of Homebrew's INSTALL_RECEIPT.json",
+      "disposition": "superseded assertion errors; acceptance discovers the sole correctly named migrated receipt below the Taskfleet rack and verifies its source.tap"
+    },
+    {
+      "symptom": "exact Homebrew version guard rejected before creating a sandbox",
+      "cause": "the host Homebrew checkout advanced between initial tool capture and review hardening while retaining the later recorded git commit",
+      "disposition": "superseded stale tool metadata; final acceptance pins both the exact current version string and git commit"
+    }
+  ],
+  "acceptance_evidence": "homebrew-acceptance.json",
+  "raw_acceptance_log": "recorded by SHA-256 in outputs-summary.txt",
+  "public_mutation": false
+}

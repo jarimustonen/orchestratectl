@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "queried_at": "2026-09-03T14:23:00Z",
+  "current_source_old_latest_installer_http_status": 200,
+  "current_source_taskfleet_latest_installer_http_status": 404,
+  "canonical_repository_taskfleet_latest_installer_http_status": 404,
+  "interpretation": "Pre-R9/pre-release current-state fact. The generated 0.6.0 old-name stub was tested only in a sandbox; it is not live yet."
+}

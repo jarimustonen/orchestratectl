@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "queried_at": "2026-09-03T14:19:57Z",
+  "source_repository": {
+    "id": 1265770191,
+    "full_name": "jarimustonen/orchestratectl",
+    "private": false,
+    "default_branch": "main",
+    "archived": false,
+    "disabled": false,
+    "pushed_at": "2026-09-03T14:03:28Z"
+  },
+  "canonical_repository": {
+    "http_status": 404
+  },
+  "canonical_tap": {
+    "id": 1355125556,
+    "full_name": "jarimustonen/homebrew-taskfleet",
+    "private": false,
+    "default_branch": "main",
+    "archived": false,
+    "disabled": false,
+    "pushed_at": "2026-09-02T18:56:19Z"
+  },
+  "legacy_tap": {
+    "id": 1322902240,
+    "full_name": "jarimustonen/homebrew-orchestratectl",
+    "private": false,
+    "default_branch": "main",
+    "archived": false,
+    "disabled": false,
+    "pushed_at": "2026-08-23T12:55:08Z"
+  }
+}

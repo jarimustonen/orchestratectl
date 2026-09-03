@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "data": {
+    "repo_root": "<REPO>",
+    "maturity": "mvp",
+    "core_complete": "complete",
+    "gaps": [
+      {
+        "id": "code-of-conduct",
+        "category": "canon",
+        "severity": "recommended",
+        "status": "absent",
+        "member": "shipshape-contributing",
+        "detail": "no CODE_OF_CONDUCT — mvp+ projects set community expectations"
+      },
+      {
+        "id": "dependency-bot",
+        "category": "canon",
+        "severity": "recommended",
+        "status": "absent",
+        "member": "shipshape-ci",
+        "detail": "no dependency-update bot (dependabot/renovate) configured — recommended at mvp+"
+      }
+    ],
+    "community_profile": {
+      "checked": true,
+      "unavailable_reason": null,
+      "readme": "present",
+      "license": "present",
+      "contributing": "present",
+      "code_of_conduct": "absent",
+      "issue_template": "absent",
+      "pull_request_template": "present",
+      "security": "absent"
+    }
+  },
+  "warnings": []
+}

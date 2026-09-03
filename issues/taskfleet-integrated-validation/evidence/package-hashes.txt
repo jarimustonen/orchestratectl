@@ -1,0 +1,3 @@
+fd1552ee8a26b554ea1b2b8d734675a2294205baef3f1c81cb0169a68a5f86a3  target/package/taskfleet-core-0.5.1.crate
+0f59cecf0bf40ff6ccfa087cd39a98a026636a0134dea460d4c68d7a9ee6b484  target/package/taskfleet-0.5.1.crate
+74b46c0212e9c240b62637e26963f681daef507fb87e960feae24ab78a695ded  target/package/orchestratectl-0.5.1.crate

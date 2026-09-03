@@ -1,0 +1,3 @@
+6755fcaefb10fb9d8941b457f77cfe1a2f91dd6712a528b96f800713d0d01443  crates.io/orchestratectl-0.5.1.crate
+55a5d6049845167e13da3eb83b66a628473664670adda0b429efc76c9eef8465  github-release/orchestratectl-aarch64-apple-darwin.tar.xz
+e6bc1291e3b7c2aee092f956eb061dbe77617580e999597beec10113970000d5  github-release/archive/orchestratectl

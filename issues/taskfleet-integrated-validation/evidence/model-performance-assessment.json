@@ -1,0 +1,46 @@
+{
+  "task_description": "Adversarial two-round review of Taskfleet ADR 0002 R8 integrated pre-cut validation evidence, including a context-request follow-up and verification of evidence-harness corrections.",
+  "notes": "The panel converged from strong initial objections to pass-after-finalization. OpenAI explicitly retracted a false Ruby quoted-label blocker. Anthropic and DeepSeek found the strongest late-stage fail-closed and isolation gaps.",
+  "rows": [
+    {
+      "model": "gemini-3.1-pro-preview",
+      "task_type": "code-review",
+      "output_quality": "good",
+      "specificity": "quoted",
+      "independence": "raised-unique",
+      "format_compliance": "yes",
+      "strength": "Found wrapper-install, stress-wording, and platform-boundary questions and corrected the false Ruby claim.",
+      "weakness": "Accepted finalization too quickly and once claimed the indexed sanitizer was missing without verifying the supplied update."
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "task_type": "code-review",
+      "output_quality": "good",
+      "specificity": "quoted",
+      "independence": "raised-unique",
+      "format_compliance": "yes",
+      "strength": "Found the aggregate authorization weakness, missing raw logs, symlink checks, cache isolation, verify-mode bug, and parity normalization gap.",
+      "weakness": "Initially raised a blocking Ruby String/Symbol claim that was factually wrong, though it retracted it explicitly after challenge."
+    },
+    {
+      "model": "claude-fable-5",
+      "task_type": "code-review",
+      "output_quality": "good",
+      "specificity": "quoted",
+      "independence": "raised-unique",
+      "format_compliance": "yes",
+      "strength": "Caught CI-count interpretation, stale machine authority, commit-unbound residue, exception handling, and finalization ordering with strong nuance.",
+      "weakness": "At times treated explicit owner disposition as requiring an additional waiver loop after the user had already defined diagnostic handling."
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "task_type": "code-review",
+      "output_quality": "good",
+      "specificity": "quoted",
+      "independence": "raised-unique",
+      "format_compliance": "yes",
+      "strength": "Caught stale DAG contradiction, exact-once warning coverage, post-update Homebrew identity, and the host RUSTUP_HOME isolation gap.",
+      "weakness": "Occasionally elevated stale generated evidence to product-level severity before checking its disposition."
+    }
+  ]
+}

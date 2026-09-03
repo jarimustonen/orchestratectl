@@ -1,0 +1,356 @@
+{
+  "schema_version": 1,
+  "tested_commit": "c3ef8b740ac531f12ce81c759ed209d178cf36bd",
+  "tested_tree": "b7d07d9df3308fb33afdfab892f949f46ef810d4",
+  "generated_at": "2026-09-03T21:46:06.986204Z",
+  "overall": "pass",
+  "r9_authorized": true,
+  "release_authorized": false,
+  "artifacts": [
+    {
+      "path": "evidence/acceptance-matrix.json",
+      "bytes": 3566,
+      "sha256": "3409556349b6760241b5d7259cbcfbc7616002371e45919b86dfe70bd3fa729c"
+    },
+    {
+      "path": "evidence/assessment.json",
+      "bytes": 17177,
+      "sha256": "9545f8ce18ed0fde1b478fd63fa543439c1fc1eb3700939dbc33ac3037ff7944"
+    },
+    {
+      "path": "evidence/assessment.md",
+      "bytes": 2243,
+      "sha256": "7db09a9f45f963883722cea7c4e42414694e875a230d193ee65f967c75396a61"
+    },
+    {
+      "path": "evidence/check-residual-identity-r8.py",
+      "bytes": 4676,
+      "sha256": "a038b1600afbf7b0d942e8f1c5e7de501bb95707c0464295740dc33817c045bd"
+    },
+    {
+      "path": "evidence/command-manifest.json",
+      "bytes": 7042,
+      "sha256": "c2219890591727600cc9eceafd11da7df57e43c0769255fee5c5680ff5ea37e0"
+    },
+    {
+      "path": "evidence/crates-summary.json",
+      "bytes": 452,
+      "sha256": "f37fab29b637816e68c36c9aab2b35ff0c4027af9dd5b1847e84b2415bb4b85a"
+    },
+    {
+      "path": "evidence/distribution-artifact-hashes.txt",
+      "bytes": 721,
+      "sha256": "4541f68ea5a90aab0ebea21e046a187fc20c01441dc5e9a623b22ffd3a4599af"
+    },
+    {
+      "path": "evidence/exceptions.json",
+      "bytes": 1482,
+      "sha256": "03a6af4a8332559c153596aaf4d849e365bf053486ecc94a38f4d14951293e1c"
+    },
+    {
+      "path": "evidence/fixture-hashes.txt",
+      "bytes": 3452,
+      "sha256": "17e7d40f6d0dd050d75a88c66ce0d8dfaf1a27d9fac6de06f77d0cad05cad759"
+    },
+    {
+      "path": "evidence/github-summary.json",
+      "bytes": 838,
+      "sha256": "47d56e3d46d1b0ea470c2388ed2e77e568782cc0812247d51f4f9854ea34bf88"
+    },
+    {
+      "path": "evidence/homebrew-acceptance.json",
+      "bytes": 1295,
+      "sha256": "d6e7051ecf9608dace70e2c420361cc17508dde3be8cb56440bb75e0f1f17a82"
+    },
+    {
+      "path": "evidence/homebrew-diagnostics.json",
+      "bytes": 2726,
+      "sha256": "e7ce92c3da4dc7af34f01dff38a537d9b3ad049bdbeb0505dbc203b50fe98d18"
+    },
+    {
+      "path": "evidence/homebrew-summary.json",
+      "bytes": 274,
+      "sha256": "9a4654fb82f7fdec864e8179fbff7ac57c4980782efba4878c9a468a142f57fc"
+    },
+    {
+      "path": "evidence/identity-occurrences.tsv",
+      "bytes": 182533,
+      "sha256": "cf509bb94b9244ae5a9cf92d7ade7ac2d1479db6318b8e0ddcb8569ad7d5e289"
+    },
+    {
+      "path": "evidence/installer-url-summary.json",
+      "bytes": 404,
+      "sha256": "8b0fd199c39d1bd2f82254fadde927aee79f95652979ca4c8edb2a1747670ef8"
+    },
+    {
+      "path": "evidence/isolation-diagnostics.json",
+      "bytes": 2038,
+      "sha256": "3ee026a0e34d3a086a8874e14a1b3468846d5fae225580ca6c895d1978aa042f"
+    },
+    {
+      "path": "evidence/issue-dag.json",
+      "bytes": 8658,
+      "sha256": "a4937e154dfa68df2befca2313453fa5b269b2591adec43c31fa39041314c27f"
+    },
+    {
+      "path": "evidence/issue-doctor.json",
+      "bytes": 1659,
+      "sha256": "9f9225f67ec8f88575cf0eb1aafd0ebc3471f8c525cf6dc875c21c55e956e3af"
+    },
+    {
+      "path": "evidence/leak-disposition.json",
+      "bytes": 1117,
+      "sha256": "7e76ec6459d14d086f2319515fffd3af97a46814ca76591476405543949fd41f"
+    },
+    {
+      "path": "evidence/legacy-0.5.1-artifact-hashes.txt",
+      "bytes": 331,
+      "sha256": "33590afdebc897044cbb80005eb1406178731b09fce9f918006c406219c9d9cf"
+    },
+    {
+      "path": "evidence/legacy-0.5.1-version.json",
+      "bytes": 2002,
+      "sha256": "15d29133b7003921c69219d3394893c180b0bba868429ace9a3c862862c1384e"
+    },
+    {
+      "path": "evidence/logs/command-parity.log",
+      "bytes": 114,
+      "sha256": "1c22dbe3cad281bd8a6e9379a491c6631c30b8308bd960a016a62337755079b2"
+    },
+    {
+      "path": "evidence/logs/current-fixture-verify.log",
+      "bytes": 665,
+      "sha256": "7fd7ebfc171016011b05fd14dabc74bb0b07d0390759db0a7595c113ef8714d2"
+    },
+    {
+      "path": "evidence/logs/distribution-drill.log",
+      "bytes": 7262,
+      "sha256": "9c171e90f553af4705b62398ac8225eb9d2a81e82a1b541340d6199534305aa0"
+    },
+    {
+      "path": "evidence/logs/full-rust-gate.log",
+      "bytes": 131719,
+      "sha256": "ef99fd6b7966ef8efbab0869ba1438f69720be349cd8846efabe5b2740eb7d34"
+    },
+    {
+      "path": "evidence/logs/homebrew-acceptance.log",
+      "bytes": 10082,
+      "sha256": "4c7a26c3abbbfbb06a2a6243e5d9badb81f228e1ea3bbe46001be0c24133ad90"
+    },
+    {
+      "path": "evidence/logs/install-channels.log",
+      "bytes": 7233,
+      "sha256": "b20427b7600f5085691bd9f2a111b2d280599893b4b875542df2d0d712025b6f"
+    },
+    {
+      "path": "evidence/logs/legacy-051-verify.log",
+      "bytes": 49,
+      "sha256": "f4fcf754a0cd6f10a9c9f5992af58d67835728c6ddbeac0ceb501cc459e0f3f6"
+    },
+    {
+      "path": "evidence/logs/release-protocol-fixtures.log",
+      "bytes": 451,
+      "sha256": "ae763b66e44e3bb21b3c049489b59a6b378f3fb89acc66cee1dc6a9214f71807"
+    },
+    {
+      "path": "evidence/logs/shipshape-contract-plan.log",
+      "bytes": 8166,
+      "sha256": "84f4798e58a6afd4e0cc81849171dd960e084d2ebeefeea11bbcac65557ce685"
+    },
+    {
+      "path": "evidence/logs/snapshot-and-isolation-diagnostics.log",
+      "bytes": 204764,
+      "sha256": "a4e14a595f756ded731dbe9d8d62913b1f67e6111a681bb9bbc297f365fe338a"
+    },
+    {
+      "path": "evidence/logs/stripped-path-final.log",
+      "bytes": 122873,
+      "sha256": "50653e022216ad010d0265ea43047c8411ecb4486d1ce4b9ef5bdd4deb42dcd7"
+    },
+    {
+      "path": "evidence/model-performance-assessment.json",
+      "bytes": 2529,
+      "sha256": "e9acc1342728118f78749a5b1997e5c26e9c84320dd7285e9c90c76b5f2abfe7"
+    },
+    {
+      "path": "evidence/model-performance-log.json",
+      "bytes": 498,
+      "sha256": "e1b0badc42253976eab3755081147ae7e0d522b6ccb0f590f7152c077ac5431e"
+    },
+    {
+      "path": "evidence/old-formula-sha.txt",
+      "bytes": 100,
+      "sha256": "9f1b6ab1e6695f0a2d9e009acb63924ac1802aa2896f071b8a372c9f21e8fa8f"
+    },
+    {
+      "path": "evidence/old-tap-head.txt",
+      "bytes": 57,
+      "sha256": "f7816ddc821727e11982f8829f77fcea09b62f7bbb22bb16fd85eba2a715bd42"
+    },
+    {
+      "path": "evidence/old-tap-tree.txt",
+      "bytes": 142,
+      "sha256": "bd2e0735985a44c36c6604481235468d11ecea0cfdb840abed340d1f3a426999"
+    },
+    {
+      "path": "evidence/outputs-summary.txt",
+      "bytes": 4383,
+      "sha256": "787753a99fe09cb6d62091381f3ed89e4be7398bac498f0453ca85c4f9438089"
+    },
+    {
+      "path": "evidence/package-hashes.txt",
+      "bytes": 319,
+      "sha256": "f1ec4ba36d052c24b1374e971b4d1a8b843ce9682f3c7100dd084d3e16274487"
+    },
+    {
+      "path": "evidence/package-members.txt",
+      "bytes": 10726,
+      "sha256": "61c2227b25763c1c0589ffbb0ec842f74fc70791c6b045a225a8ef713f84623a"
+    },
+    {
+      "path": "evidence/public-command-inventory.json",
+      "bytes": 1005,
+      "sha256": "ffaccd26686cb5b5ef39f7fc32ca794c41480cd8551e149bfb977af4a09b1c37"
+    },
+    {
+      "path": "evidence/r8-ci-artifacts-summary.json",
+      "bytes": 65,
+      "sha256": "78863444963173fac3532ac4fe2669d4c9b24b7c911db11b108268d6009e2e0e"
+    },
+    {
+      "path": "evidence/r8-ci-jobs-summary.json",
+      "bytes": 2684,
+      "sha256": "6186c3dbf48db33b8869678208421d06363fad9ffb6971a0d74bb585b0a8b90c"
+    },
+    {
+      "path": "evidence/r8-ci-summary.json",
+      "bytes": 496,
+      "sha256": "cc43403e99006bad772c3abb3b939cc9a0eb725fd8e86d5b92b521a5f34d72cb"
+    },
+    {
+      "path": "evidence/r8-shipshape-audit.json",
+      "bytes": 1027,
+      "sha256": "3de14640fd3dcbe6e72980800bf2a1be8e6615890bd0cd908c91f2f21f278f6c"
+    },
+    {
+      "path": "evidence/r8-shipshape-contract-validate.json",
+      "bytes": 146,
+      "sha256": "15c86613bd151ff061301e885582a9761a7d1d9e02370965ebbd199c886eee09"
+    },
+    {
+      "path": "evidence/r8-shipshape-contract.json",
+      "bytes": 1959,
+      "sha256": "bca24dad6bace3941c35a76f54181f683eeb6e8afe53f3371b74455abdf7da51"
+    },
+    {
+      "path": "evidence/r8-shipshape-sealed-plan.json",
+      "bytes": 4429,
+      "sha256": "67853490c27bb1488f86b3c940ebfa96df8d6fec38b61bf00a114379b37dc013"
+    },
+    {
+      "path": "evidence/r8-taskfleet-version.json",
+      "bytes": 379,
+      "sha256": "aed2b49fa017d8d580f1269ad6e694b42e8f38f303658848fb331f0d912c3f38"
+    },
+    {
+      "path": "evidence/residual-classification.txt",
+      "bytes": 599,
+      "sha256": "a0e91b1408d54fcc76ed9a4383a95d8331692f5ef7a436a69b181e86ac0322a3"
+    },
+    {
+      "path": "evidence/residue.json",
+      "bytes": 810,
+      "sha256": "dc1f55357eada6f2d10edf6946285210d0eac0a27cf5ad32d3ef9c8f5b7c1edc"
+    },
+    {
+      "path": "evidence/review-context-followups.md",
+      "bytes": 40779,
+      "sha256": "9d1a6c8a51ae8e2bee79cec2d8983ff518df0b7fc3fae29b2b8a15988264d97b"
+    },
+    {
+      "path": "evidence/review-cross-round1.md",
+      "bytes": 30150,
+      "sha256": "f2387cb8df3a384c62d241b2add697712eeb2869645d0ac09237ce1bd4aca9af"
+    },
+    {
+      "path": "evidence/review-cross-round2.md",
+      "bytes": 30677,
+      "sha256": "d81e6ffdcdfb67e12dac97e6b13e30dcee6b22c53eeaad5fd3cc9404908906f3"
+    },
+    {
+      "path": "evidence/review-round1.md",
+      "bytes": 52611,
+      "sha256": "ef10f1251410fd9d0e244bb45e099e518447d4c7073aee92b21f066b0ff0b773"
+    },
+    {
+      "path": "evidence/review.md",
+      "bytes": 7276,
+      "sha256": "e9ad3bf59a78bb6a9af71adb589e946dac97356ff99f1ce4fa667fab58ce09a9"
+    },
+    {
+      "path": "evidence/sanitization-report.json",
+      "bytes": 347,
+      "sha256": "7254a7ff3b05eff6fbc6d6b7d4988b709dddf62b38c6cafb8fe130da88d3caaf"
+    },
+    {
+      "path": "evidence/source-identity.json",
+      "bytes": 1077,
+      "sha256": "85c89a4f2fd3acb34e377e80de6dda72a0900bf28b43423280f80dcd8da8aa6d"
+    },
+    {
+      "path": "evidence/source-runners-summary.json",
+      "bytes": 288,
+      "sha256": "c54d250f6b04be8e65a8166fff7b209f57c805f5fc3f636c421efb241a307676"
+    },
+    {
+      "path": "evidence/source-tap-secret-summary.json",
+      "bytes": 138,
+      "sha256": "cb7b012f8e4023649c5cda450de5c2df5e73b94ad2f511faef77bdec738302de"
+    },
+    {
+      "path": "evidence/toolchain.json",
+      "bytes": 2056,
+      "sha256": "4e94b68624c42a4b8acf66db95d5a5136910dfd2b448c5f588343938ba4ebb05"
+    },
+    {
+      "path": "item.md",
+      "bytes": 6425,
+      "sha256": "c893e4e103d72ba31df2b4f8c086bdb1d7e8f5bf76e256bf0f1390d6a66b3cf7"
+    },
+    {
+      "path": "sanitize-evidence.py",
+      "bytes": 1064,
+      "sha256": "557ecba1d031f5545ff7d236117d0a319429864c6e0e10bd1ca17a80055a6253"
+    },
+    {
+      "path": "scan-evidence.py",
+      "bytes": 1795,
+      "sha256": "85f38a3d7e1735a177a68d9bf141e72e79ee53ad5023f9819689013643af046e"
+    },
+    {
+      "path": "validation.md",
+      "bytes": 10939,
+      "sha256": "46b561184d44c6732c767abd5b2b9be62fd823005a561540d9dc3c4679ca56a3"
+    },
+    {
+      "path": "verify-command-parity.sh",
+      "bytes": 6452,
+      "sha256": "e8390f6ea150358f599cfb6995b0093519972d6de15a0d6daa99e436877d3fd2"
+    },
+    {
+      "path": "verify-evidence-index.py",
+      "bytes": 8073,
+      "sha256": "22d0882ad8fbc5ae5925312febdfb80b615da8a14ed72afa6f55becc90562587"
+    },
+    {
+      "path": "verify-homebrew-prelive.sh",
+      "bytes": 6699,
+      "sha256": "e9c1862315810228d6300c0b4b1fdac6c99864ac12aad8b23179892f9a77012e"
+    },
+    {
+      "path": "verify-install-channels.sh",
+      "bytes": 4265,
+      "sha256": "044f1efff25a952ddedb8a6bba31bb096c0aa64d3e9b75e2e9ac56db6221355a"
+    }
+  ]
+}
