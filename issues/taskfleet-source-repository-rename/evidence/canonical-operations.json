@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "jarimustonen/taskfleet",
+  "repository_id": 1265770191,
+  "repository_node_id": "R_kgDOS3Iezw",
+  "candidate_branch": "wt/pxz260ywp6-taskfleet-source-repository-rename-r",
+  "candidate_sha": "076f983c498de1ca2fc8fe0b919130ffbd52dc27",
+  "candidate_tree": "06aaf232a85833ac1762e7a2fcf89b38cf9e6572",
+  "canonical_api": "pass",
+  "canonical_ssh_clone": "pass",
+  "canonical_fetch": "pass",
+  "canonical_candidate_branch_push": "pass",
+  "redirect_dependency": false
+}

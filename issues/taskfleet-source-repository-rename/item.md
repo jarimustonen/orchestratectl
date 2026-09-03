@@ -10,6 +10,9 @@ lane: taskfleet-rename
 lane_seq: 100
 collision: [repository-identity]
 blocked_by: ['@taskfleet-integrated-validation']
+commits:
+- hash: 076f983c498de1ca2fc8fe0b919130ffbd52dc27
+  summary: converge canonical Taskfleet repository identity
 ---
 
 # Rename Taskfleet source repository
@@ -47,3 +50,13 @@ Execute ADR 0002 R9 after immutable R8 authorization: rename the GitHub source r
 ## Recovery
 
 After the GitHub rename, fix forward. If a local/code/CI check fails, preserve the canonical repository identity, record the failure, keep this issue open, and repair through a focused follow-up. Never recreate `jarimustonen/orchestratectl`.
+
+## Agent Runs
+
+### 2026-09-03T22:53:15Z · @orchestratectl:01m1mm0cm54yt1sppxz260ywp6
+
+ADR 0002 R9 candidate/pre-main legs passed. GitHub source repository ID `1265770191` (`R_kgDOS3Iezw`) was renamed one-way from `jarimustonen/orchestratectl` to `jarimustonen/taskfleet`; canonical remotes, API, SSH clone/fetch and reversible candidate-branch push all work without redirect dependence. Identity candidate `076f983c498de1ca2fc8fe0b919130ffbd52dc27` (tree `06aaf232a85833ac1762e7a2fcf89b38cf9e6572`) passed local green gates and renamed-repository PR CI run `33814447787`, including runner ID 21 with labels `self-hosted`, `macOS`, `ARM64`. Non-publishing cargo-dist PR plan/gate run `33814447929` also passed; all host/publish jobs were skipped. Temporary PR #1 was closed unmerged and its remote branch deleted.
+
+No tag, crate, GitHub Release, formula, tap ref, secret value, installed binary/skill, or state was changed. Release remains blocked (`release/taskfleet-release.json: blocked-r8-r9-r10`; distribution `prepared-blocked-r10`); R10 owns live tap credentials and release activation. Review residuals requiring R10 re-evaluation are cargo-dist 0.28.2's generated host cancellation dependency and generated `secrets: inherit` before any live credentials/activation.
+
+Conductor finalization checklist (do not close before all pass): (1) merge only through `taskfleet run merge`; (2) verify canonical `origin/main` equals the exact merged SHA; (3) wait for a fresh `ci.yml` push run whose `headSha` is that exact merged SHA and whose every job succeeds, including `test (self-hosted-macos-arm64)` on runner ID 21; (4) recheck repository ID/name, canonical remotes, tag/release/tap/secret-name invariants, and residual classifier; (5) record final merged commit and exact-main CI on this issue, then close it. This worker deliberately leaves the issue open.

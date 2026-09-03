@@ -1,0 +1,49 @@
+.github/ISSUE_TEMPLATE/config.yml:4:    url: https://github.com/jarimustonen/orchestratectl/discussions
+AGENTS.md:84:- **Release cadence (default posture, since 2026-08-04; suspended while release activation is blocked).** Outside an explicit pre-cut block, this project **ships real releases, often** — cut one whenever something production-ready lands, don't batch changes into a big release. Two channels, both driven from the approved `OSS-RELEASE.md` contract and **both triggered by pushing a `vX.Y.Z` tag**: **crates.io** via `publish-crates.yml` in CI (`taskfleet-core` first, then `taskfleet` — the CLI depends on `taskfleet-core = "=<version>"`; do NOT run `cargo publish` locally, see the dedicated bullet below), and **prebuilt binaries + the canonical Homebrew tap `jarimustonen/homebrew-taskfleet`** via cargo-dist (CI builds the mac target on a self-hosted runner). End state after R11: `brew install jarimustonen/taskfleet/taskfleet`; the old `jarimustonen/orchestratectl/orchestratectl` command remains the current public 0.5.1 location during the pre-cut block. The `/shipshape-release` skill selects the SemVer bump; the pinned Shipshape 0.10.1 resumable protocol and `scripts/shipshape-release.sh` execute it. Mechanics live in `OSS-RELEASE.md` + `dist-workspace.toml`.
+CHANGELOG.md:221:installable via Homebrew (`brew install jarimustonen/orchestratectl/orchestratectl`).
+CHANGELOG.md:503:[Unreleased]: https://github.com/jarimustonen/orchestratectl/compare/v0.4.1...HEAD
+CHANGELOG.md:504:[0.4.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.4.0...v0.4.1
+CHANGELOG.md:505:[0.4.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.3.0...v0.4.0
+CHANGELOG.md:506:[0.3.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.2...v0.3.0
+CHANGELOG.md:507:[0.2.2]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.1...v0.2.2
+CHANGELOG.md:508:[0.2.1]: https://github.com/jarimustonen/orchestratectl/compare/v0.2.0...v0.2.1
+CHANGELOG.md:509:[0.2.0]: https://github.com/jarimustonen/orchestratectl/compare/v0.1.0...v0.2.0
+CHANGELOG.md:510:[0.1.0]: https://github.com/jarimustonen/orchestratectl/releases/tag/v0.1.0
+Cargo.toml:10:repository = "https://github.com/jarimustonen/orchestratectl"
+Cargo.toml:11:homepage = "https://github.com/jarimustonen/orchestratectl"
+README.md:3:[![CI](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml/badge.svg)](https://github.com/jarimustonen/orchestratectl/actions/workflows/ci.yml)
+README.md:61:[`jarimustonen/orchestratectl`](https://github.com/jarimustonen/orchestratectl)
+README.md:62:and `jarimustonen/orchestratectl/orchestratectl` until the separately gated
+crates/taskfleet/tests/fixtures/legacy-skills/octl-run-overview/SKILL.md:238:  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+crates/taskfleet/tests/fixtures/legacy-skills/octl-spawn-spinoff/SKILL.md:171:  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+crates/taskfleet/tests/fixtures/legacy-skills/orchestratectl-overview/SKILL.md:133:  originally used (`brew upgrade jarimustonen/orchestratectl/orchestratectl` or
+crates/taskfleet/tests/package_graph.rs:14:    assert_eq!(topology["repository"], "jarimustonen/orchestratectl");
+docs/decisions/0002-taskfleet-rename-migration.md:114:- Rename `jarimustonen/orchestratectl` to `jarimustonen/taskfleet` before the canonical tag. Never recreate/reuse the old repository name. Update remotes, exact URLs, action references, badges, secrets, and identity checks instead of configuring redirects as steady state.
+release/taskfleet-distribution.json:19:    "current": "jarimustonen/orchestratectl",
+release/taskfleet-release.json:4:  "repository": "jarimustonen/orchestratectl",
+scripts/publish-crates.sh:16:readonly user_agent="taskfleet-release-reconciler/1 (+https://github.com/jarimustonen/orchestratectl)"
+scripts/test-distribution-topology.sh:107:"${brew_env[@]}" "$brew_bin" tap jarimustonen/orchestratectl "file://$tmp/old-source" >/dev/null
+scripts/test-distribution-topology.sh:108:formula_json="$("${brew_env[@]}" "$brew_bin" info --json=v2 jarimustonen/orchestratectl/orchestratectl)"
+scripts/test-publish-crates.sh:52:    {name:"taskfleet-core",version:"1.2.3",manifest_path:($root+"/crates/taskfleet-core/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"core",dependencies:[]},
+scripts/test-publish-crates.sh:53:    {name:"taskfleet",version:"1.2.3",manifest_path:($root+"/crates/taskfleet/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"cli",dependencies:[{name:"taskfleet-core",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]},
+scripts/test-publish-crates.sh:54:    {name:"orchestratectl",version:"1.2.3",manifest_path:($root+"/compat/orchestratectl/Cargo.toml"),repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",license:"MIT",rust_version:"1.85",description:"compat",dependencies:[{name:"taskfleet",req:"=1.2.3",kind:null,optional:false,target:null,uses_default_features:true,features:[]}]}
+scripts/test-publish-crates.sh:106:    jq -n --arg checksum "$checksum" --arg description "$description" --argjson yanked "$yanked" '{version:{checksum:$checksum,yanked:$yanked,license:"MIT",rust_version:"1.85",repository:"https://github.com/jarimustonen/orchestratectl",homepage:"https://github.com/jarimustonen/orchestratectl",description:$description}}' >"$output"
+scripts/test-publish-crates.sh:154:    GITHUB_REPOSITORY=jarimustonen/orchestratectl GITHUB_SHA=1111111111111111111111111111111111111111 \
+scripts/test-publish-crates.sh:194:  GITHUB_ACTIONS=true GITHUB_EVENT_NAME=push GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_REPOSITORY=jarimustonen/orchestratectl \
+scripts/test-shipshape-release-0.10-protocol.sh:167:sed -i.bak 's#https://github.com/jarimustonen/orchestratectl#https://github.com/jarimustonen/taskfleet#g' "$tmp/repo/Cargo.toml"
+scripts/test-shipshape-release-held-tag.sh:48:  "remote get-url origin"|"remote get-url --push --all origin") printf '%s\n' 'git@github.com:jarimustonen/orchestratectl.git' ;;
+scripts/test-shipshape-release-held-tag.sh:67:if [[ "$*" == 'repo view jarimustonen/orchestratectl --json nameWithOwner -q .nameWithOwner' ]]; then
+scripts/test-shipshape-release-held-tag.sh:68:  printf '%s\n' jarimustonen/orchestratectl
+scripts/test-shipshape-release-held-tag.sh:110:  local remote="${1:-git@github.com:jarimustonen/orchestratectl.git}"
+scripts/test-shipshape-release.sh:74:      "$3" == "${GH_STUB_VIEW_EXPECTED:-jarimustonen/orchestratectl}" && "$4" == --json &&
+scripts/test-shipshape-release.sh:112:  local gh_repo="${1:-jarimustonen/orchestratectl}"
+scripts/test-shipshape-release.sh:113:  local origin="${2:-git@github.com:jarimustonen/orchestratectl.git}"
+scripts/test-shipshape-release.sh:114:  local view_expected="${3:-jarimustonen/orchestratectl}"
+scripts/test-shipshape-release.sh:139:  local expected="repo view jarimustonen/orchestratectl --json nameWithOwner -q .nameWithOwner"
+scripts/test-shipshape-release.sh:209:grep -Fx 'release repository mismatch: origin=jarimustonen/orchestratectl push=jarimustonen/orchestratectl gh=unrelated-owner/unrelated-repo expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+scripts/test-shipshape-release.sh:218:run_wrapper jarimustonen/orchestratectl https://github.com/unrelated-owner/unrelated-repo.git
+scripts/test-shipshape-release.sh:228:grep -Fx 'release repository mismatch: origin=unrelated-owner/unrelated-repo push=unrelated-owner/unrelated-repo gh=jarimustonen/orchestratectl expected=jarimustonen/orchestratectl' "$tmp/stderr" >/dev/null || {
+scripts/test-shipshape-release.sh:282:    GIT_STUB_ROOT="$tmp/work" GIT_STUB_ORIGIN=git@github.com:jarimustonen/orchestratectl.git \
+scripts/test-shipshape-release.sh:285:    GH_STUB_REPO=jarimustonen/orchestratectl "$repo_root/scripts/shipshape-release.sh" resume "$abandoned" \
+scripts/test-shipshape-release.sh:296:  "$tmp/bin/gh" repo view -R jarimustonen/orchestratectl \
+scripts/validate-distribution-topology.sh:52:  .source_repository == {current:"jarimustonen/orchestratectl",after_r9:"jarimustonen/taskfleet"} and

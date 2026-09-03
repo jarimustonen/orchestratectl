@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "candidate_commit": "076f983c498de1ca2fc8fe0b919130ffbd52dc27",
+  "commands": [
+    {"id":"r8-authority","command":"python3 issues/taskfleet-integrated-validation/verify-evidence-index.py","result":"pass"},
+    {"id":"preflight","command":"authenticated GitHub API repository/name/availability, workflow/release/tap/tag/settings snapshots","result":"pass","output":"before-*.json; before-old-source-occurrences.txt"},
+    {"id":"rename","command":"gh repo rename taskfleet --repo jarimustonen/orchestratectl --yes","result":"pass","output":"before-repository.json; after-repository.json"},
+    {"id":"remote-convergence","command":"git remote set-url origin git@github.com:jarimustonen/taskfleet.git; fetch","result":"pass","output":"after-remotes.json"},
+    {"id":"cargo-dist","command":"disposable cargo-dist 0.28.2 generate --check; plan; validate-distribution-topology.sh","result":"pass","output":"cargo-dist-plan.json"},
+    {"id":"local-gate","command":"fmt; insta loop; clippy; release nextest; doctest; rustdoc; release protocol fixtures; cargo-dist; residual scan; diff check","result":"pass","output":"local-green-gate.log"},
+    {"id":"review","command":"llm-review defaults; context follow-up; two cross-review rounds; assess-findings axes","result":"pass","output":"review*.md; assessment.*"},
+    {"id":"canonical-operations","command":"canonical API, SSH clone, fetch and reversible candidate branch push","result":"pass","output":"canonical-operations.json"},
+    {"id":"candidate-ci","command":"temporary PR #1; wait every CI check including self-hosted macOS ARM64","result":"pass","output":"candidate-runs.json; candidate-jobs.json; candidate-pr.json"},
+    {"id":"residual-classifier","command":"check-residual-source-identity.py","result":"pass","output":"residual-source-identity.json"},
+    {"id":"no-release","command":"compare tag/release/Shipshape/tap/secret-name snapshots","result":"pass","output":"after-no-release-no-tap.json"},
+    {"id":"sanitization","command":"scan-evidence.py","result":"pass","output":"sanitization-report.json"}
+  ],
+  "release_authorized": false
+}

@@ -1,0 +1,28 @@
+commit 076f983c498de1ca2fc8fe0b919130ffbd52dc27
+Author:     Jari Mustonen <jari.mustonen@iki.fi>
+AuthorDate: Fri Sep 4 01:43:50 2026 +0300
+Commit:     Jari Mustonen <jari.mustonen@iki.fi>
+CommitDate: Fri Sep 4 01:43:50 2026 +0300
+
+    chore: converge canonical Taskfleet repository identity
+
+    Refs-Issue: @taskfleet-source-repository-rename
+
+ .github/ISSUE_TEMPLATE/config.yml               |  2 +-
+ .github/workflows/ci.yml                        | 25 +++++++++++++++++++
+ .github/workflows/release.yml                   | 23 ++++++++----------
+ CHANGELOG.md                                    | 16 ++++++-------
+ Cargo.toml                                      |  4 ++--
+ README.md                                       | 14 +++++------
+ crates/taskfleet/tests/package_graph.rs         | 17 ++++++-------
+ dist-workspace.toml                             |  9 ++++---
+ issues/taskfleet-distribution-topology/plan.md  | 26 ++++++++++----------
+ release/taskfleet-distribution.json             |  8 +++----
+ release/taskfleet-release.json                  |  2 +-
+ scripts/publish-crates.sh                       |  2 +-
+ scripts/test-publish-crates.sh                  | 12 +++++-----
+ scripts/test-shipshape-release-0.10-protocol.sh |  3 +--
+ scripts/test-shipshape-release-held-tag.sh      |  8 +++----
+ scripts/test-shipshape-release.sh               | 22 ++++++++---------
+ scripts/validate-distribution-topology.sh       | 32 ++++++++++++++-----------
+ 17 files changed, 124 insertions(+), 101 deletions(-)
