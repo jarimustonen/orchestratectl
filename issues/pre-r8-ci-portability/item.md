@@ -3,12 +3,16 @@ created: 2026-09-03
 updated: 2026-09-03
 type: bug
 reporter: jari
-status: open
+status: fixed
 priority: high
 related: ['@taskfleet-integrated-validation']
 lane: taskfleet-rename
 lane_seq: 88
 collision: [repository-identity]
+closed: 2026-09-03
+commits:
+- hash: 5a098130bd5ae829e874439252aff050e4dedb2e
+  summary: 'test: declare bare CI spawn and archive dependencies'
 ---
 
 # Restore bare-CI portability before Taskfleet R8
@@ -32,3 +36,9 @@ Make both tests declare and isolate every required execution context/tool so the
 - Full Rust gate and every version-snapshot/release script pass on macOS and an available Linux/container equivalent.
 - Zero worktree/tmux/run residue outside declared sandboxes.
 - No publication, install, tag, repository rename or tap mutation.
+
+## Resolution
+
+### 2026-09-03T11:47:21Z · @issuectl
+
+Made the native exact-argv test explicitly TMUX-free with its private named session, and declared gzip in the stripped publish fixture. Focused macOS/Linux checks, release protocols, and the full Rust green gate pass.
