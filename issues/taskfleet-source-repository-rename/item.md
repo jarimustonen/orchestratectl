@@ -39,15 +39,15 @@ Execute ADR 0002 R9 after immutable R8 authorization: rename the GitHub source r
 - Trigger candidate CI in the renamed repository so the self-hosted macOS runner and all Linux jobs execute. Review every job and snapshot change. The final merged exact-main SHA must receive a fresh green `ci.yml` push run before R9 is accepted.
 - Record immutable before/after evidence and exact IDs/SHAs/run URLs under this issue. Scan maintained surfaces for unintended old source identity and classify every residual.
 
-## Acceptance criteria
+## Acceptance Criteria
 
-- GitHub canonical source is exactly `jarimustonen/taskfleet`; the old name exists only as GitHub-managed redirect and is not recreated.
-- Maintained remotes and source-owned links use the canonical URL without depending on redirect behavior.
-- Canonical clone/fetch/push and GitHub API operations pass.
-- A renamed-repository candidate run proves the self-hosted macOS runner and all CI jobs; final exact-main CI is green before closure is considered authoritative.
-- Evidence clearly distinguishes intentional legacy/protocol/history residuals.
-- No crate publication, release tag, GitHub Release, Homebrew tap/formula activation, global install, skill install, real state migration, or dependent-repository edit occurs.
-- R10/release remain blocked; R9 does not authorize publication.
+- [x] GitHub canonical source is exactly `jarimustonen/taskfleet`; the old name exists only as GitHub-managed redirect and is not recreated.
+- [x] Maintained remotes and source-owned links use the canonical URL without depending on redirect behavior.
+- [x] Canonical clone/fetch/push and GitHub API operations pass.
+- [x] A renamed-repository candidate run proves the self-hosted macOS runner and all CI jobs; final exact-main CI is green before closure is considered authoritative.
+- [x] Evidence clearly distinguishes intentional legacy/protocol/history residuals.
+- [x] No crate publication, release tag, GitHub Release, Homebrew tap/formula activation, global install, skill install, real state migration, or dependent-repository edit occurs.
+- [x] R10/release remain blocked; R9 does not authorize publication.
 
 ## Recovery
 
