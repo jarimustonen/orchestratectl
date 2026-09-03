@@ -65,7 +65,7 @@ fn each_kind_native_spawn_publishes_a_live_handshaken_node() {
         let scratch = TempDir::new().unwrap();
         let tools = NativeSpawnTools::new();
         profile(&home, &scratch);
-        let worktree = scratch.path().join("worktree");
+        let worktree = tools.worktree("worktree");
         let created = run_ok(command(&home, &tools, &worktree, "fixture").args([
             "--output",
             "json",
@@ -112,7 +112,7 @@ fn headless_native_spawn_records_qualified_session_and_emoji() {
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     profile(&home, &scratch);
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let created = run_ok(command(&home, &tools, &worktree, "isolated").args([
         "--output",
         "json",
@@ -149,7 +149,7 @@ fn named_source_branch_is_preserved_by_native_spawn() {
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     profile(&home, &scratch);
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let created = run_ok(command(&home, &tools, &worktree, "fixture").args([
         "--output",
         "json",
@@ -201,7 +201,7 @@ fn node_backed_and_claude_compatible_recorded_candidates_materialize() {
             ),
         )
         .unwrap();
-        let worktree = scratch.path().join("worktree");
+        let worktree = tools.worktree("worktree");
         let mut cmd = command(&home, &tools, &worktree, "fixture");
         cmd.args(["--output", "json", "run", "create", "--kind", "spinoff"]);
         if interactive {
@@ -221,7 +221,7 @@ fn native_workmux_failure_rolls_back_without_publication() {
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     profile(&home, &scratch);
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let output = command(&home, &tools, &worktree, "fixture")
         .env("WORKMUX_BIN", "/usr/bin/false")
         .args([

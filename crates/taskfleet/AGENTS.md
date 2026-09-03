@@ -56,6 +56,10 @@ Integration tests that exercise `run create`'s production path spawn real `taskf
 
 After `cargo test -p taskfleet` finishes, `pgrep -lf "taskfleet.*supervise"` from the workspace `target/debug/` path should return nothing. Any survivor is a missing-fixture bug in the new test.
 
+`NativeSpawnTools` runs each production-path test from a real disposable git repository and supplies a private fake tmux socket/server rooted in its own cryptographically unique `TempDir`. Its Drop guard identity-checks and stops the launched candidate, clears fake tmux state, and force-removes only fixture-owned disposable paths. Interruption tests additionally own every deliberately blocked child PID. Never point these tests at the source checkout or a shared tmux session.
+
+For an explicit real-pi operator check, use `scripts/native-spawn-smoke.sh` after building `target/release/taskfleet`. It uses a bounded no-tools prompt, disposable HOME/repository/Taskfleet state, and a private `tmux -L` server. Its trap cancels the run, stops the private server/supervisor, removes the sandbox, and rejects any before/after change to source worktrees/`wt/*` refs, default-server tmux windows, or external run roots. Do not improvise a live smoke from an implementation issue prompt.
+
 ## End-to-end spinoff harness
 
 `tests/e2e_spinoff.rs` drives one full autonomous-spinoff round-trip on every run — native `run create --kind spinoff --headless` (real generated launcher, durable PID handshake, detached supervisor) → live stub candidate → `run merge` → supervisor rolls the run up to `done`, tears down, and exits. It asserts the canonical event sequence (`run.created`, `node.created`, `supervisor.started`, `node.report`, `run.status`, `supervisor.exited`) and terminal manifest.

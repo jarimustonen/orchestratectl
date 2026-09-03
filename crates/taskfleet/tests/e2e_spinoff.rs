@@ -70,7 +70,7 @@ default="e2e"
     .unwrap();
     let merge = scratch.path().join("merge.sh");
     executable(&merge, "#!/bin/sh\nexit 0\n");
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
 
     let mut create = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     create

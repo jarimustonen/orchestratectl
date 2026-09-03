@@ -14,6 +14,30 @@ fn executable(path: &std::path::Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Owns the interrupted creator and its deliberately blocking workmux child.
+/// Drop runs during assertion panic as well as success, so this failure-path
+/// test cannot leave either process behind.
+struct InterruptedChildren {
+    creator: Option<std::process::Child>,
+    owned_pids: Vec<std::path::PathBuf>,
+}
+
+impl Drop for InterruptedChildren {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.creator {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for pid_file in &self.owned_pids {
+            if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                if let Ok(pid) = pid.trim().parse::<libc::pid_t>() {
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                }
+            }
+        }
+    }
+}
+
 fn profile(home: &TestHome, scratch: &TempDir) {
     let worker = scratch.path().join("worker.sh");
     executable(&worker, "#!/bin/sh\nexec /bin/sleep 30\n");
@@ -37,7 +61,6 @@ default="test"
 #[test]
 fn missing_candidate_fails_before_publication_and_rolls_back() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     std::fs::write(
         home.path().join("config.toml"),
@@ -51,7 +74,7 @@ default="test"
 "#,
     )
     .unwrap();
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())
@@ -82,7 +105,6 @@ default="test"
 #[test]
 fn immediate_exit_candidate_fails_before_publication() {
     let home = TestHome::new();
-    let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     std::fs::write(
         home.path().join("config.toml"),
@@ -96,7 +118,7 @@ default="test"
 "#,
     )
     .unwrap();
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())
@@ -131,15 +153,19 @@ fn interrupted_native_materialization_never_publishes_zero_node_run() {
     let tools = NativeSpawnTools::new();
     profile(&home, &scratch);
     let started = scratch.path().join("started");
+    let workmux_pid = scratch.path().join("workmux.pid");
+    let sleeper_pid = scratch.path().join("sleeper.pid");
     let workmux = scratch.path().join("blocking-workmux.sh");
     executable(
         &workmux,
         &format!(
-            "#!/bin/sh\nif [ \"$1\" = add ]; then : > '{}'; /bin/sleep 5; exit 1; fi\nexit 1\n",
-            started.display()
+            "#!/bin/sh\nif [ \"$1\" = add ]; then echo $$ > '{}'; : > '{}'; /bin/sleep 30 & echo $! > '{}'; wait; exit 1; fi\nexit 1\n",
+            workmux_pid.display(),
+            started.display(),
+            sleeper_pid.display()
         ),
     );
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())
@@ -158,16 +184,23 @@ fn interrupted_native_materialization_never_publishes_zero_node_run() {
         "--task",
         "work",
     ]);
-    let mut child = command.spawn().unwrap();
+    let mut children = InterruptedChildren {
+        creator: Some(command.spawn().unwrap()),
+        owned_pids: vec![workmux_pid, sleeper_pid],
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
     while !started.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(started.exists());
     unsafe {
-        libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
+        libc::kill(
+            children.creator.as_ref().unwrap().id() as libc::pid_t,
+            libc::SIGKILL,
+        );
     }
-    let _ = child.wait();
+    let _ = children.creator.as_mut().unwrap().wait();
+    children.creator = None;
     assert!(std::fs::read_dir(home.path().join("runs"))
         .map_or(true, |mut entries| entries.next().is_none()));
 }
@@ -178,7 +211,7 @@ fn supervisor_boot_failure_is_loud_after_native_publication() {
     let scratch = TempDir::new().unwrap();
     let tools = NativeSpawnTools::new();
     profile(&home, &scratch);
-    let worktree = scratch.path().join("worktree");
+    let worktree = tools.worktree("worktree");
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())

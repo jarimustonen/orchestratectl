@@ -189,8 +189,8 @@ default="local"
     )
     .unwrap();
 
-    let worktree = scratch.path().join("worktree");
     let native = NativeSpawnTools::new();
+    let worktree = native.worktree("worktree");
 
     // Hostile product-name executables prove both the worker shim and detached
     // supervisor re-enter the exact current binary rather than consulting PATH.
@@ -300,14 +300,14 @@ default="only"
 "#,
     )
     .unwrap();
-    let scratch = TempDir::new().unwrap();
     let native = NativeSpawnTools::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_taskfleet"));
     command
         .env("TASKFLEET_HOME", home.path())
         .env("HOME", home.path())
         .env("PATH", "/usr/bin:/bin");
-    native.configure(&mut command, &scratch.path().join("worktree"), "fixture");
+    let worktree = native.worktree("worktree");
+    native.configure(&mut command, &worktree, "fixture");
     command.env("WORKMUX_BIN", "/usr/bin/false").args([
         "--output",
         "json",
