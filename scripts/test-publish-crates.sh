@@ -21,6 +21,16 @@ for tool in bash jq awk grep mktemp rm mkdir mv tar sha256sum cat cp dirname; do
   path="$(command -v "$tool")" || { echo "missing test prerequisite: $tool" >&2; exit 1; }
   ln -s "$path" "$tmp/bin/$tool"
 done
+# Keep an executable symlink target with deliberately narrow mode bits in the
+# fixture. A blanket chmod of bin/* would dereference this link on Linux and
+# change the target from 0700 to 0711.
+cat >"$tmp/symlink-mode-probe" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+chmod 700 "$tmp/symlink-mode-probe"
+ln -s "$tmp/symlink-mode-probe" "$tmp/bin/symlink-mode-probe"
+symlink_target_mode_before="$(LC_ALL=C ls -ld "$tmp/symlink-mode-probe")"
 cat >"$tmp/bin/git" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
@@ -110,7 +120,26 @@ cat >"$tmp/bin/sleep" <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
-chmod +x "$tmp/bin/"*
+chmod +x "$tmp/bin/git" "$tmp/bin/cargo" "$tmp/bin/curl" "$tmp/bin/sleep"
+symlink_target_mode_after="$(LC_ALL=C ls -ld "$tmp/symlink-mode-probe")"
+[[ "$symlink_target_mode_after" == "$symlink_target_mode_before" ]] || {
+  echo 'fixture setup changed an executable symlink target mode' >&2
+  exit 1
+}
+
+# Exercise every fixture entry with only the fixture bin on PATH. The full
+# protocol cases below then prove that the real command arguments still work.
+for tool in bash jq awk grep mktemp rm mkdir mv tar sha256sum cat cp dirname git cargo curl sleep symlink-mode-probe; do
+  set +e
+  env -i HOME="$tmp" TMPDIR="$tmp" PATH="$tmp/bin" FIXTURE_ROOT="$fixture_root" CARGO_LOG="$tmp/cargo.log" \
+    "$tmp/bin/$tool" </dev/null >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 126 && "$status" -ne 127 ]] || {
+    echo "fixture tool is not executable under stripped PATH: $tool" >&2
+    exit 1
+  }
+done
 
 run_case() {
   local mode="$1" expected="$2" diagnostic="${3:-}"
