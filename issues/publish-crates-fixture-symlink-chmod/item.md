@@ -1,8 +1,8 @@
 ---
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 type: bug
-status: open
+status: fixed
 priority: normal
 provenance: other
 provenance_detail: Observed during ADR 0002 R8 exact-SHA integrated validation
@@ -13,6 +13,10 @@ lane: taskfleet-rename
 lane_seq: 85
 related: ['@rename-taskfleet']
 collision: [repository-identity]
+closed: 2026-09-03
+commits:
+- hash: 829c842
+  summary: avoid chmod on fixture tool symlinks
 ---
 
 # publish-crates fixture chmods symlinked system tools on Linux CI
@@ -34,3 +38,9 @@ Evidence: https://github.com/jarimustonen/orchestratectl/actions/runs/3367806849
 ## Likely correction
 
 Make only generated stub files executable, rather than applying `chmod` to the symlinked prerequisite tools. Re-run exact-SHA main CI and then restart R8 integrated evidence from the corrected immutable commit.
+
+## Resolution
+
+### 2026-09-03T10:12:58Z · @issuectl
+
+Verified the publish fixture in normal and stripped-PATH environments. The full fmt, clippy, nextest, doctest, and rustdoc gate passed after one retry of an unrelated timing-sensitive materialization test.
