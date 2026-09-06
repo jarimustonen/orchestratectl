@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "tested_commit": "23f7fcf6d9de969300dce560538ce1f3a11f2a2a",
+  "tested_tree": "fbabcec6898d9529758eb79f5f42182bd866b9e4",
+  "phase_a": {
+    "tag_only_generated_workflow": "pass",
+    "no_pr_inherited_release_secrets": "pass",
+    "structural_tag_authorization": "pass",
+    "protected_authorization_refs": "pass",
+    "homebrew_credential_canary": "pass",
+    "activation_ledgers_ready": "pass",
+    "adversarial_review_assessed": "pass"
+  },
+  "phase_b_candidate": {
+    "full_rust_gate_no_fail_fast": "pass",
+    "stripped_path_workspace_tests": "pass",
+    "shipshape_0_10_1_protocol": "pass",
+    "release_fixtures": "pass",
+    "three_crate_packages": "pass",
+    "disposable_cargo_installs": "pass",
+    "cargo_dist_archive_shell_homebrew_drill": "pass",
+    "source_and_residue_scan": "pass",
+    "shipshape_contract_audit_plan": "pass",
+    "hosted_and_self_hosted_ci": "pass",
+    "public_absence_postflight": "pass",
+    "final_merged_main_ci": "pending_conductor"
+  },
+  "phase_c": "not_executed",
+  "forbidden_side_effects": {
+    "tag_or_publish": false,
+    "github_release": false,
+    "tap_mutation": false,
+    "global_taskfleet_or_skill_install": false,
+    "real_state_migration": false
+  }
+}

@@ -1,0 +1,158 @@
+release authorization denied: unexpected repository
+release authorization denied: repository identity mismatch
+release authorization denied: event ref and tag name disagree
+release authorization denied: event ref is not a tag
+release authorization denied: tag does not match workspace version
+release authorization denied: tag does not match workspace version
+release authorization denied: release activation verification failed
+release authorization denied: live GitHub policy verification failed
+release authorization denied: authorization ref is absent
+release authorization denied: authorization ref does not identify this release commit
+Taskfleet distribution topology validated
+building artifacts:
+  taskfleet-aarch64-apple-darwin.tar.xz
+  taskfleet-aarch64-apple-darwin.tar.xz.sha256
+  source.tar.gz
+  source.tar.gz.sha256
+  orchestratectl-installer.sh
+  taskfleet-installer.sh
+  taskfleet.rb
+  sha256.sum
+
+building aarch64-apple-darwin target, using cargo profile dist --workspace)
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling once_cell v1.21.4
+   Compiling version_check v0.9.5
+   Compiling zerocopy v0.8.52
+   Compiling bitflags v2.13.0
+   Compiling getrandom v0.3.4
+   Compiling syn v2.0.118
+   Compiling generic-array v0.14.7
+   Compiling tracing-core v0.1.36
+   Compiling zmij v1.0.21
+   Compiling serde_derive v1.0.228
+   Compiling memchr v2.8.2
+   Compiling itoa v1.0.18
+   Compiling objc2 v0.6.4
+   Compiling autocfg v1.5.1
+   Compiling typenum v1.20.1
+   Compiling serde_json v1.0.150
+   Compiling rustix v1.1.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling num-traits v0.2.19
+   Compiling rand_core v0.9.5
+   Compiling tracing-attributes v0.1.31
+   Compiling errno v0.3.14
+   Compiling core-foundation-sys v0.8.7
+   Compiling crossbeam-utils v0.8.21
+   Compiling thiserror v2.0.18
+   Compiling objc2-encode v4.1.0
+   Compiling pin-project-lite v0.2.17
+   Compiling cfg_aliases v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling tracing v0.1.44
+   Compiling regex-automata v0.4.14
+   Compiling nix v0.31.3
+   Compiling rand_chacha v0.9.0
+   Compiling thiserror-impl v2.0.18
+   Compiling equivalent v1.0.2
+   Compiling anstyle-query v1.1.5
+   Compiling getrandom v0.4.3
+   Compiling anstyle v1.0.14
+   Compiling hashbrown v0.17.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling powerfmt v0.2.0
+   Compiling lazy_static v1.5.0
+   Compiling colorchoice v1.0.5
+   Compiling log v0.4.33
+   Compiling sharded-slab v0.1.7
+   Compiling anstream v1.0.0
+   Compiling tracing-log v0.2.0
+   Compiling deranged v0.4.0
+   Compiling indexmap v2.14.0
+   Compiling rand v0.9.4
+   Compiling block2 v0.6.2
+   Compiling matchers v0.2.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling tracing-serde v0.2.0
+   Compiling iana-time-zone v0.1.65
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling thread_local v1.1.9
+   Compiling smallvec v1.15.2
+   Compiling num-conv v0.1.0
+   Compiling winnow v0.7.15
+   Compiling heck v0.5.0
+   Compiling time-core v0.1.4
+   Compiling strsim v0.11.1
+   Compiling nu-ansi-term v0.50.3
+   Compiling clap_lex v1.1.0
+   Compiling clap_derive v4.6.1
+   Compiling toml_edit v0.22.27
+   Compiling clap_builder v4.6.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling time v0.3.41
+   Compiling digest v0.10.7
+   Compiling chrono v0.4.45
+   Compiling crossbeam-channel v0.5.15
+   Compiling ulid v1.2.1
+   Compiling dispatch2 v0.3.1
+   Compiling fs4 v1.1.0
+   Compiling cpufeatures v0.2.17
+   Compiling taskfleet v0.5.1 (/private/tmp/taskfleet-r10-candidate/crates/taskfleet)
+   Compiling fastrand v2.4.1
+   Compiling symlink v0.1.0
+   Compiling tempfile v3.27.0
+   Compiling sha2 v0.10.9
+   Compiling ctrlc v3.5.2
+   Compiling clap v4.6.1
+   Compiling sysinfo v0.32.1
+   Compiling semver v1.0.28
+   Compiling humantime v2.3.0
+   Compiling taskfleet-core v0.5.1 (/private/tmp/taskfleet-r10-candidate/crates/taskfleet-core)
+   Compiling tracing-appender v0.2.5
+   Compiling toml v0.8.23
+   Compiling orchestratectl v0.5.1 (/private/tmp/taskfleet-r10-candidate/compat/orchestratectl)
+    Finished `dist` profile [optimized] target(s) in 9m 57s
+building extra artifacts target (via ./scripts/build-legacy-installer-stub.sh)
+/private/tmp/taskfleet-r10-candidate/target/taskfleet-extra/orchestratectl-installer.sh
+Note: switching to '560147012b9678b42ef5e83b690f0895552d1366'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+==> Downloading https://ghcr.io/v2/homebrew/core/portable-ruby/blobs/sha256:83a3ff85d83acf0e3dd8105de0fdb01da96b7c0eaf2dfaae2ba6500ec2ae4a64
+#=#=#                                                                          ##O#-#                                                                         ##O=#  #                                                                       #=#=-#  #                                                                      -#O#- #   #                                                                    -=#=#   #   #                                                                                                                                             0.1%                                                                           0.2%                                                                           0.5%                                                                           0.9%#                                                                          1.4%#                                                                          2.6%##                                                                         3.8%###                                                                        5.1%####                                                                       6.1%#####                                                                      8.1%######                                                                     9.2%#######                                                                   10.9%#########                                                                 12.8%##########                                                                15.0%###########                                                               16.4%############                                                              17.9%##############                                                            20.3%################                                                          23.6%###################                                                       26.8%####################                                                      28.7%######################                                                    31.6%#########################                                                 35.5%############################                                              39.0%##############################                                            42.3%#################################                                         46.3%####################################                                      50.8%####################################                                      51.2%#######################################                                   55.5%##########################################                                59.0%##############################################                            64.6%##################################################                        70.3%#####################################################                     74.9%##########################################################                81.1%###############################################################           88.5%#################################################################         91.4%####################################################################      95.4%######################################################################    98.0%######################################################################## 100.0%
+==> Pouring portable-ruby-4.0.6.arm64_big_sur.bottle.tar.gz
+==> Downloading Homebrew API data
+✔︎ JSON API packages.arm64_tahoe.jws.json
+==> Tapping jarimustonen/taskfleet
+Cloning into '/private/var/folders/kj/0ktx11l557g46lrx5m9m1q0r0000gn/T/taskfleet-r7-dist.3aPVpL/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-taskfleet'...
+Tapped 1 formula (13 files, 7.3KB).
+==> Tapping jarimustonen/orchestratectl
+Cloning into '/private/var/folders/kj/0ktx11l557g46lrx5m9m1q0r0000gn/T/taskfleet-r7-dist.3aPVpL/prefix/Homebrew/Library/Taps/jarimustonen/homebrew-orchestratectl'...
+Tapped (14 files, 16.9KB).
+Taskfleet cargo-dist and disposable Homebrew topology passed

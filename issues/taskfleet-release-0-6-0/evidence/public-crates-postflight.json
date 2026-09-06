@@ -1,0 +1,20 @@
+{
+  "checked_at": "2026-09-06T05:39:26Z",
+  "versions": [
+    {
+      "package": "taskfleet",
+      "http_status": 404,
+      "body_prefix": "{\"errors\":[{\"detail\":\"crate `taskfleet` does not exist\"}]}"
+    },
+    {
+      "package": "taskfleet-core",
+      "http_status": 404,
+      "body_prefix": "{\"errors\":[{\"detail\":\"crate `taskfleet-core` does not exist\"}]}"
+    },
+    {
+      "package": "orchestratectl",
+      "http_status": 404,
+      "body_prefix": "{\"errors\":[{\"detail\":\"crate `orchestratectl` does not have a version `0.6.0`\"}]}"
+    }
+  ]
+}

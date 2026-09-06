@@ -1,0 +1,9 @@
+candidate_sha=23f7fcf6d9de969300dce560538ce1f3a11f2a2a
+candidate_tree=fbabcec6898d9529758eb79f5f42182bd866b9e4
+origin=git@github.com:jarimustonen/taskfleet.git
+true
+true
+true
+expected R11-only legacy Homebrew residue:
+README.md:63:`jarimustonen/orchestratectl/orchestratectl` until its separately gated
+canonical source identity and exact workspace pins verified

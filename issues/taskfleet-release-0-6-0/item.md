@@ -1,6 +1,6 @@
 ---
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-06
 type: task
 reporter: jari
 status: open
@@ -27,6 +27,8 @@ Complete ADR 0002 R10 end-to-end: harden and activate the canonical Taskfleet re
 
 ## Phase A — harden and activate without publishing
 
+- [x] Phase A completed: topology hardened, credentials proven, ledgers activated, and review assessed.
+
 - Re-evaluate and close the R9 review residuals before any live activation: cargo-dist 0.28.2's generated `secrets: inherit` on the reusable gate and the blocked-tag cancellation race/permissive skipped-build host dependency.
 - Prefer generator-supported tag-only topology (`pr-run-mode = "skip"` or exact supported equivalent) that removes same-repository PR access to inherited release secrets. Do not hand-edit generated `release.yml`; regenerate with exact cargo-dist 0.28.2 and make generation/check deterministic.
 - Establish a structural fail-closed activation boundary for unauthorized/non-wrapper tags. A cancellation timing race is not sufficient. Preserve the held-tag wrapper as the only release path and keep crates/GitHub Release/Homebrew legs independent after the approved tag push.
@@ -37,12 +39,16 @@ Complete ADR 0002 R10 end-to-end: harden and activate the canonical Taskfleet re
 
 ## Phase B — mandatory post-R9 exact-SHA gate
 
+- [x] Phase B worker-owned candidate gate completed for `23f7fcf6d9de969300dce560538ce1f3a11f2a2a`; final merged-main push CI remains pending.
+
 - On one exact clean integrated candidate after Phase A, run the complete CI-equivalent Rust gate, docs, reviewed snapshots, release protocol/version/topology fixtures, stripped-PATH tests, three-crate package checks, dual-name/state migration compatibility, disposable archive/shell/Homebrew installs, Shipshape contract/audit/non-mutating 0.6.0 plan, residual/source identity scans, and public availability checks.
 - Push candidate through canonical renamed-repository CI including a self-hosted macOS proof. Record exact SHA/tree/run/job/artifact IDs and immutable sanitized evidence.
 - No tag, publish, GitHub Release, formula activation, global install, skill install, real state migration, old-tap mutation, or dependent-repository edit occurs in Phase A/B.
 - Merge activation/evidence only through Taskfleet. The final merged exact-main SHA must receive green push CI before the release cut.
 
 ## Phase C — conductor-owned release transaction
+
+- [ ] Phase C remains conductor-owned and was not executed by this worker.
 
 - From synchronized clean canonical `main`, use only `scripts/shipshape-release.sh plan minor` to seal 0.6.0 and `scripts/shipshape-release.sh cut <plan-id>` to execute. The project autonomy policy removes a human approval pause, but all correctness gates remain mandatory.
 - The wrapper must own bump/version pins/lockfile/changelog, held local tag, exact bump-SHA main push CI, and resumed remote tag push. Never run `cargo publish`, bare `shipshape release cut/resume`, manual tag push, retag, or version reuse.
