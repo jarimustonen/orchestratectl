@@ -11,6 +11,8 @@ snapshots=(
   "$snapshot_dir/envelope_snapshots__version_json.snap"
   "$snapshot_dir/envelope_snapshots__version_jsonl.snap"
   "$snapshot_dir/envelope_snapshots__version_text.snap"
+  "$snapshot_dir/envelope_snapshots__skill_list_json.snap"
+  "$snapshot_dir/envelope_snapshots__skill_list_jsonl.snap"
 )
 
 state_dir="$(mktemp -d "${TMPDIR:-/tmp}/shipshape-bump-hook.XXXXXX")"
@@ -26,7 +28,7 @@ for index in "${!snapshots[@]}"; do
   cp "$snapshot" "$state_dir/before-snapshot-$index"
 done
 
-# Preserve the complete non-version-snapshot state across the test. This catches
+# Preserve the complete non-version-bearing-snapshot state across the test. This catches
 # tracked, staged, and untracked side effects while allowing shipshape's pre-hook
 # manifest/lock/changelog edits to remain exactly as they were.
 exclude_args=()
@@ -48,7 +50,7 @@ fi
 git diff --binary HEAD -- . "${exclude_args[@]}" >"$state_dir/after.diff"
 git ls-files --others --exclude-standard -z >"$state_dir/after.untracked"
 cmp -s "$state_dir/before.diff" "$state_dir/after.diff" || {
-  echo "bump hook changed a file outside the three version snapshots" >&2
+  echo "bump hook changed a file outside the version-bearing snapshots" >&2
   exit 1
 }
 cmp -s "$state_dir/before.untracked" "$state_dir/after.untracked" || {

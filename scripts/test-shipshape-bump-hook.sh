@@ -14,6 +14,8 @@ snapshots=(
   envelope_snapshots__version_json.snap
   envelope_snapshots__version_jsonl.snap
   envelope_snapshots__version_text.snap
+  envelope_snapshots__skill_list_json.snap
+  envelope_snapshots__skill_list_jsonl.snap
 )
 
 write_snapshots() {
@@ -39,6 +41,22 @@ source: fixture
 ---
 taskfleet $text_version
 EOF
+  cat >"$fixture/$snap_dir/envelope_snapshots__skill_list_json.snap" <<'EOF'
+---
+source: fixture
+---
+{"skills":[{"cli_version":"0.4.1"}]}
+EOF
+  cat >"$fixture/$snap_dir/envelope_snapshots__skill_list_jsonl.snap" <<'EOF'
+---
+source: fixture
+---
+{"skills":[{"cli_version":"0.4.1"}]}
+EOF
+  if [[ "$text_version" == 0.5.0 ]]; then
+    sed -i.bak 's/0\.4\.1/0.5.0/g' "$fixture/$snap_dir/"envelope_snapshots__skill_list_*.snap
+    rm "$fixture/$snap_dir/"*.bak
+  fi
 }
 
 make_fixture() {
@@ -81,6 +99,8 @@ case "$HOOK_TEST_MODE" in
     update "$snap_dir/envelope_snapshots__version_json.snap"
     update "$snap_dir/envelope_snapshots__version_jsonl.snap"
     update "$snap_dir/envelope_snapshots__version_text.snap"
+    update "$snap_dir/envelope_snapshots__skill_list_json.snap"
+    update "$snap_dir/envelope_snapshots__skill_list_jsonl.snap"
     ;;
   snap-new)
     HOOK_TEST_MODE=success "$0" "$@"
@@ -155,7 +175,7 @@ run_case() {
 
 run_case success 0
 run_case snap-new 1 "bump hook left unreviewed .snap.new files"
-run_case tracked 1 "bump hook changed a file outside the three version snapshots"
+run_case tracked 1 "bump hook changed a file outside the version-bearing snapshots"
 run_case untracked 1 "bump hook created or removed an unrelated untracked file"
 run_case missing 1 "check-version-snapshots: missing snapshot"
 run_case malformed 1 "is missing an expected version field"

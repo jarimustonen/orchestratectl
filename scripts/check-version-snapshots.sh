@@ -105,11 +105,16 @@ semver='[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?'
 check_snapshot "envelope_snapshots__version_text.snap" \
   "taskfleet ${semver}"
 
-# json / jsonl: every `"version": "x.y.z"` and `"cli_version": "x.y.z"` field.
+# version json / jsonl: every `"version"` and `"cli_version"` field.
 for f in envelope_snapshots__version_json.snap envelope_snapshots__version_jsonl.snap; do
   check_snapshot "$f" \
     "\"version\": ?\"${semver}\"" \
     "\"cli_version\": ?\"${semver}\""
+done
+
+# Skill-list envelopes also expose the release-coupled `cli_version` field.
+for f in envelope_snapshots__skill_list_json.snap envelope_snapshots__skill_list_jsonl.snap; do
+  check_snapshot "$f" "\"cli_version\": ?\"${semver}\""
 done
 
 if [ "$status" -ne 0 ]; then
@@ -119,4 +124,4 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-echo "check-version-snapshots: version_* snapshots match workspace version $ws_version"
+echo "check-version-snapshots: version-bearing snapshots match workspace version $ws_version"
