@@ -1,11 +1,10 @@
 ---
 created: 2026-08-12
-updated: 2026-08-12
+updated: 2026-09-06
 type: task
 status: done
 priority: normal
 epic: lifecycle-architecture-review
-deliverable: issues/lifecycle-architecture-review/alternatives.md
 closed: 2026-08-12
 ---
 
