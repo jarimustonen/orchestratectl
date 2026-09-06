@@ -163,11 +163,17 @@ jobs:
           test "$($dist_bin --version)" = 'cargo-dist 0.28.2'
           echo "DIST_BIN=$dist_bin" >> "$GITHUB_ENV"
       - run: '"$DIST_BIN" generate --check'
-      - name: Exercise release policy parser on hosted jq 1.6
+      - name: Exercise release policy parser with pinned jq 1.6
         shell: bash
         run: |
-          test "$(jq --version)" = jq-1.6
-          ./scripts/test-release-github-policy.sh
+          jq_bin="$RUNNER_TEMP/jq-1.6"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64 \
+            -o "$jq_bin"
+          echo 'af986793a515d500ab2d35f8d2aecd656e764504b789b66d7e1a0b727a124c44  '"$jq_bin" | sha256sum --check
+          chmod +x "$jq_bin"
+          test "$($jq_bin --version)" = jq-1.6
+          REAL_JQ="$jq_bin" ./scripts/test-release-github-policy.sh
       - run: ./scripts/test-release-authorization.sh
       - name: Validate exact generated release plan and coherent activation state
         shell: bash
