@@ -77,20 +77,20 @@ sha="$(git -C "$tmp/repo" rev-parse HEAD)"
 run_auth() {
   (cd "$tmp/repo" && env -i PATH="$tmp/bin:/usr/bin:/bin" ACTIVATION_OK="${ACTIVATION_OK:-1}" POLICY_OK="${POLICY_OK:-1}" \
     REPO_NODE_ID="${REPO_NODE_ID:-R_kgDOS3Iezw}" AUTH_SHA="${AUTH_SHA:-$sha}" AUTH_REF_EXISTS="${AUTH_REF_EXISTS:-1}" \
-    GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-jarimustonen/taskfleet}" \
-    GITHUB_REF="${GITHUB_REF:-refs/tags/v0.6.0}" GITHUB_REF_TYPE="${GITHUB_REF_TYPE:-tag}" \
-    GITHUB_REF_NAME="${GITHUB_REF_NAME:-v0.6.0}" GITHUB_SHA="${GITHUB_SHA:-$sha}" \
+    GITHUB_REPOSITORY="${FIXTURE_REPOSITORY:-jarimustonen/taskfleet}" \
+    GITHUB_REF="${FIXTURE_REF:-refs/tags/v0.6.0}" GITHUB_REF_TYPE="${FIXTURE_REF_TYPE:-tag}" \
+    GITHUB_REF_NAME="${FIXTURE_REF_NAME:-v0.6.0}" GITHUB_SHA="${FIXTURE_SHA:-$sha}" \
     scripts/verify-release-tag-authorization.sh)
 }
 run_auth >/dev/null
 for case_name in repository repository_id event_ref ref_type tag version activation policy authorization_missing authorization_sha; do
   set +e
   case "$case_name" in
-    repository) GITHUB_REPOSITORY=x/y run_auth; status=$? ;;
+    repository) FIXTURE_REPOSITORY=x/y run_auth; status=$? ;;
     repository_id) REPO_NODE_ID=R_wrong run_auth; status=$? ;;
-    event_ref) GITHUB_REF=refs/tags/v0.6.1 run_auth; status=$? ;;
-    ref_type) GITHUB_REF_TYPE=branch run_auth; status=$? ;;
-    tag) GITHUB_REF_NAME=v0.6.1 GITHUB_REF=refs/tags/v0.6.1 run_auth; status=$? ;;
+    event_ref) FIXTURE_REF=refs/tags/v0.6.1 run_auth; status=$? ;;
+    ref_type) FIXTURE_REF_TYPE=branch run_auth; status=$? ;;
+    tag) FIXTURE_REF_NAME=v0.6.1 FIXTURE_REF=refs/tags/v0.6.1 run_auth; status=$? ;;
     version) sed -i.bak 's/0.6.0/0.6.1/' "$tmp/repo/Cargo.toml"; run_auth; status=$?; mv "$tmp/repo/Cargo.toml.bak" "$tmp/repo/Cargo.toml" ;;
     activation) ACTIVATION_OK=0 run_auth; status=$? ;;
     policy) POLICY_OK=0 run_auth; status=$? ;;
