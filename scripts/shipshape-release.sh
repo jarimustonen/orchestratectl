@@ -207,7 +207,7 @@ advance_main_to_bump() {
     exit 2
   }
   git fetch origin +refs/heads/main:refs/remotes/origin/main
-  origin_main="$(git rev-parse origin/main)"
+  origin_main="$(git rev-parse refs/remotes/origin/main)"
   [[ "$origin_main" == "$base" || "$origin_main" == "$bump_commit" ]] || {
     echo "origin/main moved to $origin_main during the release; reconcile deliberately" >&2
     exit 1
@@ -256,6 +256,35 @@ assert_remote_tag_absent() {
   test -z "$remote_tag" || {
     echo "remote tag $tag already exists at $remote_tag; the pre-tag gate can no longer be established" >&2
     echo "publishing may be underway; inspect run $run_id and do not retag or publish manually" >&2
+    exit 2
+  }
+}
+
+release_authorization_ref() {
+  printf 'refs/heads/taskfleet-release-authorizations/%s\n' "$tag"
+}
+
+record_release_authorization() {
+  local ref ref_name response remote_ref remote_oid
+  ref="$(release_authorization_ref)"
+  git check-ref-format "$ref" >/dev/null || {
+    echo "invalid release authorization ref: $ref" >&2
+    exit 2
+  }
+  ref_name="${ref#refs/heads/}"
+  if ! response="$(gh api "repos/$expected_repo/git/ref/heads/$ref_name" 2>/dev/null)"; then
+    # GitHub's create-ref API is atomic and returns 422 if another writer wins;
+    # unlike a normal branch push it can never fast-forward an existing receipt.
+    response="$(gh api --method POST "repos/$expected_repo/git/refs" \
+      -f ref="$ref" -f sha="$bump_commit")" || {
+      echo "could not create release authorization $ref" >&2
+      exit 2
+    }
+  fi
+  remote_ref="$(jq -er .ref <<<"$response")"
+  remote_oid="$(jq -er '.object.sha' <<<"$response")"
+  [[ "$remote_ref" == "$ref" && "$remote_oid" == "$bump_commit" ]] || {
+    echo "release authorization ${remote_ref:-<missing>} points at ${remote_oid:-<missing>}, expected $ref at $bump_commit" >&2
     exit 2
   }
 }
@@ -395,6 +424,8 @@ resume_after_gate() {
   local show_json remote_tag pushed_remote
   assert_run_may_resume "$run_id"
   show_json="$(show_run "$run_id")"
+  branch="$(git symbolic-ref --quiet --short HEAD)" || { echo "release resume must run on a branch" >&2; exit 1; }
+  [[ "$branch" == main ]] || { echo "release resume must run on main (found $branch)" >&2; exit 1; }
   read_run_coordinates "$show_json"
   pushed_remote="$(jq -r --arg tag "$tag" '.data.state.tags[$tag].pushed_remote' <<<"$show_json")"
   [[ "$pushed_remote" == true || "$pushed_remote" == false ]] || {
@@ -408,17 +439,34 @@ resume_after_gate() {
     assert_remote_tag_absent
     advance_main_to_bump
     git fetch origin +refs/heads/main:refs/remotes/origin/main
-    [[ "$(git rev-parse HEAD)" == "$bump_commit" && "$(git rev-parse origin/main)" == "$bump_commit" ]] || {
+    [[ "$(git rev-parse HEAD)" == "$bump_commit" && "$(git rev-parse refs/remotes/origin/main)" == "$bump_commit" ]] || {
       echo "local and remote main must both equal journalled bump commit $bump_commit" >&2
       exit 1
     }
     validate_bump_tree
     wait_for_exact_main_ci "$bump_commit"
+    git fetch origin +refs/heads/main:refs/remotes/origin/main
+    [[ "$(git rev-parse refs/remotes/origin/main)" == "$bump_commit" ]] || {
+      echo "origin/main advanced after exact-SHA CI; release $run_id remains untagged" >&2
+      exit 1
+    }
     assert_recorded_checkpoint
     assert_repo_identity
-    assert_remote_tag_absent
     assert_run_may_resume "$run_id"
-    shipshape release resume "$run_id" --json
+    assert_remote_tag_absent
+    assert_cut_activated
+    "$repo_root/scripts/verify-release-github-policy.sh" >/dev/null
+    record_release_authorization
+    assert_remote_tag_absent
+    if ! shipshape release resume "$run_id" --json; then
+      remote_tag="$(remote_tag_commit)"
+      if [[ -z "$remote_tag" ]]; then
+        echo "release authorization is recorded but $tag is still absent; only scripts/shipshape-release.sh resume $run_id may reconcile this coordinate" >&2
+      else
+        echo "release tag $tag may already be public; only run $run_id may be resumed or verified" >&2
+      fi
+      exit 1
+    fi
   else
     remote_tag="$(remote_tag_commit)"
     [[ "$remote_tag" == "$bump_commit" ]] || {
@@ -508,7 +556,7 @@ case "$command" in
     }
 
     git fetch origin +refs/heads/main:refs/remotes/origin/main
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || {
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse refs/remotes/origin/main)" ]] || {
       echo "main must exactly match origin/main before the cut" >&2
       exit 1
     }

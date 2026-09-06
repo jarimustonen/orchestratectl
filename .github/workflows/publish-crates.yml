@@ -27,15 +27,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.0
-      - name: Verify exact five-leg topology, pins, repository, and tag
+      - name: Verify exact five-leg topology, pins, repository, tag, and wrapper authorization
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(awk -F'"' '/^\[workspace\.package\]/{p=1;next} /^\[/{p=0} p&&/^version[[:space:]]*=/{print $2;exit}' Cargo.toml)"
           test "$GITHUB_REF_TYPE" != tag || test "$GITHUB_REF_NAME" = "v$version"
           repo="$(./scripts/validate-release-topology.sh)"
           if test "$GITHUB_REF_TYPE" = tag; then
-            ./scripts/verify-release-activation.sh
+            ./scripts/verify-release-tag-authorization.sh
           fi
           cargo metadata --locked --no-deps --format-version 1 | jq -e --arg version "$version" --arg repo "https://github.com/$repo" '
             ([.packages[].name] | sort) == ["orchestratectl","taskfleet","taskfleet-core"] and

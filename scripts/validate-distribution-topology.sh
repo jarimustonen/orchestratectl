@@ -2,8 +2,10 @@
 # Validate cargo-dist's R7 plan and all checked-in distribution coordinates.
 set -euo pipefail
 
-[[ $# -eq 1 ]] || { echo "usage: $0 <cargo-dist-plan.json>" >&2; exit 2; }
+[[ $# -ge 1 && $# -le 2 ]] || { echo "usage: $0 <cargo-dist-plan.json> [prepared|active]" >&2; exit 2; }
 plan="$1"
+state="${2:-active}"
+[[ "$state" == prepared || "$state" == active ]] || { echo "state must be prepared or active" >&2; exit 2; }
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 
@@ -35,17 +37,21 @@ jq -e '
     .value.assets[] | select(.kind == "executable") | .name] | unique) == ["taskfleet"] and
   ([.releases[].artifacts[] | select(endswith(".rb"))]) == ["taskfleet.rb"] and
   ([.ci.github.artifacts_matrix.include[] | select(.targets == ["aarch64-apple-darwin"]) | .runner]) == ["macOS"] and
-  ([.ci.github.artifacts_matrix.include[] | select(.targets != ["aarch64-apple-darwin"]) | .runner] | unique) == ["ubuntu-22.04"]
+  ([.ci.github.artifacts_matrix.include[] | select(.targets != ["aarch64-apple-darwin"]) | .runner] | unique) == ["ubuntu-22.04"] and
+  ([.ci.github.artifacts_matrix.include[] | .container // null] | all(. == null))
 ' "$plan" >/dev/null || { echo "cargo-dist plan is not the admitted Taskfleet-only artifact graph" >&2; exit 2; }
 
-jq -e '
-  .schema_version == 1 and .activation == "prepared-blocked-r10" and
+jq -e --arg state "$state" '
+  .schema_version == 1 and
+  (if $state == "active" then .activation == "ready" else .activation == "prepared-blocked-r10" end) and
   .cargo_dist == {
     version:"0.28.2",config:"dist-workspace.toml",workflow:".github/workflows/release.yml",
-    trigger:"tag-push",apps:["taskfleet"],
+    trigger:"tag-push",pr_run_mode:"skip",apps:["taskfleet"],
     tap:"jarimustonen/homebrew-taskfleet",tap_secret:"HOMEBREW_TAP_TOKEN",
-    tap_secret_state:"inert-blocked-r10",
-    activation_gate:".github/workflows/taskfleet-release-gate.yml",macos_runner:"macOS",
+    tap_secret_state:(if $state == "active" then "active-proven-r10" else "pending-r10-proof" end),
+    activation_gate:"scripts/verify-release-tag-authorization.sh",
+    authorization:"wrapper-ref-exact-tag-main-green-ci",
+    release_tag_ruleset:22234415,authorization_ref_ruleset:22234417,macos_runner:"macOS",
     stub_artifact:"orchestratectl-installer.sh",
     stub_sha256:"6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b"
   } and
@@ -57,8 +63,10 @@ jq -e '
   .public_receipts.proof_tree == "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 ' release/taskfleet-distribution.json >/dev/null || { echo "distribution authority is invalid" >&2; exit 2; }
 
-[[ "$(jq -r .activation release/taskfleet-release.json)" == "blocked-r8-r9-r10" ]] || {
-  echo "release cut must remain blocked behind R8/R9/R10" >&2; exit 2;
+expected_release_activation=ready
+[[ "$state" == prepared ]] && expected_release_activation=blocked-r8-r9-r10
+[[ "$(jq -r .activation release/taskfleet-release.json)" == "$expected_release_activation" ]] || {
+  echo "release topology does not match requested $state state" >&2; exit 2;
 }
 [[ "$(grep -Fc 'repository: "jarimustonen/homebrew-taskfleet"' .github/workflows/release.yml)" == 1 ]] || {
   echo "generated workflow must contain exactly one canonical tap checkout" >&2; exit 2;
@@ -73,28 +81,23 @@ grep -A12 '^on:' .github/workflows/release.yml |
   grep -F -- "- '**[0-9]+.[0-9]+.[0-9]+*'" >/dev/null || {
   echo "generated workflow lacks the exact cargo-dist version-tag pattern" >&2; exit 2;
 }
-if grep -A12 '^on:' .github/workflows/release.yml | grep -q 'workflow_dispatch:'; then
-  echo "R9 cargo-dist workflow must use tag dispatch" >&2; exit 2
+if grep -A12 '^on:' .github/workflows/release.yml | grep -Eq 'workflow_dispatch:|pull_request:'; then
+  echo "cargo-dist release workflow must be tag-only" >&2; exit 2
 fi
-[[ "$(grep -Fc 'custom-taskfleet-release-gate' .github/workflows/release.yml)" -ge 2 ]] || {
-  echo "generated workflow does not gate build/host paths through Taskfleet activation" >&2; exit 2;
+grep -F 'pr-run-mode = "skip"' dist-workspace.toml >/dev/null || {
+  echo "cargo-dist must omit release workflow execution on pull requests" >&2; exit 2;
 }
-grep -A8 '^  build-local-artifacts:' .github/workflows/release.yml | grep -F -- '- custom-taskfleet-release-gate' >/dev/null || {
-  echo "generated artifact builds do not wait for Taskfleet activation" >&2; exit 2;
+if grep -Eq 'custom-taskfleet-release-gate|secrets: inherit' .github/workflows/release.yml; then
+  echo "generated workflow must not call a secret-inheriting reusable gate" >&2; exit 2
+fi
+grep -F './scripts/verify-release-tag-authorization.sh' .github/workflows/release.yml >/dev/null || {
+  echo "generated artifact builds do not enforce wrapper authorization" >&2; exit 2;
 }
-grep -F './scripts/verify-release-activation.sh' .github/workflows/taskfleet-release-gate.yml >/dev/null || {
-  echo "reusable cargo-dist activation gate is not wired to the canonical verifier" >&2; exit 2;
+grep -F './scripts/verify-release-tag-authorization.sh' .github/workflows/publish-crates.yml >/dev/null || {
+  echo "crates.io release leg does not enforce wrapper authorization" >&2; exit 2;
 }
-grep -F '"repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel"' \
-  .github/workflows/taskfleet-release-gate.yml >/dev/null || {
-  echo "blocked dispatch does not cancel cargo-dist's complete workflow run" >&2; exit 2;
-}
-gate_permissions="$(grep -A8 '^  custom-taskfleet-release-gate:' .github/workflows/release.yml)"
-grep -F '"actions": "write"' <<<"$gate_permissions" >/dev/null || {
-  echo "generated gate job cannot cancel a blocked workflow run" >&2; exit 2;
-}
-grep -F '"contents": "read"' <<<"$gate_permissions" >/dev/null || {
-  echo "generated gate job cannot check out the activation verifier" >&2; exit 2;
+./scripts/test-release-authorization.sh >/dev/null || {
+  echo "structural release authorization fixtures failed" >&2; exit 2;
 }
 [[ "$(grep -Fc 'token: ${{ secrets.HOMEBREW_TAP_TOKEN }}' .github/workflows/release.yml)" == 1 ]] || {
   echo "generated workflow must use the one admitted tap secret" >&2; exit 2;

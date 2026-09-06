@@ -46,6 +46,7 @@ fi
 case "$*" in
   "rev-parse --show-toplevel") printf '%s\n' "$GIT_STUB_ROOT" ;;
   "remote get-url origin"|"remote get-url --push --all origin") printf '%s\n' 'git@github.com:jarimustonen/taskfleet.git' ;;
+  "symbolic-ref --quiet --short HEAD") printf '%s\n' main ;;
   "cat-file -e "*) [[ "${HELD_VARIANT:-valid}" != missing-local-tag ]] ;;
   "rev-parse --git-common-dir") printf '%s\n' "$GIT_COMMON" ;;
   "ls-remote --tags origin "*)
@@ -53,7 +54,7 @@ case "$*" in
     ;;
   "merge-base --is-ancestor "*) [[ "${HELD_VARIANT:-valid}" != bad-ancestry ]] ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") ;;
-  "rev-parse HEAD"|"rev-parse origin/main") printf '%s\n' "$BUMP_COMMIT" ;;
+  "rev-parse HEAD"|"rev-parse refs/remotes/origin/main") printf '%s\n' "$BUMP_COMMIT" ;;
   "status --porcelain") ;;
   *) echo "stub git: unexpected arguments: $*" >&2; exit 96 ;;
 esac

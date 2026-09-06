@@ -154,13 +154,17 @@ git -C "$repo_root" push -q "$tmp/origin.git" HEAD:refs/heads/main
 git clone -q --branch main "$tmp/origin.git" "$tmp/repo"
 git -C "$tmp/repo" config user.name protocol-test
 git -C "$tmp/repo" config user.email protocol-test@example.invalid
-# Future canonical activation is simulated only inside the disposable fixture.
-# Production topology remains blocked and no public tag or registry is reachable.
+# Canonical activation is simulated only inside the disposable fixture; no
+# public tag or registry is reachable.
 jq '.activation = "ready" | .repository = "jarimustonen/taskfleet"' \
   "$tmp/repo/release/taskfleet-release.json" >"$tmp/topology.json"
 mv "$tmp/topology.json" "$tmp/repo/release/taskfleet-release.json"
 jq '.activation = "ready" | .source_repository.current = "jarimustonen/taskfleet" |
-  .cargo_dist.trigger = "tag-push"' "$tmp/repo/release/taskfleet-distribution.json" >"$tmp/distribution.json"
+  .cargo_dist.trigger = "tag-push" | .cargo_dist.pr_run_mode = "skip" |
+  .cargo_dist.tap_secret_state = "active-proven-r10" |
+  .cargo_dist.activation_gate = "scripts/verify-release-tag-authorization.sh" |
+  .cargo_dist.authorization = "wrapper-ref-exact-tag-main-green-ci"' \
+  "$tmp/repo/release/taskfleet-distribution.json" >"$tmp/distribution.json"
 mv "$tmp/distribution.json" "$tmp/repo/release/taskfleet-distribution.json"
 sed -i.bak 's/^dispatch-releases = true$/dispatch-releases = false/' "$tmp/repo/dist-workspace.toml"
 rm "$tmp/repo/dist-workspace.toml.bak"

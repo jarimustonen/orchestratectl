@@ -25,13 +25,12 @@ license: MIT
 docs_site: none
 ---
 
-> **APPROVED; CUT BLOCKED ON R8-R10.** R7 prepared and machine-verified the
-> canonical cargo-dist/Homebrew topology without activating distribution. The
-> workspace intentionally remains at 0.5.1 and `release/taskfleet-release.json`
-> remains `activation: blocked-r8-r9-r10` until integrated validation, the GitHub
-> rename, and the canonical release gates complete. Do not cut, tag, publish,
-> install, rename the source repository, or activate either tap. The old GitHub
-> repository and old-tap formula remain truthful until R9/R11.
+> **APPROVED; R10 PHASE C CONDUCTOR-OWNED.** R10 Phase A activates the
+> hardened canonical cargo-dist/Homebrew topology after exact generator,
+> ruleset, and SOPS-managed credential proofs. The workspace intentionally
+> remains at 0.5.1 until the conductor completes the post-merge exact-main CI
+> gate and uses only the pinned held-tag wrapper. Do not manually tag, publish,
+> install, or mutate either tap. The old-tap formula remains truthful until R11.
 
 ## Rationale
 - **maturity: mvp** — inferred by `ossctl facts`: has CI + a SemVer tag (`v0.0.2-alpha`) rules
@@ -148,18 +147,22 @@ docs_site: none
   verification. Never add `--allow-empty`, delete/recreate the release, or weaken
   the exact-tag/source gates. The final repair destination is
   `jarimustonen/homebrew-taskfleet`.
-- **R7 prepared cargo-dist but did not activate it.** The generated `release.yml`
-  has PR planning plus workflow dispatch whose default is non-publishing
-  `dry-run`; it has no tag-push trigger. R9 deliberately sets
-  `dispatch-releases = false` and regenerates only after canonical
-  identity/runner validation. Independently,
-  `release/taskfleet-release.json` remains `activation: blocked-r8-r9-r10`, so
-  the wrapper refuses `cut`. A cargo-dist plan job also runs the reusable
-  Taskfleet activation gate before any artifact build, hosting, or tap-secret
-  use; a rejected non-dry dispatch cancels its whole workflow run to defeat the
-  generated host job's skipped-build tolerance. Non-publishing
-  PR/default-dry-run planning is the only bypass. Do not
-  mistake the crates.io workflow's independent gate for cargo-dist activation.
+- **R10 structurally authorizes release tags.** Exact cargo-dist 0.28.2 is
+  configured with `pr-run-mode = "skip"`, so generated `release.yml` is tag-only
+  and contains no secret-inheriting reusable workflow call. The held-tag wrapper
+  creates the version-scoped `taskfleet-release-authorizations/<tag>` ref only
+  after exact-main CI succeeds; both cargo-dist builds and the independent
+  crates.io workflow require that ref to identify the peeled tag commit. Live
+  GitHub rulesets restrict all tag creation and authorization-ref creation,
+  updates, and deletion to repository administrators. This prevents ordinary
+  writers, Actions tokens, accidental tags, and historical workflow revisions
+  from bypassing the current gate; a repository administrator remains the
+  explicit trust boundary. cargo-dist 0.28.2 still permits hosting after skipped
+  local builds, so the admitted plan is pinned to a non-empty three-target local
+  matrix: authorization failure makes those jobs fail, which prevents host and
+  Homebrew publication. The wrapper's durable authorization ref marks an
+  irreversible coordinate: if tag resume is interrupted, only that same
+  Shipshape journal may reconcile it. Do not manually push the tag.
 - **Two distribution channels, one tag (after R8-R10 activation).** Pushing `vX.Y.Z` triggers both channels. (1)
   **crates.io source publish** through `.github/workflows/publish-crates.yml`, which tests on
   Linux and macOS, checks formatting, clippy, MSRV, docs, cargo-deny, and version snapshots,

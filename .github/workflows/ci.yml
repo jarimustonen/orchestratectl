@@ -114,13 +114,14 @@ jobs:
       - run: cargo nextest run --locked --release --workspace
       - run: cargo test --locked --release --workspace --doc
 
-  # R9 proves the repository-scoped cargo-dist runner on same-repository PRs.
-  # Fork pull requests never allocate this persistent machine or execute code on it.
+  # Same-repository PRs and exact-main pushes prove the repository-scoped
+  # cargo-dist runner. Fork pull requests never allocate this persistent machine.
   r9-self-hosted-macos:
     name: test (self-hosted-macos-arm64)
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 25
     steps:
@@ -138,6 +139,44 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
       - run: cargo nextest run --locked --release --workspace
       - run: cargo test --locked --release --workspace --doc
+
+  release-topology:
+    name: release topology (cargo-dist 0.28.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch checksum-pinned cargo-dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=https://github.com/axodotdev/cargo-dist/releases/download/v0.28.2/cargo-dist-x86_64-unknown-linux-gnu.tar.xz
+          archive="$RUNNER_TEMP/cargo-dist-0.28.2.tar.xz"
+          extract_dir="$RUNNER_TEMP/cargo-dist-0.28.2"
+          mkdir -m 700 "$extract_dir"
+          curl --proto '=https' --tlsv1.2 -LsSf "$url" -o "$archive"
+          echo 'c1ba58b5458646ab86f5e0c6f8641c7162eb04d92251fcd949db2c018b9e90e8  '"$archive" | sha256sum --check
+          tar -xJf "$archive" -C "$extract_dir"
+          mapfile -t candidates < <(find "$extract_dir" -type f -name dist -perm -u+x -print)
+          test "${#candidates[@]}" -eq 1
+          dist_bin="${candidates[0]}"
+          test "$($dist_bin --version)" = 'cargo-dist 0.28.2'
+          echo "DIST_BIN=$dist_bin" >> "$GITHUB_ENV"
+      - run: "$DIST_BIN" generate --check
+      - run: ./scripts/test-release-authorization.sh
+      - name: Validate exact generated release plan and coherent activation state
+        shell: bash
+        run: |
+          "$DIST_BIN" plan --output-format=json > "$RUNNER_TEMP/taskfleet-dist-plan.json"
+          release_state="$(jq -er .activation release/taskfleet-release.json)"
+          distribution_state="$(jq -er .activation release/taskfleet-distribution.json)"
+          secret_state="$(jq -er .cargo_dist.tap_secret_state release/taskfleet-distribution.json)"
+          case "$release_state:$distribution_state:$secret_state" in
+            blocked-r8-r9-r10:prepared-blocked-r10:pending-r10-proof) state=prepared ;;
+            ready:ready:active-proven-r10) state=active ;;
+            *) echo "incoherent release activation state" >&2; exit 2 ;;
+          esac
+          ./scripts/validate-distribution-topology.sh "$RUNNER_TEMP/taskfleet-dist-plan.json" "$state"
 
   msrv:
     name: msrv (1.85)

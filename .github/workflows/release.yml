@@ -39,7 +39,6 @@ permissions:
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
 on:
-  pull_request:
   push:
     tags:
       - '**[0-9]+.[0-9]+.[0-9]+*'
@@ -86,20 +85,12 @@ jobs:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
 
-  custom-taskfleet-release-gate:
-    uses: ./.github/workflows/taskfleet-release-gate.yml
-    secrets: inherit
-    permissions:
-      "actions": "write"
-      "contents": "read"
-
   # Build and packages all the platform-specific things
   build-local-artifacts:
     name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
-      - custom-taskfleet-release-gate
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
@@ -133,6 +124,11 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Require wrapper-authorized exact-main release tag"
+        run: "./scripts/verify-release-tag-authorization.sh"
+        shell: "bash"
+        env:
+          "GH_TOKEN": "${{ github.token }}"
       - name: "Remove build-account paths from Rust artifacts"
         run: "printf 'RUSTFLAGS=%s\\n' \"${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$GITHUB_WORKSPACE=/workspace --remap-path-prefix=$HOME=/build\" >> \"$GITHUB_ENV\""
         shell: "bash"

@@ -1,3 +1,8 @@
+- name: Require wrapper-authorized exact-main release tag
+  shell: bash
+  env:
+    GH_TOKEN: ${{ github.token }}
+  run: ./scripts/verify-release-tag-authorization.sh
 - name: Remove build-account paths from Rust artifacts
   shell: bash
   run: printf 'RUSTFLAGS=%s\n' "${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$GITHUB_WORKSPACE=/workspace --remap-path-prefix=$HOME=/build" >> "$GITHUB_ENV"

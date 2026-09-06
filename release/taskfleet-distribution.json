@@ -1,16 +1,20 @@
 {
   "schema_version": 1,
-  "activation": "prepared-blocked-r10",
+  "activation": "ready",
   "cargo_dist": {
     "version": "0.28.2",
     "config": "dist-workspace.toml",
     "workflow": ".github/workflows/release.yml",
     "trigger": "tag-push",
+    "pr_run_mode": "skip",
     "apps": ["taskfleet"],
     "tap": "jarimustonen/homebrew-taskfleet",
     "tap_secret": "HOMEBREW_TAP_TOKEN",
-    "tap_secret_state": "inert-blocked-r10",
-    "activation_gate": ".github/workflows/taskfleet-release-gate.yml",
+    "tap_secret_state": "active-proven-r10",
+    "activation_gate": "scripts/verify-release-tag-authorization.sh",
+    "authorization": "wrapper-ref-exact-tag-main-green-ci",
+    "release_tag_ruleset": 22234415,
+    "authorization_ref_ruleset": 22234417,
     "macos_runner": "macOS",
     "stub_artifact": "orchestratectl-installer.sh",
     "stub_sha256": "6d171a7e0e4be8dec9518d6a888ea73400c0ccebf0a0d2f68b0f41cf5414653b"

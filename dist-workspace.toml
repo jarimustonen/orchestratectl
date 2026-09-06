@@ -7,6 +7,10 @@ members = ["cargo:."]
 cargo-dist-version = "0.28.2"
 # CI backends to support
 ci = "github"
+# Release code and credentials are never made reachable from pull requests.
+# Phase B validates the generated tag-only topology locally; ordinary CI owns
+# same-repository PR validation.
+pr-run-mode = "skip"
 # R9 restores the generated tag trigger at the canonical repository. The
 # checked-in activation gate still blocks every publishing path until R10.
 dispatch-releases = false
@@ -18,12 +22,9 @@ installers = ["shell", "homebrew"]
 # Sole generated Homebrew destination. The old homebrew-orchestratectl tap is
 # static migration metadata and must never receive generated formula writes.
 tap = "jarimustonen/homebrew-taskfleet"
-# Every generated build/host/publish phase must wait for the repository's
-# canonical activation gate. As a plan job this runs before artifacts are built.
-plan-jobs = ["./taskfleet-release-gate"]
-# A blocked non-dry dispatch cancels its own run before any downstream job can
-# exploit cargo-dist's permissive skipped-build host condition.
-github-custom-job-permissions = { "taskfleet-release-gate" = { actions = "write", contents = "read" } }
+# Authorization executes inside every local build via github-build-setup. An
+# unauthorized tag therefore makes the build dependency fail (never skip), so
+# cargo-dist's permissive skipped-build host condition cannot publish.
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax).
