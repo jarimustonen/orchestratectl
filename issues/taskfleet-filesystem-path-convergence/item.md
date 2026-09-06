@@ -34,8 +34,10 @@ This is a final convergence transaction. It depends on the zero-legacy Taskfleet
 
 ## Acceptance Criteria
 
-- [ ] Every reachable supported machine uses canonical Taskfleet clone and worktree-root directory names.
-- [ ] Git worktree metadata, remotes, project launchers, fleet checks, and intake routing resolve only canonical paths.
-- [ ] No active persisted path, obsolete directory, or broken symlink retains the former identity.
-- [ ] One post-rename create/merge smoke test passes from the canonical checkout.
-- [ ] Unreachable hosts are recorded as unverified rather than assumed converged.
+- [x] Every reachable supported machine uses canonical Taskfleet clone and worktree-root directory names.
+- [x] Git worktree metadata, remotes, project launchers, fleet checks, and intake routing resolve only canonical paths.
+- [x] No active persisted path, obsolete directory, or broken symlink retains the former identity.
+- [x] One post-rename create/merge smoke test passes from the canonical checkout.
+- [x] Unreachable hosts are recorded as unverified rather than assumed converged.
+
+Brunhild was unreachable during convergence and remains explicitly unverified; the checked reachable-host criteria cover Gertrud, Hauis, and Haapa only. The smoke criterion is completed by the successful self-merge of run `01m1vxs01fapy4yc8dtz7e1b7a`.
