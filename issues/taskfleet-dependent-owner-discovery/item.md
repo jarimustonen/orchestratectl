@@ -2,12 +2,13 @@
 created: 2026-09-06
 updated: 2026-09-06
 type: task
-status: open
+status: done
 priority: high
 related: ['@taskfleet-homebrew-migration']
 lane: taskfleet-rename
 lane_seq: 130
 collision: [issues/rename-taskfleet/plan.md]
+closed: 2026-09-06
 ---
 
 # Map dependent Taskfleet owners and active references
@@ -46,8 +47,14 @@ Record which repository owns Haapa and intake deployment based on evidence, not 
 
 ## Acceptance Criteria
 
-- [ ] All maintained reachable repositories and Homebase fleet units are covered by an auditable search inventory.
-- [ ] Active references are separated from intentional compatibility/history/generated occurrences.
-- [ ] Haapa and intake ownership is identified with exact repository paths/units and reachability status.
-- [ ] Each required E2 change has one owning repository, dependency channel, ordering, and proposed issue.
-- [ ] E1 authorizes only the listed E2 worktrees; no migration has occurred.
+- [x] All maintained reachable repositories and Homebase fleet units are covered by an auditable search inventory.
+- [x] Active references are separated from intentional compatibility/history/generated occurrences.
+- [x] Haapa and intake ownership is identified with exact repository paths/units and reachability status.
+- [x] Each required E2 change has one owning repository, dependency channel, ordering, and proposed issue.
+- [x] E1 authorizes only the listed E2 worktrees; no migration has occurred.
+
+## Resolution
+
+### 2026-09-06T10:30:49Z · @issuectl
+
+Completed ADR 0002 E1 owner discovery. The owner-map inventory classifies active owners, intentional compatibility/stable protocol/history, exact Haapa ownership and reachability, and authorizes only the proposed ordered E2 issue slugs; no migration or E2 issue creation occurred.
