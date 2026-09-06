@@ -34,7 +34,7 @@ Validated in the implementation worktree on 2026-09-06:
   tools. Cargo disclosed expected macOS `rust-objcopy` dynamic-library warnings
   caused by the stripped loader path; compilation and all selected tests passed.
 
-From clean implementation commit `d484ed0`, `cargo package --locked --workspace
+From clean implementation commit `a357c0c`, `cargo package --locked --workspace
 --no-verify` produced exactly the two canonical archives (30 and 176 files), and
 the exact admitted Shipshape 0.10.1 build at
 `3e46568d6969701c5fea82fb134b62aa17121cbe` passed its held-tag protocol gate,

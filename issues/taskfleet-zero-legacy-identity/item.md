@@ -11,7 +11,7 @@ collision: [Cargo.toml, crates, docs]
 closed: 2026-09-06
 closed_by: pi
 commits:
-- hash: d484ed0
+- hash: a357c0c
   summary: make Taskfleet the sole identity
 ---
 
