@@ -80,9 +80,9 @@ run_auth() {
     GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-jarimustonen/taskfleet}" \
     GITHUB_REF="${GITHUB_REF:-refs/tags/v0.6.0}" GITHUB_REF_TYPE="${GITHUB_REF_TYPE:-tag}" \
     GITHUB_REF_NAME="${GITHUB_REF_NAME:-v0.6.0}" GITHUB_SHA="${GITHUB_SHA:-$sha}" \
-    scripts/verify-release-tag-authorization.sh >/dev/null 2>&1)
+    scripts/verify-release-tag-authorization.sh)
 }
-run_auth
+run_auth >/dev/null
 for case_name in repository repository_id event_ref ref_type tag version activation policy authorization_missing authorization_sha; do
   set +e
   case "$case_name" in
